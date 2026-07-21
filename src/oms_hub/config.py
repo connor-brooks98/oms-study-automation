@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     timezone: str = "America/New_York"
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = Field(default=8765, ge=1024, le=65535)
+    outlook_client_id: str | None = None
+    outlook_tenant: str = "organizations"
+    outlook_sync_days_ahead: int = Field(default=14, ge=1, le=90)
 
     @field_validator("timezone")
     @classmethod
@@ -25,4 +28,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

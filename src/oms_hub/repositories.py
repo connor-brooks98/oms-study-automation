@@ -1,4 +1,7 @@
+import json
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Protocol
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
@@ -6,11 +9,26 @@ from sqlalchemy.orm import selectinload
 from oms_hub.db import Database
 from oms_hub.domain import LectureStepName, StepStatus
 from oms_hub.models import (
+    ExternalEventModel,
     ImportIssueModel,
     ImportRunModel,
     LectureModel,
     LectureStepModel,
 )
+
+
+class ExternalEventData(Protocol):
+    @property
+    def external_id(self) -> str: ...
+
+    @property
+    def revision(self) -> str: ...
+
+    @property
+    def subject(self) -> str: ...
+
+    @property
+    def start_utc(self) -> datetime: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +110,84 @@ class CatalogRepository:
             lecture.topic = value.topic
             lecture.lecturer = value.lecturer
             lecture.exam_date = value.exam_date
+
+    def update_schedule(
+        self,
+        lecture_id: int,
+        scheduled_start_utc: str,
+        campus: str,
+    ) -> None:
+        with self.database.session() as session:
+            lecture = session.get(LectureModel, lecture_id)
+            if lecture is None:
+                raise KeyError(lecture_id)
+            lecture.scheduled_start_utc = scheduled_start_utc
+            lecture.campus = campus
+
+    def upsert_external_event(
+        self,
+        event: ExternalEventData,
+        lecture_id: int | None,
+        needs_review: bool,
+        detail: str,
+    ) -> None:
+        payload = json.dumps(
+            {
+                "external_id": event.external_id,
+                "revision": event.revision,
+                "subject": event.subject,
+                "start_utc": event.start_utc.isoformat(),
+                "needs_review": needs_review,
+                "detail": detail,
+            },
+            sort_keys=True,
+        )
+        with self.database.session() as session:
+            stored = session.scalar(
+                select(ExternalEventModel).where(
+                    ExternalEventModel.provider == "outlook",
+                    ExternalEventModel.external_id == event.external_id,
+                )
+            )
+            if stored is None:
+                stored = ExternalEventModel(
+                    provider="outlook",
+                    external_id=event.external_id,
+                    title=event.subject,
+                    revision=event.revision,
+                    lecture_id=lecture_id,
+                    needs_review=needs_review,
+                    detail=detail,
+                    payload_json=payload,
+                )
+                session.add(stored)
+            else:
+                stored.revision = event.revision
+                stored.title = event.subject
+                stored.lecture_id = lecture_id
+                stored.needs_review = needs_review
+                stored.detail = detail
+                stored.payload_json = payload
+
+    def list_external_events(self) -> list[ExternalEventModel]:
+        with self.database.session() as session:
+            return list(
+                session.scalars(
+                    select(ExternalEventModel).order_by(
+                        ExternalEventModel.seen_at.desc()
+                    )
+                ).all()
+            )
+
+    def list_review_events(self) -> list[ExternalEventModel]:
+        with self.database.session() as session:
+            return list(
+                session.scalars(
+                    select(ExternalEventModel)
+                    .where(ExternalEventModel.needs_review.is_(True))
+                    .order_by(ExternalEventModel.seen_at.desc())
+                ).all()
+            )
 
     def set_step_status(
         self,
