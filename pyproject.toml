@@ -22,6 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "httpx2>=2.7,<3",
   "mypy>=1.14,<2",
   "pytest>=8.3,<9",
   "pytest-cov>=6,<7",
@@ -38,6 +39,7 @@ packages = ["src/oms_hub"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+filterwarnings = ["error"]
 
 [tool.ruff]
 line-length = 100
@@ -47,4 +49,3 @@ target-version = "py312"
 python_version = "3.12"
 strict = true
 packages = ["oms_hub"]
-
