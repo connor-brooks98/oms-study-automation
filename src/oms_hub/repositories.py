@@ -5,7 +5,12 @@ from sqlalchemy.orm import selectinload
 
 from oms_hub.db import Database
 from oms_hub.domain import LectureStepName, StepStatus
-from oms_hub.models import ImportIssueModel, LectureModel, LectureStepModel
+from oms_hub.models import (
+    ImportIssueModel,
+    ImportRunModel,
+    LectureModel,
+    LectureStepModel,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,3 +145,79 @@ class CatalogRepository:
             if issue is None:
                 raise KeyError(issue_id)
             session.delete(issue)
+
+    def has_import_hash(self, source_sha256: str) -> bool:
+        with self.database.session() as session:
+            return (
+                session.scalar(
+                    select(ImportRunModel).where(
+                        ImportRunModel.source_sha256 == source_sha256
+                    )
+                )
+                is not None
+            )
+
+    def commit_tracker_import(
+        self,
+        lectures: list[LectureInput],
+        issues: list[tuple[str, int, str, str]],
+        source_sha256: str,
+        source_name: str,
+    ) -> int:
+        with self.database.session() as session:
+            if session.scalar(
+                select(ImportRunModel).where(
+                    ImportRunModel.source_sha256 == source_sha256
+                )
+            ):
+                raise ValueError("tracker workbook has already been imported")
+
+            imported = 0
+            for value in lectures:
+                lecture = session.scalar(
+                    select(LectureModel).where(
+                        LectureModel.subject == value.subject,
+                        LectureModel.exam_number == value.exam_number,
+                        LectureModel.lecture_number == value.lecture_number,
+                    )
+                )
+                if lecture is None:
+                    lecture = LectureModel(
+                        subject=value.subject,
+                        exam_number=value.exam_number,
+                        lecture_number=value.lecture_number,
+                        topic=value.topic,
+                        lecturer=value.lecturer,
+                        exam_date=value.exam_date,
+                    )
+                    lecture.steps = [
+                        LectureStepModel(
+                            name=name.value,
+                            status=StepStatus.WAITING.value,
+                        )
+                        for name in LectureStepName
+                    ]
+                    session.add(lecture)
+                    imported += 1
+                else:
+                    lecture.topic = value.topic
+                    lecture.lecturer = value.lecturer
+                    lecture.exam_date = value.exam_date
+
+            session.execute(delete(ImportIssueModel))
+            session.add_all(
+                ImportIssueModel(
+                    sheet=sheet,
+                    row_number=row,
+                    message=message,
+                    raw_values=raw,
+                )
+                for sheet, row, message, raw in issues
+            )
+            session.add(
+                ImportRunModel(
+                    source_sha256=source_sha256,
+                    source_name=source_name,
+                )
+            )
+            return imported

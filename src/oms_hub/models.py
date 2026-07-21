@@ -59,6 +59,15 @@ class ImportIssueModel(Base):
     raw_values: Mapped[str] = mapped_column(Text)
 
 
+class ImportRunModel(Base):
+    __tablename__ = "import_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_sha256: Mapped[str] = mapped_column(String(64), unique=True)
+    source_name: Mapped[str] = mapped_column(String(300))
+    imported_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
 class ExternalEventModel(Base):
     __tablename__ = "external_events"
     __table_args__ = (UniqueConstraint("provider", "external_id"),)
@@ -76,4 +85,3 @@ class ExternalEventModel(Base):
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     payload_json: Mapped[str] = mapped_column(Text)
     seen_at: Mapped[str] = mapped_column(String(40), default=utc_now)
-
