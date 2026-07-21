@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · OMS Study Hub{% endblock %}
+{% block content %}
+<p><a href="/">← Dashboard</a></p>
+<h1>{{ title }}</h1>
+<p>{{ lecture.subject }} · Exam {{ lecture.exam_number }} · {{ lecture.lecturer }}</p>
+<details>
+  <summary>Edit lecture metadata</summary>
+  <form method="post" action="/lectures/{{ lecture.id }}/metadata">
+    <label>Subject <input name="subject" value="{{ lecture.subject }}" required></label>
+    <label>Exam <input name="exam_number" type="number" min="1" value="{{ lecture.exam_number }}" required></label>
+    <label>Lecture <input name="lecture_number" type="number" min="1" value="{{ lecture.lecture_number }}" required></label>
+    <label>Topic <input name="topic" value="{{ lecture.topic }}" required></label>
+    <label>Lecturer <input name="lecturer" value="{{ lecture.lecturer }}"></label>
+    <label>Exam date <input name="exam_date" type="date" value="{{ lecture.exam_date or '' }}"></label>
+    <button type="submit">Save metadata</button>
+  </form>
+</details>
+<ol class="checklist">
+{% for step in lecture.steps %}
+  <li class="step step-{{ step.status }}">
+    <div>
+      <strong>{{ step.name.replace('_', ' ').title() }}</strong>
+      <span class="status {{ step.status }}">{{ step.status.replace('_', ' ').title() }}</span>
+    </div>
+    {% if step.detail %}<p>{{ step.detail }}</p>{% endif %}
+    {% if step.status == "needs_review" %}
+      <form method="post" action="/lectures/{{ lecture.id }}/steps/{{ step.name }}">
+        <input type="hidden" name="status" value="queued">
+        <label>Approval note <input name="detail" value="Approved in daily review"></label>
+        <button type="submit">Approve and queue</button>
+      </form>
+    {% endif %}
+  </li>
+{% endfor %}
+</ol>
+{% endblock %}

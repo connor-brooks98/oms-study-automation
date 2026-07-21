@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Lecture dashboard · OMS Study Hub{% endblock %}
+{% block content %}
+<h1>Lecture dashboard</h1>
+<p><a class="review-count" href="/review">{{ review_count }} needs review</a></p>
+<table>
+  <thead>
+    <tr><th>Lecture</th><th>Subject</th><th>Exam</th><th>Progress</th><th>Status</th></tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    <tr>
+      <td><a href="/lectures/{{ row.lecture.id }}">{{ row.title }}</a></td>
+      <td>{{ row.lecture.subject }}</td>
+      <td>Exam {{ row.lecture.exam_number }}</td>
+      <td>{{ row.completed }}/{{ row.total }}</td>
+      <td>
+        {% if row.needs_review %}
+        <span class="status needs_review">Needs review</span>
+        {% else %}
+        <span class="status">On track</span>
+        {% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5">Import the tracker to create the lecture catalog.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

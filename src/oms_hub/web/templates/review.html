@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Daily review · OMS Study Hub{% endblock %}
+{% block content %}
+<h1>Daily review</h1>
+<h2>Lecture steps</h2>
+<ul>
+{% for lecture in lectures %}
+  <li>
+    <a href="/lectures/{{ lecture.id }}">{{ lecture.subject }} Exam {{ lecture.exam_number }} · Lecture {{ "%02d"|format(lecture.lecture_number) }} · {{ lecture.topic }}</a>
+  </li>
+{% else %}
+  <li>Nothing needs review.</li>
+{% endfor %}
+</ul>
+<h2>Unmatched Outlook events</h2>
+<ul>
+{% for event in external_events %}
+  <li><strong>{{ event.title }}</strong> — {{ event.detail }}</li>
+{% else %}
+  <li>No unmatched Outlook events.</li>
+{% endfor %}
+</ul>
+<h2>Tracker import issues</h2>
+<ul class="issues">
+{% for issue in import_issues %}
+  <li>
+    <strong>{{ issue.sheet }} row {{ issue.row_number }}</strong> — {{ issue.message }} — {{ issue.raw_values }}
+    <form method="post" action="/review/import-issues/{{ issue.id }}/resolve">
+      <label>Subject <input name="subject" required></label>
+      <label>Exam <input name="exam_number" type="number" min="1" required></label>
+      <label>Lecture <input name="lecture_number" type="number" min="1" required></label>
+      <label>Topic <input name="topic" required></label>
+      <label>Lecturer <input name="lecturer"></label>
+      <button type="submit">Create lecture and resolve</button>
+    </form>
+  </li>
+{% else %}
+  <li>No tracker import issues.</li>
+{% endfor %}
+</ul>
+{% endblock %}
