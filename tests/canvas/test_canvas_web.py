@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from oms_hub.app import create_app
+from oms_hub.canvas.domain import CourseMappingInput
 from oms_hub.canvas.pairing import PairingService
 from oms_hub.config import Settings
 from tests.canvas.test_pairing import MemorySecretStore
@@ -43,6 +44,69 @@ def test_auto_processing_cannot_be_enabled_before_setup(tmp_path) -> None:
     response = client.post("/canvas/enable")
     assert response.status_code == 409
     assert app.state.canvas_repository.connection().auto_process is False
+
+
+def test_zero_item_scan_cannot_be_confirmed(tmp_path) -> None:
+    client, app = client_for(tmp_path)
+    app.state.canvas_repository.heartbeat(
+        "connected",
+        scan_complete=True,
+        item_count=0,
+    )
+
+    response = client.post("/canvas/confirm-preview")
+
+    assert response.status_code == 409
+    assert "at least one item" in response.json()["detail"]
+    assert app.state.canvas_repository.connection().discovery_confirmed is False
+
+
+def test_zero_item_scan_cannot_enable_automatic_processing(tmp_path) -> None:
+    client, app = client_for(tmp_path)
+    repository = app.state.canvas_repository
+    repository.set_pairing("extension", "fingerprint")
+    repository.replace_course_mappings(
+        [
+            CourseMappingInput(str(index), f"Course {index}", f"C{index}", subject)
+            for index, subject in enumerate(
+                ["Neuro", "MSK", "OPP", "EPC", "Heme/Lymph", "Cardio", "Renal", "Resp"],
+                start=1,
+            )
+        ]
+    )
+    repository.heartbeat("connected", scan_complete=True, item_count=0)
+    repository.set_setup(
+        study_root=str(tmp_path / "study"),
+        icloud_staging_root=str(tmp_path / "icloud"),
+        discovery_confirmed=True,
+    )
+
+    response = client.post("/canvas/enable")
+
+    assert response.status_code == 409
+    assert repository.connection().auto_process is False
+
+
+def test_automatic_processing_can_be_paused(tmp_path) -> None:
+    client, app = client_for(tmp_path)
+    app.state.canvas_repository.set_setup(auto_process=True)
+
+    response = client.post("/canvas/disable", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/canvas/setup"
+    assert app.state.canvas_repository.connection().auto_process is False
+
+
+def test_setup_shows_pause_control_while_automatic_processing_is_enabled(tmp_path) -> None:
+    client, app = client_for(tmp_path)
+    app.state.canvas_repository.set_setup(auto_process=True)
+
+    response = client.get("/canvas/setup")
+
+    assert response.status_code == 200
+    assert 'action="/canvas/disable"' in response.text
+    assert "Pause automatic processing" in response.text
 
 
 def test_dashboard_rejects_cross_site_form_posts(tmp_path) -> None:

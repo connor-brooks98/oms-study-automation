@@ -147,8 +147,11 @@ def scan_now(request: Request) -> RedirectResponse:
 @router.post("/confirm-preview")
 def confirm_preview(request: Request) -> RedirectResponse:
     connection = _repo(request).connection()
-    if not connection.last_successful_scan:
-        raise HTTPException(status_code=409, detail="Complete a discovery scan first")
+    if not connection.last_successful_scan or connection.last_scan_item_count < 1:
+        raise HTTPException(
+            status_code=409,
+            detail="Complete a discovery scan that finds at least one item first",
+        )
     _repo(request).set_setup(discovery_confirmed=True)
     return RedirectResponse("/canvas/setup", status_code=303)
 
@@ -163,11 +166,18 @@ def enable(request: Request) -> RedirectResponse:
         and bool(connection.study_root)
         and bool(connection.icloud_staging_root)
         and bool(connection.last_successful_scan)
+        and connection.last_scan_item_count > 0
         and connection.discovery_confirmed
     )
     if not ready:
         raise HTTPException(status_code=409, detail="Complete every setup step first")
     repository.set_setup(auto_process=True)
+    return RedirectResponse("/canvas/setup", status_code=303)
+
+
+@router.post("/disable")
+def disable(request: Request) -> RedirectResponse:
+    _repo(request).set_setup(auto_process=False)
     return RedirectResponse("/canvas/setup", status_code=303)
 
 
