@@ -127,7 +127,7 @@ def dry_run(args: argparse.Namespace) -> int:
 def serve(args: argparse.Namespace) -> int:
     settings = Settings()
     app = create_app(settings)
-    scheduler = None
+    sync_once = None
     if settings.outlook_client_id:
         repository = CatalogRepository(app.state.database)
         synchronizer = OutlookSynchronizer(
@@ -139,8 +139,10 @@ def serve(args: argparse.Namespace) -> int:
             start, end = _window(settings.outlook_sync_days_ahead)
             synchronizer.sync_window(start, end)
 
-        scheduler = build_scheduler(settings.timezone, sync_once)
-        scheduler.start()
+    pipeline = app.state.canvas_pipeline
+    pipeline.recover_abandoned_jobs()
+    scheduler = build_scheduler(settings.timezone, sync_once, pipeline.run_next)
+    scheduler.start()
     try:
         uvicorn.run(
             app,
@@ -148,8 +150,7 @@ def serve(args: argparse.Namespace) -> int:
             port=settings.dashboard_port,
         )
     finally:
-        if scheduler:
-            scheduler.shutdown(wait=False)
+        scheduler.shutdown(wait=False)
     return 0
 
 

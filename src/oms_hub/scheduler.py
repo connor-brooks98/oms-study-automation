@@ -11,23 +11,37 @@ logger = logging.getLogger(__name__)
 
 def build_scheduler(
     timezone: str,
-    sync_once: Callable[[], None],
+    sync_once: Callable[[], None] | None,
+    canvas_worker_once: Callable[[], object] | None = None,
 ) -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone=timezone)
 
-    def guarded_sync() -> None:
-        try:
-            sync_once()
-        except Exception:
-            logger.exception("Outlook synchronization failed")
+    if sync_once is not None:
+        configured_sync = sync_once
 
-    scheduler.add_job(
-        guarded_sync,
-        CronTrigger(hour="5,17", minute=0, timezone=timezone),
-        id="outlook-sync",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=3600,
-    )
+        def guarded_sync() -> None:
+            try:
+                configured_sync()
+            except Exception:
+                logger.exception("Outlook synchronization failed")
+
+        scheduler.add_job(
+            guarded_sync,
+            CronTrigger(hour="5,17", minute=0, timezone=timezone),
+            id="outlook-sync",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+    if canvas_worker_once is not None:
+        scheduler.add_job(
+            canvas_worker_once,
+            "interval",
+            seconds=5,
+            id="canvas-worker",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
     return scheduler
