@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from oms_hub.checklist import ChecklistService
+from oms_hub.canvas.repository import CanvasRepository
 from oms_hub.domain import LectureKey, LectureStepName, StepStatus
 from oms_hub.naming import display_title
 from oms_hub.repositories import CatalogRepository, LectureInput
@@ -49,10 +50,17 @@ def dashboard(request: Request) -> HTMLResponse:
         )
     review_count += len(repository.list_review_events())
     review_count += len(repository.list_import_issues())
+    canvas_repository = CanvasRepository(request.app.state.database)
+    review_count += len(canvas_repository.list_review_items())
+    review_count += len(canvas_repository.list_proposed_revisions())
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
-        context={"rows": rows, "review_count": review_count},
+        context={
+            "rows": rows,
+            "review_count": review_count,
+            "canvas_connection": canvas_repository.connection(),
+        },
     )
 
 

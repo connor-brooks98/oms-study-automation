@@ -3,6 +3,7 @@
 {% block content %}
 <h1>Lecture dashboard</h1>
 <p><a class="review-count" href="/review">{{ review_count }} needs review</a></p>
+<section class="card"><h2>Canvas</h2><p><span class="status {{ canvas_connection.state }}">{{ canvas_connection.state.replace('_', ' ').title() }}</span> · Last heartbeat: {{ canvas_connection.last_heartbeat or 'Never' }} · Last scan: {{ canvas_connection.last_successful_scan or 'Never' }}</p>{% if canvas_connection.last_error %}<p class="error">{{ canvas_connection.last_error }}</p>{% endif %}<p><a href="/canvas/setup">Setup</a> · <a href="/canvas/review">Review Canvas items</a></p></section>
 <table>
   <thead>
     <tr><th>Lecture</th><th>Subject</th><th>Exam</th><th>Progress</th><th>Status</th></tr>

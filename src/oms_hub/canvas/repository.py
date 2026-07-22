@@ -130,6 +130,34 @@ class CanvasRepository:
             if auto_process is not None:
                 value.auto_process = auto_process
 
+    def set_course_candidates(self, values: list[dict[str, str]]) -> None:
+        concise = [
+            {
+                "course_id": item["course_id"][:100],
+                "course_name": item["course_name"][:300],
+                "course_code": item.get("course_code", "")[:200],
+            }
+            for item in values[:100]
+        ]
+        with self.database.session() as session:
+            self._connection_in_session(session).course_candidates_json = json.dumps(
+                concise, sort_keys=True
+            )
+
+    def list_course_candidates(self) -> list[dict[str, str]]:
+        raw = json.loads(self.connection().course_candidates_json)
+        return [dict(item) for item in raw]
+
+    def list_proposed_revisions(self) -> list[SourceRevisionModel]:
+        with self.database.session() as session:
+            return list(
+                session.scalars(
+                    select(SourceRevisionModel)
+                    .where(SourceRevisionModel.state == "proposed")
+                    .order_by(SourceRevisionModel.discovered_at.desc())
+                ).all()
+            )
+
     @staticmethod
     def _connection_in_session(session: Session) -> CanvasConnectionModel:
         value = session.scalar(select(CanvasConnectionModel).limit(1))

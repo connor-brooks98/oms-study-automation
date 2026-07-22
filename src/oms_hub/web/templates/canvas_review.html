@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Canvas review · OMS Study Hub{% endblock %}
+{% block content %}
+<h1>Canvas review</h1>
+<h2>Items needing a match or decision</h2><ul class="issues">{% for item in items %}<li><strong>{{ item.filename }}</strong><p>Subject: {{ item.subject or 'Unknown' }} · Exam: {{ item.exam_number or 'Unknown' }} · Confidence: {{ '%.0f%%'|format(item.confidence * 100) }}</p><p>{{ item.evidence_json }}</p><a href="{{ item.source_url }}" target="_blank" rel="noreferrer">Open in Canvas</a><form method="post" action="/canvas/sources/{{ item.id }}/remap"><label>Map to lecture<select name="lecture_id" required>{% for lecture in lectures %}<option value="{{ lecture.id }}">{{ lecture.subject }} Exam {{ lecture.exam_number }} · Lecture {{ lecture.lecture_number }} · {{ lecture.topic }}</option>{% endfor %}</select></label><button>Save match</button></form></li>{% else %}<li>No unmatched Canvas items.</li>{% endfor %}</ul>
+<h2>Proposed lecture replacements</h2><ul class="issues">{% for revision in proposed %}<li><strong>{{ revision.original_filename }}</strong><p>Discovered {{ revision.discovered_at }}. The current lecture files are unchanged.</p><form method="post" action="/canvas/revisions/{{ revision.id }}/approve"><button>Approve replacement</button></form><form method="post" action="/canvas/revisions/{{ revision.id }}/keep"><button>Keep current version</button></form></li>{% else %}<li>No lecture replacements waiting.</li>{% endfor %}</ul>
+{% endblock %}

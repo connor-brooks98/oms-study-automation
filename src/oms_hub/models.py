@@ -106,6 +106,7 @@ class CanvasConnectionModel(Base):
     auto_process: Mapped[bool] = mapped_column(default=False)
     last_scan_item_count: Mapped[int] = mapped_column(default=0)
     last_scan_new_count: Mapped[int] = mapped_column(default=0)
+    course_candidates_json: Mapped[str] = mapped_column(Text, default="[]")
 
 
 class CanvasCourseMappingModel(Base):

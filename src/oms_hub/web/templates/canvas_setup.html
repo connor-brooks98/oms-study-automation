@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Canvas setup · OMS Study Hub{% endblock %}
+{% block content %}
+<h1>Canvas setup</h1>
+<p>This stays on your NUC and uses the Canvas session already open in Chrome.</p>
+<ol class="setup-checks">
+{% for label, complete in checks %}<li class="step step-{{ 'complete' if complete else 'waiting' }}"><strong>{{ label }}</strong> <span class="status {{ 'complete' if complete else '' }}">{{ 'Ready' if complete else 'Not ready' }}</span></li>{% endfor %}
+</ol>
+<section class="card"><h2>1. Pair the extension</h2>
+{% if request.cookies.get('canvas_pair_code') %}<p class="pair-code">{{ request.cookies.get('canvas_pair_code') }}</p><p>Enter this code in the extension within five minutes.</p>{% else %}<form method="post" action="/canvas/pair-code"><button>Generate pairing code</button></form>{% endif %}
+</section>
+<section class="card"><h2>2. Map the eight courses</h2>
+{% if not candidates %}<p>Pair the extension to fetch your active Canvas courses.</p>{% else %}<form method="post" action="/canvas/mappings">
+{% for subject, field in subject_fields.items() %}<label>{{ subject }}<select name="{{ field }}" required><option value="">Choose course</option>{% for course in candidates %}<option value="{{ course.course_id }}" {% if mapped.get(subject) == course.course_id %}selected{% endif %}>{{ course.course_name }} — {{ course.course_code }}</option>{% endfor %}</select></label>{% endfor %}<button>Save course mappings</button></form>{% endif %}
+</section>
+<section class="card"><h2>3. Confirm folders</h2><form method="post" action="/canvas/paths"><label>Local OMS II folder<input name="study_root" value="{{ study_default }}" required></label><label>iCloud Drive root<input name="icloud_root" list="icloud-roots" value="{{ connection.icloud_staging_root or '' }}" required></label><datalist id="icloud-roots">{% for root in icloud_roots %}<option value="{{ root }}">{% endfor %}</datalist><button>Verify and save folders</button></form></section>
+<section class="card"><h2>4. Preview, then enable</h2><form method="post" action="/canvas/scan-now"><button>Request discovery scan</button></form><p>Last scan: {{ connection.last_successful_scan or 'Not run yet' }} · {{ connection.last_scan_item_count }} items</p><form method="post" action="/canvas/confirm-preview"><button>Discovery results look correct</button></form><form method="post" action="/canvas/enable"><button>Enable automatic processing</button></form></section>
+<section class="card"><h2>Connection</h2><p><span class="status {{ connection.state }}">{{ connection.state.replace('_', ' ').title() }}</span> · Last heartbeat: {{ connection.last_heartbeat or 'Never' }}</p>{% if connection.last_error %}<p class="error">{{ connection.last_error }}</p>{% endif %}<form method="post" action="/canvas/revoke"><button class="danger">Revoke extension pairing</button></form></section>
+{% endblock %}

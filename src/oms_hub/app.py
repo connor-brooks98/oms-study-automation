@@ -14,6 +14,7 @@ from oms_hub.db import Database
 from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.files.office import SerialOfficeConverter
 from oms_hub.web.routes import router
+from oms_hub.web.canvas_routes import router as canvas_web_router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -43,6 +44,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.include_router(router)
     app.include_router(canvas_api_router)
+    app.include_router(canvas_web_router)
 
     @app.get("/health")
     def health() -> dict[str, str]:

@@ -82,6 +82,16 @@ class DownloadCompleteRequest(StrictModel):
     path: str = Field(min_length=1, max_length=1024)
 
 
+class CourseCandidate(StrictModel):
+    course_id: str = Field(max_length=100)
+    course_name: str = Field(max_length=300)
+    course_code: str = Field(default="", max_length=200)
+
+
+class CourseCandidatesRequest(StrictModel):
+    courses: list[CourseCandidate] = Field(max_length=100)
+
+
 def _repository(request: Request) -> CanvasRepository:
     return cast(CanvasRepository, request.app.state.canvas_repository)
 
@@ -199,6 +209,18 @@ def discover(
             DownloadDisposition(stored.source_item_id, action, reason, filename)
         )
     return DiscoveryResponse(dispositions=dispositions)
+
+
+@router.post("/courses")
+def courses(
+    value: CourseCandidatesRequest,
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, int]:
+    _require_json(request)
+    _authenticate(request, authorization)
+    _repository(request).set_course_candidates([item.model_dump() for item in value.courses])
+    return {"stored": len(value.courses)}
 
 
 @router.post("/download-complete")

@@ -41,7 +41,12 @@ th, td { padding: .75rem; text-align: left; border-bottom: 1px solid #d9e0ea; }
 form { display: grid; gap: .65rem; margin-top: .75rem; }
 label { display: grid; gap: .2rem; }
 input { max-width: 32rem; padding: .45rem; }
+select { max-width: 42rem; padding: .45rem; }
 button { width: fit-content; padding: .55rem .8rem; cursor: pointer; }
+.card { margin: 1rem 0; padding: 1rem; background: white; border-radius: .5rem; }
+.pair-code { font-size: 2rem; font-weight: 800; letter-spacing: .25rem; }
+.danger { color: #8a1621; }
+.error { color: #8a1621; }
 .issues { padding: 0; list-style: none; }
 .issues > li { margin: 1rem 0; padding: 1rem; background: white; }
 @media (max-width: 720px) {

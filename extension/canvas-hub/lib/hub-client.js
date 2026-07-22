@@ -37,5 +37,8 @@ export function postDiscover(items) {
 export function postDownloadComplete(payload) {
   return request("/api/canvas/download-complete", {method: "POST", body: JSON.stringify(payload)});
 }
+export function postCourses(courses) {
+  return request("/api/canvas/courses", {method: "POST", body: JSON.stringify({courses})});
+}
 
 export async function pairingStatus() { return Boolean(await token()); }
