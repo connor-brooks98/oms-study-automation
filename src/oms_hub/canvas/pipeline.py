@@ -290,6 +290,9 @@ class CanvasPipeline:
 
     def run_next(self) -> bool:
         with self.database.session() as session:
+            connection = session.scalar(select(CanvasConnectionModel).limit(1))
+            if connection is None or not connection.auto_process:
+                return False
             job = session.scalar(
                 select(ProcessingJobModel)
                 .where(ProcessingJobModel.state == JobState.QUEUED.value)

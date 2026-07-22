@@ -89,3 +89,13 @@ def test_changed_lecture_stays_proposed(database, tmp_path) -> None:
     result = pipeline.process_revision(second.id)
     assert result.state == "proposed"
     assert first_result.paths.local_pdf.read_bytes() == old_pdf
+
+
+def test_paused_pipeline_does_not_claim_queued_job(database, tmp_path) -> None:
+    settings, _, lecture_id, repository, pipeline = prepared(database, tmp_path)
+    revision = add_revision(settings, repository, lecture_id, attachment("Anemia.pptx"))
+
+    worked = pipeline.run_next()
+
+    assert worked is False
+    assert repository.get_revision(revision.id).state == "downloaded"
