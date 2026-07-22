@@ -1,9 +1,11 @@
 from dataclasses import replace
+from pathlib import Path
 
 from oms_hub.canvas.classifier import classify_attachment
-from oms_hub.canvas.domain import SourceKind
+from oms_hub.canvas.domain import CatalogMatch, SourceKind
 from oms_hub.canvas.matcher import match_attachment
 from oms_hub.domain import LectureStepName
+from oms_hub.files.atomic import sha256_file
 from tests.canvas.test_classifier import attachment
 from tests.canvas.test_matcher import lecture
 from tests.canvas.test_pipeline import add_revision, prepared, stored_step
@@ -24,6 +26,27 @@ def test_pq_is_converted_and_filed_without_claiming_notebooklm_upload(database, 
 
 def test_professor_lecture_pdf_is_ignored() -> None:
     assert classify_attachment(attachment("Anemia.pdf")).kind is SourceKind.IGNORE
+
+
+def test_exam_level_pq_routes_without_forcing_a_lecture_match(database, tmp_path) -> None:
+    settings, _, _, repository, pipeline = prepared(database, tmp_path)
+    value = attachment(
+        "Exam 1 Practice Questions.docx",
+        item_title="Exam 1 Practice Questions",
+        page_title="Exam 1 Practice Questions",
+    )
+    stored = repository.ingest_metadata(
+        value,
+        classify_attachment(value),
+        CatalogMatch(None, "Heme/Lymph", 1, 0.95, "exam module"),
+    )
+    source = Path(settings.revision_root) / str(stored.revision_id) / value.filename
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"PK-source")
+    repository.complete_ingestion(stored.revision_id, sha256_file(source), str(source))
+    result = pipeline.process_revision(stored.revision_id)
+    assert result.paths.local_pdf.name == "Exam 1 Practice Questions.pdf"
+    assert result.paths.local_pdf.exists()
 
 
 def test_epc_unique_topic_matches_and_competing_topic_reviews() -> None:

@@ -219,7 +219,15 @@ class CanvasRepository:
             )
             review = (
                 classification.kind is SourceKind.REVIEW
-                or (classification.kind is not SourceKind.IGNORE and match.lecture_id is None)
+                or (
+                    classification.kind is not SourceKind.IGNORE
+                    and match.lecture_id is None
+                    and not (
+                        classification.kind is SourceKind.PRACTICE_QUESTIONS
+                        and match.subject is not None
+                        and match.exam_number is not None
+                    )
+                )
             )
             context = {
                 "module_id": value.module_id,

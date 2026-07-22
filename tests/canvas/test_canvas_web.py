@@ -45,6 +45,15 @@ def test_auto_processing_cannot_be_enabled_before_setup(tmp_path) -> None:
     assert app.state.canvas_repository.connection().auto_process is False
 
 
+def test_dashboard_rejects_cross_site_form_posts(tmp_path) -> None:
+    client, _ = client_for(tmp_path)
+    response = client.post(
+        "/canvas/enable",
+        headers={"Origin": "https://malicious.example"},
+    )
+    assert response.status_code == 403
+
+
 def test_eight_discovered_courses_can_be_mapped(tmp_path) -> None:
     client, app = client_for(tmp_path)
     candidates = [

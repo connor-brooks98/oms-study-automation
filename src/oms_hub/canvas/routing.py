@@ -42,7 +42,11 @@ def build_paths(
     elif kind is SourceKind.PRACTICE_QUESTIONS:
         raw_stem = sanitize_filename(Path(original_filename).stem)
         descriptive = "Practice Questions" if _GENERIC_PQ.fullmatch(raw_stem) else raw_stem
-        stem = f"{Path(names.pdf).stem} - {descriptive}"
+        stem = (
+            f"{Path(names.pdf).stem} - {descriptive}"
+            if lecture.lecture_number > 0
+            else descriptive
+        )
         local_source = None
         local_pdf = (
             study

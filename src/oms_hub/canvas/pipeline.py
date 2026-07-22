@@ -65,17 +65,27 @@ class CanvasPipeline:
 
     def _records(
         self, revision_id: int
-    ) -> tuple[SourceRevisionModel, CanvasSourceItemModel, LectureModel]:
+    ) -> tuple[SourceRevisionModel, CanvasSourceItemModel, LectureModel | None]:
         with self.database.session() as session:
             revision = session.get(SourceRevisionModel, revision_id)
             if revision is None:
                 raise KeyError(revision_id)
             source = session.get(CanvasSourceItemModel, revision.source_item_id)
-            if source is None or source.lecture_id is None:
-                raise ValueError("Canvas source is not matched to a lecture")
-            lecture = session.get(LectureModel, source.lecture_id)
-            if lecture is None:
+            if source is None:
+                raise ValueError("Canvas source record is missing")
+            lecture = (
+                session.get(LectureModel, source.lecture_id)
+                if source.lecture_id is not None
+                else None
+            )
+            if source.lecture_id is not None and lecture is None:
                 raise ValueError("matched catalog lecture does not exist")
+            if lecture is None and not (
+                source.source_kind == SourceKind.PRACTICE_QUESTIONS.value
+                and source.subject
+                and source.exam_number
+            ):
+                raise ValueError("Canvas source has no reliable destination")
             return revision, source, lecture
 
     def _effective_settings(self) -> Settings:
@@ -170,14 +180,19 @@ class CanvasPipeline:
         if sha256_file(original) != revision.sha256:
             raise ValueError("immutable source checksum mismatch")
         kind = SourceKind(source.source_kind)
-        paths = build_paths(
-            self._effective_settings(),
+        lecture_key = (
             LectureKey(
                 lecture.subject,
                 lecture.exam_number,
                 lecture.lecture_number,
                 lecture.topic,
-            ),
+            )
+            if lecture is not None
+            else LectureKey(source.subject or "", source.exam_number or 0, 0, "")
+        )
+        paths = build_paths(
+            self._effective_settings(),
+            lecture_key,
             kind,
             revision.original_filename,
             revision.id,
@@ -200,7 +215,7 @@ class CanvasPipeline:
             paths.revision_pdf,
             current=False,
         )
-        if kind is SourceKind.LECTURE and self._has_current_lecture(lecture.id):
+        if kind is SourceKind.LECTURE and lecture is not None and self._has_current_lecture(lecture.id):
             self._set_revision_state(revision.id, RevisionState.PROPOSED)
             self._finish_job(revision.id, JobState.NEEDS_REVIEW, "lecture replacement awaits approval")
             return PipelineResult(revision.id, RevisionState.PROPOSED.value, paths)
@@ -229,7 +244,7 @@ class CanvasPipeline:
         )
         self._set_revision_state(revision.id, RevisionState.CURRENT)
         self._finish_job(revision.id, JobState.COMPLETE)
-        if kind is SourceKind.LECTURE:
+        if kind is SourceKind.LECTURE and lecture is not None:
             self._complete_lecture_steps(lecture.id, paths.icloud_pdf)
         return PipelineResult(revision.id, RevisionState.CURRENT.value, paths)
 
@@ -315,6 +330,8 @@ class CanvasPipeline:
         kind = SourceKind(source.source_kind)
         if kind is not SourceKind.LECTURE:
             raise ValueError("replacement approval applies only to lectures")
+        if lecture is None:
+            raise ValueError("lecture replacement has no catalog match")
         paths = build_paths(
             self._effective_settings(),
             LectureKey(

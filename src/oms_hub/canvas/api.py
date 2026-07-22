@@ -1,12 +1,19 @@
+import re
+from pathlib import Path
 from typing import Annotated, Literal, cast
 from urllib.parse import urlparse
-from pathlib import Path
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from oms_hub.canvas.classifier import classify_attachment
-from oms_hub.canvas.domain import CanvasAttachment, DownloadDisposition, ReviewState, SourceKind
+from oms_hub.canvas.domain import (
+    CanvasAttachment,
+    CatalogMatch,
+    DownloadDisposition,
+    ReviewState,
+    SourceKind,
+)
 from oms_hub.canvas.matcher import match_attachment
 from oms_hub.canvas.ingestion import IngestionService
 from oms_hub.canvas.pairing import PairingService
@@ -191,6 +198,19 @@ def discover(
             raise HTTPException(status_code=422, detail="Canvas course is not mapped")
         classification = classify_attachment(item)
         match = match_attachment(item, mapping.subject, lectures)
+        if (
+            classification.kind is SourceKind.PRACTICE_QUESTIONS
+            and match.lecture_id is None
+        ):
+            exam_match = re.search(r"exam\s*(\d+)", item.module_title, flags=re.IGNORECASE)
+            if exam_match:
+                match = CatalogMatch(
+                    None,
+                    mapping.subject,
+                    int(exam_match.group(1)),
+                    0.95,
+                    "practice questions matched to the exam module",
+                )
         stored = repository.ingest_metadata(item, classification, match)
         if classification.kind is SourceKind.IGNORE:
             action, reason, filename = "skip", classification.reason, None
