@@ -24,6 +24,7 @@ from oms_hub.files.pdf import validate_pdf
 from oms_hub.models import (
     ArtifactModel,
     CanvasConnectionModel,
+    CanvasCourseMappingModel,
     CanvasSourceItemModel,
     LectureModel,
     ProcessingJobModel,
@@ -296,7 +297,20 @@ class CanvasPipeline:
                 return False
             job = session.scalar(
                 select(ProcessingJobModel)
+                .join(
+                    SourceRevisionModel,
+                    ProcessingJobModel.revision_id == SourceRevisionModel.id,
+                )
+                .join(
+                    CanvasSourceItemModel,
+                    SourceRevisionModel.source_item_id == CanvasSourceItemModel.id,
+                )
+                .join(
+                    CanvasCourseMappingModel,
+                    CanvasSourceItemModel.course_id == CanvasCourseMappingModel.course_id,
+                )
                 .where(ProcessingJobModel.state == JobState.QUEUED.value)
+                .where(CanvasCourseMappingModel.enabled.is_(True))
                 .order_by(ProcessingJobModel.created_at, ProcessingJobModel.id)
             )
             if job is None:

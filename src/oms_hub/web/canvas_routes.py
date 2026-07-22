@@ -73,6 +73,7 @@ def setup(request: Request) -> HTMLResponse:
         ("Automatic processing enabled", connection.auto_process),
     ]
     mapped = {item.subject: item.course_id for item in mappings}
+    active = {item.subject: item.enabled for item in mappings}
     return templates.TemplateResponse(
         request=request,
         name="canvas_setup.html",
@@ -82,6 +83,7 @@ def setup(request: Request) -> HTMLResponse:
             "subject_fields": SUBJECT_FIELDS,
             "candidates": repository.list_course_candidates(),
             "mapped": mapped,
+            "active": active,
             "icloud_roots": _likely_icloud_roots(),
             "study_default": connection.study_root or r"%USERPROFILE%\Documents\OMS II",
         },
@@ -118,6 +120,7 @@ async def save_mappings(request: Request) -> RedirectResponse:
                 candidate["course_name"],
                 candidate["course_code"],
                 subject,
+                form.get(f"{field}_enabled") is not None,
             )
         )
     _repo(request).replace_course_mappings(values)

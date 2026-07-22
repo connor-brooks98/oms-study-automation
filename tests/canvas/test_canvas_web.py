@@ -129,6 +129,7 @@ def test_eight_discovered_courses_can_be_mapped(tmp_path) -> None:
         "/canvas/mappings",
         data={
             "course_neuro": "1",
+            "course_neuro_enabled": "on",
             "course_msk": "2",
             "course_opp": "3",
             "course_epc": "4",
@@ -140,4 +141,21 @@ def test_eight_discovered_courses_can_be_mapped(tmp_path) -> None:
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert len(app.state.canvas_repository.list_course_mappings()) == 8
+    mappings = app.state.canvas_repository.list_course_mappings()
+    assert len(mappings) == 8
+    assert [item.subject for item in mappings if item.enabled] == ["Neuro"]
+
+
+def test_setup_shows_per_course_scan_controls(tmp_path) -> None:
+    client, app = client_for(tmp_path)
+    candidates = [
+        {"course_id": str(index), "course_name": f"Course {index}", "course_code": f"C{index}"}
+        for index in range(1, 9)
+    ]
+    app.state.canvas_repository.set_course_candidates(candidates)
+
+    response = client.get("/canvas/setup")
+
+    assert response.status_code == 200
+    assert 'name="course_neuro_enabled"' in response.text
+    assert "Include Neuro in scans and processing" in response.text
