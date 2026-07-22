@@ -1,9 +1,14 @@
 from fastapi.testclient import TestClient
 
 from oms_hub.app import create_app
+from oms_hub.canvas.classifier import classify_attachment
+from oms_hub.canvas.domain import CatalogMatch
 from oms_hub.canvas.domain import CourseMappingInput
 from oms_hub.canvas.pairing import PairingService
 from oms_hub.config import Settings
+from oms_hub.files.atomic import sha256_file
+from oms_hub.repositories import CatalogRepository, LectureInput
+from tests.canvas.test_classifier import attachment
 from tests.canvas.test_pairing import MemorySecretStore
 
 
@@ -159,3 +164,49 @@ def test_setup_shows_per_course_scan_controls(tmp_path) -> None:
     assert response.status_code == 200
     assert 'name="course_neuro_enabled"' in response.text
     assert "Include Neuro in scans and processing" in response.text
+
+
+def failed_revision(app, tmp_path):
+    repository = app.state.canvas_repository
+    repository.replace_course_mappings(
+        [CourseMappingInput("751", "Hematology & Lymph", "HEME", "Heme/Lymph")]
+    )
+    lecture_id = CatalogRepository(app.state.database).upsert_lecture(
+        LectureInput("Heme/Lymph", 1, 4, "Anemia I", "Professor", None)
+    )
+    value = attachment("Anemia.pptx")
+    stored = repository.ingest_metadata(
+        value,
+        classify_attachment(value),
+        CatalogMatch(lecture_id, "Heme/Lymph", 1, 0.99, "exact"),
+    )
+    source = tmp_path / "Anemia.pptx"
+    source.write_bytes(b"PK-source")
+    repository.complete_ingestion(stored.revision_id, sha256_file(source), str(source))
+    repository.mark_revision_review(stored.revision_id, "PowerPoint export failed")
+    return stored.revision_id
+
+
+def test_review_shows_failed_revision_and_retry_control(tmp_path) -> None:
+    client, app = client_for(tmp_path)
+    revision_id = failed_revision(app, tmp_path)
+
+    response = client.get("/canvas/review")
+
+    assert response.status_code == 200
+    assert "PowerPoint export failed" in response.text
+    assert f'action="/canvas/revisions/{revision_id}/retry"' in response.text
+
+
+def test_retry_control_requeues_failed_revision(tmp_path) -> None:
+    client, app = client_for(tmp_path)
+    revision_id = failed_revision(app, tmp_path)
+
+    response = client.post(
+        f"/canvas/revisions/{revision_id}/retry",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert app.state.canvas_repository.get_revision(revision_id).state == "downloaded"
+    assert app.state.canvas_repository.list_review_items() == []

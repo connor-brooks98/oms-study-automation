@@ -200,6 +200,7 @@ def canvas_review(request: Request) -> HTMLResponse:
         name="canvas_review.html",
         context={
             "items": repository.list_review_items(),
+            "failures": repository.list_failed_revisions(),
             "proposed": repository.list_proposed_revisions(),
             "lectures": lectures,
         },
@@ -220,6 +221,15 @@ def keep(revision_id: int, request: Request) -> RedirectResponse:
     try:
         _pipeline(request).keep_current(revision_id)
     except (KeyError, ValueError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return RedirectResponse("/canvas/review", status_code=303)
+
+
+@router.post("/revisions/{revision_id}/retry")
+def retry(revision_id: int, request: Request) -> RedirectResponse:
+    try:
+        _pipeline(request).retry_revision(revision_id)
+    except (KeyError, ValueError, OSError) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return RedirectResponse("/canvas/review", status_code=303)
 

@@ -143,3 +143,11 @@ class DispositionContext:
     exam_number: int | None
     confidence: float
     has_current_artifact: bool
+
+
+@dataclass(frozen=True, slots=True)
+class FailedRevisionReview:
+    revision_id: int
+    filename: str
+    subject: str | None
+    error: str

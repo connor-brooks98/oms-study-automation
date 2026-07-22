@@ -9,6 +9,7 @@ from oms_hub.canvas.domain import (
     ArtifactRole,
     CanonicalPaths,
     JobState,
+    ReviewState,
     RevisionState,
     SourceKind,
     ValidationState,
@@ -478,3 +479,11 @@ class CanvasPipeline:
             stored = session.get(SourceRevisionModel, revision_id)
             if stored:
                 stored.state = RevisionState.DOWNLOADED.value
+                source = session.get(CanvasSourceItemModel, stored.source_item_id)
+                if source:
+                    evidence = json.loads(source.evidence_json)
+                    source.review_state = (
+                        ReviewState.RESOLVED.value
+                        if evidence.get("manual_match") is True
+                        else ReviewState.NONE.value
+                    )

@@ -26,6 +26,26 @@ def test_duplicate_lecture_pdf_is_ignored() -> None:
     assert "lecture PDF" in result.reason
 
 
+def test_page_wide_pq_text_does_not_reclassify_lecture_powerpoint() -> None:
+    result = classify_attachment(
+        attachment(
+            "2026 Student Anemia.pptx",
+            evidence_text="2026 Student Anemia.pdf Practice questions for anemia.docx",
+        )
+    )
+    assert result.kind is SourceKind.LECTURE
+
+
+def test_page_wide_pq_text_does_not_collect_duplicate_lecture_pdf() -> None:
+    result = classify_attachment(
+        attachment(
+            "2026 Student Anemia.pdf",
+            evidence_text="Practice questions for anemia.docx",
+        )
+    )
+    assert result.kind is SourceKind.IGNORE
+
+
 def test_positive_pq_docx_is_collected() -> None:
     result = classify_attachment(attachment("Practice questions for anemia.docx"))
     assert result.kind is SourceKind.PRACTICE_QUESTIONS

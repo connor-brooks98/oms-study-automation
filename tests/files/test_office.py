@@ -60,6 +60,27 @@ def test_converter_rejects_non_office_source(tmp_path) -> None:
         converter.convert(tmp_path / "source.pdf", tmp_path / "result.pdf")
 
 
+def test_powerpoint_uses_hidden_presentation_without_hiding_application(tmp_path) -> None:
+    class PowerPointApplication(FakeApplication):
+        def __setattr__(self, name, value):
+            if name == "Visible" and value is False:
+                raise RuntimeError("PowerPoint does not allow hiding the application")
+            if name == "DisplayAlerts" and value != 1:
+                raise RuntimeError("PowerPoint requires the ppAlertsNone value")
+            super().__setattr__(name, value)
+
+    document = FakeDocument()
+    application = PowerPointApplication(document)
+    converter = SerialOfficeConverter(factory=lambda progid: application)
+    source = tmp_path / "source.pptx"
+    source.write_bytes(b"source")
+    destination = tmp_path / "result.pdf"
+
+    converter.convert(source, destination)
+
+    assert destination.read_bytes() == b"pdf"
+
+
 def test_timeout_keeps_serial_lock_until_owned_work_finishes(tmp_path) -> None:
     release = threading.Event()
 

@@ -11,7 +11,10 @@ from oms_hub.canvas.domain import (
     Classification,
     CourseMappingInput,
     DispositionContext,
+    FailedRevisionReview,
+    JobState,
     MetadataResult,
+    RevisionState,
     ReviewState,
     SourceKind,
 )
@@ -21,6 +24,7 @@ from oms_hub.models import (
     CanvasConnectionModel,
     CanvasCourseMappingModel,
     CanvasSourceItemModel,
+    ProcessingJobModel,
     SourceRevisionModel,
 )
 from oms_hub.models import utc_now
@@ -347,6 +351,36 @@ class CanvasRepository:
                     .order_by(CanvasSourceItemModel.discovered_at.desc())
                 ).all()
             )
+
+    def list_failed_revisions(self) -> list[FailedRevisionReview]:
+        with self.database.session() as session:
+            rows = session.execute(
+                select(
+                    SourceRevisionModel.id,
+                    CanvasSourceItemModel.filename,
+                    CanvasSourceItemModel.subject,
+                    ProcessingJobModel.error,
+                )
+                .join(
+                    CanvasSourceItemModel,
+                    SourceRevisionModel.source_item_id == CanvasSourceItemModel.id,
+                )
+                .join(
+                    ProcessingJobModel,
+                    ProcessingJobModel.revision_id == SourceRevisionModel.id,
+                )
+                .where(
+                    SourceRevisionModel.state == RevisionState.FAILED.value,
+                    ProcessingJobModel.state.in_(
+                        (JobState.FAILED.value, JobState.NEEDS_REVIEW.value)
+                    ),
+                )
+                .order_by(CanvasSourceItemModel.subject, CanvasSourceItemModel.filename)
+            ).all()
+            return [
+                FailedRevisionReview(revision_id, filename, subject, error or "Processing failed")
+                for revision_id, filename, subject, error in rows
+            ]
 
     def count_revisions(self, source_item_id: int) -> int:
         with self.database.session() as session:

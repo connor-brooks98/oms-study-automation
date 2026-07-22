@@ -30,14 +30,14 @@ def classify_attachment(value: CanvasAttachment) -> Classification:
             value.item_title,
             value.page_title,
             value.filename,
-            value.evidence_text,
         )
     ).casefold()
     filename = value.filename.casefold()
     if suffix in {".pptm", ".docm", ".xlsm"}:
         return Classification(SourceKind.REVIEW, 1.0, "macro-enabled Office file")
     filename_has_pq = any(term in filename for term in PQ_TERMS)
-    has_pq = any(term in context for term in PQ_TERMS)
+    item_specific = f"{filename} {value.item_title if value.item_type == 'File' else ''}".casefold()
+    has_pq = any(term in item_specific for term in PQ_TERMS)
     has_negative = any(term in context for term in NEGATIVE_TERMS)
     if has_negative and not filename_has_pq:
         return Classification(SourceKind.IGNORE, 0.95, "negative content category")
