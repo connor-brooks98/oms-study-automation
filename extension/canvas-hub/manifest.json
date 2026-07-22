@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "OMS Study Hub Canvas Companion",
+  "version": "0.1.0",
+  "description": "Discovers mapped LMU lecture files for the local OMS Study Hub.",
+  "permissions": ["alarms", "downloads", "storage"],
+  "host_permissions": [
+    "https://lmunet.instructure.com/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "action": {"default_popup": "popup.html"}
+}

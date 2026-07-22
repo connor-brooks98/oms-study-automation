@@ -1,0 +1,6 @@
+{
+  "name": "oms-canvas-hub-companion",
+  "private": true,
+  "type": "module",
+  "scripts": {"test": "node --test"}
+}
