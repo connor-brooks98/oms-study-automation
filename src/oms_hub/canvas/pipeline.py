@@ -1,3 +1,4 @@
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -415,6 +416,7 @@ class CanvasPipeline:
         self._finish_job(revision_id, JobState.COMPLETE, "current lecture retained")
 
     def remap_source(self, source_item_id: int, lecture_id: int) -> None:
+        has_current_artifact = self._has_current_lecture(lecture_id)
         with self.database.session() as session:
             source = session.get(CanvasSourceItemModel, source_item_id)
             lecture = session.get(LectureModel, lecture_id)
@@ -423,8 +425,17 @@ class CanvasPipeline:
             source.lecture_id = lecture.id
             source.subject = lecture.subject
             source.exam_number = lecture.exam_number
-            source.review_state = "needs_review"
-            source.evidence_json = '{"match": "manually remapped in dashboard"}'
+            source.confidence = 1.0
+            source.review_state = (
+                "needs_review" if has_current_artifact else "resolved"
+            )
+            source.evidence_json = json.dumps(
+                {
+                    "manual_match": True,
+                    "match": "manually remapped in dashboard",
+                },
+                sort_keys=True,
+            )
 
     def retry_revision(self, revision_id: int) -> None:
         revision = self._records(revision_id)[0]

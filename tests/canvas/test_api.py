@@ -4,6 +4,7 @@ from oms_hub.app import create_app
 from oms_hub.canvas.domain import CourseMappingInput
 from oms_hub.canvas.pairing import PairingService
 from oms_hub.config import Settings
+from oms_hub.repositories import CatalogRepository, LectureInput
 from tests.canvas.test_pairing import MemorySecretStore
 
 
@@ -82,3 +83,26 @@ def test_discovery_only_returns_review_without_download(tmp_path) -> None:
     assert response.status_code == 200
     disposition = response.json()["dispositions"][0]
     assert disposition["action"] == "review"
+
+
+def test_enabling_after_discovery_downloads_existing_unstaged_revision(tmp_path) -> None:
+    client, headers = prepared_client(tmp_path)
+    CatalogRepository(client.app.state.database).upsert_lecture(
+        LectureInput("Heme/Lymph", 1, 4, "Anemia I", "Professor", None)
+    )
+    first = client.post(
+        "/api/canvas/discover",
+        headers=headers,
+        json={"items": [payload()]},
+    )
+    assert first.json()["dispositions"][0]["action"] == "review"
+    client.app.state.canvas_repository.set_setup(auto_process=True)
+
+    replay = client.post(
+        "/api/canvas/discover",
+        headers=headers,
+        json={"items": [payload()]},
+    )
+
+    assert replay.status_code == 200
+    assert replay.json()["dispositions"][0]["action"] == "download"

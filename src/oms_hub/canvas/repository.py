@@ -262,18 +262,21 @@ class CanvasRepository:
                 session.add(source)
                 session.flush()
             else:
+                existing_evidence = json.loads(source.evidence_json)
+                manual_match = existing_evidence.get("manual_match") is True
                 source.filename = value.filename
                 source.source_url = value.download_url
                 source.context_json = json.dumps(context, sort_keys=True)
                 source.source_kind = classification.kind.value
-                source.lecture_id = match.lecture_id
-                source.subject = match.subject
-                source.exam_number = match.exam_number
-                source.confidence = min(classification.confidence, match.confidence)
-                source.evidence_json = json.dumps(evidence, sort_keys=True)
-                source.review_state = (
-                    ReviewState.NEEDS_REVIEW.value if review else ReviewState.NONE.value
-                )
+                if not manual_match:
+                    source.lecture_id = match.lecture_id
+                    source.subject = match.subject
+                    source.exam_number = match.exam_number
+                    source.confidence = min(classification.confidence, match.confidence)
+                    source.evidence_json = json.dumps(evidence, sort_keys=True)
+                    source.review_state = (
+                        ReviewState.NEEDS_REVIEW.value if review else ReviewState.NONE.value
+                    )
             revision = session.scalar(
                 select(SourceRevisionModel).where(
                     SourceRevisionModel.source_item_id == source.id,

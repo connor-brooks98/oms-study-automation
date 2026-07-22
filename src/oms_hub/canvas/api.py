@@ -218,7 +218,7 @@ def discover(
             action, reason, filename = "review", match.reason, None
         elif not connection.auto_process:
             action, reason, filename = "review", "Discovery-only mode is enabled", None
-        elif not stored.created:
+        elif not stored.created and repository.get_revision(stored.revision_id).stored_path:
             action, reason, filename = "skip", "source revision already recorded", None
         else:
             safe_name = item.filename.replace("/", "-").replace("\\", "-")

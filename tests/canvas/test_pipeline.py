@@ -99,3 +99,31 @@ def test_paused_pipeline_does_not_claim_queued_job(database, tmp_path) -> None:
 
     assert worked is False
     assert repository.get_revision(revision.id).state == "downloaded"
+
+
+def test_manual_remap_resolves_unmatched_source(database, tmp_path) -> None:
+    _, _, lecture_id, repository, pipeline = prepared(database, tmp_path)
+    value = attachment("Anemia.pptx")
+    stored = repository.ingest_metadata(
+        value,
+        classify_attachment(value),
+        CatalogMatch(None, "Heme/Lymph", 1, 0.0, "unmatched"),
+    )
+
+    pipeline.remap_source(stored.source_item_id, lecture_id)
+
+    assert repository.list_review_items() == []
+    assert repository.get_disposition_context(stored.source_item_id).lecture_id == lecture_id
+
+
+def test_manual_remap_survives_metadata_replay(database, tmp_path) -> None:
+    _, _, lecture_id, repository, pipeline = prepared(database, tmp_path)
+    value = attachment("Anemia.pptx")
+    match = CatalogMatch(None, "Heme/Lymph", 1, 0.0, "unmatched")
+    stored = repository.ingest_metadata(value, classify_attachment(value), match)
+    pipeline.remap_source(stored.source_item_id, lecture_id)
+
+    repository.ingest_metadata(value, classify_attachment(value), match)
+
+    assert repository.get_disposition_context(stored.source_item_id).lecture_id == lecture_id
+    assert repository.list_review_items() == []
