@@ -319,3 +319,96 @@ class CanvasRepository:
                 )
                 or 0
             )
+
+    def get_source(self, source_item_id: int) -> CanvasSourceItemModel:
+        with self.database.session() as session:
+            value = session.get(CanvasSourceItemModel, source_item_id)
+            if value is None:
+                raise KeyError(source_item_id)
+            return value
+
+    def pending_revision(self, source_item_id: int) -> SourceRevisionModel:
+        with self.database.session() as session:
+            value = session.scalar(
+                select(SourceRevisionModel)
+                .where(
+                    SourceRevisionModel.source_item_id == source_item_id,
+                    SourceRevisionModel.state == "discovered",
+                )
+                .order_by(SourceRevisionModel.id.desc())
+            )
+            if value is None:
+                value = session.scalar(
+                    select(SourceRevisionModel)
+                    .where(SourceRevisionModel.source_item_id == source_item_id)
+                    .order_by(SourceRevisionModel.id.desc())
+                )
+            if value is None:
+                raise KeyError((source_item_id, "revision"))
+            return value
+
+    def get_revision(self, revision_id: int) -> SourceRevisionModel:
+        with self.database.session() as session:
+            value = session.get(SourceRevisionModel, revision_id)
+            if value is None:
+                raise KeyError(revision_id)
+            return value
+
+    def complete_ingestion(self, revision_id: int, sha256: str, stored_path: str) -> None:
+        from oms_hub.models import ProcessingJobModel
+
+        with self.database.session() as session:
+            revision = session.get(SourceRevisionModel, revision_id)
+            if revision is None:
+                raise KeyError(revision_id)
+            if revision.sha256 and revision.sha256 != sha256:
+                raise ValueError("revision checksum changed after ingestion")
+            revision.sha256 = sha256
+            revision.stored_path = stored_path
+            revision.state = "downloaded"
+            job = session.scalar(
+                select(ProcessingJobModel).where(
+                    ProcessingJobModel.revision_id == revision_id,
+                    ProcessingJobModel.action == "convert",
+                )
+            )
+            if job is None:
+                session.add(ProcessingJobModel(revision_id=revision_id, action="convert"))
+
+    def mark_revision_review(self, revision_id: int, message: str) -> None:
+        from oms_hub.models import ProcessingJobModel
+
+        with self.database.session() as session:
+            revision = session.get(SourceRevisionModel, revision_id)
+            if revision is None:
+                raise KeyError(revision_id)
+            revision.state = "failed"
+            source = session.get(CanvasSourceItemModel, revision.source_item_id)
+            if source is not None:
+                source.review_state = "needs_review"
+                evidence = json.loads(source.evidence_json)
+                evidence["processing"] = message[:1000]
+                source.evidence_json = json.dumps(evidence, sort_keys=True)
+            job = session.scalar(
+                select(ProcessingJobModel).where(
+                    ProcessingJobModel.revision_id == revision_id,
+                    ProcessingJobModel.action == "convert",
+                )
+            )
+            if job is not None:
+                job.state = "needs_review"
+                job.error = message[:1000]
+
+    def count_jobs(self, revision_id: int, action: str) -> int:
+        from oms_hub.models import ProcessingJobModel
+
+        with self.database.session() as session:
+            return int(
+                session.scalar(
+                    select(func.count(ProcessingJobModel.id)).where(
+                        ProcessingJobModel.revision_id == revision_id,
+                        ProcessingJobModel.action == action,
+                    )
+                )
+                or 0
+            )

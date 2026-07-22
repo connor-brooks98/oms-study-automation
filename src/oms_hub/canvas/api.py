@@ -1,5 +1,6 @@
 from typing import Annotated, Literal, cast
 from urllib.parse import urlparse
+from pathlib import Path
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -7,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from oms_hub.canvas.classifier import classify_attachment
 from oms_hub.canvas.domain import CanvasAttachment, DownloadDisposition, ReviewState, SourceKind
 from oms_hub.canvas.matcher import match_attachment
+from oms_hub.canvas.ingestion import IngestionService
 from oms_hub.canvas.pairing import PairingService
 from oms_hub.canvas.repository import CanvasRepository
 from oms_hub.repositories import CatalogRepository
@@ -199,7 +201,7 @@ def discover(
     return DiscoveryResponse(dispositions=dispositions)
 
 
-@router.post("/download-complete", status_code=501)
+@router.post("/download-complete")
 def download_complete(
     value: DownloadCompleteRequest,
     request: Request,
@@ -207,4 +209,13 @@ def download_complete(
 ) -> dict[str, str]:
     _require_json(request)
     _authenticate(request, authorization)
-    return {"status": "ingestion is not installed yet"}
+    ingestion = cast(IngestionService, request.app.state.canvas_ingestion)
+    try:
+        result = ingestion.complete_download(
+            value.source_item_id,
+            value.download_id,
+            Path(value.path),
+        )
+    except (OSError, ValueError, KeyError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {"status": "ingested", "revision_id": str(result.revision_id)}

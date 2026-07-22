@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from oms_hub import __version__
 from oms_hub.config import Settings, get_settings
 from oms_hub.canvas.api import router as canvas_api_router
+from oms_hub.canvas.ingestion import IngestionService
 from oms_hub.canvas.pairing import PairingService
 from oms_hub.canvas.repository import CanvasRepository
 from oms_hub.db import Database
@@ -26,6 +27,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.canvas_repository,
         KeyringSecretStore(),
     )
+    app.state.canvas_ingestion = IngestionService(app.state.canvas_repository, resolved)
     web_root = Path(__file__).parent / "web"
     app.mount(
         "/static",
