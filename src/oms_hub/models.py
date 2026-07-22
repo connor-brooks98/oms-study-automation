@@ -85,3 +85,101 @@ class ExternalEventModel(Base):
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     payload_json: Mapped[str] = mapped_column(Text)
     seen_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class CanvasConnectionModel(Base):
+    __tablename__ = "canvas_connections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    base_url: Mapped[str] = mapped_column(String(300), unique=True)
+    state: Mapped[str] = mapped_column(String(40), default="unpaired")
+    extension_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    credential_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    paired_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    last_heartbeat: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    last_successful_scan: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scan_requested_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    study_root: Mapped[str | None] = mapped_column(Text, nullable=True)
+    icloud_staging_root: Mapped[str | None] = mapped_column(Text, nullable=True)
+    discovery_confirmed: Mapped[bool] = mapped_column(default=False)
+    auto_process: Mapped[bool] = mapped_column(default=False)
+    last_scan_item_count: Mapped[int] = mapped_column(default=0)
+    last_scan_new_count: Mapped[int] = mapped_column(default=0)
+
+
+class CanvasCourseMappingModel(Base):
+    __tablename__ = "canvas_course_mappings"
+    __table_args__ = (UniqueConstraint("course_id"), UniqueConstraint("subject"))
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    course_id: Mapped[str] = mapped_column(String(100))
+    course_name: Mapped[str] = mapped_column(String(300))
+    course_code: Mapped[str] = mapped_column(String(200))
+    subject: Mapped[str] = mapped_column(String(100))
+    enabled: Mapped[bool] = mapped_column(default=True)
+
+
+class CanvasSourceItemModel(Base):
+    __tablename__ = "canvas_source_items"
+    __table_args__ = (UniqueConstraint("course_id", "file_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    course_id: Mapped[str] = mapped_column(String(100))
+    file_id: Mapped[str] = mapped_column(String(100))
+    filename: Mapped[str] = mapped_column(String(500))
+    source_url: Mapped[str] = mapped_column(Text)
+    context_json: Mapped[str] = mapped_column(Text)
+    source_kind: Mapped[str] = mapped_column(String(40))
+    lecture_id: Mapped[int | None] = mapped_column(ForeignKey("lectures.id"), nullable=True)
+    subject: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    exam_number: Mapped[int | None] = mapped_column(nullable=True)
+    confidence: Mapped[float] = mapped_column(default=0.0)
+    evidence_json: Mapped[str] = mapped_column(Text, default="{}")
+    review_state: Mapped[str] = mapped_column(String(30), default="none")
+    discovered_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class SourceRevisionModel(Base):
+    __tablename__ = "source_revisions"
+    __table_args__ = (UniqueConstraint("source_item_id", "remote_signature"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_item_id: Mapped[int] = mapped_column(ForeignKey("canvas_source_items.id"))
+    remote_signature: Mapped[str] = mapped_column(String(64))
+    modified_at: Mapped[str] = mapped_column(String(60))
+    remote_size: Mapped[int]
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    original_filename: Mapped[str] = mapped_column(String(500))
+    stored_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    state: Mapped[str] = mapped_column(String(30), default="discovered")
+    discovered_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class ArtifactModel(Base):
+    __tablename__ = "artifacts"
+    __table_args__ = (UniqueConstraint("revision_id", "role", "path"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    revision_id: Mapped[int] = mapped_column(ForeignKey("source_revisions.id"))
+    role: Mapped[str] = mapped_column(String(40))
+    path: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(String(64))
+    validation_state: Mapped[str] = mapped_column(String(30), default="pending")
+    promoted_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    current: Mapped[bool] = mapped_column(default=False)
+
+
+class ProcessingJobModel(Base):
+    __tablename__ = "processing_jobs"
+    __table_args__ = (UniqueConstraint("revision_id", "action"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    revision_id: Mapped[int] = mapped_column(ForeignKey("source_revisions.id"))
+    action: Mapped[str] = mapped_column(String(30))
+    state: Mapped[str] = mapped_column(String(30), default="queued")
+    attempts: Mapped[int] = mapped_column(default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
