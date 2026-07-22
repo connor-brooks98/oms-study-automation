@@ -7,6 +7,7 @@ _SEPARATOR = re.compile(r'[:|"]+')
 _JOINER = re.compile(r"[/\\]+")
 _REMOVE = re.compile(r"[<>?*]+")
 _SPACE = re.compile(r"\s+")
+_WINDOWS_RESERVED = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)", re.I)
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,12 +18,12 @@ class ArtifactNames:
     summary: str
 
 
-def _safe_topic(topic: str) -> str:
-    cleaned = _SEPARATOR.sub(" - ", topic)
+def sanitize_filename(value: str) -> str:
+    cleaned = _SEPARATOR.sub(" - ", value)
     cleaned = _JOINER.sub("-", cleaned)
     cleaned = _REMOVE.sub("", cleaned)
     cleaned = _SPACE.sub(" ", cleaned).strip(" .-")
-    return cleaned
+    return f"_{cleaned}" if _WINDOWS_RESERVED.match(cleaned) else cleaned
 
 
 def _number(value: int) -> str:
@@ -35,7 +36,7 @@ def display_title(key: LectureKey) -> str:
 
 def artifact_names(key: LectureKey) -> ArtifactNames:
     number = _number(key.lecture_number)
-    topic = _safe_topic(key.topic)
+    topic = sanitize_filename(key.topic)
     stem = f"Lecture {number} - {topic}"
     return ArtifactNames(
         pptx=f"{stem}.pptx",

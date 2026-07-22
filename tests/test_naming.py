@@ -1,5 +1,5 @@
 from oms_hub.domain import LectureKey
-from oms_hub.naming import artifact_names, display_title
+from oms_hub.naming import artifact_names, display_title, sanitize_filename
 
 
 def test_canonical_lecture_names_use_colon_only_in_display_title():
@@ -26,3 +26,8 @@ def test_windows_reserved_characters_are_replaced_and_whitespace_is_collapsed():
     )
 
     assert artifact_names(key).pdf == "Lecture 07 - Stroke - A-B - Review.pdf"
+
+
+def test_windows_reserved_names_are_prefixed():
+    assert sanitize_filename("CON") == "_CON"
+    assert sanitize_filename("lpt1.txt") == "_lpt1.txt"
