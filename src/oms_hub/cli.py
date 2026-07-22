@@ -154,6 +154,34 @@ def serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def canvas_status(args: argparse.Namespace) -> int:
+    del args
+    app = create_app(Settings())
+    connection = app.state.canvas_repository.connection()
+    print(
+        f"state={connection.state} heartbeat={connection.last_heartbeat or 'never'} "
+        f"last_scan={connection.last_successful_scan or 'never'} "
+        f"auto_process={connection.auto_process}"
+    )
+    return 0
+
+
+def canvas_worker_once(args: argparse.Namespace) -> int:
+    del args
+    app = create_app(Settings())
+    worked = app.state.canvas_pipeline.run_next()
+    print("processed=1" if worked else "processed=0")
+    return 0
+
+
+def canvas_recover(args: argparse.Namespace) -> int:
+    del args
+    app = create_app(Settings())
+    result = app.state.canvas_pipeline.recover_abandoned_jobs()
+    print(f"requeued={result.requeued} needs_review={result.needs_review}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="oms-hub")
     commands = parser.add_subparsers(required=True)
@@ -175,6 +203,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     server = commands.add_parser("serve")
     server.set_defaults(handler=serve)
+
+    status = commands.add_parser("canvas-status")
+    status.set_defaults(handler=canvas_status)
+
+    worker = commands.add_parser("canvas-worker-once")
+    worker.set_defaults(handler=canvas_worker_once)
+
+    recover = commands.add_parser("canvas-recover")
+    recover.set_defaults(handler=canvas_recover)
     return parser
 
 

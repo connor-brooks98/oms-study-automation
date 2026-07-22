@@ -1,7 +1,7 @@
 # OMS II Study Automation Hub
 
-Phase 1 provides the authoritative lecture catalog, Outlook calendar matching,
-the 21-step lecture checklist, and the local daily approval dashboard. It is
+The Hub provides the authoritative lecture catalog, Outlook calendar matching,
+the 21-step lecture checklist, Canvas lecture/PQ processing, and the local daily approval dashboard. It is
 designed to run on a Windows 11 Pro NUC and bind only to the local computer.
 
 ## Prerequisites
@@ -11,6 +11,7 @@ designed to run on a Windows 11 Pro NUC and bind only to the local computer.
 - The Fall 2026 tracker workbook
 - A Microsoft Entra public-client application ID with delegated
   `Calendars.Read` permission
+- Google Chrome, Microsoft PowerPoint, Microsoft Word, and iCloud for Windows
 
 ## Local install
 
@@ -78,15 +79,18 @@ From an elevated PowerShell window:
 The task starts the hub when the NUC user signs in and restarts it after a
 failure. No password or token is stored in either PowerShell script.
 
+## Canvas setup
+
+Follow [the Canvas companion installation guide](docs/canvas-extension-install.md), then complete `http://127.0.0.1:8765/canvas/setup`. The setup stays in discovery-only mode until the extension, eight course mappings, local/iCloud roots, and representative results are confirmed.
+
+The extension scans mapped Canvas modules every 30 minutes using the existing Chrome session. New high-confidence lectures and professor practice questions are converted and filed automatically. Changed lectures wait in Canvas review and never replace current files without approval. See the [NUC rollout and recovery guide](docs/phase-2-nuc-rollout.md).
+
 ## Backup and recovery
 
 Stop the hub before copying `C:\ProgramData\OMSStudyHub\hub.db`, or use SQLite's
 online backup API. Restart failed or reviewed steps from the dashboard. Never
 edit the SQLite database manually.
 
-## Phase 1 limitations
+## Current limitations
 
-Phase 1 does not yet download Canvas files, call Panopto, clean transcripts,
-operate NotebookLM or Gemini, publish Google Docs links, import into Goodnotes,
-or create Anki cards. Those connectors build on the catalog and checklist
-delivered here.
+The Hub does not yet call Panopto, clean transcripts, operate NotebookLM or Gemini, publish Google Docs links, control the Goodnotes UI, or create Anki cards. Canvas PDFs are staged in ordinary iCloud Drive for manual Goodnotes import.

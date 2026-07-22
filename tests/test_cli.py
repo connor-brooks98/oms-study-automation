@@ -69,6 +69,9 @@ def test_cli_exposes_phase_one_commands():
         "sync-outlook",
         "dry-run",
         "serve",
+        "canvas-status",
+        "canvas-worker-once",
+        "canvas-recover",
     ):
         suffix = ["tracker.xlsx"] if command == "import-tracker" else []
         if command == "dry-run":
