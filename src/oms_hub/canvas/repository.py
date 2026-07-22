@@ -3,6 +3,7 @@ import json
 from dataclasses import dataclass
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session
 
 from oms_hub.canvas.domain import (
     CanvasAttachment,
@@ -22,6 +23,7 @@ from oms_hub.models import (
     CanvasSourceItemModel,
     SourceRevisionModel,
 )
+from oms_hub.models import utc_now
 
 APPROVED_SUBJECTS = {
     "Neuro",
@@ -62,6 +64,80 @@ class CanvasRepository:
                 session.add(value)
                 session.flush()
             return value
+
+    def set_pairing(self, extension_id: str, fingerprint: str) -> None:
+        with self.database.session() as session:
+            value = self._connection_in_session(session)
+            value.extension_id = extension_id
+            value.credential_fingerprint = fingerprint
+            value.paired_at = utc_now()
+            value.state = "connected"
+
+    def clear_pairing(self) -> None:
+        with self.database.session() as session:
+            value = self._connection_in_session(session)
+            value.extension_id = None
+            value.credential_fingerprint = None
+            value.paired_at = None
+            value.state = "unpaired"
+
+    def heartbeat(
+        self,
+        state: str,
+        error: str | None = None,
+        *,
+        scan_complete: bool = False,
+        item_count: int = 0,
+        new_count: int = 0,
+    ) -> None:
+        with self.database.session() as session:
+            value = self._connection_in_session(session)
+            value.state = state
+            value.last_heartbeat = utc_now()
+            value.last_error = error[:1000] if error else None
+            if scan_complete:
+                value.last_successful_scan = utc_now()
+                value.last_scan_item_count = item_count
+                value.last_scan_new_count = new_count
+
+    def request_scan(self) -> None:
+        with self.database.session() as session:
+            self._connection_in_session(session).scan_requested_at = utc_now()
+
+    def consume_scan_request(self) -> bool:
+        with self.database.session() as session:
+            value = self._connection_in_session(session)
+            requested = value.scan_requested_at is not None
+            value.scan_requested_at = None
+            return requested
+
+    def set_setup(
+        self,
+        *,
+        study_root: str | None = None,
+        icloud_staging_root: str | None = None,
+        discovery_confirmed: bool | None = None,
+        auto_process: bool | None = None,
+    ) -> None:
+        with self.database.session() as session:
+            value = self._connection_in_session(session)
+            if study_root is not None:
+                value.study_root = study_root
+            if icloud_staging_root is not None:
+                value.icloud_staging_root = icloud_staging_root
+            if discovery_confirmed is not None:
+                value.discovery_confirmed = discovery_confirmed
+            if auto_process is not None:
+                value.auto_process = auto_process
+
+    @staticmethod
+    def _connection_in_session(session: Session) -> CanvasConnectionModel:
+        value = session.scalar(select(CanvasConnectionModel).limit(1))
+        if value is None:
+            value = CanvasConnectionModel(base_url="https://lmunet.instructure.com")
+            session.add(value)
+            session.flush()
+        return value
 
     def replace_course_mappings(self, values: list[CourseMappingInput]) -> None:
         subjects = [item.subject for item in values]
