@@ -112,11 +112,30 @@ class CanvasPipeline:
                 )
                 .where(
                     CanvasSourceItemModel.lecture_id == lecture_id,
+                    CanvasSourceItemModel.source_kind == SourceKind.LECTURE.value,
                     ArtifactModel.role == ArtifactRole.LOCAL_PDF.value,
                     ArtifactModel.current.is_(True),
                 )
             )
             return artifact is not None
+
+    def _restore_immutable_from_inbox(
+        self,
+        revision: SourceRevisionModel,
+        source: CanvasSourceItemModel,
+        destination: Path,
+    ) -> bool:
+        if not revision.sha256:
+            return False
+        inbox = Path(os.path.expandvars(str(self.settings.canvas_inbox))).resolve()
+        revision_inbox = (inbox / str(source.id) / str(revision.id)).resolve()
+        if not revision_inbox.is_relative_to(inbox) or not revision_inbox.is_dir():
+            return False
+        for candidate in revision_inbox.iterdir():
+            if candidate.is_file() and sha256_file(candidate) == revision.sha256:
+                verified_atomic_copy(candidate, destination)
+                return True
+        return False
 
     def _record_artifact(
         self,
@@ -365,6 +384,13 @@ class CanvasPipeline:
         )
         original = Path(revision.stored_path or "")
         validate_pdf(paths.revision_pdf)
+        original_is_valid = (
+            original.is_file()
+            and bool(revision.sha256)
+            and sha256_file(original) == revision.sha256
+        )
+        if not original_is_valid:
+            self._restore_immutable_from_inbox(revision, source, original)
         if not original.is_file() or not revision.sha256 or sha256_file(original) != revision.sha256:
             raise ValueError("proposed immutable source is missing or changed")
         if paths.local_source is None:

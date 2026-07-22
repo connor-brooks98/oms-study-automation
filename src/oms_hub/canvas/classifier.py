@@ -1,4 +1,5 @@
 from pathlib import Path
+from urllib.parse import unquote_plus
 
 from oms_hub.canvas.domain import CanvasAttachment, Classification, SourceKind
 
@@ -23,16 +24,17 @@ AUTO_PQ_SUFFIXES = {".pdf", ".doc", ".docx", ".ppt", ".pptx"}
 
 
 def classify_attachment(value: CanvasAttachment) -> Classification:
-    suffix = Path(value.filename).suffix.casefold()
+    decoded_filename = unquote_plus(value.filename)
+    suffix = Path(decoded_filename).suffix.casefold()
     context = " ".join(
         (
             value.module_title,
             value.item_title,
             value.page_title,
-            value.filename,
+            decoded_filename,
         )
     ).casefold()
-    filename = value.filename.casefold()
+    filename = decoded_filename.casefold()
     if suffix in {".pptm", ".docm", ".xlsm"}:
         return Classification(SourceKind.REVIEW, 1.0, "macro-enabled Office file")
     filename_has_pq = any(term in filename for term in PQ_TERMS)

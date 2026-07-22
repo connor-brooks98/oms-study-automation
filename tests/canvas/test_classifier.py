@@ -51,6 +51,13 @@ def test_positive_pq_docx_is_collected() -> None:
     assert result.kind is SourceKind.PRACTICE_QUESTIONS
 
 
+def test_url_encoded_pq_filename_is_collected() -> None:
+    result = classify_attachment(
+        attachment("2026+Practice+questions+for+general+CNS+pathology.docx")
+    )
+    assert result.kind is SourceKind.PRACTICE_QUESTIONS
+
+
 def test_negative_reading_overrides_weak_question_word() -> None:
     result = classify_attachment(attachment("Reading assignment questions.pdf"))
     assert result.kind is SourceKind.IGNORE

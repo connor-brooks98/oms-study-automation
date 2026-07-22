@@ -81,6 +81,22 @@ def test_powerpoint_uses_hidden_presentation_without_hiding_application(tmp_path
     assert destination.read_bytes() == b"pdf"
 
 
+def test_powerpoint_opens_immutable_source_read_only(tmp_path) -> None:
+    opened = {}
+    document = FakeDocument()
+    application = FakeApplication(document)
+    application.Presentations = SimpleNamespace(
+        Open=lambda *args, **kwargs: opened.update(kwargs) or document
+    )
+    converter = SerialOfficeConverter(factory=lambda progid: application)
+    source = tmp_path / "source.ppt"
+    source.write_bytes(b"source")
+
+    converter.convert(source, tmp_path / "result.pdf")
+
+    assert opened == {"ReadOnly": True, "WithWindow": False}
+
+
 def test_timeout_keeps_serial_lock_until_owned_work_finishes(tmp_path) -> None:
     release = threading.Event()
 

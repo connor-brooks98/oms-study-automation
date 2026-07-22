@@ -134,6 +134,19 @@ def test_pipeline_claims_job_for_enabled_course(database, tmp_path) -> None:
     assert repository.get_revision(revision.id).state == "current"
 
 
+def test_nonlecture_artifact_does_not_make_lecture_a_replacement(database, tmp_path) -> None:
+    settings, _, lecture_id, repository, pipeline = prepared(database, tmp_path)
+    pq = add_revision(
+        settings,
+        repository,
+        lecture_id,
+        attachment("Practice questions.docx"),
+    )
+    pipeline.process_revision(pq.id)
+
+    assert pipeline._has_current_lecture(lecture_id) is False
+
+
 def test_manual_remap_resolves_unmatched_source(database, tmp_path) -> None:
     _, _, lecture_id, repository, pipeline = prepared(database, tmp_path)
     value = attachment("Anemia.pptx")

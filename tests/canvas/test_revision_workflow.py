@@ -1,4 +1,5 @@
 from dataclasses import replace
+from pathlib import Path
 
 from oms_hub.domain import LectureStepName
 from tests.canvas.test_classifier import attachment
@@ -38,12 +39,30 @@ def test_keep_current_suppresses_exact_proposal(database, tmp_path) -> None:
     assert repository.get_revision(second.id).state == "kept"
 
 
+def test_approve_restores_mutated_staged_source_from_managed_download(
+    database, tmp_path
+) -> None:
+    _, _, repository, pipeline, _, second = proposed_pair(database, tmp_path)
+    revision = repository.get_revision(second.id)
+    assert revision.stored_path is not None
+    immutable = Path(revision.stored_path)
+    immutable.write_bytes(b"mutated-by-office")
+    inbox = tmp_path / "inbox"
+    candidate = inbox / str(revision.source_item_id) / str(revision.id) / revision.original_filename
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"PK-source")
+    pipeline.settings = pipeline.settings.model_copy(update={"canvas_inbox": inbox})
+
+    pipeline.approve_replacement(revision.id)
+
+    assert immutable.read_bytes() == b"PK-source"
+    assert repository.get_revision(revision.id).state == "current"
+
+
 def test_retry_rejects_missing_staged_source(database, tmp_path) -> None:
     _, _, repository, pipeline, _, second = proposed_pair(database, tmp_path)
     path = repository.get_revision(second.id).stored_path
     assert path is not None
-    from pathlib import Path
-
     Path(path).unlink()
     try:
         pipeline.retry_revision(second.id)

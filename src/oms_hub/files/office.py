@@ -73,7 +73,11 @@ class SerialOfficeConverter:
             if source.suffix.casefold() in {".ppt", ".pptx"}:
                 application = self.factory("PowerPoint.Application")
                 application.DisplayAlerts = 1
-                document = application.Presentations.Open(str(source), WithWindow=False)
+                document = application.Presentations.Open(
+                    str(source),
+                    ReadOnly=True,
+                    WithWindow=False,
+                )
                 document.SaveAs(str(destination), 32)
             else:
                 application = self.factory("Word.Application")
