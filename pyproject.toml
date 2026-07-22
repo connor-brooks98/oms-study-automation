@@ -44,6 +44,7 @@ packages = ["src/oms_hub"]
 testpaths = ["tests"]
 addopts = "-q"
 filterwarnings = ["error"]
+markers = ["windows_office: requires Windows with desktop Microsoft Office installed"]
 
 [tool.ruff]
 line-length = 100
