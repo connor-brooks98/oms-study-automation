@@ -45,6 +45,12 @@ class RecoveryReport:
     needs_review: int
 
 
+@dataclass(frozen=True, slots=True)
+class PromotionResult:
+    revision_id: int
+    paths: CanonicalPaths
+
+
 class CanvasPipeline:
     def __init__(
         self,
@@ -301,3 +307,129 @@ class CanvasPipeline:
                 job.error = "Hub restarted during processing; inspect staged artifacts before retry"
                 needs_review += 1
         return RecoveryReport(requeued=0, needs_review=needs_review)
+
+    def approve_replacement(self, revision_id: int) -> PromotionResult:
+        revision, source, lecture = self._records(revision_id)
+        if revision.state != RevisionState.PROPOSED.value:
+            raise ValueError("only a proposed lecture revision can be approved")
+        kind = SourceKind(source.source_kind)
+        if kind is not SourceKind.LECTURE:
+            raise ValueError("replacement approval applies only to lectures")
+        paths = build_paths(
+            self._effective_settings(),
+            LectureKey(
+                lecture.subject,
+                lecture.exam_number,
+                lecture.lecture_number,
+                lecture.topic,
+            ),
+            kind,
+            revision.original_filename,
+            revision.id,
+        )
+        original = Path(revision.stored_path or "")
+        validate_pdf(paths.revision_pdf)
+        if not original.is_file() or not revision.sha256 or sha256_file(original) != revision.sha256:
+            raise ValueError("proposed immutable source is missing or changed")
+        if paths.local_source is None:
+            raise ValueError("lecture replacement has no local source destination")
+        self._promote_group(
+            [
+                (original, paths.local_source),
+                (paths.revision_pdf, paths.local_pdf),
+                (paths.revision_pdf, paths.icloud_pdf),
+            ],
+            revision.id,
+        )
+        with self.database.session() as session:
+            current_artifacts = list(
+                session.scalars(
+                    select(ArtifactModel)
+                    .join(SourceRevisionModel, ArtifactModel.revision_id == SourceRevisionModel.id)
+                    .join(
+                        CanvasSourceItemModel,
+                        SourceRevisionModel.source_item_id == CanvasSourceItemModel.id,
+                    )
+                    .where(
+                        CanvasSourceItemModel.lecture_id == lecture.id,
+                        ArtifactModel.current.is_(True),
+                    )
+                ).all()
+            )
+            for artifact in current_artifacts:
+                artifact.current = False
+            stored_revision = session.get(SourceRevisionModel, revision.id)
+            if stored_revision is None:
+                raise KeyError(revision.id)
+            stored_revision.state = RevisionState.CURRENT.value
+        self._record_artifact(
+            revision.id, ArtifactRole.LOCAL_PPTX, paths.local_source, current=True
+        )
+        self._record_artifact(
+            revision.id, ArtifactRole.LOCAL_PDF, paths.local_pdf, current=True
+        )
+        self._record_artifact(
+            revision.id, ArtifactRole.ICLOUD_PDF, paths.icloud_pdf, current=True
+        )
+        self._finish_job(revision.id, JobState.COMPLETE)
+        self.catalog.set_step_status(
+            lecture.id,
+            LectureStepName.GOODNOTES_DELIVERED,
+            StepStatus.COMPLETE,
+            "Updated PDF staged; Goodnotes re-import may be required",
+        )
+        return PromotionResult(revision.id, paths)
+
+    def keep_current(self, revision_id: int) -> None:
+        revision, _, _ = self._records(revision_id)
+        if revision.state != RevisionState.PROPOSED.value:
+            raise ValueError("only a proposed revision can be kept without promotion")
+        with self.database.session() as session:
+            stored = session.get(SourceRevisionModel, revision_id)
+            if stored is None:
+                raise KeyError(revision_id)
+            stored.state = RevisionState.KEPT.value
+            source = session.get(CanvasSourceItemModel, stored.source_item_id)
+            if source:
+                source.review_state = "resolved"
+        self._finish_job(revision_id, JobState.COMPLETE, "current lecture retained")
+
+    def remap_source(self, source_item_id: int, lecture_id: int) -> None:
+        with self.database.session() as session:
+            source = session.get(CanvasSourceItemModel, source_item_id)
+            lecture = session.get(LectureModel, lecture_id)
+            if source is None or lecture is None:
+                raise KeyError((source_item_id, lecture_id))
+            source.lecture_id = lecture.id
+            source.subject = lecture.subject
+            source.exam_number = lecture.exam_number
+            source.review_state = "needs_review"
+            source.evidence_json = '{"match": "manually remapped in dashboard"}'
+
+    def retry_revision(self, revision_id: int) -> None:
+        revision = self._records(revision_id)[0]
+        if revision.state not in {
+            RevisionState.FAILED.value,
+            RevisionState.PROPOSED.value,
+        }:
+            raise ValueError("revision is not eligible for retry")
+        if not revision.stored_path or not revision.sha256:
+            raise ValueError("staged source is missing")
+        path = Path(revision.stored_path)
+        if not path.is_file() or sha256_file(path) != revision.sha256:
+            raise ValueError("staged source checksum is invalid")
+        with self.database.session() as session:
+            job = session.scalar(
+                select(ProcessingJobModel).where(
+                    ProcessingJobModel.revision_id == revision_id,
+                    ProcessingJobModel.action == "convert",
+                )
+            )
+            if job is None:
+                job = ProcessingJobModel(revision_id=revision_id, action="convert")
+                session.add(job)
+            job.state = JobState.QUEUED.value
+            job.error = None
+            stored = session.get(SourceRevisionModel, revision_id)
+            if stored:
+                stored.state = RevisionState.DOWNLOADED.value
