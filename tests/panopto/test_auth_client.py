@@ -244,6 +244,36 @@ def test_refreshed_token_is_cached_rotated_and_rejected_responses_are_sanitized(
     assert "token" not in str(captured.value).lower()
 
 
+@respx.mock
+def test_oauth_rejection_exposes_only_whitelisted_error_code():
+    respx.post(
+        "https://lmunet.hosted.panopto.com/Panopto/oauth2/connect/token"
+    ).mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "error": "invalid_client",
+                "error_description": "do-not-leak diagnostic body",
+            },
+        )
+    )
+    secrets = MemorySecrets(refresh_token=None)
+    provider = PanoptoTokenProvider(
+        "https://lmunet.hosted.panopto.com",
+        "client",
+        secrets,
+    )
+    redirect_uri = "http://127.0.0.1:8765/panopto/oauth/callback"
+    state = parse_qs(urlparse(provider.authorization_url(redirect_uri)).query)["state"][0]
+
+    with pytest.raises(PanoptoAuthenticationError) as captured:
+        provider.complete_authorization("authorization-code", state, redirect_uri)
+
+    assert "invalid_client" in str(captured.value)
+    assert "do-not-leak" not in str(captured.value)
+    assert "diagnostic body" not in str(captured.value)
+
+
 def test_missing_refresh_token_requires_browser_connection():
     provider = PanoptoTokenProvider(
         "https://lmunet.hosted.panopto.com",

@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).parents[1]
 
 
@@ -25,3 +24,12 @@ def test_installer_preserves_env_and_creates_managed_roots() -> None:
     assert "Transcript Cleaning.md" not in script
     assert "client_secret" not in script.casefold()
     assert "api_key" not in script.casefold()
+
+
+def test_installer_grants_scheduled_task_user_modify_access_to_data_root() -> None:
+    script = (ROOT / "scripts/install-windows.ps1").read_text(encoding="utf-8")
+
+    assert "WindowsIdentity]::GetCurrent().Name" in script
+    assert "icacls.exe" in script
+    assert '"${TaskIdentity}:(OI)(CI)M"' in script
+    assert script.index("icacls.exe") < script.index("Register-ScheduledTask")

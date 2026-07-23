@@ -13,6 +13,16 @@ REFRESH_TOKEN_KEY = "panopto-refresh-token"
 AUTHORIZATION_STATE_KEY = "panopto-oauth-state"
 AUTHORIZATION_SCOPE = "openid api offline_access"
 AUTHORIZATION_STATE_LIFETIME_SECONDS = 10 * 60
+OAUTH_ERROR_CODES = frozenset(
+    {
+        "invalid_client",
+        "invalid_grant",
+        "invalid_request",
+        "invalid_scope",
+        "unauthorized_client",
+        "unsupported_grant_type",
+    }
+)
 
 
 class PanoptoAuthenticationError(RuntimeError):
@@ -148,9 +158,10 @@ class PanoptoTokenProvider:
                 "Panopto authentication service is unavailable"
             ) from error
         if response.status_code in {400, 401, 403}:
+            error_code = self._safe_oauth_error_code(response)
             raise PanoptoAuthenticationError(
-                "Panopto connection was rejected; verify the web application client "
-                "ID, secret, and redirect URL"
+                f"Panopto connection was rejected ({error_code}); verify the web "
+                "application client ID, secret, and redirect URL"
             )
         try:
             response.raise_for_status()
@@ -159,6 +170,19 @@ class PanoptoTokenProvider:
             raise PanoptoAuthenticationError(
                 "Panopto authentication returned an invalid response"
             ) from error
+
+    @staticmethod
+    def _safe_oauth_error_code(response: httpx.Response) -> str:
+        try:
+            payload = response.json()
+        except (TypeError, ValueError):
+            return "unknown_error"
+        if not isinstance(payload, dict):
+            return "unknown_error"
+        error_code = payload.get("error")
+        if isinstance(error_code, str) and error_code in OAUTH_ERROR_CODES:
+            return error_code
+        return "unknown_error"
 
     def _accept_token_response(
         self,
