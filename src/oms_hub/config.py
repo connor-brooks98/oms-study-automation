@@ -26,6 +26,24 @@ class Settings(BaseSettings):
     canvas_scan_minutes: int = Field(default=30, ge=30, le=30)
     office_timeout_seconds: int = Field(default=180, ge=30, le=600)
     max_ingest_bytes: int = Field(default=250 * 1024 * 1024, ge=1)
+    panopto_tenant_url: str = "https://lmunet.hosted.panopto.com"
+    panopto_client_id: str | None = None
+    panopto_revision_root: Path = Path(
+        r"C:\ProgramData\OMSStudyHub\artifacts\panopto\revisions"
+    )
+    panopto_acceptance_session_id: str = "8796399e-393c-4256-b6e4-b48f0150d156"
+    panopto_poll_minutes: int = Field(default=15, ge=15, le=15)
+    panopto_poll_start: str = "09:20"
+    panopto_poll_end: str = "19:00"
+    panopto_max_caption_bytes: int = Field(default=5 * 1024 * 1024, ge=1)
+    transcript_prompt_path: Path = Path(
+        r"C:\Users\conbr\Documents\Main Vault\Anki AI Prompts\Transcript Cleaning.md"
+    )
+    transcript_min_clean_ratio: float = Field(default=0.60, ge=0.1, le=1.0)
+    transcript_max_clean_ratio: float = Field(default=1.25, ge=1.0, le=2.0)
+    openai_model: str = "gpt-5.6-terra"
+    openai_input_usd_per_million: float = Field(default=2.50, ge=0)
+    openai_output_usd_per_million: float = Field(default=15.00, ge=0)
 
     @field_validator("timezone")
     @classmethod

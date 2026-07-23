@@ -184,3 +184,82 @@ class ProcessingJobModel(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
     updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class PanoptoConnectionModel(Base):
+    __tablename__ = "panopto_connections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_url: Mapped[str] = mapped_column(String(300), unique=True)
+    state: Mapped[str] = mapped_column(String(40), default="disabled")
+    enabled: Mapped[bool] = mapped_column(default=False)
+    acceptance_validated_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    last_successful_poll: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved_prompt_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scan_requested_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+class PanoptoRecordingModel(Base):
+    __tablename__ = "panopto_recordings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(36), unique=True)
+    name: Mapped[str] = mapped_column(String(500))
+    created_utc: Mapped[str] = mapped_column(String(40))
+    duration_seconds: Mapped[float]
+    folder_name: Mapped[str] = mapped_column(String(300), default="")
+    content_language: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    lecture_id: Mapped[int | None] = mapped_column(ForeignKey("lectures.id"), nullable=True)
+    confidence: Mapped[float] = mapped_column(default=0.0)
+    evidence_json: Mapped[str] = mapped_column(Text, default="[]")
+    review_state: Mapped[str] = mapped_column(String(30), default="none")
+    discovered_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class TranscriptRevisionModel(Base):
+    __tablename__ = "transcript_revisions"
+    __table_args__ = (UniqueConstraint("recording_id", "raw_sha256"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    recording_id: Mapped[int] = mapped_column(ForeignKey("panopto_recordings.id"))
+    raw_sha256: Mapped[str] = mapped_column(String(64))
+    raw_path: Mapped[str] = mapped_column(Text)
+    prompt_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cleaned_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cleaned_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    canonical_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    state: Mapped[str] = mapped_column(String(30), default="downloaded")
+    current: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class TranscriptJobModel(Base):
+    __tablename__ = "transcript_jobs"
+    __table_args__ = (UniqueConstraint("revision_id", "action"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    revision_id: Mapped[int] = mapped_column(ForeignKey("transcript_revisions.id"))
+    action: Mapped[str] = mapped_column(String(30))
+    state: Mapped[str] = mapped_column(String(30), default="queued")
+    attempts: Mapped[int] = mapped_column(default=0)
+    next_attempt_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class OpenAIUsageModel(Base):
+    __tablename__ = "openai_usage"
+    __table_args__ = (UniqueConstraint("revision_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    revision_id: Mapped[int] = mapped_column(ForeignKey("transcript_revisions.id"))
+    model: Mapped[str] = mapped_column(String(100))
+    request_id: Mapped[str] = mapped_column(String(200))
+    input_tokens: Mapped[int]
+    output_tokens: Mapped[int]
+    cost_microusd: Mapped[int]
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)

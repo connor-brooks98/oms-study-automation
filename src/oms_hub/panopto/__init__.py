@@ -1,0 +1,2 @@
+"""Panopto transcript automation."""
+

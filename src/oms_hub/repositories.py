@@ -91,6 +91,43 @@ class CatalogRepository:
             )
             return list(session.scalars(statement).all())
 
+    def list_scheduled_between(
+        self,
+        start_utc: datetime,
+        end_utc: datetime,
+    ) -> list[LectureModel]:
+        with self.database.session() as session:
+            statement = (
+                select(LectureModel)
+                .where(
+                    LectureModel.scheduled_start_utc.is_not(None),
+                    LectureModel.scheduled_start_utc >= start_utc.isoformat(),
+                    LectureModel.scheduled_start_utc < end_utc.isoformat(),
+                )
+                .options(selectinload(LectureModel.steps))
+                .order_by(LectureModel.scheduled_start_utc, LectureModel.id)
+            )
+            return list(session.scalars(statement).all())
+
+    def list_missing_transcripts_before(
+        self,
+        end_utc: datetime,
+    ) -> list[LectureModel]:
+        with self.database.session() as session:
+            statement = (
+                select(LectureModel)
+                .join(LectureStepModel)
+                .where(
+                    LectureModel.scheduled_start_utc.is_not(None),
+                    LectureModel.scheduled_start_utc < end_utc.isoformat(),
+                    LectureStepModel.name == LectureStepName.TRANSCRIPT_DOWNLOADED.value,
+                    LectureStepModel.status != StepStatus.COMPLETE.value,
+                )
+                .options(selectinload(LectureModel.steps))
+                .order_by(LectureModel.scheduled_start_utc, LectureModel.id)
+            )
+            return list(session.scalars(statement).unique().all())
+
     def get_lecture(self, lecture_id: int) -> LectureModel | None:
         with self.database.session() as session:
             return session.scalar(
