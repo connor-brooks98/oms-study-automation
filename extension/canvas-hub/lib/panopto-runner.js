@@ -77,6 +77,16 @@ export async function runPanoptoCommand(command, dependencies = {}) {
           ...transcript,
         });
       }
+    } else if (command.kind === "acceptance") {
+      await tabs.update(tab.id, {url: command.payload.viewer_url});
+      await waitForReady(tab.id);
+      const transcript = await pageMessage(tabs, tab.id, "panopto:extract");
+      await hub.postAcceptance({
+        command_id: command.id,
+        session_id: command.payload.session_id,
+        viewer_url: command.payload.viewer_url,
+        ...transcript,
+      });
     } else {
       throw Object.assign(new Error("Unsupported Panopto command"), {
         code: "browser_command_failed",

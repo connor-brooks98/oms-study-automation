@@ -146,7 +146,7 @@ def serve(args: argparse.Namespace) -> int:
     panopto_pipeline.recover_abandoned_jobs()
 
     def panopto_poll_once() -> object:
-        return app.state.panopto_discovery.poll(datetime.now(UTC))
+        return app.state.panopto_browser.queue_scheduled_scan(datetime.now(UTC))
 
     scheduler = build_scheduler(
         settings.timezone,
@@ -195,19 +195,16 @@ def canvas_recover(args: argparse.Namespace) -> int:
     return 0
 
 
-def panopto_set_secret(args: argparse.Namespace) -> int:
+def panopto_clear_legacy_credentials(args: argparse.Namespace) -> int:
     del args
-    value = getpass.getpass("Panopto client secret: ")
-    if not value:
-        raise SystemExit("Secret cannot be empty")
     secrets = KeyringSecretStore()
-    secrets.set("panopto-client-secret", value)
-    secrets.delete("panopto-refresh-token")
-    secrets.delete("panopto-oauth-state")
-    print(
-        "Panopto web application client secret stored in Windows Credential "
-        "Manager; reconnect Panopto in the dashboard"
-    )
+    for key in (
+        "panopto-client-secret",
+        "panopto-refresh-token",
+        "panopto-oauth-state",
+    ):
+        secrets.delete(key)
+    print("Legacy Panopto API credentials removed")
     return 0
 
 
@@ -248,7 +245,6 @@ def panopto_status(args: argparse.Namespace) -> int:
     connection = app.state.panopto_repository.connection()
     print(
         f"state={connection.state} enabled={connection.enabled} "
-        f"connected={app.state.panopto_tokens.connected()} "
         f"acceptance={connection.acceptance_validated_at or 'not-validated'} "
         f"last_poll={connection.last_successful_poll or 'never'}"
     )
@@ -258,15 +254,8 @@ def panopto_status(args: argparse.Namespace) -> int:
 def panopto_scan_once(args: argparse.Namespace) -> int:
     del args
     app = create_app(Settings())
-    settings = app.state.settings
-    result = app.state.panopto_discovery.poll(
-        datetime.now(UTC),
-        manual_session_id=settings.panopto_acceptance_session_id,
-    )
-    print(
-        f"seen={result.seen} matched={result.matched} "
-        f"needs_review={result.needs_review}"
-    )
+    command_id = app.state.panopto_browser.queue_manual_scan(datetime.now(UTC))
+    print(f"queued={command_id}")
     return 0
 
 
@@ -320,8 +309,8 @@ def build_parser() -> argparse.ArgumentParser:
     recover = commands.add_parser("canvas-recover")
     recover.set_defaults(handler=canvas_recover)
 
-    panopto_secret = commands.add_parser("panopto-set-secret")
-    panopto_secret.set_defaults(handler=panopto_set_secret)
+    panopto_cleanup = commands.add_parser("panopto-clear-legacy-credentials")
+    panopto_cleanup.set_defaults(handler=panopto_clear_legacy_credentials)
 
     openai_key = commands.add_parser("openai-set-key")
     openai_key.set_defaults(handler=openai_set_key)

@@ -17,10 +17,8 @@ from oms_hub.config import Settings, get_settings
 from oms_hub.db import Database
 from oms_hub.files.office import SerialOfficeConverter
 from oms_hub.panopto.api import router as panopto_api_router
-from oms_hub.panopto.auth import PanoptoTokenProvider
 from oms_hub.panopto.browser_service import PanoptoBrowserService
-from oms_hub.panopto.client import PanoptoClient
-from oms_hub.panopto.discovery import PanoptoDiscovery, PollingPolicy
+from oms_hub.panopto.discovery import PollingPolicy
 from oms_hub.panopto.matcher import RecordingMatcher
 from oms_hub.panopto.openai_client import OpenAITranscriptCleaner
 from oms_hub.panopto.pipeline import TranscriptPipeline
@@ -83,15 +81,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         database,
         resolved.panopto_tenant_url,
     )
-    app.state.panopto_tokens = PanoptoTokenProvider(
-        resolved.panopto_tenant_url,
-        resolved.panopto_client_id or "",
-        app.state.secrets,
-    )
-    app.state.panopto_client = PanoptoClient(
-        resolved.panopto_tenant_url,
-        app.state.panopto_tokens,
-    )
     connection = app.state.panopto_repository.connection()
     app.state.panopto_prompt = PromptLoader(
         resolved.transcript_prompt_path,
@@ -109,19 +98,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.panopto_prompt,
         app.state.openai_cleaner,
         resolved,
-        panopto=app.state.panopto_client,
-    )
-    app.state.panopto_discovery = PanoptoDiscovery(
-        catalog,
-        app.state.panopto_repository,
-        app.state.panopto_client,
-        RecordingMatcher(resolved.timezone),
-        PollingPolicy(
-            resolved.timezone,
-            resolved.panopto_poll_start,
-            resolved.panopto_poll_end,
-        ),
-        on_match=app.state.panopto_pipeline.ingest_captions,
     )
     app.state.panopto_browser = PanoptoBrowserService(
         catalog,

@@ -146,3 +146,29 @@ test("SSO redirect without a Panopto content script requests sign-in", async () 
 
   assert.equal(result.reason_code, "panopto_login_required");
 });
+
+test("acceptance extracts the configured viewer without discovery", async () => {
+  const command = {
+    id: "acceptance-id",
+    kind: "acceptance",
+    payload: {session_id: SESSION_ID, viewer_url: VIEWER},
+  };
+  const tabs = fakeTabs([{
+    language: "English_USA",
+    line_count: 2,
+    complete: true,
+    text: "00:01 First\n00:03 Second",
+  }]);
+  const hub = fakeHub();
+  hub.acceptances = [];
+  hub.postAcceptance = async (value) => hub.acceptances.push(value);
+
+  await runPanoptoCommand(command, {
+    tabs,
+    hub,
+    waitForReady: async () => {},
+  });
+
+  assert.deepEqual(tabs.updated, [{id: 42, url: VIEWER}]);
+  assert.equal(hub.acceptances[0].session_id, SESSION_ID);
+});

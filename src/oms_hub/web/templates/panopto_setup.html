@@ -1,25 +1,20 @@
 {% extends "base.html" %}
 {% block title %}Panopto setup · OMS Study Hub{% endblock %}
 {% block content %}
-<h1>Panopto transcript setup</h1>
-<p>Credentials and the Panopto connection stay in Windows Credential Manager. This page displays only readiness state.</p>
+<h1>Panopto browser session</h1>
+<p>The Chrome companion uses your normal LMU Panopto sign-in. Cookies and credentials stay inside Chrome.</p>
 <ol class="setup-checks">
-  <li class="step"><strong>Client ID</strong> <span class="status {{ 'complete' if client_id_configured else '' }}">{{ 'Configured' if client_id_configured else 'Not configured' }}</span></li>
-  <li class="step"><strong>Panopto client secret</strong> <span class="status {{ 'complete' if panopto_credential else '' }}">{{ 'Configured' if panopto_credential else 'Not configured' }}</span></li>
-  <li class="step"><strong>Panopto user connection</strong> <span class="status {{ 'complete' if panopto_connected else '' }}">{{ 'Connected as Panopto user' if panopto_connected else 'Not connected' }}</span></li>
+  <li class="step"><strong>Browser session</strong> <span class="status {{ 'complete' if connection.state == 'connected' else 'needs_review' }}">{{ connection.state.replace('_', ' ').title() }}</span></li>
   <li class="step"><strong>OpenAI credential</strong> <span class="status {{ 'complete' if openai_credential else '' }}">{{ 'Configured' if openai_credential else 'Not configured' }}</span></li>
   <li class="step"><strong>Cleaning prompt</strong> <span class="status {{ 'complete' if prompt_state == 'Approved' else 'needs_review' }}">{{ prompt_state }}</span></li>
   <li class="step"><strong>Read-only acceptance</strong> <span class="status {{ 'complete' if connection.acceptance_validated_at else '' }}">{{ 'Validated' if connection.acceptance_validated_at else 'Not validated' }}</span></li>
   <li class="step"><strong>Automatic discovery</strong> <span class="status {{ 'complete' if connection.enabled else '' }}">{{ 'Enabled' if connection.enabled else 'Paused' }}</span></li>
 </ol>
+{% if connection.last_error %}<p class="error">{{ connection.last_error }}</p>{% endif %}
 <section class="card">
-  <h2>Panopto connection</h2>
-  <p>Sign in once through LMU Panopto. The Hub stores only the resulting refresh credential and never stores your Panopto password.</p>
-  {% if panopto_connected %}
-  <form method="post" action="/panopto/oauth/disconnect"><button class="danger">Disconnect Panopto</button></form>
-  {% else %}
-  <form method="post" action="/panopto/oauth/connect"><button>Connect Panopto</button></form>
-  {% endif %}
+  <h2>Sign in</h2>
+  <p><a href="{{ panopto_home }}" target="_blank" rel="noopener">Sign in to Panopto</a></p>
+  <form method="post" action="/panopto/browser/check"><button>Check connection</button></form>
 </section>
 <section class="card">
   <h2>Cleaning prompt</h2>
@@ -30,13 +25,13 @@
 </section>
 <section class="card">
   <h2>Read-only acceptance</h2>
-  <p>Validates the approved Panopto session and its English (United States) caption download without saving it.</p>
-  <form method="post" action="/panopto/acceptance/validate"><button>Validate acceptance session</button></form>
+  <p>Checks the approved recording through Chrome without saving or cleaning it.</p>
+  <form method="post" action="/panopto/browser/acceptance"><button>Run browser acceptance</button></form>
 </section>
 <section class="card">
   <h2>Automation</h2>
-  <p>Last poll: {{ connection.last_successful_poll or 'Never' }} · Window: weekdays 9:20 AM–7:00 PM Eastern, every 15 minutes.</p>
-  <form method="post" action="/panopto/scan"><button>Scan now</button></form>
+  <p>Last scan: {{ connection.last_successful_poll or 'Never' }} · Weekdays 9:20 AM–7:00 PM Eastern, every 15 minutes.</p>
+  <form method="post" action="/panopto/scan"><button>Scan Shared with Me now</button></form>
   {% if connection.enabled %}
   <form method="post" action="/panopto/pause"><button class="danger">Pause automatic discovery</button></form>
   {% else %}

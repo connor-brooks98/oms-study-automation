@@ -16,11 +16,8 @@ def test_panopto_defaults_are_bounded_and_secret_free() -> None:
     settings = Settings(_env_file=None)
 
     assert settings.panopto_tenant_url == "https://lmunet.hosted.panopto.com"
-    assert settings.panopto_client_id is None
-    assert (
-        settings.panopto_oauth_redirect_uri
-        == "http://127.0.0.1:8765/panopto/oauth/callback"
-    )
+    assert not hasattr(settings, "panopto_client_id")
+    assert not hasattr(settings, "panopto_oauth_redirect_uri")
     assert settings.panopto_poll_minutes == 15
     assert settings.panopto_poll_start == "09:20"
     assert settings.panopto_poll_end == "19:00"

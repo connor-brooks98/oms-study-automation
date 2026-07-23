@@ -5,12 +5,10 @@ from typing import cast
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from keyring.errors import KeyringError
 
-from oms_hub.panopto.auth import (
-    PanoptoAuthenticationError,
-    PanoptoTokenProvider,
-)
-from oms_hub.panopto.pipeline import TranscriptPipeline, validate_raw_caption
+from oms_hub.panopto.browser_service import PanoptoBrowserService
+from oms_hub.panopto.pipeline import TranscriptPipeline
 from oms_hub.panopto.prompt import PromptError, PromptLoader
 from oms_hub.panopto.repository import PanoptoRepository
 from oms_hub.repositories import CatalogRepository
@@ -32,18 +30,18 @@ def _pipeline(request: Request) -> TranscriptPipeline:
     return cast(TranscriptPipeline, request.app.state.panopto_pipeline)
 
 
+def _service(request: Request) -> PanoptoBrowserService:
+    return cast(PanoptoBrowserService, request.app.state.panopto_browser)
+
+
 def _secrets(request: Request) -> SecretStore:
     return cast(SecretStore, request.app.state.secrets)
-
-
-def _tokens(request: Request) -> PanoptoTokenProvider:
-    return cast(PanoptoTokenProvider, request.app.state.panopto_tokens)
 
 
 def _secret_present(request: Request, key: str) -> bool:
     try:
         return bool(_secrets(request).get(key))
-    except Exception:
+    except KeyringError:
         return False
 
 
@@ -52,9 +50,11 @@ def setup(request: Request) -> HTMLResponse:
     connection = _repository(request).connection()
     try:
         current_prompt = _prompt(request).inspect()
-        prompt_state = "Approved" if (
-            current_prompt.sha256 == connection.approved_prompt_sha256
-        ) else "Changed or not approved"
+        prompt_state = (
+            "Approved"
+            if current_prompt.sha256 == connection.approved_prompt_sha256
+            else "Changed or not approved"
+        )
         current_hash = current_prompt.sha256
     except PromptError:
         prompt_state = "Not readable"
@@ -64,13 +64,10 @@ def setup(request: Request) -> HTMLResponse:
         name="panopto_setup.html",
         context={
             "connection": connection,
-            "client_id_configured": bool(
-                request.app.state.settings.panopto_client_id
+            "panopto_home": (
+                f"{request.app.state.settings.panopto_tenant_url}"
+                "/Panopto/Pages/Home.aspx"
             ),
-            "panopto_credential": _secret_present(
-                request, "panopto-client-secret"
-            ),
-            "panopto_connected": _tokens(request).connected(),
             "openai_credential": _secret_present(request, "openai-api-key"),
             "prompt_path": _prompt(request).path,
             "prompt_state": prompt_state,
@@ -79,45 +76,24 @@ def setup(request: Request) -> HTMLResponse:
     )
 
 
-@router.post("/oauth/connect")
-def connect_panopto(request: Request) -> RedirectResponse:
-    try:
-        authorization_url = _tokens(request).authorization_url(
-            request.app.state.settings.panopto_oauth_redirect_uri
-        )
-    except PanoptoAuthenticationError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    return RedirectResponse(authorization_url, status_code=303)
-
-
-@router.get("/oauth/callback")
-def panopto_oauth_callback(
-    request: Request,
-    code: str | None = None,
-    state: str | None = None,
-    error: str | None = None,
-) -> RedirectResponse:
-    if error or not code or not state:
-        raise HTTPException(
-            status_code=409,
-            detail="Panopto connection was not completed",
-        )
-    try:
-        _tokens(request).complete_authorization(
-            code,
-            state,
-            request.app.state.settings.panopto_oauth_redirect_uri,
-        )
-    except PanoptoAuthenticationError as auth_error:
-        raise HTTPException(status_code=409, detail=str(auth_error)) from auth_error
-    _repository(request).reset_acceptance()
+@router.post("/browser/check")
+def check_browser(request: Request) -> RedirectResponse:
+    _service(request).queue_connection_check(datetime.now(UTC))
     return RedirectResponse("/panopto/setup", status_code=303)
 
 
-@router.post("/oauth/disconnect")
-def disconnect_panopto(request: Request) -> RedirectResponse:
-    _tokens(request).disconnect()
-    _repository(request).reset_acceptance()
+@router.post("/browser/acceptance")
+def acceptance(request: Request) -> RedirectResponse:
+    settings = request.app.state.settings
+    session_id = settings.panopto_acceptance_session_id
+    viewer_url = (
+        f"{settings.panopto_tenant_url}/Panopto/Pages/Viewer.aspx?id={session_id}"
+    )
+    _service(request).queue_acceptance(
+        datetime.now(UTC),
+        session_id,
+        viewer_url,
+    )
     return RedirectResponse("/panopto/setup", status_code=303)
 
 
@@ -141,43 +117,25 @@ def approve_prompt(request: Request) -> RedirectResponse:
     return RedirectResponse("/panopto/setup", status_code=303)
 
 
-@router.post("/acceptance/validate")
-def validate_acceptance(request: Request) -> RedirectResponse:
-    settings = request.app.state.settings
-    try:
-        session = request.app.state.panopto_client.get_session(
-            settings.panopto_acceptance_session_id
-        )
-        if session.content_language != "English_USA" or not session.caption_download_url:
-            raise ValueError("Acceptance session has no English (United States) captions")
-        payload = request.app.state.panopto_client.download_captions(
-            session.caption_download_url,
-            settings.panopto_max_caption_bytes,
-        )
-        validate_raw_caption(payload, settings.panopto_max_caption_bytes)
-    except Exception as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    _repository(request).mark_acceptance_validated(datetime.now(UTC))
-    return RedirectResponse("/panopto/setup", status_code=303)
-
-
 @router.post("/enable")
 def enable(request: Request) -> RedirectResponse:
     connection = _repository(request).connection()
     try:
-        current_prompt = _prompt(request).current()
-    except PromptError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+        prompt = _prompt(request).inspect()
+    except PromptError:
+        prompt = None
     ready = (
-        bool(request.app.state.settings.panopto_client_id)
-        and _secret_present(request, "panopto-client-secret")
-        and _tokens(request).connected()
+        connection.state == "connected"
         and _secret_present(request, "openai-api-key")
         and bool(connection.acceptance_validated_at)
-        and current_prompt.sha256 == connection.approved_prompt_sha256
+        and prompt is not None
+        and prompt.sha256 == connection.approved_prompt_sha256
     )
     if not ready:
-        raise HTTPException(status_code=409, detail="Complete every Panopto setup step first")
+        raise HTTPException(
+            status_code=409,
+            detail="Complete every Panopto setup step first",
+        )
     _repository(request).set_enabled(True)
     return RedirectResponse("/panopto/setup", status_code=303)
 
@@ -190,10 +148,7 @@ def pause(request: Request) -> RedirectResponse:
 
 @router.post("/scan")
 def scan(request: Request) -> RedirectResponse:
-    try:
-        request.app.state.panopto_discovery.poll(datetime.now(UTC))
-    except Exception as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+    _service(request).queue_manual_scan(datetime.now(UTC))
     return RedirectResponse("/panopto/setup", status_code=303)
 
 
@@ -223,7 +178,9 @@ def remap(
             status_code=409,
             detail="Recording or lecture was not found",
         ) from error
+    _service(request).queue_manual_scan(datetime.now(UTC))
     return RedirectResponse("/panopto/review", status_code=303)
+
 
 @router.post("/jobs/{job_id}/retry")
 def retry(job_id: int, request: Request) -> RedirectResponse:

@@ -162,3 +162,31 @@ def test_transcript_body_obeys_configured_limit(tmp_path):
     )
 
     assert response.status_code == 413
+
+
+def test_browser_acceptance_validates_without_saving_transcript(tmp_path):
+    client, headers = _prepared_client(tmp_path)
+    command_id = client.app.state.panopto_repository.queue_browser_command(
+        BrowserCommandKind.ACCEPTANCE,
+        {"session_id": SESSION_ID, "viewer_url": VIEWER_URL},
+        NOW,
+    )
+    client.get("/api/panopto/command", headers=headers)
+
+    response = client.post(
+        "/api/panopto/acceptance",
+        headers=headers,
+        json={
+            "command_id": command_id,
+            "session_id": SESSION_ID,
+            "viewer_url": VIEWER_URL,
+            "language": "English_USA",
+            "line_count": 2,
+            "complete": True,
+            "text": "00:01 First line\n00:03 Second line",
+        },
+    )
+
+    assert response.status_code == 200
+    assert client.app.state.panopto_repository.connection().acceptance_validated_at
+    assert list((tmp_path / "revisions").glob("*/raw.txt")) == []

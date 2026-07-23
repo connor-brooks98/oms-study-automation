@@ -27,7 +27,6 @@ class Settings(BaseSettings):
     office_timeout_seconds: int = Field(default=180, ge=30, le=600)
     max_ingest_bytes: int = Field(default=250 * 1024 * 1024, ge=1)
     panopto_tenant_url: str = "https://lmunet.hosted.panopto.com"
-    panopto_client_id: str | None = None
     panopto_revision_root: Path = Path(
         r"C:\ProgramData\OMSStudyHub\artifacts\panopto\revisions"
     )
@@ -44,13 +43,6 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5.6-terra"
     openai_input_usd_per_million: float = Field(default=2.50, ge=0)
     openai_output_usd_per_million: float = Field(default=15.00, ge=0)
-
-    @property
-    def panopto_oauth_redirect_uri(self) -> str:
-        return (
-            f"http://127.0.0.1:{self.dashboard_port}"
-            "/panopto/oauth/callback"
-        )
 
     @field_validator("timezone")
     @classmethod

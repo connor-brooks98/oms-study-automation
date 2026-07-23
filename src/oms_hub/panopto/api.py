@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 from oms_hub.canvas.pairing import PairingService
 from oms_hub.panopto.browser_domain import (
+    BrowserCommandKind,
     BrowserRecording,
     TranscriptExtraction,
 )
@@ -14,6 +15,7 @@ from oms_hub.panopto.browser_service import (
     PanoptoBrowserService,
     validate_viewer_url,
 )
+from oms_hub.panopto.pipeline import TranscriptValidationError, validate_raw_caption
 from oms_hub.panopto.repository import PanoptoRepository
 
 router = APIRouter(prefix="/api/panopto", tags=["panopto-companion"])
@@ -90,6 +92,24 @@ class ResultRequest(StrictModel):
     command_id: UUID
     status: Literal["complete", "failed"]
     reason_code: str | None = Field(default=None, pattern=r"^[a-z0-9_]{1,80}$")
+
+
+class AcceptanceRequest(StrictModel):
+    command_id: UUID
+    session_id: UUID
+    viewer_url: str = Field(max_length=1024)
+    language: str = Field(max_length=60)
+    line_count: int = Field(gt=0, le=100_000)
+    complete: bool
+    text: str
+
+    @field_validator("viewer_url")
+    @classmethod
+    def lmu_viewer_url(cls, value: str, info: ValidationInfo) -> str:
+        session_id = info.data.get("session_id")
+        if session_id is not None:
+            validate_viewer_url(value, str(session_id))
+        return value
 
 
 def _authenticate(request: Request, authorization: str | None) -> None:
@@ -205,6 +225,39 @@ def transcript(
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return {"revision_id": revision_id}
+
+
+@router.post("/acceptance")
+def acceptance(
+    value: AcceptanceRequest,
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, str]:
+    _authenticate(request, authorization)
+    if len(value.text.encode("utf-8")) > request.app.state.settings.panopto_max_caption_bytes:
+        raise HTTPException(status_code=413, detail="Transcript payload is too large")
+    command = _repository(request).get_running_browser_command(str(value.command_id))
+    expected = {
+        "session_id": str(value.session_id),
+        "viewer_url": value.viewer_url,
+    }
+    if (
+        command is None
+        or command.kind is not BrowserCommandKind.ACCEPTANCE
+        or command.payload != expected
+    ):
+        raise HTTPException(status_code=409, detail="Acceptance command does not match")
+    if not value.complete or value.language != "English_USA":
+        raise HTTPException(status_code=409, detail="English transcript is not complete")
+    try:
+        validate_raw_caption(
+            value.text.encode("utf-8"),
+            request.app.state.settings.panopto_max_caption_bytes,
+        )
+    except TranscriptValidationError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    _repository(request).mark_acceptance_validated(datetime.now(UTC))
+    return {"status": "validated"}
 
 
 @router.post("/result")

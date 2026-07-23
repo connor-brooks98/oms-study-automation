@@ -60,6 +60,11 @@ export function postPanoptoTranscript(payload) {
     method: "POST", body: JSON.stringify(payload),
   });
 }
+export function postPanoptoAcceptance(payload) {
+  return request("/api/panopto/acceptance", {
+    method: "POST", body: JSON.stringify(payload),
+  });
+}
 export function postPanoptoResult(payload) {
   return request("/api/panopto/result", {
     method: "POST", body: JSON.stringify(payload),
@@ -70,6 +75,7 @@ export const panoptoHub = {
   heartbeat: postPanoptoHeartbeat,
   postDiscover: postPanoptoDiscover,
   postTranscript: postPanoptoTranscript,
+  postAcceptance: postPanoptoAcceptance,
   postResult: postPanoptoResult,
 };
 

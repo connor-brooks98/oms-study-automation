@@ -84,7 +84,7 @@ def test_cli_exposes_secret_safe_phase_three_commands():
     parser = cli.build_parser()
 
     for command in (
-        "panopto-set-secret",
+        "panopto-clear-legacy-credentials",
         "openai-set-key",
         "panopto-init-prompt",
         "panopto-approve-prompt",
@@ -99,8 +99,9 @@ def test_cli_exposes_secret_safe_phase_three_commands():
         assert not hasattr(parsed, "api_key")
 
 
-def test_secret_commands_read_hidden_input_not_arguments(monkeypatch, capsys):
+def test_openai_key_is_hidden_and_legacy_cleanup_is_explicit(monkeypatch, capsys):
     stored: dict[str, str] = {
+        "panopto-client-secret": "stale-secret",
         "panopto-refresh-token": "stale-connection",
         "panopto-oauth-state": "stale-state",
     }
@@ -115,10 +116,7 @@ def test_secret_commands_read_hidden_input_not_arguments(monkeypatch, capsys):
     monkeypatch.setattr(cli, "KeyringSecretStore", MemorySecrets)
     monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: "private-value")
 
-    assert cli.panopto_set_secret(argparse.Namespace()) == 0
+    assert cli.panopto_clear_legacy_credentials(argparse.Namespace()) == 0
     assert cli.openai_set_key(argparse.Namespace()) == 0
-    assert stored == {
-        "panopto-client-secret": "private-value",
-        "openai-api-key": "private-value",
-    }
+    assert stored == {"openai-api-key": "private-value"}
     assert "private-value" not in capsys.readouterr().out
