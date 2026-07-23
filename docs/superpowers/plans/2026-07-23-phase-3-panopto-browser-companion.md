@@ -56,7 +56,7 @@
   `get_recording_source(recording_id) -> str | None`.
 - Produces: `recover_stale_browser_commands(now_utc, timeout_seconds=300) -> int`.
 
-- [ ] **Step 1: Write failing domain and repository tests**
+- [x] **Step 1: Write failing domain and repository tests**
 
 ```python
 def test_browser_command_queue_coalesces_and_claims_once(database):
@@ -101,13 +101,13 @@ def test_stale_running_command_is_requeued(database):
     assert repo.claim_browser_command(LATER).id == command_id
 ```
 
-- [ ] **Step 2: Run tests and verify they fail**
+- [x] **Step 2: Run tests and verify they fail**
 
 Run: `pytest tests/panopto/test_browser_repository.py -q`
 
 Expected: collection fails because `browser_domain` and browser command methods do not exist.
 
-- [ ] **Step 3: Add immutable browser value objects**
+- [x] **Step 3: Add immutable browser value objects**
 
 ```python
 class BrowserCommandKind(StrEnum):
@@ -145,7 +145,7 @@ class TranscriptExtraction:
     text: str
 ```
 
-- [ ] **Step 4: Add the additive command table and repository operations**
+- [x] **Step 4: Add the additive command table and repository operations**
 
 ```python
 class PanoptoBrowserCommandModel(Base):
@@ -177,13 +177,13 @@ Deserialize only a JSON object. Store only allowlisted connection states and
 truncate errors to 1,000 characters. Validate the exact LMU viewer origin
 before writing `PanoptoRecordingSourceModel`.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run: `pytest tests/panopto/test_browser_repository.py tests/panopto/test_domain_repository.py -q`
 
 Expected: all pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/oms_hub/models.py src/oms_hub/panopto/browser_domain.py src/oms_hub/panopto/repository.py tests/panopto/test_browser_repository.py
@@ -205,7 +205,7 @@ git commit -m "feat: add durable Panopto browser commands"
 - Produces: `process_discovery(command_id, recordings) -> list[BrowserDisposition]`.
 - Produces: `report_browser_result(command_id, reason_code) -> None`.
 
-- [ ] **Step 1: Write failing schedule/discovery tests**
+- [x] **Step 1: Write failing schedule/discovery tests**
 
 ```python
 def test_scheduled_scan_queues_only_in_eligible_window(service, repo):
@@ -231,13 +231,13 @@ def test_discovery_rejects_wrong_origin(service):
         )
 ```
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `pytest tests/panopto/test_browser_service.py -q`
 
 Expected: collection fails because `PanoptoBrowserService` does not exist.
 
-- [ ] **Step 3: Implement schedule queueing and discovery**
+- [x] **Step 3: Implement schedule queueing and discovery**
 
 ```python
 class PanoptoBrowserService:
@@ -274,20 +274,20 @@ in the renamed in-memory `viewer_url` field. Remove the old behavior that forces
 unknown discovery language into review; language is validated after viewer
 extraction.
 
-- [ ] **Step 4: Make manual review queue extraction after remap**
+- [x] **Step 4: Make manual review queue extraction after remap**
 
 Change `remap_recording(recording_id, lecture_id)` to return the recording and
 queue an extraction command only when a validated viewer URL is available in
 `PanoptoRecordingSourceModel`. If an old API-era record has no viewer URL, show a
 sanitized "rescan required" state instead of inventing a URL.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run: `pytest tests/panopto/test_browser_service.py tests/panopto/test_matcher_discovery.py -q`
 
 Expected: all pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/oms_hub/panopto/browser_service.py src/oms_hub/panopto/domain.py src/oms_hub/panopto/repository.py tests/panopto/test_browser_service.py tests/panopto/test_matcher_discovery.py
@@ -307,7 +307,7 @@ git commit -m "feat: coordinate Panopto browser discovery"
 - Produces: `TranscriptPipeline.ingest_transcript(recording_id: int, payload: bytes) -> int`.
 - Consumes: `TranscriptExtraction`; produces an immutable revision or an idempotent existing revision.
 
-- [ ] **Step 1: Write failing direct-ingestion tests**
+- [x] **Step 1: Write failing direct-ingestion tests**
 
 ```python
 def test_ingest_transcript_writes_immutable_raw_and_deduplicates(pipeline):
@@ -322,13 +322,13 @@ def test_browser_service_rejects_incomplete_extraction(service):
         service.ingest_extraction(replace(extraction(), complete=False))
 ```
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `pytest tests/panopto/test_pipeline.py tests/panopto/test_browser_service.py -q`
 
 Expected: fail because `ingest_transcript` and `ingest_extraction` do not exist.
 
-- [ ] **Step 3: Replace caption-download dependency with direct bytes**
+- [x] **Step 3: Replace caption-download dependency with direct bytes**
 
 ```python
 def ingest_transcript(self, recording_id: int, payload: bytes) -> int:
@@ -350,19 +350,19 @@ requires `complete=True`, `language == "English_USA"`, positive bounded line
 count, matching command/recording/session IDs, and a validated viewer URL
 before UTF-8 encoding the text and calling `ingest_transcript`.
 
-- [ ] **Step 4: Preserve corrected-revision behavior**
+- [x] **Step 4: Preserve corrected-revision behavior**
 
 Add a test that a changed transcript creates a second immutable directory,
 queues a new clean job, leaves the first raw file unchanged, and makes neither
 revision current until filing succeeds.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run: `pytest tests/panopto/test_pipeline.py tests/panopto/test_browser_service.py -q`
 
 Expected: all pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/oms_hub/panopto/pipeline.py src/oms_hub/panopto/browser_service.py src/oms_hub/panopto/repository.py tests/panopto/test_pipeline.py tests/panopto/test_browser_service.py
@@ -385,7 +385,7 @@ git commit -m "feat: ingest browser transcripts immutably"
 - `POST /api/panopto/result`
 - All endpoints consume the existing companion bearer verified by `PairingService.verify`.
 
-- [ ] **Step 1: Write failing API contract tests**
+- [x] **Step 1: Write failing API contract tests**
 
 ```python
 def test_panopto_api_requires_existing_companion_bearer(client):
@@ -410,13 +410,13 @@ def test_transcript_body_obeys_configured_limit(paired_client):
     assert response.status_code in {413, 422}
 ```
 
-- [ ] **Step 2: Run tests and verify 404 failures**
+- [x] **Step 2: Run tests and verify 404 failures**
 
 Run: `pytest tests/panopto/test_browser_api.py -q`
 
 Expected: endpoints return 404.
 
-- [ ] **Step 3: Implement strict API models and authentication**
+- [x] **Step 3: Implement strict API models and authentication**
 
 Use `ConfigDict(extra="forbid")`, UUID validation, maximum 100 discovery items,
 title/folder/URL bounds, positive duration, maximum 100,000 transcript lines,
@@ -428,7 +428,7 @@ Return `204` when no command is pending. `discover` returns only
 `recording_id`, `session_id`, `action`, `viewer_url`, and sanitized reason.
 Never echo transcript text.
 
-- [ ] **Step 4: Allow paired extension POSTs through cross-site middleware**
+- [x] **Step 4: Allow paired extension POSTs through cross-site middleware**
 
 ```python
 is_companion_api = request.url.path.startswith(
@@ -438,13 +438,13 @@ is_companion_api = request.url.path.startswith(
 
 Do not weaken the origin checks for dashboard routes.
 
-- [ ] **Step 5: Run API and Canvas regression tests**
+- [x] **Step 5: Run API and Canvas regression tests**
 
 Run: `pytest tests/panopto/test_browser_api.py tests/canvas/test_api.py -q`
 
 Expected: all pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/oms_hub/panopto/api.py src/oms_hub/app.py tests/panopto/test_browser_api.py tests/canvas/test_api.py
@@ -464,7 +464,7 @@ git commit -m "feat: add paired Panopto companion API"
 - Produces: `readTranscript(document, options) -> Promise<TranscriptResult>`.
 - Produces: stable reason codes `panopto_login_required`, `transcript_processing`, `english_captions_missing`, `transcript_incomplete`, and `page_structure_changed`.
 
-- [ ] **Step 1: Write failing adapter tests with synthetic documents**
+- [x] **Step 1: Write failing adapter tests with synthetic documents**
 
 ```javascript
 test("missing list container fails closed", () => {
@@ -491,13 +491,13 @@ test("virtualized transcript must reach a stable complete set", async () => {
 });
 ```
 
-- [ ] **Step 2: Run tests and verify module-not-found failure**
+- [x] **Step 2: Run tests and verify module-not-found failure**
 
 Run: `cd extension/canvas-hub && npm test`
 
 Expected: fail because `lib/panopto-page.js` does not exist.
 
-- [ ] **Step 3: Implement isolated selectors and parsers**
+- [x] **Step 3: Implement isolated selectors and parsers**
 
 Use selector arrays with the referenced rendered structures as fallbacks:
 
@@ -517,19 +517,19 @@ pane until its scroll height and ordered line signature are stable for three
 passes; reject duplicate timestamps with conflicting text and a nonzero
 scroll gap.
 
-- [ ] **Step 4: Add MIT attribution**
+- [x] **Step 4: Add MIT attribution**
 
 Update `NOTICE.md` to cite the project URL and state that its rendered Panopto
 transcript extraction approach informed `panopto-page.js`. Do not claim copied
 code if none is copied.
 
-- [ ] **Step 5: Run extension tests**
+- [x] **Step 5: Run extension tests**
 
 Run: `cd extension/canvas-hub && npm test`
 
 Expected: all pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add extension/canvas-hub/lib/panopto-page.js extension/canvas-hub/tests/panopto-page.test.js extension/canvas-hub/NOTICE.md
@@ -554,7 +554,7 @@ git commit -m "feat: parse rendered Panopto transcripts"
 - Produces: `runPanoptoCommand(command, dependencies)`.
 - Content messages: `panopto:connection-check`, `panopto:discover`, `panopto:extract`.
 
-- [ ] **Step 1: Write failing tab-ownership and command tests**
+- [x] **Step 1: Write failing tab-ownership and command tests**
 
 ```javascript
 test("runner creates and removes only its own inactive tab", async () => {
@@ -571,13 +571,13 @@ test("login result is reported without throwing retry loop", async () => {
 });
 ```
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `cd extension/canvas-hub && npm test`
 
 Expected: module-not-found failure for `panopto-runner.js`.
 
-- [ ] **Step 3: Add Panopto API calls to the Hub client**
+- [x] **Step 3: Add Panopto API calls to the Hub client**
 
 ```javascript
 export function getPanoptoCommand() {
@@ -598,14 +598,14 @@ export function postPanoptoTranscript(payload) {
 Extend `request` to handle `204` without trying to decode JSON. Do not log
 request bodies.
 
-- [ ] **Step 4: Implement the dedicated inactive tab lifecycle**
+- [x] **Step 4: Implement the dedicated inactive tab lifecycle**
 
 Create a new inactive tab for each command, wait for the exact Panopto origin,
 send a content-script message, submit discoveries, then extract each returned
 disposition. Always remove the created tab in `finally`. Never query for or
 reuse a user-created Panopto tab.
 
-- [ ] **Step 5: Register content script and exact host permission**
+- [x] **Step 5: Register content script and exact host permission**
 
 ```json
 "host_permissions": [
@@ -630,24 +630,24 @@ permissions contain no wildcard host beyond the three exact entries.
 `import(chrome.runtime.getURL("lib/panopto-page.js"))`; it does not duplicate
 the page-reading implementation.
 
-- [ ] **Step 6: Poll Panopto commands from the existing one-minute alarm**
+- [x] **Step 6: Poll Panopto commands from the existing one-minute alarm**
 
 Canvas's scheduled scan stays unchanged. The command alarm first finishes any
 Canvas scan request and then claims at most one Panopto command. Maintain
 separate `activeScan` and `activePanopto` promises.
 
-- [ ] **Step 7: Update popup status without exposing content**
+- [x] **Step 7: Update popup status without exposing content**
 
 Rename the popup heading to **OMS Study Hub Companion** and show separate
 Canvas and Panopto one-line states. Keep the existing pairing control.
 
-- [ ] **Step 8: Run all extension tests**
+- [x] **Step 8: Run all extension tests**
 
 Run: `cd extension/canvas-hub && npm test`
 
 Expected: all pass.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add extension/canvas-hub
@@ -680,7 +680,7 @@ git commit -m "feat: run Panopto through the Chrome companion"
   `ACCEPTANCE` commands.
 - Produces CLI command `panopto-clear-legacy-credentials`.
 
-- [ ] **Step 1: Replace OAuth web tests with browser-session tests**
+- [x] **Step 1: Replace OAuth web tests with browser-session tests**
 
 ```python
 def test_setup_has_browser_controls_and_no_api_credentials(client):
@@ -697,13 +697,13 @@ def test_enable_requires_browser_acceptance_prompt_and_openai(client, app):
     assert "Complete every Panopto setup step" in response.text
 ```
 
-- [ ] **Step 2: Run focused tests and verify old UI failures**
+- [x] **Step 2: Run focused tests and verify old UI failures**
 
 Run: `pytest tests/panopto/test_panopto_web.py tests/test_config.py tests/test_scheduler.py -q`
 
 Expected: fail because OAuth controls and configuration still exist.
 
-- [ ] **Step 3: Rewire the application**
+- [x] **Step 3: Rewire the application**
 
 Remove `PanoptoTokenProvider` and `PanoptoClient` construction. Construct
 `TranscriptPipeline` without a Panopto client, then construct
@@ -711,7 +711,7 @@ Remove `PanoptoTokenProvider` and `PanoptoClient` construction. Construct
 `panopto_poll_once` calls `queue_scheduled_scan(datetime.now(UTC))`; the
 existing five-second transcript worker remains unchanged.
 
-- [ ] **Step 4: Replace web routes**
+- [x] **Step 4: Replace web routes**
 
 Keep prompt approval, pause/enable, review/remap, and retry. Replace OAuth
 routes with:
@@ -733,7 +733,7 @@ def acceptance(request: Request) -> RedirectResponse:
 `/Panopto/Pages/Home.aspx`, opened in a new tab with `rel="noopener"`.
 `Scan now` queues a manual scan and returns immediately.
 
-- [ ] **Step 5: Remove Panopto API settings and add explicit cleanup**
+- [x] **Step 5: Remove Panopto API settings and add explicit cleanup**
 
 Delete `panopto_client_id` and `panopto_oauth_redirect_uri` from settings and
 `.env.example`. Remove `panopto-set-secret`. Add:
@@ -752,7 +752,7 @@ def panopto_clear_legacy_credentials(args):
 
 This command is explicit and never runs during install/startup.
 
-- [ ] **Step 6: Delete only tracked OAuth modules**
+- [x] **Step 6: Delete only tracked OAuth modules**
 
 Delete tracked `src/oms_hub/panopto/auth.py` and
 `src/oms_hub/panopto/client.py` after all imports are removed. Confirm
@@ -760,13 +760,13 @@ Delete tracked `src/oms_hub/panopto/auth.py` and
 tracked OAuth client test file because the transport it specifies no longer
 exists.
 
-- [ ] **Step 7: Run UI/config/scheduler tests**
+- [x] **Step 7: Run UI/config/scheduler tests**
 
 Run: `pytest tests/panopto/test_panopto_web.py tests/test_cli.py tests/test_config.py tests/test_dashboard.py tests/test_scheduler.py -q`
 
 Expected: all pass.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -u src/oms_hub tests/panopto
@@ -787,7 +787,7 @@ git commit -m "feat: replace Panopto OAuth with browser sessions"
 - Exercises discovery JSON -> match -> extraction JSON -> immutable raw ->
   Terra clean -> canonical file -> checklist.
 
-- [ ] **Step 1: Rewrite the acceptance test around browser payloads**
+- [x] **Step 1: Rewrite the acceptance test around browser payloads**
 
 ```python
 def test_browser_discovery_to_filed_transcript_acceptance(app, paired_client):
@@ -811,25 +811,25 @@ def test_browser_discovery_to_filed_transcript_acceptance(app, paired_client):
 Add unchanged-rescan, corrected-revision, expired-login, processing-caption,
 wrong-origin, and companion-unavailable cases.
 
-- [ ] **Step 2: Run acceptance tests and verify failures**
+- [x] **Step 2: Run acceptance tests and verify failures**
 
 Run: `pytest tests/panopto/test_phase3_acceptance.py -q`
 
 Expected: fail until any missing orchestration behavior is completed.
 
-- [ ] **Step 3: Make the minimal integration corrections**
+- [x] **Step 3: Make the minimal integration corrections**
 
 Correct only contract mismatches exposed by the acceptance test. Do not add
 fallback cookie extraction, Selenium, undocumented Panopto endpoints, or
 automatic legacy-secret deletion.
 
-- [ ] **Step 4: Verify installer preserves data and permissions**
+- [x] **Step 4: Verify installer preserves data and permissions**
 
 Keep creation and ACL handling for the existing Panopto revision root. Remove
 text that requires a Panopto client secret. Assert install does not overwrite
 `.env`, the SQLite database, or immutable revisions.
 
-- [ ] **Step 5: Run Python and extension regression suites**
+- [x] **Step 5: Run Python and extension regression suites**
 
 Run: `pytest -q`
 
@@ -839,7 +839,7 @@ Run: `cd extension/canvas-hub && npm test`
 
 Expected: all extension tests pass.
 
-- [ ] **Step 6: Run secret and permission scans**
+- [x] **Step 6: Run secret and permission scans**
 
 Run:
 
@@ -858,7 +858,7 @@ rg -n "\"cookies\"|<all_urls>|https://\\*/|console\\.(log|debug).*transcript|con
 
 Expected: no matches.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add tests scripts/install-windows.ps1
@@ -879,7 +879,7 @@ git commit -m "test: verify Panopto browser workflow"
 - Produces the exact NUC update, extension refresh, sign-in, acceptance,
   recovery, legacy cleanup, rollback, and merge instructions.
 
-- [ ] **Step 1: Update user-facing setup**
+- [x] **Step 1: Update user-facing setup**
 
 Document:
 
@@ -896,13 +896,13 @@ Document:
 Remove all instructions to create an API client, enter a client ID/secret, or
 configure an OAuth redirect.
 
-- [ ] **Step 2: Document operational states**
+- [x] **Step 2: Document operational states**
 
 Explain `companion_unavailable`, `panopto_login_required`,
 `waiting_for_transcript`, `needs_review`, and the fact that Chrome must be
 running. Include explicit recovery without exposing cookies.
 
-- [ ] **Step 3: Document legacy cleanup and rollback**
+- [x] **Step 3: Document legacy cleanup and rollback**
 
 Run legacy cleanup only after acceptance:
 
@@ -914,7 +914,7 @@ Rollback pauses Panopto, restores the previous app/extension version, and never
 deletes ProgramData revisions, the database, Canvas artifacts, or canonical
 transcripts.
 
-- [ ] **Step 4: Run documentation consistency scan**
+- [x] **Step 4: Run documentation consistency scan**
 
 Run:
 
@@ -924,7 +924,7 @@ rg -n "Server-side Web Application|panopto-set-secret|oauth/callback|client ID|c
 
 Expected: no obsolete active setup instructions.
 
-- [ ] **Step 5: Mark this plan complete and commit**
+- [x] **Step 5: Mark this plan complete and commit**
 
 Update completed task checkboxes only after their commits and change the
 browser companion spec status to **Implemented; live NUC acceptance pending**.

@@ -1,7 +1,7 @@
 # Phase 3 Panopto Browser Companion Design
 
 **Date:** 2026-07-23
-**Status:** Approved
+**Status:** Implemented; live NUC acceptance pending
 
 ## 1. Decision
 

@@ -1,62 +1,68 @@
-# Phase 3 Panopto transcript rollout
+# Phase 3 Panopto browser-session rollout
 
 ## Safety model
 
-Phase 3 uses a Panopto **Server-side Web Application** only for read
-operations. A one-time LMU SSO sign-in connects the Hub as the signed-in
-Panopto user. The Hub can search sessions, read session metadata, and download
-captions; it has no recording, upload, edit, delete, sharing, or publishing
-operation. The client secret, refresh credential, and OpenAI key live only in
-Windows Credential Manager. OAuth access credentials remain in memory and are
-refreshed automatically. The Hub never stores the Panopto password.
+Phase 3 uses the existing paired OMS Study Hub Chrome companion and the user's
+normal LMU Panopto session. It does not use a Panopto API client, client secret,
+OAuth token, exported cookie, or separate browser profile. The extension scans
+only recordings rendered in **Shared with Me**, extracts a transcript only for
+a Hub-selected recording, and cannot edit or delete Panopto content.
 
-Raw and cleaned revisions are immutable under
+Raw and cleaned revisions remain immutable under
 `C:\ProgramData\OMSStudyHub\artifacts\panopto\revisions`. Never delete that
-folder or `hub.db` during troubleshooting. A cleaned transcript is copied into
-`%USERPROFILE%\Documents\OMS II\<Subject>\Exam <number>\Transcripts` only after
-UTF-8, checksum, approved-prompt, and cleaned-length validation pass.
+folder or `hub.db` during installation or troubleshooting. Canonical
+transcripts are filed only after validation under
+`%USERPROFILE%\Documents\OMS II\<Subject>\Exam <number>\Transcripts`.
 
-## Update and install
+## Safe NUC update
 
-Open an elevated PowerShell window:
-
-```powershell
-cd C:\Services\oms-study-automation
-git pull
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\scripts\install-windows.ps1
-```
-
-The installer preserves an existing `.env`, creates the Panopto revision root,
-and does not create a secret file or modify the Obsidian prompt.
-
-In Panopto, create a new API client with these exact settings:
-
-| Setting | Value |
-|---|---|
-| Client name | `OMS Study Hub NUC` |
-| Client type | `Server-side Web Application` |
-| CORS Origin URL | `https://localhost` |
-| Redirect URL | `http://127.0.0.1:8765/panopto/oauth/callback` |
-
-Put only its non-secret client ID in `.env`:
-
-```dotenv
-OMS_HUB_PANOPTO_CLIENT_ID=<Panopto Server-side Web Application client ID>
-```
-
-Do not add the client secret or OpenAI key to `.env`.
-
-## Store credentials and approve the prompt
+Use an elevated PowerShell window. Stop the task and every Hub process first so
+Windows does not lock `oms-hub.exe` or the SQLite database:
 
 ```powershell
-.\.venv\Scripts\oms-hub.exe panopto-set-secret
+Disable-ScheduledTask -TaskName "OMS Study Automation Hub"
+Stop-ScheduledTask -TaskName "OMS Study Automation Hub" -ErrorAction SilentlyContinue
+
+Get-CimInstance Win32_Process |
+    Where-Object {
+        $_.ExecutablePath -like 'C:\Services\oms-study-automation\.venv\Scripts\*' -and
+        $_.Name -in @('python.exe', 'pythonw.exe', 'oms-hub.exe')
+    } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+
+Set-Location C:\Services\oms-study-automation
+git fetch origin
+git switch feat/panopto-browser-companion
+git pull --ff-only
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+
+Enable-ScheduledTask -TaskName "OMS Study Automation Hub"
+Start-ScheduledTask -TaskName "OMS Study Automation Hub"
+```
+
+The installer preserves `.env`, `hub.db`, ProgramData revisions, Canvas
+artifacts, the OMS II hierarchy, and the Obsidian prompt.
+
+## Refresh the existing extension
+
+1. Open `chrome://extensions` in the same Chrome profile used for Canvas.
+2. Find **OMS Study Hub Browser Companion** and choose **Reload**.
+3. Approve access to `lmunet.hosted.panopto.com` if Chrome asks.
+4. Confirm the extension remains paired on the Canvas setup page.
+
+Do not install a second extension or create a Panopto API client. The companion
+has exact access only to LMU Canvas, LMU Panopto, and the local Hub; it has no
+Chrome cookie permission. Chrome must remain running for browser commands.
+
+## OpenAI prompt readiness
+
+The OpenAI key already stored in Windows Credential Manager remains valid. If
+needed, store or rotate it interactively:
+
+```powershell
 .\.venv\Scripts\oms-hub.exe openai-set-key
 .\.venv\Scripts\oms-hub.exe panopto-init-prompt
 ```
-
-The `panopto-set-secret` command clears any prior Panopto user connection,
-because a refresh credential belongs to a specific client ID and secret.
 
 Edit:
 
@@ -64,77 +70,53 @@ Edit:
 C:\Users\conbr\Documents\Main Vault\Anki AI Prompts\Transcript Cleaning.md
 ```
 
-Then approve its exact SHA-256:
+Then approve the exact revision:
 
 ```powershell
 .\.venv\Scripts\oms-hub.exe panopto-approve-prompt
 ```
 
-Any later edit changes the hash and pauses automatic cleaning until the new
-prompt is reviewed and approved again.
+Editing the prompt later changes its hash and pauses cleaning until the new
+revision is approved.
 
-## Connect the Panopto user
+## Connect and run live acceptance
 
-Start or restart the Hub, open
-`http://127.0.0.1:8765/panopto/setup`, and choose **Connect Panopto**. Complete
-the normal LMU Panopto SSO flow in the browser. Panopto redirects back to the
-local Hub, which stores the refresh credential in Windows Credential Manager.
+Open `http://127.0.0.1:8765/panopto/setup`.
 
-The setup page must show **Connected as Panopto user** before acceptance can
-run. If the callback reports a redirect error, confirm the Panopto client uses
-the exact Redirect URL above, including `http`, `127.0.0.1`, port `8765`, and
-the complete path.
+1. Choose **Sign in to Panopto** and complete the Microsoft school login in the
+   Chrome tab.
+2. Return to the setup page and choose **Check connection**.
+3. Run acceptance against approved recording
+   `8796399e-393c-4256-b6e4-b48f0150d156`.
+4. Confirm the recording metadata, MSK lecture match, transcript preview,
+   destination preview, and immutable ProgramData path are correct.
+5. Trigger the representative workflow and confirm the checklist completes in
+   order: recording found, transcript downloaded, transcript cleaned,
+   transcript filed.
+6. Confirm `raw.txt` and `cleaned.txt` exist in one immutable revision folder
+   and one canonical transcript exists in the MSK exam `Transcripts` folder.
+7. Run the same scan again and confirm no new revision, OpenAI request, or
+   canonical file is created.
+8. Verify the established Canvas Neuro and Heme/Lymph scans still preserve
+   originals, conversions, quarantine/replacement review, local filing, and
+   Goodnotes staging.
+9. Enable Panopto automation only after all checks pass.
 
-## Read-only acceptance while paused
+## Daily operation and statuses
 
-Keep automatic discovery paused. Open
-`http://127.0.0.1:8765/panopto/setup` and choose **Validate acceptance
-session**. The check uses session
-`8796399e-393c-4256-b6e4-b48f0150d156`.
+On weekdays with an Outlook-scheduled lecture, the Hub queues a scan every
+15 minutes from 9:20 AM through 7:00 PM Eastern. A complete, confidently
+matched transcript is cleaned automatically with `gpt-5.6-terra`; no dashboard
+approval is required. No scheduled lecture means no automatic scan.
 
-Confirm:
+The main operational states are:
 
-1. Panopto refresh authentication succeeds as the connected Panopto user.
-2. The session exposes `English_USA` captions.
-3. The caption response is plain UTF-8 text, not an authentication page.
-4. The corresponding MSK lecture match is correct.
-5. The destination preview is the MSK exam transcript folder.
-6. The immutable raw path is below the ProgramData Panopto revision root.
-
-The acceptance action downloads only for validation and does not change
-Panopto.
-
-## Controlled automatic validation
-
-Choose **Enable automatic discovery** only after every setup status is ready.
-On weekdays with an Outlook-scheduled lecture, polling runs every 15 minutes
-from 9:20 AM through 7:00 PM Eastern. Cleaning starts automatically without a
-dashboard approval.
-
-For the first representative lecture:
-
-1. Confirm the four checklist steps complete in order: recording found,
-   transcript downloaded, transcript cleaned, transcript filed.
-2. Confirm `raw.txt` and `cleaned.txt` exist in one immutable revision folder.
-3. Confirm one canonical `Lecture ## - Topic - Transcript.txt` exists under
-   the subject and exam `Transcripts` folder.
-4. Confirm the dashboard reports Terra input/output tokens and cost.
-5. Run the same scan again and confirm there is no new revision, OpenAI
-   request, or canonical file.
-6. Use a controlled corrected-caption fixture and confirm it creates a new
-   revision while the prior raw and cleaned files remain unchanged.
-7. Re-run the verified Canvas Neuro and Heme/Lymph cases and confirm their
-   originals, conversion, quarantine/replacement review, local filing, and
-   Goodnotes staging behavior are unchanged.
-
-## Daily operation
-
-The Outlook schedule is the automatic polling gate. No scheduled lecture means
-no automatic Panopto search. The first eligible poll includes the prior day's
-missing transcript backfill. A caption that is not ready waits for a later
-poll; it does not consume a failed attempt. Ambiguous matches, a changed
-prompt, a non-US-English caption, or an unsafe cleaning result appears in
-Panopto review.
+| Status | Meaning and action |
+|---|---|
+| `companion_unavailable` | Chrome is closed, the extension is not paired, or its heartbeat is stale. Start Chrome, reload the extension, and confirm pairing. |
+| `panopto_login_required` | The temporary tab reached LMU/Microsoft sign-in instead of Panopto. Use **Sign in to Panopto**, finish login, then check the connection again. |
+| `waiting_for_transcript` | The recording exists but Panopto has not exposed a complete English transcript. The next eligible scan retries it without consuming a failed attempt. |
+| `needs_review` | Matching, language, prompt, or cleaning validation was not safe enough for automatic filing. Review and remap or retry in the Hub. |
 
 Useful diagnostics:
 
@@ -145,28 +127,30 @@ Useful diagnostics:
 .\.venv\Scripts\oms-hub.exe panopto-recover
 ```
 
-## Pause, retry, recovery, and rotation
+## Legacy credential cleanup
 
-- Pause discovery at `/panopto/setup`; queued durable work can still be
-  inspected.
-- Remap ambiguous recordings or retry reviewed/failed jobs at
-  `/panopto/review`.
-- Run `panopto-recover` after an unexpected stop. It verifies immutable hashes
+Only after browser-session acceptance passes, explicitly remove credentials
+left by the abandoned API-client attempt:
+
+```powershell
+.\.venv\Scripts\oms-hub.exe panopto-clear-legacy-credentials
+```
+
+This removes only the known legacy Panopto secret, refresh-token, and OAuth
+state entries from Windows Credential Manager. It does not delete the OpenAI
+key, database records, transcripts, jobs, or immutable revisions.
+
+## Recovery and rollback
+
+- Keep the Hub paused while diagnosing a browser or login problem.
+- Run `panopto-recover` after an unexpected stop; it verifies immutable hashes
   before requeueing and recognizes an already-filed canonical copy.
-- To rotate the Panopto client secret, rerun `panopto-set-secret`, restart the
-  Hub, and choose **Connect Panopto** again. To rotate the OpenAI key, rerun
-  `openai-set-key`. Do not put replacements in command arguments, logs, or
-  `.env`.
-- **Disconnect Panopto** removes only the stored Panopto refresh credential,
-  pauses discovery, and requires acceptance validation again. It does not
-  delete transcripts, jobs, or immutable revisions.
-- To rotate the prompt, edit the Obsidian note and explicitly approve the new
-  hash.
+- If the database reports read-only, stop all Hub processes and confirm the
+  scheduled task runs as the intended user with write access to
+  `C:\ProgramData\OMSStudyHub`.
+- For rollback, pause Panopto, stop the scheduled task and Hub processes, and
+  deploy the prior application revision.
 
-## Rollback
-
-Pause Panopto in the dashboard, stop the scheduled task, and deploy the prior
-application revision. Preserve `C:\ProgramData\OMSStudyHub\hub.db`, both Canvas
-and Panopto revision roots, and the canonical OMS II hierarchy. Rollback never
-requires deleting artifacts. Resume only after diagnostics and read-only
-acceptance pass.
+Rollback must preserve `C:\ProgramData\OMSStudyHub\hub.db`, all Canvas and
+Panopto revision roots, Canvas artifacts, and every canonical transcript in the
+OMS II hierarchy. Do not delete or recreate the database to roll back code.
