@@ -934,7 +934,7 @@ git add README.md docs .env.example
 git commit -m "docs: add Panopto browser rollout"
 ```
 
-- [ ] **Step 6: Final automated verification**
+- [x] **Step 6: Final automated verification**
 
 Run: `pytest -q`
 
