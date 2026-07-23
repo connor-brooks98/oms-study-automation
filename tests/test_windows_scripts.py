@@ -33,3 +33,17 @@ def test_installer_grants_scheduled_task_user_modify_access_to_data_root() -> No
     assert "icacls.exe" in script
     assert '"${TaskIdentity}:(OI)(CI)M"' in script
     assert script.index("icacls.exe") < script.index("Register-ScheduledTask")
+
+
+def test_installer_splats_complete_native_python_argument_lists() -> None:
+    script = (ROOT / "scripts/install-windows.ps1").read_text(encoding="utf-8")
+
+    assert '$PythonVersionArgs = $PythonPrefix + @("--version")' in script
+    assert "& $PythonCommand @PythonVersionArgs" in script
+    assert (
+        '$PythonVenvArgs = $PythonPrefix + @("-m", "venv", "$ProjectRoot\\.venv")'
+        in script
+    )
+    assert "& $PythonCommand @PythonVenvArgs" in script
+    assert "@PythonPrefix --version" not in script
+    assert "@PythonPrefix -m venv" not in script

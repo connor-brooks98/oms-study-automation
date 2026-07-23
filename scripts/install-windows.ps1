@@ -15,11 +15,13 @@ if (-not (Test-Path $ProjectRoot)) {
 $PyLauncher = Get-Command py -ErrorAction SilentlyContinue
 $PythonCommand = if ($PyLauncher) { $PyLauncher.Source } else { (Get-Command python -ErrorAction Stop).Source }
 $PythonPrefix = if ($PyLauncher) { @("-3.12") } else { @() }
-& $PythonCommand @PythonPrefix --version
+$PythonVersionArgs = $PythonPrefix + @("--version")
+& $PythonCommand @PythonVersionArgs
 if ($LASTEXITCODE -ne 0) { throw "Python 3.12 is required" }
 
 if (-not (Test-Path "$ProjectRoot\.venv\Scripts\python.exe")) {
-  & $PythonCommand @PythonPrefix -m venv "$ProjectRoot\.venv"
+  $PythonVenvArgs = $PythonPrefix + @("-m", "venv", "$ProjectRoot\.venv")
+  & $PythonCommand @PythonVenvArgs
 }
 & "$ProjectRoot\.venv\Scripts\python.exe" -m pip install --upgrade pip
 & "$ProjectRoot\.venv\Scripts\python.exe" -m pip install -e $ProjectRoot
