@@ -22,3 +22,20 @@ def test_scheduler_has_one_guarded_outlook_job(caplog):
         job.func()
     assert calls == 2
     assert "Outlook synchronization failed" in caplog.text
+
+
+def test_scheduler_has_guarded_panopto_jobs():
+    scheduler = build_scheduler(
+        "America/New_York",
+        None,
+        None,
+        panopto_poll_once=lambda: None,
+        panopto_worker_once=lambda: False,
+    )
+
+    poll = scheduler.get_job("panopto-poll")
+    worker = scheduler.get_job("panopto-worker")
+    assert poll is not None
+    assert worker is not None
+    assert poll.trigger.interval.total_seconds() == 900
+    assert worker.trigger.interval.total_seconds() == 5

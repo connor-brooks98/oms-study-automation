@@ -1,4 +1,5 @@
 import argparse
+import getpass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
@@ -141,7 +142,19 @@ def serve(args: argparse.Namespace) -> int:
 
     pipeline = app.state.canvas_pipeline
     pipeline.recover_abandoned_jobs()
-    scheduler = build_scheduler(settings.timezone, sync_once, pipeline.run_next)
+    panopto_pipeline = app.state.panopto_pipeline
+    panopto_pipeline.recover_abandoned_jobs()
+
+    def panopto_poll_once() -> object:
+        return app.state.panopto_discovery.poll(datetime.now(UTC))
+
+    scheduler = build_scheduler(
+        settings.timezone,
+        sync_once,
+        pipeline.run_next,
+        panopto_poll_once,
+        panopto_pipeline.run_next,
+    )
     scheduler.start()
     try:
         uvicorn.run(
@@ -182,6 +195,93 @@ def canvas_recover(args: argparse.Namespace) -> int:
     return 0
 
 
+def panopto_set_secret(args: argparse.Namespace) -> int:
+    del args
+    value = getpass.getpass("Panopto client secret: ")
+    if not value:
+        raise SystemExit("Secret cannot be empty")
+    KeyringSecretStore().set("panopto-client-secret", value)
+    print("Panopto client secret stored in Windows Credential Manager")
+    return 0
+
+
+def openai_set_key(args: argparse.Namespace) -> int:
+    del args
+    value = getpass.getpass("OpenAI API key: ")
+    if not value:
+        raise SystemExit("API key cannot be empty")
+    KeyringSecretStore().set("openai-api-key", value)
+    print("OpenAI API key stored in Windows Credential Manager")
+    return 0
+
+
+def panopto_init_prompt(args: argparse.Namespace) -> int:
+    del args
+    app = create_app(Settings())
+    path = app.state.panopto_prompt.initialize()
+    print(f"prompt={path}")
+    return 0
+
+
+def panopto_approve_prompt(args: argparse.Namespace) -> int:
+    del args
+    app = create_app(Settings())
+    prompt = app.state.panopto_prompt.inspect()
+    app.state.panopto_repository.approve_prompt(
+        prompt.sha256,
+        str(app.state.panopto_prompt.path),
+    )
+    app.state.panopto_prompt.approved_sha256 = prompt.sha256
+    print(f"approved_sha256={prompt.sha256}")
+    return 0
+
+
+def panopto_status(args: argparse.Namespace) -> int:
+    del args
+    app = create_app(Settings())
+    connection = app.state.panopto_repository.connection()
+    print(
+        f"state={connection.state} enabled={connection.enabled} "
+        f"acceptance={connection.acceptance_validated_at or 'not-validated'} "
+        f"last_poll={connection.last_successful_poll or 'never'}"
+    )
+    return 0
+
+
+def panopto_scan_once(args: argparse.Namespace) -> int:
+    del args
+    app = create_app(Settings())
+    settings = app.state.settings
+    result = app.state.panopto_discovery.poll(
+        datetime.now(UTC),
+        manual_session_id=settings.panopto_acceptance_session_id,
+    )
+    print(
+        f"seen={result.seen} matched={result.matched} "
+        f"needs_review={result.needs_review}"
+    )
+    return 0
+
+
+def panopto_worker_once(args: argparse.Namespace) -> int:
+    del args
+    app = create_app(Settings())
+    worked = app.state.panopto_pipeline.run_next()
+    print("processed=1" if worked else "processed=0")
+    return 0
+
+
+def panopto_recover(args: argparse.Namespace) -> int:
+    del args
+    app = create_app(Settings())
+    result = app.state.panopto_pipeline.recover_abandoned_jobs()
+    print(
+        f"requeued={result.requeued} completed={result.completed} "
+        f"needs_review={result.needs_review}"
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="oms-hub")
     commands = parser.add_subparsers(required=True)
@@ -212,6 +312,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     recover = commands.add_parser("canvas-recover")
     recover.set_defaults(handler=canvas_recover)
+
+    panopto_secret = commands.add_parser("panopto-set-secret")
+    panopto_secret.set_defaults(handler=panopto_set_secret)
+
+    openai_key = commands.add_parser("openai-set-key")
+    openai_key.set_defaults(handler=openai_set_key)
+
+    init_prompt = commands.add_parser("panopto-init-prompt")
+    init_prompt.set_defaults(handler=panopto_init_prompt)
+
+    approve_prompt = commands.add_parser("panopto-approve-prompt")
+    approve_prompt.set_defaults(handler=panopto_approve_prompt)
+
+    panopto_status_command = commands.add_parser("panopto-status")
+    panopto_status_command.set_defaults(handler=panopto_status)
+
+    scan_once = commands.add_parser("panopto-scan-once")
+    scan_once.set_defaults(handler=panopto_scan_once)
+
+    panopto_worker = commands.add_parser("panopto-worker-once")
+    panopto_worker.set_defaults(handler=panopto_worker_once)
+
+    panopto_recovery = commands.add_parser("panopto-recover")
+    panopto_recovery.set_defaults(handler=panopto_recover)
     return parser
 
 

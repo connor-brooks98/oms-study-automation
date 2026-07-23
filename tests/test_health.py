@@ -16,3 +16,5 @@ def test_health_reports_service_and_version(tmp_path):
         "status": "ok",
         "version": "0.1.0",
     }
+    assert hasattr(client.app.state, "panopto_pipeline")
+    assert hasattr(client.app.state, "panopto_discovery")

@@ -13,6 +13,8 @@ def build_scheduler(
     timezone: str,
     sync_once: Callable[[], None] | None,
     canvas_worker_once: Callable[[], object] | None = None,
+    panopto_poll_once: Callable[[], object] | None = None,
+    panopto_worker_once: Callable[[], object] | None = None,
 ) -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone=timezone)
 
@@ -40,6 +42,34 @@ def build_scheduler(
             "interval",
             seconds=5,
             id="canvas-worker",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+    if panopto_poll_once is not None:
+        configured_poll = panopto_poll_once
+
+        def guarded_panopto_poll() -> None:
+            try:
+                configured_poll()
+            except Exception:
+                logger.exception("Panopto discovery failed")
+
+        scheduler.add_job(
+            guarded_panopto_poll,
+            "interval",
+            minutes=15,
+            id="panopto-poll",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+    if panopto_worker_once is not None:
+        scheduler.add_job(
+            panopto_worker_once,
+            "interval",
+            seconds=5,
+            id="panopto-worker",
             replace_existing=True,
             max_instances=1,
             coalesce=True,

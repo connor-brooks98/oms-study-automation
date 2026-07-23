@@ -18,6 +18,15 @@ from oms_hub.canvas.repository import CanvasRepository
 from oms_hub.db import Database
 from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.files.office import SerialOfficeConverter
+from oms_hub.panopto.auth import PanoptoTokenProvider
+from oms_hub.panopto.client import PanoptoClient
+from oms_hub.panopto.discovery import PanoptoDiscovery, PollingPolicy
+from oms_hub.panopto.matcher import RecordingMatcher
+from oms_hub.panopto.openai_client import OpenAITranscriptCleaner
+from oms_hub.panopto.pipeline import TranscriptPipeline
+from oms_hub.panopto.prompt import PromptLoader
+from oms_hub.panopto.repository import PanoptoRepository
+from oms_hub.repositories import CatalogRepository
 from oms_hub.web.routes import router
 from oms_hub.web.canvas_routes import router as canvas_web_router
 
@@ -55,16 +64,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     database = Database(resolved.database_url)
     database.create_schema()
     app.state.database = database
+    app.state.secrets = KeyringSecretStore()
     app.state.canvas_repository = CanvasRepository(database)
     app.state.canvas_pairing = PairingService(
         app.state.canvas_repository,
-        KeyringSecretStore(),
+        app.state.secrets,
     )
     app.state.canvas_ingestion = IngestionService(app.state.canvas_repository, resolved)
     app.state.canvas_pipeline = CanvasPipeline(
         database,
         resolved,
         SerialOfficeConverter(resolved.office_timeout_seconds),
+    )
+    catalog = CatalogRepository(database)
+    app.state.panopto_repository = PanoptoRepository(
+        database,
+        resolved.panopto_tenant_url,
+    )
+    app.state.panopto_tokens = PanoptoTokenProvider(
+        resolved.panopto_tenant_url,
+        resolved.panopto_client_id or "",
+        app.state.secrets,
+    )
+    app.state.panopto_client = PanoptoClient(
+        resolved.panopto_tenant_url,
+        app.state.panopto_tokens,
+    )
+    connection = app.state.panopto_repository.connection()
+    app.state.panopto_prompt = PromptLoader(
+        resolved.transcript_prompt_path,
+        connection.approved_prompt_sha256,
+    )
+    app.state.openai_cleaner = OpenAITranscriptCleaner(
+        app.state.secrets,
+        resolved.openai_model,
+        resolved.openai_input_usd_per_million,
+        resolved.openai_output_usd_per_million,
+    )
+    app.state.panopto_pipeline = TranscriptPipeline(
+        app.state.panopto_repository,
+        catalog,
+        app.state.panopto_client,
+        app.state.panopto_prompt,
+        app.state.openai_cleaner,
+        resolved,
+    )
+    app.state.panopto_discovery = PanoptoDiscovery(
+        catalog,
+        app.state.panopto_repository,
+        app.state.panopto_client,
+        RecordingMatcher(resolved.timezone),
+        PollingPolicy(
+            resolved.timezone,
+            resolved.panopto_poll_start,
+            resolved.panopto_poll_end,
+        ),
+        on_match=app.state.panopto_pipeline.ingest_captions,
     )
     web_root = Path(__file__).parent / "web"
     app.mount(

@@ -78,3 +78,41 @@ def test_cli_exposes_phase_one_commands():
             suffix = ["--date", "2026-07-01"]
         parsed = parser.parse_args([command, *suffix])
         assert callable(parsed.handler)
+
+
+def test_cli_exposes_secret_safe_phase_three_commands():
+    parser = cli.build_parser()
+
+    for command in (
+        "panopto-set-secret",
+        "openai-set-key",
+        "panopto-init-prompt",
+        "panopto-approve-prompt",
+        "panopto-status",
+        "panopto-scan-once",
+        "panopto-worker-once",
+        "panopto-recover",
+    ):
+        parsed = parser.parse_args([command])
+        assert callable(parsed.handler)
+        assert not hasattr(parsed, "secret")
+        assert not hasattr(parsed, "api_key")
+
+
+def test_secret_commands_read_hidden_input_not_arguments(monkeypatch, capsys):
+    stored: dict[str, str] = {}
+
+    class MemorySecrets:
+        def set(self, key: str, value: str) -> None:
+            stored[key] = value
+
+    monkeypatch.setattr(cli, "KeyringSecretStore", MemorySecrets)
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: "private-value")
+
+    assert cli.panopto_set_secret(argparse.Namespace()) == 0
+    assert cli.openai_set_key(argparse.Namespace()) == 0
+    assert stored == {
+        "panopto-client-secret": "private-value",
+        "openai-api-key": "private-value",
+    }
+    assert "private-value" not in capsys.readouterr().out

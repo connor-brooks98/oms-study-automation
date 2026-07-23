@@ -71,6 +71,35 @@ class PanoptoRepository:
             connection.last_successful_poll = now_utc.isoformat()
             connection.last_error = None
 
+    def approve_prompt(self, sha256: str, prompt_path: str | None = None) -> None:
+        if len(sha256) != 64:
+            raise ValueError("Prompt SHA-256 is invalid")
+        with self.database.session() as db_session:
+            connection = db_session.scalar(
+                select(PanoptoConnectionModel).where(
+                    PanoptoConnectionModel.tenant_url == self.tenant_url
+                )
+            )
+            if connection is None:
+                connection = PanoptoConnectionModel(tenant_url=self.tenant_url)
+                db_session.add(connection)
+            connection.approved_prompt_sha256 = sha256
+            if prompt_path is not None:
+                connection.prompt_path = prompt_path
+
+    def mark_acceptance_validated(self, now_utc: datetime | None = None) -> None:
+        validated_at = now_utc or datetime.now().astimezone()
+        with self.database.session() as db_session:
+            connection = db_session.scalar(
+                select(PanoptoConnectionModel).where(
+                    PanoptoConnectionModel.tenant_url == self.tenant_url
+                )
+            )
+            if connection is None:
+                connection = PanoptoConnectionModel(tenant_url=self.tenant_url)
+                db_session.add(connection)
+            connection.acceptance_validated_at = validated_at.isoformat()
+
     def upsert_recording(
         self,
         panopto_session: PanoptoSession,
