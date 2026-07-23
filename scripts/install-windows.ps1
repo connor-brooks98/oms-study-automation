@@ -5,6 +5,7 @@ $TaskName = "OMS Study Automation Hub"
 $CanvasInbox = Join-Path $env:USERPROFILE "Downloads\OMSStudyHub\CanvasInbox"
 $StudyRoot = Join-Path $env:USERPROFILE "Documents\OMS II"
 $RevisionRoot = Join-Path $DataRoot "artifacts\revisions"
+$PanoptoRevisionRoot = Join-Path $DataRoot "artifacts\panopto\revisions"
 
 if (-not (Test-Path $ProjectRoot)) {
   throw "Project directory not found: $ProjectRoot"
@@ -21,7 +22,7 @@ if (-not (Test-Path "$ProjectRoot\.venv\Scripts\python.exe")) {
 }
 & "$ProjectRoot\.venv\Scripts\python.exe" -m pip install --upgrade pip
 & "$ProjectRoot\.venv\Scripts\python.exe" -m pip install -e $ProjectRoot
-New-Item -ItemType Directory -Force -Path $DataRoot, $CanvasInbox, $StudyRoot, $RevisionRoot | Out-Null
+New-Item -ItemType Directory -Force -Path $DataRoot, $CanvasInbox, $StudyRoot, $RevisionRoot, $PanoptoRevisionRoot | Out-Null
 if (-not (Test-Path "$ProjectRoot\.env")) {
   Copy-Item "$ProjectRoot\.env.example" "$ProjectRoot\.env"
 }

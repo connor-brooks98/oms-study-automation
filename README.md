@@ -1,8 +1,9 @@
 # OMS II Study Automation Hub
 
 The Hub provides the authoritative lecture catalog, Outlook calendar matching,
-the 21-step lecture checklist, Canvas lecture/PQ processing, and the local daily approval dashboard. It is
-designed to run on a Windows 11 Pro NUC and bind only to the local computer.
+the 21-step lecture checklist, Canvas lecture/PQ processing, Panopto transcript
+cleaning, and the local daily review dashboard. It is designed to run on a
+Windows 11 Pro NUC and bind only to the local computer.
 
 ## Prerequisites
 
@@ -12,6 +13,8 @@ designed to run on a Windows 11 Pro NUC and bind only to the local computer.
 - A Microsoft Entra public-client application ID with delegated
   `Calendars.Read` permission
 - Google Chrome, Microsoft PowerPoint, Microsoft Word, and iCloud for Windows
+- A read-only Panopto Server Application client ID and secret
+- An OpenAI API key
 
 ## Local install
 
@@ -85,6 +88,32 @@ Follow [the Canvas companion installation guide](docs/canvas-extension-install.m
 
 The extension scans mapped Canvas modules every 30 minutes using the existing Chrome session. New high-confidence lectures and professor practice questions are converted and filed automatically. Changed lectures wait in Canvas review and never replace current files without approval. See the [NUC rollout and recovery guide](docs/phase-2-nuc-rollout.md).
 
+## Panopto transcript setup
+
+Create a Panopto **Server Application** client and put only its client ID in
+`.env` as `OMS_HUB_PANOPTO_CLIENT_ID`. Store the two secrets interactively:
+
+```powershell
+.\.venv\Scripts\oms-hub.exe panopto-set-secret
+.\.venv\Scripts\oms-hub.exe openai-set-key
+.\.venv\Scripts\oms-hub.exe panopto-init-prompt
+```
+
+Edit `C:\Users\conbr\Documents\Main Vault\Anki AI Prompts\Transcript Cleaning.md`,
+then approve that exact revision:
+
+```powershell
+.\.venv\Scripts\oms-hub.exe panopto-approve-prompt
+```
+
+Complete read-only acceptance and enablement at
+`http://127.0.0.1:8765/panopto/setup`. On Outlook-scheduled lecture days the
+Hub polls every 15 minutes from 9:20 AM through 7:00 PM Eastern. It keeps
+immutable raw and cleaned revisions in ProgramData, runs approved transcripts
+through `gpt-5.6-terra` automatically, and files validated text under the
+lecture's `Transcripts` folder. See the
+[Phase 3 NUC rollout and recovery guide](docs/phase-3-nuc-rollout.md).
+
 ## Backup and recovery
 
 Stop the hub before copying `C:\ProgramData\OMSStudyHub\hub.db`, or use SQLite's
@@ -93,4 +122,6 @@ edit the SQLite database manually.
 
 ## Current limitations
 
-The Hub does not yet call Panopto, clean transcripts, operate NotebookLM or Gemini, publish Google Docs links, control the Goodnotes UI, or create Anki cards. Canvas PDFs are staged in ordinary iCloud Drive for manual Goodnotes import.
+The Hub does not yet operate NotebookLM or Gemini, publish Google Docs links,
+control the Goodnotes UI, or create Anki cards. Canvas PDFs are staged in
+ordinary iCloud Drive for manual Goodnotes import.
