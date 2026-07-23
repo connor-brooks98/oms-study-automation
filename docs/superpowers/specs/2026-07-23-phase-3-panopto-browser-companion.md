@@ -1,7 +1,7 @@
 # Phase 3 Panopto Browser Companion Design
 
 **Date:** 2026-07-23
-**Status:** Design approved; written specification awaiting review
+**Status:** Approved
 
 ## 1. Decision
 
