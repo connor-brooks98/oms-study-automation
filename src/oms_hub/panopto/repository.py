@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from oms_hub.db import Database
 from oms_hub.domain import LectureStepName, StepStatus
 from oms_hub.models import (
+    LectureModel,
     LectureStepModel,
     OpenAIUsageModel,
     PanoptoConnectionModel,
@@ -57,6 +58,19 @@ class PanoptoRepository:
                 db_session.add(connection)
             connection.enabled = enabled
             connection.state = "enabled" if enabled else "paused"
+
+    def request_scan(self, now_utc: datetime | None = None) -> None:
+        requested_at = now_utc or datetime.now().astimezone()
+        with self.database.session() as db_session:
+            connection = db_session.scalar(
+                select(PanoptoConnectionModel).where(
+                    PanoptoConnectionModel.tenant_url == self.tenant_url
+                )
+            )
+            if connection is None:
+                connection = PanoptoConnectionModel(tenant_url=self.tenant_url)
+                db_session.add(connection)
+            connection.scan_requested_at = requested_at.isoformat()
 
     def mark_poll_success(self, now_utc: datetime) -> None:
         with self.database.session() as db_session:
@@ -182,6 +196,87 @@ class PanoptoRepository:
             if recording is None:
                 raise KeyError(recording_id)
             return recording
+
+    def list_review_recordings(self) -> list[PanoptoRecordingModel]:
+        with self.database.session() as db_session:
+            return list(
+                db_session.scalars(
+                    select(PanoptoRecordingModel)
+                    .where(PanoptoRecordingModel.review_state == "needs_review")
+                    .order_by(
+                        PanoptoRecordingModel.discovered_at.desc(),
+                        PanoptoRecordingModel.id.desc(),
+                    )
+                ).all()
+            )
+
+    def list_review_jobs(self) -> list[TranscriptJobModel]:
+        with self.database.session() as db_session:
+            return list(
+                db_session.scalars(
+                    select(TranscriptJobModel)
+                    .where(
+                        TranscriptJobModel.state.in_(
+                            (
+                                TranscriptJobState.NEEDS_REVIEW.value,
+                                TranscriptJobState.FAILED.value,
+                            )
+                        )
+                    )
+                    .order_by(
+                        TranscriptJobModel.updated_at.desc(),
+                        TranscriptJobModel.id.desc(),
+                    )
+                ).all()
+            )
+
+    def pending_review_count(self) -> int:
+        with self.database.session() as db_session:
+            recording_count = db_session.scalar(
+                select(func.count(PanoptoRecordingModel.id)).where(
+                    PanoptoRecordingModel.review_state == "needs_review"
+                )
+            )
+            job_count = db_session.scalar(
+                select(func.count(TranscriptJobModel.id)).where(
+                    TranscriptJobModel.state.in_(
+                        (
+                            TranscriptJobState.NEEDS_REVIEW.value,
+                            TranscriptJobState.FAILED.value,
+                        )
+                    )
+                )
+            )
+            return int(recording_count or 0) + int(job_count or 0)
+
+    def usage_totals(self) -> tuple[int, int, int]:
+        with self.database.session() as db_session:
+            row = db_session.execute(
+                select(
+                    func.coalesce(func.sum(OpenAIUsageModel.input_tokens), 0),
+                    func.coalesce(func.sum(OpenAIUsageModel.output_tokens), 0),
+                    func.coalesce(func.sum(OpenAIUsageModel.cost_microusd), 0),
+                )
+            ).one()
+            return int(row[0]), int(row[1]), int(row[2])
+
+    def remap_recording(self, recording_id: int, lecture_id: int) -> None:
+        with self.database.session() as db_session:
+            recording = db_session.get(PanoptoRecordingModel, recording_id)
+            lecture = db_session.get(LectureModel, lecture_id)
+            if recording is None or lecture is None:
+                raise KeyError((recording_id, lecture_id))
+            recording.lecture_id = lecture_id
+            recording.confidence = 1.0
+            recording.review_state = "none"
+            recording.evidence_json = json.dumps(("manually remapped",))
+            self._set_step(
+                db_session,
+                lecture_id,
+                LectureStepName.PANOPTO_RECORDING_FOUND,
+                StepStatus.COMPLETE,
+                f"Panopto session {recording.session_id} manually matched",
+            )
 
     def get_revision(self, revision_id: int) -> TranscriptRevisionModel:
         with self.database.session() as db_session:

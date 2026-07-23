@@ -29,6 +29,7 @@ from oms_hub.panopto.repository import PanoptoRepository
 from oms_hub.repositories import CatalogRepository
 from oms_hub.web.routes import router
 from oms_hub.web.canvas_routes import router as canvas_web_router
+from oms_hub.web.panopto_routes import router as panopto_web_router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -130,6 +131,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(router)
     app.include_router(canvas_api_router)
     app.include_router(canvas_web_router)
+    app.include_router(panopto_web_router)
 
     @app.get("/health")
     def health() -> dict[str, str]:

@@ -49,6 +49,8 @@ button { width: fit-content; padding: .55rem .8rem; cursor: pointer; }
 .error { color: #8a1621; }
 .issues { padding: 0; list-style: none; }
 .issues > li { margin: 1rem 0; padding: 1rem; background: white; }
+.review-item { padding: 1rem 0; border-bottom: 1px solid #d9e0ea; }
+code { overflow-wrap: anywhere; }
 @media (max-width: 720px) {
   table, thead, tbody, tr, th, td { display: block; }
   thead { position: absolute; left: -9999px; }

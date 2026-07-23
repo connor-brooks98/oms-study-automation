@@ -8,6 +8,7 @@ from oms_hub.checklist import ChecklistService
 from oms_hub.canvas.repository import CanvasRepository
 from oms_hub.domain import LectureKey, LectureStepName, StepStatus
 from oms_hub.naming import display_title
+from oms_hub.panopto.repository import PanoptoRepository
 from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.web.schemas import LectureApi, StepApi
 
@@ -53,6 +54,13 @@ def dashboard(request: Request) -> HTMLResponse:
     canvas_repository = CanvasRepository(request.app.state.database)
     review_count += len(canvas_repository.list_review_items())
     review_count += len(canvas_repository.list_proposed_revisions())
+    panopto_repository = PanoptoRepository(
+        request.app.state.database,
+        request.app.state.settings.panopto_tenant_url,
+    )
+    panopto_review_count = panopto_repository.pending_review_count()
+    review_count += panopto_review_count
+    input_tokens, output_tokens, cost_microusd = panopto_repository.usage_totals()
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
@@ -60,6 +68,11 @@ def dashboard(request: Request) -> HTMLResponse:
             "rows": rows,
             "review_count": review_count,
             "canvas_connection": canvas_repository.connection(),
+            "panopto_connection": panopto_repository.connection(),
+            "panopto_review_count": panopto_review_count,
+            "panopto_input_tokens": input_tokens,
+            "panopto_output_tokens": output_tokens,
+            "panopto_cost_usd": cost_microusd / 1_000_000,
         },
     )
 

@@ -122,3 +122,14 @@ def test_api_returns_catalog_and_checklist_without_external_payloads(tmp_path):
     assert response.json()[0]["topic"] == "CNS Pathology"
     assert "payload_json" not in response.text
     assert "token" not in response.text.lower()
+
+
+def test_dashboard_shows_panopto_state_and_controls(tmp_path):
+    app = create_app(settings_for(tmp_path, "panopto-dashboard.db"))
+
+    response = TestClient(app).get("/")
+
+    assert response.status_code == 200
+    assert "Panopto transcripts" in response.text
+    assert 'href="/panopto/setup"' in response.text
+    assert 'href="/panopto/review"' in response.text

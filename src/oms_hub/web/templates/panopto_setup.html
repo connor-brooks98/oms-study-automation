@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Panopto setup · OMS Study Hub{% endblock %}
+{% block content %}
+<h1>Panopto transcript setup</h1>
+<p>Credentials stay in Windows Credential Manager. This page displays only readiness state.</p>
+<ol class="setup-checks">
+  <li class="step"><strong>Client ID</strong> <span class="status {{ 'complete' if client_id_configured else '' }}">{{ 'Configured' if client_id_configured else 'Not configured' }}</span></li>
+  <li class="step"><strong>Panopto credential</strong> <span class="status {{ 'complete' if panopto_credential else '' }}">{{ 'Configured' if panopto_credential else 'Not configured' }}</span></li>
+  <li class="step"><strong>OpenAI credential</strong> <span class="status {{ 'complete' if openai_credential else '' }}">{{ 'Configured' if openai_credential else 'Not configured' }}</span></li>
+  <li class="step"><strong>Cleaning prompt</strong> <span class="status {{ 'complete' if prompt_state == 'Approved' else 'needs_review' }}">{{ prompt_state }}</span></li>
+  <li class="step"><strong>Read-only acceptance</strong> <span class="status {{ 'complete' if connection.acceptance_validated_at else '' }}">{{ 'Validated' if connection.acceptance_validated_at else 'Not validated' }}</span></li>
+  <li class="step"><strong>Automatic discovery</strong> <span class="status {{ 'complete' if connection.enabled else '' }}">{{ 'Enabled' if connection.enabled else 'Paused' }}</span></li>
+</ol>
+<section class="card">
+  <h2>Cleaning prompt</h2>
+  <p>{{ prompt_path }}</p>
+  {% if current_hash %}<p>Current SHA-256: <code>{{ current_hash }}</code></p>{% endif %}
+  <form method="post" action="/panopto/prompt/initialize"><button>Initialize prompt if missing</button></form>
+  <form method="post" action="/panopto/prompt/approve"><button>Approve current prompt</button></form>
+</section>
+<section class="card">
+  <h2>Read-only acceptance</h2>
+  <p>Validates the approved Panopto session and its English (United States) caption download without saving it.</p>
+  <form method="post" action="/panopto/acceptance/validate"><button>Validate acceptance session</button></form>
+</section>
+<section class="card">
+  <h2>Automation</h2>
+  <p>Last poll: {{ connection.last_successful_poll or 'Never' }} · Window: weekdays 9:20 AM–7:00 PM Eastern, every 15 minutes.</p>
+  <form method="post" action="/panopto/scan"><button>Scan now</button></form>
+  {% if connection.enabled %}
+  <form method="post" action="/panopto/pause"><button class="danger">Pause automatic discovery</button></form>
+  {% else %}
+  <form method="post" action="/panopto/enable"><button>Enable automatic discovery</button></form>
+  {% endif %}
+</section>
+{% endblock %}
+
