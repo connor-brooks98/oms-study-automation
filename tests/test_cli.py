@@ -100,7 +100,10 @@ def test_cli_exposes_secret_safe_phase_three_commands():
 
 
 def test_secret_commands_read_hidden_input_not_arguments(monkeypatch, capsys):
-    stored: dict[str, str] = {"panopto-refresh-token": "stale-connection"}
+    stored: dict[str, str] = {
+        "panopto-refresh-token": "stale-connection",
+        "panopto-oauth-state": "stale-state",
+    }
 
     class MemorySecrets:
         def set(self, key: str, value: str) -> None:

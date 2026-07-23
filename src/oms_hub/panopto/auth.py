@@ -10,6 +10,7 @@ from oms_hub.security.secret_store import SecretStore
 
 CLIENT_SECRET_KEY = "panopto-client-secret"
 REFRESH_TOKEN_KEY = "panopto-refresh-token"
+AUTHORIZATION_STATE_KEY = "panopto-oauth-state"
 AUTHORIZATION_SCOPE = "openid api offline_access"
 AUTHORIZATION_STATE_LIFETIME_SECONDS = 10 * 60
 
@@ -32,8 +33,6 @@ class PanoptoTokenProvider:
         self.http = http or httpx.Client(timeout=30.0)
         self._token: str | None = None
         self._expires_at = 0.0
-        self._pending_state: str | None = None
-        self._pending_state_expires_at = 0.0
         self._lock = threading.RLock()
 
     def connected(self) -> bool:
@@ -42,9 +41,10 @@ class PanoptoTokenProvider:
     def authorization_url(self, redirect_uri: str) -> str:
         self._configured_client_secret()
         with self._lock:
-            self._pending_state = secure_random.token_urlsafe(32)
-            self._pending_state_expires_at = (
-                time.monotonic() + AUTHORIZATION_STATE_LIFETIME_SECONDS
+            state = secure_random.token_urlsafe(32)
+            self.secrets.set(
+                AUTHORIZATION_STATE_KEY,
+                f"{int(time.time())}:{state}",
             )
             query = urlencode(
                 {
@@ -52,7 +52,7 @@ class PanoptoTokenProvider:
                     "response_type": "code",
                     "redirect_uri": redirect_uri,
                     "scope": AUTHORIZATION_SCOPE,
-                    "state": self._pending_state,
+                    "state": state,
                 }
             )
         return f"{self.tenant_url}/Panopto/oauth2/connect/authorize?{query}"
@@ -64,14 +64,18 @@ class PanoptoTokenProvider:
         redirect_uri: str,
     ) -> None:
         with self._lock:
-            expected_state = self._pending_state
+            state_record = self.secrets.get(AUTHORIZATION_STATE_KEY)
+            self.secrets.delete(AUTHORIZATION_STATE_KEY)
+            issued_text, separator, expected_state = (state_record or "").partition(":")
+            try:
+                state_age = time.time() - int(issued_text)
+            except ValueError:
+                state_age = float("inf")
             state_is_current = (
-                expected_state is not None
-                and time.monotonic() <= self._pending_state_expires_at
+                separator == ":"
+                and 0 <= state_age <= AUTHORIZATION_STATE_LIFETIME_SECONDS
                 and secure_random.compare_digest(expected_state, state)
             )
-            self._pending_state = None
-            self._pending_state_expires_at = 0.0
             if not state_is_current:
                 raise PanoptoAuthenticationError(
                     "Panopto connection could not be verified; restart Connect Panopto"
@@ -82,9 +86,8 @@ class PanoptoTokenProvider:
                     "grant_type": "authorization_code",
                     "code": code,
                     "redirect_uri": redirect_uri,
-                    "client_id": self.client_id,
-                    "client_secret": secret,
-                }
+                },
+                auth=httpx.BasicAuth(self.client_id, secret),
             )
             self._accept_token_response(payload, require_refresh=True)
 
@@ -118,8 +121,7 @@ class PanoptoTokenProvider:
             self.secrets.delete(REFRESH_TOKEN_KEY)
             self._token = None
             self._expires_at = 0.0
-            self._pending_state = None
-            self._pending_state_expires_at = 0.0
+            self.secrets.delete(AUTHORIZATION_STATE_KEY)
 
     def _configured_client_secret(self) -> str:
         secret = self.secrets.get(CLIENT_SECRET_KEY)
@@ -129,12 +131,18 @@ class PanoptoTokenProvider:
             )
         return secret
 
-    def _request_token(self, data: Mapping[str, str]) -> object:
+    def _request_token(
+        self,
+        data: Mapping[str, str],
+        *,
+        auth: httpx.Auth | None = None,
+    ) -> object:
         try:
-            response = self.http.post(
-                f"{self.tenant_url}/Panopto/oauth2/connect/token",
-                data=data,
-            )
+            token_url = f"{self.tenant_url}/Panopto/oauth2/connect/token"
+            if auth is None:
+                response = self.http.post(token_url, data=data)
+            else:
+                response = self.http.post(token_url, data=data, auth=auth)
         except httpx.RequestError as error:
             raise PanoptoAuthenticationError(
                 "Panopto authentication service is unavailable"

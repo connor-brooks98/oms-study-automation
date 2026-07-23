@@ -126,8 +126,50 @@ def test_authorization_code_exchange_validates_state_and_saves_refresh_token():
     assert body["grant_type"] == ["authorization_code"]
     assert body["code"] == ["authorization-code"]
     assert body["redirect_uri"] == [redirect_uri]
-    assert body["client_id"] == ["client"]
-    assert body["client_secret"] == ["secret"]
+    assert "client_id" not in body
+    assert "client_secret" not in body
+    assert request.headers["authorization"] == "Basic Y2xpZW50OnNlY3JldA=="
+
+
+@respx.mock
+def test_authorization_state_survives_provider_restart():
+    route = respx.post(
+        "https://lmunet.hosted.panopto.com/Panopto/oauth2/connect/token"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "access-token",
+                "refresh_token": "new-refresh-token",
+                "expires_in": 3600,
+            },
+        )
+    )
+    secrets = MemorySecrets(refresh_token=None)
+    redirect_uri = "http://127.0.0.1:8765/panopto/oauth/callback"
+    first_process = PanoptoTokenProvider(
+        "https://lmunet.hosted.panopto.com",
+        "client",
+        secrets,
+    )
+    state = parse_qs(
+        urlparse(first_process.authorization_url(redirect_uri)).query
+    )["state"][0]
+    restarted_process = PanoptoTokenProvider(
+        "https://lmunet.hosted.panopto.com",
+        "client",
+        secrets,
+    )
+
+    restarted_process.complete_authorization(
+        "authorization-code",
+        state,
+        redirect_uri,
+    )
+
+    assert route.call_count == 1
+    assert secrets.get("panopto-oauth-state") is None
+    assert secrets.get("panopto-refresh-token") == "new-refresh-token"
 
 
 @respx.mock

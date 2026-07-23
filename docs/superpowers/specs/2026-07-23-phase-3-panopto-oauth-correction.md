@@ -34,7 +34,9 @@ password.
 
 ## Safety and lifecycle
 
-- OAuth state is unpredictable, single-use, and expires after ten minutes.
+- OAuth state is unpredictable, single-use, expires after ten minutes, and is
+  held temporarily in Windows Credential Manager so a Hub restart during LMU
+  sign-in does not invalidate the callback.
 - Callback errors and Panopto response bodies are not logged or rendered.
 - A changed client secret clears the old refresh credential.
 - Disconnecting removes the refresh credential, pauses Panopto automation, and

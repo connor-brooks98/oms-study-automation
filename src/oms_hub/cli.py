@@ -203,6 +203,7 @@ def panopto_set_secret(args: argparse.Namespace) -> int:
     secrets = KeyringSecretStore()
     secrets.set("panopto-client-secret", value)
     secrets.delete("panopto-refresh-token")
+    secrets.delete("panopto-oauth-state")
     print(
         "Panopto web application client secret stored in Windows Credential "
         "Manager; reconnect Panopto in the dashboard"
