@@ -18,4 +18,9 @@ document.querySelector("#scan").addEventListener("click", async () => {
   const result = await chrome.runtime.sendMessage({type: "scan-now"});
   status.textContent = result.status === "complete" ? `Found ${result.total} items` : result.status;
 });
+document.querySelector("#panopto").addEventListener("click", async () => {
+  status.textContent = "Checking Panopto…";
+  const result = await chrome.runtime.sendMessage({type: "panopto-scan-now"});
+  status.textContent = result?.status || "No Panopto command pending";
+});
 refresh();

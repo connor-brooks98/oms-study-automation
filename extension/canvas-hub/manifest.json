@@ -6,8 +6,18 @@
   "permissions": ["alarms", "downloads", "storage"],
   "host_permissions": [
     "https://lmunet.instructure.com/*",
+    "https://lmunet.hosted.panopto.com/*",
     "http://127.0.0.1:8765/*"
   ],
   "background": {"service_worker": "background.js", "type": "module"},
-  "action": {"default_popup": "popup.html"}
+  "action": {"default_popup": "popup.html"},
+  "content_scripts": [{
+    "matches": ["https://lmunet.hosted.panopto.com/*"],
+    "js": ["panopto-content.js"],
+    "run_at": "document_idle"
+  }],
+  "web_accessible_resources": [{
+    "resources": ["lib/panopto-page.js"],
+    "matches": ["https://lmunet.hosted.panopto.com/*"]
+  }]
 }
