@@ -949,7 +949,7 @@ Run: `git status --short`
 Expected: only the preserved untracked
 `src/oms_hub/panopto/auth 2.py` appears.
 
-- [ ] **Step 7: Push feature branch without merging**
+- [x] **Step 7: Push feature branch without merging**
 
 Push the completed feature branch. Do not merge into `main` until the live NUC
 steps pass with the approved recording and one newly shared lecture.
