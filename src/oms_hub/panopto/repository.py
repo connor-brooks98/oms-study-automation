@@ -43,6 +43,32 @@ class PanoptoRepository:
                 db_session.flush()
             return connection
 
+    def set_enabled(self, enabled: bool) -> None:
+        with self.database.session() as db_session:
+            connection = db_session.scalar(
+                select(PanoptoConnectionModel).where(
+                    PanoptoConnectionModel.tenant_url == self.tenant_url
+                )
+            )
+            if connection is None:
+                connection = PanoptoConnectionModel(tenant_url=self.tenant_url)
+                db_session.add(connection)
+            connection.enabled = enabled
+            connection.state = "enabled" if enabled else "paused"
+
+    def mark_poll_success(self, now_utc: datetime) -> None:
+        with self.database.session() as db_session:
+            connection = db_session.scalar(
+                select(PanoptoConnectionModel).where(
+                    PanoptoConnectionModel.tenant_url == self.tenant_url
+                )
+            )
+            if connection is None:
+                connection = PanoptoConnectionModel(tenant_url=self.tenant_url)
+                db_session.add(connection)
+            connection.last_successful_poll = now_utc.isoformat()
+            connection.last_error = None
+
     def upsert_recording(
         self,
         panopto_session: PanoptoSession,
