@@ -35,10 +35,8 @@ class RecordingMatch:
     evidence: tuple[str, ...]
     needs_review: bool
 
-
 @dataclass(frozen=True, slots=True)
 class RecordingDisposition:
     recording_id: int
     created: bool
     needs_review: bool
-

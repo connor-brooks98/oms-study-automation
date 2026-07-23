@@ -67,4 +67,3 @@ class PromptLoader:
                 "Transcript cleaning prompt has not been approved in its current form"
             )
         return prompt
-

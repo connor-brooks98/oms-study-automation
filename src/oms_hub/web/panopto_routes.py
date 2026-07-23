@@ -173,7 +173,6 @@ def remap(
         ) from error
     return RedirectResponse("/panopto/review", status_code=303)
 
-
 @router.post("/jobs/{job_id}/retry")
 def retry(job_id: int, request: Request) -> RedirectResponse:
     try:
@@ -181,4 +180,3 @@ def retry(job_id: int, request: Request) -> RedirectResponse:
     except (KeyError, ValueError) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return RedirectResponse("/panopto/review", status_code=303)
-

@@ -62,4 +62,3 @@ class PanoptoTokenProvider:
             lifetime = 300
         self._expires_at = time.monotonic() + lifetime
         return access_token
-
