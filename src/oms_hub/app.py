@@ -16,7 +16,9 @@ from oms_hub.canvas.repository import CanvasRepository
 from oms_hub.config import Settings, get_settings
 from oms_hub.db import Database
 from oms_hub.files.office import SerialOfficeConverter
+from oms_hub.panopto.api import router as panopto_api_router
 from oms_hub.panopto.auth import PanoptoTokenProvider
+from oms_hub.panopto.browser_service import PanoptoBrowserService
 from oms_hub.panopto.client import PanoptoClient
 from oms_hub.panopto.discovery import PanoptoDiscovery, PollingPolicy
 from oms_hub.panopto.matcher import RecordingMatcher
@@ -53,7 +55,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
         if (
             request.method in {"POST", "PUT", "PATCH", "DELETE"}
-            and not request.url.path.startswith("/api/canvas/")
+            and not request.url.path.startswith(("/api/canvas/", "/api/panopto/"))
             and origin
             and origin not in allowed_origins
         ):
@@ -121,6 +123,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ),
         on_match=app.state.panopto_pipeline.ingest_captions,
     )
+    app.state.panopto_browser = PanoptoBrowserService(
+        catalog,
+        app.state.panopto_repository,
+        RecordingMatcher(resolved.timezone),
+        PollingPolicy(
+            resolved.timezone,
+            resolved.panopto_poll_start,
+            resolved.panopto_poll_end,
+        ),
+        app.state.panopto_pipeline,
+    )
     web_root = Path(__file__).parent / "web"
     app.mount(
         "/static",
@@ -129,6 +142,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.include_router(router)
     app.include_router(canvas_api_router)
+    app.include_router(panopto_api_router)
     app.include_router(canvas_web_router)
     app.include_router(panopto_web_router)
 

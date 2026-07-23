@@ -115,6 +115,20 @@ class PanoptoRepository:
                 payload,
             )
 
+    def get_running_browser_command(self, command_id: str) -> BrowserCommand | None:
+        with self.database.session() as db_session:
+            command = db_session.get(PanoptoBrowserCommandModel, command_id)
+            if command is None or command.state != "running":
+                return None
+            payload = json.loads(command.payload_json)
+            if not isinstance(payload, dict):
+                raise TypeError("Panopto browser command payload is invalid")
+            return BrowserCommand(
+                command.id,
+                BrowserCommandKind(command.kind),
+                payload,
+            )
+
     def complete_browser_command(self, command_id: str, now_utc: datetime) -> None:
         with self.database.session() as db_session:
             command = db_session.get(PanoptoBrowserCommandModel, command_id)
