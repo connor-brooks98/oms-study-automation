@@ -29,10 +29,6 @@ from oms_hub.panopto.repository import PanoptoRepository
 from oms_hub.repositories import CatalogRepository
 
 
-class CaptionClient(Protocol):
-    def download_captions(self, download_url: str, max_bytes: int) -> bytes: ...
-
-
 class TranscriptCleaner(Protocol):
     def clean(self, raw_text: str, prompt: ApprovedPrompt) -> CleanResult: ...
 
@@ -75,11 +71,9 @@ class TranscriptPipeline:
         prompt: PromptLoader,
         cleaner: TranscriptCleaner,
         settings: Settings,
-        panopto: CaptionClient | None = None,
     ):
         self.repository = repository
         self.catalog = catalog
-        self.panopto = panopto
         self.prompt = prompt
         self.cleaner = cleaner
         self.settings = settings
@@ -99,15 +93,6 @@ class TranscriptPipeline:
         self._write_immutable(raw_path, payload, raw_sha256)
         self.repository.finalize_download(revision.id, str(raw_path))
         return revision.id
-
-    def ingest_captions(self, recording_id: int, download_url: str) -> int:
-        if self.panopto is None:
-            raise TranscriptValidationError("Panopto caption client is unavailable")
-        payload = self.panopto.download_captions(
-            download_url,
-            self.settings.panopto_max_caption_bytes,
-        )
-        return self.ingest_transcript(recording_id, payload)
 
     def run_next(self, now: datetime | None = None) -> bool:
         current = now or datetime.now(UTC)
