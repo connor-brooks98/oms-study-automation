@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     openai_input_usd_per_million: float = Field(default=2.50, ge=0)
     openai_output_usd_per_million: float = Field(default=15.00, ge=0)
 
+    @property
+    def panopto_oauth_redirect_uri(self) -> str:
+        return (
+            f"http://127.0.0.1:{self.dashboard_port}"
+            "/panopto/oauth/callback"
+        )
+
     @field_validator("timezone")
     @classmethod
     def valid_timezone(cls, value: str) -> str:

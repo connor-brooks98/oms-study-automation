@@ -1,6 +1,9 @@
 import hashlib
 from datetime import UTC, datetime
+from urllib.parse import parse_qs, urlparse
 
+import httpx
+import respx
 from fastapi.testclient import TestClient
 
 from oms_hub.app import create_app
@@ -13,6 +16,7 @@ class MemorySecrets:
     def __init__(self):
         self.values = {
             "panopto-client-secret": "configured",
+            "panopto-refresh-token": "refresh-token",
             "openai-api-key": "configured",
         }
 
@@ -52,10 +56,80 @@ def test_setup_never_renders_secrets(tmp_path):
     page = client.get("/panopto/setup")
 
     assert page.status_code == 200
-    assert "Panopto client secret" not in page.text
-    assert "OpenAI API key" not in page.text
+    assert "Panopto client secret" in page.text
+    assert "OpenAI credential" in page.text
     assert "Configured" in page.text
     assert "configured" not in page.text
+
+
+def test_connect_redirects_to_panopto_with_callback_and_offline_access(tmp_path):
+    client, _, _ = panopto_client_for(tmp_path)
+
+    response = client.post("/panopto/oauth/connect", follow_redirects=False)
+
+    assert response.status_code == 303
+    location = response.headers["location"]
+    query = parse_qs(urlparse(location).query)
+    assert location.startswith(
+        "https://lmunet.hosted.panopto.com/Panopto/oauth2/connect/authorize?"
+    )
+    assert query["redirect_uri"] == [
+        "http://127.0.0.1:8765/panopto/oauth/callback"
+    ]
+    assert "offline_access" in query["scope"][0].split()
+
+
+@respx.mock
+def test_oauth_callback_saves_connection_without_exposing_tokens(tmp_path):
+    client, app, _ = panopto_client_for(tmp_path)
+    app.state.secrets.delete("panopto-refresh-token")
+    connect = client.post("/panopto/oauth/connect", follow_redirects=False)
+    state = parse_qs(urlparse(connect.headers["location"]).query)["state"][0]
+    respx.post(
+        "https://lmunet.hosted.panopto.com/Panopto/oauth2/connect/token"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "private-access",
+                "refresh_token": "private-refresh",
+                "expires_in": 3600,
+            },
+        )
+    )
+
+    response = client.get(
+        "/panopto/oauth/callback",
+        params={"code": "authorization-code", "state": state},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/panopto/setup"
+    assert app.state.secrets.get("panopto-refresh-token") == "private-refresh"
+    page = client.get("/panopto/setup")
+    assert "private-access" not in page.text
+    assert "private-refresh" not in page.text
+    assert "Connected as Panopto user" in page.text
+
+
+def test_oauth_callback_rejects_bad_state_and_disconnect_removes_connection(tmp_path):
+    client, app, _ = panopto_client_for(tmp_path)
+    app.state.panopto_repository.mark_acceptance_validated()
+    app.state.panopto_repository.set_enabled(True)
+
+    rejected = client.get(
+        "/panopto/oauth/callback",
+        params={"code": "authorization-code", "state": "wrong"},
+    )
+    assert rejected.status_code == 409
+
+    disconnected = client.post("/panopto/oauth/disconnect", follow_redirects=False)
+    assert disconnected.status_code == 303
+    assert app.state.secrets.get("panopto-refresh-token") is None
+    connection = app.state.panopto_repository.connection()
+    assert connection.enabled is False
+    assert connection.acceptance_validated_at is None
 
 
 def test_enable_requires_acceptance_current_prompt_and_both_credentials(tmp_path):

@@ -2,7 +2,16 @@
 
 **Date:** 2026-07-23
 
-**Status:** Approved for specification review
+**Status:** Approved, with the OAuth correction below
+
+> **Authentication correction (approved 2026-07-23):** The original
+> client-credentials design selected a plain Server Application, which has no
+> Panopto user identity and cannot reliably read private course sessions.
+> Authentication now uses a Server-side Web Application authorization-code
+> flow, one-time LMU SSO, `openid api offline_access`, and a refresh credential
+> stored in Windows Credential Manager. The focused correction specification
+> is
+> [2026-07-23-phase-3-panopto-oauth-correction.md](2026-07-23-phase-3-panopto-oauth-correction.md).
 
 **Repository:** `connor-brooks98/oms-study-automation`
 
@@ -26,8 +35,8 @@ originals, revision storage, quarantine, or approval behavior.
 
 ### 2.1 Included
 
-- Panopto OAuth client-credentials authentication for an unattended Server
-  Application.
+- Panopto authorization-code authentication for a Server-side Web Application,
+  followed by unattended refresh authentication.
 - Read-only Panopto recording discovery and caption download.
 - Schedule-aware polling on lecture days.
 - Recording-to-catalog matching with review for ambiguous results.
@@ -59,7 +68,7 @@ originals, revision storage, quarantine, or approval behavior.
 
 - Tenant home URL:
   `https://lmunet.hosted.panopto.com/Panopto/Pages/Home.aspx`
-- API client type: `Server Application`.
+- API client type: `Server-side Web Application`.
 - Suggested client name: `OMS Study Hub NUC`.
 - Suggested optional client URL: `http://127.0.0.1:8765`.
 - Acceptance session ID:
@@ -128,11 +137,11 @@ The subsystem has the following boundaries.
 
 ### 4.1 Authentication
 
-The Panopto token provider exchanges the configured client ID and the
-Credential Manager client secret for a short-lived access token. Tokens are
-held only in memory and refreshed before expiration. Authentication failures
-change the Panopto connection state and stop repeated requests until the next
-bounded retry or an explicit user action.
+The Panopto token provider starts a state-protected authorization-code flow.
+After a one-time LMU SSO sign-in, it exchanges the returned code for access and
+refresh credentials using the configured client ID and Credential Manager
+client secret. The refresh credential stays in Credential Manager. Access
+credentials are held only in memory and refreshed before expiration.
 
 The OpenAI client reads its API key from Credential Manager immediately before
 use. The key is never returned by a dashboard endpoint.
@@ -351,8 +360,8 @@ the next scheduled poll without consuming the three failure attempts.
 
 The following conditions require review or explicit user action:
 
-- Invalid or revoked Panopto credentials.
-- Panopto Server Application lacks permission for required read operations.
+- Invalid or revoked Panopto client or refresh credentials.
+- Connected Panopto user lacks permission for a required session.
 - Invalid OpenAI API key or exhausted project billing.
 - Ambiguous recording-to-lecture match.
 - Unsupported or unexpected caption language.
@@ -427,7 +436,8 @@ cross-site request protections.
 
 The NUC rollout validates:
 
-1. Server Application authentication without a secret in `.env` or SQLite.
+1. Server-side Web Application SSO and refresh authentication without a secret
+   or refresh credential in `.env` or SQLite.
 2. Read-only discovery of session
    `8796399e-393c-4256-b6e4-b48f0150d156`.
 3. English (United States) caption download for the acceptance session.
@@ -447,8 +457,9 @@ The NUC rollout validates:
 ## 14. Rollout
 
 1. Update the NUC clone and install the Phase 3 dependencies.
-2. Create the Panopto Server Application and store its secret through a
-   purpose-built local credential command or dashboard form.
+2. Create the Panopto Server-side Web Application, store its secret through
+   the purpose-built local credential command, and connect once through LMU
+   SSO in the dashboard.
 3. Store the OpenAI API key through the same secret-safe mechanism.
 4. Create and review the Obsidian prompt note.
 5. Run acceptance-session discovery and caption download in discovery-only
@@ -469,8 +480,8 @@ Outlook.
 Implementation and offline tests can proceed without secrets. Live NUC
 acceptance requires:
 
-- Panopto Server Application client ID.
-- Panopto Server Application client secret, entered only into the NUC's
+- Panopto Server-side Web Application client ID.
+- Panopto Server-side Web Application client secret, entered only into the NUC's
   Windows Credential Manager workflow.
 - OpenAI project API key, entered only into the same secret-safe workflow.
 - A reviewed prompt at the confirmed Obsidian path.

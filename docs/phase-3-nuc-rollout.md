@@ -2,11 +2,13 @@
 
 ## Safety model
 
-Phase 3 uses a Panopto **Server Application** only for read operations. The Hub
-can search sessions, read session metadata, and download captions; it has no
-recording, upload, edit, delete, sharing, or publishing operation. Panopto and
-OpenAI secrets live only in Windows Credential Manager. OAuth access tokens
-remain in memory.
+Phase 3 uses a Panopto **Server-side Web Application** only for read
+operations. A one-time LMU SSO sign-in connects the Hub as the signed-in
+Panopto user. The Hub can search sessions, read session metadata, and download
+captions; it has no recording, upload, edit, delete, sharing, or publishing
+operation. The client secret, refresh credential, and OpenAI key live only in
+Windows Credential Manager. OAuth access credentials remain in memory and are
+refreshed automatically. The Hub never stores the Panopto password.
 
 Raw and cleaned revisions are immutable under
 `C:\ProgramData\OMSStudyHub\artifacts\panopto\revisions`. Never delete that
@@ -28,10 +30,19 @@ git pull
 The installer preserves an existing `.env`, creates the Panopto revision root,
 and does not create a secret file or modify the Obsidian prompt.
 
-Set this non-secret value in `.env`:
+In Panopto, create a new API client with these exact settings:
+
+| Setting | Value |
+|---|---|
+| Client name | `OMS Study Hub NUC` |
+| Client type | `Server-side Web Application` |
+| CORS Origin URL | `https://localhost` |
+| Redirect URL | `http://127.0.0.1:8765/panopto/oauth/callback` |
+
+Put only its non-secret client ID in `.env`:
 
 ```dotenv
-OMS_HUB_PANOPTO_CLIENT_ID=<Panopto Server Application client ID>
+OMS_HUB_PANOPTO_CLIENT_ID=<Panopto Server-side Web Application client ID>
 ```
 
 Do not add the client secret or OpenAI key to `.env`.
@@ -43,6 +54,9 @@ Do not add the client secret or OpenAI key to `.env`.
 .\.venv\Scripts\oms-hub.exe openai-set-key
 .\.venv\Scripts\oms-hub.exe panopto-init-prompt
 ```
+
+The `panopto-set-secret` command clears any prior Panopto user connection,
+because a refresh credential belongs to a specific client ID and secret.
 
 Edit:
 
@@ -59,6 +73,18 @@ Then approve its exact SHA-256:
 Any later edit changes the hash and pauses automatic cleaning until the new
 prompt is reviewed and approved again.
 
+## Connect the Panopto user
+
+Start or restart the Hub, open
+`http://127.0.0.1:8765/panopto/setup`, and choose **Connect Panopto**. Complete
+the normal LMU Panopto SSO flow in the browser. Panopto redirects back to the
+local Hub, which stores the refresh credential in Windows Credential Manager.
+
+The setup page must show **Connected as Panopto user** before acceptance can
+run. If the callback reports a redirect error, confirm the Panopto client uses
+the exact Redirect URL above, including `http`, `127.0.0.1`, port `8765`, and
+the complete path.
+
 ## Read-only acceptance while paused
 
 Keep automatic discovery paused. Open
@@ -68,7 +94,7 @@ session**. The check uses session
 
 Confirm:
 
-1. Panopto authentication succeeds with the Server Application.
+1. Panopto refresh authentication succeeds as the connected Panopto user.
 2. The session exposes `English_USA` captions.
 3. The caption response is plain UTF-8 text, not an authentication page.
 4. The corresponding MSK lecture match is correct.
@@ -127,8 +153,13 @@ Useful diagnostics:
   `/panopto/review`.
 - Run `panopto-recover` after an unexpected stop. It verifies immutable hashes
   before requeueing and recognizes an already-filed canonical copy.
-- To rotate either credential, rerun its interactive set command. Do not put
-  the replacement in command arguments, logs, or `.env`.
+- To rotate the Panopto client secret, rerun `panopto-set-secret`, restart the
+  Hub, and choose **Connect Panopto** again. To rotate the OpenAI key, rerun
+  `openai-set-key`. Do not put replacements in command arguments, logs, or
+  `.env`.
+- **Disconnect Panopto** removes only the stored Panopto refresh credential,
+  pauses discovery, and requires acceptance validation again. It does not
+  delete transcripts, jobs, or immutable revisions.
 - To rotate the prompt, edit the Obsidian note and explicitly approve the new
   hash.
 

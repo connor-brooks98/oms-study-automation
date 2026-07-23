@@ -200,8 +200,13 @@ def panopto_set_secret(args: argparse.Namespace) -> int:
     value = getpass.getpass("Panopto client secret: ")
     if not value:
         raise SystemExit("Secret cannot be empty")
-    KeyringSecretStore().set("panopto-client-secret", value)
-    print("Panopto client secret stored in Windows Credential Manager")
+    secrets = KeyringSecretStore()
+    secrets.set("panopto-client-secret", value)
+    secrets.delete("panopto-refresh-token")
+    print(
+        "Panopto web application client secret stored in Windows Credential "
+        "Manager; reconnect Panopto in the dashboard"
+    )
     return 0
 
 
@@ -242,6 +247,7 @@ def panopto_status(args: argparse.Namespace) -> int:
     connection = app.state.panopto_repository.connection()
     print(
         f"state={connection.state} enabled={connection.enabled} "
+        f"connected={app.state.panopto_tokens.connected()} "
         f"acceptance={connection.acceptance_validated_at or 'not-validated'} "
         f"last_poll={connection.last_successful_poll or 'never'}"
     )

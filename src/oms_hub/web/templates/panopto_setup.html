@@ -2,15 +2,25 @@
 {% block title %}Panopto setup · OMS Study Hub{% endblock %}
 {% block content %}
 <h1>Panopto transcript setup</h1>
-<p>Credentials stay in Windows Credential Manager. This page displays only readiness state.</p>
+<p>Credentials and the Panopto connection stay in Windows Credential Manager. This page displays only readiness state.</p>
 <ol class="setup-checks">
   <li class="step"><strong>Client ID</strong> <span class="status {{ 'complete' if client_id_configured else '' }}">{{ 'Configured' if client_id_configured else 'Not configured' }}</span></li>
-  <li class="step"><strong>Panopto credential</strong> <span class="status {{ 'complete' if panopto_credential else '' }}">{{ 'Configured' if panopto_credential else 'Not configured' }}</span></li>
+  <li class="step"><strong>Panopto client secret</strong> <span class="status {{ 'complete' if panopto_credential else '' }}">{{ 'Configured' if panopto_credential else 'Not configured' }}</span></li>
+  <li class="step"><strong>Panopto user connection</strong> <span class="status {{ 'complete' if panopto_connected else '' }}">{{ 'Connected as Panopto user' if panopto_connected else 'Not connected' }}</span></li>
   <li class="step"><strong>OpenAI credential</strong> <span class="status {{ 'complete' if openai_credential else '' }}">{{ 'Configured' if openai_credential else 'Not configured' }}</span></li>
   <li class="step"><strong>Cleaning prompt</strong> <span class="status {{ 'complete' if prompt_state == 'Approved' else 'needs_review' }}">{{ prompt_state }}</span></li>
   <li class="step"><strong>Read-only acceptance</strong> <span class="status {{ 'complete' if connection.acceptance_validated_at else '' }}">{{ 'Validated' if connection.acceptance_validated_at else 'Not validated' }}</span></li>
   <li class="step"><strong>Automatic discovery</strong> <span class="status {{ 'complete' if connection.enabled else '' }}">{{ 'Enabled' if connection.enabled else 'Paused' }}</span></li>
 </ol>
+<section class="card">
+  <h2>Panopto connection</h2>
+  <p>Sign in once through LMU Panopto. The Hub stores only the resulting refresh credential and never stores your Panopto password.</p>
+  {% if panopto_connected %}
+  <form method="post" action="/panopto/oauth/disconnect"><button class="danger">Disconnect Panopto</button></form>
+  {% else %}
+  <form method="post" action="/panopto/oauth/connect"><button>Connect Panopto</button></form>
+  {% endif %}
+</section>
 <section class="card">
   <h2>Cleaning prompt</h2>
   <p>{{ prompt_path }}</p>

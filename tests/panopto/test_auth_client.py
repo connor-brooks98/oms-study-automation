@@ -1,3 +1,5 @@
+from urllib.parse import parse_qs, urlparse
+
 import httpx
 import pytest
 import respx
@@ -12,10 +14,16 @@ from oms_hub.panopto.client import (
 
 
 class MemorySecrets:
-    def __init__(self, secret: str | None = "secret"):
+    def __init__(
+        self,
+        secret: str | None = "secret",
+        refresh_token: str | None = "refresh-token",
+    ):
         self.values = {}
         if secret is not None:
             self.values["panopto-client-secret"] = secret
+        if refresh_token is not None:
+            self.values["panopto-refresh-token"] = refresh_token
 
     def get(self, key: str) -> str | None:
         return self.values.get(key)
@@ -40,7 +48,7 @@ def session_payload(caption_url: str | None = "https://captions.example/file.txt
 
 
 @respx.mock
-def test_client_credentials_and_caption_download():
+def test_refresh_token_authentication_and_caption_download():
     token = respx.post(
         "https://lmunet.hosted.panopto.com/Panopto/oauth2/connect/token"
     ).mock(return_value=httpx.Response(200, json={"access_token": "token", "expires_in": 3600}))
@@ -61,6 +69,84 @@ def test_client_credentials_and_caption_download():
         b"shoulder transcript"
     )
     assert token.call_count == session.call_count == captions.call_count == 1
+
+
+def test_authorization_url_uses_user_scopes_redirect_and_unpredictable_state():
+    provider = PanoptoTokenProvider(
+        "https://lmunet.hosted.panopto.com",
+        "client",
+        MemorySecrets(refresh_token=None),
+    )
+
+    authorization_url = provider.authorization_url(
+        "http://127.0.0.1:8765/panopto/oauth/callback"
+    )
+    parsed = urlparse(authorization_url)
+    query = parse_qs(parsed.query)
+
+    assert parsed.path == "/Panopto/oauth2/connect/authorize"
+    assert query["client_id"] == ["client"]
+    assert query["response_type"] == ["code"]
+    assert query["redirect_uri"] == [
+        "http://127.0.0.1:8765/panopto/oauth/callback"
+    ]
+    assert set(query["scope"][0].split()) == {"openid", "api", "offline_access"}
+    assert len(query["state"][0]) >= 32
+
+
+@respx.mock
+def test_authorization_code_exchange_validates_state_and_saves_refresh_token():
+    route = respx.post(
+        "https://lmunet.hosted.panopto.com/Panopto/oauth2/connect/token"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "access-token",
+                "refresh_token": "new-refresh-token",
+                "expires_in": 3600,
+            },
+        )
+    )
+    secrets = MemorySecrets(refresh_token=None)
+    provider = PanoptoTokenProvider(
+        "https://lmunet.hosted.panopto.com",
+        "client",
+        secrets,
+    )
+    redirect_uri = "http://127.0.0.1:8765/panopto/oauth/callback"
+    state = parse_qs(urlparse(provider.authorization_url(redirect_uri)).query)["state"][0]
+
+    provider.complete_authorization("authorization-code", state, redirect_uri)
+
+    assert secrets.get("panopto-refresh-token") == "new-refresh-token"
+    assert provider.access_token() == "access-token"
+    request = route.calls[0].request
+    body = parse_qs(request.content.decode())
+    assert body["grant_type"] == ["authorization_code"]
+    assert body["code"] == ["authorization-code"]
+    assert body["redirect_uri"] == [redirect_uri]
+    assert body["client_id"] == ["client"]
+    assert body["client_secret"] == ["secret"]
+
+
+@respx.mock
+def test_authorization_code_exchange_rejects_missing_or_mismatched_state():
+    route = respx.post(
+        "https://lmunet.hosted.panopto.com/Panopto/oauth2/connect/token"
+    ).mock(return_value=httpx.Response(200, json={"access_token": "not-used"}))
+    provider = PanoptoTokenProvider(
+        "https://lmunet.hosted.panopto.com",
+        "client",
+        MemorySecrets(refresh_token=None),
+    )
+    redirect_uri = "http://127.0.0.1:8765/panopto/oauth/callback"
+    provider.authorization_url(redirect_uri)
+
+    with pytest.raises(PanoptoAuthenticationError, match="restart"):
+        provider.complete_authorization("authorization-code", "wrong-state", redirect_uri)
+
+    assert route.call_count == 0
 
 
 @respx.mock
@@ -84,16 +170,27 @@ def test_missing_caption_url_is_waiting():
 
 
 @respx.mock
-def test_token_is_cached_and_rejected_credentials_are_sanitized():
+def test_refreshed_token_is_cached_rotated_and_rejected_responses_are_sanitized():
     token_route = respx.post(
         "https://lmunet.hosted.panopto.com/Panopto/oauth2/connect/token"
-    ).mock(return_value=httpx.Response(200, json={"access_token": "token", "expires_in": 3600}))
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "token",
+                "refresh_token": "rotated-refresh",
+                "expires_in": 3600,
+            },
+        )
+    )
+    secrets = MemorySecrets("do-not-leak")
     provider = PanoptoTokenProvider(
-        "https://lmunet.hosted.panopto.com", "client", MemorySecrets("do-not-leak")
+        "https://lmunet.hosted.panopto.com", "client", secrets
     )
 
     assert provider.access_token() == provider.access_token() == "token"
     assert token_route.call_count == 1
+    assert secrets.get("panopto-refresh-token") == "rotated-refresh"
 
     token_route.mock(return_value=httpx.Response(401, text="do-not-leak token"))
     rejected = PanoptoTokenProvider(
@@ -103,6 +200,32 @@ def test_token_is_cached_and_rejected_credentials_are_sanitized():
         rejected.access_token()
     assert "do-not-leak" not in str(captured.value)
     assert "token" not in str(captured.value).lower()
+
+
+def test_missing_refresh_token_requires_browser_connection():
+    provider = PanoptoTokenProvider(
+        "https://lmunet.hosted.panopto.com",
+        "client",
+        MemorySecrets(refresh_token=None),
+    )
+
+    with pytest.raises(PanoptoAuthenticationError, match="Connect Panopto"):
+        provider.access_token()
+
+
+def test_disconnect_removes_only_refresh_token_and_clears_cached_access():
+    secrets = MemorySecrets()
+    provider = PanoptoTokenProvider(
+        "https://lmunet.hosted.panopto.com",
+        "client",
+        secrets,
+    )
+
+    provider.disconnect()
+
+    assert secrets.get("panopto-refresh-token") is None
+    assert secrets.get("panopto-client-secret") == "secret"
+    assert provider.connected() is False
 
 
 @respx.mock

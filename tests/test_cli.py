@@ -100,11 +100,14 @@ def test_cli_exposes_secret_safe_phase_three_commands():
 
 
 def test_secret_commands_read_hidden_input_not_arguments(monkeypatch, capsys):
-    stored: dict[str, str] = {}
+    stored: dict[str, str] = {"panopto-refresh-token": "stale-connection"}
 
     class MemorySecrets:
         def set(self, key: str, value: str) -> None:
             stored[key] = value
+
+        def delete(self, key: str) -> None:
+            stored.pop(key, None)
 
     monkeypatch.setattr(cli, "KeyringSecretStore", MemorySecrets)
     monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: "private-value")

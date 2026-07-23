@@ -13,7 +13,7 @@ Windows 11 Pro NUC and bind only to the local computer.
 - A Microsoft Entra public-client application ID with delegated
   `Calendars.Read` permission
 - Google Chrome, Microsoft PowerPoint, Microsoft Word, and iCloud for Windows
-- A read-only Panopto Server Application client ID and secret
+- A Panopto Server-side Web Application client ID and secret
 - An OpenAI API key
 
 ## Local install
@@ -90,14 +90,24 @@ The extension scans mapped Canvas modules every 30 minutes using the existing Ch
 
 ## Panopto transcript setup
 
-Create a Panopto **Server Application** client and put only its client ID in
-`.env` as `OMS_HUB_PANOPTO_CLIENT_ID`. Store the two secrets interactively:
+Create a Panopto **Server-side Web Application** client with:
+
+- CORS Origin URL: `https://localhost`
+- Redirect URL: `http://127.0.0.1:8765/panopto/oauth/callback`
+
+Put only its client ID in `.env` as `OMS_HUB_PANOPTO_CLIENT_ID`. Store the new
+client secret and OpenAI key interactively:
 
 ```powershell
 .\.venv\Scripts\oms-hub.exe panopto-set-secret
 .\.venv\Scripts\oms-hub.exe openai-set-key
 .\.venv\Scripts\oms-hub.exe panopto-init-prompt
 ```
+
+Start the Hub, open `http://127.0.0.1:8765/panopto/setup`, and choose
+**Connect Panopto**. The initial LMU SSO sign-in grants read access as your
+Panopto user. The refresh credential is stored in Windows Credential Manager;
+the Hub never stores your Panopto password.
 
 Edit `C:\Users\conbr\Documents\Main Vault\Anki AI Prompts\Transcript Cleaning.md`,
 then approve that exact revision:
@@ -106,8 +116,8 @@ then approve that exact revision:
 .\.venv\Scripts\oms-hub.exe panopto-approve-prompt
 ```
 
-Complete read-only acceptance and enablement at
-`http://127.0.0.1:8765/panopto/setup`. On Outlook-scheduled lecture days the
+After connecting, complete read-only acceptance and enablement on the same
+setup page. On Outlook-scheduled lecture days the
 Hub polls every 15 minutes from 9:20 AM through 7:00 PM Eastern. It keeps
 immutable raw and cleaned revisions in ProgramData, runs approved transcripts
 through `gpt-5.6-terra` automatically, and files validated text under the

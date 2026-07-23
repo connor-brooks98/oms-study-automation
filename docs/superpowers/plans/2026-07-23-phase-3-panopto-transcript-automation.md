@@ -1,5 +1,10 @@
 # Phase 3 Panopto Transcript Automation Implementation Plan
 
+> **Superseded authentication section:** Task 2 and every
+> client-credentials/Server Application reference in this historical plan are
+> replaced by the approved Server-side Web Application correction in
+> `docs/superpowers/specs/2026-07-23-phase-3-panopto-oauth-correction.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add safe, schedule-aware Panopto caption discovery, immutable transcript revision storage, automatic OpenAI cleaning, canonical transcript filing, and checklist updates to the existing Windows NUC Hub.

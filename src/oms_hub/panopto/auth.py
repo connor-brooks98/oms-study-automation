@@ -1,8 +1,17 @@
+import secrets as secure_random
+import threading
 import time
+from collections.abc import Mapping
+from urllib.parse import urlencode
 
 import httpx
 
 from oms_hub.security.secret_store import SecretStore
+
+CLIENT_SECRET_KEY = "panopto-client-secret"
+REFRESH_TOKEN_KEY = "panopto-refresh-token"
+AUTHORIZATION_SCOPE = "openid api offline_access"
+AUTHORIZATION_STATE_LIFETIME_SECONDS = 10 * 60
 
 
 class PanoptoAuthenticationError(RuntimeError):
@@ -23,37 +32,150 @@ class PanoptoTokenProvider:
         self.http = http or httpx.Client(timeout=30.0)
         self._token: str | None = None
         self._expires_at = 0.0
+        self._pending_state: str | None = None
+        self._pending_state_expires_at = 0.0
+        self._lock = threading.RLock()
+
+    def connected(self) -> bool:
+        return bool(self.secrets.get(REFRESH_TOKEN_KEY))
+
+    def authorization_url(self, redirect_uri: str) -> str:
+        self._configured_client_secret()
+        with self._lock:
+            self._pending_state = secure_random.token_urlsafe(32)
+            self._pending_state_expires_at = (
+                time.monotonic() + AUTHORIZATION_STATE_LIFETIME_SECONDS
+            )
+            query = urlencode(
+                {
+                    "client_id": self.client_id,
+                    "response_type": "code",
+                    "redirect_uri": redirect_uri,
+                    "scope": AUTHORIZATION_SCOPE,
+                    "state": self._pending_state,
+                }
+            )
+        return f"{self.tenant_url}/Panopto/oauth2/connect/authorize?{query}"
+
+    def complete_authorization(
+        self,
+        code: str,
+        state: str,
+        redirect_uri: str,
+    ) -> None:
+        with self._lock:
+            expected_state = self._pending_state
+            state_is_current = (
+                expected_state is not None
+                and time.monotonic() <= self._pending_state_expires_at
+                and secure_random.compare_digest(expected_state, state)
+            )
+            self._pending_state = None
+            self._pending_state_expires_at = 0.0
+            if not state_is_current:
+                raise PanoptoAuthenticationError(
+                    "Panopto connection could not be verified; restart Connect Panopto"
+                )
+            secret = self._configured_client_secret()
+            payload = self._request_token(
+                {
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                    "client_id": self.client_id,
+                    "client_secret": secret,
+                }
+            )
+            self._accept_token_response(payload, require_refresh=True)
 
     def access_token(self) -> str:
-        if self._token and time.monotonic() < self._expires_at - 60:
+        with self._lock:
+            if self._token and time.monotonic() < self._expires_at - 60:
+                return self._token
+            secret = self._configured_client_secret()
+            refresh_token = self.secrets.get(REFRESH_TOKEN_KEY)
+            if not refresh_token:
+                raise PanoptoAuthenticationError(
+                    "Connect Panopto in the dashboard before validating or scanning"
+                )
+            payload = self._request_token(
+                {
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": self.client_id,
+                    "client_secret": secret,
+                }
+            )
+            self._accept_token_response(payload, require_refresh=False)
+            if self._token is None:  # pragma: no cover - guarded by response validation
+                raise PanoptoAuthenticationError(
+                    "Panopto authentication returned an invalid response"
+                )
             return self._token
-        secret = self.secrets.get("panopto-client-secret")
+
+    def disconnect(self) -> None:
+        with self._lock:
+            self.secrets.delete(REFRESH_TOKEN_KEY)
+            self._token = None
+            self._expires_at = 0.0
+            self._pending_state = None
+            self._pending_state_expires_at = 0.0
+
+    def _configured_client_secret(self) -> str:
+        secret = self.secrets.get(CLIENT_SECRET_KEY)
         if not self.client_id or not secret:
-            raise PanoptoAuthenticationError("Panopto client credentials are not configured")
+            raise PanoptoAuthenticationError(
+                "Panopto web application client ID and secret are not configured"
+            )
+        return secret
+
+    def _request_token(self, data: Mapping[str, str]) -> object:
         try:
             response = self.http.post(
                 f"{self.tenant_url}/Panopto/oauth2/connect/token",
-                auth=(self.client_id, secret),
-                data={"grant_type": "client_credentials", "scope": "api"},
+                data=data,
             )
         except httpx.RequestError as error:
             raise PanoptoAuthenticationError(
                 "Panopto authentication service is unavailable"
             ) from error
         if response.status_code in {400, 401, 403}:
-            raise PanoptoAuthenticationError("Panopto client credentials were rejected")
+            raise PanoptoAuthenticationError(
+                "Panopto connection was rejected; verify the web application client "
+                "ID, secret, and redirect URL"
+            )
         try:
             response.raise_for_status()
-            payload = response.json()
-            access_token = payload["access_token"]
-        except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
+            return response.json()
+        except (httpx.HTTPError, TypeError, ValueError) as error:
             raise PanoptoAuthenticationError(
                 "Panopto authentication returned an invalid response"
             ) from error
+
+    def _accept_token_response(
+        self,
+        payload: object,
+        *,
+        require_refresh: bool,
+    ) -> None:
+        if not isinstance(payload, dict):
+            raise PanoptoAuthenticationError(
+                "Panopto authentication returned an invalid response"
+            )
+        access_token = payload.get("access_token")
+        refresh_token = payload.get("refresh_token")
         if not isinstance(access_token, str) or not access_token:
             raise PanoptoAuthenticationError(
                 "Panopto authentication returned an invalid response"
             )
+        if require_refresh and (
+            not isinstance(refresh_token, str) or not refresh_token
+        ):
+            raise PanoptoAuthenticationError(
+                "Panopto did not grant offline access; verify the client type and reconnect"
+            )
+        if isinstance(refresh_token, str) and refresh_token:
+            self.secrets.set(REFRESH_TOKEN_KEY, refresh_token)
         self._token = access_token
         expires_in = payload.get("expires_in", 300)
         try:
@@ -61,4 +183,3 @@ class PanoptoTokenProvider:
         except (TypeError, ValueError):
             lifetime = 300
         self._expires_at = time.monotonic() + lifetime
-        return access_token

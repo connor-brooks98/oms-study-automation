@@ -6,6 +6,10 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from oms_hub.panopto.auth import (
+    PanoptoAuthenticationError,
+    PanoptoTokenProvider,
+)
 from oms_hub.panopto.pipeline import TranscriptPipeline, validate_raw_caption
 from oms_hub.panopto.prompt import PromptError, PromptLoader
 from oms_hub.panopto.repository import PanoptoRepository
@@ -30,6 +34,10 @@ def _pipeline(request: Request) -> TranscriptPipeline:
 
 def _secrets(request: Request) -> SecretStore:
     return cast(SecretStore, request.app.state.secrets)
+
+
+def _tokens(request: Request) -> PanoptoTokenProvider:
+    return cast(PanoptoTokenProvider, request.app.state.panopto_tokens)
 
 
 def _secret_present(request: Request, key: str) -> bool:
@@ -62,12 +70,55 @@ def setup(request: Request) -> HTMLResponse:
             "panopto_credential": _secret_present(
                 request, "panopto-client-secret"
             ),
+            "panopto_connected": _tokens(request).connected(),
             "openai_credential": _secret_present(request, "openai-api-key"),
             "prompt_path": _prompt(request).path,
             "prompt_state": prompt_state,
             "current_hash": current_hash,
         },
     )
+
+
+@router.post("/oauth/connect")
+def connect_panopto(request: Request) -> RedirectResponse:
+    try:
+        authorization_url = _tokens(request).authorization_url(
+            request.app.state.settings.panopto_oauth_redirect_uri
+        )
+    except PanoptoAuthenticationError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return RedirectResponse(authorization_url, status_code=303)
+
+
+@router.get("/oauth/callback")
+def panopto_oauth_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse:
+    if error or not code or not state:
+        raise HTTPException(
+            status_code=409,
+            detail="Panopto connection was not completed",
+        )
+    try:
+        _tokens(request).complete_authorization(
+            code,
+            state,
+            request.app.state.settings.panopto_oauth_redirect_uri,
+        )
+    except PanoptoAuthenticationError as auth_error:
+        raise HTTPException(status_code=409, detail=str(auth_error)) from auth_error
+    _repository(request).reset_acceptance()
+    return RedirectResponse("/panopto/setup", status_code=303)
+
+
+@router.post("/oauth/disconnect")
+def disconnect_panopto(request: Request) -> RedirectResponse:
+    _tokens(request).disconnect()
+    _repository(request).reset_acceptance()
+    return RedirectResponse("/panopto/setup", status_code=303)
 
 
 @router.post("/prompt/initialize")
@@ -120,6 +171,7 @@ def enable(request: Request) -> RedirectResponse:
     ready = (
         bool(request.app.state.settings.panopto_client_id)
         and _secret_present(request, "panopto-client-secret")
+        and _tokens(request).connected()
         and _secret_present(request, "openai-api-key")
         and bool(connection.acceptance_validated_at)
         and current_prompt.sha256 == connection.approved_prompt_sha256

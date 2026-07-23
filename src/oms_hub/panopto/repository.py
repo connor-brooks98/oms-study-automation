@@ -114,6 +114,20 @@ class PanoptoRepository:
                 db_session.add(connection)
             connection.acceptance_validated_at = validated_at.isoformat()
 
+    def reset_acceptance(self) -> None:
+        with self.database.session() as db_session:
+            connection = db_session.scalar(
+                select(PanoptoConnectionModel).where(
+                    PanoptoConnectionModel.tenant_url == self.tenant_url
+                )
+            )
+            if connection is None:
+                connection = PanoptoConnectionModel(tenant_url=self.tenant_url)
+                db_session.add(connection)
+            connection.acceptance_validated_at = None
+            connection.enabled = False
+            connection.state = "paused"
+
     def upsert_recording(
         self,
         panopto_session: PanoptoSession,
