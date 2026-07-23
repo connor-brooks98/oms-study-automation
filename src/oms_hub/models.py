@@ -219,6 +219,31 @@ class PanoptoRecordingModel(Base):
     updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
 
 
+class PanoptoRecordingSourceModel(Base):
+    __tablename__ = "panopto_recording_sources"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    recording_id: Mapped[int] = mapped_column(
+        ForeignKey("panopto_recordings.id"),
+        unique=True,
+    )
+    viewer_url: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class PanoptoBrowserCommandModel(Base):
+    __tablename__ = "panopto_browser_commands"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(40))
+    state: Mapped[str] = mapped_column(String(30), default="pending")
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    claimed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    completed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+
 class TranscriptRevisionModel(Base):
     __tablename__ = "transcript_revisions"
     __table_args__ = (UniqueConstraint("recording_id", "raw_sha256"),)

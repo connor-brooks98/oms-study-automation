@@ -1,5 +1,7 @@
 import json
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
+from urllib.parse import parse_qs, urlparse
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -10,10 +12,16 @@ from oms_hub.models import (
     LectureModel,
     LectureStepModel,
     OpenAIUsageModel,
+    PanoptoBrowserCommandModel,
     PanoptoConnectionModel,
     PanoptoRecordingModel,
+    PanoptoRecordingSourceModel,
     TranscriptJobModel,
     TranscriptRevisionModel,
+)
+from oms_hub.panopto.browser_domain import (
+    BrowserCommand,
+    BrowserCommandKind,
 )
 from oms_hub.panopto.domain import (
     PanoptoSession,
@@ -58,6 +66,164 @@ class PanoptoRepository:
                 db_session.add(connection)
             connection.enabled = enabled
             connection.state = "enabled" if enabled else "paused"
+
+    def queue_browser_command(
+        self,
+        kind: BrowserCommandKind,
+        payload: dict[str, object],
+        now_utc: datetime,
+    ) -> str:
+        with self.database.session() as db_session:
+            existing = db_session.scalar(
+                select(PanoptoBrowserCommandModel)
+                .where(
+                    PanoptoBrowserCommandModel.kind == kind.value,
+                    PanoptoBrowserCommandModel.state.in_(("pending", "running")),
+                )
+                .order_by(PanoptoBrowserCommandModel.created_at)
+            )
+            if existing is not None:
+                return existing.id
+            command_id = str(uuid.uuid4())
+            db_session.add(
+                PanoptoBrowserCommandModel(
+                    id=command_id,
+                    kind=kind.value,
+                    payload_json=json.dumps(payload, separators=(",", ":"), sort_keys=True),
+                    created_at=now_utc.isoformat(),
+                )
+            )
+            return command_id
+
+    def claim_browser_command(self, now_utc: datetime) -> BrowserCommand | None:
+        with self.database.session() as db_session:
+            command = db_session.scalar(
+                select(PanoptoBrowserCommandModel)
+                .where(PanoptoBrowserCommandModel.state == "pending")
+                .order_by(PanoptoBrowserCommandModel.created_at)
+            )
+            if command is None:
+                return None
+            payload = json.loads(command.payload_json)
+            if not isinstance(payload, dict):
+                raise TypeError("Panopto browser command payload is invalid")
+            command.state = "running"
+            command.claimed_at = now_utc.isoformat()
+            return BrowserCommand(
+                command.id,
+                BrowserCommandKind(command.kind),
+                payload,
+            )
+
+    def complete_browser_command(self, command_id: str, now_utc: datetime) -> None:
+        with self.database.session() as db_session:
+            command = db_session.get(PanoptoBrowserCommandModel, command_id)
+            if command is None:
+                raise KeyError(command_id)
+            command.state = "complete"
+            command.completed_at = now_utc.isoformat()
+            command.error_code = None
+
+    def fail_browser_command(
+        self,
+        command_id: str,
+        now_utc: datetime,
+        error_code: str,
+    ) -> None:
+        with self.database.session() as db_session:
+            command = db_session.get(PanoptoBrowserCommandModel, command_id)
+            if command is None:
+                raise KeyError(command_id)
+            command.state = "failed"
+            command.completed_at = now_utc.isoformat()
+            command.error_code = error_code[:80]
+
+    def recover_stale_browser_commands(
+        self,
+        now_utc: datetime,
+        timeout_seconds: int = 300,
+    ) -> int:
+        cutoff = now_utc - timedelta(seconds=timeout_seconds)
+        recovered = 0
+        with self.database.session() as db_session:
+            commands = db_session.scalars(
+                select(PanoptoBrowserCommandModel).where(
+                    PanoptoBrowserCommandModel.state == "running"
+                )
+            ).all()
+            for command in commands:
+                if not command.claimed_at:
+                    continue
+                claimed = datetime.fromisoformat(command.claimed_at)
+                if claimed <= cutoff:
+                    command.state = "pending"
+                    command.claimed_at = None
+                    recovered += 1
+        return recovered
+
+    def heartbeat(
+        self,
+        state: str,
+        now_utc: datetime,
+        error: str | None = None,
+    ) -> None:
+        allowed = {
+            "companion_unavailable",
+            "panopto_login_required",
+            "connected",
+            "scanning",
+            "waiting_for_transcript",
+            "needs_review",
+            "error",
+        }
+        if state not in allowed:
+            raise ValueError("Panopto browser state is invalid")
+        with self.database.session() as db_session:
+            connection = db_session.scalar(
+                select(PanoptoConnectionModel).where(
+                    PanoptoConnectionModel.tenant_url == self.tenant_url
+                )
+            )
+            if connection is None:
+                connection = PanoptoConnectionModel(tenant_url=self.tenant_url)
+                db_session.add(connection)
+            connection.state = state
+            connection.last_error = error[:1000] if error else None
+            connection.scan_requested_at = now_utc.isoformat()
+
+    def set_recording_source(self, recording_id: int, viewer_url: str) -> None:
+        parsed = urlparse(viewer_url)
+        session_values = parse_qs(parsed.query).get("id", [])
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "lmunet.hosted.panopto.com"
+            or parsed.path != "/Panopto/Pages/Viewer.aspx"
+            or len(session_values) != 1
+        ):
+            raise ValueError("Viewer URL must use the LMU Panopto viewer")
+        with self.database.session() as db_session:
+            source = db_session.scalar(
+                select(PanoptoRecordingSourceModel).where(
+                    PanoptoRecordingSourceModel.recording_id == recording_id
+                )
+            )
+            if source is None:
+                source = PanoptoRecordingSourceModel(
+                    recording_id=recording_id,
+                    viewer_url=viewer_url,
+                )
+                db_session.add(source)
+            else:
+                source.viewer_url = viewer_url
+
+    def get_recording_source(self, recording_id: int) -> str | None:
+        with self.database.session() as db_session:
+            source = db_session.scalar(
+                select(PanoptoRecordingSourceModel).where(
+                    PanoptoRecordingSourceModel.recording_id == recording_id
+                )
+            )
+            return source.viewer_url if source is not None else None
 
     def request_scan(self, now_utc: datetime | None = None) -> None:
         requested_at = now_utc or datetime.now().astimezone()
