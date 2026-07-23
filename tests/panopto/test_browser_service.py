@@ -3,7 +3,11 @@ from datetime import UTC, datetime
 
 import pytest
 
-from oms_hub.panopto.browser_domain import BrowserCommandKind, BrowserRecording
+from oms_hub.panopto.browser_domain import (
+    BrowserCommandKind,
+    BrowserRecording,
+    TranscriptExtraction,
+)
 from oms_hub.panopto.browser_service import PanoptoBrowserService
 from oms_hub.panopto.discovery import PollingPolicy
 from oms_hub.panopto.matcher import RecordingMatcher
@@ -108,3 +112,21 @@ def test_discovery_ignores_recordings_older_than_previous_day(database):
     )
 
     assert service.process_discovery("command-id", [old], NOW) == []
+
+
+def test_incomplete_extraction_is_rejected_before_ingestion(database):
+    service, _ = _service(database)
+
+    with pytest.raises(ValueError, match="complete"):
+        service.ingest_extraction(
+            TranscriptExtraction(
+                "command-id",
+                1,
+                SESSION_ID,
+                VIEWER_URL,
+                "English_USA",
+                10,
+                False,
+                "partial transcript",
+            )
+        )

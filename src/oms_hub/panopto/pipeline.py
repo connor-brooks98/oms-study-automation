@@ -72,10 +72,10 @@ class TranscriptPipeline:
         self,
         repository: PanoptoRepository,
         catalog: CatalogRepository,
-        panopto: CaptionClient,
         prompt: PromptLoader,
         cleaner: TranscriptCleaner,
         settings: Settings,
+        panopto: CaptionClient | None = None,
     ):
         self.repository = repository
         self.catalog = catalog
@@ -84,18 +84,30 @@ class TranscriptPipeline:
         self.cleaner = cleaner
         self.settings = settings
 
-    def ingest_captions(self, recording_id: int, download_url: str) -> int:
-        payload = self.panopto.download_captions(
-            download_url,
-            self.settings.panopto_max_caption_bytes,
-        )
+    def ingest_transcript(self, recording_id: int, payload: bytes) -> int:
         validate_raw_caption(payload, self.settings.panopto_max_caption_bytes)
         raw_sha256 = hashlib.sha256(payload).hexdigest()
         revision = self.repository.create_raw_revision(recording_id, raw_sha256, "")
+        if revision.raw_path:
+            existing = Path(revision.raw_path)
+            if existing.is_file() and sha256_file(existing) == raw_sha256:
+                return revision.id
+            raise TranscriptValidationError(
+                "Immutable raw transcript is missing or changed"
+            )
         raw_path = self._revision_root(revision.id) / "raw.txt"
         self._write_immutable(raw_path, payload, raw_sha256)
         self.repository.finalize_download(revision.id, str(raw_path))
         return revision.id
+
+    def ingest_captions(self, recording_id: int, download_url: str) -> int:
+        if self.panopto is None:
+            raise TranscriptValidationError("Panopto caption client is unavailable")
+        payload = self.panopto.download_captions(
+            download_url,
+            self.settings.panopto_max_caption_bytes,
+        )
+        return self.ingest_transcript(recording_id, payload)
 
     def run_next(self, now: datetime | None = None) -> bool:
         current = now or datetime.now(UTC)

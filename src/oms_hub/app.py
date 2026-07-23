@@ -1,22 +1,20 @@
-from pathlib import Path
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi import Request
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from starlette.responses import Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.responses import Response
 
 from oms_hub import __version__
-from oms_hub.config import Settings, get_settings
 from oms_hub.canvas.api import router as canvas_api_router
 from oms_hub.canvas.ingestion import IngestionService
 from oms_hub.canvas.pairing import PairingService
 from oms_hub.canvas.pipeline import CanvasPipeline
 from oms_hub.canvas.repository import CanvasRepository
+from oms_hub.config import Settings, get_settings
 from oms_hub.db import Database
-from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.files.office import SerialOfficeConverter
 from oms_hub.panopto.auth import PanoptoTokenProvider
 from oms_hub.panopto.client import PanoptoClient
@@ -27,9 +25,10 @@ from oms_hub.panopto.pipeline import TranscriptPipeline
 from oms_hub.panopto.prompt import PromptLoader
 from oms_hub.panopto.repository import PanoptoRepository
 from oms_hub.repositories import CatalogRepository
-from oms_hub.web.routes import router
+from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.web.canvas_routes import router as canvas_web_router
 from oms_hub.web.panopto_routes import router as panopto_web_router
+from oms_hub.web.routes import router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -105,10 +104,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.panopto_pipeline = TranscriptPipeline(
         app.state.panopto_repository,
         catalog,
-        app.state.panopto_client,
         app.state.panopto_prompt,
         app.state.openai_cleaner,
         resolved,
+        panopto=app.state.panopto_client,
     )
     app.state.panopto_discovery = PanoptoDiscovery(
         catalog,

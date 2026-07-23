@@ -17,16 +17,6 @@ from oms_hub.panopto.repository import PanoptoRepository
 from oms_hub.repositories import CatalogRepository, LectureInput
 
 
-class FakePanopto:
-    def __init__(self, payload: bytes):
-        self.payload = payload
-        self.downloads = 0
-
-    def download_captions(self, download_url: str, max_bytes: int) -> bytes:
-        self.downloads += 1
-        return self.payload
-
-
 class FakeCleaner:
     def __init__(self, text: str | None = None, error: Exception | None = None):
         self.text = text
@@ -84,28 +74,27 @@ def prepared_pipeline(database, tmp_path, raw_text="Raw shoulder transcript."):
         study_root=tmp_path / "OMS II",
         transcript_prompt_path=prompt_path,
     )
-    fake_panopto = FakePanopto(raw_text.encode())
     cleaner = FakeCleaner()
     pipeline = TranscriptPipeline(
         repository,
         catalog,
-        fake_panopto,
         PromptLoader(prompt_path, approved),
         cleaner,
         settings,
     )
-    return pipeline, catalog, lecture_id, disposition.recording_id, fake_panopto, cleaner
+    return pipeline, catalog, lecture_id, disposition.recording_id, cleaner
 
 
 def test_download_clean_file_and_checklist(database, tmp_path):
-    pipeline, catalog, lecture_id, recording_id, _, _ = prepared_pipeline(
+    pipeline, catalog, lecture_id, recording_id, _ = prepared_pipeline(
         database,
         tmp_path,
         "Raw shoulder transcript with substantive medical detail.",
     )
 
-    revision_id = pipeline.ingest_captions(
-        recording_id, "https://captions.example/file.txt"
+    revision_id = pipeline.ingest_transcript(
+        recording_id,
+        b"Raw shoulder transcript with substantive medical detail.",
     )
     assert pipeline.run_next()
     assert pipeline.run_next()
@@ -124,12 +113,12 @@ def test_download_clean_file_and_checklist(database, tmp_path):
 
 
 def test_identical_caption_hash_does_not_call_openai_twice(database, tmp_path):
-    pipeline, _, _, recording_id, _, cleaner = prepared_pipeline(
+    pipeline, _, _, recording_id, cleaner = prepared_pipeline(
         database, tmp_path, "same transcript"
     )
 
-    first = pipeline.ingest_captions(recording_id, "https://captions.example/file.txt")
-    second = pipeline.ingest_captions(recording_id, "https://captions.example/file.txt")
+    first = pipeline.ingest_transcript(recording_id, b"same transcript")
+    second = pipeline.ingest_transcript(recording_id, b"same transcript")
     assert first == second
     assert pipeline.repository.job_count(first, TranscriptAction.CLEAN) == 1
     assert pipeline.run_next()
@@ -137,17 +126,16 @@ def test_identical_caption_hash_does_not_call_openai_twice(database, tmp_path):
 
 
 def test_invalid_or_overcompressed_caption_never_reaches_canonical_path(database, tmp_path):
-    pipeline, _, _, recording_id, fake_panopto, cleaner = prepared_pipeline(
+    pipeline, _, _, recording_id, cleaner = prepared_pipeline(
         database, tmp_path, "A substantive transcript long enough to validate."
     )
-    fake_panopto.payload = b"<html>login</html>"
     with pytest.raises(TranscriptValidationError):
-        pipeline.ingest_captions(recording_id, "https://captions.example/file.txt")
+        pipeline.ingest_transcript(recording_id, b"<html>login</html>")
 
-    fake_panopto.payload = b"A substantive transcript long enough to validate."
     cleaner.text = "short"
-    revision_id = pipeline.ingest_captions(
-        recording_id, "https://captions.example/file.txt"
+    revision_id = pipeline.ingest_transcript(
+        recording_id,
+        b"A substantive transcript long enough to validate.",
     )
     assert pipeline.run_next()
     revision = pipeline.repository.get_revision(revision_id)
@@ -158,11 +146,9 @@ def test_invalid_or_overcompressed_caption_never_reaches_canonical_path(database
 
 
 def test_transient_cleaning_failure_exhausts_three_attempts(database, tmp_path):
-    pipeline, _, _, recording_id, _, cleaner = prepared_pipeline(database, tmp_path)
+    pipeline, _, _, recording_id, cleaner = prepared_pipeline(database, tmp_path)
     cleaner.error = OpenAITransientError("temporary")
-    revision_id = pipeline.ingest_captions(
-        recording_id, "https://captions.example/file.txt"
-    )
+    revision_id = pipeline.ingest_transcript(recording_id, b"Raw shoulder transcript.")
     start = datetime(2026, 7, 23, 14, tzinfo=UTC)
 
     assert pipeline.run_next(start)
@@ -177,10 +163,8 @@ def test_transient_cleaning_failure_exhausts_three_attempts(database, tmp_path):
 
 
 def test_recovery_requeues_running_clean_job_when_raw_is_intact(database, tmp_path):
-    pipeline, _, _, recording_id, _, _ = prepared_pipeline(database, tmp_path)
-    revision_id = pipeline.ingest_captions(
-        recording_id, "https://captions.example/file.txt"
-    )
+    pipeline, _, _, recording_id, _ = prepared_pipeline(database, tmp_path)
+    revision_id = pipeline.ingest_transcript(recording_id, b"Raw shoulder transcript.")
     claimed = pipeline.repository.claim_next_job(datetime.now(UTC))
     assert claimed is not None and claimed.state == "running"
 

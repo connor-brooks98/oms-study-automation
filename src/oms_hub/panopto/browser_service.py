@@ -1,16 +1,22 @@
 from datetime import datetime, timedelta
+from typing import Protocol
 from urllib.parse import parse_qs, urlparse
 
 from oms_hub.panopto.browser_domain import (
     BrowserCommandKind,
     BrowserDisposition,
     BrowserRecording,
+    TranscriptExtraction,
 )
 from oms_hub.panopto.discovery import PollingPolicy
 from oms_hub.panopto.domain import PanoptoSession
 from oms_hub.panopto.matcher import RecordingMatcher
 from oms_hub.panopto.repository import PanoptoRepository
 from oms_hub.repositories import CatalogRepository
+
+
+class TranscriptIngestor(Protocol):
+    def ingest_transcript(self, recording_id: int, payload: bytes) -> int: ...
 
 
 def validate_viewer_url(viewer_url: str, session_id: str) -> None:
@@ -31,11 +37,13 @@ class PanoptoBrowserService:
         repository: PanoptoRepository,
         matcher: RecordingMatcher,
         policy: PollingPolicy,
+        pipeline: TranscriptIngestor | None = None,
     ):
         self.catalog = catalog
         self.repository = repository
         self.matcher = matcher
         self.policy = policy
+        self.pipeline = pipeline
 
     def queue_scheduled_scan(self, now: datetime) -> str | None:
         local_day = now.astimezone(self.policy.timezone).date()
@@ -127,3 +135,24 @@ class PanoptoBrowserService:
             )
         self.repository.mark_poll_success(now)
         return dispositions
+
+    def ingest_extraction(self, extraction: TranscriptExtraction) -> int:
+        if not extraction.complete:
+            raise ValueError("Transcript extraction is not complete")
+        if extraction.language != "English_USA":
+            raise ValueError("English (United States) transcript is required")
+        if extraction.line_count <= 0:
+            raise ValueError("Transcript line count is invalid")
+        validate_viewer_url(extraction.viewer_url, extraction.session_id)
+        recording = self.repository.get_recording(extraction.recording_id)
+        if recording.session_id != extraction.session_id:
+            raise ValueError("Transcript recording does not match the session")
+        source = self.repository.get_recording_source(extraction.recording_id)
+        if source != extraction.viewer_url:
+            raise ValueError("Transcript viewer URL does not match discovery")
+        if self.pipeline is None:
+            raise ValueError("Transcript pipeline is unavailable")
+        return self.pipeline.ingest_transcript(
+            extraction.recording_id,
+            extraction.text.encode("utf-8"),
+        )
