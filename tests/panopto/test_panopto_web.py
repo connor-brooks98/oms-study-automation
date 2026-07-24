@@ -1,5 +1,6 @@
 import hashlib
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -54,6 +55,22 @@ def test_setup_is_single_default_overview(tmp_path):
     assert "Check Panopto command" not in page.text
     assert "client secret" not in page.text.lower()
     assert "redirect" not in page.text.lower()
+
+
+def test_setup_waits_for_extension_launch_acknowledgement(tmp_path):
+    del tmp_path
+    setup_js = (
+        Path(__file__).parents[2]
+        / "src"
+        / "oms_hub"
+        / "web"
+        / "static"
+        / "setup.js"
+    ).read_text(encoding="utf-8")
+
+    assert "oms-study-hub:panopto-request-ack" in setup_js
+    assert "await launchInChrome(body.request_id)" in setup_js
+    assert "Reload this Setup page" in setup_js
 
 
 def test_one_click_test_returns_bridge_request_id(tmp_path):

@@ -20,3 +20,15 @@ test("Panopto content script downloads captions instead of scraping lines", () =
   assert.doesNotMatch(panoptoContent, /panopto:extract/);
   assert.doesNotMatch(panoptoContent, /readTranscript/);
 });
+
+test("immediate Hub requests acknowledge before running Panopto work", () => {
+  const immediateHandler = background.match(
+    /if \(message\?\.type === "panopto-request-now"\) \{([\s\S]*?)\n  \}/,
+  )?.[1] || "";
+
+  assert.match(immediateHandler, /sendResponse\(\{status: "accepted"\}\)/);
+  assert.match(immediateHandler, /pollCommands\(\)\.catch/);
+  assert.ok(
+    immediateHandler.indexOf("sendResponse") < immediateHandler.indexOf("pollCommands"),
+  );
+});

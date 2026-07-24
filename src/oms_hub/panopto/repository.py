@@ -116,6 +116,8 @@ class PanoptoRepository:
         kind: BrowserRequestKind,
         payload: dict[str, object],
         now_utc: datetime,
+        *,
+        retry_waiting: bool = False,
     ) -> str:
         encoded_payload = json.dumps(
             payload,
@@ -139,6 +141,11 @@ class PanoptoRepository:
                 )
             )
             if existing is not None:
+                if retry_waiting and existing.state == "waiting_for_captions":
+                    existing.state = "requested"
+                    existing.progress = "queued"
+                    existing.next_eligible_at = None
+                    existing.error_code = None
                 return existing.id
             db_session.add(
                 PanoptoBrowserRequestModel(

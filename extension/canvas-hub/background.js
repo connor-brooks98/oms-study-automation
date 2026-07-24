@@ -49,9 +49,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message?.type === "panopto-request-now") {
-    pollCommands().then(sendResponse)
-      .catch((error) => sendResponse({status: "error", error: String(error)}));
-    return true;
+    sendResponse({status: "accepted"});
+    pollCommands().catch(() => {});
+    return false;
   }
   return false;
 });

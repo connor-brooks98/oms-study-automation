@@ -13,10 +13,10 @@ export function createHubBridge({origin, send}) {
     ) {
       return false;
     }
-    await send({
+    const response = await send({
       type: "panopto-request-now",
       request_id: requestId,
     });
-    return true;
+    return response?.status === "accepted";
   };
 }

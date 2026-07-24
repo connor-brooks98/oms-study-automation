@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OMS Study Hub Companion",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Connects Canvas and Panopto to the local OMS Study Hub.",
   "permissions": ["alarms", "downloads", "storage"],
   "host_permissions": [

@@ -1,4 +1,5 @@
 const TEST_EVENT = "oms-study-hub:panopto-test";
+const ACK_EVENT = "oms-study-hub:panopto-request-ack";
 let polling = null;
 
 function label(value) {
@@ -64,6 +65,33 @@ function connectEvents() {
   };
 }
 
+function launchInChrome(requestId) {
+  return new Promise((resolve, reject) => {
+    let timeout;
+    function finish(error) {
+      clearTimeout(timeout);
+      window.removeEventListener(ACK_EVENT, acknowledge);
+      if (error) reject(error);
+      else resolve();
+    }
+    function acknowledge(event) {
+      if (event?.detail?.request_id !== requestId) return;
+      if (event.detail.accepted === true) finish();
+      else finish(new Error("The extension did not accept the Panopto request."));
+    }
+    window.addEventListener(ACK_EVENT, acknowledge);
+    timeout = setTimeout(
+      () => finish(new Error(
+        "The extension did not receive the request. Reload this Setup page after reloading the extension.",
+      )),
+      3000,
+    );
+    window.dispatchEvent(new CustomEvent(TEST_EVENT, {
+      detail: {request_id: requestId},
+    }));
+  });
+}
+
 async function testPanopto(button) {
   const feedback = document.querySelector("[data-panopto-feedback]");
   document.querySelectorAll("[data-panopto-test]").forEach((item) => {
@@ -77,9 +105,7 @@ async function testPanopto(button) {
     });
     if (!response.ok) throw new Error("The Hub could not start the test");
     const body = await response.json();
-    window.dispatchEvent(new CustomEvent(TEST_EVENT, {
-      detail: {request_id: body.request_id},
-    }));
+    await launchInChrome(body.request_id);
     if (feedback) feedback.textContent = "Panopto test launched in Chrome.";
   } catch (error) {
     if (feedback) feedback.textContent = error.message;
@@ -102,9 +128,7 @@ async function scanPanopto(button) {
     });
     if (!response.ok) throw new Error("The Hub could not start the scan");
     const body = await response.json();
-    window.dispatchEvent(new CustomEvent(TEST_EVENT, {
-      detail: {request_id: body.request_id},
-    }));
+    await launchInChrome(body.request_id);
     if (feedback) feedback.textContent = "Panopto scan launched in Chrome.";
   } catch (error) {
     if (feedback) feedback.textContent = error.message;

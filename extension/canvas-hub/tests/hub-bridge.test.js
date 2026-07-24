@@ -9,18 +9,34 @@ test("Hub bridge forwards only exact local test events", async () => {
   const sent = [];
   const bridge = createHubBridge({
     origin: "http://127.0.0.1:8765",
-    send: async (message) => sent.push(message),
+    send: async (message) => {
+      sent.push(message);
+      return {status: "accepted"};
+    },
   });
 
-  await bridge({
+  const accepted = await bridge({
     type: "oms-study-hub:panopto-test",
     detail: {request_id: REQUEST_ID},
   });
 
+  assert.equal(accepted, true);
   assert.deepEqual(sent, [{
     type: "panopto-request-now",
     request_id: REQUEST_ID,
   }]);
+});
+
+test("Hub bridge reports when the service worker does not accept the request", async () => {
+  const bridge = createHubBridge({
+    origin: "http://127.0.0.1:8765",
+    send: async () => ({status: "error"}),
+  });
+
+  assert.equal(await bridge({
+    type: "oms-study-hub:panopto-test",
+    detail: {request_id: REQUEST_ID},
+  }), false);
 });
 
 test("Hub bridge ignores wrong origins, event types, and request IDs", async () => {

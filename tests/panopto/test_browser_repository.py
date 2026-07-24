@@ -194,6 +194,34 @@ def test_waiting_caption_request_obeys_next_eligible_time(database):
     assert due.id == request_id
 
 
+def test_explicit_browser_request_retries_waiting_captions_immediately(database):
+    repository = PanoptoRepository(database)
+    request_id = repository.create_browser_request(
+        BrowserRequestKind.CONNECTION_TEST,
+        {},
+        NOW,
+    )
+    repository.wait_browser_request(
+        request_id,
+        "captions_pending",
+        NOW + timedelta(minutes=15),
+        NOW,
+    )
+
+    retried_id = repository.create_browser_request(
+        BrowserRequestKind.CONNECTION_TEST,
+        {},
+        NOW + timedelta(minutes=1),
+        retry_waiting=True,
+    )
+
+    assert retried_id == request_id
+    retried = repository.next_browser_request(NOW + timedelta(minutes=1))
+    assert retried is not None
+    assert retried.state == "requested"
+    assert retried.progress == "queued"
+
+
 def test_active_legacy_browser_commands_are_superseded(database):
     repository = PanoptoRepository(database)
     pending = repository.queue_browser_command(

@@ -64,6 +64,7 @@ class PanoptoBrowserService:
             BrowserRequestKind.SCAN,
             {"manual": True},
             now,
+            retry_waiting=True,
         )
 
     def queue_connection_test(self, now: datetime) -> str:
@@ -71,6 +72,7 @@ class PanoptoBrowserService:
             BrowserRequestKind.CONNECTION_TEST,
             {},
             now,
+            retry_waiting=True,
         )
 
     def queue_connection_check(self, now: datetime) -> str:
