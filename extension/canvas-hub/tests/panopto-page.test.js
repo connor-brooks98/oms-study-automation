@@ -6,6 +6,7 @@ import {
   isLoginRequired,
   readSharedRecordings,
   readTranscript,
+  waitForSharedRecordings,
 } from "../lib/panopto-page.js";
 
 const SESSION_ID = "8796399e-393c-4256-b6e4-b48f0150d156";
@@ -69,6 +70,28 @@ test("normalizes only bounded recording metadata", () => {
     folder_name: "Shared with Me",
     viewer_url: VIEWER,
   }]);
+});
+
+test("waits for the Shared with Me list to render", async () => {
+  const ready = sharedDocument();
+  let attempts = 0;
+  const delayed = node();
+  delayed.querySelector = (selector) => {
+    if (selector === "#listViewContainer") {
+      attempts += 1;
+      return attempts >= 3 ? ready.querySelector(selector) : null;
+    }
+    return null;
+  };
+
+  const result = await waitForSharedRecordings(
+    delayed,
+    {hostname: "lmunet.hosted.panopto.com"},
+    {maxAttempts: 5, settle: async () => {}},
+  );
+
+  assert.equal(result.length, 1);
+  assert.equal(attempts, 3);
 });
 
 test("rejects a recording link outside LMU Panopto", () => {

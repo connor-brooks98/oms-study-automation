@@ -1,6 +1,6 @@
 import * as defaultHub from "./hub-client.js";
 
-const HOME = "https://lmunet.hosted.panopto.com/Panopto/Pages/Home.aspx";
+const SHARED_WITH_ME = "https://lmunet.hosted.panopto.com/Panopto/Pages/Sessions/List.aspx#isSharedWithMe=true";
 const SAFE_REASONS = new Set([
   "panopto_login_required",
   "transcript_processing",
@@ -75,7 +75,7 @@ export async function runPanoptoCommand(command, dependencies = {}) {
   try {
     await hub.heartbeat("scanning");
     stage = "tab_open";
-    tab = await tabs.create({url: HOME, active: false});
+    tab = await tabs.create({url: SHARED_WITH_ME, active: false});
     stage = "tab_load";
     await waitForReady(tab.id);
     stage = "page_message";

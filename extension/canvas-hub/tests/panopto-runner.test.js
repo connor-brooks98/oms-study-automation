@@ -6,6 +6,7 @@ import {runPanoptoCommand} from "../lib/panopto-runner.js";
 const COMMAND = {id: "command-id", kind: "scan", payload: {manual: true}};
 const SESSION_ID = "8796399e-393c-4256-b6e4-b48f0150d156";
 const VIEWER = `https://lmunet.hosted.panopto.com/Panopto/Pages/Viewer.aspx?id=${SESSION_ID}`;
+const SHARED_WITH_ME = "https://lmunet.hosted.panopto.com/Panopto/Pages/Sessions/List.aspx#isSharedWithMe=true";
 
 function fakeTabs(messages = []) {
   return {
@@ -50,6 +51,7 @@ test("runner creates and removes only its own inactive tab", async () => {
   });
 
   assert.equal(tabs.created[0].active, false);
+  assert.equal(tabs.created[0].url, SHARED_WITH_ME);
   assert.deepEqual(tabs.removed, [42]);
   assert.deepEqual(tabs.updated, []);
   assert.equal(hub.results[0].status, "complete");

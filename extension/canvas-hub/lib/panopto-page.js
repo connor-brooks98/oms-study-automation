@@ -127,6 +127,46 @@ export function readSharedRecordings(document) {
   });
 }
 
+export async function waitForSharedRecordings(document, location, options = {}) {
+  const maxAttempts = options.maxAttempts ?? 120;
+  const settle = options.settle
+    ?? (() => new Promise((resolve) => setTimeout(resolve, 250)));
+  let navigationClicked = false;
+  let lastError;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (isLoginRequired(document, location)) {
+      throw new PanoptoPageError(
+        "panopto_login_required",
+        "Sign in to Panopto",
+      );
+    }
+    try {
+      return readSharedRecordings(document);
+    } catch (error) {
+      if (error.code !== "page_structure_changed") throw error;
+      lastError = error;
+    }
+    if (!navigationClicked) {
+      const control = [...document.querySelectorAll("a,button")].find(
+        (item) => (item.textContent || "")
+          .trim()
+          .replace(/\s+/g, " ")
+          .toLowerCase()
+          .includes("shared with me"),
+      );
+      if (control) {
+        control.click();
+        navigationClicked = true;
+      }
+    }
+    await settle();
+  }
+  throw lastError || new PanoptoPageError(
+    "page_structure_changed",
+    "Panopto recording list was not found",
+  );
+}
+
 export async function readTranscript(document, options = {}) {
   const pane = first(document, TRANSCRIPT_PANES);
   if (!pane) {
