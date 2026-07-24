@@ -135,6 +135,30 @@ test("loads a virtualized transcript until the ordered line set is stable", asyn
   );
 });
 
+test("stable rendered transcript does not require reaching the scroll bottom", async () => {
+  const pane = node({
+    many: {
+      "li.index-event": [
+        node({text: "00:01 First line"}),
+        node({text: "00:04 Second line"}),
+      ],
+    },
+  });
+  pane.scrollHeight = 100_000;
+  pane.clientHeight = 20;
+  const document = node({one: {"div.event-tab-scroll-pane": pane}});
+
+  const result = await readTranscript(document, {
+    maxScrolls: 5,
+    stablePasses: 2,
+    settle: async () => {},
+  });
+
+  assert.equal(result.complete, true);
+  assert.equal(result.line_count, 2);
+  assert.equal(result.text, "00:01 First line\n00:04 Second line");
+});
+
 test("empty transcript is reported as still processing", async () => {
   const pane = node({many: {"li.index-event": []}});
   const document = node({one: {"div.event-tab-scroll-pane": pane}});

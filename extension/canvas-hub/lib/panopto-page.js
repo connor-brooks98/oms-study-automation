@@ -187,9 +187,8 @@ export async function readTranscript(document, options = {}) {
       .map((line) => (line.textContent || "").trim())
       .filter(Boolean);
     const signature = latest.join("\n");
-    const bottom = pane.scrollTop + pane.clientHeight >= pane.scrollHeight;
     stable = signature && signature === prior ? stable + 1 : 0;
-    if (bottom && stable >= requiredStable) {
+    if (stable >= requiredStable) {
       return {
         complete: true,
         line_count: latest.length,
