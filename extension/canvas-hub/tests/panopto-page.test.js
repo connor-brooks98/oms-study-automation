@@ -4,8 +4,9 @@ import test from "node:test";
 import {
   PanoptoPageError,
   isLoginRequired,
+  newestSharedRecording,
+  readCaptionDownload,
   readSharedRecordings,
-  readTranscript,
   waitForSharedRecordings,
 } from "../lib/panopto-page.js";
 
@@ -19,6 +20,7 @@ function node({text = "", attrs = {}, one = {}, many = {}} = {}) {
     scrollHeight: 100,
     clientHeight: 20,
     getAttribute(name) { return attrs[name] ?? null; },
+    click() {},
     querySelector(selector) { return one[selector] ?? null; },
     querySelectorAll(selector) { return many[selector] ?? []; },
   };
@@ -107,64 +109,68 @@ test("rejects a recording link outside LMU Panopto", () => {
   );
 });
 
-test("loads a virtualized transcript until the ordered line set is stable", async () => {
-  let pass = 0;
-  const pane = node();
-  pane.scrollHeight = 120;
-  pane.clientHeight = 20;
-  pane.querySelectorAll = () => {
-    pass += 1;
-    const texts = pass < 2
-      ? ["00:01 First line"]
-      : ["00:01 First line", "00:04 Second line", "00:08 Third line"];
-    return texts.map((text) => node({text}));
-  };
-  const document = node({one: {"div.event-tab-scroll-pane": pane}});
+test("selects newest shared recording by created time", () => {
+  const newest = newestSharedRecording([
+    {session_id: "old", created_utc: "2026-07-24T12:00:00.000Z"},
+    {session_id: "new", created_utc: "2026-07-24T13:00:00.000Z"},
+  ]);
+  assert.equal(newest.session_id, "new");
+});
 
-  const result = await readTranscript(document, {
-    maxScrolls: 20,
-    stablePasses: 3,
-    settle: async () => {},
+test("returns the built-in English USA caption download", () => {
+  const link = node({
+    text: "Download Captions",
+    attrs: {
+      href: "https://lmunet.hosted.panopto.com/Panopto/caption.txt",
+      "data-language": "English_USA",
+    },
   });
+  const result = readCaptionDownload(
+    node({many: {"a,button": [link]}}),
+    {origin: "https://lmunet.hosted.panopto.com"},
+  );
 
-  assert.equal(result.complete, true);
-  assert.equal(result.line_count, 3);
+  assert.equal(result.status, "ready");
+  assert.equal(result.language, "English_USA");
   assert.equal(
-    result.text,
-    "00:01 First line\n00:04 Second line\n00:08 Third line",
+    result.download_url,
+    "https://lmunet.hosted.panopto.com/Panopto/caption.txt",
   );
 });
 
-test("stable rendered transcript does not require reaching the scroll bottom", async () => {
-  const pane = node({
-    many: {
-      "li.index-event": [
-        node({text: "00:01 First line"}),
-        node({text: "00:04 Second line"}),
-      ],
-    },
-  });
-  pane.scrollHeight = 100_000;
-  pane.clientHeight = 20;
-  const document = node({one: {"div.event-tab-scroll-pane": pane}});
-
-  const result = await readTranscript(document, {
-    maxScrolls: 5,
-    stablePasses: 2,
-    settle: async () => {},
-  });
-
-  assert.equal(result.complete, true);
-  assert.equal(result.line_count, 2);
-  assert.equal(result.text, "00:01 First line\n00:04 Second line");
+test("missing caption control remains eligible for polling", () => {
+  assert.deepEqual(
+    readCaptionDownload(node(), {origin: "https://lmunet.hosted.panopto.com"}),
+    {status: "captions_pending"},
+  );
 });
 
-test("empty transcript is reported as still processing", async () => {
-  const pane = node({many: {"li.index-event": []}});
-  const document = node({one: {"div.event-tab-scroll-pane": pane}});
+test("rejects caption URLs outside LMU Panopto", () => {
+  const link = node({
+    text: "Download Captions English (United States)",
+    attrs: {href: "https://evil.example/caption.txt"},
+  });
 
-  await assert.rejects(
-    readTranscript(document, {settle: async () => {}}),
-    (error) => error.code === "transcript_processing",
+  assert.throws(
+    () => readCaptionDownload(
+      node({many: {"a,button": [link]}}),
+      {origin: "https://lmunet.hosted.panopto.com"},
+    ),
+    (error) => error.code === "unsafe_caption_download",
+  );
+});
+
+test("rejects script caption URLs", () => {
+  const link = node({
+    text: "Download Captions English (United States)",
+    attrs: {href: "javascript:alert(1)"},
+  });
+
+  assert.throws(
+    () => readCaptionDownload(
+      node({many: {"a,button": [link]}}),
+      {origin: "https://lmunet.hosted.panopto.com"},
+    ),
+    (error) => error.code === "unsafe_caption_download",
   );
 });

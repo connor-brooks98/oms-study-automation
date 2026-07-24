@@ -14,9 +14,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "panopto:discover") {
       return {recordings: await sharedWithMe(adapter)};
     }
-    if (message?.type === "panopto:extract") {
-      const transcript = await adapter.readTranscript(document);
-      return {language: "English_USA", ...transcript};
+    if (message?.type === "panopto:caption-download") {
+      return adapter.waitForCaptionDownload(document, location);
     }
     throw Object.assign(new Error("Unsupported Panopto page command"), {
       code: "page_structure_changed",

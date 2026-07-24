@@ -4,15 +4,6 @@ const TITLE_LINKS = [
   ".item-title.title-link a.detail-title",
   "a[href*='/Panopto/Pages/Viewer.aspx?id=']",
 ];
-const TRANSCRIPT_PANES = [
-  "div.event-tab-scroll-pane",
-  "[data-testid='transcript-scroll-pane']",
-];
-const TRANSCRIPT_LINES = [
-  "li.index-event",
-  "[data-testid='transcript-line']",
-];
-
 export class PanoptoPageError extends Error {
   constructor(code, message) {
     super(message);
@@ -167,49 +158,119 @@ export async function waitForSharedRecordings(document, location, options = {}) 
   );
 }
 
-export async function readTranscript(document, options = {}) {
-  const pane = first(document, TRANSCRIPT_PANES);
-  if (!pane) {
+export function newestSharedRecording(recordings) {
+  if (!Array.isArray(recordings) || !recordings.length) {
     throw new PanoptoPageError(
-      "page_structure_changed",
-      "Panopto transcript panel was not found",
+      "no_shared_recordings",
+      "No shared Panopto recordings were found",
     );
   }
-  const maxScrolls = options.maxScrolls ?? 200;
-  const requiredStable = options.stablePasses ?? 3;
+  return recordings.reduce((newest, current) => {
+    const currentTime = Date.parse(current.created_utc);
+    const newestTime = Date.parse(newest.created_utc);
+    if (!Number.isFinite(currentTime) || !Number.isFinite(newestTime)) {
+      throw new PanoptoPageError(
+        "page_structure_changed",
+        "Panopto recording time is invalid",
+      );
+    }
+    return currentTime > newestTime ? current : newest;
+  });
+}
+
+function normalized(value) {
+  return (value || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function isEnglishUsa(control) {
+  const metadata = [
+    control.getAttribute("data-language"),
+    control.getAttribute("data-language-code"),
+    control.getAttribute("lang"),
+    control.getAttribute("aria-label"),
+    control.getAttribute("title"),
+    control.textContent,
+  ].map(normalized).join(" ");
+  return (
+    metadata.includes("english_usa")
+    || metadata.includes("english (united states)")
+    || metadata.includes("en-us")
+  );
+}
+
+function isCaptionControl(control) {
+  const label = normalized([
+    control.textContent,
+    control.getAttribute("aria-label"),
+    control.getAttribute("title"),
+  ].filter(Boolean).join(" "));
+  return label.includes("download caption");
+}
+
+function captionUrl(control, location) {
+  const raw = control.getAttribute("href")
+    || control.getAttribute("data-download-url")
+    || control.getAttribute("data-caption-download-url");
+  if (!raw) return null;
+  let url;
+  try {
+    url = new URL(raw, location.origin);
+  } catch {
+    throw new PanoptoPageError(
+      "unsafe_caption_download",
+      "Caption download URL is invalid",
+    );
+  }
+  if (
+    url.protocol !== "https:"
+    || url.hostname !== "lmunet.hosted.panopto.com"
+  ) {
+    throw new PanoptoPageError(
+      "unsafe_caption_download",
+      "Caption download is outside LMU Panopto",
+    );
+  }
+  return url.toString();
+}
+
+export function readCaptionDownload(document, location) {
+  const controls = [...document.querySelectorAll("a,button")];
+  for (const control of controls) {
+    if (!isCaptionControl(control) || !isEnglishUsa(control)) continue;
+    const downloadUrl = captionUrl(control, location);
+    if (!downloadUrl) continue;
+    const requestedName = control.getAttribute("download") || "";
+    const filename = requestedName.toLowerCase().endsWith(".txt")
+      ? requestedName
+      : "captions.txt";
+    return {
+      status: "ready",
+      language: "English_USA",
+      download_url: downloadUrl,
+      filename,
+    };
+  }
+  return {status: "captions_pending"};
+}
+
+export async function waitForCaptionDownload(document, location, options = {}) {
+  const maxAttempts = options.maxAttempts ?? 8;
   const settle = options.settle
     ?? (() => new Promise((resolve) => setTimeout(resolve, 100)));
-  let prior = "";
-  let stable = 0;
-  let latest = [];
-  for (let pass = 0; pass < maxScrolls; pass += 1) {
-    latest = all(pane, TRANSCRIPT_LINES)
-      .map((line) => (line.textContent || "").trim())
-      .filter(Boolean);
-    const signature = latest.join("\n");
-    stable = signature && signature === prior ? stable + 1 : 0;
-    if (stable >= requiredStable) {
-      return {
-        complete: true,
-        line_count: latest.length,
-        text: signature,
-      };
+  let revealed = false;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const result = readCaptionDownload(document, location);
+    if (result.status === "ready") return result;
+    if (!revealed) {
+      const control = [...document.querySelectorAll("a,button")].find(
+        (item) => isCaptionControl(item) && !captionUrl(item, location),
+      );
+      if (control) {
+        control.click();
+        revealed = true;
+      }
     }
-    prior = signature;
-    pane.scrollTop = Math.min(
-      pane.scrollTop + Math.max(pane.clientHeight, 1),
-      Math.max(pane.scrollHeight - pane.clientHeight, 0),
-    );
     await settle();
   }
-  if (!latest.length) {
-    throw new PanoptoPageError(
-      "transcript_processing",
-      "Panopto transcript is still processing",
-    );
-  }
-  throw new PanoptoPageError(
-    "transcript_incomplete",
-    "Panopto transcript did not load completely",
-  );
+  return {status: "captions_pending"};
 }
