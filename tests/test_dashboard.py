@@ -131,5 +131,5 @@ def test_dashboard_shows_panopto_state_and_controls(tmp_path):
 
     assert response.status_code == 200
     assert "Panopto transcripts" in response.text
-    assert 'href="/panopto/setup"' in response.text
+    assert 'href="/setup#panopto-detail"' in response.text
     assert 'href="/panopto/review"' in response.text

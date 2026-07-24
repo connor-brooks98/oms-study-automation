@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from oms_hub.app import create_app
 from oms_hub.config import Settings
-from oms_hub.panopto.browser_domain import BrowserCommandKind
+from oms_hub.panopto.browser_domain import BrowserRequestKind
 
 
 class MemorySecrets:
@@ -40,29 +40,58 @@ def panopto_client_for(tmp_path):
     return TestClient(app), app, prompt_path
 
 
-def test_setup_has_browser_controls_and_no_api_credentials(tmp_path):
+def test_setup_is_single_default_overview(tmp_path):
     client, _, _ = panopto_client_for(tmp_path)
 
-    page = client.get("/panopto/setup")
+    page = client.get("/setup")
 
     assert page.status_code == 200
+    assert "Setup Center" in page.text
+    assert "Canvas" in page.text
+    assert "Panopto" in page.text
     assert "Sign in to Panopto" in page.text
-    assert "Check connection" in page.text
+    assert "Test Panopto Connection" in page.text
+    assert "Check Panopto command" not in page.text
     assert "client secret" not in page.text.lower()
     assert "redirect" not in page.text.lower()
 
 
-def test_check_connection_queues_browser_command(tmp_path):
+def test_one_click_test_returns_bridge_request_id(tmp_path):
     client, app, _ = panopto_client_for(tmp_path)
 
-    response = client.post("/panopto/browser/check", follow_redirects=False)
+    response = client.post("/setup/panopto/test")
 
-    assert response.status_code == 303
-    command = app.state.panopto_repository.claim_browser_command(
-        datetime(2026, 7, 23, 14, tzinfo=UTC)
+    assert response.status_code == 200
+    request_id = response.json()["request_id"]
+    request = app.state.panopto_repository.get_browser_request(
+        request_id
     )
-    assert command is not None
-    assert command.kind is BrowserCommandKind.CONNECTION_CHECK
+    assert request is not None
+    assert request.kind is BrowserRequestKind.CONNECTION_TEST
+
+
+def test_setup_status_and_event_stream_are_safe(tmp_path):
+    client, _, _ = panopto_client_for(tmp_path)
+
+    status = client.get("/api/setup/status")
+    stream = client.get("/api/setup/events?once=true")
+
+    assert status.status_code == 200
+    assert set(status.json()) == {"canvas", "panopto", "openai", "prompt"}
+    assert "api-key" not in status.text.lower()
+    assert "bearer" not in status.text.lower()
+    assert stream.status_code == 200
+    assert stream.headers["content-type"].startswith("text/event-stream")
+    assert "event: status" in stream.text
+
+
+def test_legacy_setup_routes_redirect_into_setup_center(tmp_path):
+    client, _, _ = panopto_client_for(tmp_path)
+
+    response = client.get("/panopto/setup", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/setup?detail=panopto"
 
 
 def test_scan_now_queues_instead_of_blocking_on_network(tmp_path):
@@ -71,12 +100,12 @@ def test_scan_now_queues_instead_of_blocking_on_network(tmp_path):
     response = client.post("/panopto/scan", follow_redirects=False)
 
     assert response.status_code == 303
-    command = app.state.panopto_repository.claim_browser_command(
+    request = app.state.panopto_repository.next_browser_request(
         datetime(2026, 7, 23, 14, tzinfo=UTC)
     )
-    assert command is not None
-    assert command.kind is BrowserCommandKind.SCAN
-    assert command.payload == {"manual": True}
+    assert request is not None
+    assert request.kind is BrowserRequestKind.SCAN
+    assert request.payload == {"manual": True}
 
 
 def test_enable_requires_browser_acceptance_prompt_and_openai(tmp_path):

@@ -2,8 +2,7 @@ from fastapi.testclient import TestClient
 
 from oms_hub.app import create_app
 from oms_hub.canvas.classifier import classify_attachment
-from oms_hub.canvas.domain import CatalogMatch
-from oms_hub.canvas.domain import CourseMappingInput
+from oms_hub.canvas.domain import CatalogMatch, CourseMappingInput
 from oms_hub.canvas.pairing import PairingService
 from oms_hub.config import Settings
 from oms_hub.files.atomic import sha256_file
@@ -29,7 +28,7 @@ def client_for(tmp_path):
 
 def test_setup_shows_ordered_readiness_checks(tmp_path) -> None:
     client, _ = client_for(tmp_path)
-    response = client.get("/canvas/setup")
+    response = client.get("/setup?detail=canvas")
     assert response.status_code == 200
     labels = [
         "Extension paired",
@@ -99,7 +98,7 @@ def test_automatic_processing_can_be_paused(tmp_path) -> None:
     response = client.post("/canvas/disable", follow_redirects=False)
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/canvas/setup"
+    assert response.headers["location"] == "/setup?detail=canvas"
     assert app.state.canvas_repository.connection().auto_process is False
 
 
@@ -107,7 +106,7 @@ def test_setup_shows_pause_control_while_automatic_processing_is_enabled(tmp_pat
     client, app = client_for(tmp_path)
     app.state.canvas_repository.set_setup(auto_process=True)
 
-    response = client.get("/canvas/setup")
+    response = client.get("/setup?detail=canvas")
 
     assert response.status_code == 200
     assert 'action="/canvas/disable"' in response.text
@@ -159,11 +158,21 @@ def test_setup_shows_per_course_scan_controls(tmp_path) -> None:
     ]
     app.state.canvas_repository.set_course_candidates(candidates)
 
-    response = client.get("/canvas/setup")
+    response = client.get("/setup?detail=canvas")
 
     assert response.status_code == 200
     assert 'name="course_neuro_enabled"' in response.text
     assert "Include Neuro in scans and processing" in response.text
+
+
+def test_navigation_has_one_consolidated_setup_entry(tmp_path) -> None:
+    client, _ = client_for(tmp_path)
+
+    response = client.get("/")
+
+    assert 'href="/setup"' in response.text
+    assert 'href="/canvas/setup"' not in response.text
+    assert 'href="/panopto/setup"' not in response.text
 
 
 def failed_revision(app, tmp_path):

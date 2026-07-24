@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Setup Center · OMS Study Hub{% endblock %}
+{% block content %}
+<div class="setup-heading">
+  <div><p class="eyebrow">Connections and automation</p><h1>Setup Center</h1></div>
+  <span class="live-indicator"><span></span> Live status</span>
+</div>
+<p class="setup-intro">Canvas, Panopto, OpenAI, and your transcript prompt stay together here. This overview always opens first.</p>
+
+<section class="service-grid" aria-label="Service overview">
+  <article class="service-card" data-service="canvas">
+    <div class="service-card-heading"><h2>Canvas</h2><span class="status" data-status>{{ snapshot.canvas.state.replace('_', ' ').title() }}</span></div>
+    <p>Lecture files and practice questions</p>
+    <p class="service-meta" data-meta>{{ 'Automatic processing on' if snapshot.canvas.automatic else 'Automatic processing paused' }}</p>
+    <a href="#canvas-detail">Review Canvas setup</a>
+  </article>
+  <article class="service-card" data-service="panopto">
+    <div class="service-card-heading"><h2>Panopto</h2><span class="status" data-status>{{ snapshot.panopto.state.replace('_', ' ').title() }}</span></div>
+    <p>Shared recordings and caption downloads</p>
+    <p class="service-meta" data-meta>{{ snapshot.panopto.progress.replace('_', ' ').title() if snapshot.panopto.progress else 'Ready for a connection test' }}</p>
+    <a href="{{ panopto_home }}" target="_blank" rel="noopener">Sign in to Panopto</a>
+    <button type="button" class="primary" data-panopto-test>Test Panopto Connection</button>
+    <p class="inline-feedback" data-panopto-feedback aria-live="polite"></p>
+  </article>
+  <article class="service-card" data-service="openai">
+    <div class="service-card-heading"><h2>OpenAI</h2><span class="status" data-status>{{ snapshot.openai.state.replace('_', ' ').title() }}</span></div>
+    <p>Automatic transcript cleaning with Terra</p>
+    <p class="service-meta" data-meta>{{ 'Credential configured' if openai_credential else 'Credential needs attention' }}</p>
+  </article>
+  <article class="service-card" data-service="prompt">
+    <div class="service-card-heading"><h2>Cleaning prompt</h2><span class="status" data-status>{{ prompt_state.replace('_', ' ').title() }}</span></div>
+    <p class="service-meta prompt-path" data-meta>{{ prompt_path }}</p>
+    <a href="#panopto-detail">Review prompt controls</a>
+  </article>
+</section>
+
+<details id="canvas-detail" class="setup-detail" {% if detail == 'canvas' %}open{% endif %}>
+  <summary><span><strong>Canvas setup</strong><small>Pairing, courses, folders, and automation</small></span></summary>
+  <div class="detail-body">
+    <ol class="setup-checks">
+    {% for label, complete in canvas_checks %}<li class="step step-{{ 'complete' if complete else 'waiting' }}"><strong>{{ label }}</strong> <span class="status {{ 'complete' if complete else '' }}">{{ 'Ready' if complete else 'Not ready' }}</span></li>{% endfor %}
+    </ol>
+    <section class="card"><h3>1. Pair the companion</h3>
+    {% if request.cookies.get('canvas_pair_code') %}<p class="pair-code">{{ request.cookies.get('canvas_pair_code') }}</p><p>Enter this code in the extension within five minutes.</p>{% else %}<form method="post" action="/canvas/pair-code"><button>Generate pairing code</button></form>{% endif %}
+    </section>
+    <section class="card"><h3>2. Map the eight courses</h3>
+    {% if not candidates %}<p>Pair the extension to fetch your active Canvas courses.</p>{% else %}<form method="post" action="/canvas/mappings">
+    {% for subject, field in subject_fields.items() %}
+    <label>{{ subject }}<select name="{{ field }}" required><option value="">Choose course</option>{% for course in candidates %}<option value="{{ course.course_id }}" {% if mapped.get(subject) == course.course_id %}selected{% endif %}>{{ course.course_name }} — {{ course.course_code }}</option>{% endfor %}</select></label>
+    <label class="check-label"><input type="checkbox" name="{{ field }}_enabled" {% if active.get(subject, true) %}checked{% endif %}> Include {{ subject }} in scans and processing</label>
+    {% endfor %}<button>Save course mappings</button></form>{% endif %}
+    </section>
+    <section class="card"><h3>3. Confirm folders</h3><form method="post" action="/canvas/paths"><label>Local OMS II folder<input name="study_root" value="{{ study_default }}" required></label><label>iCloud Drive root<input name="icloud_root" list="icloud-roots" value="{{ canvas_connection.icloud_staging_root or '' }}" required></label><datalist id="icloud-roots">{% for root in icloud_roots %}<option value="{{ root }}">{% endfor %}</datalist><button>Verify and save folders</button></form></section>
+    <section class="card"><h3>4. Preview and automate</h3><form method="post" action="/canvas/scan-now"><button>Request discovery scan</button></form><p>Last scan: {{ canvas_connection.last_successful_scan or 'Not run yet' }} · {{ canvas_connection.last_scan_item_count }} items</p>{% if canvas_connection.last_scan_item_count > 0 %}<form method="post" action="/canvas/confirm-preview"><button>Discovery results look correct</button></form>{% endif %}{% if canvas_connection.auto_process %}<form method="post" action="/canvas/disable"><button class="danger">Pause automatic processing</button></form>{% else %}<form method="post" action="/canvas/enable"><button>Enable automatic processing</button></form>{% endif %}</section>
+  </div>
+</details>
+
+<details id="panopto-detail" class="setup-detail" {% if detail == 'panopto' %}open{% endif %}>
+  <summary><span><strong>Panopto and transcript setup</strong><small>Sign-in, testing, prompt approval, and polling</small></span></summary>
+  <div class="detail-body">
+    <section class="card"><h3>Browser connection</h3><p>The companion uses the LMU Panopto session already in Chrome. Cookies and credentials stay in Chrome.</p><p><a href="{{ panopto_home }}" target="_blank" rel="noopener">Sign in to Panopto</a></p><button type="button" class="primary" data-panopto-test>Test Panopto Connection</button></section>
+    <section class="card"><h3>Cleaning prompt</h3><p class="prompt-path">{{ prompt_path }}</p><p>Status: <span class="status {{ 'complete' if prompt_state == 'approved' else 'needs_review' }}">{{ prompt_state.replace('_', ' ').title() }}</span></p><form method="post" action="/panopto/prompt/initialize"><button>Initialize prompt if missing</button></form><form method="post" action="/panopto/prompt/approve"><button>Approve current prompt</button></form></section>
+    <section class="card"><h3>Automation</h3><p>Weekdays 9:20 AM–7:00 PM Eastern, every 15 minutes. Missing captions remain in the polling lineup.</p><form method="post" action="/panopto/scan"><button>Scan Shared with Me now</button></form>{% if panopto_connection.enabled %}<form method="post" action="/panopto/pause"><button class="danger">Pause automatic discovery</button></form>{% else %}<form method="post" action="/panopto/enable"><button>Enable automatic discovery</button></form>{% endif %}</section>
+  </div>
+</details>
+<script src="/static/setup.js" defer></script>
+{% endblock %}

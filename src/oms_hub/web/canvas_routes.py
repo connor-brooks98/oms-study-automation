@@ -59,41 +59,15 @@ def _likely_icloud_roots() -> list[str]:
 
 
 @router.get("/setup", response_class=HTMLResponse)
-def setup(request: Request) -> HTMLResponse:
-    repository = _repo(request)
-    connection = repository.connection()
-    mappings = repository.list_course_mappings()
-    checks = [
-        ("Extension paired", bool(connection.credential_fingerprint)),
-        ("Eight courses mapped", len(mappings) == 8),
-        ("Local study folder confirmed", bool(connection.study_root)),
-        ("iCloud staging folder confirmed", bool(connection.icloud_staging_root)),
-        ("Discovery scan completed", bool(connection.last_successful_scan)),
-        ("Discovery preview confirmed", connection.discovery_confirmed),
-        ("Automatic processing enabled", connection.auto_process),
-    ]
-    mapped = {item.subject: item.course_id for item in mappings}
-    active = {item.subject: item.enabled for item in mappings}
-    return templates.TemplateResponse(
-        request=request,
-        name="canvas_setup.html",
-        context={
-            "connection": connection,
-            "checks": checks,
-            "subject_fields": SUBJECT_FIELDS,
-            "candidates": repository.list_course_candidates(),
-            "mapped": mapped,
-            "active": active,
-            "icloud_roots": _likely_icloud_roots(),
-            "study_default": connection.study_root or r"%USERPROFILE%\Documents\OMS II",
-        },
-    )
+def setup(request: Request) -> RedirectResponse:
+    del request
+    return RedirectResponse("/setup?detail=canvas", status_code=307)
 
 
 @router.post("/pair-code")
 def create_pair_code(request: Request) -> RedirectResponse:
     code = _pairing(request).create_code()
-    response = RedirectResponse("/canvas/setup", status_code=303)
+    response = RedirectResponse("/setup?detail=canvas", status_code=303)
     response.set_cookie(
         "canvas_pair_code",
         code.value,
@@ -124,7 +98,7 @@ async def save_mappings(request: Request) -> RedirectResponse:
             )
         )
     _repo(request).replace_course_mappings(values)
-    return RedirectResponse("/canvas/setup", status_code=303)
+    return RedirectResponse("/setup?detail=canvas", status_code=303)
 
 
 @router.post("/paths")
@@ -138,13 +112,13 @@ def save_paths(
     _write_probe(local)
     _write_probe(cloud)
     _repo(request).set_setup(study_root=str(local), icloud_staging_root=str(cloud))
-    return RedirectResponse("/canvas/setup", status_code=303)
+    return RedirectResponse("/setup?detail=canvas", status_code=303)
 
 
 @router.post("/scan-now")
 def scan_now(request: Request) -> RedirectResponse:
     _repo(request).request_scan()
-    return RedirectResponse("/canvas/setup", status_code=303)
+    return RedirectResponse("/setup?detail=canvas", status_code=303)
 
 
 @router.post("/confirm-preview")
@@ -156,7 +130,7 @@ def confirm_preview(request: Request) -> RedirectResponse:
             detail="Complete a discovery scan that finds at least one item first",
         )
     _repo(request).set_setup(discovery_confirmed=True)
-    return RedirectResponse("/canvas/setup", status_code=303)
+    return RedirectResponse("/setup?detail=canvas", status_code=303)
 
 
 @router.post("/enable")
@@ -175,19 +149,19 @@ def enable(request: Request) -> RedirectResponse:
     if not ready:
         raise HTTPException(status_code=409, detail="Complete every setup step first")
     repository.set_setup(auto_process=True)
-    return RedirectResponse("/canvas/setup", status_code=303)
+    return RedirectResponse("/setup?detail=canvas", status_code=303)
 
 
 @router.post("/disable")
 def disable(request: Request) -> RedirectResponse:
     _repo(request).set_setup(auto_process=False)
-    return RedirectResponse("/canvas/setup", status_code=303)
+    return RedirectResponse("/setup?detail=canvas", status_code=303)
 
 
 @router.post("/revoke")
 def revoke(request: Request) -> RedirectResponse:
     _pairing(request).revoke()
-    return RedirectResponse("/canvas/setup", status_code=303)
+    return RedirectResponse("/setup?detail=canvas", status_code=303)
 
 
 @router.get("/review", response_class=HTMLResponse)

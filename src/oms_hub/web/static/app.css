@@ -51,7 +51,90 @@ button { width: fit-content; padding: .55rem .8rem; cursor: pointer; }
 .issues > li { margin: 1rem 0; padding: 1rem; background: white; }
 .review-item { padding: 1rem 0; border-bottom: 1px solid #d9e0ea; }
 code { overflow-wrap: anywhere; }
+.setup-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.setup-heading h1 { margin: .15rem 0; }
+.eyebrow {
+  margin: 0;
+  color: #53627a;
+  font-size: .78rem;
+  font-weight: 750;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.setup-intro { max-width: 48rem; color: #53627a; }
+.live-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  color: #34503d;
+  font-size: .9rem;
+  font-weight: 700;
+}
+.live-indicator span {
+  width: .65rem;
+  height: .65rem;
+  border-radius: 50%;
+  background: #2da44e;
+  box-shadow: 0 0 0 4px #d5f4df;
+}
+.service-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+.service-card {
+  min-height: 10rem;
+  padding: 1.15rem;
+  border: 1px solid #dce3ec;
+  border-radius: .75rem;
+  background: white;
+  box-shadow: 0 2px 8px rgb(31 47 73 / 6%);
+}
+.service-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+}
+.service-card h2 { margin: 0; font-size: 1.2rem; }
+.service-card .primary { margin-top: .85rem; }
+.service-meta { min-height: 1.3rem; color: #53627a; }
+.prompt-path { overflow-wrap: anywhere; }
+.inline-feedback { min-height: 1.2rem; color: #34503d; }
+.setup-detail {
+  margin: 1rem 0;
+  border: 1px solid #d7dfe9;
+  border-radius: .7rem;
+  background: #edf1f7;
+}
+.setup-detail > summary {
+  padding: 1rem 1.15rem;
+  cursor: pointer;
+}
+.setup-detail > summary span { display: inline-grid; gap: .15rem; }
+.setup-detail > summary small { color: #53627a; }
+.detail-body { padding: 0 1rem 1rem; }
+.check-label { display: flex; grid-template-columns: auto 1fr; align-items: center; }
+.check-label input { margin: 0; }
+button.primary {
+  border: 1px solid #174ea6;
+  border-radius: .35rem;
+  color: white;
+  background: #174ea6;
+  font-weight: 700;
+}
+button:disabled { cursor: wait; opacity: .65; }
 @media (max-width: 720px) {
+  header { align-items: flex-start; gap: .75rem; }
+  header nav { text-align: right; }
+  .service-grid { grid-template-columns: 1fr; }
+  .setup-heading { align-items: flex-start; }
   table, thead, tbody, tr, th, td { display: block; }
   thead { position: absolute; left: -9999px; }
   td { border-bottom: 0; }

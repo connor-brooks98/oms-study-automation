@@ -46,55 +46,21 @@ def _secret_present(request: Request, key: str) -> bool:
 
 
 @router.get("/setup", response_class=HTMLResponse)
-def setup(request: Request) -> HTMLResponse:
-    connection = _repository(request).connection()
-    try:
-        current_prompt = _prompt(request).inspect()
-        prompt_state = (
-            "Approved"
-            if current_prompt.sha256 == connection.approved_prompt_sha256
-            else "Changed or not approved"
-        )
-        current_hash = current_prompt.sha256
-    except PromptError:
-        prompt_state = "Not readable"
-        current_hash = None
-    return templates.TemplateResponse(
-        request=request,
-        name="panopto_setup.html",
-        context={
-            "connection": connection,
-            "panopto_home": (
-                f"{request.app.state.settings.panopto_tenant_url}"
-                "/Panopto/Pages/Home.aspx"
-            ),
-            "openai_credential": _secret_present(request, "openai-api-key"),
-            "prompt_path": _prompt(request).path,
-            "prompt_state": prompt_state,
-            "current_hash": current_hash,
-        },
-    )
+def setup(request: Request) -> RedirectResponse:
+    del request
+    return RedirectResponse("/setup?detail=panopto", status_code=307)
 
 
 @router.post("/browser/check")
 def check_browser(request: Request) -> RedirectResponse:
     _service(request).queue_connection_check(datetime.now(UTC))
-    return RedirectResponse("/panopto/setup", status_code=303)
+    return RedirectResponse("/setup?detail=panopto", status_code=303)
 
 
 @router.post("/browser/acceptance")
 def acceptance(request: Request) -> RedirectResponse:
-    settings = request.app.state.settings
-    session_id = settings.panopto_acceptance_session_id
-    viewer_url = (
-        f"{settings.panopto_tenant_url}/Panopto/Pages/Viewer.aspx?id={session_id}"
-    )
-    _service(request).queue_acceptance(
-        datetime.now(UTC),
-        session_id,
-        viewer_url,
-    )
-    return RedirectResponse("/panopto/setup", status_code=303)
+    _service(request).queue_connection_test(datetime.now(UTC))
+    return RedirectResponse("/setup?detail=panopto", status_code=303)
 
 
 @router.post("/prompt/initialize")
@@ -103,7 +69,7 @@ def initialize_prompt(request: Request) -> RedirectResponse:
         _prompt(request).initialize()
     except OSError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    return RedirectResponse("/panopto/setup", status_code=303)
+    return RedirectResponse("/setup?detail=panopto", status_code=303)
 
 
 @router.post("/prompt/approve")
@@ -114,7 +80,7 @@ def approve_prompt(request: Request) -> RedirectResponse:
         raise HTTPException(status_code=409, detail=str(error)) from error
     _repository(request).approve_prompt(prompt.sha256, str(_prompt(request).path))
     _prompt(request).approved_sha256 = prompt.sha256
-    return RedirectResponse("/panopto/setup", status_code=303)
+    return RedirectResponse("/setup?detail=panopto", status_code=303)
 
 
 @router.post("/enable")
@@ -137,19 +103,19 @@ def enable(request: Request) -> RedirectResponse:
             detail="Complete every Panopto setup step first",
         )
     _repository(request).set_enabled(True)
-    return RedirectResponse("/panopto/setup", status_code=303)
+    return RedirectResponse("/setup?detail=panopto", status_code=303)
 
 
 @router.post("/pause")
 def pause(request: Request) -> RedirectResponse:
     _repository(request).set_enabled(False)
-    return RedirectResponse("/panopto/setup", status_code=303)
+    return RedirectResponse("/setup?detail=panopto", status_code=303)
 
 
 @router.post("/scan")
 def scan(request: Request) -> RedirectResponse:
     _service(request).queue_manual_scan(datetime.now(UTC))
-    return RedirectResponse("/panopto/setup", status_code=303)
+    return RedirectResponse("/setup?detail=panopto", status_code=303)
 
 
 @router.get("/review", response_class=HTMLResponse)

@@ -31,6 +31,7 @@ from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.web.canvas_routes import router as canvas_web_router
 from oms_hub.web.panopto_routes import router as panopto_web_router
 from oms_hub.web.routes import router
+from oms_hub.web.setup_routes import router as setup_router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -131,6 +132,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(panopto_api_router)
     app.include_router(canvas_web_router)
     app.include_router(panopto_web_router)
+    app.include_router(setup_router)
 
     @app.get("/health")
     def health() -> dict[str, str]:
