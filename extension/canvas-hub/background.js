@@ -1,5 +1,6 @@
 import {postDownloadComplete} from "./lib/hub-client.js";
 import {completedDownload} from "./lib/downloads.js";
+import {createCommandPoller} from "./lib/command-poller.js";
 import {runScan} from "./lib/scanner.js";
 import {runPanoptoCommand} from "./lib/panopto-runner.js";
 import {
@@ -10,18 +11,13 @@ import {
 
 const ALARM = "canvas_scan";
 const COMMAND_ALARM = "canvas_commands";
-let activePanopto = null;
-
-async function pollCommands() {
-  const config = await getConfig();
-  if (config.scan_requested) await runScan();
-  if (activePanopto) return activePanopto;
-  const command = await getPanoptoCommand();
-  if (!command) return null;
-  activePanopto = runPanoptoCommand(command, {hub: panoptoHub})
-    .finally(() => { activePanopto = null; });
-  return activePanopto;
-}
+const pollCommands = createCommandPoller({
+  getConfig,
+  runScan,
+  getPanoptoCommand,
+  runPanoptoCommand,
+  panoptoHub,
+});
 
 async function ensureAlarm() {
   if (!await chrome.alarms.get(ALARM)) {
