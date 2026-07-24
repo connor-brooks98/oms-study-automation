@@ -189,6 +189,8 @@ function isEnglishUsa(control) {
     control.getAttribute("lang"),
     control.getAttribute("aria-label"),
     control.getAttribute("title"),
+    control.getAttribute("download"),
+    control.getAttribute("href"),
     control.textContent,
   ].map(normalized).join(" ");
   return (
@@ -263,7 +265,9 @@ export async function waitForCaptionDownload(document, location, options = {}) {
     if (result.status === "ready") return result;
     if (!revealed) {
       const control = [...document.querySelectorAll("a,button")].find(
-        (item) => isCaptionControl(item) && !captionUrl(item, location),
+        (item) => isCaptionControl(item)
+          && item.getAttribute("aria-haspopup") === "true"
+          && !captionUrl(item, location),
       );
       if (control) {
         control.click();

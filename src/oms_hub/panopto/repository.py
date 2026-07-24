@@ -117,17 +117,34 @@ class PanoptoRepository:
         payload: dict[str, object],
         now_utc: datetime,
     ) -> str:
+        encoded_payload = json.dumps(
+            payload,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
         request_id = str(uuid.uuid4())
         with self.database.session() as db_session:
+            existing = db_session.scalar(
+                select(PanoptoBrowserRequestModel).where(
+                    PanoptoBrowserRequestModel.kind == kind.value,
+                    PanoptoBrowserRequestModel.payload_json == encoded_payload,
+                    PanoptoBrowserRequestModel.state.in_(
+                        (
+                            "requested",
+                            "running",
+                            "awaiting_login",
+                            "waiting_for_captions",
+                        )
+                    ),
+                )
+            )
+            if existing is not None:
+                return existing.id
             db_session.add(
                 PanoptoBrowserRequestModel(
                     id=request_id,
                     kind=kind.value,
-                    payload_json=json.dumps(
-                        payload,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ),
+                    payload_json=encoded_payload,
                     requested_at=now_utc.isoformat(),
                 )
             )

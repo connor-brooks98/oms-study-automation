@@ -83,6 +83,25 @@ def test_connection_test_creates_recoverable_request(database):
     assert request.kind is BrowserRequestKind.CONNECTION_TEST
 
 
+def test_caption_retry_stays_inside_weekday_polling_window(database):
+    service, repository = _service(database)
+    friday_at_close = datetime(2026, 7, 24, 23, 0, tzinfo=UTC)
+    request_id = repository.create_browser_request(
+        BrowserRequestKind.SCAN,
+        {"manual": False},
+        friday_at_close,
+    )
+
+    service.defer_captions(request_id, friday_at_close)
+
+    assert repository.next_browser_request(
+        datetime(2026, 7, 27, 13, 19, tzinfo=UTC)
+    ) is None
+    assert repository.next_browser_request(
+        datetime(2026, 7, 27, 13, 20, tzinfo=UTC)
+    ).id == request_id
+
+
 def test_discovery_returns_extract_only_for_confident_match(database):
     service, repository = _service(database)
 

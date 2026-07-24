@@ -76,6 +76,34 @@ class PanoptoBrowserService:
     def queue_connection_check(self, now: datetime) -> str:
         return self.queue_connection_test(now)
 
+    def defer_captions(self, request_id: str, now: datetime) -> datetime:
+        local = now.astimezone(self.policy.timezone)
+        candidate = local + timedelta(minutes=15)
+        candidate_time = candidate.time().replace(tzinfo=None)
+        if (
+            candidate.weekday() < 5
+            and candidate.date() == local.date()
+            and candidate_time <= self.policy.end
+        ):
+            eligible = candidate
+        else:
+            next_day = local.date() + timedelta(days=1)
+            while next_day.weekday() >= 5:
+                next_day += timedelta(days=1)
+            eligible = datetime.combine(
+                next_day,
+                self.policy.start,
+                self.policy.timezone,
+            )
+        due = eligible.astimezone(now.tzinfo)
+        self.repository.wait_browser_request(
+            request_id,
+            "captions_pending",
+            due,
+            now,
+        )
+        return due
+
     def queue_acceptance(
         self,
         now: datetime,

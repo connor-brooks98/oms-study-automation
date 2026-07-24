@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal, cast
 from uuid import UUID
@@ -310,12 +310,7 @@ def browser_request_result(
         repository.complete_browser_request(str(request_id), now)
         repository.heartbeat("connected", now)
     elif value.status == "waiting_for_captions":
-        repository.wait_browser_request(
-            str(request_id),
-            value.reason_code or "captions_pending",
-            now + timedelta(minutes=15),
-            now,
-        )
+        _service(request).defer_captions(str(request_id), now)
         repository.heartbeat("waiting_for_transcript", now)
     else:
         reason = value.reason_code or "browser_request_failed"

@@ -109,6 +109,7 @@ def test_production_download_preserves_immutable_raw_before_removing_inbox(tmp_p
         ("captions.pdf", b"00:01 text", "English_USA"),
         ("captions.txt", b"<!doctype html><title>Login</title>", "English_USA"),
         ("captions.txt", b'{"error":"login"}', "English_USA"),
+        ("captions.txt", b'{"captions":[]}', "English_USA"),
         ("captions.txt", b"00:01 text", "English_GBR"),
         ("captions.txt", b"x" * 257, "English_USA"),
     ],

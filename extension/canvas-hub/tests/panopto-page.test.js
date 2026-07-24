@@ -138,6 +138,24 @@ test("returns the built-in English USA caption download", () => {
   );
 });
 
+test("recognizes English USA from Panopto download metadata", () => {
+  const link = node({
+    text: "Download Captions",
+    attrs: {
+      href: "https://lmunet.hosted.panopto.com/Panopto/caption.txt?language=en-US",
+      download: "Lecture_Captions_English (United States).txt",
+    },
+  });
+
+  assert.equal(
+    readCaptionDownload(
+      node({many: {"a,button": [link]}}),
+      {origin: "https://lmunet.hosted.panopto.com"},
+    ).status,
+    "ready",
+  );
+});
+
 test("missing caption control remains eligible for polling", () => {
   assert.deepEqual(
     readCaptionDownload(node(), {origin: "https://lmunet.hosted.panopto.com"}),

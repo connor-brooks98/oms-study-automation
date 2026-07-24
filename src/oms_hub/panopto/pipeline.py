@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import uuid
 from dataclasses import dataclass
@@ -52,7 +53,7 @@ def validate_raw_caption(payload: bytes, max_bytes: int) -> str:
     if not payload or len(payload) > max_bytes:
         raise TranscriptValidationError("caption payload size is invalid")
     prefix = payload[:512].lstrip().lower()
-    if prefix.startswith((b"<!doctype html", b"<html", b'{"error"')):
+    if prefix.startswith((b"<!doctype html", b"<html")):
         raise TranscriptValidationError("caption response is not plain text")
     try:
         text = payload.decode("utf-8")
@@ -60,6 +61,13 @@ def validate_raw_caption(payload: bytes, max_bytes: int) -> str:
         raise TranscriptValidationError("caption response is not UTF-8") from error
     if not text.strip():
         raise TranscriptValidationError("caption response is empty")
+    if text.lstrip().startswith(("{", "[")):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, (dict, list)):
+            raise TranscriptValidationError("caption response is not plain text")
     return text
 
 

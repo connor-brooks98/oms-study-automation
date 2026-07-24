@@ -150,6 +150,30 @@ def test_browser_request_remains_visible_until_terminal(database):
     assert repository.next_browser_request(NOW) is None
 
 
+def test_equivalent_active_browser_requests_are_coalesced(database):
+    repository = PanoptoRepository(database)
+
+    first = repository.create_browser_request(
+        BrowserRequestKind.SCAN,
+        {"manual": False},
+        NOW,
+    )
+    second = repository.create_browser_request(
+        BrowserRequestKind.SCAN,
+        {"manual": False},
+        NOW + timedelta(minutes=15),
+    )
+
+    assert second == first
+    repository.complete_browser_request(first, NOW + timedelta(minutes=16))
+    third = repository.create_browser_request(
+        BrowserRequestKind.SCAN,
+        {"manual": False},
+        NOW + timedelta(minutes=30),
+    )
+    assert third != first
+
+
 def test_waiting_caption_request_obeys_next_eligible_time(database):
     repository = PanoptoRepository(database)
     request_id = repository.create_browser_request(
