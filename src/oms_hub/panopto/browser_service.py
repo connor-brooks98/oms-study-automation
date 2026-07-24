@@ -151,7 +151,7 @@ class PanoptoBrowserService:
                 stored.recording_id,
                 item.viewer_url,
             )
-            if match.lecture_id is not None and not match.needs_review:
+            if not stored.needs_review:
                 action = "download_caption"
                 viewer_url: str | None = item.viewer_url
             else:

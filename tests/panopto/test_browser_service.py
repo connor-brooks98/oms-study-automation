@@ -134,6 +134,23 @@ def test_unmatched_recording_is_reviewed_without_extraction(database):
     assert result[0].viewer_url is None
 
 
+def test_manual_remap_survives_discovery_replay_and_downloads(database):
+    service, repository = _service(database)
+    unrelated = replace(_recording(), name="Unrelated Grand Rounds")
+    reviewed = service.process_discovery("first-scan", [unrelated], NOW)[0]
+    lecture_id = CatalogRepository(database).list_lectures()[0].id
+
+    repository.remap_recording(reviewed.recording_id, lecture_id)
+    replayed = service.process_discovery("second-scan", [unrelated], NOW)[0]
+
+    persisted = repository.get_recording(reviewed.recording_id)
+    assert persisted.lecture_id == lecture_id
+    assert persisted.review_state == "manual"
+    assert replayed.action == "download_caption"
+    assert replayed.viewer_url == VIEWER_URL
+    assert repository.list_review_recordings() == []
+
+
 def test_discovery_ignores_recordings_older_than_previous_day(database):
     service, _ = _service(database)
     old = replace(

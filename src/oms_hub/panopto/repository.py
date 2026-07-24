@@ -531,7 +531,29 @@ class PanoptoRepository:
                 )
             )
             created = recording is None
-            review_state = "needs_review" if match.needs_review else "none"
+            manually_mapped = bool(
+                recording is not None
+                and recording.lecture_id is not None
+                and (
+                    recording.review_state == "manual"
+                    or recording.evidence_json == json.dumps(("manually remapped",))
+                )
+            )
+            effective_lecture_id = (
+                recording.lecture_id
+                if manually_mapped and recording is not None
+                else match.lecture_id
+            )
+            effective_confidence = 1.0 if manually_mapped else match.confidence
+            effective_evidence = (
+                ("manually remapped",) if manually_mapped else match.evidence
+            )
+            effective_needs_review = False if manually_mapped else match.needs_review
+            review_state = (
+                "manual"
+                if manually_mapped
+                else ("needs_review" if effective_needs_review else "none")
+            )
             if recording is None:
                 recording = PanoptoRecordingModel(
                     session_id=panopto_session.session_id,
@@ -540,9 +562,9 @@ class PanoptoRepository:
                     duration_seconds=panopto_session.duration_seconds,
                     folder_name=panopto_session.folder_name,
                     content_language=panopto_session.content_language,
-                    lecture_id=match.lecture_id,
-                    confidence=match.confidence,
-                    evidence_json=json.dumps(match.evidence),
+                    lecture_id=effective_lecture_id,
+                    confidence=effective_confidence,
+                    evidence_json=json.dumps(effective_evidence),
                     review_state=review_state,
                 )
                 db_session.add(recording)
@@ -553,15 +575,15 @@ class PanoptoRepository:
                 recording.duration_seconds = panopto_session.duration_seconds
                 recording.folder_name = panopto_session.folder_name
                 recording.content_language = panopto_session.content_language
-                recording.lecture_id = match.lecture_id
-                recording.confidence = match.confidence
-                recording.evidence_json = json.dumps(match.evidence)
+                recording.lecture_id = effective_lecture_id
+                recording.confidence = effective_confidence
+                recording.evidence_json = json.dumps(effective_evidence)
                 recording.review_state = review_state
 
-            if match.lecture_id is not None and not match.needs_review:
+            if effective_lecture_id is not None and not effective_needs_review:
                 step = db_session.scalar(
                     select(LectureStepModel).where(
-                        LectureStepModel.lecture_id == match.lecture_id,
+                        LectureStepModel.lecture_id == effective_lecture_id,
                         LectureStepModel.name
                         == LectureStepName.PANOPTO_RECORDING_FOUND.value,
                     )
@@ -570,7 +592,7 @@ class PanoptoRepository:
                     step.status = StepStatus.COMPLETE.value
                     step.detail = f"Panopto session {panopto_session.session_id}"
 
-            return RecordingDisposition(recording.id, created, match.needs_review)
+            return RecordingDisposition(recording.id, created, effective_needs_review)
 
     def create_raw_revision(
         self,
@@ -673,7 +695,7 @@ class PanoptoRepository:
                 raise KeyError((recording_id, lecture_id))
             recording.lecture_id = lecture_id
             recording.confidence = 1.0
-            recording.review_state = "none"
+            recording.review_state = "manual"
             recording.evidence_json = json.dumps(("manually remapped",))
             self._set_step(
                 db_session,
