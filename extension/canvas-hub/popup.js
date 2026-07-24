@@ -1,6 +1,7 @@
 import {pair, pairingStatus} from "./lib/hub-client.js";
 import {postCourses} from "./lib/hub-client.js";
 import {listAll} from "./lib/canvas-api.js";
+import {formatPanoptoResult} from "./lib/popup-status.js";
 
 const status = document.querySelector("#status");
 async function refresh() { status.textContent = await pairingStatus() ? "Paired" : "Not paired"; }
@@ -21,6 +22,6 @@ document.querySelector("#scan").addEventListener("click", async () => {
 document.querySelector("#panopto").addEventListener("click", async () => {
   status.textContent = "Checking Panopto…";
   const result = await chrome.runtime.sendMessage({type: "panopto-scan-now"});
-  status.textContent = result?.status || "No Panopto command pending";
+  status.textContent = formatPanoptoResult(result);
 });
 refresh();
