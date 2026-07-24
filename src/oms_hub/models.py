@@ -244,6 +244,21 @@ class PanoptoBrowserCommandModel(Base):
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
 
+class PanoptoBrowserRequestModel(Base):
+    __tablename__ = "panopto_browser_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(40))
+    state: Mapped[str] = mapped_column(String(40), default="requested")
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    progress: Mapped[str] = mapped_column(String(80), default="requested")
+    requested_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    started_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    completed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    next_eligible_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+
 class TranscriptRevisionModel(Base):
     __tablename__ = "transcript_revisions"
     __table_args__ = (UniqueConstraint("recording_id", "raw_sha256"),)

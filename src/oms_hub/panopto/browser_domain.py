@@ -9,11 +9,25 @@ class BrowserCommandKind(StrEnum):
     ACCEPTANCE = "acceptance"
 
 
+class BrowserRequestKind(StrEnum):
+    CONNECTION_TEST = "connection_test"
+    SCAN = "scan"
+
+
 @dataclass(frozen=True, slots=True)
 class BrowserCommand:
     id: str
     kind: BrowserCommandKind
     payload: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserRequest:
+    id: str
+    kind: BrowserRequestKind
+    state: str
+    payload: dict[str, object]
+    progress: str
 
 
 @dataclass(frozen=True, slots=True)

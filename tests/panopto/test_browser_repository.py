@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from oms_hub.panopto.browser_domain import BrowserCommandKind
+from oms_hub.panopto.browser_domain import BrowserCommandKind, BrowserRequestKind
 from oms_hub.panopto.domain import PanoptoSession, RecordingMatch
 from oms_hub.panopto.repository import PanoptoRepository
 
@@ -120,3 +120,73 @@ def test_explicit_retry_requeues_a_running_browser_command(database):
         "session_id": "new",
         "viewer_url": "https://example.test/new",
     }
+
+
+def test_browser_request_remains_visible_until_terminal(database):
+    repository = PanoptoRepository(database)
+    request_id = repository.create_browser_request(
+        BrowserRequestKind.CONNECTION_TEST,
+        {},
+        NOW,
+    )
+
+    first = repository.next_browser_request(NOW)
+    second = repository.next_browser_request(NOW)
+
+    assert first is not None
+    assert first.id == request_id
+    assert second is not None
+    assert second.id == request_id
+    repository.update_browser_request(
+        request_id,
+        "running",
+        "opening_shared",
+        NOW,
+    )
+    updated = repository.next_browser_request(NOW)
+    assert updated is not None
+    assert updated.progress == "opening_shared"
+    repository.complete_browser_request(request_id, NOW)
+    assert repository.next_browser_request(NOW) is None
+
+
+def test_waiting_caption_request_obeys_next_eligible_time(database):
+    repository = PanoptoRepository(database)
+    request_id = repository.create_browser_request(
+        BrowserRequestKind.CONNECTION_TEST,
+        {},
+        NOW,
+    )
+    repository.wait_browser_request(
+        request_id,
+        "captions_pending",
+        NOW + timedelta(minutes=15),
+        NOW,
+    )
+
+    assert repository.next_browser_request(NOW + timedelta(minutes=14)) is None
+    due = repository.next_browser_request(NOW + timedelta(minutes=15))
+    assert due is not None
+    assert due.id == request_id
+
+
+def test_active_legacy_browser_commands_are_superseded(database):
+    repository = PanoptoRepository(database)
+    pending = repository.queue_browser_command(
+        BrowserCommandKind.SCAN,
+        {"manual": True},
+        NOW,
+    )
+    running = repository.queue_browser_command(
+        BrowserCommandKind.ACCEPTANCE,
+        {"session_id": "session", "viewer_url": "https://example.test/viewer"},
+        NOW,
+    )
+    assert repository.claim_browser_command(NOW) is not None
+    assert repository.claim_browser_command(NOW) is not None
+
+    count = repository.supersede_legacy_browser_commands(NOW)
+
+    assert count == 2
+    assert repository.get_running_browser_command(pending) is None
+    assert repository.get_running_browser_command(running) is None

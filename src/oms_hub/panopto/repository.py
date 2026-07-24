@@ -13,6 +13,7 @@ from oms_hub.models import (
     LectureStepModel,
     OpenAIUsageModel,
     PanoptoBrowserCommandModel,
+    PanoptoBrowserRequestModel,
     PanoptoConnectionModel,
     PanoptoRecordingModel,
     PanoptoRecordingSourceModel,
@@ -22,6 +23,8 @@ from oms_hub.models import (
 from oms_hub.panopto.browser_domain import (
     BrowserCommand,
     BrowserCommandKind,
+    BrowserRequest,
+    BrowserRequestKind,
 )
 from oms_hub.panopto.domain import (
     PanoptoSession,
@@ -107,6 +110,145 @@ class PanoptoRepository:
                 )
             )
             return command_id
+
+    def create_browser_request(
+        self,
+        kind: BrowserRequestKind,
+        payload: dict[str, object],
+        now_utc: datetime,
+    ) -> str:
+        request_id = str(uuid.uuid4())
+        with self.database.session() as db_session:
+            db_session.add(
+                PanoptoBrowserRequestModel(
+                    id=request_id,
+                    kind=kind.value,
+                    payload_json=json.dumps(
+                        payload,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    requested_at=now_utc.isoformat(),
+                )
+            )
+        return request_id
+
+    def next_browser_request(self, now_utc: datetime) -> BrowserRequest | None:
+        with self.database.session() as db_session:
+            request = db_session.scalar(
+                select(PanoptoBrowserRequestModel)
+                .where(
+                    PanoptoBrowserRequestModel.state.in_(
+                        (
+                            "requested",
+                            "running",
+                            "awaiting_login",
+                            "waiting_for_captions",
+                        )
+                    ),
+                    or_(
+                        PanoptoBrowserRequestModel.next_eligible_at.is_(None),
+                        PanoptoBrowserRequestModel.next_eligible_at
+                        <= now_utc.isoformat(),
+                    ),
+                )
+                .order_by(PanoptoBrowserRequestModel.requested_at)
+            )
+            if request is None:
+                return None
+            payload = json.loads(request.payload_json)
+            if not isinstance(payload, dict):
+                raise TypeError("Panopto browser request payload is invalid")
+            return BrowserRequest(
+                request.id,
+                BrowserRequestKind(request.kind),
+                request.state,
+                payload,
+                request.progress,
+            )
+
+    def update_browser_request(
+        self,
+        request_id: str,
+        state: str,
+        progress: str,
+        now_utc: datetime,
+        error_code: str | None = None,
+    ) -> None:
+        with self.database.session() as db_session:
+            request = db_session.get(PanoptoBrowserRequestModel, request_id)
+            if request is None:
+                raise KeyError(request_id)
+            request.state = state[:40]
+            request.progress = progress[:80]
+            request.error_code = error_code[:80] if error_code else None
+            request.next_eligible_at = None
+            if request.started_at is None:
+                request.started_at = now_utc.isoformat()
+
+    def wait_browser_request(
+        self,
+        request_id: str,
+        reason_code: str,
+        next_eligible_at: datetime,
+        now_utc: datetime,
+    ) -> None:
+        with self.database.session() as db_session:
+            request = db_session.get(PanoptoBrowserRequestModel, request_id)
+            if request is None:
+                raise KeyError(request_id)
+            request.state = "waiting_for_captions"
+            request.progress = "captions_pending"
+            request.error_code = reason_code[:80]
+            request.next_eligible_at = next_eligible_at.isoformat()
+            if request.started_at is None:
+                request.started_at = now_utc.isoformat()
+
+    def complete_browser_request(
+        self,
+        request_id: str,
+        now_utc: datetime,
+    ) -> None:
+        with self.database.session() as db_session:
+            request = db_session.get(PanoptoBrowserRequestModel, request_id)
+            if request is None:
+                raise KeyError(request_id)
+            request.state = "complete"
+            request.progress = "complete"
+            request.completed_at = now_utc.isoformat()
+            request.next_eligible_at = None
+            request.error_code = None
+
+    def fail_browser_request(
+        self,
+        request_id: str,
+        reason_code: str,
+        now_utc: datetime,
+    ) -> None:
+        with self.database.session() as db_session:
+            request = db_session.get(PanoptoBrowserRequestModel, request_id)
+            if request is None:
+                raise KeyError(request_id)
+            request.state = "failed"
+            request.progress = "failed"
+            request.completed_at = now_utc.isoformat()
+            request.next_eligible_at = None
+            request.error_code = reason_code[:80]
+
+    def supersede_legacy_browser_commands(self, now_utc: datetime) -> int:
+        count = 0
+        with self.database.session() as db_session:
+            commands = db_session.scalars(
+                select(PanoptoBrowserCommandModel).where(
+                    PanoptoBrowserCommandModel.state.in_(("pending", "running"))
+                )
+            ).all()
+            for command in commands:
+                command.state = "failed"
+                command.completed_at = now_utc.isoformat()
+                command.error_code = "superseded_command_model"
+                count += 1
+        return count
 
     def claim_browser_command(self, now_utc: datetime) -> BrowserCommand | None:
         with self.database.session() as db_session:
