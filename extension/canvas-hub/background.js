@@ -1,5 +1,9 @@
-import {postDownloadComplete} from "./lib/hub-client.js";
+import {
+  postDownloadComplete,
+  postPanoptoDownloadComplete,
+} from "./lib/hub-client.js";
 import {completedDownload} from "./lib/downloads.js";
+import {completePanoptoDownload} from "./lib/panopto-downloads.js";
 import {createCommandPoller} from "./lib/command-poller.js";
 import {runScan} from "./lib/scanner.js";
 import {runPanoptoCommand} from "./lib/panopto-runner.js";
@@ -44,11 +48,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((error) => sendResponse({status: "error", error: String(error)}));
     return true;
   }
+  if (message?.type === "panopto-request-now") {
+    pollCommands().then(sendResponse)
+      .catch((error) => sendResponse({status: "error", error: String(error)}));
+    return true;
+  }
   return false;
 });
 chrome.downloads.onChanged.addListener((delta) => {
   if (delta.state?.current === "complete") {
     completedDownload(delta.id, postDownloadComplete).catch(() => {});
+    completePanoptoDownload(
+      delta.id,
+      postPanoptoDownloadComplete,
+    ).catch(() => {});
   }
 });
 ensureAlarm();

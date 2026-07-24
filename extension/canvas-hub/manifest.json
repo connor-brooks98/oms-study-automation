@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "OMS Study Hub Canvas Companion",
-  "version": "0.1.0",
-  "description": "Discovers mapped LMU lecture files for the local OMS Study Hub.",
+  "name": "OMS Study Hub Companion",
+  "version": "0.2.0",
+  "description": "Connects Canvas and Panopto to the local OMS Study Hub.",
   "permissions": ["alarms", "downloads", "storage"],
   "host_permissions": [
     "https://lmunet.instructure.com/*",
@@ -11,13 +11,23 @@
   ],
   "background": {"service_worker": "background.js", "type": "module"},
   "action": {"default_popup": "popup.html"},
-  "content_scripts": [{
-    "matches": ["https://lmunet.hosted.panopto.com/*"],
-    "js": ["panopto-content.js"],
-    "run_at": "document_idle"
-  }],
+  "content_scripts": [
+    {
+      "matches": ["https://lmunet.hosted.panopto.com/*"],
+      "js": ["panopto-content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["http://127.0.0.1:8765/*"],
+      "js": ["hub-bridge.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "web_accessible_resources": [{
-    "resources": ["lib/panopto-page.js"],
-    "matches": ["https://lmunet.hosted.panopto.com/*"]
+    "resources": ["lib/panopto-page.js", "lib/hub-bridge.js"],
+    "matches": [
+      "https://lmunet.hosted.panopto.com/*",
+      "http://127.0.0.1:8765/*"
+    ]
   }]
 }

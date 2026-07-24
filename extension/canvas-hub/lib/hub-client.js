@@ -45,6 +45,30 @@ export function postCourses(courses) {
 export function getPanoptoCommand() {
   return request("/api/panopto/command", {}, true, true);
 }
+export function getPanoptoRequest() {
+  return request("/api/panopto/request", {}, true, true);
+}
+export function postPanoptoProgress(requestId, state, progress) {
+  return request(`/api/panopto/request/${requestId}/progress`, {
+    method: "POST", body: JSON.stringify({state, progress}),
+  });
+}
+export function postPanoptoRequestDiscovery(requestId, recordings) {
+  return request(`/api/panopto/request/${requestId}/discover`, {
+    method: "POST", body: JSON.stringify({recordings}),
+  });
+}
+export function postPanoptoDownloadComplete(requestId, payload) {
+  return request(`/api/panopto/request/${requestId}/download`, {
+    method: "POST", body: JSON.stringify(payload),
+  });
+}
+export function postPanoptoRequestResult(requestId, status, reasonCode = null) {
+  return request(`/api/panopto/request/${requestId}/result`, {
+    method: "POST",
+    body: JSON.stringify({status, reason_code: reasonCode}),
+  });
+}
 export function postPanoptoHeartbeat(state, details = {}) {
   return request("/api/panopto/heartbeat", {
     method: "POST", body: JSON.stringify({state, ...details}),
@@ -77,6 +101,15 @@ export const panoptoHub = {
   postTranscript: postPanoptoTranscript,
   postAcceptance: postPanoptoAcceptance,
   postResult: postPanoptoResult,
+};
+
+export const panoptoRequestHub = {
+  heartbeat: postPanoptoHeartbeat,
+  getRequest: getPanoptoRequest,
+  postProgress: postPanoptoProgress,
+  postDiscovery: postPanoptoRequestDiscovery,
+  postDownloadComplete: postPanoptoDownloadComplete,
+  postResult: postPanoptoRequestResult,
 };
 
 export async function pairingStatus() { return Boolean(await token()); }
