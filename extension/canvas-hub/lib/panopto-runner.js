@@ -46,20 +46,33 @@ async function pageMessage(tabs, tabId, type, retryDelay) {
   return response;
 }
 
-async function defaultWaitForReady(tabs, tabId) {
-  await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(listener);
-      reject(new Error("Panopto tab timed out"));
-    }, 30000);
+export function waitForTabReady(tabs, tabId) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timeout;
+    function finish(error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      tabs.onUpdated.removeListener(listener);
+      if (error) reject(error);
+      else resolve();
+    }
     function listener(id, info) {
       if (id === tabId && info.status === "complete") {
-        clearTimeout(timeout);
-        chrome.tabs.onUpdated.removeListener(listener);
-        resolve();
+        finish();
       }
     }
-    chrome.tabs.onUpdated.addListener(listener);
+    tabs.onUpdated.addListener(listener);
+    timeout = setTimeout(
+      () => finish(new Error("Panopto tab timed out")),
+      30000,
+    );
+    tabs.get(tabId)
+      .then((tab) => {
+        if (tab.status === "complete") finish();
+      })
+      .catch(finish);
   });
 }
 
@@ -67,7 +80,7 @@ export async function runPanoptoCommand(command, dependencies = {}) {
   const tabs = dependencies.tabs || chrome.tabs;
   const hub = dependencies.hub || defaultHub;
   const waitForReady = dependencies.waitForReady
-    || ((tabId) => defaultWaitForReady(tabs, tabId));
+    || ((tabId) => waitForTabReady(tabs, tabId));
   const messageRetryDelay = dependencies.messageRetryDelay
     || (() => new Promise((resolve) => setTimeout(resolve, 250)));
   let tab;

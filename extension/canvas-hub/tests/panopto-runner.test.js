@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {runPanoptoCommand} from "../lib/panopto-runner.js";
+import {
+  runPanoptoCommand,
+  waitForTabReady,
+} from "../lib/panopto-runner.js";
 
 const COMMAND = {id: "command-id", kind: "scan", payload: {manual: true}};
 const SESSION_ID = "8796399e-393c-4256-b6e4-b48f0150d156";
@@ -39,6 +42,23 @@ function fakeHub(dispositions = []) {
     async postResult(value) { this.results.push(value); },
   };
 }
+
+test("tab readiness recognizes a viewer that already finished loading", async () => {
+  const listeners = new Set();
+  const tabs = {
+    onUpdated: {
+      addListener(listener) { listeners.add(listener); },
+      removeListener(listener) { listeners.delete(listener); },
+    },
+    async get(id) {
+      return {id, status: "complete"};
+    },
+  };
+
+  await waitForTabReady(tabs, 42);
+
+  assert.equal(listeners.size, 0);
+});
 
 test("runner creates and removes only its own inactive tab", async () => {
   const tabs = fakeTabs([{recordings: []}]);
