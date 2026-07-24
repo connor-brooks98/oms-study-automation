@@ -94,3 +94,29 @@ def test_stale_running_command_is_requeued(database):
     claimed = repository.claim_browser_command(NOW + timedelta(minutes=6))
     assert claimed is not None
     assert claimed.id == command_id
+
+
+def test_explicit_retry_requeues_a_running_browser_command(database):
+    repository = PanoptoRepository(database)
+    command_id = repository.queue_browser_command(
+        BrowserCommandKind.ACCEPTANCE,
+        {"session_id": "old", "viewer_url": "https://example.test/old"},
+        NOW,
+    )
+    assert repository.claim_browser_command(NOW) is not None
+
+    retried_id = repository.queue_browser_command(
+        BrowserCommandKind.ACCEPTANCE,
+        {"session_id": "new", "viewer_url": "https://example.test/new"},
+        NOW + timedelta(minutes=1),
+        retry_running=True,
+    )
+
+    assert retried_id == command_id
+    retried = repository.claim_browser_command(NOW + timedelta(minutes=1))
+    assert retried is not None
+    assert retried.id == command_id
+    assert retried.payload == {
+        "session_id": "new",
+        "viewer_url": "https://example.test/new",
+    }

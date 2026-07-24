@@ -83,6 +83,7 @@ class PanoptoBrowserService:
             BrowserCommandKind.ACCEPTANCE,
             {"session_id": session_id, "viewer_url": viewer_url},
             now,
+            retry_running=True,
         )
 
     def process_discovery(

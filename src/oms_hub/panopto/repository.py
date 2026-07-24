@@ -72,6 +72,8 @@ class PanoptoRepository:
         kind: BrowserCommandKind,
         payload: dict[str, object],
         now_utc: datetime,
+        *,
+        retry_running: bool = False,
     ) -> str:
         with self.database.session() as db_session:
             existing = db_session.scalar(
@@ -83,6 +85,17 @@ class PanoptoRepository:
                 .order_by(PanoptoBrowserCommandModel.created_at)
             )
             if existing is not None:
+                if retry_running and existing.state == "running":
+                    existing.state = "pending"
+                    existing.payload_json = json.dumps(
+                        payload,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                    existing.created_at = now_utc.isoformat()
+                    existing.claimed_at = None
+                    existing.completed_at = None
+                    existing.error_code = None
                 return existing.id
             command_id = str(uuid.uuid4())
             db_session.add(
