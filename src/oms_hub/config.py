@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     panopto_revision_root: Path = Path(
         r"C:\ProgramData\OMSStudyHub\artifacts\panopto\revisions"
     )
+    panopto_inbox: Path = Path(
+        r"%USERPROFILE%\Downloads\OMSStudyHub\PanoptoInbox"
+    )
+    panopto_quarantine_root: Path = Path(
+        r"C:\ProgramData\OMSStudyHub\quarantine\panopto"
+    )
     panopto_acceptance_session_id: str = "8796399e-393c-4256-b6e4-b48f0150d156"
     panopto_poll_minutes: int = Field(default=15, ge=15, le=15)
     panopto_poll_start: str = "09:20"

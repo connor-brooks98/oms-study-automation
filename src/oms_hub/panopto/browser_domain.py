@@ -28,6 +28,7 @@ class BrowserRequest:
     state: str
     payload: dict[str, object]
     progress: str
+    error_code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -6,6 +6,8 @@ $CanvasInbox = Join-Path $env:USERPROFILE "Downloads\OMSStudyHub\CanvasInbox"
 $StudyRoot = Join-Path $env:USERPROFILE "Documents\OMS II"
 $RevisionRoot = Join-Path $DataRoot "artifacts\revisions"
 $PanoptoRevisionRoot = Join-Path $DataRoot "artifacts\panopto\revisions"
+$PanoptoInbox = Join-Path $env:USERPROFILE "Downloads\OMSStudyHub\PanoptoInbox"
+$PanoptoQuarantineRoot = Join-Path $DataRoot "quarantine\panopto"
 $TaskIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 if (-not (Test-Path $ProjectRoot)) {
@@ -25,7 +27,7 @@ if (-not (Test-Path "$ProjectRoot\.venv\Scripts\python.exe")) {
 }
 & "$ProjectRoot\.venv\Scripts\python.exe" -m pip install --upgrade pip
 & "$ProjectRoot\.venv\Scripts\python.exe" -m pip install -e $ProjectRoot
-New-Item -ItemType Directory -Force -Path $DataRoot, $CanvasInbox, $StudyRoot, $RevisionRoot, $PanoptoRevisionRoot | Out-Null
+New-Item -ItemType Directory -Force -Path $DataRoot, $CanvasInbox, $StudyRoot, $RevisionRoot, $PanoptoRevisionRoot, $PanoptoInbox, $PanoptoQuarantineRoot | Out-Null
 & icacls.exe $DataRoot /grant "${TaskIdentity}:(OI)(CI)M" /T /C | Out-Null
 if ($LASTEXITCODE -ne 0) {
   throw "Failed to grant $TaskIdentity modify access to $DataRoot"
@@ -57,4 +59,5 @@ Register-ScheduledTask `
 
 Write-Host "Installed. Dashboard: http://127.0.0.1:8765"
 Write-Host "Canvas inbox: $CanvasInbox"
+Write-Host "Panopto inbox: $PanoptoInbox"
 Write-Host "Remove with: Unregister-ScheduledTask -TaskName '$TaskName' -Confirm:`$false"

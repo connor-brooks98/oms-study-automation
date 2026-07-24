@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Literal, cast
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from oms_hub.panopto.browser_service import (
     PanoptoBrowserService,
     validate_viewer_url,
 )
+from oms_hub.panopto.download_ingestion import PanoptoDownloadIngestion
 from oms_hub.panopto.pipeline import TranscriptValidationError, validate_raw_caption
 from oms_hub.panopto.repository import PanoptoRepository
 
@@ -83,6 +85,30 @@ class RequestResultRequest(StrictModel):
     reason_code: str | None = Field(default=None, pattern=r"^[a-z0-9_]{1,80}$")
 
 
+class DownloadCompleteRequest(StrictModel):
+    recording_id: int | None = Field(default=None, gt=0)
+    session_id: UUID
+    viewer_url: str = Field(max_length=1024)
+    language: Literal["English_USA"]
+    chrome_download_id: int = Field(ge=0)
+    path: str = Field(min_length=1, max_length=4096)
+
+    @field_validator("viewer_url")
+    @classmethod
+    def lmu_viewer_url(cls, value: str, info: ValidationInfo) -> str:
+        session_id = info.data.get("session_id")
+        if session_id is not None:
+            validate_viewer_url(value, str(session_id))
+        return value
+
+    @field_validator("path")
+    @classmethod
+    def absolute_path(cls, value: str) -> str:
+        if not Path(value).is_absolute():
+            raise ValueError("Managed download path must be absolute")
+        return value
+
+
 class TranscriptRequest(StrictModel):
     command_id: UUID
     recording_id: int = Field(gt=0)
@@ -142,6 +168,13 @@ def _repository(request: Request) -> PanoptoRepository:
 
 def _service(request: Request) -> PanoptoBrowserService:
     return cast(PanoptoBrowserService, request.app.state.panopto_browser)
+
+
+def _download_ingestion(request: Request) -> PanoptoDownloadIngestion:
+    return cast(
+        PanoptoDownloadIngestion,
+        request.app.state.panopto_download_ingestion,
+    )
 
 
 def _require_running_command(request: Request, command_id: UUID) -> None:
@@ -281,6 +314,49 @@ def browser_request_result(
         repository.fail_browser_request(str(request_id), reason, now)
         repository.heartbeat("error", now, reason)
     return {"status": "ok"}
+
+
+@router.post("/request/{request_id}/download")
+def browser_request_download(
+    request_id: UUID,
+    value: DownloadCompleteRequest,
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, str | int | None]:
+    _authenticate(request, authorization)
+    _require_browser_request(request, request_id)
+    persisted = _repository(request).get_browser_request(str(request_id))
+    if persisted is None:
+        raise HTTPException(status_code=409, detail="Panopto request is missing")
+    now = datetime.now(UTC)
+    try:
+        if persisted.kind.value == "connection_test":
+            if value.recording_id is not None:
+                raise ValueError("Connection test must not include a recording ID")
+            _download_ingestion(request).complete_test_download(
+                str(request_id),
+                Path(value.path),
+                value.language,
+                now,
+            )
+            return {"status": "validated", "revision_id": None}
+        if value.recording_id is None:
+            raise ValueError("Scan download requires a recording ID")
+        recording = _repository(request).get_recording(value.recording_id)
+        if recording.session_id != str(value.session_id):
+            raise ValueError("Recording session does not match")
+        if _repository(request).get_recording_source(value.recording_id) != value.viewer_url:
+            raise ValueError("Recording viewer URL does not match")
+        revision_id = _download_ingestion(request).complete_recording_download(
+            str(request_id),
+            value.recording_id,
+            Path(value.path),
+            value.language,
+            now,
+        )
+        return {"status": "ingested", "revision_id": revision_id}
+    except (KeyError, TranscriptValidationError, ValueError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/discover")

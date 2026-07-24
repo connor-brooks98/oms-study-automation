@@ -165,6 +165,7 @@ class PanoptoRepository:
                 request.state,
                 payload,
                 request.progress,
+                request.error_code,
             )
 
     def get_browser_request(self, request_id: str) -> BrowserRequest | None:
@@ -181,6 +182,7 @@ class PanoptoRepository:
                 request.state,
                 payload,
                 request.progress,
+                request.error_code,
             )
 
     def update_browser_request(

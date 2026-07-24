@@ -20,6 +20,7 @@ from oms_hub.files.office import SerialOfficeConverter
 from oms_hub.panopto.api import router as panopto_api_router
 from oms_hub.panopto.browser_service import PanoptoBrowserService
 from oms_hub.panopto.discovery import PollingPolicy
+from oms_hub.panopto.download_ingestion import PanoptoDownloadIngestion
 from oms_hub.panopto.matcher import RecordingMatcher
 from oms_hub.panopto.openai_client import OpenAITranscriptCleaner
 from oms_hub.panopto.pipeline import TranscriptPipeline
@@ -101,6 +102,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         catalog,
         app.state.panopto_prompt,
         app.state.openai_cleaner,
+        resolved,
+    )
+    app.state.panopto_download_ingestion = PanoptoDownloadIngestion(
+        app.state.panopto_repository,
+        app.state.panopto_pipeline,
         resolved,
     )
     app.state.panopto_browser = PanoptoBrowserService(

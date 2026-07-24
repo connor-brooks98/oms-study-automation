@@ -23,6 +23,8 @@ def _prepared_client(tmp_path):
         data_dir=tmp_path,
         database_url=f"sqlite:///{tmp_path / 'api.db'}",
         panopto_revision_root=tmp_path / "revisions",
+        panopto_inbox=tmp_path / "inbox",
+        panopto_quarantine_root=tmp_path / "quarantine",
         study_root=tmp_path / "OMS II",
         transcript_prompt_path=tmp_path / "Transcript Cleaning.md",
         panopto_max_caption_bytes=128,
@@ -126,6 +128,64 @@ def test_request_discovery_returns_caption_download_disposition(tmp_path):
     disposition = response.json()["dispositions"][0]
     assert disposition["action"] == "download_caption"
     assert disposition["viewer_url"] == VIEWER_URL
+
+
+def test_connection_test_download_is_validated_without_revision(tmp_path):
+    client, headers = _prepared_client(tmp_path)
+    request_id = client.app.state.panopto_browser.queue_connection_test(NOW)
+    path = tmp_path / "inbox" / request_id / "captions.txt"
+    path.parent.mkdir(parents=True)
+    path.write_text("00:01 First line\n00:03 Second line", encoding="utf-8")
+
+    response = client.post(
+        f"/api/panopto/request/{request_id}/download",
+        headers=headers,
+        json={
+            "recording_id": None,
+            "session_id": SESSION_ID,
+            "viewer_url": VIEWER_URL,
+            "language": "English_USA",
+            "chrome_download_id": 41,
+            "path": str(path.resolve()),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "validated", "revision_id": None}
+    assert not path.exists()
+    assert list((tmp_path / "revisions").glob("*/raw.txt")) == []
+
+
+def test_scan_download_is_ingested_from_managed_inbox(tmp_path):
+    client, headers = _prepared_client(tmp_path)
+    request_id = client.app.state.panopto_browser.queue_manual_scan(NOW)
+    discovery = client.post(
+        f"/api/panopto/request/{request_id}/discover",
+        headers=headers,
+        json={"recordings": [_recording_json()]},
+    ).json()["dispositions"][0]
+    path = tmp_path / "inbox" / request_id / "captions.txt"
+    path.parent.mkdir(parents=True)
+    path.write_text("00:01 Raw shoulder transcript", encoding="utf-8")
+
+    response = client.post(
+        f"/api/panopto/request/{request_id}/download",
+        headers=headers,
+        json={
+            "recording_id": discovery["recording_id"],
+            "session_id": SESSION_ID,
+            "viewer_url": VIEWER_URL,
+            "language": "English_USA",
+            "chrome_download_id": 42,
+            "path": str(path.resolve()),
+        },
+    )
+
+    assert response.status_code == 200
+    revision_id = response.json()["revision_id"]
+    assert revision_id
+    assert not path.exists()
+    assert (tmp_path / "revisions" / str(revision_id) / "raw.txt").is_file()
 
 
 def test_command_is_claimed_once(tmp_path):

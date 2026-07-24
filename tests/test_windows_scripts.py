@@ -20,6 +20,8 @@ def test_installer_preserves_env_and_creates_managed_roots() -> None:
     assert "CanvasInbox" in script
     assert "artifacts\\revisions" in script
     assert "artifacts\\panopto\\revisions" in script
+    assert "PanoptoInbox" in script
+    assert "quarantine\\panopto" in script
     assert "Documents\\OMS II" in script
     assert "Transcript Cleaning.md" not in script
     assert "client_secret" not in script.casefold()
