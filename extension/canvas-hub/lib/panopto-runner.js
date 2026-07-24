@@ -7,14 +7,24 @@ const SAFE_REASONS = new Set([
   "english_captions_missing",
   "transcript_incomplete",
   "page_structure_changed",
+  "panopto_tab_open_failed",
+  "panopto_tab_load_failed",
+  "panopto_page_message_failed",
+  "panopto_hub_request_failed",
   "browser_command_failed",
 ]);
 
-function safeReason(error) {
+function safeReason(error, stage) {
   if (String(error?.message || "").includes("Receiving end does not exist")) {
     return "panopto_login_required";
   }
-  return SAFE_REASONS.has(error?.code) ? error.code : "browser_command_failed";
+  if (SAFE_REASONS.has(error?.code)) return error.code;
+  return {
+    tab_open: "panopto_tab_open_failed",
+    tab_load: "panopto_tab_load_failed",
+    page_message: "panopto_page_message_failed",
+    hub_request: "panopto_hub_request_failed",
+  }[stage] || "browser_command_failed";
 }
 
 async function pageMessage(tabs, tabId, type) {
@@ -50,14 +60,19 @@ export async function runPanoptoCommand(command, dependencies = {}) {
   const waitForReady = dependencies.waitForReady
     || ((tabId) => defaultWaitForReady(tabs, tabId));
   let tab;
+  let stage = "hub_request";
   try {
     await hub.heartbeat("scanning");
+    stage = "tab_open";
     tab = await tabs.create({url: HOME, active: false});
+    stage = "tab_load";
     await waitForReady(tab.id);
+    stage = "page_message";
     if (command.kind === "connection_check") {
       await pageMessage(tabs, tab.id, "panopto:connection-check");
     } else if (command.kind === "scan") {
       const discovery = await pageMessage(tabs, tab.id, "panopto:discover");
+      stage = "hub_request";
       const response = await hub.postDiscover({
         command_id: command.id,
         recordings: discovery.recordings,
@@ -66,9 +81,12 @@ export async function runPanoptoCommand(command, dependencies = {}) {
         if (disposition.action !== "extract_transcript" || !disposition.viewer_url) {
           continue;
         }
+        stage = "tab_load";
         await tabs.update(tab.id, {url: disposition.viewer_url});
         await waitForReady(tab.id);
+        stage = "page_message";
         const transcript = await pageMessage(tabs, tab.id, "panopto:extract");
+        stage = "hub_request";
         await hub.postTranscript({
           command_id: command.id,
           recording_id: disposition.recording_id,
@@ -78,9 +96,12 @@ export async function runPanoptoCommand(command, dependencies = {}) {
         });
       }
     } else if (command.kind === "acceptance") {
+      stage = "tab_load";
       await tabs.update(tab.id, {url: command.payload.viewer_url});
       await waitForReady(tab.id);
+      stage = "page_message";
       const transcript = await pageMessage(tabs, tab.id, "panopto:extract");
+      stage = "hub_request";
       await hub.postAcceptance({
         command_id: command.id,
         session_id: command.payload.session_id,
@@ -92,6 +113,7 @@ export async function runPanoptoCommand(command, dependencies = {}) {
         code: "browser_command_failed",
       });
     }
+    stage = "hub_request";
     await hub.postResult({
       command_id: command.id,
       status: "complete",
@@ -100,7 +122,7 @@ export async function runPanoptoCommand(command, dependencies = {}) {
     await hub.heartbeat("connected");
     return {status: "complete"};
   } catch (error) {
-    const reason = safeReason(error);
+    const reason = safeReason(error, stage);
     await hub.postResult({
       command_id: command.id,
       status: "failed",

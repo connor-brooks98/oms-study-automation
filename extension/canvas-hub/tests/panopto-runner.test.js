@@ -147,6 +147,33 @@ test("SSO redirect without a Panopto content script requests sign-in", async () 
   assert.equal(result.reason_code, "panopto_login_required");
 });
 
+test("generic tab load failures report a safe stage code", async () => {
+  const result = await runPanoptoCommand(COMMAND, {
+    tabs: fakeTabs(),
+    hub: fakeHub(),
+    waitForReady: async () => {
+      throw new Error("unknown browser detail");
+    },
+  });
+
+  assert.equal(result.reason_code, "panopto_tab_load_failed");
+});
+
+test("generic page message failures report a safe stage code", async () => {
+  const tabs = fakeTabs();
+  tabs.sendMessage = async () => {
+    throw new Error("unknown browser detail");
+  };
+
+  const result = await runPanoptoCommand(COMMAND, {
+    tabs,
+    hub: fakeHub(),
+    waitForReady: async () => {},
+  });
+
+  assert.equal(result.reason_code, "panopto_page_message_failed");
+});
+
 test("acceptance extracts the configured viewer without discovery", async () => {
   const command = {
     id: "acceptance-id",
