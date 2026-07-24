@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from oms_hub.app import create_app
 from oms_hub.canvas.pairing import PairingService
 from oms_hub.config import Settings
-from oms_hub.panopto.browser_domain import BrowserCommandKind
+from oms_hub.panopto.browser_domain import BrowserCommandKind, BrowserRequestKind
 from oms_hub.repositories import CatalogRepository, LectureInput
 from tests.canvas.test_pairing import MemorySecretStore
 
@@ -73,6 +73,59 @@ def test_panopto_api_requires_existing_companion_bearer(tmp_path):
     client, _ = _prepared_client(tmp_path)
 
     assert client.get("/api/panopto/command").status_code == 401
+    assert client.get("/api/panopto/request").status_code == 401
+
+
+def test_request_is_recoverable_until_complete(tmp_path):
+    client, headers = _prepared_client(tmp_path)
+    request_id = client.app.state.panopto_repository.create_browser_request(
+        BrowserRequestKind.CONNECTION_TEST,
+        {},
+        NOW,
+    )
+
+    first = client.get("/api/panopto/request", headers=headers)
+    second = client.get("/api/panopto/request", headers=headers)
+    progress = client.post(
+        f"/api/panopto/request/{request_id}/progress",
+        headers=headers,
+        json={"state": "running", "progress": "opening_shared"},
+    )
+    updated = client.get("/api/panopto/request", headers=headers)
+    completed = client.post(
+        f"/api/panopto/request/{request_id}/result",
+        headers=headers,
+        json={"status": "complete", "reason_code": None},
+    )
+    empty = client.get("/api/panopto/request", headers=headers)
+
+    assert first.status_code == 200
+    assert first.json()["id"] == request_id
+    assert second.json()["id"] == request_id
+    assert progress.status_code == 200
+    assert updated.json()["progress"] == "opening_shared"
+    assert completed.status_code == 200
+    assert empty.status_code == 204
+
+
+def test_request_discovery_returns_caption_download_disposition(tmp_path):
+    client, headers = _prepared_client(tmp_path)
+    request_id = client.app.state.panopto_repository.create_browser_request(
+        BrowserRequestKind.SCAN,
+        {"manual": True},
+        NOW,
+    )
+
+    response = client.post(
+        f"/api/panopto/request/{request_id}/discover",
+        headers=headers,
+        json={"recordings": [_recording_json()]},
+    )
+
+    assert response.status_code == 200
+    disposition = response.json()["dispositions"][0]
+    assert disposition["action"] == "download_caption"
+    assert disposition["viewer_url"] == VIEWER_URL
 
 
 def test_command_is_claimed_once(tmp_path):
@@ -124,7 +177,7 @@ def test_discovery_returns_bounded_extract_disposition(tmp_path):
 
     assert response.status_code == 200
     disposition = response.json()["dispositions"][0]
-    assert disposition["action"] == "extract_transcript"
+    assert disposition["action"] == "download_caption"
     assert disposition["viewer_url"] == VIEWER_URL
 
 

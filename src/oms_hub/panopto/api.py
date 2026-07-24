@@ -69,6 +69,20 @@ class DiscoveryRequest(StrictModel):
     recordings: list[RecordingRequest] = Field(max_length=100)
 
 
+class RequestDiscoveryRequest(StrictModel):
+    recordings: list[RecordingRequest] = Field(max_length=100)
+
+
+class RequestProgressRequest(StrictModel):
+    state: Literal["running", "awaiting_login"]
+    progress: str = Field(pattern=r"^[a-z0-9_]{1,80}$")
+
+
+class RequestResultRequest(StrictModel):
+    status: Literal["complete", "failed"]
+    reason_code: str | None = Field(default=None, pattern=r"^[a-z0-9_]{1,80}$")
+
+
 class TranscriptRequest(StrictModel):
     command_id: UUID
     recording_id: int = Field(gt=0)
@@ -138,6 +152,18 @@ def _require_running_command(request: Request, command_id: UUID) -> None:
         )
 
 
+def _require_browser_request(
+    request: Request,
+    request_id: UUID,
+) -> None:
+    value = _repository(request).get_browser_request(str(request_id))
+    if value is None or value.state in {"complete", "failed"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Panopto browser request is not active",
+        )
+
+
 @router.post("/heartbeat")
 def heartbeat(
     value: HeartbeatRequest,
@@ -170,6 +196,91 @@ def command(
         "kind": claimed.kind.value,
         "payload": claimed.payload,
     }
+
+
+@router.get("/request", response_model=None)
+def browser_request(
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> Response | dict[str, object]:
+    _authenticate(request, authorization)
+    pending = _repository(request).next_browser_request(datetime.now(UTC))
+    if pending is None:
+        return Response(status_code=204)
+    return {
+        "id": pending.id,
+        "kind": pending.kind.value,
+        "state": pending.state,
+        "payload": pending.payload,
+        "progress": pending.progress,
+    }
+
+
+@router.post("/request/{request_id}/progress")
+def browser_request_progress(
+    request_id: UUID,
+    value: RequestProgressRequest,
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, str]:
+    _authenticate(request, authorization)
+    _require_browser_request(request, request_id)
+    _repository(request).update_browser_request(
+        str(request_id),
+        value.state,
+        value.progress,
+        datetime.now(UTC),
+    )
+    return {"status": "ok"}
+
+
+@router.post("/request/{request_id}/discover")
+def browser_request_discover(
+    request_id: UUID,
+    value: RequestDiscoveryRequest,
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    _authenticate(request, authorization)
+    _require_browser_request(request, request_id)
+    dispositions = _service(request).process_discovery(
+        str(request_id),
+        [item.domain_value() for item in value.recordings],
+        datetime.now(UTC),
+    )
+    return {
+        "dispositions": [
+            {
+                "recording_id": item.recording_id,
+                "session_id": item.session_id,
+                "action": item.action,
+                "viewer_url": item.viewer_url,
+                "reason": item.reason,
+            }
+            for item in dispositions
+        ]
+    }
+
+
+@router.post("/request/{request_id}/result")
+def browser_request_result(
+    request_id: UUID,
+    value: RequestResultRequest,
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, str]:
+    _authenticate(request, authorization)
+    _require_browser_request(request, request_id)
+    now = datetime.now(UTC)
+    repository = _repository(request)
+    if value.status == "complete":
+        repository.complete_browser_request(str(request_id), now)
+        repository.heartbeat("connected", now)
+    else:
+        reason = value.reason_code or "browser_request_failed"
+        repository.fail_browser_request(str(request_id), reason, now)
+        repository.heartbeat("error", now, reason)
+    return {"status": "ok"}
 
 
 @router.post("/discover")

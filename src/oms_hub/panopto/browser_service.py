@@ -6,6 +6,7 @@ from oms_hub.panopto.browser_domain import (
     BrowserCommandKind,
     BrowserDisposition,
     BrowserRecording,
+    BrowserRequestKind,
     TranscriptExtraction,
 )
 from oms_hub.panopto.discovery import PollingPolicy
@@ -52,25 +53,28 @@ class PanoptoBrowserService:
         connection = self.repository.connection()
         if not self.policy.eligible(now, lectures, connection.enabled):
             return None
-        return self.repository.queue_browser_command(
-            BrowserCommandKind.SCAN,
+        return self.repository.create_browser_request(
+            BrowserRequestKind.SCAN,
             {"manual": False},
             now,
         )
 
     def queue_manual_scan(self, now: datetime) -> str:
-        return self.repository.queue_browser_command(
-            BrowserCommandKind.SCAN,
+        return self.repository.create_browser_request(
+            BrowserRequestKind.SCAN,
             {"manual": True},
             now,
         )
 
-    def queue_connection_check(self, now: datetime) -> str:
-        return self.repository.queue_browser_command(
-            BrowserCommandKind.CONNECTION_CHECK,
+    def queue_connection_test(self, now: datetime) -> str:
+        return self.repository.create_browser_request(
+            BrowserRequestKind.CONNECTION_TEST,
             {},
             now,
         )
+
+    def queue_connection_check(self, now: datetime) -> str:
+        return self.queue_connection_test(now)
 
     def queue_acceptance(
         self,
@@ -120,7 +124,7 @@ class PanoptoBrowserService:
                 item.viewer_url,
             )
             if match.lecture_id is not None and not match.needs_review:
-                action = "extract_transcript"
+                action = "download_caption"
                 viewer_url: str | None = item.viewer_url
             else:
                 action = "review"

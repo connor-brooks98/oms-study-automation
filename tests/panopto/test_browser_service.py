@@ -4,8 +4,8 @@ from datetime import UTC, datetime
 import pytest
 
 from oms_hub.panopto.browser_domain import (
-    BrowserCommandKind,
     BrowserRecording,
+    BrowserRequestKind,
     TranscriptExtraction,
 )
 from oms_hub.panopto.browser_service import PanoptoBrowserService
@@ -63,13 +63,24 @@ def test_scheduled_scan_queues_only_in_eligible_window(database):
     assert service.queue_scheduled_scan(
         datetime(2026, 7, 23, 13, 19, tzinfo=UTC)
     ) is None
-    command_id = service.queue_scheduled_scan(NOW)
+    request_id = service.queue_scheduled_scan(NOW)
 
-    assert command_id is not None
-    command = repository.claim_browser_command(NOW)
-    assert command is not None
-    assert command.kind is BrowserCommandKind.SCAN
-    assert command.payload == {"manual": False}
+    assert request_id is not None
+    request = repository.next_browser_request(NOW)
+    assert request is not None
+    assert request.kind is BrowserRequestKind.SCAN
+    assert request.payload == {"manual": False}
+
+
+def test_connection_test_creates_recoverable_request(database):
+    service, repository = _service(database)
+
+    request_id = service.queue_connection_test(NOW)
+
+    request = repository.next_browser_request(NOW)
+    assert request is not None
+    assert request.id == request_id
+    assert request.kind is BrowserRequestKind.CONNECTION_TEST
 
 
 def test_discovery_returns_extract_only_for_confident_match(database):
@@ -78,7 +89,7 @@ def test_discovery_returns_extract_only_for_confident_match(database):
     result = service.process_discovery("command-id", [_recording()], NOW)
 
     assert len(result) == 1
-    assert result[0].action == "extract_transcript"
+    assert result[0].action == "download_caption"
     assert result[0].viewer_url == VIEWER_URL
     assert repository.get_recording_source(result[0].recording_id) == VIEWER_URL
 

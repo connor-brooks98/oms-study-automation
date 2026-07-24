@@ -167,6 +167,22 @@ class PanoptoRepository:
                 request.progress,
             )
 
+    def get_browser_request(self, request_id: str) -> BrowserRequest | None:
+        with self.database.session() as db_session:
+            request = db_session.get(PanoptoBrowserRequestModel, request_id)
+            if request is None:
+                return None
+            payload = json.loads(request.payload_json)
+            if not isinstance(payload, dict):
+                raise TypeError("Panopto browser request payload is invalid")
+            return BrowserRequest(
+                request.id,
+                BrowserRequestKind(request.kind),
+                request.state,
+                payload,
+                request.progress,
+            )
+
     def update_browser_request(
         self,
         request_id: str,

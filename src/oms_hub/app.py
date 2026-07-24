@@ -1,4 +1,5 @@
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -80,6 +81,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.panopto_repository = PanoptoRepository(
         database,
         resolved.panopto_tenant_url,
+    )
+    app.state.panopto_repository.supersede_legacy_browser_commands(
+        datetime.now(UTC)
     )
     connection = app.state.panopto_repository.connection()
     app.state.panopto_prompt = PromptLoader(
