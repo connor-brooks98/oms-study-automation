@@ -3,6 +3,7 @@ import {completedDownload} from "./lib/downloads.js";
 import {runScan} from "./lib/scanner.js";
 import {runPanoptoCommand} from "./lib/panopto-runner.js";
 import {
+  getConfig,
   getPanoptoCommand,
   panoptoHub,
 } from "./lib/hub-client.js";
@@ -12,7 +13,6 @@ const COMMAND_ALARM = "canvas_commands";
 let activePanopto = null;
 
 async function pollCommands() {
-  const {getConfig} = await import("./lib/hub-client.js");
   const config = await getConfig();
   if (config.scan_requested) await runScan();
   if (activePanopto) return activePanopto;
