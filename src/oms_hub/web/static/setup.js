@@ -91,7 +91,32 @@ async function testPanopto(button) {
   }
 }
 
+async function scanPanopto(button) {
+  const feedback = document.querySelector("[data-panopto-scan-feedback]");
+  button.disabled = true;
+  if (feedback) feedback.textContent = "Opening Shared with Me…";
+  try {
+    const response = await fetch("/setup/panopto/scan", {
+      method: "POST",
+      headers: {accept: "application/json"},
+    });
+    if (!response.ok) throw new Error("The Hub could not start the scan");
+    const body = await response.json();
+    window.dispatchEvent(new CustomEvent(TEST_EVENT, {
+      detail: {request_id: body.request_id},
+    }));
+    if (feedback) feedback.textContent = "Panopto scan launched in Chrome.";
+  } catch (error) {
+    if (feedback) feedback.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 document.querySelectorAll("[data-panopto-test]").forEach((button) => {
   button.addEventListener("click", () => testPanopto(button));
+});
+document.querySelectorAll("[data-panopto-scan]").forEach((button) => {
+  button.addEventListener("click", () => scanPanopto(button));
 });
 connectEvents();

@@ -108,6 +108,19 @@ def test_scan_now_queues_instead_of_blocking_on_network(tmp_path):
     assert request.payload == {"manual": True}
 
 
+def test_setup_scan_returns_request_id_for_immediate_companion_launch(tmp_path):
+    client, app, _ = panopto_client_for(tmp_path)
+
+    response = client.post("/setup/panopto/scan")
+
+    assert response.status_code == 200
+    request_id = response.json()["request_id"]
+    request = app.state.panopto_repository.get_browser_request(request_id)
+    assert request is not None
+    assert request.kind is BrowserRequestKind.SCAN
+    assert request.payload == {"manual": True}
+
+
 def test_enable_requires_browser_acceptance_prompt_and_openai(tmp_path):
     client, _, _ = panopto_client_for(tmp_path)
 

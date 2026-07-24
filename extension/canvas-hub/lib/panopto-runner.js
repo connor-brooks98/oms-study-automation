@@ -196,7 +196,10 @@ export async function runPanoptoRequest(request, dependencies = {}) {
     stage = "tab_open";
     tab = await tabs.create({
       url: SHARED_WITH_ME,
-      active: request.kind === "connection_test",
+      active: (
+        request.kind === "connection_test"
+        || (request.kind === "scan" && request.payload?.manual === true)
+      ),
     });
     stage = "tab_load";
     await waitForReady(tab.id);

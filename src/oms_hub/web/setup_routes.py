@@ -161,6 +161,12 @@ def test_panopto_connection(request: Request) -> dict[str, str]:
     return {"request_id": request_id}
 
 
+@router.post("/setup/panopto/scan")
+def scan_panopto_now(request: Request) -> dict[str, str]:
+    request_id = _browser(request).queue_manual_scan(datetime.now(UTC))
+    return {"request_id": request_id}
+
+
 @router.get("/api/setup/status")
 def setup_status(request: Request) -> dict[str, object]:
     return _status_snapshot(request)

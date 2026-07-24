@@ -155,6 +155,18 @@ test("scheduled scan uses an inactive tab and managed caption downloads", async 
   }]);
 });
 
+test("manual scan opens visibly for immediate Hub feedback", async () => {
+  const tabs = fakeTabs([{recordings: [RECORDING]}]);
+  const hub = fakeHub([]);
+
+  await runPanoptoRequest(
+    {id: REQUEST_ID, kind: "scan", state: "requested", payload: {manual: true}},
+    {tabs, hub, downloads: fakeDownloads(), waitForReady: async () => {}},
+  );
+
+  assert.equal(tabs.created[0].active, true);
+});
+
 test("missing captions return the request to the polling lineup", async () => {
   const tabs = fakeTabs([
     {recordings: [RECORDING]},
