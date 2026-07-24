@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  fetchSharedRecordings,
   PanoptoPageError,
   isLoginRequired,
   newestSharedRecording,
@@ -12,6 +13,7 @@ import {
 
 const SESSION_ID = "8796399e-393c-4256-b6e4-b48f0150d156";
 const VIEWER = `https://lmunet.hosted.panopto.com/Panopto/Pages/Viewer.aspx?id=${SESSION_ID}`;
+const PANOPTO_ORIGIN = "https://lmunet.hosted.panopto.com";
 
 function node({text = "", attrs = {}, one = {}, many = {}} = {}) {
   return {
@@ -72,6 +74,128 @@ test("normalizes only bounded recording metadata", () => {
     folder_name: "Shared with Me",
     viewer_url: VIEWER,
   }]);
+});
+
+test("discovers Shared with Me recordings through the signed-in Panopto session", async () => {
+  const calls = [];
+  const fetcher = async (...args) => {
+    calls.push(args);
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          d: {
+            Results: [{
+              DeliveryID: SESSION_ID,
+              SessionName: "6H. MSK Shoulder Disease Injury",
+              StartTime: "2026-07-23T13:05:00Z",
+              Duration: 3600,
+              FolderName: "Shared with Me",
+              ViewerUrl: VIEWER,
+            }],
+          },
+        };
+      },
+    };
+  };
+
+  const result = await fetchSharedRecordings(fetcher, {origin: PANOPTO_ORIGIN});
+
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0][0],
+    `${PANOPTO_ORIGIN}/Panopto/Services/Data.svc/GetSessions`,
+  );
+  assert.equal(calls[0][1].method, "POST");
+  assert.equal(calls[0][1].credentials, "same-origin");
+  assert.deepEqual(JSON.parse(calls[0][1].body), {
+    queryParameters: {
+      sortColumn: 1,
+      getFolderData: true,
+      includePlaylists: true,
+      isSharedWithMe: true,
+      page: 0,
+      maxResults: 100,
+    },
+  });
+  assert.deepEqual(result, [{
+    session_id: SESSION_ID,
+    name: "6H. MSK Shoulder Disease Injury",
+    created_utc: "2026-07-23T13:05:00.000Z",
+    duration_seconds: 3600,
+    folder_name: "Shared with Me",
+    viewer_url: VIEWER,
+  }]);
+});
+
+test("accepts Panopto Microsoft JSON dates and string-wrapped responses", async () => {
+  const fetcher = async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return {
+        d: JSON.stringify({
+          Results: [{
+            DeliveryID: SESSION_ID,
+            SessionName: "Newest shared recording",
+            StartTime: "/Date(1784811900000)/",
+            Duration: "01:00:00",
+            FolderName: "Shared with Me",
+          }],
+        }),
+      };
+    },
+  });
+
+  const [recording] = await fetchSharedRecordings(
+    fetcher,
+    {origin: PANOPTO_ORIGIN},
+  );
+
+  assert.equal(recording.created_utc, "2026-07-23T13:05:00.000Z");
+  assert.equal(recording.duration_seconds, 3600);
+  assert.equal(recording.viewer_url, VIEWER);
+});
+
+test("reports Panopto sign-in when the session listing is unauthorized", async () => {
+  const fetcher = async () => ({ok: false, status: 401});
+
+  await assert.rejects(
+    fetchSharedRecordings(fetcher, {origin: PANOPTO_ORIGIN}),
+    (error) => error instanceof PanoptoPageError
+      && error.code === "panopto_login_required",
+  );
+});
+
+test("reports Panopto sign-in from its authenticated-session error response", async () => {
+  const fetcher = async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return {ErrorCode: 2, ErrorMessage: "Authentication required"};
+    },
+  });
+
+  await assert.rejects(
+    fetchSharedRecordings(fetcher, {origin: PANOPTO_ORIGIN}),
+    (error) => error instanceof PanoptoPageError
+      && error.code === "panopto_login_required",
+  );
+});
+
+test("reports an empty Shared with Me listing immediately", async () => {
+  const fetcher = async () => ({
+    ok: true,
+    status: 200,
+    async json() { return {d: {Results: []}}; },
+  });
+
+  await assert.rejects(
+    fetchSharedRecordings(fetcher, {origin: PANOPTO_ORIGIN}),
+    (error) => error instanceof PanoptoPageError
+      && error.code === "no_shared_recordings",
+  );
 });
 
 test("waits for the Shared with Me list to render", async () => {

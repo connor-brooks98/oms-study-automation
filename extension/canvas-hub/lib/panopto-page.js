@@ -4,6 +4,8 @@ const TITLE_LINKS = [
   ".item-title.title-link a.detail-title",
   "a[href*='/Panopto/Pages/Viewer.aspx?id=']",
 ];
+const PANOPTO_HOST = "lmunet.hosted.panopto.com";
+const SHARED_SESSIONS_PATH = "/Panopto/Services/Data.svc/GetSessions";
 export class PanoptoPageError extends Error {
   constructor(code, message) {
     super(message);
@@ -33,6 +35,10 @@ function text(root, selectors) {
 }
 
 function parseDuration(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) && value >= 0 ? Math.round(value) : 0;
+  }
+  if (typeof value !== "string") return 0;
   const parts = value.trim().split(":").map(Number);
   if (!parts.length || parts.some((part) => !Number.isFinite(part))) return 0;
   if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
@@ -50,7 +56,7 @@ function viewer(value) {
   const sessionId = url.searchParams.get("id");
   if (
     url.protocol !== "https:"
-    || url.hostname !== "lmunet.hosted.panopto.com"
+    || url.hostname !== PANOPTO_HOST
     || url.pathname !== "/Panopto/Pages/Viewer.aspx"
     || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId || "")
   ) {
@@ -60,6 +66,166 @@ function viewer(value) {
     );
   }
   return {sessionId, url: url.toString()};
+}
+
+function parsedPanoptoDate(value) {
+  if (value instanceof Date) return value;
+  if (typeof value === "number") {
+    return new Date(value < 10_000_000_000 ? value * 1000 : value);
+  }
+  if (typeof value !== "string") return new Date(Number.NaN);
+  const microsoftJson = value.match(/^\/Date\((-?\d+)/);
+  if (microsoftJson) return new Date(Number(microsoftJson[1]));
+  return new Date(value);
+}
+
+function sessionCreated(item) {
+  const value = [
+    item.StartTime,
+    item.SessionStartTime,
+    item.CreatedTime,
+    item.CreationTime,
+    item.CreatedDate,
+    item.Date,
+    item.ScheduledStartTime,
+    item.SessionDate,
+  ].find((candidate) => candidate !== undefined && candidate !== null);
+  const created = parsedPanoptoDate(value);
+  if (Number.isNaN(created.getTime())) {
+    throw new PanoptoPageError(
+      "page_structure_changed",
+      "Panopto recording time was not found",
+    );
+  }
+  return created.toISOString();
+}
+
+function responseData(payload) {
+  let data = payload?.d ?? payload;
+  if (typeof data === "string") {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      throw new PanoptoPageError(
+        "page_structure_changed",
+        "Panopto session response was invalid",
+      );
+    }
+  }
+  if (data?.ErrorCode === 2 || payload?.ErrorCode === 2) {
+    throw new PanoptoPageError(
+      "panopto_login_required",
+      "Sign in to Panopto",
+    );
+  }
+  if (!data || !Array.isArray(data.Results)) {
+    throw new PanoptoPageError(
+      "page_structure_changed",
+      "Panopto session results were not found",
+    );
+  }
+  return data.Results;
+}
+
+function recordingFromSession(item, origin) {
+  const sessionId = String(item.DeliveryID || "").trim();
+  const name = String(item.SessionName || "").trim();
+  if (!sessionId || !name) {
+    throw new PanoptoPageError(
+      "page_structure_changed",
+      "Panopto recording metadata was incomplete",
+    );
+  }
+  const rawViewer = item.ViewerUrl
+    || item.EmbedUrl
+    || `/Panopto/Pages/Viewer.aspx?id=${encodeURIComponent(sessionId)}`;
+  let absoluteViewer;
+  try {
+    absoluteViewer = new URL(rawViewer, origin).toString();
+  } catch {
+    throw new PanoptoPageError(
+      "page_structure_changed",
+      "Invalid viewer link",
+    );
+  }
+  const parsed = viewer(absoluteViewer);
+  if (parsed.sessionId.toLowerCase() !== sessionId.toLowerCase()) {
+    throw new PanoptoPageError(
+      "page_structure_changed",
+      "Panopto recording ID did not match its viewer link",
+    );
+  }
+  return {
+    session_id: parsed.sessionId,
+    name,
+    created_utc: sessionCreated(item),
+    duration_seconds: parseDuration(item.Duration),
+    folder_name: String(item.FolderName || "Shared with Me").trim(),
+    viewer_url: parsed.url,
+  };
+}
+
+export async function fetchSharedRecordings(fetcher, location) {
+  if (
+    typeof fetcher !== "function"
+    || location?.origin !== `https://${PANOPTO_HOST}`
+  ) {
+    throw new PanoptoPageError(
+      "page_structure_changed",
+      "Shared recording discovery requires LMU Panopto",
+    );
+  }
+  const response = await fetcher(`${location.origin}${SHARED_SESSIONS_PATH}`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      queryParameters: {
+        sortColumn: 1,
+        getFolderData: true,
+        includePlaylists: true,
+        isSharedWithMe: true,
+        page: 0,
+        maxResults: 100,
+      },
+    }),
+  });
+  if (response.status === 401 || response.status === 403) {
+    throw new PanoptoPageError(
+      "panopto_login_required",
+      "Sign in to Panopto",
+    );
+  }
+  if (!response.ok) {
+    throw new PanoptoPageError(
+      "page_structure_changed",
+      "Panopto session listing request failed",
+    );
+  }
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new PanoptoPageError(
+      "page_structure_changed",
+      "Panopto session response was invalid",
+    );
+  }
+  const sessions = responseData(payload).filter(
+    (item) => item?.DeliveryID && item?.SessionName,
+  );
+  if (!sessions.length) {
+    throw new PanoptoPageError(
+      "no_shared_recordings",
+      "No shared Panopto recordings were found",
+    );
+  }
+  return sessions.slice(0, 100).map(
+    (item) => recordingFromSession(item, location.origin),
+  );
 }
 
 export function isLoginRequired(document, location) {
@@ -225,7 +391,7 @@ function captionUrl(control, location) {
   }
   if (
     url.protocol !== "https:"
-    || url.hostname !== "lmunet.hosted.panopto.com"
+    || url.hostname !== PANOPTO_HOST
   ) {
     throw new PanoptoPageError(
       "unsafe_caption_download",

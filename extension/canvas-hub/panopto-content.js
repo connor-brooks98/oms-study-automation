@@ -1,7 +1,10 @@
 const adapterPromise = import(chrome.runtime.getURL("lib/panopto-page.js"));
 
 async function sharedWithMe(adapter) {
-  return adapter.waitForSharedRecordings(document, location);
+  return adapter.fetchSharedRecordings(
+    (...args) => globalThis.fetch(...args),
+    location,
+  );
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
