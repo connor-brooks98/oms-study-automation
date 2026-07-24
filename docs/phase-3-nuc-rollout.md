@@ -5,14 +5,20 @@
 Phase 3 uses the existing paired OMS Study Hub Chrome companion and the user's
 normal LMU Panopto session. It does not use a Panopto API client, client secret,
 OAuth token, exported cookie, or separate browser profile. The extension scans
-only recordings rendered in **Shared with Me**, extracts a transcript only for
-a Hub-selected recording, and cannot edit or delete Panopto content.
+only recordings rendered in **Shared with Me**, uses Panopto's built-in
+**Download Captions** control for English (United States), and cannot edit or
+delete Panopto content. It does not play lectures or scrape transcript-panel
+lines.
 
 Raw and cleaned revisions remain immutable under
 `C:\ProgramData\OMSStudyHub\artifacts\panopto\revisions`. Never delete that
 folder or `hub.db` during installation or troubleshooting. Canonical
 transcripts are filed only after validation under
 `%USERPROFILE%\Documents\OMS II\<Subject>\Exam <number>\Transcripts`.
+Chrome downloads first enter
+`%USERPROFILE%\Downloads\OMSStudyHub\PanoptoInbox`; production files are
+removed only after the immutable ProgramData original is verified. Invalid
+managed files move to `C:\ProgramData\OMSStudyHub\quarantine\panopto`.
 
 ## Safe NUC update
 
@@ -46,13 +52,15 @@ artifacts, the OMS II hierarchy, and the Obsidian prompt.
 ## Refresh the existing extension
 
 1. Open `chrome://extensions` in the same Chrome profile used for Canvas.
-2. Find **OMS Study Hub Browser Companion** and choose **Reload**.
+2. Find **OMS Study Hub Companion** and choose **Reload**.
 3. Approve access to `lmunet.hosted.panopto.com` if Chrome asks.
-4. Confirm the extension remains paired on the Canvas setup page.
+4. Open `http://127.0.0.1:8765/setup` and confirm Canvas still shows paired.
 
 Do not install a second extension or create a Panopto API client. The companion
 has exact access only to LMU Canvas, LMU Panopto, and the local Hub; it has no
-Chrome cookie permission. Chrome must remain running for browser commands.
+Chrome cookie permission. Chrome must remain running for browser requests. The
+extension popup is only for pairing/repair diagnostics; it is not part of the
+normal Panopto test flow.
 
 ## OpenAI prompt readiness
 
@@ -81,26 +89,38 @@ revision is approved.
 
 ## Connect and run live acceptance
 
-Open `http://127.0.0.1:8765/panopto/setup`.
+Open `http://127.0.0.1:8765/setup`. The Setup Center must open on its overview;
+do not click the extension popup during these checks.
 
-1. Choose **Sign in to Panopto** and complete the Microsoft school login in the
-   Chrome tab.
-2. Return to the setup page and choose **Check connection**.
-3. Run acceptance against approved recording
-   `8796399e-393c-4256-b6e4-b48f0150d156`.
-4. Confirm the recording metadata, MSK lecture match, transcript preview,
-   destination preview, and immutable ProgramData path are correct.
-5. Trigger the representative workflow and confirm the checklist completes in
-   order: recording found, transcript downloaded, transcript cleaned,
-   transcript filed.
-6. Confirm `raw.txt` and `cleaned.txt` exist in one immutable revision folder
-   and one canonical transcript exists in the MSK exam `Transcripts` folder.
-7. Run the same scan again and confirm no new revision, OpenAI request, or
-   canonical file is created.
-8. Verify the established Canvas Neuro and Heme/Lymph scans still preserve
-   originals, conversions, quarantine/replacement review, local filing, and
-   Goodnotes staging.
-9. Enable Panopto automation only after all checks pass.
+1. **Logged-in one-click test:** choose **Sign in to Panopto**, finish the
+   Microsoft school login, then choose **Test Panopto Connection** once in the
+   Hub. Confirm an active tab immediately opens the newest recording under
+   Shared with Me, downloads its English (United States) captions, closes, and
+   reports a successful test. The temporary test caption must be deleted with
+   no revision, cleaning request, canonical file, or checklist change.
+2. **Logged-out continuation:** sign out of Panopto and run the same Hub test.
+   Confirm the active tab remains open for sign-in and the same request
+   continues automatically after login without an extension click.
+3. **Captions-pending retry:** use a newly released recording whose captions
+   are still processing. Confirm the Hub shows `waiting_for_captions`, creates
+   no revision/OpenAI call/review item, and retries after 15 minutes within the
+   weekday 9:20 AM–7:00 PM Eastern window.
+4. **Real ingestion:** run a scan for a confidently matched lecture with
+   captions. Confirm the checklist completes in order—recording found,
+   transcript downloaded, transcript cleaned, transcript filed—and confirm
+   immutable `raw.txt`/`cleaned.txt` plus one canonical transcript under the
+   correct exam's `Transcripts` folder. Repeat unchanged captions to prove no
+   duplicate revision or OpenAI request is created.
+5. **Live overview:** while the test and scan run, leave the Setup Center open
+   and confirm Canvas, Panopto, OpenAI, prompt, and Panopto progress update
+   without refreshing the page.
+6. **Restart recovery:** start a test or scan, restart the Hub/extension before
+   it finishes, and confirm the persisted request resumes rather than
+   disappearing or duplicating the download.
+
+Finally, verify the established Canvas Neuro and Heme/Lymph scans still
+preserve originals, conversions, quarantine/replacement review, local filing,
+and Goodnotes staging. Enable Panopto automation only after all checks pass.
 
 ## Daily operation and statuses
 
@@ -115,7 +135,7 @@ The main operational states are:
 |---|---|
 | `companion_unavailable` | Chrome is closed, the extension is not paired, or its heartbeat is stale. Start Chrome, reload the extension, and confirm pairing. |
 | `panopto_login_required` | The temporary tab reached LMU/Microsoft sign-in instead of Panopto. Use **Sign in to Panopto**, finish login, then check the connection again. |
-| `waiting_for_transcript` | The recording exists but Panopto has not exposed a complete English transcript. The next eligible scan retries it without consuming a failed attempt. |
+| `waiting_for_captions` | The recording exists but Panopto has not exposed the English (United States) caption download. The request returns to the eligible 15-minute polling lineup without a revision, OpenAI call, or review item. |
 | `needs_review` | Matching, language, prompt, or cleaning validation was not safe enough for automatic filing. Review and remap or retry in the Hub. |
 
 Useful diagnostics:

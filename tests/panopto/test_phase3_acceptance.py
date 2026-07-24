@@ -1,5 +1,5 @@
 import hashlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
@@ -45,6 +45,8 @@ def _prepared(tmp_path):
         data_dir=tmp_path / "ProgramData",
         database_url=f"sqlite:///{tmp_path / 'hub.db'}",
         panopto_revision_root=tmp_path / "ProgramData" / "revisions",
+        panopto_inbox=tmp_path / "PanoptoInbox",
+        panopto_quarantine_root=tmp_path / "ProgramData" / "quarantine",
         study_root=tmp_path / "OMS II",
         transcript_prompt_path=prompt_path,
     )
@@ -92,35 +94,40 @@ def _run_browser_cycle(
     headers: dict[str, str],
     transcript: str,
 ) -> None:
-    client.app.state.panopto_browser.queue_manual_scan(NOW)
-    command = client.get("/api/panopto/command", headers=headers).json()
+    request_id = client.app.state.panopto_browser.queue_manual_scan(NOW)
+    request = client.get("/api/panopto/request", headers=headers).json()
+    assert request["id"] == request_id
     discovery = client.post(
-        "/api/panopto/discover",
+        f"/api/panopto/request/{request_id}/discover",
         headers=headers,
-        json={"command_id": command["id"], "recordings": [_recording()]},
+        json={"recordings": [_recording()]},
     )
     disposition = discovery.json()["dispositions"][0]
-    assert disposition["action"] == "extract_transcript"
+    assert disposition["action"] == "download_caption"
+    path = (
+        client.app.state.settings.panopto_inbox
+        / request_id
+        / f"{SESSION_ID}-captions.txt"
+    )
+    path.parent.mkdir(parents=True)
+    path.write_text(transcript, encoding="utf-8")
     response = client.post(
-        "/api/panopto/transcript",
+        f"/api/panopto/request/{request_id}/download",
         headers=headers,
         json={
-            "command_id": command["id"],
             "recording_id": disposition["recording_id"],
             "session_id": SESSION_ID,
             "viewer_url": VIEWER_URL,
             "language": "English_USA",
-            "line_count": 2,
-            "complete": True,
-            "text": transcript,
+            "chrome_download_id": 17,
+            "path": str(path.resolve()),
         },
     )
     assert response.status_code == 200
     client.post(
-        "/api/panopto/result",
+        f"/api/panopto/request/{request_id}/result",
         headers=headers,
         json={
-            "command_id": command["id"],
             "status": "complete",
             "reason_code": None,
         },
@@ -171,3 +178,44 @@ def test_browser_discovery_to_cleaned_transcript_acceptance(tmp_path):
         first,
         corrected,
     }
+
+
+def test_captions_pending_creates_no_revision_job_or_review(
+    tmp_path,
+    monkeypatch,
+):
+    client, headers, _, _, cleaner = _prepared(tmp_path)
+    request_id = client.app.state.panopto_browser.queue_manual_scan(NOW)
+    discovery = client.post(
+        f"/api/panopto/request/{request_id}/discover",
+        headers=headers,
+        json={"recordings": [_recording()]},
+    )
+    assert discovery.status_code == 200
+
+    class Clock:
+        @classmethod
+        def now(cls, timezone):
+            return NOW
+
+    monkeypatch.setattr("oms_hub.panopto.api.datetime", Clock)
+    result = client.post(
+        f"/api/panopto/request/{request_id}/result",
+        headers=headers,
+        json={
+            "status": "waiting_for_captions",
+            "reason_code": "captions_pending",
+        },
+    )
+
+    assert result.status_code == 200
+    assert cleaner.call_count == 0
+    assert list((tmp_path / "ProgramData" / "revisions").glob("*/raw.txt")) == []
+    assert client.app.state.panopto_repository.pending_review_count() == 0
+    assert client.app.state.panopto_pipeline.run_next() is False
+    assert client.app.state.panopto_repository.next_browser_request(
+        NOW + timedelta(minutes=14)
+    ) is None
+    assert client.app.state.panopto_repository.next_browser_request(
+        NOW + timedelta(minutes=15)
+    ).id == request_id

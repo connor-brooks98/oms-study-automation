@@ -83,7 +83,10 @@ failure. No password or token is stored in either PowerShell script.
 
 ## Canvas setup
 
-Follow [the Canvas companion installation guide](docs/canvas-extension-install.md), then complete `http://127.0.0.1:8765/canvas/setup`. The setup stays in discovery-only mode until the extension, eight course mappings, local/iCloud roots, and representative results are confirmed.
+Follow [the Canvas companion installation guide](docs/canvas-extension-install.md),
+then complete the Canvas section at `http://127.0.0.1:8765/setup`. The setup
+stays in discovery-only mode until the extension, eight course mappings,
+local/iCloud roots, and representative results are confirmed.
 
 The extension scans mapped Canvas modules every 30 minutes using the existing Chrome session. New high-confidence lectures and professor practice questions are converted and filed automatically. Changed lectures wait in Canvas review and never replace current files without approval. See the [NUC rollout and recovery guide](docs/phase-2-nuc-rollout.md).
 
@@ -107,13 +110,15 @@ then approve that exact revision:
 ```
 
 Reload the existing unpacked extension, open
-`http://127.0.0.1:8765/panopto/setup`, choose **Sign in to Panopto**, and
-complete the normal Microsoft school login in Chrome. Return to the setup page,
-choose **Check connection**, and validate the representative recording before
-enabling automation.
+`http://127.0.0.1:8765/setup`, choose **Sign in to Panopto**, and complete the
+normal Microsoft school login in Chrome. Choose **Test Panopto Connection**
+once in the Hub. The companion opens the newest Shared with Me recording in a
+visible tab and uses Panopto's built-in English (United States) caption
+download; the extension popup is not part of the normal flow.
 
 Chrome must be running. On Outlook-scheduled lecture days the Hub queues a
-browser scan every 15 minutes from 9:20 AM through 7:00 PM Eastern. It keeps
+browser scan every 15 minutes from 9:20 AM through 7:00 PM Eastern. Recordings
+released before captions are ready remain in the polling lineup. The Hub keeps
 immutable raw and cleaned revisions in ProgramData, runs complete transcripts
 through `gpt-5.6-terra` automatically, and files validated text under the
 lecture's `Transcripts` folder. See the

@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -170,7 +171,7 @@ def setup_events(
     request: Request,
     once: bool = Query(default=False),
 ) -> StreamingResponse:
-    async def events():
+    async def events() -> AsyncIterator[str]:
         previous: str | None = None
         while True:
             current = json.dumps(
