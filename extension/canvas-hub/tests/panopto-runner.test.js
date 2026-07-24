@@ -105,6 +105,7 @@ test("login requirement is reported once and tab is still removed", async () => 
     tabs,
     hub,
     waitForReady: async () => {},
+    messageRetryDelay: async () => {},
   });
 
   assert.equal(result.reason_code, "panopto_login_required");
@@ -142,6 +143,7 @@ test("SSO redirect without a Panopto content script requests sign-in", async () 
     tabs,
     hub: fakeHub(),
     waitForReady: async () => {},
+    messageRetryDelay: async () => {},
   });
 
   assert.equal(result.reason_code, "panopto_login_required");
@@ -169,9 +171,32 @@ test("generic page message failures report a safe stage code", async () => {
     tabs,
     hub: fakeHub(),
     waitForReady: async () => {},
+    messageRetryDelay: async () => {},
   });
 
   assert.equal(result.reason_code, "panopto_page_message_failed");
+});
+
+test("page messaging retries while the content listener is becoming ready", async () => {
+  const tabs = fakeTabs();
+  let attempts = 0;
+  tabs.sendMessage = async () => {
+    attempts += 1;
+    if (attempts < 3) {
+      throw new Error("The message port closed before a response was received.");
+    }
+    return {recordings: []};
+  };
+
+  const result = await runPanoptoCommand(COMMAND, {
+    tabs,
+    hub: fakeHub(),
+    waitForReady: async () => {},
+    messageRetryDelay: async () => {},
+  });
+
+  assert.equal(result.status, "complete");
+  assert.equal(attempts, 3);
 });
 
 test("acceptance extracts the configured viewer without discovery", async () => {

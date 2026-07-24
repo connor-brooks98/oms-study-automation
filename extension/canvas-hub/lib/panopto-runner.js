@@ -27,8 +27,17 @@ function safeReason(error, stage) {
   }[stage] || "browser_command_failed";
 }
 
-async function pageMessage(tabs, tabId, type) {
-  const response = await tabs.sendMessage(tabId, {type});
+async function pageMessage(tabs, tabId, type, retryDelay) {
+  let response;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      response = await tabs.sendMessage(tabId, {type});
+      break;
+    } catch (error) {
+      if (attempt === 19) throw error;
+      await retryDelay();
+    }
+  }
   if (response?.error) {
     throw Object.assign(new Error("Panopto page command failed"), {
       code: response.code,
@@ -59,6 +68,8 @@ export async function runPanoptoCommand(command, dependencies = {}) {
   const hub = dependencies.hub || defaultHub;
   const waitForReady = dependencies.waitForReady
     || ((tabId) => defaultWaitForReady(tabs, tabId));
+  const messageRetryDelay = dependencies.messageRetryDelay
+    || (() => new Promise((resolve) => setTimeout(resolve, 250)));
   let tab;
   let stage = "hub_request";
   try {
@@ -69,9 +80,19 @@ export async function runPanoptoCommand(command, dependencies = {}) {
     await waitForReady(tab.id);
     stage = "page_message";
     if (command.kind === "connection_check") {
-      await pageMessage(tabs, tab.id, "panopto:connection-check");
+      await pageMessage(
+        tabs,
+        tab.id,
+        "panopto:connection-check",
+        messageRetryDelay,
+      );
     } else if (command.kind === "scan") {
-      const discovery = await pageMessage(tabs, tab.id, "panopto:discover");
+      const discovery = await pageMessage(
+        tabs,
+        tab.id,
+        "panopto:discover",
+        messageRetryDelay,
+      );
       stage = "hub_request";
       const response = await hub.postDiscover({
         command_id: command.id,
@@ -85,7 +106,12 @@ export async function runPanoptoCommand(command, dependencies = {}) {
         await tabs.update(tab.id, {url: disposition.viewer_url});
         await waitForReady(tab.id);
         stage = "page_message";
-        const transcript = await pageMessage(tabs, tab.id, "panopto:extract");
+        const transcript = await pageMessage(
+          tabs,
+          tab.id,
+          "panopto:extract",
+          messageRetryDelay,
+        );
         stage = "hub_request";
         await hub.postTranscript({
           command_id: command.id,
@@ -100,7 +126,12 @@ export async function runPanoptoCommand(command, dependencies = {}) {
       await tabs.update(tab.id, {url: command.payload.viewer_url});
       await waitForReady(tab.id);
       stage = "page_message";
-      const transcript = await pageMessage(tabs, tab.id, "panopto:extract");
+      const transcript = await pageMessage(
+        tabs,
+        tab.id,
+        "panopto:extract",
+        messageRetryDelay,
+      );
       stage = "hub_request";
       await hub.postAcceptance({
         command_id: command.id,
