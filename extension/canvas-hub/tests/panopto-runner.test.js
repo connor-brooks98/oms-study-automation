@@ -2,44 +2,74 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  runPanoptoCommand,
+  runPanoptoRequest,
   waitForTabReady,
 } from "../lib/panopto-runner.js";
 
-const COMMAND = {id: "command-id", kind: "scan", payload: {manual: true}};
+const REQUEST_ID = "84729a54-a9a7-4835-9535-e44f8bbcb375";
 const SESSION_ID = "8796399e-393c-4256-b6e4-b48f0150d156";
 const VIEWER = `https://lmunet.hosted.panopto.com/Panopto/Pages/Viewer.aspx?id=${SESSION_ID}`;
 const SHARED_WITH_ME = "https://lmunet.hosted.panopto.com/Panopto/Pages/Sessions/List.aspx#isSharedWithMe=true";
+const RECORDING = {
+  session_id: SESSION_ID,
+  name: "Shoulder",
+  created_utc: "2026-07-23T13:05:00.000Z",
+  duration_seconds: 3600,
+  folder_name: "Shared with Me",
+  viewer_url: VIEWER,
+};
 
 function fakeTabs(messages = []) {
   return {
     created: [],
     updated: [],
     removed: [],
+    current: {id: 42, status: "complete", url: SHARED_WITH_ME},
     async create(value) {
-      const tab = {id: 42, ...value};
+      const tab = {id: 42, status: "complete", ...value};
       this.created.push(tab);
+      this.current = tab;
       return tab;
     },
-    async update(id, value) { this.updated.push({id, ...value}); },
+    async update(id, value) {
+      this.updated.push({id, ...value});
+      this.current = {...this.current, ...value};
+      return this.current;
+    },
     async remove(id) { this.removed.push(id); },
     async sendMessage() { return messages.shift(); },
+    async get() { return this.current; },
   };
 }
 
 function fakeHub(dispositions = []) {
   return {
+    progress: [],
     discoveries: [],
-    transcripts: [],
     results: [],
     heartbeats: [],
     async heartbeat(state) { this.heartbeats.push(state); },
-    async postDiscover(value) {
-      this.discoveries.push(value);
+    async postProgress(id, state, progress) {
+      this.progress.push({id, state, progress});
+    },
+    async postDiscovery(id, recordings) {
+      this.discoveries.push({id, recordings});
       return {dispositions};
     },
-    async postTranscript(value) { this.transcripts.push(value); },
-    async postResult(value) { this.results.push(value); },
+    async postResult(id, status, reasonCode) {
+      this.results.push({id, status, reasonCode});
+    },
+  };
+}
+
+function fakeDownloads() {
+  return {
+    started: [],
+    async start(descriptor, metadata) {
+      this.started.push({descriptor, metadata});
+      return 17;
+    },
+    async waitAndComplete() { return true; },
   };
 }
 
@@ -60,189 +90,134 @@ test("tab readiness recognizes a viewer that already finished loading", async ()
   assert.equal(listeners.size, 0);
 });
 
-test("runner creates and removes only its own inactive tab", async () => {
-  const tabs = fakeTabs([{recordings: []}]);
+test("connection test opens visibly, selects newest recording, and downloads", async () => {
+  const older = {...RECORDING, session_id: "old", created_utc: "2026-07-23T12:00:00Z"};
+  const tabs = fakeTabs([
+    {recordings: [older, RECORDING]},
+    {
+      status: "ready",
+      language: "English_USA",
+      download_url: "https://lmunet.hosted.panopto.com/Panopto/captions.txt",
+      filename: "captions.txt",
+    },
+  ]);
   const hub = fakeHub();
+  const downloads = fakeDownloads();
 
-  await runPanoptoCommand(COMMAND, {
-    tabs,
-    hub,
-    waitForReady: async () => {},
+  const result = await runPanoptoRequest(
+    {id: REQUEST_ID, kind: "connection_test", state: "requested", payload: {}},
+    {tabs, hub, downloads, waitForReady: async () => {}},
+  );
+
+  assert.equal(result.status, "complete");
+  assert.deepEqual(tabs.created[0], {
+    id: 42,
+    status: "complete",
+    url: SHARED_WITH_ME,
+    active: true,
   });
-
-  assert.equal(tabs.created[0].active, false);
-  assert.equal(tabs.created[0].url, SHARED_WITH_ME);
+  assert.deepEqual(tabs.updated[0], {id: 42, url: VIEWER, active: true});
+  assert.equal(downloads.started[0].metadata.recording_id, null);
+  assert.equal(downloads.started[0].metadata.session_id, SESSION_ID);
   assert.deepEqual(tabs.removed, [42]);
-  assert.deepEqual(tabs.updated, []);
-  assert.equal(hub.results[0].status, "complete");
 });
 
-test("matched recording is extracted and posted without page HTML", async () => {
+test("scheduled scan uses an inactive tab and managed caption downloads", async () => {
   const tabs = fakeTabs([
-    {recordings: [{
-      session_id: SESSION_ID,
-      name: "Shoulder",
-      created_utc: "2026-07-23T13:05:00.000Z",
-      duration_seconds: 3600,
-      folder_name: "Shared with Me",
-      viewer_url: VIEWER,
-    }]},
+    {recordings: [RECORDING]},
     {
+      status: "ready",
       language: "English_USA",
-      line_count: 2,
-      complete: true,
-      text: "00:01 First\n00:03 Second",
+      download_url: "https://lmunet.hosted.panopto.com/Panopto/captions.txt",
     },
   ]);
   const hub = fakeHub([{
     recording_id: 7,
     session_id: SESSION_ID,
-    action: "extract_transcript",
+    action: "download_caption",
+    viewer_url: VIEWER,
+    reason: "matched",
+  }]);
+  const downloads = fakeDownloads();
+
+  await runPanoptoRequest(
+    {id: REQUEST_ID, kind: "scan", state: "requested", payload: {manual: false}},
+    {tabs, hub, downloads, waitForReady: async () => {}},
+  );
+
+  assert.equal(tabs.created[0].active, false);
+  assert.equal(hub.discoveries[0].recordings.length, 1);
+  assert.equal(downloads.started[0].metadata.recording_id, 7);
+  assert.deepEqual(hub.results, [{
+    id: REQUEST_ID,
+    status: "complete",
+    reasonCode: null,
+  }]);
+});
+
+test("missing captions return the request to the polling lineup", async () => {
+  const tabs = fakeTabs([
+    {recordings: [RECORDING]},
+    {status: "captions_pending"},
+  ]);
+  const hub = fakeHub([{
+    recording_id: 7,
+    session_id: SESSION_ID,
+    action: "download_caption",
     viewer_url: VIEWER,
     reason: "matched",
   }]);
 
-  await runPanoptoCommand(COMMAND, {
-    tabs,
-    hub,
-    waitForReady: async () => {},
-  });
+  const result = await runPanoptoRequest(
+    {id: REQUEST_ID, kind: "scan", state: "requested", payload: {manual: false}},
+    {tabs, hub, downloads: fakeDownloads(), waitForReady: async () => {}},
+  );
 
-  assert.deepEqual(tabs.updated, [{id: 42, url: VIEWER}]);
-  assert.equal(hub.transcripts[0].recording_id, 7);
-  assert.equal(hub.transcripts[0].text, "00:01 First\n00:03 Second");
-  assert.equal("html" in hub.transcripts[0], false);
-});
-
-test("login requirement is reported once and tab is still removed", async () => {
-  const tabs = fakeTabs([]);
-  tabs.sendMessage = async () => {
-    const error = new Error("Sign in required");
-    error.code = "panopto_login_required";
-    throw error;
-  };
-  const hub = fakeHub();
-
-  const result = await runPanoptoCommand(COMMAND, {
-    tabs,
-    hub,
-    waitForReady: async () => {},
-    messageRetryDelay: async () => {},
-  });
-
-  assert.equal(result.reason_code, "panopto_login_required");
-  assert.deepEqual(tabs.removed, [42]);
+  assert.equal(result.status, "waiting_for_captions");
   assert.deepEqual(hub.results, [{
-    command_id: "command-id",
-    status: "failed",
-    reason_code: "panopto_login_required",
+    id: REQUEST_ID,
+    status: "waiting_for_captions",
+    reasonCode: "captions_pending",
   }]);
 });
 
-test("content-script reason codes are preserved without raw errors", async () => {
-  const tabs = fakeTabs([{
-    error: true,
-    code: "transcript_processing",
-  }]);
-  const hub = fakeHub();
-
-  const result = await runPanoptoCommand(COMMAND, {
-    tabs,
-    hub,
-    waitForReady: async () => {},
-  });
-
-  assert.equal(result.reason_code, "transcript_processing");
-});
-
-test("SSO redirect without a Panopto content script requests sign-in", async () => {
+test("login in the same visible tab continues the connection test", async () => {
   const tabs = fakeTabs();
+  let messages = 0;
   tabs.sendMessage = async () => {
-    throw new Error("Could not establish connection. Receiving end does not exist.");
-  };
-
-  const result = await runPanoptoCommand(COMMAND, {
-    tabs,
-    hub: fakeHub(),
-    waitForReady: async () => {},
-    messageRetryDelay: async () => {},
-  });
-
-  assert.equal(result.reason_code, "panopto_login_required");
-});
-
-test("generic tab load failures report a safe stage code", async () => {
-  const result = await runPanoptoCommand(COMMAND, {
-    tabs: fakeTabs(),
-    hub: fakeHub(),
-    waitForReady: async () => {
-      throw new Error("unknown browser detail");
-    },
-  });
-
-  assert.equal(result.reason_code, "panopto_tab_load_failed");
-});
-
-test("generic page message failures report a safe stage code", async () => {
-  const tabs = fakeTabs();
-  tabs.sendMessage = async () => {
-    throw new Error("unknown browser detail");
-  };
-
-  const result = await runPanoptoCommand(COMMAND, {
-    tabs,
-    hub: fakeHub(),
-    waitForReady: async () => {},
-    messageRetryDelay: async () => {},
-  });
-
-  assert.equal(result.reason_code, "panopto_page_message_failed");
-});
-
-test("page messaging retries while the content listener is becoming ready", async () => {
-  const tabs = fakeTabs();
-  let attempts = 0;
-  tabs.sendMessage = async () => {
-    attempts += 1;
-    if (attempts < 3) {
-      throw new Error("The message port closed before a response was received.");
+    messages += 1;
+    if (messages === 1) {
+      const error = new Error("Receiving end does not exist");
+      error.code = "panopto_login_required";
+      throw error;
     }
-    return {recordings: []};
+    if (messages === 2) return {recordings: [RECORDING]};
+    return {
+      status: "ready",
+      language: "English_USA",
+      download_url: "https://lmunet.hosted.panopto.com/Panopto/captions.txt",
+    };
   };
+  const hub = fakeHub();
+  let continued = false;
 
-  const result = await runPanoptoCommand(COMMAND, {
-    tabs,
-    hub: fakeHub(),
-    waitForReady: async () => {},
-    messageRetryDelay: async () => {},
-  });
+  const result = await runPanoptoRequest(
+    {id: REQUEST_ID, kind: "connection_test", state: "requested", payload: {}},
+    {
+      tabs,
+      hub,
+      downloads: fakeDownloads(),
+      waitForReady: async () => {},
+      messageRetryDelay: async () => {},
+      waitForLogin: async () => { continued = true; },
+    },
+  );
 
   assert.equal(result.status, "complete");
-  assert.equal(attempts, 3);
-});
-
-test("acceptance extracts the configured viewer without discovery", async () => {
-  const command = {
-    id: "acceptance-id",
-    kind: "acceptance",
-    payload: {session_id: SESSION_ID, viewer_url: VIEWER},
-  };
-  const tabs = fakeTabs([{
-    language: "English_USA",
-    line_count: 2,
-    complete: true,
-    text: "00:01 First\n00:03 Second",
-  }]);
-  const hub = fakeHub();
-  hub.acceptances = [];
-  hub.postAcceptance = async (value) => hub.acceptances.push(value);
-
-  await runPanoptoCommand(command, {
-    tabs,
-    hub,
-    waitForReady: async () => {},
-  });
-
-  assert.deepEqual(tabs.updated, [{id: 42, url: VIEWER}]);
-  assert.equal(hub.acceptances[0].session_id, SESSION_ID);
+  assert.equal(continued, true);
+  assert.equal(tabs.updated.some((value) => value.active === true), true);
+  assert.equal(
+    hub.progress.some((value) => value.state === "awaiting_login"),
+    true,
+  );
 });

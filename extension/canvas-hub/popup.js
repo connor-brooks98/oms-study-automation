@@ -20,7 +20,7 @@ document.querySelector("#scan").addEventListener("click", async () => {
   status.textContent = result.status === "complete" ? `Found ${result.total} items` : result.status;
 });
 document.querySelector("#panopto").addEventListener("click", async () => {
-  status.textContent = "Checking Panopto…";
+  status.textContent = "Checking for a Hub request…";
   const result = await chrome.runtime.sendMessage({type: "panopto-scan-now"});
   status.textContent = formatPanoptoResult(result);
 });

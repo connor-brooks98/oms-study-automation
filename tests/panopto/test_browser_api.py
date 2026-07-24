@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
@@ -108,6 +108,37 @@ def test_request_is_recoverable_until_complete(tmp_path):
     assert updated.json()["progress"] == "opening_shared"
     assert completed.status_code == 200
     assert empty.status_code == 204
+
+
+def test_captions_pending_request_reappears_after_fifteen_minutes(
+    tmp_path,
+    monkeypatch,
+):
+    client, headers = _prepared_client(tmp_path)
+    request_id = client.app.state.panopto_browser.queue_manual_scan(NOW)
+
+    class Clock:
+        @classmethod
+        def now(cls, timezone):
+            return NOW
+
+    monkeypatch.setattr("oms_hub.panopto.api.datetime", Clock)
+    response = client.post(
+        f"/api/panopto/request/{request_id}/result",
+        headers=headers,
+        json={
+            "status": "waiting_for_captions",
+            "reason_code": "captions_pending",
+        },
+    )
+
+    assert response.status_code == 200
+    assert client.app.state.panopto_repository.next_browser_request(
+        NOW + timedelta(minutes=14)
+    ) is None
+    assert client.app.state.panopto_repository.next_browser_request(
+        NOW + timedelta(minutes=15)
+    ).id == request_id
 
 
 def test_request_discovery_returns_caption_download_disposition(tmp_path):

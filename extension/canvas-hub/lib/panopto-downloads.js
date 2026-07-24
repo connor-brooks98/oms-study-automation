@@ -90,3 +90,18 @@ export async function completePanoptoDownload(downloadId, report) {
   await chrome.storage.session.set({[SESSION_KEY]: records});
   return true;
 }
+
+export async function waitForPanoptoDownloadReport(
+  downloadId,
+  options = {},
+) {
+  const maxAttempts = options.maxAttempts ?? 300;
+  const settle = options.settle
+    ?? (() => new Promise((resolve) => setTimeout(resolve, 100)));
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const records = await managed();
+    if (!records[String(downloadId)]) return true;
+    await settle();
+  }
+  throw new Error("Panopto caption report timed out");
+}

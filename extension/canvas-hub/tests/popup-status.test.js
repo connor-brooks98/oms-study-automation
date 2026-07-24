@@ -23,6 +23,6 @@ test("Panopto popup shows safe command reason codes", () => {
   );
 });
 
-test("Panopto popup handles an empty command queue", () => {
-  assert.equal(formatPanoptoResult(null), "No Panopto command pending");
+test("Panopto popup handles an empty request queue", () => {
+  assert.equal(formatPanoptoResult(null), "No Hub request pending");
 });

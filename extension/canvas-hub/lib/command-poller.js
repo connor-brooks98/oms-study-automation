@@ -1,21 +1,28 @@
 export function createCommandPoller({
   getConfig,
   runScan,
-  getPanoptoCommand,
-  runPanoptoCommand,
+  getPanoptoRequest,
+  runPanoptoRequest,
   panoptoHub,
 }) {
   let activePanopto = null;
-  return async function pollCommands() {
-    const config = await getConfig();
-    if (config.scan_requested) runScan().catch(() => {});
-    if (activePanopto) return activePanopto;
-    const command = await getPanoptoCommand();
-    if (!command) return null;
-    activePanopto = runPanoptoCommand(command, {hub: panoptoHub})
-      .finally(() => {
-        activePanopto = null;
-      });
-    return activePanopto;
+  let pollInFlight = null;
+  return function pollCommands() {
+    if (pollInFlight) return pollInFlight;
+    pollInFlight = (async () => {
+      const config = await getConfig();
+      if (config.scan_requested) runScan().catch(() => {});
+      if (activePanopto) return activePanopto;
+      const request = await getPanoptoRequest();
+      if (!request) return null;
+      activePanopto = runPanoptoRequest(request, {hub: panoptoHub})
+        .finally(() => {
+          activePanopto = null;
+        });
+      return activePanopto;
+    })().finally(() => {
+      pollInFlight = null;
+    });
+    return pollInFlight;
   };
 }

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal, cast
 from uuid import UUID
@@ -81,7 +81,7 @@ class RequestProgressRequest(StrictModel):
 
 
 class RequestResultRequest(StrictModel):
-    status: Literal["complete", "failed"]
+    status: Literal["complete", "failed", "waiting_for_captions"]
     reason_code: str | None = Field(default=None, pattern=r"^[a-z0-9_]{1,80}$")
 
 
@@ -309,6 +309,14 @@ def browser_request_result(
     if value.status == "complete":
         repository.complete_browser_request(str(request_id), now)
         repository.heartbeat("connected", now)
+    elif value.status == "waiting_for_captions":
+        repository.wait_browser_request(
+            str(request_id),
+            value.reason_code or "captions_pending",
+            now + timedelta(minutes=15),
+            now,
+        )
+        repository.heartbeat("waiting_for_transcript", now)
     else:
         reason = value.reason_code or "browser_request_failed"
         repository.fail_browser_request(str(request_id), reason, now)
