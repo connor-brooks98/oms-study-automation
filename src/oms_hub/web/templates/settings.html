@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Settings · Study Hub{% endblock %}
+{% block content %}
+<section class="page-shell narrow-page">
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">Configuration</p>
+      <h1>Settings</h1>
+      <p class="page-summary">Manage the lecture tracker and local pipeline inputs.</p>
+    </div>
+  </div>
+  <section class="card settings-card">
+    <p class="mono-label">Course structure</p>
+    <h2>Lecture exam tracker</h2>
+    <p>Upload an Excel tracker to preview courses, Exams, and lecture changes before applying them.</p>
+    <form action="/settings/tracker/preview" method="post" enctype="multipart/form-data">
+      <label>Tracker workbook <input type="file" name="workbook" accept=".xlsx" required></label>
+      <button class="button primary" type="submit">Preview tracker</button>
+    </form>
+  </section>
+</section>
+{% endblock %}

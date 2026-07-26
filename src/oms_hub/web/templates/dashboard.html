@@ -1,32 +1,69 @@
 {% extends "base.html" %}
-{% block title %}Lecture dashboard · OMS Study Hub{% endblock %}
+{% block title %}Course library · Study Hub{% endblock %}
 {% block content %}
-<h1>Lecture dashboard</h1>
-<p><a class="review-count" href="/review">{{ review_count }} needs review</a></p>
-<section class="card"><h2>Canvas</h2><p><span class="status {{ canvas_connection.state }}">{{ canvas_connection.state.replace('_', ' ').title() }}</span> · Last heartbeat: {{ canvas_connection.last_heartbeat or 'Never' }} · Last scan: {{ canvas_connection.last_successful_scan or 'Never' }}</p>{% if canvas_connection.last_error %}<p class="error">{{ canvas_connection.last_error }}</p>{% endif %}<p><a href="/canvas/setup">Setup</a> · <a href="/canvas/review">Review Canvas items</a></p></section>
-<section class="card"><h2>Panopto transcripts</h2><p><span class="status {{ 'complete' if panopto_connection.enabled else '' }}">{{ 'Enabled' if panopto_connection.enabled else 'Paused' }}</span> · Last poll: {{ panopto_connection.last_successful_poll or 'Never' }} · {{ panopto_review_count }} awaiting review</p><p>{{ panopto_input_tokens }} input tokens · {{ panopto_output_tokens }} output tokens · ${{ '%.4f'|format(panopto_cost_usd) }}</p><p><a href="/panopto/setup">Setup</a> · <a href="/panopto/review">Review transcripts</a></p></section>
-<table>
-  <thead>
-    <tr><th>Lecture</th><th>Subject</th><th>Exam</th><th>Progress</th><th>Status</th></tr>
-  </thead>
-  <tbody>
-  {% for row in rows %}
-    <tr>
-      <td><a href="/lectures/{{ row.lecture.id }}">{{ row.title }}</a></td>
-      <td>{{ row.lecture.subject }}</td>
-      <td>Exam {{ row.lecture.exam_number }}</td>
-      <td>{{ row.completed }}/{{ row.total }}</td>
-      <td>
-        {% if row.needs_review %}
-        <span class="status needs_review">Needs review</span>
-        {% else %}
-        <span class="status">On track</span>
-        {% endif %}
-      </td>
-    </tr>
-  {% else %}
-    <tr><td colspan="5">Import the tracker to create the lecture catalog.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
+<section class="page-shell dashboard-page">
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">Study library</p>
+      <h1>Course library</h1>
+      <p class="page-summary">{{ courses|length }} courses · course → Exam → lecture</p>
+    </div>
+    <div class="heading-actions">
+      {% if review_count %}
+      <a class="review-count" href="/review">{{ review_count }} needs review</a>
+      {% endif %}
+      <a class="button primary" href="/uploads/slides">+ Upload lecture</a>
+    </div>
+  </div>
+
+  <div class="course-list">
+    {% for course in courses %}
+    {% set course_id = "course-" ~ loop.index %}
+    <section class="course-group" data-course="{{ course.name }}" style="--course-hue: {{ course.hue }}">
+      <button class="course-toggle" type="button" data-disclosure data-storage-key="course:{{ course.name }}" aria-expanded="{{ 'true' if loop.first else 'false' }}" aria-controls="{{ course_id }}">
+        <span class="chevron" aria-hidden="true">▸</span>
+        <span class="course-dot" aria-hidden="true"></span>
+        <span class="course-name">{{ course.name }}</span>
+        <span class="count-pill">{{ course.lecture_count }} lectures</span>
+      </button>
+      <div class="exam-list" id="{{ course_id }}" {% if not loop.first %}hidden{% endif %}>
+        {% for exam in course.exams %}
+        {% set exam_id = course_id ~ "-exam-" ~ exam.number %}
+        <section class="exam-group" data-exam="{{ exam.number }}">
+          <button class="exam-toggle" type="button" data-disclosure data-storage-key="exam:{{ course.name }}:{{ exam.number }}" aria-expanded="{{ 'true' if loop.first else 'false' }}" aria-controls="{{ exam_id }}">
+            <span class="chevron" aria-hidden="true">▸</span>
+            <span>Exam {{ exam.number }}</span>
+            <span class="exam-count">{{ exam.lectures|length }} lectures</span>
+          </button>
+          <div class="lecture-list" id="{{ exam_id }}" {% if not loop.first %}hidden{% endif %}>
+            {% for row in exam.lectures %}
+            <a class="lecture-row" href="/lectures/{{ row.lecture.id }}">
+              <span class="status-dot status-{{ row.status }}" aria-hidden="true"></span>
+              <span class="lecture-title">{{ row.title }}</span>
+              <span class="status-pill status-{{ row.status }}">{{ row.status_label }}</span>
+              <span class="file-flags" aria-label="Available files">
+                <span class="{{ 'available' if row.has_slides else 'missing' }}">PPTX</span>
+                <span class="{{ 'available' if row.has_transcript else 'missing' }}">TXT</span>
+              </span>
+              <span class="row-progress">{{ row.percent }}%</span>
+            </a>
+            {% endfor %}
+          </div>
+        </section>
+        {% endfor %}
+      </div>
+    </section>
+    {% else %}
+    <section class="empty-state">
+      <p class="eyebrow">Start here</p>
+      <h2>Import your lecture tracker</h2>
+      <p>The tracker creates your courses, Exams, and lecture checklist.</p>
+      <a class="button primary" href="/settings">Open settings</a>
+    </section>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/dashboard.js" defer></script>
 {% endblock %}

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% set is_slides = kind.value == "slides" %}
+{% block title %}Upload {{ "slides" if is_slides else "transcripts" }} · Study Hub{% endblock %}
+{% block content %}
+<section class="page-shell upload-page">
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">Manual ingestion</p>
+      <h1>Upload {{ "lecture slides" if is_slides else "lecture transcripts" }}</h1>
+      <p class="page-summary">
+        {% if is_slides %}Add downloaded PowerPoint files. The NUC will match, preserve, convert, and file them.
+        {% else %}Add downloaded text transcripts. The NUC will match, clean, validate, and file them.{% endif %}
+      </p>
+    </div>
+  </div>
+
+  <form class="upload-form" action="/uploads/{{ kind.value }}" method="post" enctype="multipart/form-data" data-upload-form data-kind="{{ kind.value }}">
+    <div class="upload-zone" data-drop-zone>
+      <span class="upload-mark" aria-hidden="true">↑</span>
+      <h2>Drop {{ "PowerPoint" if is_slides else "transcript" }} files here</h2>
+      <p id="upload-help">{{ "PPTX only" if is_slides else "TXT only" }} · multiple files supported · up to 100 MB each</p>
+      <label for="upload-files" class="sr-only">Choose {{ "PowerPoint" if is_slides else "transcript" }} files</label>
+      <input id="upload-files" class="sr-only" name="files" type="file" accept="{{ accept }}" multiple required aria-describedby="upload-help">
+      <button class="button secondary upload-browse" type="button">Choose files</button>
+    </div>
+    <div class="selected-files" data-selected-files aria-live="polite"></div>
+    <button class="button primary upload-submit" type="submit">Upload files</button>
+  </form>
+
+  <section class="upload-results" aria-labelledby="upload-status-heading">
+    <h2 id="upload-status-heading">Upload status</h2>
+    <div class="upload-status" data-upload-status role="status" aria-live="polite">Ready for files.</div>
+    <div class="upload-progress" hidden data-progress-wrap>
+      <span data-progress-bar></span>
+    </div>
+    <ul class="upload-items" data-upload-items></ul>
+  </section>
+
+  <aside class="info-card">
+    <strong>What happens next</strong>
+    <p>Confident matches enter processing automatically. Anything ambiguous stays in <a href="/quarantine">Quarantine</a> until you choose its lecture.</p>
+  </aside>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/uploads.js" defer></script>
+{% endblock %}

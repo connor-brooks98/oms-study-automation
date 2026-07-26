@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Anki · Study Hub{% endblock %}
+{% block content %}
+<section class="page-shell narrow-page">
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">Later workflow</p>
+      <h1>Anki integration</h1>
+      <p class="page-summary">A dedicated review space for generated flashcards.</p>
+    </div>
+    <span class="status-pill status-not_started">Later phase</span>
+  </div>
+  <section class="empty-state anki-placeholder">
+    <span class="placeholder-mark" aria-hidden="true">A</span>
+    <h2>Card review will live here</h2>
+    <p>NotebookLM/Gemini quiz generation and Anki synchronization will be connected after the manual slide and transcript pipeline is fully accepted.</p>
+    <p class="mono-note">No cards are generated or synced yet.</p>
+  </section>
+</section>
+{% endblock %}

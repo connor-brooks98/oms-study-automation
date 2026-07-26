@@ -7,7 +7,10 @@ _SEPARATOR = re.compile(r'[:|"]+')
 _JOINER = re.compile(r"[/\\]+")
 _REMOVE = re.compile(r"[<>?*]+")
 _SPACE = re.compile(r"\s+")
-_WINDOWS_RESERVED = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)", re.I)
+_WINDOWS_RESERVED = re.compile(
+    r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)

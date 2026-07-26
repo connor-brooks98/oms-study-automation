@@ -1,37 +1,101 @@
 {% extends "base.html" %}
-{% block title %}{{ title }} · OMS Study Hub{% endblock %}
+{% block title %}{{ title }} · Study Hub{% endblock %}
 {% block content %}
-<p><a href="/">← Dashboard</a></p>
-<h1>{{ title }}</h1>
-<p>{{ lecture.subject }} · Exam {{ lecture.exam_number }} · {{ lecture.lecturer }}</p>
-<details>
-  <summary>Edit lecture metadata</summary>
-  <form method="post" action="/lectures/{{ lecture.id }}/metadata">
-    <label>Subject <input name="subject" value="{{ lecture.subject }}" required></label>
-    <label>Exam <input name="exam_number" type="number" min="1" value="{{ lecture.exam_number }}" required></label>
-    <label>Lecture <input name="lecture_number" type="number" min="1" value="{{ lecture.lecture_number }}" required></label>
-    <label>Topic <input name="topic" value="{{ lecture.topic }}" required></label>
-    <label>Lecturer <input name="lecturer" value="{{ lecture.lecturer }}"></label>
-    <label>Exam date <input name="exam_date" type="date" value="{{ lecture.exam_date or '' }}"></label>
-    <button type="submit">Save metadata</button>
-  </form>
-</details>
-<ol class="checklist">
-{% for step in lecture.steps %}
-  <li class="step step-{{ step.status }}">
+<article class="page-shell lecture-page" style="--course-hue: {{ course_hue }}">
+  <nav class="breadcrumbs" aria-label="Breadcrumb">
+    <a href="/">Dashboard</a><span aria-hidden="true">/</span>
+    <span>{{ lecture.subject }}</span><span aria-hidden="true">/</span>
+    <span>Exam {{ lecture.exam_number }}</span>
+  </nav>
+
+  <header class="lecture-heading">
+    <span class="course-rail" aria-hidden="true"></span>
     <div>
-      <strong>{{ step.name.replace('_', ' ').title() }}</strong>
-      <span class="status {{ step.status }}">{{ step.status.replace('_', ' ').title() }}</span>
+      <h1>{{ title }}</h1>
+      <span class="course-badge">{{ lecture.subject }}</span>
     </div>
-    {% if step.detail %}<p>{{ step.detail }}</p>{% endif %}
-    {% if step.status == "needs_review" %}
-      <form method="post" action="/lectures/{{ lecture.id }}/steps/{{ step.name }}">
-        <input type="hidden" name="status" value="queued">
-        <label>Approval note <input name="detail" value="Approved in daily review"></label>
-        <button type="submit">Approve and queue</button>
-      </form>
-    {% endif %}
-  </li>
-{% endfor %}
-</ol>
+  </header>
+
+  <section class="pipeline-card" aria-labelledby="pipeline-heading">
+    <p class="mono-label" id="pipeline-heading">Pipeline status</p>
+    <div class="pipeline-status">
+      <strong class="status-text status-{{ status }}">{{ status_label }}</strong>
+      <span>{{ progress_percent }}%</span>
+    </div>
+    <div class="progress-track" role="progressbar" aria-label="Lecture processing progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ progress_percent }}">
+      <span class="progress-fill status-{{ status }}" style="width: {{ progress_percent }}%"></span>
+    </div>
+    <p class="pipeline-note">
+      {% if status == "complete" %}Slides and transcript are ready.
+      {% elif status in ("needs_review", "quarantined") %}One or more files need your review.
+      {% elif status == "failed" %}Processing stopped with an actionable error.
+      {% elif status == "processing" %}The NUC is working through the available files.
+      {% else %}Waiting for lecture files to be uploaded.{% endif %}
+    </p>
+  </section>
+
+  <div class="file-card-grid">
+    <section class="file-card {{ 'ready' if slide_revision else 'missing' }}">
+      <div class="file-card-title">
+        <span class="file-state-icon" aria-hidden="true">{{ "✓" if slide_revision else "↑" }}</span>
+        <h2>Lecture Slides (PPTX / PDF)</h2>
+      </div>
+      <p class="file-caption">{{ slide_revision.canonical_derived_path.name if slide_revision else "Not yet uploaded" }}</p>
+      <div class="file-actions">
+        {% if slide_revision %}
+        <a class="button secondary" href="/artifacts/{{ slide_revision.id }}/pptx">Download PPTX</a>
+        <a class="button primary" href="/artifacts/{{ slide_revision.id }}/pdf">Open Lecture PDF</a>
+        {% else %}
+        <a class="button disabled" href="/uploads/slides" aria-disabled="true">Open Lecture PDF</a>
+        {% endif %}
+      </div>
+    </section>
+    <section class="file-card {{ 'ready' if transcript_revision else 'missing' }}">
+      <div class="file-card-title">
+        <span class="file-state-icon" aria-hidden="true">{{ "✓" if transcript_revision else "↑" }}</span>
+        <h2>Transcript (TXT)</h2>
+      </div>
+      <p class="file-caption">{{ transcript_revision.canonical_derived_path.name if transcript_revision else "Not yet uploaded" }}</p>
+      <div class="file-actions">
+        {% if transcript_revision %}
+        <a class="button secondary" href="/artifacts/{{ transcript_revision.id }}/raw">Open Raw Transcript</a>
+        <a class="button primary" href="/artifacts/{{ transcript_revision.id }}/cleaned">Open Cleaned Transcript</a>
+        {% else %}
+        <a class="button disabled" href="/uploads/transcripts" aria-disabled="true">Open Cleaned Transcript</a>
+        {% endif %}
+      </div>
+    </section>
+  </div>
+
+  <section class="checklist-card">
+    <div class="section-heading">
+      <div>
+        <p class="mono-label">First release</p>
+        <h2>Processing checklist</h2>
+      </div>
+    </div>
+    <ol class="compact-checklist">
+      {% for step in release_steps %}
+      <li>
+        <span class="status-dot status-{{ step.status }}" aria-hidden="true"></span>
+        <span>{{ step.name.replace('_', ' ').title() }}</span>
+        <span class="status-pill status-{{ step.status }}">{{ step.status.replace('_', ' ').title() }}</span>
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
+
+  <details class="metadata-panel">
+    <summary>Edit lecture details</summary>
+    <form method="post" action="/lectures/{{ lecture.id }}/metadata">
+      <label>Course <input name="subject" value="{{ lecture.subject }}" required></label>
+      <label>Exam <input name="exam_number" type="number" min="1" value="{{ lecture.exam_number }}" required></label>
+      <label>Lecture <input name="lecture_number" type="number" min="1" value="{{ lecture.lecture_number }}" required></label>
+      <label>Topic <input name="topic" value="{{ lecture.topic }}" required></label>
+      <label>Lecturer <input name="lecturer" value="{{ lecture.lecturer }}"></label>
+      <label>Exam date <input name="exam_date" type="date" value="{{ lecture.exam_date or '' }}"></label>
+      <button class="button primary" type="submit">Save details</button>
+    </form>
+  </details>
+</article>
 {% endblock %}

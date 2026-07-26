@@ -1,34 +1,16 @@
-import json
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Protocol
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
 
 from oms_hub.db import Database
-from oms_hub.domain import LectureStepName, StepStatus
+from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.models import (
-    ExternalEventModel,
     ImportIssueModel,
     ImportRunModel,
     LectureModel,
     LectureStepModel,
 )
-
-
-class ExternalEventData(Protocol):
-    @property
-    def external_id(self) -> str: ...
-
-    @property
-    def revision(self) -> str: ...
-
-    @property
-    def subject(self) -> str: ...
-
-    @property
-    def start_utc(self) -> datetime: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +50,7 @@ class CatalogRepository:
                         name=name.value,
                         status=StepStatus.WAITING.value,
                     )
-                    for name in LectureStepName
+                    for name in V2StepName
                 ]
                 session.add(lecture)
                 session.flush()
@@ -91,43 +73,6 @@ class CatalogRepository:
             )
             return list(session.scalars(statement).all())
 
-    def list_scheduled_between(
-        self,
-        start_utc: datetime,
-        end_utc: datetime,
-    ) -> list[LectureModel]:
-        with self.database.session() as session:
-            statement = (
-                select(LectureModel)
-                .where(
-                    LectureModel.scheduled_start_utc.is_not(None),
-                    LectureModel.scheduled_start_utc >= start_utc.isoformat(),
-                    LectureModel.scheduled_start_utc < end_utc.isoformat(),
-                )
-                .options(selectinload(LectureModel.steps))
-                .order_by(LectureModel.scheduled_start_utc, LectureModel.id)
-            )
-            return list(session.scalars(statement).all())
-
-    def list_missing_transcripts_before(
-        self,
-        end_utc: datetime,
-    ) -> list[LectureModel]:
-        with self.database.session() as session:
-            statement = (
-                select(LectureModel)
-                .join(LectureStepModel)
-                .where(
-                    LectureModel.scheduled_start_utc.is_not(None),
-                    LectureModel.scheduled_start_utc < end_utc.isoformat(),
-                    LectureStepModel.name == LectureStepName.TRANSCRIPT_DOWNLOADED.value,
-                    LectureStepModel.status != StepStatus.COMPLETE.value,
-                )
-                .options(selectinload(LectureModel.steps))
-                .order_by(LectureModel.scheduled_start_utc, LectureModel.id)
-            )
-            return list(session.scalars(statement).unique().all())
-
     def get_lecture(self, lecture_id: int) -> LectureModel | None:
         with self.database.session() as session:
             return session.scalar(
@@ -148,88 +93,10 @@ class CatalogRepository:
             lecture.lecturer = value.lecturer
             lecture.exam_date = value.exam_date
 
-    def update_schedule(
-        self,
-        lecture_id: int,
-        scheduled_start_utc: str,
-        campus: str,
-    ) -> None:
-        with self.database.session() as session:
-            lecture = session.get(LectureModel, lecture_id)
-            if lecture is None:
-                raise KeyError(lecture_id)
-            lecture.scheduled_start_utc = scheduled_start_utc
-            lecture.campus = campus
-
-    def upsert_external_event(
-        self,
-        event: ExternalEventData,
-        lecture_id: int | None,
-        needs_review: bool,
-        detail: str,
-    ) -> None:
-        payload = json.dumps(
-            {
-                "external_id": event.external_id,
-                "revision": event.revision,
-                "subject": event.subject,
-                "start_utc": event.start_utc.isoformat(),
-                "needs_review": needs_review,
-                "detail": detail,
-            },
-            sort_keys=True,
-        )
-        with self.database.session() as session:
-            stored = session.scalar(
-                select(ExternalEventModel).where(
-                    ExternalEventModel.provider == "outlook",
-                    ExternalEventModel.external_id == event.external_id,
-                )
-            )
-            if stored is None:
-                stored = ExternalEventModel(
-                    provider="outlook",
-                    external_id=event.external_id,
-                    title=event.subject,
-                    revision=event.revision,
-                    lecture_id=lecture_id,
-                    needs_review=needs_review,
-                    detail=detail,
-                    payload_json=payload,
-                )
-                session.add(stored)
-            else:
-                stored.revision = event.revision
-                stored.title = event.subject
-                stored.lecture_id = lecture_id
-                stored.needs_review = needs_review
-                stored.detail = detail
-                stored.payload_json = payload
-
-    def list_external_events(self) -> list[ExternalEventModel]:
-        with self.database.session() as session:
-            return list(
-                session.scalars(
-                    select(ExternalEventModel).order_by(
-                        ExternalEventModel.seen_at.desc()
-                    )
-                ).all()
-            )
-
-    def list_review_events(self) -> list[ExternalEventModel]:
-        with self.database.session() as session:
-            return list(
-                session.scalars(
-                    select(ExternalEventModel)
-                    .where(ExternalEventModel.needs_review.is_(True))
-                    .order_by(ExternalEventModel.seen_at.desc())
-                ).all()
-            )
-
     def set_step_status(
         self,
         lecture_id: int,
-        name: LectureStepName,
+        name: V2StepName,
         status: StepStatus,
         detail: str | None = None,
     ) -> None:
@@ -296,7 +163,7 @@ class CatalogRepository:
         issues: list[tuple[str, int, str, str]],
         source_sha256: str,
         source_name: str,
-    ) -> int:
+    ) -> tuple[int, int]:
         with self.database.session() as session:
             if session.scalar(
                 select(ImportRunModel).where(
@@ -306,6 +173,7 @@ class CatalogRepository:
                 raise ValueError("tracker workbook has already been imported")
 
             imported = 0
+            updated = 0
             for value in lectures:
                 lecture = session.scalar(
                     select(LectureModel).where(
@@ -328,14 +196,20 @@ class CatalogRepository:
                             name=name.value,
                             status=StepStatus.WAITING.value,
                         )
-                        for name in LectureStepName
+                        for name in V2StepName
                     ]
                     session.add(lecture)
                     imported += 1
                 else:
+                    changed = (
+                        lecture.topic != value.topic
+                        or lecture.lecturer != value.lecturer
+                        or lecture.exam_date != value.exam_date
+                    )
                     lecture.topic = value.topic
                     lecture.lecturer = value.lecturer
                     lecture.exam_date = value.exam_date
+                    updated += int(changed)
 
             session.execute(delete(ImportIssueModel))
             session.add_all(
@@ -353,4 +227,4 @@ class CatalogRepository:
                     source_name=source_name,
                 )
             )
-            return imported
+            return imported, updated
