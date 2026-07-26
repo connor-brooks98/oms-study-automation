@@ -1,4 +1,5 @@
 from pathlib import Path
+from threading import RLock
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
@@ -7,9 +8,11 @@ from oms_hub.ingestion.domain import (
     StoredUploadItem,
     UploadEvidence,
     UploadKind,
+    UploadState,
 )
 from oms_hub.ingestion.matcher import UploadMatcher
 from oms_hub.ingestion.repository import IngestionRepository
+from oms_hub.ingestion.staging import StagingService
 from oms_hub.repositories import CatalogRepository
 
 _MAX_EVIDENCE_MEMBER = 1024 * 1024
@@ -21,10 +24,13 @@ class IngestionService:
         repository: IngestionRepository,
         catalog: CatalogRepository,
         matcher: UploadMatcher,
+        staging: StagingService,
     ):
         self.repository = repository
         self.catalog = catalog
         self.matcher = matcher
+        self.staging = staging
+        self._decision_lock = RLock()
 
     def match_item(self, item_id: str) -> StoredUploadItem:
         item = self.repository.require_item(item_id)
@@ -48,6 +54,20 @@ class IngestionService:
         item = self.repository.require_item(item_id)
         self.repository.set_manual_assignment(item_id, lecture_id)
         self._complete_match_steps(lecture_id, item.kind)
+
+    def confirm_processing(self, item_id: str) -> StoredUploadItem:
+        with self._decision_lock:
+            return self.repository.confirm_processing(item_id)
+
+    def discard_item(self, item_id: str) -> StoredUploadItem:
+        with self._decision_lock:
+            item = self.repository.require_item(item_id)
+            if item.state is UploadState.DISCARDED:
+                return item
+            if item.state is not UploadState.AWAITING_CONFIRMATION:
+                raise ValueError("upload is not awaiting confirmation")
+            self.staging.discard_file(item.staged_path)
+            return self.repository.mark_discarded(item_id)
 
     def _complete_match_steps(
         self,

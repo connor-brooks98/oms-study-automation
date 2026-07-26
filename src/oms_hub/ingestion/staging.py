@@ -169,6 +169,15 @@ class StagingService:
             original_filename=session.filename,
         )
 
+    def discard_file(self, path: Path) -> None:
+        resolved_root = self.root.resolve()
+        resolved = path.resolve()
+        if not resolved.is_relative_to(resolved_root):
+            raise UploadRejected("upload path escaped staging root")
+        if not resolved.is_file():
+            raise UploadRejected("staged upload file is missing")
+        resolved.unlink()
+
     def _validate_filename(
         self,
         kind: UploadKind,

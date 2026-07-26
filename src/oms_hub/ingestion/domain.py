@@ -13,10 +13,12 @@ class UploadState(StrEnum):
     UPLOADING = "uploading"
     MATCHING = "matching"
     QUARANTINED = "quarantined"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
     QUEUED = "queued"
     PROCESSING = "processing"
     NEEDS_REVIEW = "needs_review"
     COMPLETE = "complete"
+    DISCARDED = "discarded"
     FAILED = "failed"
 
 

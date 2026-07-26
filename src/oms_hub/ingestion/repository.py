@@ -160,6 +160,41 @@ class IngestionRepository:
                 or 0
             )
 
+    def confirm_processing(self, item_id: str) -> StoredUploadItem:
+        with self.database.session() as session:
+            item = session.get(UploadItemModel, item_id)
+            if item is None:
+                raise KeyError(item_id)
+            if item.state == UploadState.AWAITING_CONFIRMATION.value:
+                item.state = UploadState.QUEUED.value
+                item.error = None
+                self._enqueue(session, item.id, "process")
+                self._sync_batch_state(session, item.batch_id)
+            elif item.state not in {
+                UploadState.QUEUED.value,
+                UploadState.PROCESSING.value,
+                UploadState.NEEDS_REVIEW.value,
+                UploadState.COMPLETE.value,
+                UploadState.FAILED.value,
+            }:
+                raise ValueError("upload is not awaiting confirmation")
+            session.flush()
+            return self._stored_item(item)
+
+    def mark_discarded(self, item_id: str) -> StoredUploadItem:
+        with self.database.session() as session:
+            item = session.get(UploadItemModel, item_id)
+            if item is None:
+                raise KeyError(item_id)
+            if item.state == UploadState.AWAITING_CONFIRMATION.value:
+                item.state = UploadState.DISCARDED.value
+                item.error = None
+                self._sync_batch_state(session, item.batch_id)
+            elif item.state != UploadState.DISCARDED.value:
+                raise ValueError("upload is not awaiting confirmation")
+            session.flush()
+            return self._stored_item(item)
+
     def claim_next_job(self, now: datetime) -> IngestionJob | None:
         now_value = now.isoformat()
         with self.database.session() as session:
@@ -713,7 +748,7 @@ class IngestionRepository:
         session: Session,
         item: UploadItemModel,
     ) -> None:
-        duplicate = session.scalar(
+        exact = session.scalar(
             select(StudyRevisionModel.id).where(
                 StudyRevisionModel.lecture_id == item.lecture_id,
                 StudyRevisionModel.kind == item.kind,
@@ -721,8 +756,22 @@ class IngestionRepository:
                 StudyRevisionModel.current.is_(True),
             )
         )
-        if duplicate is not None:
+        if exact is not None:
             item.state = UploadState.COMPLETE.value
+            item.error = None
+            return
+        current = session.scalar(
+            select(StudyRevisionModel.id).where(
+                StudyRevisionModel.lecture_id == item.lecture_id,
+                StudyRevisionModel.kind == item.kind,
+                StudyRevisionModel.current.is_(True),
+            )
+        )
+        if (
+            current is not None
+            and item.kind == UploadKind.TRANSCRIPTS.value
+        ):
+            item.state = UploadState.AWAITING_CONFIRMATION.value
             item.error = None
             return
         self._enqueue(session, item.id, "process")
@@ -744,10 +793,12 @@ class IngestionRepository:
             UploadState.FAILED,
             UploadState.QUARANTINED,
             UploadState.NEEDS_REVIEW,
+            UploadState.AWAITING_CONFIRMATION,
             UploadState.PROCESSING,
             UploadState.QUEUED,
             UploadState.MATCHING,
             UploadState.COMPLETE,
+            UploadState.DISCARDED,
         )
         if batch is not None:
             batch.state = next(

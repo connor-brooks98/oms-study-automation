@@ -245,6 +245,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.ingestion_repository,
         app.state.catalog_repository,
         UploadMatcher(),
+        app.state.upload_staging,
     )
     app.state.slide_pipeline = SlidePipeline(
         database,
