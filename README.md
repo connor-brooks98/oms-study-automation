@@ -26,7 +26,6 @@ Slides and Transcripts pages.
 ## Transcript setup
 
 ```powershell
-.\.venv\Scripts\oms-hub.exe openai-set-key
 .\.venv\Scripts\oms-hub.exe prompt-init
 .\.venv\Scripts\oms-hub.exe prompt-fingerprint
 ```
@@ -34,6 +33,11 @@ Slides and Transcripts pages.
 Edit the prompt in Obsidian, copy the printed fingerprint into
 `OMS_HUB_TRANSCRIPT_PROMPT_SHA256`, and restart the Hub. A prompt change pauses
 cleaning until its new fingerprint is explicitly configured.
+
+Open **Settings → AI providers** to save OpenAI, Google Gemini, and Anthropic
+Claude credentials in Windows Credential Manager. Select a model, run
+**Test connection**, and choose the active provider. Stored credentials are
+never returned to the browser or written to `.env` or SQLite.
 
 ## NUC and remote access
 
@@ -45,3 +49,6 @@ JWT and allowed email.
 
 NotebookLM/Gemini automation and Anki automation are later milestones. Anki
 already has a dedicated placeholder page in the interface.
+
+The multi-provider hotfix procedure is in
+[docs/v2-multi-provider-nuc-rollout.md](docs/v2-multi-provider-nuc-rollout.md).
