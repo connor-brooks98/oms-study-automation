@@ -6,7 +6,10 @@ from pathlib import Path
 HOTFIX_FILES = (
     "src/oms_hub/app.py",
     "src/oms_hub/config.py",
+    "src/oms_hub/ingestion/domain.py",
     "src/oms_hub/ingestion/repository.py",
+    "src/oms_hub/ingestion/service.py",
+    "src/oms_hub/ingestion/staging.py",
     "src/oms_hub/ingestion/worker.py",
     "src/oms_hub/llm/__init__.py",
     "src/oms_hub/llm/anthropic.py",
@@ -21,10 +24,15 @@ HOTFIX_FILES = (
     "src/oms_hub/transcripts/cleaner.py",
     "src/oms_hub/transcripts/pipeline.py",
     "src/oms_hub/web/llm_schemas.py",
+    "src/oms_hub/web/artifact_routes.py",
     "src/oms_hub/web/settings_routes.py",
+    "src/oms_hub/web/upload_routes.py",
     "src/oms_hub/web/static/app.css",
     "src/oms_hub/web/static/settings.js",
+    "src/oms_hub/web/static/uploads.js",
+    "src/oms_hub/web/templates/artifact_text.html",
     "src/oms_hub/web/templates/settings.html",
+    "src/oms_hub/web/templates/uploads.html",
 )
 
 

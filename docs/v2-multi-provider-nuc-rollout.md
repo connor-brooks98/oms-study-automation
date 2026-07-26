@@ -2,7 +2,8 @@
 
 This update adds secure dashboard credential entry, model selection, connection
 testing, and transcript cleaning through OpenAI, Google Gemini, and Anthropic
-Claude.
+Claude. It also adds a pre-LLM duplicate transcript confirmation and a
+validated `.txt` download from the cleaned-transcript review page.
 
 The hotfix does not contain credentials, `.env`, the Study Hub database,
 transcripts, or user documents.
@@ -119,6 +120,21 @@ the server log. Do not send or screenshot the credential.
 Upload one short non-sensitive sample transcript with each provider active.
 Confirm each job completes and the cleaned transcript opens normally. Switch
 providers only between jobs.
+
+Then verify the transcript safeguards:
+
+1. Upload the exact same transcript again. Confirm the upload says it was
+   already processed and that no API request was made.
+2. Upload a different transcript that matches the same lecture. Confirm the
+   Hub pauses and displays the detected course, lecture number, and topic.
+3. Choose **Discard upload**. Confirm the new upload is discarded and the
+   existing cleaned transcript still opens.
+4. Repeat with another different file and choose **Process anyway**. Confirm
+   one replacement job is queued and the normal replacement-review workflow
+   follows.
+5. Open the cleaned transcript and click **Download transcript**. Confirm the
+   `.txt` filename contains the course, lecture number, topic, and
+   `Transcript`, and that its content matches the reviewed transcript.
 
 ## Rollback
 

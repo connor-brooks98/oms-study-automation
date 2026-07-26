@@ -39,6 +39,20 @@ Claude credentials in Windows Credential Manager. Select a model, run
 **Test connection**, and choose the active provider. Stored credentials are
 never returned to the browser or written to `.env` or SQLite.
 
+## Transcript cost safeguard and download
+
+Study Hub checks a matched transcript before creating an LLM processing job.
+Uploading the exact same source again finishes without an API request. A
+different transcript matched to a lecture that already has a cleaned version
+pauses and displays the detected course, lecture number, and topic. Choose
+**Process anyway** to authorize the new request or **Discard upload** to remove
+only the newly staged file.
+
+Open a lecture, select **Open Cleaned Transcript**, and use **Download
+transcript** to save the already-validated text. The downloaded filename
+contains the course, lecture number, topic, and `Transcript`; downloading does
+not call an LLM.
+
 ## NUC and remote access
 
 The complete side-by-side installation, Cloudflare Access, backup, acceptance,
