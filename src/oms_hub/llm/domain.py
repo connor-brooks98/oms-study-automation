@@ -17,6 +17,39 @@ class DiagnosticSource(StrEnum):
     SERVICE = "provider_service"
 
 
+class LLMRequestError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        source: DiagnosticSource,
+        http_status: int | None = None,
+        provider_request_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.source = source
+        self.http_status = http_status
+        self.provider_request_id = provider_request_id
+
+
+@dataclass(frozen=True, slots=True)
+class CleanResult:
+    text: str
+    provider: ProviderName
+    model: str
+    request_id: str
+    input_tokens: int
+    output_tokens: int
+    cost_microusd: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderConnection:
+    provider: ProviderName
+    model: str
+    request_id: str | None
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderPreference:
     provider: ProviderName
@@ -28,4 +61,3 @@ class ProviderPreference:
     diagnostic_message: str | None
     http_status: int | None
     provider_request_id: str | None
-
