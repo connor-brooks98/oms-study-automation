@@ -442,6 +442,7 @@ class IngestionRepository:
         input_tokens: int,
         output_tokens: int,
         cost_microusd: int,
+        provider: str = "openai",
     ) -> None:
         with self.database.session() as session:
             usage = session.scalar(
@@ -453,6 +454,7 @@ class IngestionRepository:
                 session.add(
                     StudyUsageModel(
                         revision_id=revision_id,
+                        provider=provider,
                         model=model,
                         request_id=request_id,
                         input_tokens=input_tokens,

@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
 
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.models import (
@@ -12,11 +12,23 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 2
+LATEST_SCHEMA_VERSION = 3
 
 
 def migrate_database(database: "Database") -> None:
     database.create_schema()
+    usage_columns = {
+        column["name"]
+        for column in inspect(database.engine).get_columns("study_usage")
+    }
+    if "provider" not in usage_columns:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE study_usage ADD COLUMN provider "
+                    "VARCHAR(30) NOT NULL DEFAULT 'openai'"
+                )
+            )
     with database.session() as session:
         version = session.get(SchemaVersionModel, 1)
         if version is not None and version.version >= LATEST_SCHEMA_VERSION:

@@ -180,12 +180,51 @@ class StudyUsageModel(Base):
         ForeignKey("study_revisions.id"),
         unique=True,
     )
+    provider: Mapped[str] = mapped_column(
+        String(30),
+        default="openai",
+        server_default="openai",
+    )
     model: Mapped[str] = mapped_column(String(100))
     request_id: Mapped[str] = mapped_column(String(200))
     input_tokens: Mapped[int]
     output_tokens: Mapped[int]
     cost_microusd: Mapped[int]
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class LLMProviderSettingModel(Base):
+    __tablename__ = "llm_provider_settings"
+
+    provider: Mapped[str] = mapped_column(String(30), primary_key=True)
+    model: Mapped[str] = mapped_column(String(200))
+    active: Mapped[bool] = mapped_column(default=False)
+    last_test_state: Mapped[str | None] = mapped_column(
+        String(30),
+        nullable=True,
+    )
+    last_tested_at: Mapped[str | None] = mapped_column(
+        String(40),
+        nullable=True,
+    )
+    diagnostic_source: Mapped[str | None] = mapped_column(
+        String(40),
+        nullable=True,
+    )
+    diagnostic_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    http_status: Mapped[int | None] = mapped_column(nullable=True)
+    provider_request_id: Mapped[str | None] = mapped_column(
+        String(200),
+        nullable=True,
+    )
+    updated_at: Mapped[str] = mapped_column(
+        String(40),
+        default=utc_now,
+        onupdate=utc_now,
+    )
 
 
 class IngestionJobModel(Base):
