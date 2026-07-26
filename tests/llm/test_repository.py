@@ -34,3 +34,20 @@ def test_repository_updates_models_and_keeps_exactly_one_active_provider(tmp_pat
     assert active.provider is ProviderName.GEMINI
     assert sum(item.active for item in repository.list()) == 1
 
+
+def test_repository_can_clear_stale_connection_status(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    repository = LLMSettingsRepository(database, default_openai_model="gpt-5.2")
+    repository.record_test(
+        ProviderName.OPENAI,
+        state="connected",
+        tested_at="2026-07-26T12:00:00+00:00",
+        provider_request_id="request",
+    )
+
+    cleared = repository.clear_test(ProviderName.OPENAI)
+
+    assert cleared.last_test_state is None
+    assert cleared.last_tested_at is None
+    assert cleared.provider_request_id is None

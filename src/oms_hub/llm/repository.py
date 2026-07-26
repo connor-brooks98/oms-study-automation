@@ -109,6 +109,23 @@ class LLMSettingsRepository:
             session.flush()
             return self._preference(stored)
 
+    def clear_test(
+        self,
+        provider: ProviderName,
+    ) -> ProviderPreference:
+        with self.database.session() as session:
+            stored = session.get(LLMProviderSettingModel, provider.value)
+            if stored is None:
+                raise KeyError(provider.value)
+            stored.last_test_state = None
+            stored.last_tested_at = None
+            stored.diagnostic_source = None
+            stored.diagnostic_message = None
+            stored.http_status = None
+            stored.provider_request_id = None
+            session.flush()
+            return self._preference(stored)
+
     def _ensure_defaults(self) -> None:
         with self.database.session() as session:
             existing = {
@@ -151,4 +168,3 @@ class LLMSettingsRepository:
             http_status=stored.http_status,
             provider_request_id=stored.provider_request_id,
         )
-
