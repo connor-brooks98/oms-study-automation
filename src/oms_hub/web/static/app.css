@@ -536,6 +536,14 @@ select {
   gap: .6rem;
   margin-top: 1rem;
 }
+.artifact-text-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.artifact-text-heading h1 { margin: 0; }
 .info-card { padding: 1rem 1.15rem; margin-top: 1rem; color: var(--text-2); font-size: .82rem; line-height: 1.55; }
 .info-card p { margin: .35rem 0 0; }
 .review-section { margin-top: 1.5rem; }
