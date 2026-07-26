@@ -61,7 +61,10 @@ class LLMService:
         )
 
     def credential_configured(self, provider: ProviderName) -> bool:
-        value = self.secrets.get(SECRET_KEYS[provider])
+        try:
+            value = self.secrets.get(SECRET_KEYS[provider])
+        except Exception:  # noqa: BLE001 - read-only status fails closed
+            return False
         return bool(value and value.strip())
 
     def _credential(self, provider: ProviderName) -> str:
@@ -72,4 +75,3 @@ class LLMService:
                 source=DiagnosticSource.AUTHENTICATION,
             )
         return value
-

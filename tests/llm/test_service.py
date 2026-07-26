@@ -108,3 +108,22 @@ def test_missing_credential_is_an_authentication_diagnostic(tmp_path):
     assert raised.value.source is DiagnosticSource.AUTHENTICATION
     assert raised.value.http_status is None
 
+
+def test_configured_status_fails_closed_when_credential_store_is_unavailable(
+    tmp_path,
+):
+    _, service = prepared_service(tmp_path)
+
+    class FailingSecrets:
+        def get(self, key):
+            raise RuntimeError("credential backend unavailable")
+
+        def set(self, key, value):
+            raise RuntimeError
+
+        def delete(self, key):
+            raise RuntimeError
+
+    service.secrets = FailingSecrets()
+
+    assert service.credential_configured(ProviderName.OPENAI) is False

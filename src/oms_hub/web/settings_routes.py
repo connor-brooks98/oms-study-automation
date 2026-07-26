@@ -65,10 +65,40 @@ def _preview_courses(preview: TrackerPreview) -> tuple[dict[str, object], ...]:
 
 @router.get("", response_class=HTMLResponse)
 def settings_page(request: Request) -> HTMLResponse:
+    labels = {
+        ProviderName.OPENAI: "OpenAI",
+        ProviderName.GEMINI: "Google Gemini",
+        ProviderName.ANTHROPIC: "Anthropic Claude",
+    }
+    preferences = _llm_settings(request).list()
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
-        context={},
+        context={
+            "providers": tuple(
+                {
+                    "name": preference.provider.value,
+                    "label": labels[preference.provider],
+                    "model": preference.model,
+                    "active": preference.active,
+                    "configured": _llm_service(
+                        request
+                    ).credential_configured(preference.provider),
+                    "last_test_state": preference.last_test_state,
+                    "last_tested_at": preference.last_tested_at,
+                    "diagnostic_source": preference.diagnostic_source,
+                    "diagnostic_message": preference.diagnostic_message,
+                    "http_status": preference.http_status,
+                    "provider_request_id": (
+                        preference.provider_request_id
+                    ),
+                }
+                for preference in preferences
+            ),
+            "active_provider": _llm_settings(
+                request
+            ).active().provider.value,
+        },
     )
 
 
