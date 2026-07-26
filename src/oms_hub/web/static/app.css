@@ -492,6 +492,50 @@ select {
 .upload-progress span { display: block; width: 0; height: 100%; background: var(--processing); transition: width 150ms linear; }
 .upload-items { display: grid; gap: .4rem; margin: .8rem 0 0; padding: 0; list-style: none; }
 .upload-items li { display: flex; justify-content: space-between; gap: 1rem; padding: .55rem .65rem; border-radius: .4rem; background: var(--surface); font-size: .78rem; }
+.duplicate-dialog {
+  width: min(32rem, calc(100% - 2rem));
+  padding: 1.5rem;
+  border: 1px solid oklch(.79 .09 70);
+  border-radius: .85rem;
+  box-shadow: 0 1.2rem 3rem oklch(.2 .02 70 / .24);
+}
+.duplicate-dialog::backdrop {
+  background: oklch(.18 .02 250 / .62);
+  backdrop-filter: blur(2px);
+}
+.duplicate-dialog-mark {
+  display: grid;
+  width: 2.4rem;
+  height: 2.4rem;
+  margin-bottom: .8rem;
+  place-items: center;
+  border-radius: 999px;
+  background: oklch(.94 .08 70);
+  color: oklch(.43 .11 55);
+  font-weight: 800;
+}
+.duplicate-dialog h2 { margin: .2rem 0 .65rem; }
+.duplicate-dialog > p:not(.eyebrow, .duplicate-lecture, .duplicate-error) {
+  color: var(--text-2);
+  line-height: 1.55;
+}
+.duplicate-lecture {
+  padding: .8rem;
+  border-radius: .5rem;
+  background: var(--surface);
+  font: 600 .78rem/1.5 "IBM Plex Mono", monospace;
+}
+.duplicate-error {
+  min-height: 1.2rem;
+  color: oklch(.43 .17 25);
+  font-size: .76rem;
+}
+.duplicate-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: .6rem;
+  margin-top: 1rem;
+}
 .info-card { padding: 1rem 1.15rem; margin-top: 1rem; color: var(--text-2); font-size: .82rem; line-height: 1.55; }
 .info-card p { margin: .35rem 0 0; }
 .review-section { margin-top: 1.5rem; }

@@ -759,6 +759,9 @@ class IngestionRepository:
         if exact is not None:
             item.state = UploadState.COMPLETE.value
             item.error = None
+            evidence = list(json.loads(item.evidence_json))
+            evidence.append("Exact transcript already processed")
+            item.evidence_json = json.dumps(evidence)
             return
         current = session.scalar(
             select(StudyRevisionModel.id).where(

@@ -40,6 +40,21 @@
     <strong>What happens next</strong>
     <p>Confident matches enter processing automatically. Anything ambiguous stays in <a href="/quarantine">Quarantine</a> until you choose its lecture.</p>
   </aside>
+
+  {% if not is_slides %}
+  <dialog class="duplicate-dialog" data-duplicate-dialog aria-labelledby="duplicate-dialog-title" aria-describedby="duplicate-dialog-copy">
+    <div class="duplicate-dialog-mark" aria-hidden="true">!</div>
+    <p class="eyebrow">API cost safeguard</p>
+    <h2 id="duplicate-dialog-title">Cleaned transcript already available</h2>
+    <p id="duplicate-dialog-copy">A cleaned lecture transcript has already been processed for this lecture. Are you sure you want to process another?</p>
+    <p class="duplicate-lecture" data-duplicate-lecture></p>
+    <p class="duplicate-error" data-duplicate-error role="alert" aria-live="assertive"></p>
+    <div class="duplicate-actions">
+      <button class="button danger" type="button" data-discard-duplicate>Discard upload</button>
+      <button class="button primary" type="button" data-confirm-duplicate>Process anyway</button>
+    </div>
+  </dialog>
+  {% endif %}
 </section>
 {% endblock %}
 {% block scripts %}

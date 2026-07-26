@@ -1,6 +1,10 @@
 import hashlib
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
+from oms_hub.app import create_app
+from oms_hub.config import Settings
 from oms_hub.db import Database
 from oms_hub.ingestion.domain import StagedUpload, UploadKind, UploadState
 from oms_hub.ingestion.matcher import UploadMatcher
@@ -112,10 +116,9 @@ def test_exact_current_transcript_completes_without_a_job(tmp_path):
 
     repository.set_manual_assignment("exact-transcript", lecture_id)
 
-    assert (
-        repository.require_item("exact-transcript").state
-        is UploadState.COMPLETE
-    )
+    exact = repository.require_item("exact-transcript")
+    assert exact.state is UploadState.COMPLETE
+    assert "Exact transcript already processed" in exact.evidence
     assert repository.count_jobs("exact-transcript", "process") == 0
 
 
@@ -220,3 +223,140 @@ def test_discard_rejects_path_outside_staging_and_keeps_item_paused(
         is UploadState.AWAITING_CONFIRMATION
     )
     assert repository.count_jobs("paused-transcript", "process") == 0
+
+
+def _prepared_route_client(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        database_url=f"sqlite:///{tmp_path / 'route-hub.db'}",
+        allow_local_access=True,
+    )
+    app = create_app(settings)
+    repository = app.state.ingestion_repository
+    catalog = app.state.catalog_repository
+    lecture_id = catalog.upsert_lecture(
+        LectureInput(
+            "Cardiology",
+            1,
+            7,
+            "Heart Failure",
+            "Dr Test",
+            None,
+        )
+    )
+    _add_current_transcript(
+        app.state.database,
+        repository,
+        tmp_path,
+        lecture_id,
+        b"Original transcript.",
+    )
+    staging_root = app.state.upload_staging.root
+    staging_root.mkdir(parents=True, exist_ok=True)
+    batch_id, staged_path, _ = _add_upload(
+        repository,
+        staging_root,
+        "route-paused-transcript",
+        b"Corrected transcript.",
+    )
+    repository.set_manual_assignment(
+        "route-paused-transcript",
+        lecture_id,
+    )
+    return (
+        TestClient(app),
+        repository,
+        batch_id,
+        staged_path,
+    )
+
+
+def test_batch_status_includes_safe_duplicate_warning_metadata(tmp_path):
+    client, _, batch_id, _ = _prepared_route_client(tmp_path)
+
+    response = client.get(f"/api/upload-batches/{batch_id}")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["duplicate_warning"] == {
+        "subject": "Cardiology",
+        "lecture_number": 7,
+        "topic": "Heart Failure",
+    }
+
+
+def test_confirm_route_queues_one_processing_job(tmp_path):
+    client, repository, _, _ = _prepared_route_client(tmp_path)
+
+    first = client.post(
+        "/api/upload-items/route-paused-transcript/confirm"
+    )
+    second = client.post(
+        "/api/upload-items/route-paused-transcript/confirm"
+    )
+
+    assert first.status_code == 200
+    assert first.json() == {
+        "item_id": "route-paused-transcript",
+        "state": "queued",
+    }
+    assert second.status_code == 200
+    assert repository.count_jobs(
+        "route-paused-transcript",
+        "process",
+    ) == 1
+
+
+def test_discard_route_removes_staged_upload_without_a_job(tmp_path):
+    client, repository, _, staged_path = _prepared_route_client(tmp_path)
+
+    first = client.post(
+        "/api/upload-items/route-paused-transcript/discard"
+    )
+    second = client.post(
+        "/api/upload-items/route-paused-transcript/discard"
+    )
+
+    assert first.status_code == 200
+    assert first.json() == {
+        "item_id": "route-paused-transcript",
+        "state": "discarded",
+    }
+    assert second.status_code == 200
+    assert not staged_path.exists()
+    assert repository.count_jobs(
+        "route-paused-transcript",
+        "process",
+    ) == 0
+
+
+def test_stale_decision_route_returns_conflict(tmp_path):
+    client, _, _, _ = _prepared_route_client(tmp_path)
+    client.post("/api/upload-items/route-paused-transcript/confirm")
+
+    response = client.post(
+        "/api/upload-items/route-paused-transcript/discard"
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "upload is not awaiting confirmation"
+    )
+
+
+def test_transcript_upload_page_renders_accessible_duplicate_dialog(
+    tmp_path,
+):
+    client, _, _, _ = _prepared_route_client(tmp_path)
+
+    response = client.get("/uploads/transcripts")
+
+    assert response.status_code == 200
+    assert response.text.count("<dialog") == 1
+    assert "data-duplicate-dialog" in response.text
+    assert "already been processed for this lecture" in response.text
+    assert "data-duplicate-lecture" in response.text
+    assert "data-confirm-duplicate" in response.text
+    assert "data-discard-duplicate" in response.text
+    assert "Process anyway" in response.text
+    assert "Discard upload" in response.text

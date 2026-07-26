@@ -9,7 +9,9 @@ from pydantic import BaseModel, Field
 
 from oms_hub.ingestion.domain import UploadKind, UploadState
 from oms_hub.ingestion.repository import IngestionRepository
+from oms_hub.ingestion.service import IngestionService
 from oms_hub.ingestion.staging import StagingService, UploadRejected
+from oms_hub.repositories import CatalogRepository
 
 router = APIRouter()
 templates = Jinja2Templates(
@@ -54,6 +56,14 @@ def _staging(request: Request) -> StagingService:
     return cast(StagingService, request.app.state.upload_staging)
 
 
+def _ingestion(request: Request) -> IngestionService:
+    return cast(IngestionService, request.app.state.ingestion_service)
+
+
+def _catalog(request: Request) -> CatalogRepository:
+    return cast(CatalogRepository, request.app.state.catalog_repository)
+
+
 @router.post("/uploads/{kind}", status_code=202)
 def upload_files(
     kind: UploadKind,
@@ -87,7 +97,55 @@ def batch_status(batch_id: str, request: Request) -> JSONResponse:
     batch = _repository(request).get_batch(batch_id)
     if batch is None:
         raise HTTPException(404, "upload batch not found")
-    return JSONResponse(batch.public_dict())
+    payload = batch.public_dict()
+    items = cast(list[dict[str, object]], payload["items"])
+    for item in items:
+        if item["state"] != UploadState.AWAITING_CONFIRMATION.value:
+            continue
+        lecture_id = item.get("lecture_id")
+        if not isinstance(lecture_id, int):
+            continue
+        lecture = _catalog(request).get_lecture(lecture_id)
+        if lecture is None:
+            continue
+        item["duplicate_warning"] = {
+            "subject": lecture.subject,
+            "lecture_number": lecture.lecture_number,
+            "topic": lecture.topic,
+        }
+    return JSONResponse(payload)
+
+
+def _decision_payload(item_id: str, state: UploadState) -> dict[str, str]:
+    return {"item_id": item_id, "state": state.value}
+
+
+@router.post("/api/upload-items/{item_id}/confirm")
+def confirm_transcript(
+    item_id: str,
+    request: Request,
+) -> dict[str, str]:
+    try:
+        item = _ingestion(request).confirm_processing(item_id)
+    except KeyError as error:
+        raise HTTPException(404, "upload item not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return _decision_payload(item.id, item.state)
+
+
+@router.post("/api/upload-items/{item_id}/discard")
+def discard_transcript(
+    item_id: str,
+    request: Request,
+) -> dict[str, str]:
+    try:
+        item = _ingestion(request).discard_item(item_id)
+    except KeyError as error:
+        raise HTTPException(404, "upload item not found") from error
+    except (OSError, UploadRejected, ValueError) as error:
+        raise HTTPException(409, str(error)) from error
+    return _decision_payload(item.id, item.state)
 
 
 @router.post("/api/upload-chunks", status_code=201)
