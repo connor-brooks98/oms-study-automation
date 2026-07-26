@@ -15,12 +15,13 @@ from oms_hub.ingestion.domain import (
     UploadState,
 )
 from oms_hub.ingestion.repository import IngestionRepository
+from oms_hub.llm.domain import CleanResult
 from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import (
     build_transcript_destination,
     expanded_path,
 )
-from oms_hub.transcripts.cleaner import CleanResult, TranscriptCleaner
+from oms_hub.transcripts.cleaner import TranscriptCleaner
 from oms_hub.transcripts.prompt import ApprovedPrompt, PromptLoader
 
 
@@ -140,6 +141,7 @@ class TranscriptPipeline:
             if model_result is not None:
                 self.repository.record_study_usage(
                     revision.id,
+                    provider=model_result.provider.value,
                     model=model_result.model,
                     request_id=model_result.request_id,
                     input_tokens=model_result.input_tokens,

@@ -10,7 +10,7 @@ from oms_hub.files.office import (
 )
 from oms_hub.ingestion.domain import IngestionJob, UploadKind, UploadState
 from oms_hub.ingestion.repository import IngestionRepository
-from oms_hub.transcripts.cleaner import OpenAIRateLimitError, OpenAITransientError
+from oms_hub.llm.domain import DiagnosticSource, LLMRequestError
 from oms_hub.transcripts.pipeline import TranscriptValidationError
 
 logger = logging.getLogger(__name__)
@@ -83,14 +83,18 @@ class IngestionWorker:
 
     @staticmethod
     def _is_transient(error: Exception) -> bool:
+        if isinstance(error, LLMRequestError):
+            return error.source in {
+                DiagnosticSource.NETWORK,
+                DiagnosticSource.QUOTA,
+                DiagnosticSource.SERVICE,
+            }
         return isinstance(
             error,
             (
                 OfficeConversionError,
                 OfficeTimeoutError,
                 OfficeUnavailableError,
-                OpenAIRateLimitError,
-                OpenAITransientError,
             ),
         )
 

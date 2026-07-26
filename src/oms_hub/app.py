@@ -16,6 +16,12 @@ from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.ingestion.service import IngestionService as ManualIngestionService
 from oms_hub.ingestion.staging import StagingService
 from oms_hub.ingestion.worker import IngestionWorker
+from oms_hub.llm.anthropic import AnthropicProvider
+from oms_hub.llm.domain import ProviderName
+from oms_hub.llm.gemini import GeminiProvider
+from oms_hub.llm.openai import OpenAIProvider
+from oms_hub.llm.repository import LLMSettingsRepository
+from oms_hub.llm.service import LLMService
 from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import expanded_path
 from oms_hub.security.access import (
@@ -26,7 +32,6 @@ from oms_hub.security.access import (
 from oms_hub.security.csrf import CsrfProtector, origin_is_allowed
 from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.slides.pipeline import SlidePipeline
-from oms_hub.transcripts.cleaner import OpenAITranscriptCleaner
 from oms_hub.transcripts.pipeline import TranscriptPipeline as V2TranscriptPipeline
 from oms_hub.transcripts.prompt import PromptLoader as V2PromptLoader
 from oms_hub.web.artifact_routes import router as artifact_router
@@ -212,6 +217,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     database.migrate()
     app.state.database = database
     app.state.secrets = KeyringSecretStore()
+    app.state.llm_settings = LLMSettingsRepository(
+        database,
+        default_openai_model=resolved.openai_model,
+    )
+    app.state.llm_service = LLMService(
+        app.state.llm_settings,
+        app.state.secrets,
+        {
+            ProviderName.OPENAI: OpenAIProvider(
+                input_usd_per_million=resolved.openai_input_usd_per_million,
+                output_usd_per_million=resolved.openai_output_usd_per_million,
+            ),
+            ProviderName.GEMINI: GeminiProvider(),
+            ProviderName.ANTHROPIC: AnthropicProvider(),
+        },
+    )
     app.state.catalog_repository = CatalogRepository(database)
     app.state.ingestion_repository = IngestionRepository(database)
     app.state.upload_staging = StagingService(
@@ -234,17 +255,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         expanded_path(resolved.transcript_prompt_path),
         resolved.transcript_prompt_sha256,
     )
-    app.state.openai_cleaner = OpenAITranscriptCleaner(
-        app.state.secrets,
-        resolved.openai_model,
-        resolved.openai_input_usd_per_million,
-        resolved.openai_output_usd_per_million,
-    )
     app.state.transcript_pipeline = V2TranscriptPipeline(
         database,
         resolved,
         app.state.transcript_prompt,
-        app.state.openai_cleaner,
+        app.state.llm_service,
     )
     app.state.ingestion_worker = IngestionWorker(
         app.state.ingestion_repository,
