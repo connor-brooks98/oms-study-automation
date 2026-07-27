@@ -247,3 +247,129 @@ class IngestionJobModel(Base):
         default=utc_now,
         onupdate=utc_now,
     )
+
+
+class GoogleConnectionModel(Base):
+    __tablename__ = "google_connection"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    state: Mapped[str] = mapped_column(String(30), default="disconnected")
+    account_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    notebook_state: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    gemini_state: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    docs_state: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    diagnostic: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_tested_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class StudyPromptSettingModel(Base):
+    __tablename__ = "study_prompt_settings"
+
+    kind: Mapped[str] = mapped_column(String(30), primary_key=True)
+    path: Mapped[str] = mapped_column(Text, default="")
+    last_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_modified_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class NotebookMappingModel(Base):
+    __tablename__ = "notebook_mappings"
+    __table_args__ = (UniqueConstraint("subject_key", "exam_number"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subject: Mapped[str] = mapped_column(String(100))
+    subject_key: Mapped[str] = mapped_column(String(100))
+    exam_number: Mapped[int]
+    remote_notebook_id: Mapped[str] = mapped_column(String(200), unique=True)
+    title: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class NotebookSourceMappingModel(Base):
+    __tablename__ = "notebook_source_mappings"
+    __table_args__ = (
+        UniqueConstraint("notebook_mapping_id", "study_revision_id", "source_kind"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    notebook_mapping_id: Mapped[int] = mapped_column(ForeignKey("notebook_mappings.id"))
+    lecture_id: Mapped[int] = mapped_column(ForeignKey("lectures.id"))
+    study_revision_id: Mapped[int] = mapped_column(ForeignKey("study_revisions.id"))
+    source_kind: Mapped[str] = mapped_column(String(30))
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    remote_source_id: Mapped[str] = mapped_column(String(200))
+    state: Mapped[str] = mapped_column(String(30), default="ready")
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    verified_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+class CourseQuizDocumentModel(Base):
+    __tablename__ = "course_quiz_documents"
+
+    subject_key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(100))
+    document_id: Mapped[str] = mapped_column(String(200), unique=True)
+    title: Mapped[str] = mapped_column(String(300))
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class ExamQuizTabModel(Base):
+    __tablename__ = "exam_quiz_tabs"
+    __table_args__ = (UniqueConstraint("subject_key", "exam_number"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subject_key: Mapped[str] = mapped_column(
+        ForeignKey("course_quiz_documents.subject_key")
+    )
+    exam_number: Mapped[int]
+    tab_id: Mapped[str] = mapped_column(String(200))
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class GenerationJobModel(Base):
+    __tablename__ = "generation_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    lecture_id: Mapped[int] = mapped_column(ForeignKey("lectures.id"))
+    kind: Mapped[str] = mapped_column(String(20))
+    state: Mapped[str] = mapped_column(String(30), default="queued")
+    stage: Mapped[str] = mapped_column(String(30), default="validate")
+    attempts: Mapped[int] = mapped_column(default=0)
+    next_attempt_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    notebook_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    pdf_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    transcript_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    notebook_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gemini_quiz_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    quiz_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class OutlineOutputModel(Base):
+    __tablename__ = "outline_outputs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lecture_id: Mapped[int] = mapped_column(ForeignKey("lectures.id"))
+    job_id: Mapped[str] = mapped_column(ForeignKey("generation_jobs.id"), unique=True)
+    path: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(String(64))
+    current: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class QuizOutputModel(Base):
+    __tablename__ = "quiz_outputs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lecture_id: Mapped[int] = mapped_column(ForeignKey("lectures.id"))
+    job_id: Mapped[str] = mapped_column(ForeignKey("generation_jobs.id"), unique=True)
+    url: Mapped[str] = mapped_column(Text)
+    docs_synced: Mapped[bool] = mapped_column(default=False)
+    current: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
