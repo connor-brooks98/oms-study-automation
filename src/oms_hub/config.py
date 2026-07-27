@@ -7,6 +7,26 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _normalize_hostname(value: str | None, field_name: str) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower().rstrip(".")
+    if not re.fullmatch(
+        r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+        r"[a-z]{2,63}",
+        normalized,
+    ):
+        raise ValueError(f"{field_name} must be a hostname without a scheme or port")
+    return normalized
+
+
+def _validate_secret_key_name(value: str) -> str:
+    normalized = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", normalized):
+        raise ValueError("credential key name contains unsupported characters")
+    return normalized
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OMS_HUB_", env_file=".env", extra="ignore")
 
@@ -44,6 +64,31 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5.2"
     openai_input_usd_per_million: float = Field(default=2.50, ge=0)
     openai_output_usd_per_million: float = Field(default=15.00, ge=0)
+    anki_enabled: bool = False
+    anki_data_dir: Path | None = None
+    anki_agent_hostname: str | None = None
+    anki_agent_token_key: str = "anki-agent-token"
+    anki_agent_heartbeat_max_age_seconds: int = Field(
+        default=24 * 60 * 60,
+        ge=60,
+        le=30 * 24 * 60 * 60,
+    )
+    anki_snapshot_max_age_hours: int = Field(default=48, ge=1, le=24 * 30)
+    anki_worker_poll_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
+    anki_embedding_model: str = Field(
+        default="BAAI/bge-small-en-v1.5",
+        min_length=1,
+        max_length=200,
+    )
+    anki_focused_retrieval_limit: int = Field(default=200, ge=1, le=5_000)
+    anki_global_retrieval_limit: int = Field(default=50, ge=1, le=1_000)
+    anki_image_low_estimate_usd: float = Field(default=0.0, ge=0)
+    anki_image_medium_estimate_usd: float = Field(default=0.0, ge=0)
+    anki_image_high_estimate_usd: float = Field(default=0.0, ge=0)
+
+    @property
+    def resolved_anki_data_dir(self) -> Path:
+        return self.anki_data_dir if self.anki_data_dir is not None else self.data_dir / "anki"
 
     @field_validator("timezone")
     @classmethod
@@ -54,16 +99,17 @@ class Settings(BaseSettings):
     @field_validator("public_hostname")
     @classmethod
     def normalize_public_hostname(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = value.strip().lower().rstrip(".")
-        if not re.fullmatch(
-            r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
-            r"[a-z]{2,63}",
-            normalized,
-        ):
-            raise ValueError("public_hostname must be a hostname without a scheme or port")
-        return normalized
+        return _normalize_hostname(value, "public_hostname")
+
+    @field_validator("anki_agent_hostname")
+    @classmethod
+    def normalize_anki_agent_hostname(cls, value: str | None) -> str | None:
+        return _normalize_hostname(value, "anki_agent_hostname")
+
+    @field_validator("anki_agent_token_key")
+    @classmethod
+    def validate_anki_agent_token_key(cls, value: str) -> str:
+        return _validate_secret_key_name(value)
 
     @field_validator("cloudflare_access_issuer")
     @classmethod

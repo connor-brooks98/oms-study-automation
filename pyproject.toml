@@ -8,15 +8,21 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.14"
 dependencies = [
   "fastapi>=0.115,<1",
+  "fastembed>=0.7,<1",
   "httpx>=0.28,<1",
   "jinja2>=3.1,<4",
   "keyring>=25,<26",
   "openpyxl>=3.1,<4",
   "msoffcrypto-tool>=6,<7",
+  "numpy>=2,<3",
+  "Pillow>=11,<13",
   "pyjwt[crypto]>=2.10,<3",
+  "PyMuPDF>=1.26,<2",
   "pypdf>=6.14,<7",
   "pydantic-settings>=2.7,<3",
+  "python-pptx>=1.0,<2",
   "python-multipart>=0.0.20,<1",
+  "selectolax>=0.3,<1",
   "sqlalchemy>=2.0,<3",
   "uvicorn[standard]>=0.34,<1",
   "pywin32==312; sys_platform == 'win32'",
@@ -24,6 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "httpx2",
   "mypy>=1.14,<2",
   "pytest>=8.3,<9",
   "pytest-cov>=6,<7",
@@ -34,9 +41,11 @@ dev = [
 
 [project.scripts]
 oms-hub = "oms_hub.cli:main"
+oms-study-hub = "oms_hub.cli:main"
+oms-anki-agent = "oms_anki_agent.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/oms_hub"]
+packages = ["src/oms_hub", "src/oms_anki_agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -51,4 +60,4 @@ target-version = "py312"
 [tool.mypy]
 python_version = "3.12"
 strict = true
-packages = ["oms_hub"]
+packages = ["oms_hub", "oms_anki_agent"]
