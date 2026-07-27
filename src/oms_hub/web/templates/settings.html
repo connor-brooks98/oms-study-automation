@@ -100,6 +100,40 @@
     </div>
   </section>
 
+  <section class="settings-section" aria-labelledby="google-heading">
+    <div class="settings-section-heading">
+      <div>
+        <p class="mono-label">Account connection</p>
+        <h2 id="google-heading">Google workspace</h2>
+        <p>Connect the Google account used for NotebookLM, Gemini, and shared quiz documents.</p>
+      </div>
+    </div>
+
+    <article class="card provider-card" data-google-card>
+      <div class="provider-card-heading">
+        <div>
+          <p class="provider-kicker">NotebookLM · Gemini · Google Docs</p>
+          <h3>Google account</h3>
+        </div>
+        <span class="credential-state" data-google-badge>Not connected</span>
+      </div>
+      <p class="field-help">Your login is saved on this Study Hub device so you only need to connect once.</p>
+      <div class="provider-field">
+        <label for="google-oauth-client">OAuth client JSON</label>
+        <input id="google-oauth-client" type="file" accept=".json,application/json" data-google-oauth-client>
+        <p class="field-help">One-time setup: choose the Desktop app client file downloaded from Google Cloud.</p>
+      </div>
+      <div class="provider-buttons">
+        <button class="button secondary" type="button" data-google-save-client>Save client file</button>
+        <button class="button primary" type="button" data-google-connect>Connect Google</button>
+        <button class="button secondary" type="button" data-google-test>Test connection</button>
+      </div>
+      <p class="field-message" data-google-status aria-live="polite">
+        Connect your account to enable NotebookLM outlines and Gemini quizzes.
+      </p>
+    </article>
+  </section>
+
   <section class="settings-section" aria-labelledby="notebook-prompts-heading">
     <div class="settings-section-heading">
       <div>

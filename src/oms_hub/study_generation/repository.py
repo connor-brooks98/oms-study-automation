@@ -6,7 +6,11 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.engine import CursorResult
 
 from oms_hub.db import Database
-from oms_hub.models import GenerationJobModel, StudyPromptSettingModel
+from oms_hub.models import (
+    GenerationJobModel,
+    GoogleConnectionModel,
+    StudyPromptSettingModel,
+)
 from oms_hub.study_generation.domain import (
     GenerationJob,
     GenerationKind,
@@ -82,6 +86,38 @@ class GenerationRepository:
                 raise KeyError(kind.value)
             model.last_sha256 = sha256
             model.last_modified_at = modified_at
+
+    def save_google_status(
+        self,
+        *,
+        state: str,
+        account_email: str | None,
+        notebook_state: str,
+        gemini_state: str,
+        docs_state: str,
+        diagnostic: str | None,
+        tested_at: str,
+    ) -> None:
+        with self.database.session() as session:
+            model = session.get(GoogleConnectionModel, 1)
+            if model is None:
+                model = GoogleConnectionModel(id=1)
+                session.add(model)
+            model.state = state
+            model.account_email = account_email
+            model.notebook_state = notebook_state
+            model.gemini_state = gemini_state
+            model.docs_state = docs_state
+            model.diagnostic = diagnostic
+            model.last_tested_at = tested_at
+
+    def google_status(self) -> GoogleConnectionModel | None:
+        with self.database.session() as session:
+            model = session.get(GoogleConnectionModel, 1)
+            if model is None:
+                return None
+            session.expunge(model)
+            return model
 
     def claim_next(self, now: datetime) -> GenerationJob | None:
         with self.database.session() as session:

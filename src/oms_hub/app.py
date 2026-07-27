@@ -32,11 +32,20 @@ from oms_hub.security.access import (
 from oms_hub.security.csrf import CsrfProtector, origin_is_allowed
 from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.slides.pipeline import SlidePipeline
+from oms_hub.study_generation.google_connection import (
+    GoogleConnectionService,
+    PlaywrightGoogleProbe,
+)
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.transcripts.pipeline import TranscriptPipeline as V2TranscriptPipeline
 from oms_hub.transcripts.prompt import PromptLoader as V2PromptLoader
 from oms_hub.web.artifact_routes import router as artifact_router
-from oms_hub.web.generation_routes import router as generation_router
+from oms_hub.web.generation_routes import (
+    google_router,
+)
+from oms_hub.web.generation_routes import (
+    router as generation_router,
+)
 from oms_hub.web.quarantine_routes import router as quarantine_router
 from oms_hub.web.routes import router
 from oms_hub.web.settings_routes import router as settings_router
@@ -238,6 +247,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.catalog_repository = CatalogRepository(database)
     app.state.ingestion_repository = IngestionRepository(database)
     app.state.generation_repository = GenerationRepository(database)
+    app.state.google_connection = GoogleConnectionService(
+        app.state.generation_repository,
+        app.state.secrets,
+        resolved.data_dir,
+        PlaywrightGoogleProbe(resolved.data_dir, app.state.secrets),
+    )
     app.state.upload_staging = StagingService(
         resolved.data_dir / "staging",
         resolved.max_upload_file_bytes,
@@ -282,6 +297,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(upload_router)
     app.include_router(quarantine_router)
     app.include_router(generation_router)
+    app.include_router(google_router)
     @app.get("/health")
     def health() -> dict[str, str]:
         return {

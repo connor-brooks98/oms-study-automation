@@ -71,6 +71,38 @@
     return payload;
   };
 
+  const getJson = async (fetchImpl, url) => {
+    const response = await fetchImpl(url, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Study Hub rejected the request.");
+    }
+    return payload;
+  };
+
+  const renderGoogleStatus = (card, status) => {
+    const badge = card.querySelector("[data-google-badge]");
+    const message = card.querySelector("[data-google-status]");
+    const connected = status.state === "connected";
+    const connecting = Boolean(status.connecting);
+
+    badge.textContent = connecting ? "Connecting" : connected ? "Connected" : "Not connected";
+    badge.classList.toggle("is-configured", connected);
+
+    if (connecting) {
+      message.textContent = "Finish signing in using the browser window on this Study Hub device.";
+    } else if (connected) {
+      message.textContent = status.account_email
+        ? `Google is connected as ${status.account_email}.`
+        : "Google is connected.";
+    } else if (status.message) {
+      message.textContent = status.message;
+    }
+  };
+
   const setTestState = (button, state) => {
     const presentation = testPresentation(state);
     button.classList.remove("is-testing", "is-connected", "is-failed");
@@ -221,6 +253,83 @@
       });
     });
 
+    const googleCard = documentRef.querySelector("[data-google-card]");
+    if (googleCard) {
+      const connectButton = googleCard.querySelector("[data-google-connect]");
+      const testButton = googleCard.querySelector("[data-google-test]");
+      const saveClientButton = googleCard.querySelector("[data-google-save-client]");
+      const clientInput = googleCard.querySelector("[data-google-oauth-client]");
+      const message = googleCard.querySelector("[data-google-status]");
+
+      getJson(fetchImpl, "/settings/google/status")
+        .then((status) => renderGoogleStatus(googleCard, status))
+        .catch((error) => {
+          message.textContent = error.message;
+        });
+
+      saveClientButton.addEventListener("click", async () => {
+        const selected = clientInput.files[0];
+        if (!selected) {
+          message.textContent = "Choose the OAuth client JSON file first.";
+          return;
+        }
+        saveClientButton.disabled = true;
+        const form = new FormData();
+        form.append("client_file", selected);
+        try {
+          const response = await fetchImpl("/settings/google/oauth-client", {
+            method: "POST",
+            headers: { "X-CSRF-Token": token() },
+            body: form,
+            cache: "no-store",
+          });
+          const result = await response.json();
+          if (!response.ok) {
+            throw new Error(result.detail || "Study Hub rejected the client file.");
+          }
+          message.textContent = "OAuth client file saved securely.";
+        } catch (error) {
+          message.textContent = error.message;
+        } finally {
+          saveClientButton.disabled = false;
+        }
+      });
+
+      connectButton.addEventListener("click", async () => {
+        connectButton.disabled = true;
+        try {
+          const status = await postJson(
+            fetchImpl,
+            "/settings/google/connect",
+            {},
+            token(),
+          );
+          renderGoogleStatus(googleCard, status);
+        } catch (error) {
+          message.textContent = error.message;
+        } finally {
+          connectButton.disabled = false;
+        }
+      });
+
+      testButton.addEventListener("click", async () => {
+        testButton.disabled = true;
+        try {
+          const status = await postJson(
+            fetchImpl,
+            "/settings/google/test",
+            {},
+            token(),
+          );
+          renderGoogleStatus(googleCard, status);
+        } catch (error) {
+          message.textContent = error.message;
+        } finally {
+          testButton.disabled = false;
+        }
+      });
+    }
+
     const active = documentRef.querySelector("[data-active-provider]");
     const saveActive = documentRef.querySelector("[data-save-active]");
     const activeMessage = documentRef.querySelector("[data-active-message]");
@@ -249,8 +358,10 @@
   const api = {
     csrfToken,
     diagnosticLines,
+    getJson,
     initialize,
     postJson,
+    renderGoogleStatus,
     testPresentation,
     togglePassword,
   };
