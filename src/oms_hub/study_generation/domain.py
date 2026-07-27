@@ -61,3 +61,64 @@ class PromptSnapshot:
     content: str
     sha256: str
     modified_at: str
+
+
+class SourceIsolationError(ValueError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class NotebookRef:
+    id: str
+    title: str
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionSource:
+    lecture_id: int
+    revision_id: int
+    path: Path
+    sha256: str
+    kind: SourceKind
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteSource:
+    remote_id: str
+    lecture_id: int
+    revision_id: int
+    sha256: str
+    kind: SourceKind
+    ready: bool
+
+
+@dataclass(frozen=True, slots=True)
+class LectureSourceSet:
+    lecture_id: int
+    pdf: RemoteSource
+    transcript: RemoteSource
+
+    def __post_init__(self) -> None:
+        if (
+            self.pdf.kind is not SourceKind.LECTURE_PDF
+            or self.transcript.kind is not SourceKind.CLEANED_TRANSCRIPT
+        ):
+            raise SourceIsolationError("lecture source kinds are invalid")
+        if (
+            self.pdf.lecture_id != self.lecture_id
+            or self.transcript.lecture_id != self.lecture_id
+        ):
+            raise SourceIsolationError("lecture sources belong to different lectures")
+        if not self.pdf.ready or not self.transcript.ready:
+            raise SourceIsolationError("lecture sources are not ready")
+        if self.pdf.remote_id == self.transcript.remote_id:
+            raise SourceIsolationError("lecture sources must be distinct")
+
+    @property
+    def remote_ids(self) -> list[str]:
+        return [self.pdf.remote_id, self.transcript.remote_id]
+
+
+@dataclass(frozen=True, slots=True)
+class NotebookAnswer:
+    text: str
