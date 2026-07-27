@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}Review tracker import · Study Hub{% endblock %}
+{% block content %}
+<section class="page-shell tracker-preview-page">
+  <nav class="breadcrumbs" aria-label="Breadcrumb">
+    <a href="/settings">Settings</a>
+    <span aria-hidden="true">/</span>
+    <span>Tracker preview</span>
+  </nav>
+
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">Non-mutating preview</p>
+      <h1>Review tracker import</h1>
+      <p class="page-summary">
+        Nothing has been added yet. Review the detected structure and approve
+        <strong>{{ preview.source_name }}</strong> when it looks right.
+      </p>
+    </div>
+    <span class="status-pill status-{{ 'complete' if preview.state == 'ready' else 'review' }}">
+      {{ preview.state }}
+    </span>
+  </div>
+
+  <section class="preview-stats" aria-label="Tracker summary">
+    <article class="preview-stat">
+      <strong>{{ course_count }}</strong>
+      <span>Courses</span>
+    </article>
+    <article class="preview-stat">
+      <strong>{{ exam_count }}</strong>
+      <span>Exams</span>
+    </article>
+    <article class="preview-stat">
+      <strong>{{ preview.detected|length }}</strong>
+      <span>Lectures</span>
+    </article>
+    <article class="preview-stat">
+      <strong>{{ preview.issues|length }}</strong>
+      <span>Rows to review</span>
+    </article>
+  </section>
+
+  <section class="card preview-change-card">
+    <div>
+      <p class="mono-label">Catalog changes</p>
+      <h2>What applying this tracker will do</h2>
+    </div>
+    <div class="change-counts">
+      <span><strong>{{ preview.new|length }}</strong> new</span>
+      <span><strong>{{ preview.changed|length }}</strong> changed</span>
+      <span><strong>{{ preview.unchanged }}</strong> unchanged</span>
+      <span><strong>{{ preview.missing|length }}</strong> missing</span>
+    </div>
+    {% if preview.changed %}
+    <details class="preview-detail">
+      <summary>Review changed lectures</summary>
+      <ul class="preview-lecture-list">
+      {% for lecture in preview.changed %}
+        <li>
+          <strong>{{ lecture.subject }} · Exam {{ lecture.exam_number }} · Lecture {{ lecture.lecture_number }}</strong>
+          <span>{{ lecture.topic }}{% if lecture.lecturer %} — {{ lecture.lecturer }}{% endif %}</span>
+        </li>
+      {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+    {% if preview.missing %}
+    <details class="preview-detail">
+      <summary>Review lectures missing from this workbook</summary>
+      <ul class="preview-lecture-list">
+      {% for lecture in preview.missing %}
+        <li>
+          <strong>{{ lecture.subject }} · Exam {{ lecture.exam_number }} · Lecture {{ lecture.lecture_number }}</strong>
+          <span>{{ lecture.topic }}</span>
+        </li>
+      {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+  </section>
+
+  {% if preview.issues %}
+  <section class="card preview-issues-card" aria-labelledby="tracker-issues-heading">
+    <p class="mono-label">Needs review</p>
+    <h2 id="tracker-issues-heading">
+      {{ preview.issues|length }} ambiguous {{ "row" if preview.issues|length == 1 else "rows" }}
+    </h2>
+    <p>
+      Valid lectures can still be imported. These rows will remain on the
+      Review page until you assign or correct them.
+    </p>
+    <ul class="preview-issue-list">
+    {% for issue in preview.issues %}
+      <li>
+        <strong>{{ issue.sheet }} · row {{ issue.row_number }}</strong>
+        <span>{{ issue.message }}</span>
+        <code>{{ issue.raw_values }}</code>
+      </li>
+    {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  <section class="preview-catalog" aria-labelledby="detected-catalog-heading">
+    <div class="section-heading">
+      <div>
+        <p class="mono-label">Detected catalog</p>
+        <h2 id="detected-catalog-heading">Courses, Exams, and lectures</h2>
+      </div>
+      <span class="mono-note">{{ preview.detected|length }} total lectures</span>
+    </div>
+
+    <div class="preview-course-list">
+    {% for course in courses %}
+      <details class="preview-course">
+        <summary>
+          <span>{{ course.name }}</span>
+          <span class="count-pill">{{ course.lecture_count }} lectures</span>
+        </summary>
+        <div class="preview-exam-list">
+        {% for exam in course.exams %}
+          <details class="preview-exam">
+            <summary>
+              <span>Exam {{ exam.number }}</span>
+              <span class="exam-count">{{ exam.lectures|length }} lectures</span>
+            </summary>
+            <ol class="preview-lecture-list">
+            {% for lecture in exam.lectures %}
+              <li value="{{ lecture.lecture_number }}">
+                <strong>{{ lecture.topic }}</strong>
+                <span>
+                  Lecture {{ lecture.lecture_number }}
+                  {% if lecture.lecturer %} · {{ lecture.lecturer }}{% endif %}
+                  {% if lecture.exam_date %} · Exam {{ lecture.exam_date }}{% endif %}
+                </span>
+              </li>
+            {% endfor %}
+            </ol>
+          </details>
+        {% endfor %}
+        </div>
+      </details>
+    {% endfor %}
+    </div>
+  </section>
+
+  <section class="card preview-approval">
+    <div>
+      <p class="mono-label">Approval</p>
+      <h2>
+        {% if preview.state == "identical" %}
+          This tracker has already been imported
+        {% else %}
+          Ready to build the Study Hub catalog?
+        {% endif %}
+      </h2>
+      <p>
+        {% if preview.state == "identical" %}
+          Return to Settings if you intended to select a different workbook.
+        {% else %}
+          Applying imports valid lectures and preserves any existing lecture
+          progress. Ambiguous rows remain available for manual review.
+        {% endif %}
+      </p>
+    </div>
+    <div class="preview-actions">
+      <a class="button secondary" href="/settings">Choose another file</a>
+      {% if preview.state != "identical" %}
+      <form method="post" action="/settings/tracker/apply">
+        <input type="hidden" name="preview_id" value="{{ preview.id }}">
+        <button class="button primary" type="submit">Apply tracker</button>
+      </form>
+      {% endif %}
+    </div>
+  </section>
+</section>
+{% endblock %}

@@ -1,19 +1,42 @@
+from collections import OrderedDict
 from pathlib import Path
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from oms_hub.checklist import ChecklistService
-from oms_hub.canvas.repository import CanvasRepository
-from oms_hub.domain import LectureKey, LectureStepName, StepStatus
+from oms_hub.domain import (
+    LectureKey,
+    StepStatus,
+    V2StepName,
+)
+from oms_hub.ingestion.domain import UploadKind
+from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.naming import display_title
-from oms_hub.panopto.repository import PanoptoRepository
+from oms_hub.progress import overall_status
 from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.web.schemas import LectureApi, StepApi
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 router = APIRouter()
+
+_COURSE_HUES = {
+    "clinical neuroscience": 290,
+    "neuro": 290,
+    "msk": 50,
+    "opp": 190,
+    "epc": 95,
+    "heme & lymph": 15,
+    "heme/lymph": 15,
+    "heme": 15,
+    "cardio": 340,
+    "renal": 135,
+    "respiratory": 205,
+}
+_V2_STEP_VALUES = {name.value for name in V2StepName}
+_V2_RELEASE_VALUES = {
+    name.value for name in V2StepName.first_release()
+}
 
 
 def _repo(request: Request) -> CatalogRepository:
@@ -23,15 +46,15 @@ def _repo(request: Request) -> CatalogRepository:
 @router.get("/", response_class=HTMLResponse)
 def dashboard(request: Request) -> HTMLResponse:
     repository = _repo(request)
-    rows: list[dict[str, object]] = []
+    ingestion = IngestionRepository(request.app.state.database)
+    grouped: OrderedDict[str, dict[int, list[dict[str, object]]]] = (
+        OrderedDict()
+    )
     review_count = 0
     for lecture in repository.list_lectures():
-        completed = sum(
-            item.status in {"complete", "skipped"}
-            for item in lecture.steps
-        )
         needs_review = sum(
-            item.status == "needs_review" for item in lecture.steps
+            item.name in _V2_STEP_VALUES and item.status == "needs_review"
+            for item in lecture.steps
         )
         review_count += needs_review
         key = LectureKey(
@@ -40,39 +63,64 @@ def dashboard(request: Request) -> HTMLResponse:
             lecture.lecture_number,
             lecture.topic,
         )
-        rows.append(
-            {
-                "lecture": lecture,
-                "title": display_title(key),
-                "completed": completed,
-                "total": len(lecture.steps),
-                "needs_review": needs_review,
-            }
+        v2_steps = {
+            step.name: step.status
+            for step in lecture.steps
+            if step.name in _V2_STEP_VALUES
+        }
+        status = overall_status(v2_steps)
+        release_steps = [
+            v2_steps.get(step.value, StepStatus.WAITING.value)
+            for step in V2StepName.first_release()
+        ]
+        release_completed = sum(
+            value in {StepStatus.COMPLETE.value, StepStatus.SKIPPED.value}
+            for value in release_steps
         )
-    review_count += len(repository.list_review_events())
+        current_kinds = {
+            revision.kind
+            for revision in ingestion.list_current_revisions(lecture.id)
+        }
+        v2_row = {
+            "lecture": lecture,
+            "title": display_title(key),
+            "status": status.value,
+            "status_label": status.value.replace("_", " ").title(),
+            "completed": release_completed,
+            "total": len(release_steps),
+            "percent": round(
+                release_completed / len(release_steps) * 100
+            ),
+            "has_slides": UploadKind.SLIDES in current_kinds,
+            "has_transcript": UploadKind.TRANSCRIPTS in current_kinds,
+        }
+        grouped.setdefault(lecture.subject, OrderedDict()).setdefault(
+            lecture.exam_number,
+            [],
+        ).append(v2_row)
     review_count += len(repository.list_import_issues())
-    canvas_repository = CanvasRepository(request.app.state.database)
-    review_count += len(canvas_repository.list_review_items())
-    review_count += len(canvas_repository.list_proposed_revisions())
-    panopto_repository = PanoptoRepository(
-        request.app.state.database,
-        request.app.state.settings.panopto_tenant_url,
-    )
-    panopto_review_count = panopto_repository.pending_review_count()
-    review_count += panopto_review_count
-    input_tokens, output_tokens, cost_microusd = panopto_repository.usage_totals()
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
         context={
-            "rows": rows,
+            "courses": [
+                {
+                    "name": subject,
+                    "hue": _course_hue(subject),
+                    "lecture_count": sum(
+                        len(lectures) for lectures in exams.values()
+                    ),
+                    "exams": [
+                        {
+                            "number": exam_number,
+                            "lectures": lectures,
+                        }
+                        for exam_number, lectures in sorted(exams.items())
+                    ],
+                }
+                for subject, exams in grouped.items()
+            ],
             "review_count": review_count,
-            "canvas_connection": canvas_repository.connection(),
-            "panopto_connection": panopto_repository.connection(),
-            "panopto_review_count": panopto_review_count,
-            "panopto_input_tokens": input_tokens,
-            "panopto_output_tokens": output_tokens,
-            "panopto_cost_usd": cost_microusd / 1_000_000,
         },
     )
 
@@ -88,10 +136,61 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
         lecture.lecture_number,
         lecture.topic,
     )
+    v2_steps = {
+        step.name: step.status
+        for step in lecture.steps
+        if step.name in _V2_STEP_VALUES
+    }
+    status = overall_status(v2_steps)
+    step_by_name = {
+        step.name: step
+        for step in lecture.steps
+        if step.name in _V2_RELEASE_VALUES
+    }
+    release_steps = [
+        step_by_name[name.value]
+        for name in V2StepName.first_release()
+        if name.value in step_by_name
+    ]
+    completed = sum(
+        step.status in {StepStatus.COMPLETE.value, StepStatus.SKIPPED.value}
+        for step in release_steps
+    )
+    revisions = {
+        revision.kind: revision
+        for revision in IngestionRepository(
+            request.app.state.database
+        ).list_current_revisions(lecture_id)
+    }
     return templates.TemplateResponse(
         request=request,
         name="lecture.html",
-        context={"lecture": lecture, "title": display_title(key)},
+        context={
+            "lecture": lecture,
+            "title": display_title(key),
+            "status": status.value,
+            "status_label": status.value.replace("_", " ").title(),
+            "progress_percent": round(
+                completed / len(release_steps) * 100
+            )
+            if release_steps
+            else 0,
+            "release_steps": release_steps,
+            "slide_revision": revisions.get(UploadKind.SLIDES),
+            "transcript_revision": revisions.get(
+                UploadKind.TRANSCRIPTS
+            ),
+            "course_hue": _course_hue(lecture.subject),
+        },
+    )
+
+
+@router.get("/anki", response_class=HTMLResponse)
+def anki_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="anki.html",
+        context={},
     )
 
 
@@ -101,34 +200,22 @@ def review(request: Request) -> HTMLResponse:
     lectures = [
         item
         for item in repository.list_lectures()
-        if any(step.status == "needs_review" for step in item.steps)
+        if any(
+            step.name in _V2_STEP_VALUES and step.status == "needs_review"
+            for step in item.steps
+        )
     ]
     return templates.TemplateResponse(
         request=request,
         name="review.html",
         context={
             "lectures": lectures,
-            "external_events": repository.list_review_events(),
             "import_issues": repository.list_import_issues(),
+            "proposed_revisions": IngestionRepository(
+                request.app.state.database
+            ).list_proposed_revisions(),
         },
     )
-
-
-@router.post("/lectures/{lecture_id}/steps/{step_name}")
-def update_step(
-    lecture_id: int,
-    step_name: LectureStepName,
-    request: Request,
-    status: StepStatus = Form(),
-    detail: str = Form(default=""),
-) -> RedirectResponse:
-    ChecklistService(_repo(request)).transition(
-        lecture_id,
-        step_name,
-        status,
-        detail or None,
-    )
-    return RedirectResponse(f"/lectures/{lecture_id}", status_code=303)
 
 
 @router.post("/lectures/{lecture_id}/metadata")
@@ -205,3 +292,11 @@ def lecture_api(request: Request) -> list[LectureApi]:
         )
         for lecture in _repo(request).list_lectures()
     ]
+
+
+def _course_hue(subject: str) -> int:
+    normalized = subject.casefold().strip()
+    for name, hue in _COURSE_HUES.items():
+        if name in normalized or normalized in name:
+            return hue
+    return 255

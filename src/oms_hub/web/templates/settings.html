@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Settings · Study Hub{% endblock %}
+{% block content %}
+<section class="page-shell settings-page">
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">Configuration</p>
+      <h1>Settings</h1>
+      <p class="page-summary">Manage AI providers, credentials, and local pipeline inputs.</p>
+    </div>
+  </div>
+
+  <section class="settings-section" aria-labelledby="ai-provider-heading">
+    <div class="settings-section-heading">
+      <div>
+        <p class="mono-label">Transcript cleaning</p>
+        <h2 id="ai-provider-heading">AI providers</h2>
+        <p>Store multiple credentials securely and choose which service cleans new transcripts.</p>
+      </div>
+      <div class="active-provider-control">
+        <label for="active-provider">Active provider</label>
+        <div class="active-provider-row">
+          <select id="active-provider" data-active-provider>
+            {% for provider in providers %}
+            <option value="{{ provider.name }}" {% if provider.name == active_provider %}selected{% endif %}>{{ provider.label }}</option>
+            {% endfor %}
+          </select>
+          <button class="button secondary" type="button" data-save-active>Use provider</button>
+        </div>
+        <p class="field-message" data-active-message aria-live="polite"></p>
+      </div>
+    </div>
+
+    <div class="provider-grid">
+      {% for provider in providers %}
+      {% set test_state = provider.last_test_state or "neutral" %}
+      <article class="card provider-card" data-provider-card data-provider="{{ provider.name }}">
+        <div class="provider-card-heading">
+          <div>
+            <p class="provider-kicker">{{ "Active" if provider.active else "Available" }}</p>
+            <h3>{{ provider.label }}</h3>
+          </div>
+          <span class="credential-state {{ 'is-configured' if provider.configured else '' }}" data-configured-state>
+            {{ "Configured" if provider.configured else "Not configured" }}
+          </span>
+        </div>
+
+        <div class="provider-field">
+          <label for="model-{{ provider.name }}">Model</label>
+          <div class="provider-action-row">
+            <input id="model-{{ provider.name }}" type="text" maxlength="200" autocomplete="off" value="{{ provider.model }}" data-model-input>
+            <button class="button secondary compact-button" type="button" data-save-model>Save model</button>
+          </div>
+        </div>
+
+        <div class="provider-field">
+          <label for="credential-{{ provider.name }}">API credential</label>
+          <div class="password-control">
+            <input
+              id="credential-{{ provider.name }}"
+              type="password"
+              maxlength="8192"
+              autocomplete="new-password"
+              autocapitalize="off"
+              spellcheck="false"
+              placeholder="{{ 'Replace stored credential' if provider.configured else 'Paste credential' }}"
+              data-credential-input>
+            <button
+              class="password-toggle"
+              type="button"
+              aria-label="Show {{ provider.label }} credential"
+              data-toggle-password>Show</button>
+          </div>
+          <p class="field-help">Stored in Windows Credential Manager. Leave blank to keep the current credential.</p>
+        </div>
+
+        <div class="provider-buttons">
+          <button class="button primary" type="button" data-save-credential>Save credential</button>
+          <button
+            class="button connection-button {% if test_state == 'connected' %}is-connected{% elif test_state == 'failed' %}is-failed{% endif %}"
+            type="button"
+            data-test-connection>
+            {% if test_state == "connected" %}Connected{% elif test_state == "failed" %}Connection failed{% else %}Test connection{% endif %}
+          </button>
+        </div>
+
+        <p class="field-message" data-provider-message aria-live="polite"></p>
+        <div class="provider-diagnostic" data-diagnostic aria-live="polite" {% if not provider.diagnostic_message %}hidden{% endif %}>
+          {% if provider.diagnostic_message %}
+          <p>{{ provider.diagnostic_message }}</p>
+          {% if provider.http_status %}<p>HTTP {{ provider.http_status }}</p>{% endif %}
+          {% if provider.provider_request_id %}<p>Provider request: {{ provider.provider_request_id }}</p>{% endif %}
+          {% endif %}
+        </div>
+        {% if provider.last_tested_at %}
+        <p class="last-tested">Last tested {{ provider.last_tested_at }}</p>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="card settings-card tracker-settings">
+    <p class="mono-label">Course structure</p>
+    <h2>Lecture exam tracker</h2>
+    <p>Upload an Excel tracker to preview courses, exams, and lecture changes before applying them.</p>
+    <form action="/settings/tracker/preview" method="post" enctype="multipart/form-data">
+      <label>Tracker workbook <input type="file" name="workbook" accept=".xlsx" required></label>
+      <button class="button primary" type="submit">Preview tracker</button>
+    </form>
+  </section>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/settings.js" defer></script>
+{% endblock %}

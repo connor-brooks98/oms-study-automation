@@ -39,28 +39,55 @@ class TrackerImportResult:
     source_sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class TrackerParseIssue:
+    sheet: str
+    row_number: int
+    message: str
+    raw_values: str
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedTracker:
+    lectures: tuple[LectureInput, ...]
+    issues: tuple[TrackerParseIssue, ...]
+    source_sha256: str
+    source_name: str
+
+
 def _normalized_subject(value: str) -> str:
     key = re.sub(r"\s+", " ", value.strip().upper())
     key = re.sub(r"\s*-\s*EXAM$", "", key)
     return _ALIASES.get(key, value.strip().title())
 
 
-class TrackerImporter:
-    def __init__(self, repository: CatalogRepository):
-        self.repository = repository
+def _exam_dates(sheet: Any) -> dict[tuple[str, int], str]:
+    result: dict[tuple[str, int], str] = {}
+    for row in sheet.iter_rows(min_row=2, values_only=True):
+        raw_date, raw_exam = row[0], row[1]
+        if not raw_date or not raw_exam:
+            continue
+        value = raw_date.date() if isinstance(raw_date, datetime) else raw_date
+        if not isinstance(value, date):
+            continue
+        for part in str(raw_exam).split("/"):
+            match = _SECTION.match(part.strip())
+            if match:
+                subject = _normalized_subject(match.group("subject"))
+                result[(subject, int(match.group("exam")))] = value.isoformat()
+    return result
 
-    def import_once(self, path: Path) -> TrackerImportResult:
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        if self.repository.has_import_hash(digest):
-            raise ValueError("tracker workbook has already been imported")
 
-        workbook = load_workbook(path, data_only=True, read_only=True)
+def parse_tracker(path: Path) -> ParsedTracker:
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    workbook = load_workbook(path, data_only=True, read_only=True)
+    try:
         exam_dates = (
-            self._exam_dates(workbook["EXAM DATES"])
+            _exam_dates(workbook["EXAM DATES"])
             if "EXAM DATES" in workbook.sheetnames
             else {}
         )
-        issues: list[tuple[str, int, str, str]] = []
+        issues: list[TrackerParseIssue] = []
         lectures: list[LectureInput] = []
 
         for sheet in workbook.worksheets:
@@ -97,7 +124,7 @@ class TrackerImporter:
                     continue
                 if not first.isdigit():
                     issues.append(
-                        (
+                        TrackerParseIssue(
                             sheet.title,
                             row_number,
                             "ambiguous lecture number",
@@ -107,7 +134,7 @@ class TrackerImporter:
                     continue
                 if not second:
                     issues.append(
-                        (
+                        TrackerParseIssue(
                             sheet.title,
                             row_number,
                             "missing lecture title",
@@ -126,31 +153,42 @@ class TrackerImporter:
                     )
                 )
 
-        imported = self.repository.commit_tracker_import(
-            lectures,
-            issues,
-            digest,
-            path.name,
+        return ParsedTracker(
+            lectures=tuple(lectures),
+            issues=tuple(issues),
+            source_sha256=digest,
+            source_name=path.name,
+        )
+    finally:
+        workbook.close()
+
+
+class TrackerImporter:
+    def __init__(self, repository: CatalogRepository):
+        self.repository = repository
+
+    def import_once(self, path: Path) -> TrackerImportResult:
+        parsed = parse_tracker(path)
+        if self.repository.has_import_hash(parsed.source_sha256):
+            raise ValueError("tracker workbook has already been imported")
+
+        imported, updated = self.repository.commit_tracker_import(
+            list(parsed.lectures),
+            [
+                (
+                    issue.sheet,
+                    issue.row_number,
+                    issue.message,
+                    issue.raw_values,
+                )
+                for issue in parsed.issues
+            ],
+            parsed.source_sha256,
+            parsed.source_name,
         )
         return TrackerImportResult(
             imported=imported,
-            updated=0,
-            issues=len(issues),
-            source_sha256=digest,
+            updated=updated,
+            issues=len(parsed.issues),
+            source_sha256=parsed.source_sha256,
         )
-
-    def _exam_dates(self, sheet: Any) -> dict[tuple[str, int], str]:
-        result: dict[tuple[str, int], str] = {}
-        for row in sheet.iter_rows(min_row=2, values_only=True):
-            raw_date, raw_block = row[0], row[1]
-            if not raw_date or not raw_block:
-                continue
-            value = raw_date.date() if isinstance(raw_date, datetime) else raw_date
-            if not isinstance(value, date):
-                continue
-            for part in str(raw_block).split("/"):
-                match = _SECTION.match(part.strip())
-                if match:
-                    subject = _normalized_subject(match.group("subject"))
-                    result[(subject, int(match.group("exam")))] = value.isoformat()
-        return result

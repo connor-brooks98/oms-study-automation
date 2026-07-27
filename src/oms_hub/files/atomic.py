@@ -27,3 +27,28 @@ def verified_atomic_copy(source: Path, destination: Path) -> str:
         return source_digest
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def verified_atomic_write(payload: bytes, destination: Path) -> str:
+    expected_sha256 = hashlib.sha256(payload).hexdigest()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        if sha256_file(destination) != expected_sha256:
+            raise OSError("immutable destination already contains other data")
+        return expected_sha256
+    temporary = destination.with_name(
+        f".{destination.name}.partial-{uuid.uuid4().hex}"
+    )
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if sha256_file(temporary) != expected_sha256:
+            raise OSError("written file checksum mismatch")
+        os.replace(temporary, destination)
+        if sha256_file(destination) != expected_sha256:
+            raise OSError("promoted file checksum mismatch")
+        return expected_sha256
+    finally:
+        temporary.unlink(missing_ok=True)

@@ -16,6 +16,11 @@ class Database:
     def create_schema(self) -> None:
         Base.metadata.create_all(self.engine)
 
+    def migrate(self) -> None:
+        from oms_hub.migrations import migrate_database
+
+        migrate_database(self)
+
     @contextmanager
     def session(self) -> Iterator[Session]:
         session = self._sessions()
@@ -27,4 +32,3 @@ class Database:
             raise
         finally:
             session.close()
-

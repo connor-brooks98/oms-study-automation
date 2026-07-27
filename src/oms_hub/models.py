@@ -12,6 +12,18 @@ class Base(DeclarativeBase):
     pass
 
 
+class SchemaVersionModel(Base):
+    __tablename__ = "schema_version"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    version: Mapped[int]
+    updated_at: Mapped[str] = mapped_column(
+        String(40),
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+
 class LectureModel(Base):
     __tablename__ = "lectures"
     __table_args__ = (
@@ -25,10 +37,17 @@ class LectureModel(Base):
     topic: Mapped[str] = mapped_column(String(300))
     lecturer: Mapped[str] = mapped_column(String(300), default="")
     exam_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
-    scheduled_start_utc: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    scheduled_start_utc: Mapped[str | None] = mapped_column(
+        String(40),
+        nullable=True,
+    )
     campus: Mapped[str | None] = mapped_column(String(20), nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
-    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+    updated_at: Mapped[str] = mapped_column(
+        String(40),
+        default=utc_now,
+        onupdate=utc_now,
+    )
     steps: Mapped[list["LectureStepModel"]] = relationship(
         back_populates="lecture",
         cascade="all, delete-orphan",
@@ -45,7 +64,11 @@ class LectureStepModel(Base):
     name: Mapped[str] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(String(30))
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
-    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+    updated_at: Mapped[str] = mapped_column(
+        String(40),
+        default=utc_now,
+        onupdate=utc_now,
+    )
     lecture: Mapped[LectureModel] = relationship(back_populates="steps")
 
 
@@ -68,198 +91,159 @@ class ImportRunModel(Base):
     imported_at: Mapped[str] = mapped_column(String(40), default=utc_now)
 
 
-class ExternalEventModel(Base):
-    __tablename__ = "external_events"
-    __table_args__ = (UniqueConstraint("provider", "external_id"),)
+class UploadBatchModel(Base):
+    __tablename__ = "upload_batches"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    provider: Mapped[str] = mapped_column(String(30))
-    external_id: Mapped[str] = mapped_column(String(300))
-    title: Mapped[str] = mapped_column(String(500))
-    revision: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    state: Mapped[str] = mapped_column(String(30), default="uploading")
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(
+        String(40),
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+
+class UploadItemModel(Base):
+    __tablename__ = "upload_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(ForeignKey("upload_batches.id"))
+    kind: Mapped[str] = mapped_column(String(20))
+    original_filename: Mapped[str] = mapped_column(String(500))
+    staged_path: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int]
+    state: Mapped[str] = mapped_column(String(30), default="matching")
     lecture_id: Mapped[int | None] = mapped_column(
         ForeignKey("lectures.id"),
         nullable=True,
     )
-    needs_review: Mapped[bool] = mapped_column(default=False)
-    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
-    payload_json: Mapped[str] = mapped_column(Text)
-    seen_at: Mapped[str] = mapped_column(String(40), default=utc_now)
-
-
-class CanvasConnectionModel(Base):
-    __tablename__ = "canvas_connections"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    base_url: Mapped[str] = mapped_column(String(300), unique=True)
-    state: Mapped[str] = mapped_column(String(40), default="unpaired")
-    extension_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    credential_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    paired_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    last_heartbeat: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    last_successful_scan: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    scan_requested_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    study_root: Mapped[str | None] = mapped_column(Text, nullable=True)
-    icloud_staging_root: Mapped[str | None] = mapped_column(Text, nullable=True)
-    discovery_confirmed: Mapped[bool] = mapped_column(default=False)
-    auto_process: Mapped[bool] = mapped_column(default=False)
-    last_scan_item_count: Mapped[int] = mapped_column(default=0)
-    last_scan_new_count: Mapped[int] = mapped_column(default=0)
-    course_candidates_json: Mapped[str] = mapped_column(Text, default="[]")
-
-
-class CanvasCourseMappingModel(Base):
-    __tablename__ = "canvas_course_mappings"
-    __table_args__ = (UniqueConstraint("course_id"), UniqueConstraint("subject"))
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    course_id: Mapped[str] = mapped_column(String(100))
-    course_name: Mapped[str] = mapped_column(String(300))
-    course_code: Mapped[str] = mapped_column(String(200))
-    subject: Mapped[str] = mapped_column(String(100))
-    enabled: Mapped[bool] = mapped_column(default=True)
-
-
-class CanvasSourceItemModel(Base):
-    __tablename__ = "canvas_source_items"
-    __table_args__ = (UniqueConstraint("course_id", "file_id"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    course_id: Mapped[str] = mapped_column(String(100))
-    file_id: Mapped[str] = mapped_column(String(100))
-    filename: Mapped[str] = mapped_column(String(500))
-    source_url: Mapped[str] = mapped_column(Text)
-    context_json: Mapped[str] = mapped_column(Text)
-    source_kind: Mapped[str] = mapped_column(String(40))
-    lecture_id: Mapped[int | None] = mapped_column(ForeignKey("lectures.id"), nullable=True)
-    subject: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    exam_number: Mapped[int | None] = mapped_column(nullable=True)
-    confidence: Mapped[float] = mapped_column(default=0.0)
-    evidence_json: Mapped[str] = mapped_column(Text, default="{}")
-    review_state: Mapped[str] = mapped_column(String(30), default="none")
-    discovered_at: Mapped[str] = mapped_column(String(40), default=utc_now)
-    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
-
-
-class SourceRevisionModel(Base):
-    __tablename__ = "source_revisions"
-    __table_args__ = (UniqueConstraint("source_item_id", "remote_signature"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    source_item_id: Mapped[int] = mapped_column(ForeignKey("canvas_source_items.id"))
-    remote_signature: Mapped[str] = mapped_column(String(64))
-    modified_at: Mapped[str] = mapped_column(String(60))
-    remote_size: Mapped[int]
-    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    original_filename: Mapped[str] = mapped_column(String(500))
-    stored_path: Mapped[str | None] = mapped_column(Text, nullable=True)
-    state: Mapped[str] = mapped_column(String(30), default="discovered")
-    discovered_at: Mapped[str] = mapped_column(String(40), default=utc_now)
-
-
-class ArtifactModel(Base):
-    __tablename__ = "artifacts"
-    __table_args__ = (UniqueConstraint("revision_id", "role", "path"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    revision_id: Mapped[int] = mapped_column(ForeignKey("source_revisions.id"))
-    role: Mapped[str] = mapped_column(String(40))
-    path: Mapped[str] = mapped_column(Text)
-    sha256: Mapped[str] = mapped_column(String(64))
-    validation_state: Mapped[str] = mapped_column(String(30), default="pending")
-    promoted_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    current: Mapped[bool] = mapped_column(default=False)
-
-
-class ProcessingJobModel(Base):
-    __tablename__ = "processing_jobs"
-    __table_args__ = (UniqueConstraint("revision_id", "action"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    revision_id: Mapped[int] = mapped_column(ForeignKey("source_revisions.id"))
-    action: Mapped[str] = mapped_column(String(30))
-    state: Mapped[str] = mapped_column(String(30), default="queued")
-    attempts: Mapped[int] = mapped_column(default=0)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
-    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
-
-
-class PanoptoConnectionModel(Base):
-    __tablename__ = "panopto_connections"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    tenant_url: Mapped[str] = mapped_column(String(300), unique=True)
-    state: Mapped[str] = mapped_column(String(40), default="disabled")
-    enabled: Mapped[bool] = mapped_column(default=False)
-    acceptance_validated_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    last_successful_poll: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    prompt_path: Mapped[str | None] = mapped_column(Text, nullable=True)
-    approved_prompt_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    scan_requested_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
-
-
-class PanoptoRecordingModel(Base):
-    __tablename__ = "panopto_recordings"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    session_id: Mapped[str] = mapped_column(String(36), unique=True)
-    name: Mapped[str] = mapped_column(String(500))
-    created_utc: Mapped[str] = mapped_column(String(40))
-    duration_seconds: Mapped[float]
-    folder_name: Mapped[str] = mapped_column(String(300), default="")
-    content_language: Mapped[str | None] = mapped_column(String(60), nullable=True)
-    lecture_id: Mapped[int | None] = mapped_column(ForeignKey("lectures.id"), nullable=True)
     confidence: Mapped[float] = mapped_column(default=0.0)
     evidence_json: Mapped[str] = mapped_column(Text, default="[]")
-    review_state: Mapped[str] = mapped_column(String(30), default="none")
-    discovered_at: Mapped[str] = mapped_column(String(40), default=utc_now)
-    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
-
-
-class TranscriptRevisionModel(Base):
-    __tablename__ = "transcript_revisions"
-    __table_args__ = (UniqueConstraint("recording_id", "raw_sha256"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    recording_id: Mapped[int] = mapped_column(ForeignKey("panopto_recordings.id"))
-    raw_sha256: Mapped[str] = mapped_column(String(64))
-    raw_path: Mapped[str] = mapped_column(Text)
-    prompt_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    cleaned_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    cleaned_path: Mapped[str | None] = mapped_column(Text, nullable=True)
-    canonical_path: Mapped[str | None] = mapped_column(Text, nullable=True)
-    state: Mapped[str] = mapped_column(String(30), default="downloaded")
-    current: Mapped[bool] = mapped_column(default=False)
-    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
-
-
-class TranscriptJobModel(Base):
-    __tablename__ = "transcript_jobs"
-    __table_args__ = (UniqueConstraint("revision_id", "action"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    revision_id: Mapped[int] = mapped_column(ForeignKey("transcript_revisions.id"))
-    action: Mapped[str] = mapped_column(String(30))
-    state: Mapped[str] = mapped_column(String(30), default="queued")
-    attempts: Mapped[int] = mapped_column(default=0)
-    next_attempt_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    manual_assignment: Mapped[bool] = mapped_column(default=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
-    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+    updated_at: Mapped[str] = mapped_column(
+        String(40),
+        default=utc_now,
+        onupdate=utc_now,
+    )
 
 
-class OpenAIUsageModel(Base):
-    __tablename__ = "openai_usage"
-    __table_args__ = (UniqueConstraint("revision_id"),)
+class StudyRevisionModel(Base):
+    __tablename__ = "study_revisions"
+    __table_args__ = (
+        UniqueConstraint("upload_item_id"),
+        UniqueConstraint("lecture_id", "kind", "source_sha256"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    revision_id: Mapped[int] = mapped_column(ForeignKey("transcript_revisions.id"))
+    upload_item_id: Mapped[str] = mapped_column(ForeignKey("upload_items.id"))
+    lecture_id: Mapped[int] = mapped_column(ForeignKey("lectures.id"))
+    kind: Mapped[str] = mapped_column(String(20))
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    immutable_source_path: Mapped[str] = mapped_column(Text)
+    derived_sha256: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    immutable_derived_path: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    canonical_source_path: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    canonical_derived_path: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    icloud_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_sha256: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    state: Mapped[str] = mapped_column(String(30), default="proposed")
+    current: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    promoted_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+class StudyUsageModel(Base):
+    __tablename__ = "study_usage"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    revision_id: Mapped[int] = mapped_column(
+        ForeignKey("study_revisions.id"),
+        unique=True,
+    )
+    provider: Mapped[str] = mapped_column(
+        String(30),
+        default="openai",
+        server_default="openai",
+    )
     model: Mapped[str] = mapped_column(String(100))
     request_id: Mapped[str] = mapped_column(String(200))
     input_tokens: Mapped[int]
     output_tokens: Mapped[int]
     cost_microusd: Mapped[int]
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class LLMProviderSettingModel(Base):
+    __tablename__ = "llm_provider_settings"
+
+    provider: Mapped[str] = mapped_column(String(30), primary_key=True)
+    model: Mapped[str] = mapped_column(String(200))
+    active: Mapped[bool] = mapped_column(default=False)
+    last_test_state: Mapped[str | None] = mapped_column(
+        String(30),
+        nullable=True,
+    )
+    last_tested_at: Mapped[str | None] = mapped_column(
+        String(40),
+        nullable=True,
+    )
+    diagnostic_source: Mapped[str | None] = mapped_column(
+        String(40),
+        nullable=True,
+    )
+    diagnostic_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    http_status: Mapped[int | None] = mapped_column(nullable=True)
+    provider_request_id: Mapped[str | None] = mapped_column(
+        String(200),
+        nullable=True,
+    )
+    updated_at: Mapped[str] = mapped_column(
+        String(40),
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+
+class IngestionJobModel(Base):
+    __tablename__ = "ingestion_jobs"
+    __table_args__ = (UniqueConstraint("upload_item_id", "action"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    upload_item_id: Mapped[str] = mapped_column(ForeignKey("upload_items.id"))
+    action: Mapped[str] = mapped_column(String(30))
+    state: Mapped[str] = mapped_column(String(30), default="queued")
+    attempts: Mapped[int] = mapped_column(default=0)
+    next_attempt_at: Mapped[str | None] = mapped_column(
+        String(40),
+        nullable=True,
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(
+        String(40),
+        default=utc_now,
+        onupdate=utc_now,
+    )
