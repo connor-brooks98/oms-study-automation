@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from oms_hub.domain import LectureKey
@@ -50,7 +50,19 @@ class GenerationWorker:
         try:
             self._run(job)
         except Exception as error:  # noqa: BLE001 - durable boundary sanitizes content
-            self.repository.fail(job.id, _safe_error(error))
+            safe = _safe_error(error)
+            if _is_transient(error) and job.attempts < 4:
+                self.repository.retry(
+                    job.id,
+                    safe,
+                    timedelta(seconds=min(30 * (2 ** max(job.attempts - 1, 0)), 300)),
+                )
+            else:
+                self.repository.fail(
+                    job.id,
+                    safe,
+                    paused=_is_auth_error(error),
+                )
         return True
 
     def _run(self, job: Any) -> None:
@@ -228,3 +240,34 @@ def _safe_error(error: Exception) -> str:
     if isinstance(error, allowed):
         return str(error)[:500]
     return "Generation stopped because an external service failed"
+
+
+def _is_auth_error(error: Exception) -> bool:
+    message = str(error).casefold()
+    return any(
+        phrase in message
+        for phrase in (
+            "authentication",
+            "connect google",
+            "not connected",
+            "oauth",
+            "sign-in",
+            "sign in",
+        )
+    )
+
+
+def _is_transient(error: Exception) -> bool:
+    if isinstance(error, (TimeoutError, ConnectionError)):
+        return True
+    message = str(error).casefold()
+    return any(
+        phrase in message
+        for phrase in (
+            "timed out",
+            "timeout",
+            "temporarily unavailable",
+            "rate limit",
+            "connection reset",
+        )
+    )

@@ -61,7 +61,13 @@ class GoogleDocsGateway:
     ) -> ExamTabRef:
         stored = self.repository.exam_tab(document.subject_key, exam_number)
         if stored is not None:
-            return ExamTabRef(document.id, stored.tab_id, exam_number)
+            current = (
+                self.docs.documents()
+                .get(documentId=document.id, includeTabsContent=True)
+                .execute()
+            )
+            if stored.tab_id in _all_tab_ids(current):
+                return ExamTabRef(document.id, stored.tab_id, exam_number)
         title = f"Exam {exam_number}"
         response = (
             self.docs.documents()
@@ -225,6 +231,20 @@ def _tab_named_ranges(document: dict[str, Any], tab_id: str) -> dict[str, Any]:
         if str(tab.get("tabProperties", {}).get("tabId")) == tab_id:
             return dict(tab.get("documentTab", {}).get("namedRanges", {}))
     return dict(document.get("namedRanges", {}))
+
+
+def _all_tab_ids(document: dict[str, Any]) -> set[str]:
+    result: set[str] = set()
+
+    def visit(tabs: list[dict[str, Any]]) -> None:
+        for tab in tabs:
+            value = tab.get("tabProperties", {}).get("tabId")
+            if value is not None:
+                result.add(str(value))
+            visit(tab.get("childTabs", []))
+
+    visit(document.get("tabs", []))
+    return result
 
 
 def _lecture_number(name: str) -> int:

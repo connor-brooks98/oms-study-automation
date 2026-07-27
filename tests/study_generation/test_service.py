@@ -4,7 +4,11 @@ from pathlib import Path
 import pytest
 
 from oms_hub.ingestion.domain import UploadKind
-from oms_hub.study_generation.domain import GenerationKind, PromptSnapshot
+from oms_hub.study_generation.domain import (
+    GenerationKind,
+    GenerationState,
+    PromptSnapshot,
+)
 from oms_hub.study_generation.service import (
     GenerationPrerequisiteError,
     GenerationService,
@@ -56,7 +60,12 @@ class Jobs:
         return type(
             "Job",
             (),
-            {"id": "job-1", "pdf_revision_id": None, "kind": kind},
+            {
+                "id": "job-1",
+                "pdf_revision_id": None,
+                "kind": kind,
+                "state": GenerationState.QUEUED,
+            },
         )()
 
     def advance(self, job_id, stage, **fields):

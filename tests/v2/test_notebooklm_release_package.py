@@ -1,0 +1,44 @@
+import importlib.util
+import zipfile
+from pathlib import Path
+
+
+def _builder():
+    path = Path(__file__).parents[2] / "scripts" / "build-v2-release.py"
+    spec = importlib.util.spec_from_file_location("release_builder", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_source_release_includes_generation_runtime_and_excludes_google_state(
+    tmp_path,
+):
+    root = Path(__file__).parents[2]
+    _, source = _builder().build_releases(root, tmp_path, "test")
+    with zipfile.ZipFile(source) as archive:
+        names = set(archive.namelist())
+
+    assert "src/oms_hub/study_generation/notebook.py" in names
+    assert "src/oms_hub/study_generation/gemini_quiz.py" in names
+    assert "src/oms_hub/study_generation/google_docs.py" in names
+    forbidden = (
+        "storage_state",
+        "notebooklm-storage",
+        "browser-profile",
+        "oauth-client",
+        "token.json",
+    )
+    assert not any(any(value in name.casefold() for value in forbidden) for name in names)
+
+
+def test_hotfix_contains_dependencies_and_lecture_controls(tmp_path):
+    root = Path(__file__).parents[2]
+    hotfix, _ = _builder().build_releases(root, tmp_path, "test")
+    with zipfile.ZipFile(hotfix) as archive:
+        names = set(archive.namelist())
+
+    assert "pyproject.toml" in names
+    assert "src/oms_hub/web/static/lecture.js" in names
+    assert "src/oms_hub/web/templates/lecture.html" in names

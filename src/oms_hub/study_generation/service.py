@@ -6,6 +6,7 @@ from oms_hub.study_generation.domain import (
     GenerationJob,
     GenerationKind,
     GenerationStage,
+    GenerationState,
     PromptKind,
 )
 
@@ -63,6 +64,8 @@ class GenerationService:
         )
         prompt = self.prompts.inspect(prompt_kind)
         job = self.jobs.queue(lecture_id, kind)
+        if job.state is GenerationState.PAUSED:
+            job = self.jobs.requeue(job.id)
         if job.pdf_revision_id is not None:
             return cast(GenerationJob, job)
         assert pdf is not None and transcript is not None

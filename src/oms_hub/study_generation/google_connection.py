@@ -285,6 +285,46 @@ class PlaywrightGoogleProbe:
         email = self.secrets.get(CONNECTED_EMAIL_KEY)
         if not email:
             raise RuntimeError(f"{surface.value} account is not connected")
+        if surface is GoogleSurface.DOCS:
+            refresh_token = self.secrets.get(OAUTH_REFRESH_TOKEN_KEY)
+            if not refresh_token or not self.oauth_clients.status().configured:
+                raise RuntimeError("Google Docs account is not connected")
+            installed = json.loads(
+                self.oauth_clients.path.read_text(encoding="utf-8")
+            )["installed"]
+            from google.oauth2.credentials import Credentials
+
+            credentials = Credentials(  # type: ignore[no-untyped-call]
+                token=None,
+                refresh_token=refresh_token,
+                token_uri=installed.get(
+                    "token_uri",
+                    "https://oauth2.googleapis.com/token",
+                ),
+                client_id=installed["client_id"],
+                client_secret=installed["client_secret"],
+                scopes=GOOGLE_SCOPES,
+            )
+            return _oauth_email(credentials)
+        from playwright.sync_api import sync_playwright
+
+        url = (
+            "https://notebooklm.google.com/"
+            if surface is GoogleSurface.NOTEBOOK
+            else "https://gemini.google.com/"
+        )
+        with sync_playwright() as playwright:
+            context = playwright.chromium.launch_persistent_context(
+                str(self.profile),
+                headless=True,
+            )
+            try:
+                page = context.pages[0] if context.pages else context.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                if "accounts.google.com" in page.url:
+                    raise RuntimeError(f"{surface.value} sign-in is required")
+            finally:
+                context.close()
         return email
 
 

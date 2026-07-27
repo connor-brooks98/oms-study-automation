@@ -4,7 +4,11 @@ import zipfile
 from pathlib import Path
 
 HOTFIX_FILES = (
+    ".env.example",
+    "README.md",
+    "pyproject.toml",
     "src/oms_hub/app.py",
+    "src/oms_hub/cli.py",
     "src/oms_hub/config.py",
     "src/oms_hub/ingestion/domain.py",
     "src/oms_hub/ingestion/repository.py",
@@ -21,17 +25,32 @@ HOTFIX_FILES = (
     "src/oms_hub/llm/service.py",
     "src/oms_hub/migrations.py",
     "src/oms_hub/models.py",
+    "src/oms_hub/routing.py",
+    "src/oms_hub/study_generation/__init__.py",
+    "src/oms_hub/study_generation/domain.py",
+    "src/oms_hub/study_generation/gemini_quiz.py",
+    "src/oms_hub/study_generation/google_connection.py",
+    "src/oms_hub/study_generation/google_docs.py",
+    "src/oms_hub/study_generation/notebook.py",
+    "src/oms_hub/study_generation/outline.py",
+    "src/oms_hub/study_generation/prompts.py",
+    "src/oms_hub/study_generation/repository.py",
+    "src/oms_hub/study_generation/service.py",
+    "src/oms_hub/study_generation/worker.py",
     "src/oms_hub/transcripts/cleaner.py",
     "src/oms_hub/transcripts/pipeline.py",
     "src/oms_hub/web/llm_schemas.py",
     "src/oms_hub/web/artifact_routes.py",
+    "src/oms_hub/web/generation_routes.py",
     "src/oms_hub/web/settings_routes.py",
     "src/oms_hub/web/upload_routes.py",
     "src/oms_hub/web/static/app.css",
     "src/oms_hub/web/static/settings.js",
+    "src/oms_hub/web/static/lecture.js",
     "src/oms_hub/web/static/uploads.js",
     "src/oms_hub/web/templates/artifact_text.html",
     "src/oms_hub/web/templates/settings.html",
+    "src/oms_hub/web/templates/lecture.html",
     "src/oms_hub/web/templates/uploads.html",
 )
 
@@ -93,10 +112,27 @@ def _allowed(relative: str) -> bool:
             ".pytest_cache",
             ".ruff_cache",
             ".venv",
+            ".superpowers",
             "__pycache__",
+            "browser-profile",
             "dist",
         }
         for part in path.parts
+    ):
+        return False
+    forbidden_names = {
+        "notebooklm-storage.json",
+        "oauth-client.json",
+        "storage-state.json",
+        "storage_state.json",
+        "token.json",
+        "trace.zip",
+    }
+    if path.name.casefold() in forbidden_names:
+        return False
+    if (
+        path.suffix.casefold() == ".pdf"
+        and any(part.casefold() in {"artifacts", "lecture outlines"} for part in path.parts)
     ):
         return False
     return "gpt key" not in lowered

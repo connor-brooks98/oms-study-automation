@@ -5,6 +5,8 @@ PowerPoints and Panopto transcript downloads. It imports an Excel exam tracker,
 groups lectures by course and Exam, matches uploads, quarantines uncertain
 matches, converts PowerPoints to PDF, cleans transcripts with the approved
 Obsidian prompt, and files the resulting artifacts on the NUC and in iCloud.
+It can also build lecture-specific NotebookLM outlines and Gemini quizzes from
+exactly the current lecture PDF and cleaned transcript.
 
 Canvas polling, Panopto polling, Outlook synchronization, and the browser
 extension are intentionally not part of V2. The NUC must be online for remote
@@ -61,8 +63,24 @@ The Hub remains bound to `127.0.0.1`; Cloudflare Tunnel provides outbound-only
 remote connectivity, and the application independently verifies the Access
 JWT and allowed email.
 
-NotebookLM/Gemini automation and Anki automation are later milestones. Anki
-already has a dedicated placeholder page in the interface.
+## NotebookLM outlines and Gemini quizzes
+
+The lecture page has separate **Generate Outline** and **Generate Quiz**
+actions. Outline and quiz prompts remain editable in Obsidian and are linked
+from **Settings → Notebook prompts**. Google is connected once from
+**Settings → Google workspace**; its reusable browser and OAuth state stay on
+the Study Hub device.
+
+Each course exam receives its own NotebookLM notebook. The current lecture PDF
+and cleaned transcript are the only source IDs submitted for that lecture.
+Outlines are stored under the exam's `Lecture Outlines` folder. Quiz links are
+placed in one Google Doc per course with one tab per exam and are also available
+through **Take Lecture Quiz** on the lecture page.
+
+The branch setup, Google Cloud setup, acceptance test, and rollback procedure
+are in
+[docs/notebooklm-gemini-nuc-rollout.md](docs/notebooklm-gemini-nuc-rollout.md).
+Anki automation remains a later milestone.
 
 The multi-provider hotfix procedure is in
 [docs/v2-multi-provider-nuc-rollout.md](docs/v2-multi-provider-nuc-rollout.md).

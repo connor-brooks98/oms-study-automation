@@ -1,9 +1,9 @@
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import CursorResult
 
 from oms_hub.db import Database
@@ -219,6 +219,30 @@ class GenerationRepository:
             None,
         )
 
+    def requeue(self, job_id: str) -> GenerationJob:
+        with self.database.session() as session:
+            model = session.get(GenerationJobModel, job_id)
+            if model is None:
+                raise KeyError(job_id)
+            if model.state != GenerationState.PAUSED.value:
+                return self._job(model)
+            model.state = GenerationState.QUEUED.value
+            model.error = None
+            model.next_attempt_at = None
+            session.flush()
+            return self._job(model)
+
+    def retry(self, job_id: str, error: str, delay: timedelta) -> GenerationJob:
+        with self.database.session() as session:
+            model = session.get(GenerationJobModel, job_id)
+            if model is None:
+                raise KeyError(job_id)
+            model.state = GenerationState.QUEUED.value
+            model.error = error[:500]
+            model.next_attempt_at = (datetime.now(UTC) + delay).isoformat()
+            session.flush()
+            return self._job(model)
+
     def fail(self, job_id: str, error: str, *, paused: bool = False) -> GenerationJob:
         return self._set_state(
             job_id,
@@ -359,6 +383,12 @@ class GenerationRepository:
                     )
                 )
             else:
+                if model.document_id != document_id:
+                    session.execute(
+                        delete(ExamQuizTabModel).where(
+                            ExamQuizTabModel.subject_key == subject_key
+                        )
+                    )
                 model.subject = subject
                 model.document_id = document_id
                 model.title = title
