@@ -156,6 +156,15 @@ def test_authenticated_agent_bypasses_browser_csrf_and_updates_heartbeat(
     assert app.state.anki_repository.agent_state().agent_id == AGENT_ID
 
 
+def test_authenticated_agent_health_endpoint_is_read_only(tmp_path) -> None:
+    client, _ = _prepared_client(tmp_path)
+
+    response = client.get("/agent/v1/health", headers=_agent_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
 def test_agent_claims_each_durable_command_once(tmp_path) -> None:
     client, app = _prepared_client(tmp_path)
     queued = app.state.anki_repository.queue_agent_command(

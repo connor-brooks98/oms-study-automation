@@ -37,6 +37,11 @@ async def _validated_body[Contract: BaseModel](
         raise HTTPException(status_code=422, detail="invalid agent payload") from exc
 
 
+@router.get("/health")
+def agent_health() -> dict[str, str]:
+    return {"service": "oms-study-automation", "status": "ok"}
+
+
 def _require_owned(
     request: Request,
     command_id: UUID,
