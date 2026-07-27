@@ -50,10 +50,15 @@ OMS_HUB_GENERATION_TIMEOUT_SECONDS=180
 
 Restart the scheduled task after editing `.env`.
 
-Open Study Hub **Settings → Notebook prompts**. Paste the full Windows paths to
-the outline prompt and quiz prompt in the Obsidian vault. Select **Save path**
-and **Test file** for each. Study Hub reads the latest file content when a job
-starts, so later prompt edits require no code change.
+Open Study Hub **Settings → Notebook prompts**. For each prompt:
+
+1. Select **Select Path**.
+2. Choose the matching Obsidian Markdown or text file in the NUC file browser.
+3. Select **Save Path**.
+4. Select **Test file**.
+
+Study Hub reads the latest file content when a job starts, so later prompt
+edits require no code change.
 
 ## 3. Connect Google once
 
@@ -62,8 +67,9 @@ In Google Cloud Console:
 1. Enable the Google Docs API and Google Drive API.
 2. Configure the OAuth consent screen for the Google account that owns the
    NotebookLM notebooks, Gemini Quiz Gem, and quiz documents.
-3. Create an OAuth client with application type **Desktop app**.
-4. Download its JSON file to the NUC.
+3. While the OAuth app is in testing mode, add that email under **Test users**.
+4. Create an OAuth client with application type **Desktop app**.
+5. Download its JSON file to the NUC.
 
 On the NUC itself, or through Remote Desktop, open **Settings → Google
 workspace**:
@@ -73,8 +79,14 @@ workspace**:
 3. Complete OAuth consent in the browser.
 4. In the Chromium window opened by Study Hub, sign in to the same account in
    Gemini and NotebookLM.
-5. Return to Settings and select **Test connection**. NotebookLM, Gemini, and
+5. Leave the browser windows open until Study Hub finishes checking all three
+   services.
+6. Return to Settings and select **Test connection**. NotebookLM, Gemini, and
    Google Docs should each show **connected**.
+
+If a service fails, Settings now names the affected surface and the next action.
+Select **Connect Google** again after correcting the issue; each attempt requests
+fresh consent and an abandoned sign-in attempt expires after five minutes.
 
 The OAuth refresh token is kept in Windows Credential Manager. The OAuth client
 file, browser profile, and NotebookLM storage state are owner-only files below
