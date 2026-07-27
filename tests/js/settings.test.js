@@ -76,3 +76,39 @@ test("diagnostics return safe text fields without HTML", () => {
     "Study Hub reference: correlation-1",
   ]);
 });
+
+test("settings initialize immediately when the page is already loaded", () => {
+  let starts = 0;
+  const documentRef = {
+    readyState: "complete",
+    addEventListener() {
+      throw new Error("DOMContentLoaded listener should not be registered");
+    },
+  };
+
+  settings.runWhenReady(documentRef, () => {
+    starts += 1;
+  });
+
+  assert.equal(starts, 1);
+});
+
+test("settings wait for DOMContentLoaded while the page is loading", () => {
+  let listener;
+  let starts = 0;
+  const documentRef = {
+    readyState: "loading",
+    addEventListener(name, callback) {
+      assert.equal(name, "DOMContentLoaded");
+      listener = callback;
+    },
+  };
+
+  settings.runWhenReady(documentRef, () => {
+    starts += 1;
+  });
+  assert.equal(starts, 0);
+
+  listener();
+  assert.equal(starts, 1);
+});

@@ -130,6 +130,14 @@
     container.hidden = lines.length === 0;
   };
 
+  const runWhenReady = (documentRef, callback) => {
+    if (documentRef.readyState === "loading") {
+      documentRef.addEventListener("DOMContentLoaded", callback, { once: true });
+      return;
+    }
+    callback();
+  };
+
   const initialize = (documentRef, fetchImpl) => {
     const token = () => csrfToken(documentRef);
     documentRef.querySelectorAll("[data-provider-card]").forEach((card) => {
@@ -379,6 +387,7 @@
     initialize,
     postJson,
     renderGoogleStatus,
+    runWhenReady,
     testPresentation,
     togglePassword,
   };
@@ -387,7 +396,7 @@
     module.exports = api;
   }
   if (root.document) {
-    root.document.addEventListener("DOMContentLoaded", () => {
+    runWhenReady(root.document, () => {
       initialize(root.document, root.fetch.bind(root));
     });
   }

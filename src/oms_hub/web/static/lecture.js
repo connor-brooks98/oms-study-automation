@@ -43,6 +43,14 @@
     return active;
   };
 
+  const runWhenReady = (documentRef, callback) => {
+    if (documentRef.readyState === "loading") {
+      documentRef.addEventListener("DOMContentLoaded", callback, { once: true });
+      return;
+    }
+    callback();
+  };
+
   const initialize = (documentRef, fetchImpl = root.fetch.bind(root)) => {
     const match = root.location.pathname.match(/^\/lectures\/(\d+)/);
     if (!match) return;
@@ -96,9 +104,12 @@
     void refresh();
   };
 
-  const api = { csrfToken, initialize, render };
+  const api = { csrfToken, initialize, render, runWhenReady };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) {
-    root.document.addEventListener("DOMContentLoaded", () => initialize(root.document));
+    runWhenReady(
+      root.document,
+      () => initialize(root.document),
+    );
   }
 })(typeof globalThis === "undefined" ? this : globalThis);
