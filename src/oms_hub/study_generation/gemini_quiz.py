@@ -3,6 +3,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from oms_hub.study_generation.browser_profile import launch_google_profile
+
 
 class GeminiContractError(RuntimeError):
     pass
@@ -128,8 +130,9 @@ class _PersistentPage:
         from playwright.sync_api import sync_playwright
 
         self.playwright = sync_playwright().start()
-        self.context = self.playwright.chromium.launch_persistent_context(
-            str(self.profile_path),
+        self.context = launch_google_profile(
+            self.playwright.chromium,
+            self.profile_path,
             headless=True,
         )
         return self.context.pages[0] if self.context.pages else self.context.new_page()

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Protocol
 
 from oms_hub.security.secret_store import SecretStore
+from oms_hub.study_generation.browser_profile import launch_google_profile
 from oms_hub.study_generation.repository import GenerationRepository
 
 CONNECTED_EMAIL_KEY = "google-connected-email"
@@ -280,8 +281,9 @@ class PlaywrightGoogleProbe:
         if os.name != "nt":
             self.root.chmod(0o700)
         with sync_playwright() as playwright:
-            context = playwright.chromium.launch_persistent_context(
-                str(self.profile),
+            context = launch_google_profile(
+                playwright.chromium,
+                self.profile,
                 headless=False,
             )
             try:
@@ -331,8 +333,9 @@ class PlaywrightGoogleProbe:
             else "https://gemini.google.com/"
         )
         with sync_playwright() as playwright:
-            context = playwright.chromium.launch_persistent_context(
-                str(self.profile),
+            context = launch_google_profile(
+                playwright.chromium,
+                self.profile,
                 headless=True,
             )
             try:
@@ -379,7 +382,7 @@ def _safe_surface_error(
     }[surface]
     message = str(error).casefold()
     if "executable doesn't exist" in message or "browser executable" in message:
-        return f"{label} needs its Chromium browser installed."
+        return f"{label} needs Google Chrome installed."
     if "invalid_grant" in message or "expired or revoked" in message:
         return f"{label} authorization expired; connect Google again."
     if (
@@ -410,8 +413,8 @@ def _safe_interactive_error(error: Exception) -> str:
         return "Google did not return offline access; connect again and approve access."
     if "executable doesn't exist" in message or "browser executable" in message:
         return (
-            "Chromium is not installed for Study Hub. Install Playwright Chromium, "
-            "then connect again."
+            "Google Chrome is not installed on the NUC. Install Chrome, "
+            "then connect Google again."
         )
     if "timed out" in message or "timeout" in message:
         return (

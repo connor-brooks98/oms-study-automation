@@ -3,6 +3,7 @@ import stat
 from dataclasses import dataclass
 
 from oms_hub.db import Database
+from oms_hub.study_generation.browser_profile import launch_google_profile
 from oms_hub.study_generation.google_connection import (
     GoogleConnectionService,
     GoogleOAuthClientStore,
@@ -41,6 +42,16 @@ class FailedProbe:
             GoogleSurface.DOCS: "invalid_grant",
         }
         raise RuntimeError(errors[surface])
+
+
+class BrowserLauncher:
+    def __init__(self):
+        self.options = None
+        self.context = object()
+
+    def launch_persistent_context(self, **options):
+        self.options = options
+        return self.context
 
 
 def test_connected_status_requires_same_account_on_all_surfaces(tmp_path):
@@ -129,12 +140,34 @@ def test_connection_test_reports_safe_actionable_surface_failures(tmp_path):
 
     assert status.state == "failed"
     assert status.message == (
-        "NotebookLM needs sign-in. Gemini needs its Chromium browser installed. "
+        "NotebookLM needs sign-in. Gemini needs Google Chrome installed. "
         "Google Docs authorization expired; connect Google again."
     )
     assert [surface.message for surface in status.surfaces] == [
         "NotebookLM needs sign-in.",
-        "Gemini needs its Chromium browser installed.",
+        "Gemini needs Google Chrome installed.",
         "Google Docs authorization expired; connect Google again.",
     ]
     assert "invalid_grant" not in repr(status)
+
+
+def test_google_profile_uses_system_chrome_without_automation_marker(tmp_path):
+    browser = BrowserLauncher()
+
+    context = launch_google_profile(
+        browser,
+        tmp_path / "browser-profile",
+        headless=False,
+    )
+
+    assert context is browser.context
+    assert browser.options == {
+        "user_data_dir": str(tmp_path / "browser-profile"),
+        "channel": "chrome",
+        "headless": False,
+        "args": [
+            "--disable-blink-features=AutomationControlled",
+            "--password-store=basic",
+        ],
+        "ignore_default_args": ["--enable-automation"],
+    }

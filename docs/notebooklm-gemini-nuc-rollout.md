@@ -77,8 +77,8 @@ workspace**:
 1. Choose the downloaded **OAuth client JSON** and select **Save client file**.
 2. Select **Connect Google**.
 3. Complete OAuth consent in the browser.
-4. In the Chromium window opened by Study Hub, sign in to the same account in
-   Gemini and NotebookLM.
+4. In the Google Chrome window opened by Study Hub, sign in to the same
+   account in Gemini and NotebookLM.
 5. Leave the browser windows open until Study Hub finishes checking all three
    services.
 6. Return to Settings and select **Test connection**. NotebookLM, Gemini, and
