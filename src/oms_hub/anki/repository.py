@@ -10,6 +10,8 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from oms_hub.anki.domain import (
+    AgentCommandType,
+    AgentState,
     Candidate,
     CreateCurationJob,
     CurationJob,
@@ -21,9 +23,12 @@ from oms_hub.anki.domain import (
     ReviewChangeSet,
     SavedReview,
     StageUsage,
+    StoredAgentCommand,
     StoredEnvelope,
 )
 from oms_hub.anki.models import (
+    AnkiAgentCommandModel,
+    AnkiAgentStateModel,
     AnkiCandidateModel,
     AnkiCurationJobModel,
     AnkiEnvelopeModel,
@@ -442,6 +447,137 @@ class AnkiCurationRepository:
             session.flush()
             return self._envelope(stored)
 
+    def record_agent_heartbeat(
+        self,
+        *,
+        agent_id: str,
+        heartbeat_at: str,
+        versions: dict[str, Any],
+        active_snapshot_id: str | None,
+        health: dict[str, Any],
+    ) -> AgentState:
+        with self.database.session() as session:
+            stored = session.get(AnkiAgentStateModel, 1)
+            if stored is None:
+                stored = AnkiAgentStateModel(
+                    id=1,
+                    versions_json="{}",
+                    health_json="{}",
+                )
+                session.add(stored)
+            stored.agent_id = agent_id
+            stored.heartbeat_at = heartbeat_at
+            stored.versions_json = _canonical_json(versions)
+            stored.active_snapshot_id = active_snapshot_id
+            stored.health_json = _canonical_json(health)
+            session.flush()
+            return self._agent_state(stored)
+
+    def agent_state(self) -> AgentState:
+        with self.database.session() as session:
+            stored = session.get(AnkiAgentStateModel, 1)
+            if stored is None:
+                return AgentState(
+                    agent_id=None,
+                    heartbeat_at=None,
+                    versions={},
+                    active_snapshot_id=None,
+                    health={},
+                )
+            return self._agent_state(stored)
+
+    def queue_agent_command(
+        self,
+        command_type: AgentCommandType,
+        payload: dict[str, Any],
+    ) -> StoredAgentCommand:
+        payload_json = _canonical_json(payload)
+        with self.database.session() as session:
+            stored = AnkiAgentCommandModel(
+                id=str(uuid4()),
+                command_type=command_type.value,
+                state="queued",
+                payload_json=payload_json,
+                payload_sha256=_sha256_text(payload_json),
+            )
+            session.add(stored)
+            session.flush()
+            return self._agent_command(stored)
+
+    def claim_next_agent_command(
+        self,
+        agent_id: str,
+        now: datetime,
+    ) -> StoredAgentCommand | None:
+        with self.database.session() as session:
+            stored = session.scalar(
+                select(AnkiAgentCommandModel)
+                .where(AnkiAgentCommandModel.state == "queued")
+                .order_by(
+                    AnkiAgentCommandModel.created_at,
+                    AnkiAgentCommandModel.id,
+                )
+                .limit(1)
+            )
+            if stored is None:
+                return None
+            claimed = session.execute(
+                update(AnkiAgentCommandModel)
+                .where(
+                    AnkiAgentCommandModel.id == stored.id,
+                    AnkiAgentCommandModel.state == "queued",
+                )
+                .values(
+                    state="claimed",
+                    owner_agent_id=agent_id,
+                    claimed_at=now.isoformat(),
+                    error=None,
+                )
+            )
+            if cast(CursorResult[Any], claimed).rowcount != 1:
+                return None
+            session.flush()
+            session.refresh(stored)
+            return self._agent_command(stored)
+
+    def require_owned_agent_command(
+        self,
+        command_id: UUID,
+        agent_id: str,
+        allowed_types: set[AgentCommandType],
+    ) -> StoredAgentCommand:
+        with self.database.session() as session:
+            stored = session.get(AnkiAgentCommandModel, str(command_id))
+            if stored is None:
+                raise KeyError(str(command_id))
+            if (
+                stored.state != "claimed"
+                or stored.owner_agent_id != agent_id
+                or AgentCommandType(stored.command_type) not in allowed_types
+            ):
+                raise ValueError("agent command is not owned by this agent")
+            return self._agent_command(stored)
+
+    def complete_agent_command(
+        self,
+        command_id: UUID,
+        agent_id: str,
+        result: dict[str, Any],
+    ) -> StoredAgentCommand:
+        result_json = _canonical_json(result)
+        with self.database.session() as session:
+            stored = session.get(AnkiAgentCommandModel, str(command_id))
+            if stored is None:
+                raise KeyError(str(command_id))
+            if stored.state != "claimed" or stored.owner_agent_id != agent_id:
+                raise ValueError("agent command is not owned by this agent")
+            stored.state = "complete"
+            stored.result_json = result_json
+            stored.result_sha256 = _sha256_text(result_json)
+            stored.completed_at = utc_now()
+            session.flush()
+            return self._agent_command(stored)
+
     @staticmethod
     def _require_job_model(session: Session, job_id: UUID) -> AnkiCurationJobModel:
         stored = session.get(AnkiCurationJobModel, str(job_id))
@@ -556,4 +692,26 @@ class AnkiCurationRepository:
             payload_sha256=stored.payload_sha256,
             state=stored.state,
             receipt_summary=receipt,
+        )
+
+    @staticmethod
+    def _agent_state(stored: AnkiAgentStateModel) -> AgentState:
+        return AgentState(
+            agent_id=stored.agent_id,
+            heartbeat_at=stored.heartbeat_at,
+            versions=cast(dict[str, Any], json.loads(stored.versions_json)),
+            active_snapshot_id=stored.active_snapshot_id,
+            health=cast(dict[str, Any], json.loads(stored.health_json)),
+        )
+
+    @staticmethod
+    def _agent_command(stored: AnkiAgentCommandModel) -> StoredAgentCommand:
+        return StoredAgentCommand(
+            id=UUID(stored.id),
+            command_type=AgentCommandType(stored.command_type),
+            state=stored.state,
+            payload=cast(dict[str, Any], json.loads(stored.payload_json)),
+            payload_sha256=stored.payload_sha256,
+            owner_agent_id=stored.owner_agent_id,
+            created_at=stored.created_at,
         )

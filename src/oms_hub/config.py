@@ -73,6 +73,11 @@ class Settings(BaseSettings):
         ge=60,
         le=30 * 24 * 60 * 60,
     )
+    anki_agent_max_request_bytes: int = Field(
+        default=100 * 1024 * 1024,
+        ge=256,
+        le=500 * 1024 * 1024,
+    )
     anki_snapshot_max_age_hours: int = Field(default=48, ge=1, le=24 * 30)
     anki_worker_poll_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
     anki_embedding_model: str = Field(

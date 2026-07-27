@@ -245,6 +245,8 @@ class AnkiAgentCommandModel(Base):
     state: Mapped[str] = mapped_column(String(30), default="queued")
     payload_json: Mapped[str] = mapped_column(Text)
     payload_sha256: Mapped[str] = mapped_column(String(64))
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     owner_agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
     claimed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)

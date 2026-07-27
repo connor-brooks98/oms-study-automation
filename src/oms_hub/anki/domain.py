@@ -184,3 +184,23 @@ class StoredEnvelope:
     payload_sha256: str
     state: str
     receipt_summary: dict[str, Any] | None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentState:
+    agent_id: str | None
+    heartbeat_at: str | None
+    versions: dict[str, Any]
+    active_snapshot_id: str | None
+    health: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class StoredAgentCommand:
+    id: UUID
+    command_type: AgentCommandType
+    state: str
+    payload: dict[str, Any]
+    payload_sha256: str
+    owner_agent_id: str | None
+    created_at: str
