@@ -1,7 +1,9 @@
 import gzip
 import json
+import math
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -21,6 +23,82 @@ from oms_hub.anki.snapshot import (
 SOURCE_DECK = "Anking Step Deck"
 SOURCE_DECK_QUERY = 'deck:"Anking Step Deck"'
 EXPORT_VERSION = "1"
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotVersions:
+    export_version: str
+    normalizer_version: str
+    embedding_model: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeltaSnapshotPlan:
+    full_export: bool
+    reason: str
+    edit_query: str | None = None
+    added_note_ids: tuple[int, ...] = ()
+    deleted_note_ids: tuple[int, ...] = ()
+
+
+class DeltaSnapshotPlanner:
+    def __init__(
+        self,
+        ledger: AgentLedger,
+        *,
+        safety_margin: timedelta = timedelta(hours=2),
+        maximum_window: timedelta = timedelta(days=7),
+    ) -> None:
+        self.ledger = ledger
+        self.safety_margin = safety_margin
+        self.maximum_window = maximum_window
+
+    def plan(
+        self,
+        *,
+        current_note_ids: Sequence[int],
+        now: datetime,
+        versions: SnapshotVersions,
+    ) -> DeltaSnapshotPlan:
+        stored_hashes = self.ledger.note_hashes()
+        state = self.ledger.snapshot_state()
+        if not stored_hashes or state is None:
+            return DeltaSnapshotPlan(full_export=True, reason="ledger_absent")
+        if int(state.get("note_count", -1)) != len(stored_hashes):
+            return DeltaSnapshotPlan(full_export=True, reason="ledger_count_mismatch")
+        stored_versions = (
+            state.get("export_version"),
+            state.get("normalizer_version"),
+            state.get("embedding_model"),
+        )
+        if stored_versions != (
+            versions.export_version,
+            versions.normalizer_version,
+            versions.embedding_model,
+        ):
+            return DeltaSnapshotPlan(full_export=True, reason="version_changed")
+        try:
+            exported_at = datetime.fromisoformat(str(state["exported_at"]))
+        except (KeyError, ValueError):
+            return DeltaSnapshotPlan(full_export=True, reason="ledger_invalid")
+        elapsed = now - exported_at
+        if elapsed < timedelta() or elapsed + self.safety_margin > self.maximum_window:
+            return DeltaSnapshotPlan(full_export=True, reason="unsafe_window")
+        current = set(current_note_ids)
+        if any(note_id <= 0 for note_id in current):
+            raise ValueError("current note IDs must be positive")
+        prior = set(stored_hashes)
+        days = max(
+            1,
+            math.ceil((elapsed + self.safety_margin) / timedelta(days=1)),
+        )
+        return DeltaSnapshotPlan(
+            full_export=False,
+            reason="delta_safe",
+            edit_query=f'{SOURCE_DECK_QUERY} edited:{days}',
+            added_note_ids=tuple(sorted(current - prior)),
+            deleted_note_ids=tuple(sorted(prior - current)),
+        )
 
 
 class SnapshotAnki(Protocol):

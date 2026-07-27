@@ -1,12 +1,19 @@
 import json
 import sqlite3
+from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 from uuid import UUID
 
 
 class OperationIdentityConflict(RuntimeError):
     """An operation UUID was reused with different immutable content."""
+
+
+class SnapshotVersionInfo(Protocol):
+    export_version: str
+    normalizer_version: str
+    embedding_model: str
 
 
 class AgentLedger:
@@ -47,6 +54,43 @@ class AgentLedger:
                 "SELECT note_id, content_hash FROM snapshot_notes ORDER BY note_id"
             ).fetchall()
         return {int(note_id): str(content_hash) for note_id, content_hash in rows}
+
+    def set_snapshot_state(
+        self,
+        *,
+        exported_at: datetime,
+        note_count: int,
+        versions: SnapshotVersionInfo,
+    ) -> None:
+        value = json.dumps(
+            {
+                "exported_at": exported_at.isoformat(),
+                "note_count": note_count,
+                "export_version": versions.export_version,
+                "normalizer_version": versions.normalizer_version,
+                "embedding_model": versions.embedding_model,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO metadata (key, value) VALUES ('snapshot_state', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (value,),
+            )
+
+    def snapshot_state(self) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM metadata WHERE key = 'snapshot_state'"
+            ).fetchone()
+        if row is None:
+            return None
+        value = json.loads(str(row[0]))
+        return cast(dict[str, Any], value)
 
     def record_operation(
         self,
