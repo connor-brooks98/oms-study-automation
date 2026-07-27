@@ -2,6 +2,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import inspect, select, text
 
+import oms_hub.anki.models  # noqa: F401
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.models import (
     LectureModel,
@@ -12,7 +13,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 3
+LATEST_SCHEMA_VERSION = 4
 
 
 def migrate_database(database: "Database") -> None:
