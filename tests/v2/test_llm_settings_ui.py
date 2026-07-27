@@ -37,4 +37,7 @@ def test_settings_renders_active_provider_control_and_external_script(tmp_path):
         r'<option value="openai" selected(?:="selected")?>',
         response.text,
     )
-    assert '<script src="/static/settings.js" defer></script>' in response.text
+    assert re.search(
+        r'<script src="/static/settings\.js(?:\?v=[^"]+)?" defer></script>',
+        response.text,
+    )

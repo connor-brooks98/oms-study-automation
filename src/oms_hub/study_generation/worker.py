@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from oms_hub.domain import LectureKey
+from oms_hub.domain import LectureKey, StepStatus, V2StepName
 from oms_hub.files.atomic import sha256_file
 from oms_hub.ingestion.domain import UploadKind
 from oms_hub.study_generation.domain import (
@@ -47,6 +47,13 @@ class GenerationWorker:
         job = self.repository.claim_next(datetime.now(UTC))
         if job is None:
             return False
+        progress_step = _progress_step(job.kind)
+        self.catalog.set_step_status(
+            job.lecture_id,
+            progress_step,
+            StepStatus.RUNNING,
+            f"{job.kind.value.title()} generation is running",
+        )
         try:
             self._run(job)
         except Exception as error:  # noqa: BLE001 - durable boundary sanitizes content
@@ -57,11 +64,28 @@ class GenerationWorker:
                     safe,
                     timedelta(seconds=min(30 * (2 ** max(job.attempts - 1, 0)), 300)),
                 )
+                self.catalog.set_step_status(
+                    job.lecture_id,
+                    progress_step,
+                    StepStatus.QUEUED,
+                    safe,
+                )
             else:
+                paused = _is_auth_error(error)
                 self.repository.fail(
                     job.id,
                     safe,
-                    paused=_is_auth_error(error),
+                    paused=paused,
+                )
+                self.catalog.set_step_status(
+                    job.lecture_id,
+                    progress_step,
+                    (
+                        StepStatus.NEEDS_REVIEW
+                        if paused
+                        else StepStatus.FAILED
+                    ),
+                    safe,
                 )
         return True
 
@@ -166,6 +190,12 @@ class GenerationWorker:
         if job.kind is GenerationKind.OUTLINE:
             self.outline.file(job, lecture_key, answer)
             self.repository.complete(job.id)
+            self.catalog.set_step_status(
+                job.lecture_id,
+                V2StepName.SUMMARY_FILED,
+                StepStatus.COMPLETE,
+                "Lecture summary PDF is ready",
+            )
             return
         quiz_ref = (
             GeminiQuizRef(job.gemini_quiz_id)
@@ -198,6 +228,12 @@ class GenerationWorker:
             docs_synced=True,
         )
         self.repository.complete(job.id)
+        self.catalog.set_step_status(
+            job.lecture_id,
+            V2StepName.QUIZ_PUBLISHED,
+            StepStatus.COMPLETE,
+            "Lecture quiz is published and linked",
+        )
 
 
 def _revision_source(
@@ -270,4 +306,12 @@ def _is_transient(error: Exception) -> bool:
             "rate limit",
             "connection reset",
         )
+    )
+
+
+def _progress_step(kind: GenerationKind) -> V2StepName:
+    return (
+        V2StepName.SUMMARY_FILED
+        if kind is GenerationKind.OUTLINE
+        else V2StepName.QUIZ_PUBLISHED
     )

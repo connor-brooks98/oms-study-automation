@@ -44,3 +44,44 @@ def test_settings_uses_existing_design_for_prompt_paths(tmp_path):
 
     assert "Notebook prompts" in page.text
     assert page.text.count("data-prompt-path") == 2
+    assert page.text.count("Select Path") == 2
+
+
+class FakePromptPathPicker:
+    def __init__(self, selected):
+        self.selected = selected
+
+    def select(self):
+        return self.selected
+
+
+def test_prompt_file_can_be_selected_without_saving_it(tmp_path):
+    client, app = prepared_client(tmp_path)
+    selected = tmp_path / "Obsidian" / "Outline Prompt.md"
+    app.state.prompt_path_picker = FakePromptPathPicker(selected)
+
+    response = client.post(
+        "/settings/generation/prompts/outline/select",
+        json={},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "kind": "outline",
+        "path": str(selected),
+        "selected": True,
+    }
+    assert app.state.generation_repository.prompt_path(PromptKind.OUTLINE) is None
+
+
+def test_saved_prompt_path_changes_action_to_save_path(tmp_path):
+    client, app = prepared_client(tmp_path)
+    app.state.generation_repository.set_prompt_path(
+        PromptKind.OUTLINE,
+        str(tmp_path / "Outline.md"),
+    )
+
+    page = client.get("/settings")
+
+    assert page.text.count("Select Path") == 1
+    assert page.text.count("Save Path") == 1

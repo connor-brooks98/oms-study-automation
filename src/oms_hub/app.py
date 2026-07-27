@@ -40,6 +40,7 @@ from oms_hub.study_generation.google_connection import (
 from oms_hub.study_generation.google_docs import OAuthGoogleDocsGateway
 from oms_hub.study_generation.notebook import StoredNotebookLMGateway
 from oms_hub.study_generation.outline import OutlineService
+from oms_hub.study_generation.path_picker import SystemPromptPathPicker
 from oms_hub.study_generation.prompts import PromptFileService
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.service import GenerationService
@@ -261,6 +262,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved.data_dir,
         PlaywrightGoogleProbe(resolved.data_dir, app.state.secrets),
     )
+    app.state.prompt_path_picker = SystemPromptPathPicker()
     app.state.upload_staging = StagingService(
         resolved.data_dir / "staging",
         resolved.max_upload_file_bytes,

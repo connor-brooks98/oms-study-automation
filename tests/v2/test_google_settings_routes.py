@@ -89,3 +89,28 @@ def test_oauth_client_upload_does_not_echo_secret(tmp_path):
     assert response.status_code == 200
     assert response.json() == {"configured": True}
     assert "super-secret" not in response.text
+
+
+def test_connect_response_keeps_all_google_surfaces_connecting(tmp_path):
+    app = create_app(
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path,
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        )
+    )
+    app.state.google_connection = FakeGoogleConnection()
+
+    response = TestClient(app).post("/settings/google/connect", json={})
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "state": "connecting",
+        "account_email": None,
+        "surfaces": [
+            {"name": "notebook", "state": "connecting", "message": None},
+            {"name": "gemini", "state": "connecting", "message": None},
+            {"name": "docs", "state": "connecting", "message": None},
+        ],
+        "message": "Complete Google sign-in in the browser window.",
+    }

@@ -1,5 +1,6 @@
 from typing import Any, cast
 
+from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.files.atomic import sha256_file
 from oms_hub.ingestion.domain import UploadKind
 from oms_hub.study_generation.domain import (
@@ -67,9 +68,19 @@ class GenerationService:
         if job.state is GenerationState.PAUSED:
             job = self.jobs.requeue(job.id)
         if job.pdf_revision_id is not None:
+            self.catalog.set_step_status(
+                lecture_id,
+                _progress_step(kind),
+                (
+                    StepStatus.RUNNING
+                    if job.state is GenerationState.RUNNING
+                    else StepStatus.QUEUED
+                ),
+                f"{kind.value.title()} generation queued",
+            )
             return cast(GenerationJob, job)
         assert pdf is not None and transcript is not None
-        return cast(
+        queued = cast(
             GenerationJob,
             self.jobs.advance(
                 job.id,
@@ -80,6 +91,13 @@ class GenerationService:
                 transcript_revision_id=transcript.id,
             ),
         )
+        self.catalog.set_step_status(
+            lecture_id,
+            _progress_step(kind),
+            StepStatus.QUEUED,
+            f"{kind.value.title()} generation queued",
+        )
+        return queued
 
 
 def _ready_revision(revision: Any | None) -> bool:
@@ -93,4 +111,12 @@ def _ready_revision(revision: Any | None) -> bool:
         return False
     return bool(
         sha256_file(revision.canonical_derived_path) == revision.derived_sha256
+    )
+
+
+def _progress_step(kind: GenerationKind) -> V2StepName:
+    return (
+        V2StepName.SUMMARY_FILED
+        if kind is GenerationKind.OUTLINE
+        else V2StepName.QUIZ_PUBLISHED
     )

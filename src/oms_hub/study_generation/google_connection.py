@@ -71,6 +71,7 @@ class GoogleSurface(StrEnum):
 class GoogleSurfaceStatus:
     name: str
     state: str
+    message: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,15 +133,23 @@ class GoogleConnectionService:
                 surface_statuses.append(
                     GoogleSurfaceStatus(surface.value, "connected")
                 )
-            except Exception:  # noqa: BLE001 - external boundary is sanitized
+            except Exception as error:  # noqa: BLE001 - external boundary is sanitized
                 surface_statuses.append(
-                    GoogleSurfaceStatus(surface.value, "failed")
+                    GoogleSurfaceStatus(
+                        surface.value,
+                        "failed",
+                        _safe_surface_error(surface, error),
+                    )
                 )
         values = set(emails.values())
         if len(emails) != len(GoogleSurface):
             state = "failed"
             email = None
-            message = "One or more Google services could not be reached"
+            message = " ".join(
+                item.message
+                for item in surface_statuses
+                if item.message is not None
+            )
         elif len(values) != 1:
             state = "failed"
             email = None
@@ -170,7 +179,9 @@ class GoogleConnectionService:
 
     def start_interactive(self) -> GoogleConnectionStatus:
         if not self._lock.acquire(blocking=False):
-            return GoogleConnectionStatus("connecting", None, (), None)
+            return _connecting_status(
+                "A Google sign-in window is already open on this Study Hub device."
+            )
         try:
             self.repository.save_google_status(
                 state="connecting",
@@ -178,7 +189,7 @@ class GoogleConnectionService:
                 notebook_state="connecting",
                 gemini_state="connecting",
                 docs_state="connecting",
-                diagnostic=None,
+                diagnostic="Complete Google sign-in in the browser window.",
                 tested_at=datetime.now(UTC).isoformat(),
             )
             starter = getattr(self.probe, "start_interactive", None)
@@ -186,8 +197,8 @@ class GoogleConnectionService:
                 raise RuntimeError("interactive Google connection is unavailable")
             starter()
             return self.test()
-        except Exception:  # noqa: BLE001 - persist only a safe diagnostic
-            message = "Google sign-in did not finish; reconnect and try again"
+        except Exception as error:  # noqa: BLE001 - persist only a safe diagnostic
+            message = _safe_interactive_error(error)
             self.repository.save_google_status(
                 state="failed",
                 account_email=None,
@@ -252,11 +263,17 @@ class PlaywrightGoogleProbe:
             port=0,
             open_browser=True,
             authorization_prompt_message="Complete Google access in your browser.",
+            timeout_seconds=300,
+            access_type="offline",
+            prompt="consent",
         )
-        if not credentials.refresh_token:
+        refresh_token = credentials.refresh_token or self.secrets.get(
+            OAUTH_REFRESH_TOKEN_KEY
+        )
+        if not refresh_token:
             raise RuntimeError("Google did not provide a reusable login")
         email = _oauth_email(credentials)
-        self.secrets.set(OAUTH_REFRESH_TOKEN_KEY, credentials.refresh_token)
+        self.secrets.set(OAUTH_REFRESH_TOKEN_KEY, refresh_token)
         self.secrets.set(CONNECTED_EMAIL_KEY, email)
 
         self.root.mkdir(parents=True, exist_ok=True)
@@ -337,3 +354,70 @@ def _oauth_email(credentials: object) -> str:
     if not isinstance(email, str) or not email:
         raise RuntimeError("Google account email was unavailable")
     return email.casefold()
+
+
+def _connecting_status(message: str) -> GoogleConnectionStatus:
+    return GoogleConnectionStatus(
+        "connecting",
+        None,
+        tuple(
+            GoogleSurfaceStatus(surface.value, "connecting")
+            for surface in GoogleSurface
+        ),
+        message,
+    )
+
+
+def _safe_surface_error(
+    surface: GoogleSurface,
+    error: Exception,
+) -> str:
+    label = {
+        GoogleSurface.NOTEBOOK: "NotebookLM",
+        GoogleSurface.GEMINI: "Gemini",
+        GoogleSurface.DOCS: "Google Docs",
+    }[surface]
+    message = str(error).casefold()
+    if "executable doesn't exist" in message or "browser executable" in message:
+        return f"{label} needs its Chromium browser installed."
+    if "invalid_grant" in message or "expired or revoked" in message:
+        return f"{label} authorization expired; connect Google again."
+    if (
+        "sign-in" in message
+        or "sign in" in message
+        or "not connected" in message
+    ):
+        return f"{label} needs sign-in."
+    if "access_denied" in message or "access denied" in message:
+        return f"{label} access was denied by Google."
+    if "timed out" in message or "timeout" in message:
+        return f"{label} timed out while checking the account."
+    return f"{label} could not be reached."
+
+
+def _safe_interactive_error(error: Exception) -> str:
+    message = str(error).casefold()
+    if "not configured" in message:
+        return "Save the Google Desktop app OAuth client JSON, then connect again."
+    if "access_denied" in message or "access denied" in message:
+        return (
+            "Google denied this account. Add the email as an OAuth test user, "
+            "then connect again."
+        )
+    if "invalid_grant" in message or "expired or revoked" in message:
+        return "Google authorization expired; connect Google again."
+    if "reusable login" in message:
+        return "Google did not return offline access; connect again and approve access."
+    if "executable doesn't exist" in message or "browser executable" in message:
+        return (
+            "Chromium is not installed for Study Hub. Install Playwright Chromium, "
+            "then connect again."
+        )
+    if "timed out" in message or "timeout" in message:
+        return (
+            "Google sign-in timed out. Close any old sign-in window and connect again."
+        )
+    return (
+        "Google sign-in stopped before all services connected. "
+        "Connect again and complete every browser sign-in window."
+    )

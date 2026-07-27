@@ -87,7 +87,7 @@
     const badge = card.querySelector("[data-google-badge]");
     const message = card.querySelector("[data-google-status]");
     const connected = status.state === "connected";
-    const connecting = Boolean(status.connecting);
+    const connecting = status.state === "connecting";
 
     badge.textContent = connecting ? "Connecting" : connected ? "Connected" : "Not connected";
     badge.classList.toggle("is-configured", connected);
@@ -95,13 +95,15 @@
       (status.surfaces || []).map((surface) => [surface.name, surface.state]),
     );
     card.querySelectorAll("[data-google-surface]").forEach((surface) => {
-      const state = surfaces.get(surface.dataset.googleSurface) || "disconnected";
+      const state = surfaces.get(surface.dataset.googleSurface)
+        || (connecting ? "connecting" : "disconnected");
       surface.textContent = state.replaceAll("_", " ");
       surface.className = `status-pill status-${state}`;
     });
 
     if (connecting) {
-      message.textContent = "Finish signing in using the browser window on this Study Hub device.";
+      message.textContent = status.message
+        || "Finish signing in using the browser window on this Study Hub device.";
     } else if (connected) {
       message.textContent = status.account_email
         ? `Google is connected as ${status.account_email}.`
@@ -110,6 +112,10 @@
       message.textContent = status.message;
     }
   };
+
+  const promptPathAction = (value) => (
+    String(value || "").trim() ? "save" : "select"
+  );
 
   const setTestState = (button, state) => {
     const presentation = testPresentation(state);
@@ -239,8 +245,32 @@
       const kind = card.dataset.prompt;
       const input = card.querySelector("[data-prompt-path]");
       const message = card.querySelector("[data-prompt-message]");
-      card.querySelector("[data-save-prompt]").addEventListener("click", async () => {
+      const pathButton = card.querySelector("[data-save-prompt]");
+      const updatePromptAction = () => {
+        pathButton.textContent = promptPathAction(input.value) === "select"
+          ? "Select Path"
+          : "Save Path";
+      };
+      input.addEventListener("input", updatePromptAction);
+      pathButton.addEventListener("click", async () => {
         try {
+          if (promptPathAction(input.value) === "select") {
+            message.textContent = "Choose the Obsidian prompt on the NUC…";
+            const result = await postJson(
+              fetchImpl,
+              `/settings/generation/prompts/${kind}/select`,
+              {},
+              token(),
+            );
+            if (result.selected) {
+              input.value = result.path;
+              updatePromptAction();
+              message.textContent = "Path selected. Click Save Path to keep it.";
+            } else {
+              message.textContent = "No prompt file was selected.";
+            }
+            return;
+          }
           await postJson(
             fetchImpl,
             `/settings/generation/prompts/${kind}`,
@@ -386,6 +416,7 @@
     getJson,
     initialize,
     postJson,
+    promptPathAction,
     renderGoogleStatus,
     runWhenReady,
     testPresentation,

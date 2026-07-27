@@ -13,7 +13,10 @@ from oms_hub.study_generation.domain import (
 from oms_hub.study_generation.google_connection import (
     GoogleConnectionService,
     GoogleConnectionStatus,
+    GoogleSurface,
+    GoogleSurfaceStatus,
 )
+from oms_hub.study_generation.path_picker import PromptPathPicker
 from oms_hub.study_generation.prompts import PromptConfigurationError, PromptFileService
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.service import (
@@ -51,7 +54,11 @@ def _google_payload(status: GoogleConnectionStatus) -> dict[str, object]:
         "state": status.state,
         "account_email": status.account_email,
         "surfaces": [
-            {"name": surface.name, "state": surface.state}
+            {
+                "name": surface.name,
+                "state": surface.state,
+                "message": surface.message,
+            }
             for surface in status.surfaces
         ],
         "message": status.message,
@@ -92,6 +99,24 @@ def test_prompt_path(request: Request, kind: str) -> JSONResponse:
             "path": str(prompt.path),
             "sha256": prompt.sha256,
             "modified_at": prompt.modified_at,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/prompts/{kind}/select")
+def select_prompt_path(request: Request, kind: str) -> JSONResponse:
+    selected_kind = _kind(kind)
+    picker = cast(PromptPathPicker, request.app.state.prompt_path_picker)
+    try:
+        selected_path = picker.select()
+    except RuntimeError as error:
+        raise HTTPException(409, str(error)) from error
+    return JSONResponse(
+        {
+            "kind": selected_kind.value,
+            "path": str(selected_path) if selected_path is not None else None,
+            "selected": selected_path is not None,
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -220,8 +245,17 @@ def connect_google(request: Request) -> JSONResponse:
         daemon=True,
     )
     thread.start()
+    connecting = GoogleConnectionStatus(
+        "connecting",
+        None,
+        tuple(
+            GoogleSurfaceStatus(surface.value, "connecting")
+            for surface in GoogleSurface
+        ),
+        "Complete Google sign-in in the browser window.",
+    )
     return JSONResponse(
-        {"state": "connecting"},
+        _google_payload(connecting),
         status_code=202,
         headers={"Cache-Control": "no-store"},
     )

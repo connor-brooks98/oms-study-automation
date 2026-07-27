@@ -161,7 +161,7 @@
           <input id="prompt-{{ prompt.kind }}" type="text" maxlength="2048" value="{{ prompt.path }}" data-prompt-path>
         </div>
         <div class="provider-buttons">
-          <button class="button primary" type="button" data-save-prompt>Save path</button>
+          <button class="button primary" type="button" data-save-prompt>{{ "Save Path" if prompt.path else "Select Path" }}</button>
           <button class="button secondary" type="button" data-test-prompt>Test file</button>
         </div>
         <p class="field-message" data-prompt-message aria-live="polite"></p>
@@ -182,5 +182,5 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/settings.js?v=20260727.1" defer></script>
+<script src="/static/settings.js?v=20260727.2" defer></script>
 {% endblock %}

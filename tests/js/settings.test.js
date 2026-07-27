@@ -112,3 +112,53 @@ test("settings wait for DOMContentLoaded while the page is loading", () => {
   listener();
   assert.equal(starts, 1);
 });
+
+test("Google connecting state keeps every service in connecting state", () => {
+  const surfaces = ["notebook", "gemini", "docs"].map((name) => ({
+    dataset: { googleSurface: name },
+    textContent: "",
+    className: "",
+  }));
+  const badge = {
+    textContent: "",
+    classList: { toggle() {} },
+  };
+  const message = { textContent: "" };
+  const card = {
+    querySelector(selector) {
+      if (selector === "[data-google-badge]") return badge;
+      if (selector === "[data-google-status]") return message;
+      throw new Error(`unexpected selector: ${selector}`);
+    },
+    querySelectorAll(selector) {
+      assert.equal(selector, "[data-google-surface]");
+      return surfaces;
+    },
+  };
+
+  settings.renderGoogleStatus(card, {
+    state: "connecting",
+    account_email: null,
+    surfaces: [],
+    message: "Complete Google sign-in in the browser window.",
+  });
+
+  assert.equal(badge.textContent, "Connecting");
+  assert.deepEqual(
+    surfaces.map((surface) => surface.textContent),
+    ["connecting", "connecting", "connecting"],
+  );
+  assert.equal(
+    message.textContent,
+    "Complete Google sign-in in the browser window.",
+  );
+});
+
+test("prompt action changes from select to save after a path is chosen", () => {
+  assert.equal(settings.promptPathAction(""), "select");
+  assert.equal(settings.promptPathAction("   "), "select");
+  assert.equal(
+    settings.promptPathAction("C:\\Vault\\Outline Prompt.md"),
+    "save",
+  );
+});

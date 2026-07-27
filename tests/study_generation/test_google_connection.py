@@ -33,6 +33,16 @@ class Probe:
         return self.emails[surface]
 
 
+class FailedProbe:
+    def account_email(self, surface):
+        errors = {
+            GoogleSurface.NOTEBOOK: "notebook sign-in is required",
+            GoogleSurface.GEMINI: "browser executable doesn't exist",
+            GoogleSurface.DOCS: "invalid_grant",
+        }
+        raise RuntimeError(errors[surface])
+
+
 def test_connected_status_requires_same_account_on_all_surfaces(tmp_path):
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()
@@ -103,3 +113,28 @@ def test_oauth_client_rejects_non_desktop_payload(tmp_path):
         assert "Desktop app" in str(error)
     else:
         raise AssertionError("expected invalid OAuth client to be rejected")
+
+
+def test_connection_test_reports_safe_actionable_surface_failures(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    service = GoogleConnectionService(
+        GenerationRepository(database),
+        MemorySecrets(),
+        tmp_path,
+        FailedProbe(),
+    )
+
+    status = service.test()
+
+    assert status.state == "failed"
+    assert status.message == (
+        "NotebookLM needs sign-in. Gemini needs its Chromium browser installed. "
+        "Google Docs authorization expired; connect Google again."
+    )
+    assert [surface.message for surface in status.surfaces] == [
+        "NotebookLM needs sign-in.",
+        "Gemini needs its Chromium browser installed.",
+        "Google Docs authorization expired; connect Google again.",
+    ]
+    assert "invalid_grant" not in repr(status)

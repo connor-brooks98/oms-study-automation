@@ -3,6 +3,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.ingestion.domain import UploadKind
 from oms_hub.study_generation.domain import (
     GenerationJob,
@@ -104,16 +105,21 @@ def test_worker_resume_at_share_does_not_regenerate_quiz(tmp_path):
         sync_quiz_link=lambda tab, lecture, url: None,
     )
     gemini = Gemini()
+    progress = []
+    catalog = SimpleNamespace(
+        get_lecture=lambda lecture_id: SimpleNamespace(
+            subject="Neuro",
+            exam_number=1,
+            lecture_number=1,
+            topic="Seizures",
+        ),
+        set_step_status=lambda lecture_id, name, status, detail=None: (
+            progress.append((lecture_id, name, status, detail))
+        ),
+    )
     worker = GenerationWorker(
         repository,
-        SimpleNamespace(
-            get_lecture=lambda lecture_id: SimpleNamespace(
-                subject="Neuro",
-                exam_number=1,
-                lecture_number=1,
-                topic="Seizures",
-            )
-        ),
+        catalog,
         SimpleNamespace(get_study_revision=lambda revision_id: revisions[revision_id]),
         SimpleNamespace(
             inspect=lambda kind: PromptSnapshot(
@@ -133,3 +139,13 @@ def test_worker_resume_at_share_does_not_regenerate_quiz(tmp_path):
     assert gemini.generate_calls == 0
     assert gemini.share_calls == 1
     assert repository.quiz == "https://gemini.google.com/share/quiz-1"
+    assert progress[0][:3] == (
+        1,
+        V2StepName.QUIZ_PUBLISHED,
+        StepStatus.RUNNING,
+    )
+    assert progress[-1][:3] == (
+        1,
+        V2StepName.QUIZ_PUBLISHED,
+        StepStatus.COMPLETE,
+    )
