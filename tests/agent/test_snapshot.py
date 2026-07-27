@@ -6,8 +6,16 @@ from typing import Any
 
 import pytest
 
+from oms_anki_agent.ledger import AgentLedger
+from oms_anki_agent.service import LedgerSnapshotFactory
 from oms_anki_agent.snapshot import FullSnapshotExporter
-from oms_hub.anki.contracts import SnapshotManifest
+from oms_hub.anki.contracts import (
+    AgentCommand,
+    SnapshotDelta,
+    SnapshotManifest,
+    canonical_payload_sha256,
+)
+from oms_hub.anki.domain import AgentCommandType
 from oms_hub.anki.snapshot import SnapshotValidationError, stage_full_snapshot
 
 
@@ -128,3 +136,37 @@ def test_hub_rejects_invalid_snapshot_before_replacing_stage(
             max_row_bytes=500 if failure == "oversized" else 20_000,
         )
     assert not (tmp_path / "job" / "current").exists()
+
+
+def test_service_prepares_delta_as_streamed_file_and_defers_ledger_commit(
+    tmp_path: Path,
+) -> None:
+    ledger = AgentLedger(tmp_path / "ledger.sqlite3")
+    ledger.replace_note_hashes({101: "0" * 64, 999: "f" * 64})
+    factory = LedgerSnapshotFactory(
+        exporter=FullSnapshotExporter(
+            anki=FakeAnki(_fixture_notes()),
+            chunk_size=2,
+            agent_version="test",
+        ),
+        ledger=ledger,
+        work_root=tmp_path / "work",
+    )
+    command = AgentCommand(
+        command_id="b2edb9da-4421-4d27-bc6b-7797ed310355",
+        command_type=AgentCommandType.DELTA_SNAPSHOT,
+        payload={},
+        payload_sha256="a" * 64,
+        created_at="2026-07-27T12:00:00Z",
+    )
+
+    prepared = factory.create(command)
+    payload = json.loads(prepared.payload_path.read_text(encoding="utf-8"))
+    contract = SnapshotDelta.model_validate(payload)
+
+    assert [note["note_id"] for note in payload["upserts"]] == [101, 102, 103]
+    assert payload["deleted_note_ids"] == [999]
+    assert canonical_payload_sha256(contract) == prepared.payload_sha256
+    assert ledger.note_hashes() == {101: "0" * 64, 999: "f" * 64}
+    factory.commit(prepared)
+    assert set(ledger.note_hashes()) == {101, 102, 103}

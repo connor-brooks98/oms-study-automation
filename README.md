@@ -61,8 +61,44 @@ The Hub remains bound to `127.0.0.1`; Cloudflare Tunnel provides outbound-only
 remote connectivity, and the application independently verifies the Access
 JWT and allowed email.
 
-NotebookLM/Gemini automation and Anki automation are later milestones. Anki
-already has a dedicated placeholder page in the interface.
+### Read-only Anki bridge
+
+The first Anki milestone exports and indexes `Anking Step Deck`; it does not
+tag notes, create notes, store media, or sync. On the NUC, expose only the
+loopback Hub port to the tailnet:
+
+```text
+tailscale serve --bg 8765
+tailscale serve status
+```
+
+Use the Tailscale hostname as the Mac agent's Hub URL. Store the shared bearer
+value in Windows Credential Manager and macOS Keychain under service
+`OMSStudyHub` and account `anki-agent-token`. Do not put it in the LaunchAgent,
+shell history, `.env`, or a command-line flag.
+
+On the Mac, install the package, confirm AnkiConnect v6 is listening only on
+`127.0.0.1:8765`, then run:
+
+```text
+oms-anki-agent doctor
+scripts/macos/install-anki-agent.sh \
+  --hub-url https://study-hub.example.ts.net
+launchctl print gui/$(id -u)/com.omsstudy.anki-agent
+```
+
+Rotate the bearer value in both Windows Credential Manager and macOS Keychain,
+then restart the Hub and agent. Disable the private route with
+`tailscale serve reset`. Confirm the public Cloudflare hostname does not expose
+the agent family:
+
+```text
+curl -i https://study.example.com/agent/v1/heartbeat
+# Expected: HTTP 404
+```
+
+The agent logs beneath `~/Library/Logs/OMSStudyHub`. A manual read-only export
+is available with `oms-anki-agent snapshot --full`.
 
 The multi-provider hotfix procedure is in
 [docs/v2-multi-provider-nuc-rollout.md](docs/v2-multi-provider-nuc-rollout.md).

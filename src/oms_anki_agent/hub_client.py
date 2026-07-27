@@ -1,8 +1,11 @@
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
+from uuid import UUID
 
 import httpx
+from pydantic import ValidationError
 
-from oms_hub.anki.contracts import AgentHeartbeat
+from oms_anki_agent.snapshot import PreparedSnapshot, SnapshotUpload
+from oms_hub.anki.contracts import AgentCommand, AgentHeartbeat
 from oms_hub.security.secret_store import SecretStore
 
 
@@ -52,12 +55,49 @@ class HubClient:
             )
         )
 
+    def next_command(self) -> AgentCommand | None:
+        response = self._request("GET", "/agent/v1/commands/next")
+        if response.status_code == 204:
+            return None
+        try:
+            return AgentCommand.model_validate(response.json())
+        except (ValueError, ValidationError) as exc:
+            raise HubProtocolError(
+                "Study Hub returned an invalid agent command",
+                transient=False,
+            ) from exc
+
+    def upload_snapshot(
+        self,
+        command_id: UUID,
+        snapshot: SnapshotUpload,
+    ) -> dict[str, str]:
+        if isinstance(snapshot, PreparedSnapshot):
+            with snapshot.payload_path.open("rb") as stream:
+                return self._object(
+                    self._request(
+                        "POST",
+                        f"/agent/v1/commands/{command_id}/snapshot",
+                        content=stream,
+                        content_length=snapshot.payload_path.stat().st_size,
+                    )
+                )
+        return self._object(
+            self._request(
+                "POST",
+                f"/agent/v1/commands/{command_id}/snapshot",
+                json=snapshot.model_dump(mode="json"),
+            )
+        )
+
     def _request(
         self,
         method: str,
         path: str,
         *,
         json: dict[str, Any] | None = None,
+        content: BinaryIO | None = None,
+        content_length: int | None = None,
     ) -> httpx.Response:
         token = self.secrets.get(self.token_key)
         if not token:
@@ -65,15 +105,22 @@ class HubClient:
                 "Hub bearer token is missing from Keychain",
                 transient=False,
             )
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-OMS-Agent-ID": self.agent_id,
+        }
+        if content is not None:
+            headers["Content-Type"] = "application/json"
+            if content_length is None:
+                raise ValueError("streamed Hub requests require a content length")
+            headers["Content-Length"] = str(content_length)
         try:
             response = self.http.request(
                 method,
                 self.hub_url + path,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "X-OMS-Agent-ID": self.agent_id,
-                },
+                headers=headers,
                 json=json,
+                content=content,
             )
         except httpx.RequestError as exc:
             raise HubUnavailable("Study Hub is unavailable", transient=True) from exc

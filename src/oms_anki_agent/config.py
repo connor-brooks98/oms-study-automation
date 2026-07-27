@@ -14,6 +14,7 @@ class AgentSettings(BaseSettings):
     )
 
     hub_url: str
+    agent_id: str = "connor-mac"
     hub_token_key: str = "anki-agent-token"
     ankiconnect_url: Literal["http://127.0.0.1:8765"] = "http://127.0.0.1:8765"
     poll_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
@@ -50,4 +51,12 @@ class AgentSettings(BaseSettings):
         normalized = value.strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", normalized):
             raise ValueError("hub_token_key contains unsupported characters")
+        return normalized
+
+    @field_validator("agent_id")
+    @classmethod
+    def validate_agent_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", normalized):
+            raise ValueError("agent_id contains unsupported characters")
         return normalized

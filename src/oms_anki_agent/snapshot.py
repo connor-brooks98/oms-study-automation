@@ -1,6 +1,8 @@
 import gzip
+import hashlib
 import json
 import math
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -9,10 +11,12 @@ from typing import Any, Protocol
 
 from oms_anki_agent.ledger import AgentLedger
 from oms_hub.anki.contracts import (
+    SnapshotDelta,
     SnapshotManifest,
     SnapshotNote,
     canonical_payload_sha256,
 )
+from oms_hub.anki.domain import AgentCommandType
 from oms_hub.anki.normalize import extract_media_references
 from oms_hub.anki.snapshot import (
     hash_content_sequence,
@@ -30,6 +34,17 @@ class SnapshotVersions:
     export_version: str
     normalizer_version: str
     embedding_model: str
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSnapshot:
+    manifest: SnapshotManifest
+    payload_sha256: str
+    payload_path: Path
+    note_hashes: dict[int, str]
+
+
+SnapshotUpload = SnapshotDelta | PreparedSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +198,61 @@ class FullSnapshotExporter:
         )
 
 
+def prepare_snapshot_upload(
+    *,
+    manifest: SnapshotManifest,
+    exported_notes: Path,
+    destination: Path,
+    command_type: AgentCommandType,
+    prior_hashes: dict[int, str],
+) -> PreparedSnapshot:
+    selected_path = destination.with_suffix(".upserts.jsonl")
+    current_hashes: dict[int, str] = {}
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with _open_input(exported_notes) as source, selected_path.open(
+            "w",
+            encoding="utf-8",
+            newline="\n",
+        ) as selected:
+            for line in source:
+                if not line.strip():
+                    continue
+                note = SnapshotNote.model_validate_json(line)
+                current_hashes[note.note_id] = note.content_sha256
+                if (
+                    command_type is AgentCommandType.FULL_SNAPSHOT
+                    or prior_hashes.get(note.note_id) != note.content_sha256
+                ):
+                    selected.write(
+                        json.dumps(
+                            note.model_dump(mode="json"),
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            ensure_ascii=False,
+                        )
+                    )
+                    selected.write("\n")
+            selected.flush()
+            os.fsync(selected.fileno())
+        deleted = (
+            ()
+            if command_type is AgentCommandType.FULL_SNAPSHOT
+            else tuple(sorted(set(prior_hashes) - set(current_hashes)))
+        )
+        components = _payload_components(manifest, deleted)
+        payload_sha256 = _hash_payload_without_sha(selected_path, components)
+        _write_payload_file(destination, selected_path, components, payload_sha256)
+        return PreparedSnapshot(
+            manifest=manifest,
+            payload_sha256=payload_sha256,
+            payload_path=destination,
+            note_hashes=current_hashes,
+        )
+    finally:
+        selected_path.unlink(missing_ok=True)
+
+
 def _snapshot_note(raw: dict[str, Any]) -> SnapshotNote:
     try:
         note_id = _positive_int(raw["noteId"])
@@ -240,3 +310,73 @@ def _open_output(path: Path) -> Any:
     if path.suffix.casefold() == ".gz":
         return gzip.open(path, "wt", encoding="utf-8", newline="\n")
     return path.open("w", encoding="utf-8", newline="\n")
+
+
+def _open_input(path: Path) -> Any:
+    if path.suffix.casefold() == ".gz":
+        return gzip.open(path, "rt", encoding="utf-8")
+    return path.open("r", encoding="utf-8")
+
+
+def _payload_components(
+    manifest: SnapshotManifest,
+    deleted_note_ids: tuple[int, ...],
+) -> tuple[bytes, bytes]:
+    deleted = json.dumps(deleted_note_ids, separators=(",", ":")).encode("utf-8")
+    manifest_json = json.dumps(
+        manifest.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return deleted, manifest_json
+
+
+def _hash_payload_without_sha(
+    notes_path: Path,
+    components: tuple[bytes, bytes],
+) -> str:
+    deleted, manifest = components
+    digest = hashlib.sha256()
+    digest.update(b'{"contract_version":1,"deleted_note_ids":')
+    digest.update(deleted)
+    digest.update(b',"manifest":')
+    digest.update(manifest)
+    digest.update(b',"upserts":[')
+    _visit_jsonl(notes_path, digest.update)
+    digest.update(b"]}")
+    return digest.hexdigest()
+
+
+def _write_payload_file(
+    destination: Path,
+    notes_path: Path,
+    components: tuple[bytes, bytes],
+    payload_sha256: str,
+) -> None:
+    deleted, manifest = components
+    with destination.open("wb") as output:
+        output.write(b'{"contract_version":1,"deleted_note_ids":')
+        output.write(deleted)
+        output.write(b',"manifest":')
+        output.write(manifest)
+        output.write(b',"payload_sha256":')
+        output.write(json.dumps(payload_sha256).encode("ascii"))
+        output.write(b',"upserts":[')
+        _visit_jsonl(notes_path, output.write)
+        output.write(b"]}")
+        output.flush()
+        os.fsync(output.fileno())
+
+
+def _visit_jsonl(path: Path, consume: Any) -> None:
+    first = True
+    with path.open("rb") as stream:
+        for line in stream:
+            row = line.strip()
+            if not row:
+                continue
+            if not first:
+                consume(b",")
+            consume(row)
+            first = False
