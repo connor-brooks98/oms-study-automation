@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
 
 class GenerationKind(StrEnum):
@@ -52,3 +53,11 @@ class GenerationJob:
     notebook_answer: str | None = None
     gemini_quiz_id: str | None = None
     quiz_url: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PromptSnapshot:
+    path: Path
+    content: str
+    sha256: str
+    modified_at: str

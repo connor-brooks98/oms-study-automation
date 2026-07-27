@@ -100,6 +100,37 @@
     </div>
   </section>
 
+  <section class="settings-section" aria-labelledby="notebook-prompts-heading">
+    <div class="settings-section-heading">
+      <div>
+        <p class="mono-label">Gemini Notebook</p>
+        <h2 id="notebook-prompts-heading">Notebook prompts</h2>
+        <p>Link the outline and quiz prompts you maintain in Obsidian.</p>
+      </div>
+    </div>
+    <div class="provider-grid">
+      {% for prompt in prompt_settings %}
+      <article class="card provider-card" data-prompt-card data-prompt="{{ prompt.kind }}">
+        <div class="provider-card-heading">
+          <div>
+            <p class="provider-kicker">Obsidian file</p>
+            <h3>{{ prompt.label }}</h3>
+          </div>
+        </div>
+        <div class="provider-field">
+          <label for="prompt-{{ prompt.kind }}">File path</label>
+          <input id="prompt-{{ prompt.kind }}" type="text" maxlength="2048" value="{{ prompt.path }}" data-prompt-path>
+        </div>
+        <div class="provider-buttons">
+          <button class="button primary" type="button" data-save-prompt>Save path</button>
+          <button class="button secondary" type="button" data-test-prompt>Test file</button>
+        </div>
+        <p class="field-message" data-prompt-message aria-live="polite"></p>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+
   <section class="card settings-card tracker-settings">
     <p class="mono-label">Course structure</p>
     <h2>Lecture exam tracker</h2>

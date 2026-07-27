@@ -6,12 +6,13 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.engine import CursorResult
 
 from oms_hub.db import Database
-from oms_hub.models import GenerationJobModel
+from oms_hub.models import GenerationJobModel, StudyPromptSettingModel
 from oms_hub.study_generation.domain import (
     GenerationJob,
     GenerationKind,
     GenerationStage,
     GenerationState,
+    PromptKind,
 )
 
 _ACTIVE_STATES = {
@@ -48,6 +49,39 @@ class GenerationRepository:
             session.add(model)
             session.flush()
             return self._job(model)
+
+    def set_prompt_path(self, kind: PromptKind, path: str) -> None:
+        normalized = path.strip()
+        if not normalized:
+            raise ValueError("prompt path cannot be empty")
+        with self.database.session() as session:
+            model = session.get(StudyPromptSettingModel, kind.value)
+            if model is None:
+                session.add(
+                    StudyPromptSettingModel(kind=kind.value, path=normalized)
+                )
+            else:
+                model.path = normalized
+                model.last_sha256 = None
+                model.last_modified_at = None
+
+    def prompt_path(self, kind: PromptKind) -> str | None:
+        with self.database.session() as session:
+            model = session.get(StudyPromptSettingModel, kind.value)
+            return model.path if model is not None and model.path else None
+
+    def record_prompt_validation(
+        self,
+        kind: PromptKind,
+        sha256: str,
+        modified_at: str,
+    ) -> None:
+        with self.database.session() as session:
+            model = session.get(StudyPromptSettingModel, kind.value)
+            if model is None:
+                raise KeyError(kind.value)
+            model.last_sha256 = sha256
+            model.last_modified_at = modified_at
 
     def claim_next(self, now: datetime) -> GenerationJob | None:
         with self.database.session() as session:

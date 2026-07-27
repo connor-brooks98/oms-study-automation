@@ -187,6 +187,40 @@
       });
     });
 
+    documentRef.querySelectorAll("[data-prompt-card]").forEach((card) => {
+      const kind = card.dataset.prompt;
+      const input = card.querySelector("[data-prompt-path]");
+      const message = card.querySelector("[data-prompt-message]");
+      card.querySelector("[data-save-prompt]").addEventListener("click", async () => {
+        try {
+          await postJson(
+            fetchImpl,
+            `/settings/generation/prompts/${kind}`,
+            { path: input.value },
+            token(),
+          );
+          message.textContent = "Prompt path saved.";
+        } catch (error) {
+          message.textContent = error.message;
+        }
+      });
+      card.querySelector("[data-test-prompt]").addEventListener("click", async () => {
+        try {
+          const result = await postJson(
+            fetchImpl,
+            `/settings/generation/prompts/${kind}/test`,
+            {},
+            token(),
+          );
+          message.textContent = result.state === "valid"
+            ? "Prompt file is ready."
+            : result.message;
+        } catch (error) {
+          message.textContent = error.message;
+        }
+      });
+    });
+
     const active = documentRef.querySelector("[data-active-provider]");
     const saveActive = documentRef.querySelector("[data-save-active]");
     const activeMessage = documentRef.querySelector("[data-active-message]");
