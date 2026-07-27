@@ -205,6 +205,27 @@ class GoogleConnectionService:
         self.oauth_clients.save(payload)
         return self.oauth_clients.status()
 
+    def oauth_credentials(self) -> object:
+        from google.oauth2.credentials import Credentials
+
+        refresh_token = self.secrets.get(OAUTH_REFRESH_TOKEN_KEY)
+        if not refresh_token or not self.oauth_clients.status().configured:
+            raise RuntimeError("Google Docs access is not connected")
+        installed = json.loads(
+            self.oauth_clients.path.read_text(encoding="utf-8")
+        )["installed"]
+        return Credentials(  # type: ignore[no-untyped-call]
+            token=None,
+            refresh_token=refresh_token,
+            token_uri=installed.get(
+                "token_uri",
+                "https://oauth2.googleapis.com/token",
+            ),
+            client_id=installed["client_id"],
+            client_secret=installed["client_secret"],
+            scopes=GOOGLE_SCOPES,
+        )
+
 
 class PlaywrightGoogleProbe:
     """Headed NUC browser profile used for Google sign-in and Gemini."""

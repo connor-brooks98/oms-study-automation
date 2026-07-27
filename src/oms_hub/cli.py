@@ -47,14 +47,22 @@ def serve(args: argparse.Namespace) -> int:
     settings = Settings()
     app = create_app(settings)
     app.state.ingestion_worker.recover_interrupted_jobs()
+    app.state.generation_worker.recover_interrupted_jobs()
     stop = threading.Event()
-    worker_thread = threading.Thread(
-        target=_run_worker,
-        args=(stop, app.state.ingestion_worker),
-        name="oms-v2-ingestion",
-        daemon=True,
-    )
-    worker_thread.start()
+    worker_threads = [
+        threading.Thread(
+            target=_run_worker,
+            args=(stop, worker),
+            name=name,
+            daemon=True,
+        )
+        for name, worker in (
+            ("oms-v2-ingestion", app.state.ingestion_worker),
+            ("oms-study-generation", app.state.generation_worker),
+        )
+    ]
+    for worker_thread in worker_threads:
+        worker_thread.start()
     try:
         uvicorn.run(
             app,
@@ -63,7 +71,8 @@ def serve(args: argparse.Namespace) -> int:
         )
     finally:
         stop.set()
-        worker_thread.join(timeout=10)
+        for worker_thread in worker_threads:
+            worker_thread.join(timeout=10)
     return 0
 
 
@@ -71,6 +80,7 @@ def worker_once(args: argparse.Namespace) -> int:
     del args
     app = create_app(Settings())
     worked = app.state.ingestion_worker.run_once()
+    worked = app.state.generation_worker.run_once() or worked
     print("processed=1" if worked else "processed=0")
     return 0
 
@@ -79,6 +89,7 @@ def recover_jobs(args: argparse.Namespace) -> int:
     del args
     app = create_app(Settings())
     recovered = app.state.ingestion_worker.recover_interrupted_jobs()
+    recovered += app.state.generation_worker.recover_interrupted_jobs()
     print(f"requeued={recovered}")
     return 0
 

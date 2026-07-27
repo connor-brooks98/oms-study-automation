@@ -13,12 +13,42 @@ from oms_hub.artifacts import (
     ArtifactService,
     ResolvedArtifact,
 )
+from oms_hub.files.atomic import sha256_file
+from oms_hub.files.pdf import validate_pdf
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.naming import sanitize_filename
 from oms_hub.repositories import CatalogRepository
+from oms_hub.routing import expanded_path
+from oms_hub.study_generation.repository import GenerationRepository
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+
+@router.get("/artifacts/outlines/{outline_id}")
+def outline_artifact(request: Request, outline_id: int) -> FileResponse:
+    repository = GenerationRepository(request.app.state.database)
+    record = repository.outline(outline_id)
+    if record is None:
+        raise HTTPException(404, "outline was not found")
+    root = expanded_path(request.app.state.settings.study_root).resolve()
+    path = record.path.resolve()
+    if not path.is_relative_to(root):
+        raise HTTPException(409, "outline path is outside the study folder")
+    if not path.is_file() or sha256_file(path) != record.sha256:
+        raise HTTPException(409, "outline file no longer matches its record")
+    try:
+        validate_pdf(path)
+    except Exception as error:
+        raise HTTPException(409, "outline PDF is not valid") from error
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'inline; filename="{path.name}"',
+        },
+    )
 
 
 def _service(request: Request) -> ArtifactService:

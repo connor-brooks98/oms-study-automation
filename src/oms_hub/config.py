@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5.2"
     openai_input_usd_per_million: float = Field(default=2.50, ge=0)
     openai_output_usd_per_million: float = Field(default=15.00, ge=0)
+    gemini_quiz_gem_url: str | None = None
+    generation_timeout_seconds: int = Field(default=180, ge=30, le=600)
 
     @field_validator("timezone")
     @classmethod

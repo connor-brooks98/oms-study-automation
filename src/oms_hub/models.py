@@ -341,6 +341,14 @@ class GenerationJobModel(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pdf_revision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("study_revisions.id"),
+        nullable=True,
+    )
+    transcript_revision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("study_revisions.id"),
+        nullable=True,
+    )
     notebook_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     pdf_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     transcript_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)

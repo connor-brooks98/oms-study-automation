@@ -65,6 +65,40 @@
         {% endif %}
       </div>
     </section>
+    <section class="file-card {{ 'ready' if outline_output else 'missing' }}" data-generation-card data-kind="outline">
+      <div class="file-card-title">
+        <span class="file-state-icon" aria-hidden="true">{{ "✓" if outline_output else "✦" }}</span>
+        <h2>Lecture Outline (PDF)</h2>
+      </div>
+      <p class="file-caption" data-generation-message aria-live="polite">
+        {% if outline_output %}Current lecture outline is ready.
+        {% elif outline_job %}{{ outline_job.stage.value.replace('_', ' ').title() }}
+        {% else %}Generated from this lecture's PDF and cleaned transcript only.{% endif %}
+      </p>
+      <div class="file-actions">
+        {% if outline_output %}
+        <a class="button primary" data-generation-link href="/artifacts/outlines/{{ outline_output.id }}">Open Lecture Outline</a>
+        {% endif %}
+        <button class="button {{ 'secondary' if outline_output else 'primary' }}" type="button" data-generate>Generate Outline</button>
+      </div>
+    </section>
+    <section class="file-card {{ 'ready' if quiz_output else 'missing' }}" data-generation-card data-kind="quiz">
+      <div class="file-card-title">
+        <span class="file-state-icon" aria-hidden="true">{{ "✓" if quiz_output else "✦" }}</span>
+        <h2>Lecture Quiz</h2>
+      </div>
+      <p class="file-caption" data-generation-message aria-live="polite">
+        {% if quiz_output %}Current Gemini quiz is ready.
+        {% elif quiz_job %}{{ quiz_job.stage.value.replace('_', ' ').title() }}
+        {% else %}Built in your Gemini Quiz Gem from this lecture only.{% endif %}
+      </p>
+      <div class="file-actions">
+        {% if quiz_output %}
+        <a class="button primary" data-generation-link href="{{ quiz_output.url }}" target="_blank" rel="noopener noreferrer">Take Lecture Quiz</a>
+        {% endif %}
+        <button class="button {{ 'secondary' if quiz_output else 'primary' }}" type="button" data-generate>Generate Quiz</button>
+      </div>
+    </section>
   </div>
 
   <section class="checklist-card">
@@ -98,4 +132,7 @@
     </form>
   </details>
 </article>
+{% endblock %}
+{% block scripts %}
+<script src="/static/lecture.js" defer></script>
 {% endblock %}

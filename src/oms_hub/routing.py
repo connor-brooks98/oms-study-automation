@@ -65,6 +65,28 @@ def build_transcript_destination(
     return destination
 
 
+def build_outline_destination(
+    settings: Settings,
+    lecture: LectureKey,
+) -> Path:
+    study_root = expanded_path(settings.study_root)
+    destination = (
+        study_root
+        / sanitize_filename(lecture.subject)
+        / f"Exam {lecture.exam_number}"
+        / "Lecture Outlines"
+        / (
+            sanitize_filename(
+                f"{lecture.subject} - Lecture {lecture.lecture_number:02d} - "
+                f"{lecture.topic} - Lecture Outline"
+            )
+            + ".pdf"
+        )
+    )
+    _require_within(destination, study_root)
+    return destination
+
+
 def _require_within(path: Path, root: Path) -> None:
     if not path.resolve().is_relative_to(root.resolve()):
         raise ValueError("artifact destination escapes its configured root")

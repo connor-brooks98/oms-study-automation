@@ -47,6 +47,10 @@ class GenerationJob:
     stage: GenerationStage
     attempts: int
     error: str | None = None
+    prompt_path: str | None = None
+    prompt_sha256: str | None = None
+    pdf_revision_id: int | None = None
+    transcript_revision_id: int | None = None
     notebook_id: str | None = None
     pdf_source_id: str | None = None
     transcript_source_id: str | None = None
@@ -122,3 +126,23 @@ class LectureSourceSet:
 @dataclass(frozen=True, slots=True)
 class NotebookAnswer:
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class OutlineRecord:
+    id: int
+    lecture_id: int
+    job_id: str
+    path: Path
+    sha256: str
+    current: bool
+
+
+@dataclass(frozen=True, slots=True)
+class QuizRecord:
+    id: int
+    lecture_id: int
+    job_id: str
+    url: str
+    docs_synced: bool
+    current: bool

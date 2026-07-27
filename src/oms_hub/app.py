@@ -32,16 +32,24 @@ from oms_hub.security.access import (
 from oms_hub.security.csrf import CsrfProtector, origin_is_allowed
 from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.slides.pipeline import SlidePipeline
+from oms_hub.study_generation.gemini_quiz import PersistentGeminiQuizGateway
 from oms_hub.study_generation.google_connection import (
     GoogleConnectionService,
     PlaywrightGoogleProbe,
 )
+from oms_hub.study_generation.google_docs import OAuthGoogleDocsGateway
+from oms_hub.study_generation.notebook import StoredNotebookLMGateway
+from oms_hub.study_generation.outline import OutlineService
+from oms_hub.study_generation.prompts import PromptFileService
 from oms_hub.study_generation.repository import GenerationRepository
+from oms_hub.study_generation.service import GenerationService
+from oms_hub.study_generation.worker import GenerationWorker
 from oms_hub.transcripts.pipeline import TranscriptPipeline as V2TranscriptPipeline
 from oms_hub.transcripts.prompt import PromptLoader as V2PromptLoader
 from oms_hub.web.artifact_routes import router as artifact_router
 from oms_hub.web.generation_routes import (
     google_router,
+    lecture_router,
 )
 from oms_hub.web.generation_routes import (
     router as generation_router,
@@ -285,6 +293,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.slide_pipeline,
         app.state.transcript_pipeline,
     )
+    prompt_files = PromptFileService(app.state.generation_repository)
+    app.state.generation_service = GenerationService(
+        app.state.catalog_repository,
+        app.state.ingestion_repository,
+        app.state.generation_repository,
+        prompt_files,
+        app.state.google_connection,
+    )
+    app.state.generation_worker = GenerationWorker(
+        app.state.generation_repository,
+        app.state.catalog_repository,
+        app.state.ingestion_repository,
+        prompt_files,
+        StoredNotebookLMGateway(
+            resolved.data_dir / "google" / "notebooklm-storage.json"
+        ),
+        OutlineService(resolved, app.state.generation_repository),
+        PersistentGeminiQuizGateway(
+            resolved.data_dir / "google" / "browser-profile",
+            resolved.gemini_quiz_gem_url,
+            timeout_ms=resolved.generation_timeout_seconds * 1000,
+        ),
+        OAuthGoogleDocsGateway(
+            app.state.generation_repository,
+            app.state.google_connection,
+        ),
+    )
     web_root = Path(__file__).parent / "web"
     app.mount(
         "/static",
@@ -298,6 +333,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(quarantine_router)
     app.include_router(generation_router)
     app.include_router(google_router)
+    app.include_router(lecture_router)
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {

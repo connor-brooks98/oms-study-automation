@@ -91,6 +91,14 @@
 
     badge.textContent = connecting ? "Connecting" : connected ? "Connected" : "Not connected";
     badge.classList.toggle("is-configured", connected);
+    const surfaces = new Map(
+      (status.surfaces || []).map((surface) => [surface.name, surface.state]),
+    );
+    card.querySelectorAll("[data-google-surface]").forEach((surface) => {
+      const state = surfaces.get(surface.dataset.googleSurface) || "disconnected";
+      surface.textContent = state.replaceAll("_", " ");
+      surface.className = `status-pill status-${state}`;
+    });
 
     if (connecting) {
       message.textContent = "Finish signing in using the browser window on this Study Hub device.";
@@ -260,12 +268,19 @@
       const saveClientButton = googleCard.querySelector("[data-google-save-client]");
       const clientInput = googleCard.querySelector("[data-google-oauth-client]");
       const message = googleCard.querySelector("[data-google-status]");
+      let googlePollTimer;
 
-      getJson(fetchImpl, "/settings/google/status")
-        .then((status) => renderGoogleStatus(googleCard, status))
+      const refreshGoogle = () => getJson(fetchImpl, "/settings/google/status")
+        .then((status) => {
+          renderGoogleStatus(googleCard, status);
+          if (status.state === "connecting") {
+            googlePollTimer = root.setTimeout(refreshGoogle, 2000);
+          }
+        })
         .catch((error) => {
           message.textContent = error.message;
         });
+      void refreshGoogle();
 
       saveClientButton.addEventListener("click", async () => {
         const selected = clientInput.files[0];
@@ -305,6 +320,8 @@
             token(),
           );
           renderGoogleStatus(googleCard, status);
+          root.clearTimeout(googlePollTimer);
+          googlePollTimer = root.setTimeout(refreshGoogle, 1500);
         } catch (error) {
           message.textContent = error.message;
         } finally {
