@@ -3,6 +3,7 @@ from io import BytesIO
 from typing import Any
 
 from pypdf import PdfReader
+from reportlab.lib import colors  # type: ignore[import-untyped]
 from reportlab.lib.enums import TA_CENTER  # type: ignore[import-untyped]
 from reportlab.lib.pagesizes import letter  # type: ignore[import-untyped]
 from reportlab.lib.styles import (  # type: ignore[import-untyped]
@@ -11,9 +12,7 @@ from reportlab.lib.styles import (  # type: ignore[import-untyped]
 )
 from reportlab.lib.units import inch  # type: ignore[import-untyped]
 from reportlab.platypus import (  # type: ignore[import-untyped]
-    ListFlowable,
-    ListItem,
-    PageBreak,
+    HRFlowable,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -27,6 +26,10 @@ from oms_hub.study_generation.domain import (
     GenerationJob,
     NotebookAnswer,
     OutlineRecord,
+)
+from oms_hub.study_generation.outline_markup import (
+    parse_outline_blocks,
+    safe_inline_markup,
 )
 from oms_hub.study_generation.repository import GenerationRepository
 
@@ -84,50 +87,53 @@ class OutlinePdfRenderer:
             ),
         }
         story: list[object] = [Paragraph(escape(title.strip()), title_style)]
-        bullets: list[ListItem] = []
+        list_styles: dict[int, ParagraphStyle] = {}
 
-        def flush_bullets() -> None:
-            if bullets:
-                story.append(
-                    ListFlowable(
-                        list(bullets),
-                        bulletType="bullet",
-                        leftIndent=20,
-                        bulletFontName="Helvetica",
-                    )
-                )
-                story.append(Spacer(1, 5))
-                bullets.clear()
-
-        for raw_line in content.splitlines():
-            line = raw_line.strip()
-            if not line:
-                flush_bullets()
-                continue
-            if line in {"---", "***"}:
-                flush_bullets()
-                story.append(PageBreak())
-                continue
-            heading_level = len(line) - len(line.lstrip("#"))
-            if heading_level and heading_level <= 3 and line[heading_level:].strip():
-                flush_bullets()
+        for block in parse_outline_blocks(content):
+            if block.kind == "heading":
+                style = heading_styles[min(block.level, 3)]
                 story.append(
                     Paragraph(
-                        escape(line[heading_level:].strip()),
-                        heading_styles[heading_level],
+                        safe_inline_markup(block.text),
+                        style,
                     )
                 )
-            elif line.startswith(("- ", "* ")):
-                bullets.append(
-                    ListItem(
-                        Paragraph(escape(line[2:].strip()), body_style),
-                        leftIndent=8,
+            elif block.kind == "list_item":
+                style = list_styles.get(block.level)
+                if style is None:
+                    style = ParagraphStyle(
+                        f"OutlineList{block.level}",
+                        parent=body_style,
+                        leftIndent=18 + block.level * 18,
+                        bulletIndent=block.level * 18,
+                        spaceAfter=4,
+                    )
+                    list_styles[block.level] = style
+                story.append(
+                    Paragraph(
+                        safe_inline_markup(block.text),
+                        style,
+                        bulletText=escape(block.marker or "•"),
+                    )
+                )
+            elif block.kind == "rule":
+                story.append(Spacer(1, 4))
+                story.append(
+                    HRFlowable(
+                        width="100%",
+                        thickness=0.6,
+                        color=colors.HexColor("#AAB3C2"),
+                        spaceBefore=2,
+                        spaceAfter=7,
                     )
                 )
             else:
-                flush_bullets()
-                story.append(Paragraph(escape(line), body_style))
-        flush_bullets()
+                story.append(
+                    Paragraph(
+                        safe_inline_markup(block.text),
+                        body_style,
+                    )
+                )
 
         document = SimpleDocTemplate(
             buffer,
