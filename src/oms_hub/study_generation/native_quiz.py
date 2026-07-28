@@ -1,0 +1,176 @@
+import json
+import re
+from dataclasses import replace
+from typing import Annotated
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+)
+
+from oms_hub.study_generation.domain import (
+    NativeQuiz,
+    PromptSnapshot,
+    QuizChoice,
+    QuizFeedback,
+    QuizQuestion,
+)
+
+_Text = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=20_000),
+]
+_Title = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=300),
+]
+
+_QUIZ_OUTPUT_CONTRACT = """
+
+STUDY HUB OUTPUT CONTRACT
+Return exactly one JSON object. Do not add prose before or after it. Do not use
+Markdown except that a single ```json code fence around the object is allowed.
+Use this exact shape:
+{
+  "title": "Lecture quiz title",
+  "questions": [
+    {
+      "stem": "Question text",
+      "choices": ["Choice A", "Choice B", "Choice C", "Choice D"],
+      "correct_index": 0,
+      "rationale": "Why the correct answer is correct and the others are not."
+    }
+  ]
+}
+`correct_index` is zero-based. Include 1 to 100 questions, 2 to 8 distinct
+choices per question, and a non-empty expert rationale for every question.
+""".strip()
+
+
+class QuizContractError(ValueError):
+    pass
+
+
+class _QuestionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stem: _Text
+    choices: Annotated[list[_Text], Field(min_length=2, max_length=8)]
+    correct_index: int = Field(ge=0)
+    rationale: _Text
+
+    @field_validator("choices")
+    @classmethod
+    def choices_are_distinct(cls, choices: list[str]) -> list[str]:
+        normalized = {choice.casefold() for choice in choices}
+        if len(normalized) != len(choices):
+            raise ValueError("choices must be distinct")
+        return choices
+
+    @field_validator("correct_index")
+    @classmethod
+    def correct_index_is_in_range(
+        cls,
+        correct_index: int,
+        info: object,
+    ) -> int:
+        data = getattr(info, "data", {})
+        choices = data.get("choices", [])
+        if choices and correct_index >= len(choices):
+            raise ValueError("correct_index must identify an available choice")
+        return correct_index
+
+
+class _QuizInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: _Title
+    questions: Annotated[list[_QuestionInput], Field(min_length=1, max_length=100)]
+
+
+def quiz_prompt(prompt: PromptSnapshot) -> PromptSnapshot:
+    return replace(
+        prompt,
+        content=f"{prompt.content.rstrip()}\n\n{_QUIZ_OUTPUT_CONTRACT}",
+    )
+
+
+def parse_native_quiz(raw: str) -> NativeQuiz:
+    text = raw.strip()
+    fenced = re.fullmatch(
+        r"```(?:json)?\s*(.*?)\s*```",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if fenced is not None:
+        text = fenced.group(1)
+    try:
+        decoded = json.loads(text)
+        validated = _QuizInput.model_validate(decoded)
+    except (json.JSONDecodeError, ValidationError, TypeError) as error:
+        raise QuizContractError(
+            f"NotebookLM quiz JSON is invalid: {error}"
+        ) from error
+    return NativeQuiz(
+        validated.title,
+        tuple(
+            QuizQuestion(
+                f"q{question_index}",
+                question.stem,
+                tuple(
+                    QuizChoice(f"c{choice_index}", choice)
+                    for choice_index, choice in enumerate(
+                        question.choices,
+                        start=1,
+                    )
+                ),
+                f"c{question.correct_index + 1}",
+                question.rationale,
+            )
+            for question_index, question in enumerate(
+                validated.questions,
+                start=1,
+            )
+        ),
+    )
+
+
+def public_quiz_content(quiz: NativeQuiz) -> dict[str, object]:
+    return {
+        "title": quiz.title,
+        "questions": [
+            {
+                "id": question.id,
+                "stem": question.stem,
+                "choices": [
+                    {"id": choice.id, "text": choice.text}
+                    for choice in question.choices
+                ],
+            }
+            for question in quiz.questions
+        ],
+    }
+
+
+def grade_answer(
+    quiz: NativeQuiz,
+    question_id: str,
+    choice_id: str,
+) -> QuizFeedback:
+    question = next(
+        (item for item in quiz.questions if item.id == question_id),
+        None,
+    )
+    if question is None:
+        raise KeyError(question_id)
+    if choice_id not in {choice.id for choice in question.choices}:
+        raise KeyError(choice_id)
+    return QuizFeedback(
+        correct=choice_id == question.correct_choice_id,
+        correct_choice_id=question.correct_choice_id,
+        rationale=question.rationale,
+    )

@@ -146,3 +146,31 @@ class QuizRecord:
     url: str
     docs_synced: bool
     current: bool
+
+
+@dataclass(frozen=True, slots=True)
+class QuizChoice:
+    id: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class QuizQuestion:
+    id: str
+    stem: str
+    choices: tuple[QuizChoice, ...]
+    correct_choice_id: str
+    rationale: str
+
+
+@dataclass(frozen=True, slots=True)
+class NativeQuiz:
+    title: str
+    questions: tuple[QuizQuestion, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class QuizFeedback:
+    correct: bool
+    correct_choice_id: str
+    rationale: str
