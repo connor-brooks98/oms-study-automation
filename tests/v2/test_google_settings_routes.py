@@ -93,6 +93,14 @@ def test_oauth_client_upload_does_not_echo_secret(tmp_path):
     assert response.json() == {"configured": True}
     assert "super-secret" not in response.text
 
+    reloaded = client.get("/settings")
+
+    assert "Client file saved." in reloaded.text
+    assert (
+        "The browser clears the chosen filename after a reload"
+        in reloaded.text
+    )
+
 
 def test_connect_response_keeps_all_google_surfaces_connecting(tmp_path):
     app = create_app(

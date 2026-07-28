@@ -125,8 +125,8 @@
       <div class="provider-field">
         <label for="google-oauth-client">OAuth client JSON</label>
         <input id="google-oauth-client" type="file" accept=".json,application/json" data-google-oauth-client>
-        <p class="field-help">One-time setup: choose the Desktop app client file downloaded from Google Cloud.</p>
-        <p class="field-message" data-google-client-state>Client file not saved.</p>
+        <p class="field-help">One-time setup: choose the Desktop app client file downloaded from Google Cloud. The browser clears the chosen filename after a reload; the saved status below is authoritative.</p>
+        <p class="field-message" data-google-client-state>{{ "Client file saved." if google_status.oauth_client_configured else "Client file not saved." }}</p>
       </div>
       <div class="provider-buttons">
         <button class="button secondary" type="button" data-google-save-client>Save client file</button>
@@ -182,5 +182,5 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/settings.js?v=20260727.2" defer></script>
+<script src="/static/settings.js?v=20260728.1" defer></script>
 {% endblock %}

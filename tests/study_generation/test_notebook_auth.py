@@ -45,9 +45,9 @@ def test_login_uses_system_chrome_and_exact_worker_storage(tmp_path):
     assert runner.calls == [
         [
             str(tmp_path / "notebooklm.exe"),
+            "login",
             "--storage",
             str(tmp_path / "notebooklm-storage.json"),
-            "login",
             "--browser",
             "chrome",
         ]

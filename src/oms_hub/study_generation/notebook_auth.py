@@ -33,8 +33,11 @@ class NotebookCLIAuth:
         try:
             result = self._run(
                 "login",
+                "--storage",
+                str(self.storage_path),
                 "--browser",
                 "chrome",
+                include_root_storage=False,
                 timeout=330,
             )
         except subprocess.TimeoutExpired as error:
@@ -92,15 +95,17 @@ class NotebookCLIAuth:
     def _run(
         self,
         *arguments: str,
+        include_root_storage: bool = True,
         timeout: int,
     ) -> subprocess.CompletedProcess[str]:
+        command = [str(self.executable)]
+        if include_root_storage:
+            command.extend(
+                ["--storage", str(self.storage_path)]
+            )
+        command.extend(arguments)
         return self.runner(
-            [
-                str(self.executable),
-                "--storage",
-                str(self.storage_path),
-                *arguments,
-            ],
+            command,
             capture_output=True,
             text=True,
             encoding="utf-8",
