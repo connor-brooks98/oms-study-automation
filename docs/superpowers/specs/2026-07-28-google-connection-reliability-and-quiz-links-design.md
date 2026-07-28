@@ -218,10 +218,13 @@ and source kind:
 - NotebookLM remote source ID; and
 - clean display title.
 
-The binding is added in the next additive SQLite schema migration with a
-uniqueness constraint on notebook ID, lecture ID, and source kind. The
-migration does not alter or delete existing generation jobs, quiz outputs,
-outlines, or lecture files.
+The existing `notebook_mappings` and `notebook_source_mappings` tables become
+the active source registry. The next additive SQLite schema migration adds the
+clean display title needed for auditing and title repair. Existing uniqueness
+and revision fields retain historical bindings; only one binding per notebook,
+lecture, and source kind is kept in the `ready` state. The migration does not
+alter or delete existing generation jobs, quiz outputs, outlines, or lecture
+files.
 
 On generation, Study Hub lists the notebook's current remote sources and:
 
