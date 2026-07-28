@@ -95,6 +95,21 @@ test("progress restores only for the same quiz token and version", () => {
   assert.equal(newVersion.questions.q1.selectedChoiceId, null);
 });
 
+test("corrupted submitted feedback is discarded instead of breaking the quiz", () => {
+  const corrupted = quiz.createQuizState(content);
+  corrupted.questions.q1.selectedChoiceId = "c1";
+  corrupted.questions.q1.submitted = true;
+  corrupted.questions.q1.feedback = null;
+
+  const restored = quiz.restoreProgress(
+    content,
+    quiz.serializeProgress(corrupted),
+  );
+
+  assert.equal(restored.questions.q1.submitted, false);
+  assert.equal(restored.questions.q1.selectedChoiceId, null);
+});
+
 test("answer request sends CSRF protection and keeps answers out of URL", async () => {
   let captured;
   const fakeFetch = async (url, options) => {

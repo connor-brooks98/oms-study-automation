@@ -156,6 +156,20 @@
         const eliminated = Array.isArray(candidate.eliminatedChoiceIds)
           ? candidate.eliminatedChoiceIds.filter((id) => validChoices.has(id))
           : [];
+        const submitted = candidate.submitted === true;
+        const feedbackValid = (
+          candidate.feedback
+          && typeof candidate.feedback.correct === "boolean"
+          && validChoices.has(candidate.feedback.correct_choice_id)
+          && typeof candidate.feedback.rationale === "string"
+          && candidate.feedback.rationale.length > 0
+        );
+        if (
+          submitted
+          && (!candidate.selectedChoiceId || !feedbackValid)
+        ) {
+          return fresh;
+        }
         restoredQuestions[question.id] = {
           ...baseline,
           selectedChoiceId: candidate.selectedChoiceId,
@@ -163,8 +177,8 @@
           highlights: mergedRanges(
             Array.isArray(candidate.highlights) ? candidate.highlights : [],
           ).filter((range) => range.end <= question.stem.length),
-          submitted: candidate.submitted === true,
-          feedback: candidate.submitted === true
+          submitted,
+          feedback: submitted
             ? candidate.feedback
             : null,
         };
