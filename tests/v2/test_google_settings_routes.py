@@ -18,6 +18,7 @@ class FakeGoogleConnection:
                 for name in ("notebook", "docs")
             ),
             None,
+            True,
         )
 
     def test(self):
@@ -42,6 +43,7 @@ def test_google_status_is_secret_safe_and_not_cacheable(tmp_path):
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert response.json()["account_email"] == "student@example.com"
+    assert response.json()["oauth_client_configured"] is True
     assert all(
         forbidden not in response.text
         for forbidden in ("refresh_token", "client_secret", "SID", "ya29.")
@@ -62,6 +64,7 @@ def test_settings_shows_google_connection_card(tmp_path):
     assert "Connect Google" in page.text
     assert "OAuth client JSON" in page.text
     assert "data-google-status" in page.text
+    assert "data-google-client-state" in page.text
 
 
 def test_oauth_client_upload_does_not_echo_secret(tmp_path):
@@ -112,4 +115,5 @@ def test_connect_response_keeps_all_google_surfaces_connecting(tmp_path):
             {"name": "docs", "state": "connecting", "message": None},
         ],
         "message": "Complete Google sign-in in the browser window.",
+        "oauth_client_configured": True,
     }

@@ -1,5 +1,6 @@
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from oms_hub.config import Settings
 from oms_hub.study_generation.native_quiz import validate_native_quiz_url
@@ -18,6 +19,10 @@ class ExamTabRef:
     document_id: str
     tab_id: str
     exam_number: int
+
+
+class GoogleDocsAuthenticationError(RuntimeError):
+    pass
 
 
 class GoogleDocsGateway:
@@ -101,8 +106,8 @@ class GoogleDocsGateway:
     ) -> None:
         trusted_url = validate_native_quiz_url(url, self.settings)
         marker = f"oms-study-hub-quiz-lecture-{lecture_number}"
-        prefix = f"Lecture {lecture_number}: "
-        label = f"{prefix}{trusted_url}\n"
+        label = f"Lecture {lecture_number} Quiz"
+        line = f"{label}\n"
         document = (
             self.docs.documents()
             .get(documentId=tab.document_id, includeTabsContent=True)
@@ -142,15 +147,15 @@ class GoogleDocsGateway:
                             "index": insertion_index,
                             "tabId": tab.tab_id,
                         },
-                        "text": label,
+                        "text": line,
                     }
                 },
                 {
                     "updateTextStyle": {
                         "range": {
                             "tabId": tab.tab_id,
-                            "startIndex": insertion_index + len(prefix),
-                            "endIndex": insertion_index + len(label) - 1,
+                            "startIndex": insertion_index,
+                            "endIndex": insertion_index + len(label),
                         },
                         "textStyle": {"link": {"url": trusted_url}},
                         "fields": "link",
@@ -162,7 +167,7 @@ class GoogleDocsGateway:
                         "range": {
                             "tabId": tab.tab_id,
                             "startIndex": insertion_index,
-                            "endIndex": insertion_index + len(label),
+                            "endIndex": insertion_index + len(line),
                         },
                     }
                 },
@@ -191,14 +196,24 @@ class OAuthGoogleDocsGateway:
         self._gateway: GoogleDocsGateway | None = None
 
     def ensure_course_document(self, subject: str) -> CourseDocumentRef:
-        return self._current().ensure_course_document(subject)
+        return cast(
+            CourseDocumentRef,
+            self._authenticated(
+                lambda: self._current().ensure_course_document(subject)
+            ),
+        )
 
     def ensure_exam_tab(
         self,
         document: CourseDocumentRef,
         exam_number: int,
     ) -> ExamTabRef:
-        return self._current().ensure_exam_tab(document, exam_number)
+        return cast(
+            ExamTabRef,
+            self._authenticated(
+                lambda: self._current().ensure_exam_tab(document, exam_number)
+            ),
+        )
 
     def sync_quiz_link(
         self,
@@ -206,7 +221,24 @@ class OAuthGoogleDocsGateway:
         lecture_number: int,
         url: str,
     ) -> None:
-        self._current().sync_quiz_link(tab, lecture_number, url)
+        self._authenticated(
+            lambda: self._current().sync_quiz_link(
+                tab,
+                lecture_number,
+                url,
+            )
+        )
+
+    def _authenticated(self, action: Callable[[], Any]) -> Any:
+        try:
+            return action()
+        except Exception as error:
+            if _is_docs_auth_error(error):
+                self._gateway = None
+                raise GoogleDocsAuthenticationError(
+                    "Google Docs authorization expired; reconnect Google in Settings."
+                ) from error
+            raise
 
     def _current(self) -> GoogleDocsGateway:
         if self._gateway is None:
@@ -234,6 +266,21 @@ class OAuthGoogleDocsGateway:
 
 def _subject_key(subject: str) -> str:
     return " ".join(subject.casefold().split())
+
+
+def _is_docs_auth_error(error: Exception) -> bool:
+    message = str(error).casefold()
+    return any(
+        phrase in message
+        for phrase in (
+            "invalid_grant",
+            "invalid credentials",
+            "unauthorized",
+            "authentication",
+            "credentials expired",
+            "token has been expired",
+        )
+    )
 
 
 def _tab_named_ranges(document: dict[str, Any], tab_id: str) -> dict[str, Any]:

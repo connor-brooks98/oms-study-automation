@@ -335,6 +335,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.google_connection,
             resolved,
         ),
+        app.state.google_connection,
     )
     web_root = Path(__file__).parent / "web"
     app.mount(

@@ -47,6 +47,16 @@ class FailedProbe:
         raise RuntimeError(errors[surface])
 
 
+class PartialInteractiveProbe:
+    def start_interactive(self):
+        raise RuntimeError("NotebookLM login did not complete")
+
+    def account_email(self, surface):
+        if surface is GoogleSurface.NOTEBOOK:
+            raise RuntimeError("NotebookLM login is required")
+        return "student@example.com"
+
+
 class BrowserLauncher:
     def __init__(self):
         self.options = None
@@ -179,6 +189,23 @@ def test_notebook_surface_uses_live_cli_auth_check(tmp_path):
         probe.account_email(GoogleSurface.NOTEBOOK)
 
     assert notebook_auth.check_calls == 1
+
+
+def test_failed_interactive_login_preserves_live_surface_status(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    service = GoogleConnectionService(
+        GenerationRepository(database),
+        MemorySecrets(),
+        tmp_path,
+        PartialInteractiveProbe(),
+    )
+
+    status = service.start_interactive()
+
+    by_name = {surface.name: surface.state for surface in status.surfaces}
+    assert status.state == "failed"
+    assert by_name == {"notebook": "failed", "docs": "connected"}
 
 
 def test_interactive_connection_runs_notebook_cli_login(

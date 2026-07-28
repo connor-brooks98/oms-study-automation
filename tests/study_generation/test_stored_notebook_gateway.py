@@ -15,7 +15,10 @@ from oms_hub.study_generation.domain import (
     SourceIsolationError,
     SourceKind,
 )
-from oms_hub.study_generation.notebook import StoredNotebookLMGateway
+from oms_hub.study_generation.notebook import (
+    NotebookAuthenticationError,
+    StoredNotebookLMGateway,
+)
 
 
 @dataclass
@@ -99,6 +102,18 @@ class FakeClientContext:
 
     async def __aenter__(self):
         return self.client
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
+class ExpiredClientContext:
+    async def __aenter__(self):
+        raise RuntimeError(
+            "Authentication expired or invalid. Redirected to: "
+            "https://accounts.google.com/ Run 'notebooklm login' "
+            "to re-authenticate."
+        )
 
     async def __aexit__(self, exc_type, exc, traceback):
         return False
@@ -223,6 +238,22 @@ def test_source_upload_uses_canonical_path_stem(tmp_path):
         "Lecture 02 - Demyelinating Disease - Transcript",
     ]
     assert sources.remote_ids == ["new-1", "new-2"]
+
+
+def test_gateway_translates_expired_storage_into_safe_auth_error(tmp_path):
+    gateway = StoredNotebookLMGateway(
+        tmp_path / "notebooklm-storage.json",
+        FakeRepository([]),
+        client_factory=ExpiredClientContext,
+    )
+
+    with pytest.raises(
+        NotebookAuthenticationError,
+        match="reconnect Google in Settings",
+    ) as error:
+        gateway.ensure_notebook("Neuro", 1)
+
+    assert "accounts.google.com" not in str(error.value)
 
 
 def test_changed_revision_binds_replacement_before_old_and_legacy_delete(tmp_path):

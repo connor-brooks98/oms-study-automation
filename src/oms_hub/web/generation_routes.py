@@ -62,6 +62,7 @@ def _google_payload(status: GoogleConnectionStatus) -> dict[str, object]:
             for surface in status.surfaces
         ],
         "message": status.message,
+        "oauth_client_configured": status.oauth_client_configured,
     }
 
 
@@ -253,6 +254,7 @@ def connect_google(request: Request) -> JSONResponse:
             for surface in GoogleSurface
         ),
         "Complete Google sign-in in the browser window.",
+        _google(request).status().oauth_client_configured,
     )
     return JSONResponse(
         _google_payload(connecting),

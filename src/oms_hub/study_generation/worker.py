@@ -16,10 +16,15 @@ from oms_hub.study_generation.domain import (
     SourceIsolationError,
     SourceKind,
 )
+from oms_hub.study_generation.google_connection import GoogleSurface
+from oms_hub.study_generation.google_docs import (
+    GoogleDocsAuthenticationError,
+)
 from oms_hub.study_generation.native_quiz import (
     parse_native_quiz,
     quiz_prompt,
 )
+from oms_hub.study_generation.notebook import NotebookAuthenticationError
 
 
 class GenerationWorker:
@@ -33,6 +38,7 @@ class GenerationWorker:
         outline: Any,
         publisher: Any,
         docs: Any,
+        google: Any | None = None,
     ):
         self.repository = repository
         self.catalog = catalog
@@ -42,6 +48,7 @@ class GenerationWorker:
         self.outline = outline
         self.publisher = publisher
         self.docs = docs
+        self.google = google
 
     def recover_interrupted_jobs(self) -> int:
         return cast(int, self.repository.recover_interrupted())
@@ -60,6 +67,17 @@ class GenerationWorker:
         try:
             self._run(job)
         except Exception as error:  # noqa: BLE001 - durable boundary sanitizes content
+            if self.google is not None:
+                if isinstance(error, NotebookAuthenticationError):
+                    self.google.invalidate(
+                        GoogleSurface.NOTEBOOK,
+                        str(error),
+                    )
+                elif isinstance(error, GoogleDocsAuthenticationError):
+                    self.google.invalidate(
+                        GoogleSurface.DOCS,
+                        str(error),
+                    )
             safe = _safe_error(error)
             if _is_transient(error) and job.attempts < 4:
                 self.repository.retry(
@@ -288,6 +306,11 @@ def _safe_error(error: Exception) -> str:
 
 
 def _is_auth_error(error: Exception) -> bool:
+    if isinstance(
+        error,
+        (NotebookAuthenticationError, GoogleDocsAuthenticationError),
+    ):
+        return True
     message = str(error).casefold()
     return any(
         phrase in message

@@ -55,8 +55,15 @@ class Prompts:
 
 
 class Google:
+    def __init__(self):
+        self.live_checks = 0
+
     def status(self):
         return type("Status", (), {"state": "connected"})()
+
+    def require_live(self):
+        self.live_checks += 1
+        return self.status()
 
 
 class Jobs:
@@ -111,12 +118,13 @@ class PausedJobs(Jobs):
 
 
 def test_outline_queue_requires_current_pdf_and_cleaned_transcript(tmp_path):
+    google = Google()
     service = GenerationService(
         Catalog(),
         Ingestion([]),
         Jobs(),
         Prompts(),
-        Google(),
+        google,
     )
 
     with pytest.raises(GenerationPrerequisiteError) as error:
@@ -134,6 +142,7 @@ def test_queue_snapshots_current_revision_ids_and_prompt(tmp_path):
 
     jobs = Jobs()
     catalog = Catalog()
+    google = Google()
     service = GenerationService(
         catalog,
         Ingestion(
@@ -154,7 +163,7 @@ def test_queue_snapshots_current_revision_ids_and_prompt(tmp_path):
         ),
         jobs,
         Prompts(),
-        Google(),
+        google,
     )
 
     service.queue_outline(4)
@@ -162,6 +171,7 @@ def test_queue_snapshots_current_revision_ids_and_prompt(tmp_path):
     assert jobs.advanced["pdf_revision_id"] == 10
     assert jobs.advanced["transcript_revision_id"] == 11
     assert jobs.advanced["prompt_sha256"] == "a" * 64
+    assert google.live_checks == 1
     assert catalog.steps[-1][:3] == (
         4,
         V2StepName.SUMMARY_FILED,

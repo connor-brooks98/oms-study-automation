@@ -54,7 +54,18 @@ class GenerationService:
             raise GenerationPrerequisiteError(
                 "Current lecture PDF and cleaned transcript are required"
             )
-        if self.google.status().state != "connected":
+        live_check = getattr(self.google, "require_live", None)
+        try:
+            google_status = (
+                live_check()
+                if live_check is not None
+                else self.google.status()
+            )
+        except Exception as error:
+            raise GenerationPrerequisiteError(
+                "Reconnect Google in Settings before generating"
+            ) from error
+        if google_status.state != "connected":
             raise GenerationPrerequisiteError(
                 "Connect Google in Settings before generating"
             )

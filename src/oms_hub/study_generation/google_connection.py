@@ -80,6 +80,7 @@ class GoogleConnectionStatus:
     account_email: str | None
     surfaces: tuple[GoogleSurfaceStatus, ...]
     message: str | None
+    oauth_client_configured: bool = False
 
 
 class GoogleAccountProbe(Protocol):
@@ -107,8 +108,15 @@ class GoogleConnectionService:
 
     def status(self) -> GoogleConnectionStatus:
         stored = self.repository.google_status()
+        configured = self.oauth_clients.status().configured
         if stored is None:
-            return GoogleConnectionStatus("disconnected", None, (), None)
+            return GoogleConnectionStatus(
+                "disconnected",
+                None,
+                (),
+                None,
+                configured,
+            )
         surfaces = tuple(
             GoogleSurfaceStatus(name.value, state or "disconnected")
             for name, state in (
@@ -121,6 +129,7 @@ class GoogleConnectionService:
             stored.account_email,
             surfaces,
             stored.diagnostic,
+            configured,
         )
 
     def test(self) -> GoogleConnectionStatus:
@@ -174,7 +183,47 @@ class GoogleConnectionService:
             email,
             tuple(surface_statuses),
             message,
+            self.oauth_clients.status().configured,
         )
+
+    def require_live(self) -> GoogleConnectionStatus:
+        status = self.test()
+        if status.state != "connected":
+            raise RuntimeError(
+                status.message or "Connect Google in Settings before generating"
+            )
+        return status
+
+    def invalidate(
+        self,
+        surface: GoogleSurface,
+        message: str,
+    ) -> GoogleConnectionStatus:
+        stored = self.repository.google_status()
+        notebook_state = (
+            (stored.notebook_state or "disconnected")
+            if stored is not None
+            else "disconnected"
+        )
+        docs_state = (
+            (stored.docs_state or "disconnected")
+            if stored is not None
+            else "disconnected"
+        )
+        if surface is GoogleSurface.NOTEBOOK:
+            notebook_state = "failed"
+        else:
+            docs_state = "failed"
+        self.repository.save_google_status(
+            state="failed",
+            account_email=stored.account_email if stored is not None else None,
+            notebook_state=notebook_state,
+            gemini_state="unused",
+            docs_state=docs_state,
+            diagnostic=message,
+            tested_at=datetime.now(UTC).isoformat(),
+        )
+        return self.status()
 
     def start_interactive(self) -> GoogleConnectionStatus:
         if not self._lock.acquire(blocking=False):
@@ -198,12 +247,25 @@ class GoogleConnectionService:
             return self.test()
         except Exception as error:  # noqa: BLE001 - persist only a safe diagnostic
             message = _safe_interactive_error(error)
+            checked = self.test()
+            if checked.state == "connected":
+                return checked
+            by_name = {
+                surface.name: surface.state
+                for surface in checked.surfaces
+            }
             self.repository.save_google_status(
                 state="failed",
-                account_email=None,
-                notebook_state="failed",
+                account_email=checked.account_email,
+                notebook_state=by_name.get(
+                    GoogleSurface.NOTEBOOK.value,
+                    "failed",
+                ),
                 gemini_state="unused",
-                docs_state="failed",
+                docs_state=by_name.get(
+                    GoogleSurface.DOCS.value,
+                    "failed",
+                ),
                 diagnostic=message,
                 tested_at=datetime.now(UTC).isoformat(),
             )

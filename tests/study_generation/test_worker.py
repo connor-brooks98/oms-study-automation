@@ -14,6 +14,8 @@ from oms_hub.study_generation.domain import (
     NotebookAnswer,
     PromptSnapshot,
 )
+from oms_hub.study_generation.google_connection import GoogleSurface
+from oms_hub.study_generation.notebook import NotebookAuthenticationError
 from oms_hub.study_generation.worker import GenerationWorker
 
 QUIZ_JSON = json.dumps(
@@ -100,6 +102,22 @@ class Notebook:
         del notebook, sources
         self.prompt = prompt
         return NotebookAnswer(QUIZ_JSON)
+
+
+class ExpiredNotebook(Notebook):
+    def ask(self, notebook, sources, prompt):
+        del notebook, sources, prompt
+        raise NotebookAuthenticationError(
+            "NotebookLM login expired; reconnect Google in Settings."
+        )
+
+
+class GoogleConnection:
+    def __init__(self):
+        self.invalidations = []
+
+    def invalidate(self, surface, message):
+        self.invalidations.append((surface, message))
 
 
 def _job(**overrides):
@@ -252,3 +270,39 @@ def test_worker_resume_at_docs_does_not_republish_quiz(tmp_path):
 
     assert docs.links == [("document:Neuro:exam:1", 2, QUIZ_URL)]
     assert repository.current.state is GenerationState.COMPLETE
+
+
+def test_worker_pauses_and_invalidates_expired_notebook_login(tmp_path):
+    worker, repository, _, progress = _worker(
+        tmp_path,
+        _job(),
+        Publisher(),
+        ExpiredNotebook(),
+    )
+    failures = []
+    repository.fail = lambda job_id, error, paused=False: failures.append(
+        (job_id, error, paused)
+    )
+    google = GoogleConnection()
+    worker.google = google
+
+    assert worker.run_once()
+
+    assert failures == [
+        (
+            "job-1",
+            "NotebookLM login expired; reconnect Google in Settings.",
+            True,
+        )
+    ]
+    assert google.invalidations == [
+        (
+            GoogleSurface.NOTEBOOK,
+            "NotebookLM login expired; reconnect Google in Settings.",
+        )
+    ]
+    assert progress[-1][:3] == (
+        1,
+        V2StepName.QUIZ_PUBLISHED,
+        StepStatus.NEEDS_REVIEW,
+    )

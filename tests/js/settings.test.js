@@ -124,10 +124,12 @@ test("Google connecting state keeps every service in connecting state", () => {
     classList: { toggle() {} },
   };
   const message = { textContent: "" };
+  const clientState = { textContent: "" };
   const card = {
     querySelector(selector) {
       if (selector === "[data-google-badge]") return badge;
       if (selector === "[data-google-status]") return message;
+      if (selector === "[data-google-client-state]") return clientState;
       throw new Error(`unexpected selector: ${selector}`);
     },
     querySelectorAll(selector) {
@@ -141,6 +143,7 @@ test("Google connecting state keeps every service in connecting state", () => {
     account_email: null,
     surfaces: [],
     message: "Complete Google sign-in in the browser window.",
+    oauth_client_configured: true,
   });
 
   assert.equal(badge.textContent, "Connecting");
@@ -152,6 +155,7 @@ test("Google connecting state keeps every service in connecting state", () => {
     message.textContent,
     "Complete Google sign-in in the browser window.",
   );
+  assert.equal(clientState.textContent, "Client file saved.");
 });
 
 test("prompt action changes from select to save after a path is chosen", () => {

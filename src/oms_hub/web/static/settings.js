@@ -86,11 +86,17 @@
   const renderGoogleStatus = (card, status) => {
     const badge = card.querySelector("[data-google-badge]");
     const message = card.querySelector("[data-google-status]");
+    const clientState = card.querySelector("[data-google-client-state]");
     const connected = status.state === "connected";
     const connecting = status.state === "connecting";
 
     badge.textContent = connecting ? "Connecting" : connected ? "Connected" : "Not connected";
     badge.classList.toggle("is-configured", connected);
+    if (clientState) {
+      clientState.textContent = status.oauth_client_configured
+        ? "Client file saved."
+        : "Client file not saved.";
+    }
     const surfaces = new Map(
       (status.surfaces || []).map((surface) => [surface.name, surface.state]),
     );
@@ -341,6 +347,8 @@
             throw new Error(result.detail || "Study Hub rejected the client file.");
           }
           message.textContent = "OAuth client file saved securely.";
+          const clientState = googleCard.querySelector("[data-google-client-state]");
+          if (clientState) clientState.textContent = "Client file saved.";
         } catch (error) {
           message.textContent = error.message;
         } finally {

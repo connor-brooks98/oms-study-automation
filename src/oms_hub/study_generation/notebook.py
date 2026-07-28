@@ -20,6 +20,10 @@ from oms_hub.study_generation.repository import GenerationRepository
 logger = logging.getLogger(__name__)
 
 
+class NotebookAuthenticationError(RuntimeError):
+    pass
+
+
 class NotebookGateway(Protocol):
     def ensure_notebook(self, subject: str, exam_number: int) -> NotebookRef: ...
 
@@ -136,7 +140,9 @@ class StoredNotebookLMGateway:
     def ensure_notebook(self, subject: str, exam_number: int) -> NotebookRef:
         return cast(
             NotebookRef,
-            _run(self._ensure_notebook(subject, exam_number)),
+            _authenticated_run(
+                self._ensure_notebook(subject, exam_number),
+            ),
         )
 
     def ensure_sources(
@@ -148,7 +154,7 @@ class StoredNotebookLMGateway:
     ) -> LectureSourceSet:
         return cast(
             LectureSourceSet,
-            _run(
+            _authenticated_run(
                 self._ensure_sources(
                     notebook,
                     lecture_id,
@@ -166,7 +172,7 @@ class StoredNotebookLMGateway:
     ) -> NotebookAnswer:
         return cast(
             NotebookAnswer,
-            _run(self._ask(notebook, sources, prompt)),
+            _authenticated_run(self._ask(notebook, sources, prompt)),
         )
 
     async def _ensure_notebook(
@@ -421,3 +427,28 @@ def _validate_revision_source(
 
 def _run(awaitable: Any) -> Any:
     return asyncio.run(awaitable)
+
+
+def _authenticated_run(awaitable: Any) -> Any:
+    try:
+        return _run(awaitable)
+    except Exception as error:
+        if _is_notebook_auth_error(error):
+            raise NotebookAuthenticationError(
+                "NotebookLM login expired; reconnect Google in Settings."
+            ) from error
+        raise
+
+
+def _is_notebook_auth_error(error: Exception) -> bool:
+    message = str(error).casefold()
+    return any(
+        phrase in message
+        for phrase in (
+            "authentication expired",
+            "authentication invalid",
+            "accounts.google.com",
+            "notebooklm login",
+            "login to notebooklm",
+        )
+    )
