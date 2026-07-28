@@ -21,7 +21,7 @@ def test_source_release_includes_generation_runtime_and_excludes_google_state(
         names = set(archive.namelist())
 
     assert "src/oms_hub/study_generation/notebook.py" in names
-    assert "src/oms_hub/study_generation/gemini_quiz.py" in names
+    assert "src/oms_hub/study_generation/native_quiz.py" in names
     assert "src/oms_hub/study_generation/google_docs.py" in names
     forbidden = (
         "storage_state",
@@ -40,5 +40,10 @@ def test_hotfix_contains_dependencies_and_lecture_controls(tmp_path):
         names = set(archive.namelist())
 
     assert "pyproject.toml" in names
+    assert "src/oms_hub/study_generation/native_quiz.py" in names
+    assert "src/oms_hub/web/public_quiz_routes.py" in names
+    assert "src/oms_hub/web/static/public_quiz.js" in names
+    assert "src/oms_hub/web/static/public_quiz.css" in names
+    assert "src/oms_hub/web/templates/public_quiz.html" in names
     assert "src/oms_hub/web/static/lecture.js" in names
     assert "src/oms_hub/web/templates/lecture.html" in names
