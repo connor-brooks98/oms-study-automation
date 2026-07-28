@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import json
 import re
 from dataclasses import replace
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -19,6 +22,9 @@ from oms_hub.study_generation.domain import (
     QuizFeedback,
     QuizQuestion,
 )
+
+if TYPE_CHECKING:
+    from oms_hub.config import Settings
 
 _Text = Annotated[
     str,
@@ -174,3 +180,58 @@ def grade_answer(
         correct_choice_id=question.correct_choice_id,
         rationale=question.rationale,
     )
+
+
+def serialize_native_quiz(quiz: NativeQuiz) -> str:
+    return json.dumps(
+        {
+            "title": quiz.title,
+            "questions": [
+                {
+                    "stem": question.stem,
+                    "choices": [
+                        choice.text
+                        for choice in question.choices
+                    ],
+                    "correct_index": next(
+                        index
+                        for index, choice in enumerate(question.choices)
+                        if choice.id == question.correct_choice_id
+                    ),
+                    "rationale": question.rationale,
+                }
+                for question in quiz.questions
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def quiz_origin(settings: Settings) -> str:
+    if settings.public_hostname:
+        return f"https://{settings.public_hostname}"
+    return f"http://127.0.0.1:{settings.dashboard_port}"
+
+
+def quiz_url(token: str, settings: Settings) -> str:
+    if not re.fullmatch(r"[0-9a-f]{64}", token):
+        raise QuizContractError("native quiz token is invalid")
+    return f"{quiz_origin(settings)}/public/quizzes/{token}"
+
+
+def validate_native_quiz_url(url: str, settings: Settings) -> str:
+    normalized = url.strip()
+    parsed = urlsplit(normalized)
+    expected = urlsplit(quiz_origin(settings))
+    if (
+        parsed.scheme != expected.scheme
+        or parsed.netloc != expected.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or not re.fullmatch(r"/public/quizzes/[0-9a-f]{64}", parsed.path)
+    ):
+        raise QuizContractError("Study Hub returned an untrusted quiz link")
+    return normalized

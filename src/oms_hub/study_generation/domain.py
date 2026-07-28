@@ -174,3 +174,13 @@ class QuizFeedback:
     correct: bool
     correct_choice_id: str
     rationale: str
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedQuizRecord:
+    token: str
+    lecture_id: int
+    job_id: str
+    title: str
+    quiz: NativeQuiz
+    version: int

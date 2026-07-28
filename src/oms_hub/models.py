@@ -381,3 +381,26 @@ class QuizOutputModel(Base):
     docs_synced: Mapped[bool] = mapped_column(default=False)
     current: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class PublishedQuizModel(Base):
+    __tablename__ = "published_quizzes"
+
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    lecture_id: Mapped[int] = mapped_column(
+        ForeignKey("lectures.id"),
+        unique=True,
+    )
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("generation_jobs.id"),
+        unique=True,
+    )
+    title: Mapped[str] = mapped_column(String(300))
+    payload_json: Mapped[str] = mapped_column(Text)
+    version: Mapped[int] = mapped_column(default=1)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(
+        String(40),
+        default=utc_now,
+        onupdate=utc_now,
+    )

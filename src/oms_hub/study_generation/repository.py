@@ -1,3 +1,4 @@
+import secrets
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -13,6 +14,7 @@ from oms_hub.models import (
     GenerationJobModel,
     GoogleConnectionModel,
     OutlineOutputModel,
+    PublishedQuizModel,
     QuizOutputModel,
     StudyPromptSettingModel,
 )
@@ -21,9 +23,15 @@ from oms_hub.study_generation.domain import (
     GenerationKind,
     GenerationStage,
     GenerationState,
+    NativeQuiz,
     OutlineRecord,
     PromptKind,
+    PublishedQuizRecord,
     QuizRecord,
+)
+from oms_hub.study_generation.native_quiz import (
+    parse_native_quiz,
+    serialize_native_quiz,
 )
 
 _ACTIVE_STATES = {
@@ -357,6 +365,45 @@ class GenerationRepository:
             )
             return self._quiz(model) if model is not None else None
 
+    def publish_quiz(
+        self,
+        lecture_id: int,
+        job_id: str,
+        quiz: NativeQuiz,
+    ) -> PublishedQuizRecord:
+        with self.database.session() as session:
+            model = session.scalar(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.lecture_id == lecture_id
+                )
+            )
+            if model is None:
+                model = PublishedQuizModel(
+                    token=secrets.token_hex(32),
+                    lecture_id=lecture_id,
+                    job_id=job_id,
+                    title=quiz.title,
+                    payload_json=serialize_native_quiz(quiz),
+                    version=1,
+                )
+                session.add(model)
+            elif model.job_id != job_id:
+                model.job_id = job_id
+                model.title = quiz.title
+                model.payload_json = serialize_native_quiz(quiz)
+                model.version += 1
+            session.flush()
+            return self._published_quiz(model)
+
+    def published_quiz(self, token: str) -> PublishedQuizRecord | None:
+        with self.database.session() as session:
+            model = session.get(PublishedQuizModel, token)
+            return (
+                self._published_quiz(model)
+                if model is not None
+                else None
+            )
+
     def course_document(self, subject_key: str) -> CourseQuizDocumentModel | None:
         with self.database.session() as session:
             model = session.get(CourseQuizDocumentModel, subject_key)
@@ -493,4 +540,16 @@ class GenerationRepository:
             model.url,
             model.docs_synced,
             model.current,
+        )
+
+    @staticmethod
+    def _published_quiz(model: PublishedQuizModel) -> PublishedQuizRecord:
+        quiz = parse_native_quiz(model.payload_json)
+        return PublishedQuizRecord(
+            model.token,
+            model.lecture_id,
+            model.job_id,
+            model.title,
+            quiz,
+            model.version,
         )

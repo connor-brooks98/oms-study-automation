@@ -3,13 +3,17 @@ from pathlib import Path
 
 import pytest
 
+from oms_hub.config import Settings
 from oms_hub.study_generation.domain import PromptSnapshot
 from oms_hub.study_generation.native_quiz import (
     QuizContractError,
     grade_answer,
     parse_native_quiz,
     public_quiz_content,
+    quiz_origin,
     quiz_prompt,
+    quiz_url,
+    validate_native_quiz_url,
 )
 
 
@@ -136,3 +140,54 @@ def test_grading_rejects_unknown_question_or_choice(question_id, choice_id):
 
     with pytest.raises(KeyError):
         grade_answer(quiz, question_id, choice_id)
+
+
+def test_public_quiz_url_uses_the_configured_exact_https_origin(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        public_hostname="study.example.com",
+    )
+    token = "a" * 64
+
+    assert quiz_origin(settings) == "https://study.example.com"
+    assert quiz_url(token, settings) == (
+        f"https://study.example.com/public/quizzes/{token}"
+    )
+    assert validate_native_quiz_url(quiz_url(token, settings), settings) == (
+        f"https://study.example.com/public/quizzes/{token}"
+    )
+
+
+def test_public_quiz_url_uses_local_dashboard_origin_without_public_host(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        dashboard_port=9123,
+    )
+
+    assert quiz_origin(settings) == "http://127.0.0.1:9123"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://evil.example/public/quizzes/" + "a" * 64,
+        "https://user@study.example.com/public/quizzes/" + "a" * 64,
+        "https://study.example.com/public/quizzes/not-a-token",
+        "https://study.example.com/public/quizzes/" + "a" * 64 + "?answer=1",
+        "https://study.example.com/public/quizzes/" + "a" * 64 + "#key",
+    ],
+)
+def test_public_quiz_url_rejects_untrusted_links(tmp_path, url):
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        public_hostname="study.example.com",
+    )
+
+    with pytest.raises(QuizContractError, match="untrusted"):
+        validate_native_quiz_url(url, settings)
