@@ -23,11 +23,15 @@ class SharedQuiz:
 def validate_shared_quiz_url(url: str) -> str:
     normalized = url.strip()
     parsed = urlparse(normalized)
+    share_prefix = {
+        "gemini.google.com": "/share/",
+        "g.co": "/gemini/share/",
+    }.get(parsed.hostname or "")
     if (
         parsed.scheme != "https"
-        or parsed.hostname != "gemini.google.com"
-        or not parsed.path.startswith("/share/")
-        or len(parsed.path) <= len("/share/")
+        or share_prefix is None
+        or not parsed.path.startswith(share_prefix)
+        or len(parsed.path) <= len(share_prefix)
         or parsed.username
         or parsed.password
         or parsed.port not in {None, 443}
@@ -64,15 +68,24 @@ class GeminiQuizGateway:
         editor.wait_for(state="visible", timeout=self.timeout_ms)
         editor.fill(f"{marker}\n\n{quiz_content}")
         editor.press("Enter")
-        self.page.get_by_role("button", name="Share").wait_for(
-            state="visible",
-            timeout=self.timeout_ms,
-        )
+        try:
+            self.page.get_by_role(
+                "button",
+                name="Share quiz",
+                exact=True,
+            ).wait_for(
+                state="visible",
+                timeout=self.timeout_ms,
+            )
+        except Exception as exc:
+            raise GeminiContractError(
+                "Gemini created a response, but Study Hub could not find Share quiz"
+            ) from exc
         return GeminiQuizRef(str(self.page.url))
 
     def share(self, quiz: GeminiQuizRef) -> SharedQuiz:
         del quiz
-        self.page.get_by_role("button", name="Share").click()
+        self.page.get_by_role("button", name="Share quiz", exact=True).click()
         anyone = self.page.get_by_text("Anyone with the link", exact=False)
         if anyone.count():
             anyone.first.click()
