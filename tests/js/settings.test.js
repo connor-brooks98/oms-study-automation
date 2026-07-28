@@ -114,7 +114,7 @@ test("settings wait for DOMContentLoaded while the page is loading", () => {
 });
 
 test("Google connecting state keeps every service in connecting state", () => {
-  const surfaces = ["notebook", "gemini", "docs"].map((name) => ({
+  const surfaces = ["notebook", "docs"].map((name) => ({
     dataset: { googleSurface: name },
     textContent: "",
     className: "",
@@ -146,7 +146,7 @@ test("Google connecting state keeps every service in connecting state", () => {
   assert.equal(badge.textContent, "Connecting");
   assert.deepEqual(
     surfaces.map((surface) => surface.textContent),
-    ["connecting", "connecting", "connecting"],
+    ["connecting", "connecting"],
   );
   assert.equal(
     message.textContent,

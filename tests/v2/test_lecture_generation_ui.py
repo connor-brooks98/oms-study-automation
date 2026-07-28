@@ -25,6 +25,8 @@ def test_lecture_page_shows_separate_outline_and_quiz_controls(tmp_path):
     assert "Generate Quiz" in page.text
     assert "Lecture Outline (PDF)" in page.text
     assert "Lecture Quiz" in page.text
+    assert "Built from this lecture's PDF and cleaned transcript only." in page.text
+    assert "Gemini Quiz Gem" not in page.text
     assert (
         f'href="/uploads/slides?lecture_id={lecture_id}"'
         in page.text

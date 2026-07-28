@@ -64,7 +64,6 @@ class GoogleOAuthClientStore:
 
 class GoogleSurface(StrEnum):
     NOTEBOOK = "notebook"
-    GEMINI = "gemini"
     DOCS = "docs"
 
 
@@ -114,7 +113,6 @@ class GoogleConnectionService:
             GoogleSurfaceStatus(name.value, state or "disconnected")
             for name, state in (
                 (GoogleSurface.NOTEBOOK, stored.notebook_state),
-                (GoogleSurface.GEMINI, stored.gemini_state),
                 (GoogleSurface.DOCS, stored.docs_state),
             )
         )
@@ -166,7 +164,7 @@ class GoogleConnectionService:
             state=state,
             account_email=email,
             notebook_state=by_name[GoogleSurface.NOTEBOOK.value],
-            gemini_state=by_name[GoogleSurface.GEMINI.value],
+            gemini_state="unused",
             docs_state=by_name[GoogleSurface.DOCS.value],
             diagnostic=message,
             tested_at=now,
@@ -188,7 +186,7 @@ class GoogleConnectionService:
                 state="connecting",
                 account_email=None,
                 notebook_state="connecting",
-                gemini_state="connecting",
+                gemini_state="unused",
                 docs_state="connecting",
                 diagnostic="Complete Google sign-in in the browser window.",
                 tested_at=datetime.now(UTC).isoformat(),
@@ -204,7 +202,7 @@ class GoogleConnectionService:
                 state="failed",
                 account_email=None,
                 notebook_state="failed",
-                gemini_state="failed",
+                gemini_state="unused",
                 docs_state="failed",
                 diagnostic=message,
                 tested_at=datetime.now(UTC).isoformat(),
@@ -240,7 +238,7 @@ class GoogleConnectionService:
 
 
 class PlaywrightGoogleProbe:
-    """Headed NUC browser profile used for Google sign-in and Gemini."""
+    """Headed NUC browser profile used for NotebookLM sign-in."""
 
     def __init__(self, data_dir: Path, secrets: SecretStore):
         self.root = (data_dir / "google").resolve()
@@ -288,8 +286,7 @@ class PlaywrightGoogleProbe:
             )
             try:
                 page = context.pages[0] if context.pages else context.new_page()
-                page.goto("https://gemini.google.com/", wait_until="domcontentloaded")
-                context.new_page().goto(
+                page.goto(
                     "https://notebooklm.google.com/",
                     wait_until="domcontentloaded",
                 )
@@ -327,11 +324,6 @@ class PlaywrightGoogleProbe:
             return _oauth_email(credentials)
         from playwright.sync_api import sync_playwright
 
-        url = (
-            "https://notebooklm.google.com/"
-            if surface is GoogleSurface.NOTEBOOK
-            else "https://gemini.google.com/"
-        )
         with sync_playwright() as playwright:
             context = launch_google_profile(
                 playwright.chromium,
@@ -340,7 +332,11 @@ class PlaywrightGoogleProbe:
             )
             try:
                 page = context.pages[0] if context.pages else context.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                page.goto(
+                    "https://notebooklm.google.com/",
+                    wait_until="domcontentloaded",
+                    timeout=30_000,
+                )
                 if "accounts.google.com" in page.url:
                     raise RuntimeError(f"{surface.value} sign-in is required")
             finally:
@@ -377,7 +373,6 @@ def _safe_surface_error(
 ) -> str:
     label = {
         GoogleSurface.NOTEBOOK: "NotebookLM",
-        GoogleSurface.GEMINI: "Gemini",
         GoogleSurface.DOCS: "Google Docs",
     }[surface]
     message = str(error).casefold()

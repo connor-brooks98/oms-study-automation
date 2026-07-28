@@ -38,7 +38,6 @@ class FailedProbe:
     def account_email(self, surface):
         errors = {
             GoogleSurface.NOTEBOOK: "notebook sign-in is required",
-            GoogleSurface.GEMINI: "browser executable doesn't exist",
             GoogleSurface.DOCS: "invalid_grant",
         }
         raise RuntimeError(errors[surface])
@@ -64,7 +63,6 @@ def test_connected_status_requires_same_account_on_all_surfaces(tmp_path):
         Probe(
             {
                 GoogleSurface.NOTEBOOK: "student@example.com",
-                GoogleSurface.GEMINI: "student@example.com",
                 GoogleSurface.DOCS: "other@example.com",
             }
         ),
@@ -140,12 +138,11 @@ def test_connection_test_reports_safe_actionable_surface_failures(tmp_path):
 
     assert status.state == "failed"
     assert status.message == (
-        "NotebookLM needs sign-in. Gemini needs Google Chrome installed. "
+        "NotebookLM needs sign-in. "
         "Google Docs authorization expired; connect Google again."
     )
     assert [surface.message for surface in status.surfaces] == [
         "NotebookLM needs sign-in.",
-        "Gemini needs Google Chrome installed.",
         "Google Docs authorization expired; connect Google again.",
     ]
     assert "invalid_grant" not in repr(status)

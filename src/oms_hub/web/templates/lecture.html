@@ -90,9 +90,9 @@
         <h2>Lecture Quiz</h2>
       </div>
       <p class="file-caption" data-generation-message aria-live="polite">
-        {% if quiz_output %}Current Gemini quiz is ready.
+        {% if quiz_output %}Current Study Hub quiz is ready.
         {% elif quiz_job %}{{ quiz_job.stage.value.replace('_', ' ').title() }}
-        {% else %}Built in your Gemini Quiz Gem from this lecture only.{% endif %}
+        {% else %}Built from this lecture's PDF and cleaned transcript only.{% endif %}
       </p>
       <div class="file-actions">
         {% if quiz_output %}

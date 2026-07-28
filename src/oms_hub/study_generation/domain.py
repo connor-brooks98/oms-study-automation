@@ -22,6 +22,8 @@ class GenerationStage(StrEnum):
     SOURCES = "sources"
     NOTEBOOK_PROMPT = "notebook_prompt"
     PDF = "pdf"
+    QUIZ_VALIDATE = "quiz_validate"
+    PUBLISH = "publish"
     GEMINI = "gemini"
     SHARE = "share"
     DOCS = "docs"

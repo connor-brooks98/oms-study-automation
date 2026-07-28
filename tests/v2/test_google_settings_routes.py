@@ -15,7 +15,7 @@ class FakeGoogleConnection:
             "student@example.com",
             tuple(
                 GoogleSurfaceStatus(name, "connected")
-                for name in ("notebook", "gemini", "docs")
+                for name in ("notebook", "docs")
             ),
             None,
         )
@@ -109,7 +109,6 @@ def test_connect_response_keeps_all_google_surfaces_connecting(tmp_path):
         "account_email": None,
         "surfaces": [
             {"name": "notebook", "state": "connecting", "message": None},
-            {"name": "gemini", "state": "connecting", "message": None},
             {"name": "docs", "state": "connecting", "message": None},
         ],
         "message": "Complete Google sign-in in the browser window.",

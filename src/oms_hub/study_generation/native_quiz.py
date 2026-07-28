@@ -25,6 +25,7 @@ from oms_hub.study_generation.domain import (
 
 if TYPE_CHECKING:
     from oms_hub.config import Settings
+    from oms_hub.study_generation.repository import GenerationRepository
 
 _Text = Annotated[
     str,
@@ -59,6 +60,29 @@ choices per question, and a non-empty expert rationale for every question.
 
 class QuizContractError(ValueError):
     pass
+
+
+class NativeQuizPublisher:
+    def __init__(
+        self,
+        repository: GenerationRepository,
+        settings: Settings,
+    ):
+        self.repository = repository
+        self.settings = settings
+
+    def publish(
+        self,
+        lecture_id: int,
+        job_id: str,
+        quiz: NativeQuiz,
+    ) -> str:
+        published = self.repository.publish_quiz(
+            lecture_id,
+            job_id,
+            quiz,
+        )
+        return quiz_url(published.token, self.settings)
 
 
 class _QuestionInput(BaseModel):

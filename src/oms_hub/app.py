@@ -32,12 +32,12 @@ from oms_hub.security.access import (
 from oms_hub.security.csrf import CsrfProtector, origin_is_allowed
 from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.slides.pipeline import SlidePipeline
-from oms_hub.study_generation.gemini_quiz import PersistentGeminiQuizGateway
 from oms_hub.study_generation.google_connection import (
     GoogleConnectionService,
     PlaywrightGoogleProbe,
 )
 from oms_hub.study_generation.google_docs import OAuthGoogleDocsGateway
+from oms_hub.study_generation.native_quiz import NativeQuizPublisher
 from oms_hub.study_generation.notebook import StoredNotebookLMGateway
 from oms_hub.study_generation.outline import OutlineService
 from oms_hub.study_generation.path_picker import SystemPromptPathPicker
@@ -316,14 +316,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved.data_dir / "google" / "notebooklm-storage.json"
         ),
         OutlineService(resolved, app.state.generation_repository),
-        PersistentGeminiQuizGateway(
-            resolved.data_dir / "google" / "browser-profile",
-            resolved.gemini_quiz_gem_url,
-            timeout_ms=resolved.generation_timeout_seconds * 1000,
+        NativeQuizPublisher(
+            app.state.generation_repository,
+            resolved,
         ),
         OAuthGoogleDocsGateway(
             app.state.generation_repository,
             app.state.google_connection,
+            resolved,
         ),
     )
     web_root = Path(__file__).parent / "web"

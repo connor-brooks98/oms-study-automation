@@ -16,7 +16,10 @@ from oms_hub.study_generation.domain import (
     SourceIsolationError,
     SourceKind,
 )
-from oms_hub.study_generation.gemini_quiz import GeminiQuizRef
+from oms_hub.study_generation.native_quiz import (
+    parse_native_quiz,
+    quiz_prompt,
+)
 
 
 class GenerationWorker:
@@ -28,7 +31,7 @@ class GenerationWorker:
         prompts: Any,
         notebook: Any,
         outline: Any,
-        gemini: Any,
+        publisher: Any,
         docs: Any,
     ):
         self.repository = repository
@@ -37,7 +40,7 @@ class GenerationWorker:
         self.prompts = prompts
         self.notebook = notebook
         self.outline = outline
-        self.gemini = gemini
+        self.publisher = publisher
         self.docs = docs
 
     def recover_interrupted_jobs(self) -> int:
@@ -170,11 +173,20 @@ class GenerationWorker:
         if job.notebook_answer:
             answer = NotebookAnswer(job.notebook_answer)
         else:
-            answer = self.notebook.ask(notebook_ref, sources, prompt)
+            notebook_prompt = (
+                prompt
+                if job.kind is GenerationKind.OUTLINE
+                else quiz_prompt(prompt)
+            )
+            answer = self.notebook.ask(
+                notebook_ref,
+                sources,
+                notebook_prompt,
+            )
             next_stage = (
                 GenerationStage.PDF
                 if job.kind is GenerationKind.OUTLINE
-                else GenerationStage.GEMINI
+                else GenerationStage.QUIZ_VALIDATE
             )
             job = self.repository.advance(
                 job.id,
@@ -197,22 +209,19 @@ class GenerationWorker:
                 "Lecture summary PDF is ready",
             )
             return
-        quiz_ref = (
-            GeminiQuizRef(job.gemini_quiz_id)
-            if job.gemini_quiz_id
-            else self.gemini.generate(job.id, answer.text)
-        )
-        if not job.gemini_quiz_id:
-            job = self.repository.advance(
-                job.id,
-                GenerationStage.SHARE,
-                gemini_quiz_id=quiz_ref.id,
-            )
         if job.quiz_url:
             quiz_url = job.quiz_url
         else:
-            shared = self.gemini.share(quiz_ref)
-            quiz_url = shared.url
+            quiz = parse_native_quiz(answer.text)
+            job = self.repository.advance(
+                job.id,
+                GenerationStage.PUBLISH,
+            )
+            quiz_url = self.publisher.publish(
+                job.lecture_id,
+                job.id,
+                quiz,
+            )
             job = self.repository.advance(
                 job.id,
                 GenerationStage.DOCS,

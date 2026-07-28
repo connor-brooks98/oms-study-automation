@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from typing import Any
 
-from oms_hub.study_generation.gemini_quiz import validate_shared_quiz_url
+from oms_hub.config import Settings
+from oms_hub.study_generation.native_quiz import validate_native_quiz_url
 from oms_hub.study_generation.repository import GenerationRepository
 
 
@@ -25,10 +26,12 @@ class GoogleDocsGateway:
         repository: GenerationRepository,
         docs: Any,
         drive: Any,
+        settings: Settings,
     ):
         self.repository = repository
         self.docs = docs
         self.drive = drive
+        self.settings = settings
 
     def ensure_course_document(self, subject: str) -> CourseDocumentRef:
         subject_key = _subject_key(subject)
@@ -96,7 +99,7 @@ class GoogleDocsGateway:
         lecture_number: int,
         url: str,
     ) -> None:
-        trusted_url = validate_shared_quiz_url(url)
+        trusted_url = validate_native_quiz_url(url, self.settings)
         marker = f"oms-study-hub-quiz-lecture-{lecture_number}"
         prefix = f"Lecture {lecture_number}: "
         label = f"{prefix}{trusted_url}\n"
@@ -176,9 +179,15 @@ class GoogleDocsGateway:
 
 
 class OAuthGoogleDocsGateway:
-    def __init__(self, repository: GenerationRepository, connection: Any):
+    def __init__(
+        self,
+        repository: GenerationRepository,
+        connection: Any,
+        settings: Settings,
+    ):
         self.repository = repository
         self.connection = connection
+        self.settings = settings
         self._gateway: GoogleDocsGateway | None = None
 
     def ensure_course_document(self, subject: str) -> CourseDocumentRef:
@@ -218,6 +227,7 @@ class OAuthGoogleDocsGateway:
                     credentials=credentials,
                     cache_discovery=False,
                 ),
+                self.settings,
             )
         return self._gateway
 
