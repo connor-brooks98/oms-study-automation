@@ -51,9 +51,9 @@ $Health
 git rev-parse HEAD
 ```
 
-The first start upgrades the SQLite schema to version 5 and adds the
-`published_quizzes` table. The migration does not delete or rewrite existing
-lecture data.
+The first start upgrades the SQLite schema to version 6. It retains the
+additive native quiz tables and adds the durable NotebookLM source-title
+registry. The migration does not delete or rewrite existing lecture data.
 
 If installation again reports that `oms-hub.exe` is in use, confirm the
 scheduled task is stopped, close any PowerShell window running `oms-hub serve`,
@@ -72,34 +72,62 @@ request to NotebookLM.
 
 Open **Settings → Google workspace**:
 
-1. NotebookLM and Google Docs should show **connected**.
-2. If either is disconnected, select **Connect Google**.
-3. Complete Google Docs OAuth consent.
-4. Sign in to NotebookLM in the Chrome window opened on the NUC.
-5. Return to Settings and select **Test connection**.
+1. Select the Google Desktop app OAuth JSON once and choose **Save client
+   file**. The page should show **Client file saved** after saving and after a
+   reload. The file is required for private Google Docs; it is never displayed
+   back in the browser.
+2. Select **Connect Google**. If the saved Google Docs authorization is still
+   valid, Study Hub reuses it without showing consent again. Otherwise,
+   complete the Google Docs consent window.
+3. Complete the NotebookLM login in the system Chrome window opened by the
+   supported NotebookLM login command.
+4. Return to Settings and select **Test connection**. This performs a live
+   NotebookLM token fetch and Google account request; it does not rely only on
+   the last saved green status.
+5. Confirm NotebookLM and Google Docs both show **connected**.
+
+Generation performs the same live check before adding a job. If either
+authorization expires during a job, only that service is marked failed and
+the job pauses so it can be retried after **Connect Google**.
+
+NotebookLM sources use the canonical filed lecture names. For example, the
+uploaded source title should read `Lecture 02 - Demyelinating Disease -
+Transcript`, not an internal name such as
+`OMS-1-cleaned_transcript-2ddfc6dcf8905f73`.
+
+For every outline and quiz request, Study Hub sends exactly two source IDs:
+the selected lecture's current PDF and its current cleaned transcript. The
+checkboxes visible when a person opens NotebookLM are browser-interface state;
+they do not control the explicit source IDs sent by Study Hub.
 
 Gemini is no longer a required connection surface. The separate Gemini API
 provider under **AI providers** is unchanged and may still be used for other
 Study Hub processing.
 
-## 3. Permit only quiz links through Cloudflare Access
+## 3. Restrict shared quiz links to LMU organizational email
 
-The Study Hub application allows anonymous access only below
-`/public/quizzes/`. Cloudflare Access must have a matching, more-specific path
-rule or classmates will still see the Access login.
+The Study Hub application accepts unauthenticated requests only below
+`/public/quizzes/`, but Cloudflare Access remains the sharing gate. Give that
+path its own, more-specific Access application so classmates can authenticate
+without gaining access to the owner-only Study Hub.
 
 In Cloudflare Zero Trust:
 
 1. Open **Access controls → Applications**.
 2. Add a **Self-hosted** application for the existing Study Hub hostname.
 3. Set its path to `/public/quizzes/*`.
-4. Add a **Bypass** policy that applies to everyone.
-5. Save the application and confirm it is more specific than the existing
+4. Add an **Allow** policy whose include rule is **Emails ending in** and enter
+   `@lmunet.edu`.
+5. Enable **One-time PIN** as the login method. This works with the
+   organizational Microsoft mailbox without requiring Microsoft tenant admin
+   access.
+6. Save the application and confirm it is more specific than the existing
    whole-host Study Hub application.
 
-Do not bypass `/`, `/static/*`, `/lectures/*`, `/settings/*`, or the entire
-hostname. The main Study Hub application must continue requiring the owner's
-Cloudflare Access identity.
+Do not create an Everyone or Bypass policy. Do not apply the classmate rule to
+`/`, `/static/*`, `/lectures/*`, `/settings/*`, or the entire hostname. The
+main Study Hub application must continue requiring the owner's Cloudflare
+Access identity.
 
 ## 4. One-lecture acceptance test
 
@@ -117,18 +145,25 @@ Use a lecture whose PDF and cleaned transcript already open normally.
    rationale is shown.
 8. Select **Continue**, refresh the browser, and confirm progress is retained.
 9. Finish the quiz and confirm the score screen appears.
+10. Select **Open Lecture Outline** and confirm headings are bold, nested
+    bullets are indented, and Markdown stars are not printed as literal
+    formatting characters.
 
 Then confirm sharing:
 
 1. Copy the quiz URL.
 2. Open it in a private browser window not signed in to Cloudflare.
-3. Confirm the quiz opens.
-4. In that same private window, open the Study Hub hostname without the quiz
+3. Confirm Cloudflare requests an email address. Verify a non-`@lmunet.edu`
+   address is refused, then authenticate using an `@lmunet.edu` address and
+   its emailed one-time PIN.
+4. Confirm the quiz opens after the organizational login.
+5. In that same private window, open the Study Hub hostname without the quiz
    path and confirm Cloudflare Access still blocks it.
-5. Open the course quiz Google Doc and confirm the correct exam tab contains:
+6. Open the course quiz Google Doc and confirm the correct exam tab contains a
+   hyperlink whose visible text is:
 
    ```text
-   Lecture 1: https://YOUR-STUDY-HUB/public/quizzes/...
+   Lecture N Quiz
    ```
 
 Regenerate the lecture quiz once. The public URL and Google Doc entry should

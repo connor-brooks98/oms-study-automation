@@ -67,18 +67,23 @@ JWT and allowed email.
 
 The lecture page has separate **Generate Outline** and **Generate Quiz**
 actions. Outline and quiz prompts remain editable in Obsidian and are linked
-from **Settings → Notebook prompts**. Google is connected once from
-**Settings → Google workspace**; its reusable browser and OAuth state stay on
-the Study Hub device.
+from **Settings → Notebook prompts**. Google is connected from
+**Settings → Google workspace**. Google Docs uses its one-time Desktop app
+OAuth client setup, while NotebookLM uses its supported system-Chrome login;
+both saved authorizations stay on the Study Hub device and are checked live
+before generation.
 
 Each course exam receives its own NotebookLM notebook. The current lecture PDF
-and cleaned transcript are the only source IDs submitted for that lecture.
-Outlines are stored under the exam's `Lecture Outlines` folder. Quiz links are
-placed in one Google Doc per course with one tab per exam and are also available
-through **Take Lecture Quiz** on the lecture page. The native quiz player gives
-feedback after every submitted question and supports highlighting question
-text, crossing out answer choices, changing a choice before submission, and
-restoring progress after a refresh.
+and cleaned transcript are the only two source IDs submitted for that lecture,
+even if the NotebookLM website visually shows other checked sources. Uploaded
+sources retain their canonical filed lecture names. Outlines are stored under
+the exam's `Lecture Outlines` folder and render headings, emphasis, and nested
+lists as formatted PDF content. Quiz links are placed in one Google Doc per
+course with one tab per exam as a linked `Lecture N Quiz` label and are also
+available through **Take Lecture Quiz** on the lecture page. The native quiz
+player gives feedback after every submitted question and supports highlighting
+question text, crossing out answer choices, changing a choice before
+submission, and restoring progress after a refresh.
 
 The branch setup, Google Cloud setup, Cloudflare quiz-sharing rule, acceptance
 test, and rollback procedure are in

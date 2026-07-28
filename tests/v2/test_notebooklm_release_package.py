@@ -23,6 +23,8 @@ def test_source_release_includes_generation_runtime_and_excludes_google_state(
     assert "src/oms_hub/study_generation/notebook.py" in names
     assert "src/oms_hub/study_generation/native_quiz.py" in names
     assert "src/oms_hub/study_generation/google_docs.py" in names
+    assert "src/oms_hub/study_generation/notebook_auth.py" in names
+    assert "src/oms_hub/study_generation/outline_markup.py" in names
     forbidden = (
         "storage_state",
         "notebooklm-storage",
@@ -41,6 +43,8 @@ def test_hotfix_contains_dependencies_and_lecture_controls(tmp_path):
 
     assert "pyproject.toml" in names
     assert "src/oms_hub/study_generation/native_quiz.py" in names
+    assert "src/oms_hub/study_generation/notebook_auth.py" in names
+    assert "src/oms_hub/study_generation/outline_markup.py" in names
     assert "src/oms_hub/web/public_quiz_routes.py" in names
     assert "src/oms_hub/web/static/public_quiz.js" in names
     assert "src/oms_hub/web/static/public_quiz.css" in names

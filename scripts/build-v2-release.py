@@ -70,7 +70,11 @@ def build_releases(
     )
     source = output_dir / f"Study-Hub-V2-Source-{release_date}.zip"
     source_files = _source_files(root)
-    _write_archive(root, hotfix, HOTFIX_FILES)
+    runtime_files = {
+        path for path in source_files if path.startswith("src/oms_hub/")
+    }
+    hotfix_files = tuple(sorted(set(HOTFIX_FILES) | runtime_files))
+    _write_archive(root, hotfix, hotfix_files)
     _write_archive(root, source, source_files)
     _write_checksum(hotfix)
     _write_checksum(source)
@@ -178,7 +182,7 @@ def _write_checksum(path: Path) -> None:
 
 if __name__ == "__main__":
     project_root = Path(__file__).resolve().parents[1]
-    built = build_releases(project_root, project_root / "dist", "20260726")
+    built = build_releases(project_root, project_root / "dist", "20260728")
     for artifact in built:
         print(artifact)
         print(artifact.with_suffix(artifact.suffix + ".sha256"))
