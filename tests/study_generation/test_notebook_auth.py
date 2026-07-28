@@ -32,11 +32,12 @@ def _auth(tmp_path, runner):
     return NotebookCLIAuth(
         tmp_path / "notebooklm-storage.json",
         executable=tmp_path / "notebooklm.exe",
+        python_executable=tmp_path / "python.exe",
         runner=runner,
     )
 
 
-def test_login_uses_system_chrome_and_exact_worker_storage(tmp_path):
+def test_login_uses_gemini_notebook_compatibility_runner(tmp_path):
     runner = RecordingRunner()
     auth = _auth(tmp_path, runner)
 
@@ -44,7 +45,9 @@ def test_login_uses_system_chrome_and_exact_worker_storage(tmp_path):
 
     assert runner.calls == [
         [
-            str(tmp_path / "notebooklm.exe"),
+            str(tmp_path / "python.exe"),
+            "-m",
+            "oms_hub.study_generation.notebook_login_compat",
             "login",
             "--storage",
             str(tmp_path / "notebooklm-storage.json"),

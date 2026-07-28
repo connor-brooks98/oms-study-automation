@@ -22,22 +22,29 @@ class NotebookCLIAuth:
         storage_path: Path,
         *,
         executable: Path | None = None,
+        python_executable: Path | None = None,
         runner: Runner = subprocess.run,
     ) -> None:
         self.storage_path = storage_path.resolve()
         self.executable = executable or _default_executable()
+        self.python_executable = Path(
+            python_executable or sys.executable
+        ).resolve()
         self.runner = runner
 
     def login(self) -> None:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             result = self._run(
+                "-m",
+                "oms_hub.study_generation.notebook_login_compat",
                 "login",
                 "--storage",
                 str(self.storage_path),
                 "--browser",
                 "chrome",
                 "--fresh",
+                executable=self.python_executable,
                 include_root_storage=False,
                 timeout=330,
             )
@@ -96,10 +103,11 @@ class NotebookCLIAuth:
     def _run(
         self,
         *arguments: str,
+        executable: Path | None = None,
         include_root_storage: bool = True,
         timeout: int,
     ) -> subprocess.CompletedProcess[str]:
-        command = [str(self.executable)]
+        command = [str(executable or self.executable)]
         if include_root_storage:
             command.extend(
                 ["--storage", str(self.storage_path)]
