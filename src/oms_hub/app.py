@@ -55,6 +55,7 @@ from oms_hub.web.generation_routes import (
 from oms_hub.web.generation_routes import (
     router as generation_router,
 )
+from oms_hub.web.public_quiz_routes import router as public_quiz_router
 from oms_hub.web.quarantine_routes import router as quarantine_router
 from oms_hub.web.routes import router
 from oms_hub.web.settings_routes import router as settings_router
@@ -99,6 +100,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         host = (request.url.hostname or "").lower().rstrip(".")
         local_hosts = {"127.0.0.1", "localhost", "testserver"}
         is_public = bool(resolved.public_hostname and host == resolved.public_hostname)
+        is_public_quiz = request.url.path.startswith("/public/quizzes/")
 
         def harden(response: Response) -> Response:
             response.headers["Content-Security-Policy"] = (
@@ -124,6 +126,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 response.status_code in {401, 403, 503}
                 or "text/html" in content_type
                 or request.url.path.startswith("/artifacts/")
+                or is_public_quiz
             ):
                 response.headers.setdefault("Cache-Control", "no-store")
             if is_public:
@@ -133,38 +136,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return response
 
         if is_public:
-            verifier = request.app.state.access_verifier
-            if verifier is None:
-                return harden(
-                    JSONResponse(
-                        {"detail": "Cloudflare Access is not configured"},
-                        status_code=503,
+            if not is_public_quiz:
+                verifier = request.app.state.access_verifier
+                if verifier is None:
+                    return harden(
+                        JSONResponse(
+                            {"detail": "Cloudflare Access is not configured"},
+                            status_code=503,
+                        )
                     )
-                )
-            assertion = request.headers.get("Cf-Access-Jwt-Assertion")
-            if not assertion:
-                return harden(
-                    JSONResponse(
-                        {"detail": "Cloudflare Access identity is required"},
-                        status_code=401,
+                assertion = request.headers.get("Cf-Access-Jwt-Assertion")
+                if not assertion:
+                    return harden(
+                        JSONResponse(
+                            {"detail": "Cloudflare Access identity is required"},
+                            status_code=401,
+                        )
                     )
-                )
-            try:
-                request.state.access_identity = verifier.verify(assertion)
-            except AccessIdentityForbidden:
-                return harden(
-                    JSONResponse(
-                        {"detail": "Cloudflare Access identity is not allowed"},
-                        status_code=403,
+                try:
+                    request.state.access_identity = verifier.verify(assertion)
+                except AccessIdentityForbidden:
+                    return harden(
+                        JSONResponse(
+                            {"detail": "Cloudflare Access identity is not allowed"},
+                            status_code=403,
+                        )
                     )
-                )
-            except AccessTokenInvalid:
-                return harden(
-                    JSONResponse(
-                        {"detail": "Cloudflare Access identity is invalid"},
-                        status_code=401,
+                except AccessTokenInvalid:
+                    return harden(
+                        JSONResponse(
+                            {"detail": "Cloudflare Access identity is invalid"},
+                            status_code=401,
+                        )
                     )
-                )
         elif host in local_hosts:
             if not resolved.allow_local_access:
                 return harden(
@@ -336,6 +340,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(generation_router)
     app.include_router(google_router)
     app.include_router(lecture_router)
+    app.include_router(public_quiz_router)
 
     @app.get("/health")
     def health() -> dict[str, str]:
