@@ -81,6 +81,19 @@ def test_public_quiz_page_and_content_do_not_expose_answer_key(tmp_path):
     assert "rationale" not in content.text
 
 
+def test_public_quiz_assets_are_served_inside_the_bypass_path(tmp_path):
+    app, _ = _published_app(tmp_path)
+
+    with TestClient(app) as client:
+        script = client.get("/public/quizzes/assets/player.js")
+        styles = client.get("/public/quizzes/assets/player.css")
+
+    assert script.status_code == 200
+    assert script.headers["content-type"].startswith("text/javascript")
+    assert styles.status_code == 200
+    assert styles.headers["content-type"].startswith("text/css")
+
+
 def test_answer_feedback_is_limited_to_the_requested_question(tmp_path):
     app, published = _published_app(tmp_path)
 

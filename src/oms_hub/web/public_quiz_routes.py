@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Annotated, cast
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, StringConstraints
 
@@ -15,6 +15,7 @@ from oms_hub.study_generation.repository import GenerationRepository
 
 router = APIRouter(prefix="/public/quizzes")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+_STATIC_ROOT = Path(__file__).parent / "static"
 _PublicId = Annotated[
     str,
     StringConstraints(pattern=r"^[a-z][0-9]{1,3}$", max_length=4),
@@ -24,6 +25,24 @@ _PublicId = Annotated[
 class AnswerSubmission(BaseModel):
     question_id: _PublicId
     choice_id: _PublicId
+
+
+@router.get("/assets/player.js", include_in_schema=False)
+def player_javascript() -> FileResponse:
+    return FileResponse(
+        _STATIC_ROOT / "public_quiz.js",
+        media_type="text/javascript",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+@router.get("/assets/player.css", include_in_schema=False)
+def player_styles() -> FileResponse:
+    return FileResponse(
+        _STATIC_ROOT / "public_quiz.css",
+        media_type="text/css",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
 
 
 def _repository(request: Request) -> GenerationRepository:
