@@ -67,10 +67,10 @@ JWT and allowed email.
 
 The lecture page has separate **Generate Outline** and **Generate Quiz**
 actions. Outline and quiz prompts remain editable in Obsidian and are linked
-from **Settings → Notebook prompts**. Google is connected from
-**Settings → Google workspace**. Google Docs uses its one-time Desktop app
-OAuth client setup, while NotebookLM uses its supported system-Chrome login;
-both saved authorizations stay on the Study Hub device and are checked live
+from **Settings → Notebook prompts**. Gemini Notebook is connected from
+**Settings → Gemini Notebook** using its system-Chrome login. No Google Docs
+API, OAuth client JSON, or copied authorization code is required. The saved
+Notebook authorization stays on the Study Hub device and is checked live
 before generation.
 
 Each course exam receives its own NotebookLM notebook. The current lecture PDF
@@ -78,12 +78,15 @@ and cleaned transcript are the only two source IDs submitted for that lecture,
 even if the NotebookLM website visually shows other checked sources. Uploaded
 sources retain their canonical filed lecture names. Outlines are stored under
 the exam's `Lecture Outlines` folder and render headings, emphasis, and nested
-lists as formatted PDF content. Quiz links are placed in one Google Doc per
-course with one tab per exam as a linked `Lecture N Quiz` label and are also
-available through **Take Lecture Quiz** on the lecture page. The native quiz
+lists as formatted PDF content. Published quizzes are organized at the single
+shareable `/public/quizzes` library by Course → Exam → Lecture and remain
+available through **Take Lecture Quiz** on the private lecture page. Lectures
+with an outline also show a **Lecture Outline** button in the shared library.
+The native quiz
 player gives feedback after every submitted question and supports highlighting
 question text, crossing out answer choices, changing a choice before
-submission, and restoring progress after a refresh.
+submission, and restoring progress after a refresh. The shared library shows
+Not started, In progress, or Completed using only that browser's local storage.
 
 The branch setup, Google Cloud setup, Cloudflare quiz-sharing rule, acceptance
 test, and rollback procedure are in

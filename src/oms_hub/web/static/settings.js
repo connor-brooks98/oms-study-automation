@@ -83,37 +83,20 @@
     return payload;
   };
 
-  const renderGoogleStatus = (card, status) => {
-    const badge = card.querySelector("[data-google-badge]");
-    const message = card.querySelector("[data-google-status]");
-    const clientState = card.querySelector("[data-google-client-state]");
+  const renderNotebookStatus = (card, status) => {
+    const badge = card.querySelector("[data-notebook-badge]");
+    const message = card.querySelector("[data-notebook-status]");
     const connected = status.state === "connected";
     const connecting = status.state === "connecting";
 
     badge.textContent = connecting ? "Connecting" : connected ? "Connected" : "Not connected";
     badge.classList.toggle("is-configured", connected);
-    if (clientState) {
-      clientState.textContent = status.oauth_client_configured
-        ? "Client file saved."
-        : "Client file not saved.";
-    }
-    const surfaces = new Map(
-      (status.surfaces || []).map((surface) => [surface.name, surface.state]),
-    );
-    card.querySelectorAll("[data-google-surface]").forEach((surface) => {
-      const state = surfaces.get(surface.dataset.googleSurface)
-        || (connecting ? "connecting" : "disconnected");
-      surface.textContent = state.replaceAll("_", " ");
-      surface.className = `status-pill status-${state}`;
-    });
 
     if (connecting) {
       message.textContent = status.message
         || "Finish signing in using the browser window on this Study Hub device.";
     } else if (connected) {
-      message.textContent = status.account_email
-        ? `Google is connected as ${status.account_email}.`
-        : "Google is connected.";
+      message.textContent = "Gemini Notebook is connected.";
     } else if (status.message) {
       message.textContent = status.message;
     }
@@ -305,69 +288,37 @@
       });
     });
 
-    const googleCard = documentRef.querySelector("[data-google-card]");
-    if (googleCard) {
-      const connectButton = googleCard.querySelector("[data-google-connect]");
-      const testButton = googleCard.querySelector("[data-google-test]");
-      const saveClientButton = googleCard.querySelector("[data-google-save-client]");
-      const clientInput = googleCard.querySelector("[data-google-oauth-client]");
-      const message = googleCard.querySelector("[data-google-status]");
-      let googlePollTimer;
+    const notebookCard = documentRef.querySelector("[data-notebook-card]");
+    if (notebookCard) {
+      const connectButton = notebookCard.querySelector("[data-notebook-connect]");
+      const testButton = notebookCard.querySelector("[data-notebook-test]");
+      const message = notebookCard.querySelector("[data-notebook-status]");
+      let notebookPollTimer;
 
-      const refreshGoogle = () => getJson(fetchImpl, "/settings/google/status")
+      const refreshNotebook = () => getJson(fetchImpl, "/settings/notebook/status")
         .then((status) => {
-          renderGoogleStatus(googleCard, status);
+          renderNotebookStatus(notebookCard, status);
           if (status.state === "connecting") {
-            googlePollTimer = root.setTimeout(refreshGoogle, 2000);
+            notebookPollTimer = root.setTimeout(refreshNotebook, 2000);
           }
         })
         .catch((error) => {
           message.textContent = error.message;
         });
-      void refreshGoogle();
-
-      saveClientButton.addEventListener("click", async () => {
-        const selected = clientInput.files[0];
-        if (!selected) {
-          message.textContent = "Choose the OAuth client JSON file first.";
-          return;
-        }
-        saveClientButton.disabled = true;
-        const form = new FormData();
-        form.append("client_file", selected);
-        try {
-          const response = await fetchImpl("/settings/google/oauth-client", {
-            method: "POST",
-            headers: { "X-CSRF-Token": token() },
-            body: form,
-            cache: "no-store",
-          });
-          const result = await response.json();
-          if (!response.ok) {
-            throw new Error(result.detail || "Study Hub rejected the client file.");
-          }
-          message.textContent = "OAuth client file saved securely.";
-          const clientState = googleCard.querySelector("[data-google-client-state]");
-          if (clientState) clientState.textContent = "Client file saved.";
-        } catch (error) {
-          message.textContent = error.message;
-        } finally {
-          saveClientButton.disabled = false;
-        }
-      });
+      void refreshNotebook();
 
       connectButton.addEventListener("click", async () => {
         connectButton.disabled = true;
         try {
           const status = await postJson(
             fetchImpl,
-            "/settings/google/connect",
+            "/settings/notebook/connect",
             {},
             token(),
           );
-          renderGoogleStatus(googleCard, status);
-          root.clearTimeout(googlePollTimer);
-          googlePollTimer = root.setTimeout(refreshGoogle, 1500);
+          renderNotebookStatus(notebookCard, status);
+          root.clearTimeout(notebookPollTimer);
+          notebookPollTimer = root.setTimeout(refreshNotebook, 1500);
         } catch (error) {
           message.textContent = error.message;
         } finally {
@@ -380,11 +331,11 @@
         try {
           const status = await postJson(
             fetchImpl,
-            "/settings/google/test",
+            "/settings/notebook/test",
             {},
             token(),
           );
-          renderGoogleStatus(googleCard, status);
+          renderNotebookStatus(notebookCard, status);
         } catch (error) {
           message.textContent = error.message;
         } finally {
@@ -425,7 +376,7 @@
     initialize,
     postJson,
     promptPathAction,
-    renderGoogleStatus,
+    renderNotebookStatus,
     runWhenReady,
     testPresentation,
     togglePassword,

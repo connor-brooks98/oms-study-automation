@@ -24,6 +24,7 @@ class GenerationStage(StrEnum):
     PDF = "pdf"
     QUIZ_VALIDATE = "quiz_validate"
     PUBLISH = "publish"
+    CATALOG = "catalog"
     GEMINI = "gemini"
     SHARE = "share"
     DOCS = "docs"
@@ -169,7 +170,6 @@ class QuizRecord:
     lecture_id: int
     job_id: str
     url: str
-    docs_synced: bool
     current: bool
 
 

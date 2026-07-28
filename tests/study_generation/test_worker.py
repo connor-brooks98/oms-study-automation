@@ -14,7 +14,6 @@ from oms_hub.study_generation.domain import (
     NotebookAnswer,
     PromptSnapshot,
 )
-from oms_hub.study_generation.google_connection import GoogleSurface
 from oms_hub.study_generation.notebook import NotebookAuthenticationError
 from oms_hub.study_generation.worker import GenerationWorker
 
@@ -64,8 +63,8 @@ class Repository:
     def fail(self, job_id, error, paused=False):
         raise AssertionError((job_id, error, paused))
 
-    def record_quiz(self, lecture_id, job_id, url, docs_synced):
-        self.quiz = (lecture_id, job_id, url, docs_synced)
+    def record_quiz(self, lecture_id, job_id, url):
+        self.quiz = (lecture_id, job_id, url)
 
 
 class Publisher:
@@ -80,18 +79,12 @@ class Publisher:
         return QUIZ_URL
 
 
-class Docs:
+class NotebookConnection:
     def __init__(self):
-        self.links = []
+        self.invalidations = []
 
-    def ensure_course_document(self, subject):
-        return f"document:{subject}"
-
-    def ensure_exam_tab(self, document, exam):
-        return f"{document}:exam:{exam}"
-
-    def sync_quiz_link(self, tab, lecture, url):
-        self.links.append((tab, lecture, url))
+    def invalidate(self, message):
+        self.invalidations.append(message)
 
 
 class Notebook:
@@ -110,14 +103,6 @@ class ExpiredNotebook(Notebook):
         raise NotebookAuthenticationError(
             "NotebookLM login expired; reconnect Google in Settings."
         )
-
-
-class GoogleConnection:
-    def __init__(self):
-        self.invalidations = []
-
-    def invalidate(self, surface, message):
-        self.invalidations.append((surface, message))
 
 
 def _job(**overrides):
@@ -175,7 +160,7 @@ def _worker(tmp_path, job, publisher, notebook=None):
         ),
     )
     repository = Repository(job)
-    docs = Docs()
+    connection = NotebookConnection()
     selected_notebook = notebook or SimpleNamespace()
     worker = GenerationWorker(
         repository,
@@ -194,14 +179,14 @@ def _worker(tmp_path, job, publisher, notebook=None):
         selected_notebook,
         SimpleNamespace(),
         publisher,
-        docs,
+        connection,
     )
-    return worker, repository, docs, progress
+    return worker, repository, connection, progress
 
 
 def test_worker_validates_and_publishes_notebook_quiz_natively(tmp_path):
     publisher = Publisher()
-    worker, repository, docs, progress = _worker(
+    worker, repository, connection, progress = _worker(
         tmp_path,
         _job(
             stage=GenerationStage.QUIZ_VALIDATE,
@@ -215,8 +200,8 @@ def test_worker_validates_and_publishes_notebook_quiz_natively(tmp_path):
     assert len(publisher.calls) == 1
     assert publisher.calls[0][:2] == (1, "job-1")
     assert publisher.calls[0][2].title == "Seizure Practice"
-    assert repository.quiz == (1, "job-1", QUIZ_URL, True)
-    assert docs.links == [("document:Neuro:exam:1", 2, QUIZ_URL)]
+    assert repository.quiz == (1, "job-1", QUIZ_URL)
+    assert connection.invalidations == []
     assert repository.current.state is GenerationState.COMPLETE
     assert progress[0][:3] == (
         1,
@@ -251,12 +236,12 @@ def test_worker_appends_machine_contract_to_editable_obsidian_prompt(tmp_path):
     assert [stage for stage, _ in repository.advances] == [
         GenerationStage.QUIZ_VALIDATE,
         GenerationStage.PUBLISH,
-        GenerationStage.DOCS,
+        GenerationStage.CATALOG,
     ]
 
 
 def test_worker_resume_at_docs_does_not_republish_quiz(tmp_path):
-    worker, repository, docs, _ = _worker(
+    worker, repository, connection, _ = _worker(
         tmp_path,
         _job(
             stage=GenerationStage.DOCS,
@@ -265,10 +250,15 @@ def test_worker_resume_at_docs_does_not_republish_quiz(tmp_path):
         ),
         Publisher(fail=True),
     )
+    worker.prompts = SimpleNamespace(
+        inspect=lambda kind: (_ for _ in ()).throw(
+            AssertionError(f"legacy recovery must not reload {kind}")
+        )
+    )
 
     assert worker.run_once()
 
-    assert docs.links == [("document:Neuro:exam:1", 2, QUIZ_URL)]
+    assert connection.invalidations == []
     assert repository.current.state is GenerationState.COMPLETE
 
 
@@ -283,8 +273,7 @@ def test_worker_pauses_and_invalidates_expired_notebook_login(tmp_path):
     repository.fail = lambda job_id, error, paused=False: failures.append(
         (job_id, error, paused)
     )
-    google = GoogleConnection()
-    worker.google = google
+    connection = worker.notebook_connection
 
     assert worker.run_once()
 
@@ -295,11 +284,8 @@ def test_worker_pauses_and_invalidates_expired_notebook_login(tmp_path):
             True,
         )
     ]
-    assert google.invalidations == [
-        (
-            GoogleSurface.NOTEBOOK,
-            "NotebookLM login expired; reconnect Google in Settings.",
-        )
+    assert connection.invalidations == [
+        "NotebookLM login expired; reconnect Google in Settings."
     ]
     assert progress[-1][:3] == (
         1,

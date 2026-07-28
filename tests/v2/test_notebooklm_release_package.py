@@ -22,7 +22,8 @@ def test_source_release_includes_generation_runtime_and_excludes_google_state(
 
     assert "src/oms_hub/study_generation/notebook.py" in names
     assert "src/oms_hub/study_generation/native_quiz.py" in names
-    assert "src/oms_hub/study_generation/google_docs.py" in names
+    assert "src/oms_hub/study_generation/notebook_connection.py" in names
+    assert "src/oms_hub/study_generation/google_docs.py" not in names
     assert "src/oms_hub/study_generation/notebook_auth.py" in names
     assert "src/oms_hub/study_generation/outline_markup.py" in names
     forbidden = (
@@ -49,5 +50,8 @@ def test_hotfix_contains_dependencies_and_lecture_controls(tmp_path):
     assert "src/oms_hub/web/static/public_quiz.js" in names
     assert "src/oms_hub/web/static/public_quiz.css" in names
     assert "src/oms_hub/web/templates/public_quiz.html" in names
+    assert "src/oms_hub/web/static/public_quiz_library.js" in names
+    assert "src/oms_hub/web/static/public_quiz_library.css" in names
+    assert "src/oms_hub/web/templates/public_quiz_library.html" in names
     assert "src/oms_hub/web/static/lecture.js" in names
     assert "src/oms_hub/web/templates/lecture.html" in names

@@ -16,10 +16,6 @@ from oms_hub.study_generation.domain import (
     SourceIsolationError,
     SourceKind,
 )
-from oms_hub.study_generation.google_connection import GoogleSurface
-from oms_hub.study_generation.google_docs import (
-    GoogleDocsAuthenticationError,
-)
 from oms_hub.study_generation.native_quiz import (
     parse_native_quiz,
     quiz_prompt,
@@ -37,8 +33,7 @@ class GenerationWorker:
         notebook: Any,
         outline: Any,
         publisher: Any,
-        docs: Any,
-        google: Any | None = None,
+        notebook_connection: Any | None = None,
     ):
         self.repository = repository
         self.catalog = catalog
@@ -47,8 +42,7 @@ class GenerationWorker:
         self.notebook = notebook
         self.outline = outline
         self.publisher = publisher
-        self.docs = docs
-        self.google = google
+        self.notebook_connection = notebook_connection
 
     def recover_interrupted_jobs(self) -> int:
         return cast(int, self.repository.recover_interrupted())
@@ -67,17 +61,11 @@ class GenerationWorker:
         try:
             self._run(job)
         except Exception as error:  # noqa: BLE001 - durable boundary sanitizes content
-            if self.google is not None:
-                if isinstance(error, NotebookAuthenticationError):
-                    self.google.invalidate(
-                        GoogleSurface.NOTEBOOK,
-                        str(error),
-                    )
-                elif isinstance(error, GoogleDocsAuthenticationError):
-                    self.google.invalidate(
-                        GoogleSurface.DOCS,
-                        str(error),
-                    )
+            if (
+                self.notebook_connection is not None
+                and isinstance(error, NotebookAuthenticationError)
+            ):
+                self.notebook_connection.invalidate(str(error))
             safe = _safe_error(error)
             if _is_transient(error) and job.attempts < 4:
                 self.repository.retry(
@@ -114,6 +102,16 @@ class GenerationWorker:
         lecture = self.catalog.get_lecture(job.lecture_id)
         if lecture is None:
             raise RuntimeError("lecture was removed")
+        if (
+            job.kind is GenerationKind.QUIZ
+            and job.quiz_url
+            and job.stage in {
+                GenerationStage.CATALOG,
+                GenerationStage.DOCS,
+            }
+        ):
+            self._complete_quiz(job, job.quiz_url)
+            return
         prompt_kind = (
             PromptKind.OUTLINE
             if job.kind is GenerationKind.OUTLINE
@@ -242,24 +240,23 @@ class GenerationWorker:
             )
             job = self.repository.advance(
                 job.id,
-                GenerationStage.DOCS,
+                GenerationStage.CATALOG,
                 quiz_url=quiz_url,
             )
-        document = self.docs.ensure_course_document(lecture.subject)
-        tab = self.docs.ensure_exam_tab(document, lecture.exam_number)
-        self.docs.sync_quiz_link(tab, lecture.lecture_number, quiz_url)
+        self._complete_quiz(job, quiz_url)
+
+    def _complete_quiz(self, job: Any, quiz_url: str) -> None:
         self.repository.record_quiz(
             job.lecture_id,
             job.id,
             quiz_url,
-            docs_synced=True,
         )
         self.repository.complete(job.id)
         self.catalog.set_step_status(
             job.lecture_id,
             V2StepName.QUIZ_PUBLISHED,
             StepStatus.COMPLETE,
-            "Lecture quiz is published and linked",
+            "Lecture quiz is published",
         )
 
 
@@ -306,10 +303,7 @@ def _safe_error(error: Exception) -> str:
 
 
 def _is_auth_error(error: Exception) -> bool:
-    if isinstance(
-        error,
-        (NotebookAuthenticationError, GoogleDocsAuthenticationError),
-    ):
+    if isinstance(error, NotebookAuthenticationError):
         return True
     message = str(error).casefold()
     return any(

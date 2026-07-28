@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 from fastapi.testclient import TestClient
@@ -7,6 +8,7 @@ from oms_hub.config import Settings
 from oms_hub.repositories import LectureInput
 from oms_hub.study_generation.domain import GenerationKind
 from oms_hub.study_generation.native_quiz import parse_native_quiz
+from oms_hub.study_generation.outline import OutlinePdfRenderer
 
 
 def _quiz():
@@ -39,6 +41,7 @@ def _published_app(tmp_path, *, public=False):
         _env_file=None,
         data_dir=tmp_path,
         database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        study_root=tmp_path / "study",
         public_hostname="study.example.com" if public else None,
     )
     app = create_app(settings)
@@ -55,6 +58,72 @@ def _published_app(tmp_path, *, public=False):
         _quiz(),
     )
     return app, published
+
+
+def test_public_library_groups_only_published_quizzes(tmp_path):
+    app, published = _published_app(tmp_path)
+    app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 1, 2, "Unpublished lecture", "", None)
+    )
+
+    response = TestClient(app).get("/public/quizzes")
+
+    assert response.status_code == 200
+    assert "Course quiz library" in response.text
+    assert "Neuro" in response.text
+    assert "Exam 1" in response.text
+    assert "Lecture 1" in response.text
+    assert published.token in response.text
+    assert "Unpublished lecture" not in response.text
+
+
+def test_public_library_root_uses_same_access_boundary_as_quiz_pages(tmp_path):
+    app, _ = _published_app(tmp_path, public=True)
+
+    response = TestClient(
+        app,
+        base_url="https://study.example.com",
+    ).get("/public/quizzes", headers={"host": "study.example.com"})
+
+    assert response.status_code == 200
+
+
+def test_public_outline_uses_quiz_token_and_returns_current_pdf(tmp_path):
+    app, published = _published_app(tmp_path)
+    path = tmp_path / "study" / "Neuro" / "outline.pdf"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = OutlinePdfRenderer().render("Neuro Outline", "# Topic\nContent")
+    path.write_bytes(payload)
+    job = app.state.generation_repository.queue(
+        published.lecture_id,
+        GenerationKind.OUTLINE,
+    )
+    app.state.generation_repository.record_outline(
+        published.lecture_id,
+        job.id,
+        path,
+        hashlib.sha256(payload).hexdigest(),
+    )
+
+    client = TestClient(app)
+    library = client.get("/public/quizzes")
+    response = client.get(
+        f"/public/quizzes/{published.token}/outline",
+    )
+
+    assert "Lecture Outline" in library.text
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+
+
+def test_public_outline_is_not_available_without_current_outline(tmp_path):
+    app, published = _published_app(tmp_path)
+
+    response = TestClient(app).get(
+        f"/public/quizzes/{published.token}/outline",
+    )
+
+    assert response.status_code == 404
 
 
 def test_public_quiz_page_and_content_do_not_expose_answer_key(tmp_path):
@@ -87,11 +156,15 @@ def test_public_quiz_assets_are_served_inside_the_bypass_path(tmp_path):
     with TestClient(app) as client:
         script = client.get("/public/quizzes/assets/player.js")
         styles = client.get("/public/quizzes/assets/player.css")
+        library_script = client.get("/public/quizzes/assets/library.js")
+        library_styles = client.get("/public/quizzes/assets/library.css")
 
     assert script.status_code == 200
     assert script.headers["content-type"].startswith("text/javascript")
     assert styles.status_code == 200
     assert styles.headers["content-type"].startswith("text/css")
+    assert library_script.status_code == 200
+    assert library_styles.status_code == 200
 
 
 def test_answer_feedback_is_limited_to_the_requested_question(tmp_path):

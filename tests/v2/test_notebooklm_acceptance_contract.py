@@ -7,8 +7,12 @@ def test_rollout_documents_connection_source_and_output_contracts():
         encoding="utf-8"
     )
 
-    assert "Client file saved" in rollout
-    assert "Lecture N Quiz" in rollout
+    assert "Connect Notebook" in rollout
+    assert "no OAuth JSON upload" in rollout
+    assert "/public/quizzes" in rollout
+    assert "Lecture Outline" in rollout
+    assert "Not started" in rollout
+    assert "Completed" in rollout
     assert "canonical" in rollout.casefold()
     assert "exactly two source IDs" in rollout
     assert "@lmunet.edu" in rollout

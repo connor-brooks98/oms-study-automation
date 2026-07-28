@@ -368,7 +368,25 @@ class GenerationRepository:
         with self.database.session() as session:
             models = session.scalars(
                 select(GenerationJobModel).where(
-                    GenerationJobModel.state == GenerationState.RUNNING.value
+                    or_(
+                        GenerationJobModel.state
+                        == GenerationState.RUNNING.value,
+                        (
+                            (
+                                GenerationJobModel.state
+                                == GenerationState.PAUSED.value
+                            )
+                            & (
+                                GenerationJobModel.kind
+                                == GenerationKind.QUIZ.value
+                            )
+                            & (
+                                GenerationJobModel.stage
+                                == GenerationStage.DOCS.value
+                            )
+                            & GenerationJobModel.quiz_url.is_not(None)
+                        ),
+                    )
                 )
             ).all()
             for model in models:
@@ -485,8 +503,6 @@ class GenerationRepository:
         lecture_id: int,
         job_id: str,
         url: str,
-        *,
-        docs_synced: bool,
     ) -> QuizRecord:
         with self.database.session() as session:
             session.execute(
@@ -502,13 +518,13 @@ class GenerationRepository:
                     lecture_id=lecture_id,
                     job_id=job_id,
                     url=url,
-                    docs_synced=docs_synced,
+                    docs_synced=False,
                     current=True,
                 )
                 session.add(model)
             else:
                 model.url = url
-                model.docs_synced = docs_synced
+                model.docs_synced = False
                 model.current = True
             session.flush()
             return self._quiz(model)
@@ -561,6 +577,15 @@ class GenerationRepository:
                 if model is not None
                 else None
             )
+
+    def published_quizzes(self) -> tuple[PublishedQuizRecord, ...]:
+        with self.database.session() as session:
+            models = session.scalars(
+                select(PublishedQuizModel).order_by(
+                    PublishedQuizModel.lecture_id,
+                )
+            ).all()
+            return tuple(self._published_quiz(model) for model in models)
 
     def course_document(self, subject_key: str) -> CourseQuizDocumentModel | None:
         with self.database.session() as session:
@@ -696,7 +721,6 @@ class GenerationRepository:
             model.lecture_id,
             model.job_id,
             model.url,
-            model.docs_synced,
             model.current,
         )
 

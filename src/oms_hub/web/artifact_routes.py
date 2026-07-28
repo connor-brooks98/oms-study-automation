@@ -19,6 +19,7 @@ from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.naming import sanitize_filename
 from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import expanded_path
+from oms_hub.study_generation.domain import OutlineRecord
 from oms_hub.study_generation.repository import GenerationRepository
 
 router = APIRouter()
@@ -31,6 +32,15 @@ def outline_artifact(request: Request, outline_id: int) -> FileResponse:
     record = repository.outline(outline_id)
     if record is None:
         raise HTTPException(404, "outline was not found")
+    return outline_pdf_response(request, record)
+
+
+def outline_pdf_response(
+    request: Request,
+    record: OutlineRecord,
+    *,
+    cache_control: str = "private, no-store",
+) -> FileResponse:
     root = expanded_path(request.app.state.settings.study_root).resolve()
     path = record.path.resolve()
     if not path.is_relative_to(root):
@@ -45,7 +55,7 @@ def outline_artifact(request: Request, outline_id: int) -> FileResponse:
         path,
         media_type="application/pdf",
         headers={
-            "Cache-Control": "private, no-store",
+            "Cache-Control": cache_control,
             "Content-Disposition": f'inline; filename="{path.name}"',
         },
     )

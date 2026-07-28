@@ -32,14 +32,13 @@ from oms_hub.security.access import (
 from oms_hub.security.csrf import CsrfProtector, origin_is_allowed
 from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.slides.pipeline import SlidePipeline
-from oms_hub.study_generation.google_connection import (
-    GoogleConnectionService,
-    PlaywrightGoogleProbe,
-)
-from oms_hub.study_generation.google_docs import OAuthGoogleDocsGateway
 from oms_hub.study_generation.native_quiz import NativeQuizPublisher
 from oms_hub.study_generation.notebook import StoredNotebookLMGateway
 from oms_hub.study_generation.notebook_auth import NotebookCLIAuth
+from oms_hub.study_generation.notebook_connection import (
+    NotebookConnectionService,
+    retire_google_docs_credentials,
+)
 from oms_hub.study_generation.outline import OutlineService
 from oms_hub.study_generation.path_picker import SystemPromptPathPicker
 from oms_hub.study_generation.prompts import PromptFileService
@@ -50,8 +49,8 @@ from oms_hub.transcripts.pipeline import TranscriptPipeline as V2TranscriptPipel
 from oms_hub.transcripts.prompt import PromptLoader as V2PromptLoader
 from oms_hub.web.artifact_routes import router as artifact_router
 from oms_hub.web.generation_routes import (
-    google_router,
     lecture_router,
+    notebook_router,
 )
 from oms_hub.web.generation_routes import (
     router as generation_router,
@@ -101,7 +100,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         host = (request.url.hostname or "").lower().rstrip(".")
         local_hosts = {"127.0.0.1", "localhost", "testserver"}
         is_public = bool(resolved.public_hostname and host == resolved.public_hostname)
-        is_public_quiz = request.url.path.startswith("/public/quizzes/")
+        is_public_quiz = (
+            request.url.path == "/public/quizzes"
+            or request.url.path.startswith("/public/quizzes/")
+        )
 
         def harden(response: Response) -> Response:
             response.headers["Content-Security-Policy"] = (
@@ -242,6 +244,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     database.migrate()
     app.state.database = database
     app.state.secrets = KeyringSecretStore()
+    retire_google_docs_credentials(resolved.data_dir, app.state.secrets)
     app.state.llm_settings = LLMSettingsRepository(
         database,
         default_openai_model=resolved.openai_model,
@@ -265,15 +268,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved.data_dir / "google" / "notebooklm-storage.json"
     )
     app.state.notebook_auth = NotebookCLIAuth(notebook_storage_path)
-    app.state.google_connection = GoogleConnectionService(
+    app.state.notebook_connection = NotebookConnectionService(
         app.state.generation_repository,
-        app.state.secrets,
-        resolved.data_dir,
-        PlaywrightGoogleProbe(
-            resolved.data_dir,
-            app.state.secrets,
-            app.state.notebook_auth,
-        ),
+        app.state.notebook_auth,
     )
     app.state.prompt_path_picker = SystemPromptPathPicker()
     app.state.upload_staging = StagingService(
@@ -314,7 +311,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.ingestion_repository,
         app.state.generation_repository,
         prompt_files,
-        app.state.google_connection,
+        app.state.notebook_connection,
     )
     app.state.generation_worker = GenerationWorker(
         app.state.generation_repository,
@@ -330,12 +327,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.generation_repository,
             resolved,
         ),
-        OAuthGoogleDocsGateway(
-            app.state.generation_repository,
-            app.state.google_connection,
-            resolved,
-        ),
-        app.state.google_connection,
+        app.state.notebook_connection,
     )
     web_root = Path(__file__).parent / "web"
     app.mount(
@@ -349,7 +341,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(upload_router)
     app.include_router(quarantine_router)
     app.include_router(generation_router)
-    app.include_router(google_router)
+    app.include_router(notebook_router)
     app.include_router(lecture_router)
     app.include_router(public_quiz_router)
 

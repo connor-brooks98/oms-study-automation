@@ -113,49 +113,30 @@ test("settings wait for DOMContentLoaded while the page is loading", () => {
   assert.equal(starts, 1);
 });
 
-test("Google connecting state keeps every service in connecting state", () => {
-  const surfaces = ["notebook", "docs"].map((name) => ({
-    dataset: { googleSurface: name },
-    textContent: "",
-    className: "",
-  }));
+test("Notebook connecting state is rendered without Google Docs surfaces", () => {
   const badge = {
     textContent: "",
     classList: { toggle() {} },
   };
   const message = { textContent: "" };
-  const clientState = { textContent: "" };
   const card = {
     querySelector(selector) {
-      if (selector === "[data-google-badge]") return badge;
-      if (selector === "[data-google-status]") return message;
-      if (selector === "[data-google-client-state]") return clientState;
+      if (selector === "[data-notebook-badge]") return badge;
+      if (selector === "[data-notebook-status]") return message;
       throw new Error(`unexpected selector: ${selector}`);
-    },
-    querySelectorAll(selector) {
-      assert.equal(selector, "[data-google-surface]");
-      return surfaces;
     },
   };
 
-  settings.renderGoogleStatus(card, {
+  settings.renderNotebookStatus(card, {
     state: "connecting",
-    account_email: null,
-    surfaces: [],
     message: "Complete Google sign-in in the browser window.",
-    oauth_client_configured: true,
   });
 
   assert.equal(badge.textContent, "Connecting");
-  assert.deepEqual(
-    surfaces.map((surface) => surface.textContent),
-    ["connecting", "connecting"],
-  );
   assert.equal(
     message.textContent,
     "Complete Google sign-in in the browser window.",
   );
-  assert.equal(clientState.textContent, "Client file saved.");
 });
 
 test("prompt action changes from select to save after a path is chosen", () => {

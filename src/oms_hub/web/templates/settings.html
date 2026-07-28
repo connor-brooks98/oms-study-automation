@@ -104,37 +104,26 @@
     <div class="settings-section-heading">
       <div>
         <p class="mono-label">Account connection</p>
-        <h2 id="google-heading">Google workspace</h2>
-        <p>Connect the Google account used for NotebookLM and shared quiz documents.</p>
+        <h2 id="google-heading">Gemini Notebook</h2>
+        <p>Connect the Google account used to generate lecture outlines and quizzes.</p>
       </div>
     </div>
 
-    <article class="card provider-card" data-google-card>
+    <article class="card provider-card" data-notebook-card>
       <div class="provider-card-heading">
         <div>
-          <p class="provider-kicker">NotebookLM · Google Docs</p>
-          <h3>Google account</h3>
+          <p class="provider-kicker">Gemini Notebook</p>
+          <h3>Notebook account</h3>
         </div>
-        <span class="credential-state" data-google-badge>Not connected</span>
+        <span class="credential-state" data-notebook-badge>Not connected</span>
       </div>
-      <p class="field-help">Save the Docs client once. Connect Google renews the browser login when either authorization needs attention.</p>
-      <div class="compact-checklist" aria-label="Google service connection status">
-        <p>NotebookLM <span class="status-pill" data-google-surface="notebook">Not connected</span></p>
-        <p>Google Docs <span class="status-pill" data-google-surface="docs">Not connected</span></p>
-      </div>
-      <div class="provider-field">
-        <label for="google-oauth-client">OAuth client JSON</label>
-        <input id="google-oauth-client" type="file" accept=".json,application/json" data-google-oauth-client>
-        <p class="field-help">One-time setup: choose the Desktop app client file downloaded from Google Cloud. The browser clears the chosen filename after a reload; the saved status below is authoritative.</p>
-        <p class="field-message" data-google-client-state>{{ "Client file saved." if google_status.oauth_client_configured else "Client file not saved." }}</p>
-      </div>
+      <p class="field-help">Connect opens a browser window on the Study Hub device. Sign in once with the Google account you use at notebook.google.com.</p>
       <div class="provider-buttons">
-        <button class="button secondary" type="button" data-google-save-client>Save client file</button>
-        <button class="button primary" type="button" data-google-connect>Connect Google</button>
-        <button class="button secondary" type="button" data-google-test>Test connection</button>
+        <button class="button primary" type="button" data-notebook-connect>Connect Notebook</button>
+        <button class="button secondary" type="button" data-notebook-test>Test connection</button>
       </div>
-      <p class="field-message" data-google-status aria-live="polite">
-        Connect your account to enable NotebookLM generation and shared quiz documents.
+      <p class="field-message" data-notebook-status aria-live="polite">
+        Connect your account to enable Gemini Notebook generation.
       </p>
     </article>
   </section>
@@ -182,5 +171,5 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/settings.js?v=20260728.1" defer></script>
+<script src="/static/settings.js?v=20260728.2" defer></script>
 {% endblock %}

@@ -60,38 +60,20 @@ Open Study Hub **Settings → Notebook prompts**. For each prompt:
 Study Hub reads the latest file content when a job starts, so later prompt
 edits require no code change.
 
-## 3. Connect Google once
+## 3. Connect Gemini Notebook once
 
-In Google Cloud Console:
+On the NUC itself, or through Remote Desktop, open **Settings → Gemini
+Notebook**:
 
-1. Enable the Google Docs API and Google Drive API.
-2. Configure the OAuth consent screen for the Google account that owns the
-   NotebookLM notebooks, Gemini Quiz Gem, and quiz documents.
-3. While the OAuth app is in testing mode, add that email under **Test users**.
-4. Create an OAuth client with application type **Desktop app**.
-5. Download its JSON file to the NUC.
+1. Select **Connect Notebook**.
+2. Complete Google sign-in in the Chrome window opened by Study Hub.
+3. Return to Settings and select **Test connection**.
+4. Confirm Gemini Notebook shows **Connected**.
 
-On the NUC itself, or through Remote Desktop, open **Settings → Google
-workspace**:
-
-1. Choose the downloaded **OAuth client JSON** and select **Save client file**.
-2. Select **Connect Google**.
-3. Complete OAuth consent in the browser.
-4. In the Google Chrome window opened by Study Hub, sign in to the same
-   account in Gemini and NotebookLM.
-5. Leave the browser windows open until Study Hub finishes checking all three
-   services.
-6. Return to Settings and select **Test connection**. NotebookLM, Gemini, and
-   Google Docs should each show **connected**.
-
-If a service fails, Settings now names the affected surface and the next action.
-Select **Connect Google** again after correcting the issue; each attempt requests
-fresh consent and an abandoned sign-in attempt expires after five minutes.
-
-The OAuth refresh token is kept in Windows Credential Manager. The OAuth client
-file, browser profile, and NotebookLM storage state are owner-only files below
-`C:\ProgramData\OMSStudyHub\google`; they must not be copied into Git or a
-release archive.
+No Google Cloud project, OAuth client JSON, Google Docs API, or Drive API is
+required. If the login expires, select **Connect Notebook** again. The Notebook
+storage state remains an owner-only file below the Study Hub data directory and
+must not be copied into Git or a release archive.
 
 ## 4. One-lecture acceptance test
 

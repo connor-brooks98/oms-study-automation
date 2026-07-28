@@ -8,8 +8,6 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.14"
 dependencies = [
   "fastapi>=0.115,<1",
-  "google-api-python-client>=2.180,<3",
-  "google-auth-oauthlib>=1.2,<2",
   "httpx>=0.28,<1",
   "jinja2>=3.1,<4",
   "keyring>=25,<26",

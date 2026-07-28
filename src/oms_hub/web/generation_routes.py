@@ -1,7 +1,7 @@
 import threading
 from typing import Annotated, cast
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -10,11 +10,9 @@ from oms_hub.study_generation.domain import (
     GenerationKind,
     PromptKind,
 )
-from oms_hub.study_generation.google_connection import (
-    GoogleConnectionService,
-    GoogleConnectionStatus,
-    GoogleSurface,
-    GoogleSurfaceStatus,
+from oms_hub.study_generation.notebook_connection import (
+    NotebookConnectionService,
+    NotebookConnectionStatus,
 )
 from oms_hub.study_generation.path_picker import PromptPathPicker
 from oms_hub.study_generation.prompts import PromptConfigurationError, PromptFileService
@@ -45,24 +43,19 @@ def _kind(value: str) -> PromptKind:
         raise HTTPException(404, "prompt kind was not found") from error
 
 
-def _google(request: Request) -> GoogleConnectionService:
-    return cast(GoogleConnectionService, request.app.state.google_connection)
+def _notebook(request: Request) -> NotebookConnectionService:
+    return cast(
+        NotebookConnectionService,
+        request.app.state.notebook_connection,
+    )
 
 
-def _google_payload(status: GoogleConnectionStatus) -> dict[str, object]:
+def _notebook_payload(
+    status: NotebookConnectionStatus,
+) -> dict[str, object]:
     return {
         "state": status.state,
-        "account_email": status.account_email,
-        "surfaces": [
-            {
-                "name": surface.name,
-                "state": surface.state,
-                "message": surface.message,
-            }
-            for surface in status.surfaces
-        ],
         "message": status.message,
-        "oauth_client_configured": status.oauth_client_configured,
     }
 
 
@@ -123,7 +116,7 @@ def select_prompt_path(request: Request, kind: str) -> JSONResponse:
     )
 
 
-google_router = APIRouter(prefix="/settings/google")
+notebook_router = APIRouter(prefix="/settings/notebook")
 lecture_router = APIRouter(prefix="/lectures")
 
 
@@ -204,60 +197,36 @@ def queue_quiz(request: Request, lecture_id: int) -> JSONResponse:
     return _queue_generation(request, lecture_id, GenerationKind.QUIZ)
 
 
-@google_router.get("/status")
-def google_status(request: Request) -> JSONResponse:
+@notebook_router.get("/status")
+def notebook_status(request: Request) -> JSONResponse:
     return JSONResponse(
-        _google_payload(_google(request).status()),
+        _notebook_payload(_notebook(request).status()),
         headers={"Cache-Control": "no-store"},
     )
 
 
-@google_router.post("/oauth-client")
-async def save_google_oauth_client(
-    request: Request,
-    client_file: Annotated[UploadFile, File()],
-) -> JSONResponse:
-    payload = await client_file.read(64 * 1024 + 1)
-    if len(payload) > 64 * 1024:
-        raise HTTPException(413, "OAuth client file is too large")
-    try:
-        status = _google(request).save_oauth_client(payload)
-    except ValueError as error:
-        raise HTTPException(422, str(error)) from error
+@notebook_router.post("/test")
+def test_notebook(request: Request) -> JSONResponse:
     return JSONResponse(
-        {"configured": status.configured},
+        _notebook_payload(_notebook(request).test()),
         headers={"Cache-Control": "no-store"},
     )
 
 
-@google_router.post("/test")
-def test_google(request: Request) -> JSONResponse:
-    return JSONResponse(
-        _google_payload(_google(request).test()),
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-@google_router.post("/connect", status_code=202)
-def connect_google(request: Request) -> JSONResponse:
+@notebook_router.post("/connect", status_code=202)
+def connect_notebook(request: Request) -> JSONResponse:
     thread = threading.Thread(
-        target=_google(request).start_interactive,
-        name="oms-google-connect",
+        target=_notebook(request).start_interactive,
+        name="oms-notebook-connect",
         daemon=True,
     )
     thread.start()
-    connecting = GoogleConnectionStatus(
+    connecting = NotebookConnectionStatus(
         "connecting",
-        None,
-        tuple(
-            GoogleSurfaceStatus(surface.value, "connecting")
-            for surface in GoogleSurface
-        ),
         "Complete Google sign-in in the browser window.",
-        _google(request).status().oauth_client_configured,
     )
     return JSONResponse(
-        _google_payload(connecting),
+        _notebook_payload(connecting),
         status_code=202,
         headers={"Cache-Control": "no-store"},
     )

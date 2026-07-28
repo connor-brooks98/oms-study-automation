@@ -23,13 +23,13 @@ class GenerationService:
         ingestion: Any,
         jobs: Any,
         prompts: Any,
-        google: Any,
+        notebook_connection: Any,
     ):
         self.catalog = catalog
         self.ingestion = ingestion
         self.jobs = jobs
         self.prompts = prompts
-        self.google = google
+        self.notebook_connection = notebook_connection
 
     def queue_outline(self, lecture_id: int) -> GenerationJob:
         return self._queue(lecture_id, GenerationKind.OUTLINE)
@@ -54,20 +54,24 @@ class GenerationService:
             raise GenerationPrerequisiteError(
                 "Current lecture PDF and cleaned transcript are required"
             )
-        live_check = getattr(self.google, "require_live", None)
+        live_check = getattr(
+            self.notebook_connection,
+            "require_live",
+            None,
+        )
         try:
-            google_status = (
+            notebook_status = (
                 live_check()
                 if live_check is not None
-                else self.google.status()
+                else self.notebook_connection.status()
             )
         except Exception as error:
             raise GenerationPrerequisiteError(
-                "Reconnect Google in Settings before generating"
+                "Reconnect Gemini Notebook in Settings before generating"
             ) from error
-        if google_status.state != "connected":
+        if notebook_status.state != "connected":
             raise GenerationPrerequisiteError(
-                "Connect Google in Settings before generating"
+                "Connect Gemini Notebook in Settings before generating"
             )
         prompt_kind = (
             PromptKind.OUTLINE

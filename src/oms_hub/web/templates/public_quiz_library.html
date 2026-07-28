@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#273958">
+  <title>Course Quiz Library · Study Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/public/quizzes/assets/library.css">
+</head>
+<body>
+  <main class="public-library" data-quiz-library>
+    <header class="library-heading">
+      <div>
+        <p class="eyebrow">Study Hub</p>
+        <h1>Course quiz library</h1>
+        <p>Choose a course, exam, and lecture quiz.</p>
+      </div>
+      <button class="button secondary" type="button" data-reset-progress>Reset quiz progress</button>
+    </header>
+
+    {% if courses %}
+    <div class="course-list">
+      {% for course in courses %}
+      {% set course_index = loop.index %}
+      <section class="course-card">
+        <button class="disclosure course-button" type="button" aria-expanded="{{ 'true' if loop.first else 'false' }}" aria-controls="course-{{ loop.index }}">
+          <span>{{ course.name }}</span>
+          <span class="count">{{ course.quiz_count }} quiz{{ '' if course.quiz_count == 1 else 'zes' }}</span>
+        </button>
+        <div id="course-{{ loop.index }}" class="course-content" {% if not loop.first %}hidden{% endif %}>
+          {% for exam in course.exams %}
+          <section class="exam-card">
+            <button class="disclosure exam-button" type="button" aria-expanded="{{ 'true' if loop.first else 'false' }}" aria-controls="course-{{ course_index }}-exam-{{ loop.index }}">
+              <span>Exam {{ exam.number }}</span>
+              <span class="chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div id="course-{{ course_index }}-exam-{{ loop.index }}" class="lecture-list" {% if not loop.first %}hidden{% endif %}>
+              {% for row in exam.quizzes %}
+              <article class="lecture-row">
+                <a class="quiz-link" href="{{ row.url }}" data-quiz-row data-quiz-token="{{ row.token }}" data-quiz-version="{{ row.version }}">
+                  <span>
+                    <strong>Lecture {{ row.lecture_number }}</strong>
+                    <small>{{ row.topic }}</small>
+                  </span>
+                  <span class="progress-pill" data-quiz-progress>Not started</span>
+                </a>
+                {% if row.outline_url %}
+                <a class="button outline-button" href="{{ row.outline_url }}" target="_blank" rel="noopener">Lecture Outline</a>
+                {% endif %}
+              </article>
+              {% endfor %}
+            </div>
+          </section>
+          {% endfor %}
+        </div>
+      </section>
+      {% endfor %}
+    </div>
+    {% else %}
+    <section class="empty-state">
+      <h2>No quizzes are published yet</h2>
+      <p>Published lecture quizzes will appear here automatically.</p>
+    </section>
+    {% endif %}
+    <p class="reset-message" data-reset-message aria-live="polite"></p>
+  </main>
+  <script src="/public/quizzes/assets/library.js" defer></script>
+</body>
+</html>

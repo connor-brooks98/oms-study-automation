@@ -28,10 +28,9 @@ HOTFIX_FILES = (
     "src/oms_hub/routing.py",
     "src/oms_hub/study_generation/__init__.py",
     "src/oms_hub/study_generation/domain.py",
-    "src/oms_hub/study_generation/google_connection.py",
-    "src/oms_hub/study_generation/google_docs.py",
     "src/oms_hub/study_generation/native_quiz.py",
     "src/oms_hub/study_generation/notebook.py",
+    "src/oms_hub/study_generation/notebook_connection.py",
     "src/oms_hub/study_generation/outline.py",
     "src/oms_hub/study_generation/prompts.py",
     "src/oms_hub/study_generation/repository.py",
@@ -48,6 +47,8 @@ HOTFIX_FILES = (
     "src/oms_hub/web/static/app.css",
     "src/oms_hub/web/static/public_quiz.css",
     "src/oms_hub/web/static/public_quiz.js",
+    "src/oms_hub/web/static/public_quiz_library.css",
+    "src/oms_hub/web/static/public_quiz_library.js",
     "src/oms_hub/web/static/settings.js",
     "src/oms_hub/web/static/lecture.js",
     "src/oms_hub/web/static/uploads.js",
@@ -55,6 +56,7 @@ HOTFIX_FILES = (
     "src/oms_hub/web/templates/settings.html",
     "src/oms_hub/web/templates/lecture.html",
     "src/oms_hub/web/templates/public_quiz.html",
+    "src/oms_hub/web/templates/public_quiz_library.html",
     "src/oms_hub/web/templates/uploads.html",
 )
 
@@ -99,7 +101,7 @@ def _source_files(root: Path) -> tuple[str, ...]:
         sorted(
             path
             for path in result.stdout.splitlines()
-            if path and _allowed(path)
+            if path and _allowed(path) and (root / path).is_file()
         )
     )
     if not files:

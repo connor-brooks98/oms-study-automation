@@ -50,7 +50,7 @@ class NotebookCLIAuth:
             )
         except subprocess.TimeoutExpired as error:
             raise RuntimeError(
-                "NotebookLM login timed out. Connect Google again."
+                "Gemini Notebook login timed out. Connect Notebook again."
             ) from error
         except FileNotFoundError as error:
             raise RuntimeError(

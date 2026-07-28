@@ -100,7 +100,9 @@ def settings_page(request: Request) -> HTMLResponse:
             "active_provider": _llm_settings(
                 request
             ).active().provider.value,
-            "google_status": request.app.state.google_connection.status(),
+            "notebook_status": (
+                request.app.state.notebook_connection.status()
+            ),
             "prompt_settings": tuple(
                 {
                     "kind": kind.value,

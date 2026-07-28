@@ -50,6 +50,23 @@ def test_claim_and_recovery_preserve_recorded_stage(tmp_path):
     assert recovered.stage is GenerationStage.GEMINI
 
 
+def test_recovery_requeues_paused_legacy_docs_job_with_published_url(tmp_path):
+    repository, lecture_id = prepared_repository(tmp_path)
+    job = repository.queue(lecture_id, GenerationKind.QUIZ)
+    repository.advance(
+        job.id,
+        GenerationStage.DOCS,
+        quiz_url="https://study.example.com/public/quizzes/" + "a" * 64,
+    )
+    repository.fail(job.id, "Google Docs authorization expired", paused=True)
+
+    assert repository.recover_interrupted() == 1
+    recovered = repository.get(job.id)
+    assert recovered.state is GenerationState.QUEUED
+    assert recovered.stage is GenerationStage.DOCS
+    assert recovered.quiz_url is not None
+
+
 def _quiz(title="Seizures"):
     return parse_native_quiz(
         json.dumps(
