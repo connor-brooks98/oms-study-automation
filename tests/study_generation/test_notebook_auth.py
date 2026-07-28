@@ -50,6 +50,7 @@ def test_login_uses_system_chrome_and_exact_worker_storage(tmp_path):
             str(tmp_path / "notebooklm-storage.json"),
             "--browser",
             "chrome",
+            "--fresh",
         ]
     ]
     assert runner.options[0]["shell"] is False

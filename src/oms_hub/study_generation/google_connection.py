@@ -445,6 +445,7 @@ def _safe_surface_error(
     if (
         "sign-in" in message
         or "sign in" in message
+        or "login" in message
         or "not connected" in message
     ):
         return f"{label} needs sign-in."

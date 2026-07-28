@@ -41,7 +41,7 @@ class Probe:
 class FailedProbe:
     def account_email(self, surface):
         errors = {
-            GoogleSurface.NOTEBOOK: "notebook sign-in is required",
+            GoogleSurface.NOTEBOOK: "NotebookLM login is required",
             GoogleSurface.DOCS: "invalid_grant",
         }
         raise RuntimeError(errors[surface])

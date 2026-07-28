@@ -37,6 +37,7 @@ class NotebookCLIAuth:
                 str(self.storage_path),
                 "--browser",
                 "chrome",
+                "--fresh",
                 include_root_storage=False,
                 timeout=330,
             )
