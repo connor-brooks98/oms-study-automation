@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Protocol
 
 from oms_hub.security.secret_store import SecretStore
-from oms_hub.study_generation.browser_profile import launch_google_profile
+from oms_hub.study_generation.notebook_auth import NotebookCLIAuth
 from oms_hub.study_generation.repository import GenerationRepository
 
 CONNECTED_EMAIL_KEY = "google-connected-email"
@@ -238,21 +238,69 @@ class GoogleConnectionService:
 
 
 class PlaywrightGoogleProbe:
-    """Headed NUC browser profile used for NotebookLM sign-in."""
+    """Google Docs OAuth and NotebookLM CLI authentication probe."""
 
-    def __init__(self, data_dir: Path, secrets: SecretStore):
+    def __init__(
+        self,
+        data_dir: Path,
+        secrets: SecretStore,
+        notebook_auth: NotebookCLIAuth | None = None,
+    ):
         self.root = (data_dir / "google").resolve()
-        self.profile = self.root / "browser-profile"
         self.storage_state = self.root / "notebooklm-storage.json"
         self.secrets = secrets
         self.oauth_clients = GoogleOAuthClientStore(data_dir)
+        self.notebook_auth = notebook_auth or NotebookCLIAuth(self.storage_state)
 
     def start_interactive(self) -> None:
-        from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore[import-untyped]
-        from playwright.sync_api import sync_playwright
-
         if not self.oauth_clients.status().configured:
             raise RuntimeError("Google OAuth client is not configured")
+        self._connect_docs()
+        self.notebook_auth.login()
+        notebook_check = self.notebook_auth.check()
+        if not notebook_check.connected:
+            raise RuntimeError(
+                notebook_check.message or "NotebookLM login is required."
+            )
+
+    def account_email(self, surface: GoogleSurface) -> str:
+        email = self.secrets.get(CONNECTED_EMAIL_KEY)
+        if not email:
+            raise RuntimeError(f"{surface.value} account is not connected")
+        if surface is GoogleSurface.DOCS:
+            refresh_token = self.secrets.get(OAUTH_REFRESH_TOKEN_KEY)
+            if not refresh_token or not self.oauth_clients.status().configured:
+                raise RuntimeError("Google Docs account is not connected")
+            return _oauth_email(
+                _stored_oauth_credentials(
+                    self.oauth_clients,
+                    refresh_token,
+                )
+            )
+        notebook_check = self.notebook_auth.check()
+        if not notebook_check.connected:
+            raise RuntimeError(
+                notebook_check.message or "NotebookLM sign-in is required"
+            )
+        return email
+
+    def _connect_docs(self) -> None:
+        refresh_token = self.secrets.get(OAUTH_REFRESH_TOKEN_KEY)
+        if refresh_token:
+            try:
+                credentials = _stored_oauth_credentials(
+                    self.oauth_clients,
+                    refresh_token,
+                )
+                email = _oauth_email(credentials)
+            except Exception:  # noqa: BLE001 - invalid token falls through to OAuth
+                refresh_token = None
+            else:
+                self.secrets.set(CONNECTED_EMAIL_KEY, email)
+                return
+
+        from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore[import-untyped]
+
         flow = InstalledAppFlow.from_client_secrets_file(
             str(self.oauth_clients.path),
             scopes=GOOGLE_SCOPES,
@@ -266,82 +314,34 @@ class PlaywrightGoogleProbe:
             access_type="offline",
             prompt="consent",
         )
-        refresh_token = credentials.refresh_token or self.secrets.get(
-            OAUTH_REFRESH_TOKEN_KEY
-        )
+        refresh_token = credentials.refresh_token or refresh_token
         if not refresh_token:
             raise RuntimeError("Google did not provide a reusable login")
         email = _oauth_email(credentials)
         self.secrets.set(OAUTH_REFRESH_TOKEN_KEY, refresh_token)
         self.secrets.set(CONNECTED_EMAIL_KEY, email)
 
-        self.root.mkdir(parents=True, exist_ok=True)
-        if os.name != "nt":
-            self.root.chmod(0o700)
-        with sync_playwright() as playwright:
-            context = launch_google_profile(
-                playwright.chromium,
-                self.profile,
-                headless=False,
-            )
-            try:
-                page = context.pages[0] if context.pages else context.new_page()
-                page.goto(
-                    "https://notebooklm.google.com/",
-                    wait_until="domcontentloaded",
-                )
-                page.wait_for_timeout(120_000)
-                context.storage_state(path=str(self.storage_state))
-                if os.name != "nt":
-                    self.storage_state.chmod(0o600)
-            finally:
-                context.close()
 
-    def account_email(self, surface: GoogleSurface) -> str:
-        email = self.secrets.get(CONNECTED_EMAIL_KEY)
-        if not email:
-            raise RuntimeError(f"{surface.value} account is not connected")
-        if surface is GoogleSurface.DOCS:
-            refresh_token = self.secrets.get(OAUTH_REFRESH_TOKEN_KEY)
-            if not refresh_token or not self.oauth_clients.status().configured:
-                raise RuntimeError("Google Docs account is not connected")
-            installed = json.loads(
-                self.oauth_clients.path.read_text(encoding="utf-8")
-            )["installed"]
-            from google.oauth2.credentials import Credentials
+def _stored_oauth_credentials(
+    oauth_clients: GoogleOAuthClientStore,
+    refresh_token: str,
+) -> object:
+    installed = json.loads(
+        oauth_clients.path.read_text(encoding="utf-8")
+    )["installed"]
+    from google.oauth2.credentials import Credentials
 
-            credentials = Credentials(  # type: ignore[no-untyped-call]
-                token=None,
-                refresh_token=refresh_token,
-                token_uri=installed.get(
-                    "token_uri",
-                    "https://oauth2.googleapis.com/token",
-                ),
-                client_id=installed["client_id"],
-                client_secret=installed["client_secret"],
-                scopes=GOOGLE_SCOPES,
-            )
-            return _oauth_email(credentials)
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as playwright:
-            context = launch_google_profile(
-                playwright.chromium,
-                self.profile,
-                headless=True,
-            )
-            try:
-                page = context.pages[0] if context.pages else context.new_page()
-                page.goto(
-                    "https://notebooklm.google.com/",
-                    wait_until="domcontentloaded",
-                    timeout=30_000,
-                )
-                if "accounts.google.com" in page.url:
-                    raise RuntimeError(f"{surface.value} sign-in is required")
-            finally:
-                context.close()
-        return email
+    return Credentials(  # type: ignore[no-untyped-call]
+        token=None,
+        refresh_token=refresh_token,
+        token_uri=installed.get(
+            "token_uri",
+            "https://oauth2.googleapis.com/token",
+        ),
+        client_id=installed["client_id"],
+        client_secret=installed["client_secret"],
+        scopes=GOOGLE_SCOPES,
+    )
 
 
 def _oauth_email(credentials: object) -> str:

@@ -39,6 +39,7 @@ from oms_hub.study_generation.google_connection import (
 from oms_hub.study_generation.google_docs import OAuthGoogleDocsGateway
 from oms_hub.study_generation.native_quiz import NativeQuizPublisher
 from oms_hub.study_generation.notebook import StoredNotebookLMGateway
+from oms_hub.study_generation.notebook_auth import NotebookCLIAuth
 from oms_hub.study_generation.outline import OutlineService
 from oms_hub.study_generation.path_picker import SystemPromptPathPicker
 from oms_hub.study_generation.prompts import PromptFileService
@@ -260,11 +261,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.catalog_repository = CatalogRepository(database)
     app.state.ingestion_repository = IngestionRepository(database)
     app.state.generation_repository = GenerationRepository(database)
+    notebook_storage_path = (
+        resolved.data_dir / "google" / "notebooklm-storage.json"
+    )
+    app.state.notebook_auth = NotebookCLIAuth(notebook_storage_path)
     app.state.google_connection = GoogleConnectionService(
         app.state.generation_repository,
         app.state.secrets,
         resolved.data_dir,
-        PlaywrightGoogleProbe(resolved.data_dir, app.state.secrets),
+        PlaywrightGoogleProbe(
+            resolved.data_dir,
+            app.state.secrets,
+            app.state.notebook_auth,
+        ),
     )
     app.state.prompt_path_picker = SystemPromptPathPicker()
     app.state.upload_staging = StagingService(
@@ -313,7 +322,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.ingestion_repository,
         prompt_files,
         StoredNotebookLMGateway(
-            resolved.data_dir / "google" / "notebooklm-storage.json",
+            notebook_storage_path,
             app.state.generation_repository,
         ),
         OutlineService(resolved, app.state.generation_repository),

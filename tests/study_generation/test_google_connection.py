@@ -2,13 +2,17 @@ import json
 import stat
 from dataclasses import dataclass
 
+import pytest
+
 from oms_hub.db import Database
 from oms_hub.study_generation.browser_profile import launch_google_profile
 from oms_hub.study_generation.google_connection import (
     GoogleConnectionService,
     GoogleOAuthClientStore,
     GoogleSurface,
+    PlaywrightGoogleProbe,
 )
+from oms_hub.study_generation.notebook_auth import NotebookAuthCheck
 from oms_hub.study_generation.repository import GenerationRepository
 
 
@@ -51,6 +55,23 @@ class BrowserLauncher:
     def launch_persistent_context(self, **options):
         self.options = options
         return self.context
+
+
+class NotebookAuth:
+    def __init__(self, *, connected=True):
+        self.connected = connected
+        self.login_calls = 0
+        self.check_calls = 0
+
+    def login(self):
+        self.login_calls += 1
+
+    def check(self):
+        self.check_calls += 1
+        return NotebookAuthCheck(
+            self.connected,
+            None if self.connected else "NotebookLM login is required.",
+        )
 
 
 def test_connected_status_requires_same_account_on_all_surfaces(tmp_path):
@@ -146,6 +167,44 @@ def test_connection_test_reports_safe_actionable_surface_failures(tmp_path):
         "Google Docs authorization expired; connect Google again.",
     ]
     assert "invalid_grant" not in repr(status)
+
+
+def test_notebook_surface_uses_live_cli_auth_check(tmp_path):
+    secrets = MemorySecrets()
+    secrets.set("google-connected-email", "student@example.com")
+    notebook_auth = NotebookAuth(connected=False)
+    probe = PlaywrightGoogleProbe(tmp_path, secrets, notebook_auth)
+
+    with pytest.raises(RuntimeError, match="login is required"):
+        probe.account_email(GoogleSurface.NOTEBOOK)
+
+    assert notebook_auth.check_calls == 1
+
+
+def test_interactive_connection_runs_notebook_cli_login(
+    monkeypatch,
+    tmp_path,
+):
+    secrets = MemorySecrets()
+    notebook_auth = NotebookAuth()
+    probe = PlaywrightGoogleProbe(tmp_path, secrets, notebook_auth)
+    probe.oauth_clients.save(
+        json.dumps(
+            {
+                "installed": {
+                    "client_id": "client.apps.googleusercontent.com",
+                    "client_secret": "secret-value",
+                    "redirect_uris": ["http://localhost"],
+                }
+            }
+        ).encode()
+    )
+    monkeypatch.setattr(probe, "_connect_docs", lambda: None)
+
+    probe.start_interactive()
+
+    assert notebook_auth.login_calls == 1
+    assert notebook_auth.check_calls == 1
 
 
 def test_google_profile_uses_system_chrome_without_automation_marker(tmp_path):
