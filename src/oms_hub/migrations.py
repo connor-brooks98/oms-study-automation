@@ -12,7 +12,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 5
+LATEST_SCHEMA_VERSION = 6
 
 
 def migrate_database(database: "Database") -> None:
@@ -27,6 +27,20 @@ def migrate_database(database: "Database") -> None:
                 text(
                     "ALTER TABLE study_usage ADD COLUMN provider "
                     "VARCHAR(30) NOT NULL DEFAULT 'openai'"
+                )
+            )
+    source_columns = {
+        column["name"]
+        for column in inspect(database.engine).get_columns(
+            "notebook_source_mappings"
+        )
+    }
+    if "display_title" not in source_columns:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE notebook_source_mappings "
+                    "ADD COLUMN display_title VARCHAR(500) NOT NULL DEFAULT ''"
                 )
             )
     with database.session() as session:

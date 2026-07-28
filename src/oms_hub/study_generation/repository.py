@@ -1,3 +1,4 @@
+import re
 import secrets
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -13,6 +14,8 @@ from oms_hub.models import (
     ExamQuizTabModel,
     GenerationJobModel,
     GoogleConnectionModel,
+    NotebookMappingModel,
+    NotebookSourceMappingModel,
     OutlineOutputModel,
     PublishedQuizModel,
     QuizOutputModel,
@@ -24,10 +27,13 @@ from oms_hub.study_generation.domain import (
     GenerationStage,
     GenerationState,
     NativeQuiz,
+    NotebookMapping,
+    NotebookSourceBinding,
     OutlineRecord,
     PromptKind,
     PublishedQuizRecord,
     QuizRecord,
+    SourceKind,
 )
 from oms_hub.study_generation.native_quiz import (
     parse_native_quiz,
@@ -133,6 +139,145 @@ class GenerationRepository:
                 return None
             session.expunge(model)
             return model
+
+    def notebook_mapping(
+        self,
+        subject_key: str,
+        exam_number: int,
+    ) -> NotebookMapping | None:
+        with self.database.session() as session:
+            model = session.scalar(
+                select(NotebookMappingModel).where(
+                    NotebookMappingModel.subject_key == subject_key,
+                    NotebookMappingModel.exam_number == exam_number,
+                )
+            )
+            return self._notebook_mapping(model) if model is not None else None
+
+    def save_notebook_mapping(
+        self,
+        subject: str,
+        subject_key: str,
+        exam_number: int,
+        remote_notebook_id: str,
+        title: str,
+    ) -> NotebookMapping:
+        normalized_subject = subject.strip()
+        normalized_key = subject_key.strip()
+        normalized_remote_id = remote_notebook_id.strip()
+        normalized_title = title.strip()
+        if (
+            not normalized_subject
+            or not normalized_key
+            or not normalized_remote_id
+            or not normalized_title
+        ):
+            raise ValueError("notebook mapping fields cannot be empty")
+        with self.database.session() as session:
+            model = session.scalar(
+                select(NotebookMappingModel).where(
+                    NotebookMappingModel.subject_key == normalized_key,
+                    NotebookMappingModel.exam_number == exam_number,
+                )
+            )
+            if model is None:
+                model = NotebookMappingModel(
+                    subject=normalized_subject,
+                    subject_key=normalized_key,
+                    exam_number=exam_number,
+                    remote_notebook_id=normalized_remote_id,
+                    title=normalized_title,
+                )
+                session.add(model)
+            else:
+                model.subject = normalized_subject
+                model.remote_notebook_id = normalized_remote_id
+                model.title = normalized_title
+            session.flush()
+            return self._notebook_mapping(model)
+
+    def source_binding(
+        self,
+        notebook_mapping_id: int,
+        lecture_id: int,
+        source_kind: SourceKind,
+    ) -> NotebookSourceBinding | None:
+        with self.database.session() as session:
+            model = session.scalar(
+                select(NotebookSourceMappingModel)
+                .where(
+                    NotebookSourceMappingModel.notebook_mapping_id
+                    == notebook_mapping_id,
+                    NotebookSourceMappingModel.lecture_id == lecture_id,
+                    NotebookSourceMappingModel.source_kind == source_kind.value,
+                    NotebookSourceMappingModel.state == "ready",
+                )
+                .order_by(
+                    NotebookSourceMappingModel.verified_at.desc(),
+                    NotebookSourceMappingModel.id.desc(),
+                )
+            )
+            return self._source_binding(model) if model is not None else None
+
+    def bind_source(
+        self,
+        notebook_mapping_id: int,
+        lecture_id: int,
+        revision_id: int,
+        source_kind: SourceKind,
+        source_sha256: str,
+        remote_source_id: str,
+        display_title: str,
+    ) -> NotebookSourceBinding:
+        normalized_remote_id = remote_source_id.strip()
+        normalized_title = display_title.strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", source_sha256):
+            raise ValueError("source fingerprint is invalid")
+        if not normalized_remote_id or not normalized_title:
+            raise ValueError("source binding fields cannot be empty")
+        with self.database.session() as session:
+            session.execute(
+                update(NotebookSourceMappingModel)
+                .where(
+                    NotebookSourceMappingModel.notebook_mapping_id
+                    == notebook_mapping_id,
+                    NotebookSourceMappingModel.lecture_id == lecture_id,
+                    NotebookSourceMappingModel.source_kind == source_kind.value,
+                    NotebookSourceMappingModel.state == "ready",
+                )
+                .values(state="superseded")
+            )
+            model = session.scalar(
+                select(NotebookSourceMappingModel).where(
+                    NotebookSourceMappingModel.notebook_mapping_id
+                    == notebook_mapping_id,
+                    NotebookSourceMappingModel.study_revision_id == revision_id,
+                    NotebookSourceMappingModel.source_kind == source_kind.value,
+                )
+            )
+            verified_at = datetime.now(UTC).isoformat()
+            if model is None:
+                model = NotebookSourceMappingModel(
+                    notebook_mapping_id=notebook_mapping_id,
+                    lecture_id=lecture_id,
+                    study_revision_id=revision_id,
+                    source_kind=source_kind.value,
+                    source_sha256=source_sha256,
+                    remote_source_id=normalized_remote_id,
+                    display_title=normalized_title,
+                    state="ready",
+                    verified_at=verified_at,
+                )
+                session.add(model)
+            else:
+                model.lecture_id = lecture_id
+                model.source_sha256 = source_sha256
+                model.remote_source_id = normalized_remote_id
+                model.display_title = normalized_title
+                model.state = "ready"
+                model.verified_at = verified_at
+            session.flush()
+            return self._source_binding(model)
 
     def claim_next(self, now: datetime) -> GenerationJob | None:
         with self.database.session() as session:
@@ -552,4 +697,31 @@ class GenerationRepository:
             model.title,
             quiz,
             model.version,
+        )
+
+    @staticmethod
+    def _notebook_mapping(model: NotebookMappingModel) -> NotebookMapping:
+        return NotebookMapping(
+            model.id,
+            model.subject,
+            model.subject_key,
+            model.exam_number,
+            model.remote_notebook_id,
+            model.title,
+        )
+
+    @staticmethod
+    def _source_binding(
+        model: NotebookSourceMappingModel,
+    ) -> NotebookSourceBinding:
+        return NotebookSourceBinding(
+            model.id,
+            model.notebook_mapping_id,
+            model.lecture_id,
+            model.study_revision_id,
+            SourceKind(model.source_kind),
+            model.source_sha256,
+            model.remote_source_id,
+            model.display_title,
+            model.state,
         )

@@ -7,6 +7,7 @@ from oms_hub.study_generation.domain import (
     GenerationKind,
     GenerationStage,
     GenerationState,
+    SourceKind,
 )
 from oms_hub.study_generation.native_quiz import parse_native_quiz
 from oms_hub.study_generation.repository import GenerationRepository
@@ -100,3 +101,63 @@ def test_unknown_public_quiz_token_returns_none(tmp_path):
         assert repository.published_quiz("f" * 64) is None
     finally:
         repository.database.engine.dispose()
+
+
+def test_binding_new_revision_supersedes_prior_ready_source(tmp_path):
+    repository, lecture_id = prepared_repository(tmp_path)
+    notebook = repository.save_notebook_mapping(
+        "Neuro",
+        "neuro",
+        1,
+        "nb-1",
+        "Neuro · Exam 1",
+    )
+
+    first = repository.bind_source(
+        notebook.id,
+        lecture_id,
+        revision_id=10,
+        source_kind=SourceKind.LECTURE_PDF,
+        source_sha256="a" * 64,
+        remote_source_id="remote-old",
+        display_title="Lecture 01 - Seizures",
+    )
+    second = repository.bind_source(
+        notebook.id,
+        lecture_id,
+        revision_id=11,
+        source_kind=SourceKind.LECTURE_PDF,
+        source_sha256="b" * 64,
+        remote_source_id="remote-new",
+        display_title="Lecture 01 - Seizures",
+    )
+
+    assert first.remote_source_id == "remote-old"
+    assert repository.source_binding(
+        notebook.id,
+        lecture_id,
+        SourceKind.LECTURE_PDF,
+    ) == second
+
+
+def test_notebook_mapping_is_upserted_by_course_and_exam(tmp_path):
+    repository, _ = prepared_repository(tmp_path)
+
+    first = repository.save_notebook_mapping(
+        "Neuro",
+        "neuro",
+        1,
+        "nb-old",
+        "Neuro · Exam 1",
+    )
+    second = repository.save_notebook_mapping(
+        "Neuro",
+        "neuro",
+        1,
+        "nb-new",
+        "Neuro · Exam 1",
+    )
+
+    assert second.id == first.id
+    assert second.remote_notebook_id == "nb-new"
+    assert repository.notebook_mapping("neuro", 1) == second

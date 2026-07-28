@@ -300,6 +300,7 @@ class NotebookSourceMappingModel(Base):
     source_kind: Mapped[str] = mapped_column(String(30))
     source_sha256: Mapped[str] = mapped_column(String(64))
     remote_source_id: Mapped[str] = mapped_column(String(200))
+    display_title: Mapped[str] = mapped_column(String(500), default="")
     state: Mapped[str] = mapped_column(String(30), default="ready")
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
     verified_at: Mapped[str | None] = mapped_column(String(40), nullable=True)

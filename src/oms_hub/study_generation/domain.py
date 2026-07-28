@@ -35,6 +35,29 @@ class SourceKind(StrEnum):
     CLEANED_TRANSCRIPT = "cleaned_transcript"
 
 
+@dataclass(frozen=True, slots=True)
+class NotebookMapping:
+    id: int
+    subject: str
+    subject_key: str
+    exam_number: int
+    remote_notebook_id: str
+    title: str
+
+
+@dataclass(frozen=True, slots=True)
+class NotebookSourceBinding:
+    id: int
+    notebook_mapping_id: int
+    lecture_id: int
+    revision_id: int
+    source_kind: SourceKind
+    source_sha256: str
+    remote_source_id: str
+    display_title: str
+    state: str
+
+
 class PromptKind(StrEnum):
     OUTLINE = "outline"
     QUIZ = "quiz"
