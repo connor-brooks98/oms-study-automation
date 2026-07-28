@@ -161,3 +161,4 @@ def test_notebook_mapping_is_upserted_by_course_and_exam(tmp_path):
     assert second.id == first.id
     assert second.remote_notebook_id == "nb-new"
     assert repository.notebook_mapping("neuro", 1) == second
+    assert repository.notebook_mapping_by_remote_id("nb-new") == second

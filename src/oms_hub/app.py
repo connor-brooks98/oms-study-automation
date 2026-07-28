@@ -313,7 +313,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.ingestion_repository,
         prompt_files,
         StoredNotebookLMGateway(
-            resolved.data_dir / "google" / "notebooklm-storage.json"
+            resolved.data_dir / "google" / "notebooklm-storage.json",
+            app.state.generation_repository,
         ),
         OutlineService(resolved, app.state.generation_repository),
         NativeQuizPublisher(

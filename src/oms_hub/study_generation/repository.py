@@ -154,6 +154,19 @@ class GenerationRepository:
             )
             return self._notebook_mapping(model) if model is not None else None
 
+    def notebook_mapping_by_remote_id(
+        self,
+        remote_notebook_id: str,
+    ) -> NotebookMapping | None:
+        with self.database.session() as session:
+            model = session.scalar(
+                select(NotebookMappingModel).where(
+                    NotebookMappingModel.remote_notebook_id
+                    == remote_notebook_id
+                )
+            )
+            return self._notebook_mapping(model) if model is not None else None
+
     def save_notebook_mapping(
         self,
         subject: str,

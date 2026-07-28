@@ -1,0 +1,419 @@
+import hashlib
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+
+from oms_hub.study_generation.domain import (
+    LectureSourceSet,
+    NotebookMapping,
+    NotebookRef,
+    NotebookSourceBinding,
+    PromptSnapshot,
+    RemoteSource,
+    RevisionSource,
+    SourceIsolationError,
+    SourceKind,
+)
+from oms_hub.study_generation.notebook import StoredNotebookLMGateway
+
+
+@dataclass
+class FakeRemote:
+    id: str
+    title: str
+    status: str = "ready"
+
+
+class FakeNotebooks:
+    def __init__(self, notebooks):
+        self.items = notebooks
+
+    async def list(self):
+        return list(self.items)
+
+    async def create(self, title):
+        created = FakeRemote("nb-created", title)
+        self.items.append(created)
+        return created
+
+
+class FakeSources:
+    def __init__(self, sources, events):
+        self.items = list(sources)
+        self.events = events
+        self.upload_titles = []
+
+    async def list(self, notebook_id):
+        assert notebook_id == "nb-1"
+        return list(self.items)
+
+    async def add_file(self, notebook_id, path, *, wait, title):
+        assert notebook_id == "nb-1"
+        assert Path(path).is_file()
+        assert wait is True
+        self.upload_titles.append(title)
+        remote = FakeRemote(f"new-{len(self.upload_titles)}", title)
+        self.items.append(remote)
+        self.events.append(("upload", remote.id))
+        return remote
+
+    async def rename(self, notebook_id, source_id, new_title):
+        assert notebook_id == "nb-1"
+        remote = next(item for item in self.items if item.id == source_id)
+        remote.title = new_title
+        self.events.append(("rename", source_id))
+        return remote
+
+    async def delete(self, notebook_id, source_id):
+        assert notebook_id == "nb-1"
+        self.events.append(("delete", source_id))
+        self.items = [item for item in self.items if item.id != source_id]
+
+
+class FakeChat:
+    def __init__(self):
+        self.calls = []
+
+    async def ask(self, notebook_id, question, *, source_ids):
+        self.calls.append(
+            {
+                "notebook_id": notebook_id,
+                "question": question,
+                "source_ids": list(source_ids),
+            }
+        )
+        return type("Answer", (), {"answer": "Selected lecture only"})()
+
+
+class FakeClient:
+    def __init__(self, sources, events):
+        self.notebooks = FakeNotebooks([FakeRemote("nb-1", "Neuro · Exam 1")])
+        self.sources = FakeSources(sources, events)
+        self.chat = FakeChat()
+
+
+class FakeClientContext:
+    def __init__(self, client):
+        self.client = client
+
+    async def __aenter__(self):
+        return self.client
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
+class FakeRepository:
+    def __init__(self, events):
+        self.events = events
+        self.notebook = NotebookMapping(
+            1,
+            "Neuro",
+            "neuro",
+            1,
+            "nb-1",
+            "Neuro · Exam 1",
+        )
+        self.bindings = {}
+
+    def notebook_mapping(self, subject_key, exam_number):
+        if (subject_key, exam_number) == ("neuro", 1):
+            return self.notebook
+        return None
+
+    def notebook_mapping_by_remote_id(self, remote_notebook_id):
+        return self.notebook if remote_notebook_id == "nb-1" else None
+
+    def save_notebook_mapping(
+        self,
+        subject,
+        subject_key,
+        exam_number,
+        remote_notebook_id,
+        title,
+    ):
+        self.notebook = NotebookMapping(
+            1,
+            subject,
+            subject_key,
+            exam_number,
+            remote_notebook_id,
+            title,
+        )
+        return self.notebook
+
+    def source_binding(self, notebook_mapping_id, lecture_id, source_kind):
+        return self.bindings.get((notebook_mapping_id, lecture_id, source_kind))
+
+    def bind_source(
+        self,
+        notebook_mapping_id,
+        lecture_id,
+        revision_id,
+        source_kind,
+        source_sha256,
+        remote_source_id,
+        display_title,
+    ):
+        binding = NotebookSourceBinding(
+            len(self.bindings) + 1,
+            notebook_mapping_id,
+            lecture_id,
+            revision_id,
+            source_kind,
+            source_sha256,
+            remote_source_id,
+            display_title,
+            "ready",
+        )
+        self.bindings[(notebook_mapping_id, lecture_id, source_kind)] = binding
+        self.events.append(("bind", remote_source_id))
+        return binding
+
+
+def _revision(path, lecture_id, revision_id, kind, payload):
+    path.write_bytes(payload)
+    return RevisionSource(
+        lecture_id,
+        revision_id,
+        path,
+        hashlib.sha256(payload).hexdigest(),
+        kind,
+    )
+
+
+def _gateway(tmp_path, client, repository):
+    return StoredNotebookLMGateway(
+        tmp_path / "notebooklm-storage.json",
+        repository,
+        client_factory=lambda: FakeClientContext(client),
+    )
+
+
+def test_source_upload_uses_canonical_path_stem(tmp_path):
+    events = []
+    repository = FakeRepository(events)
+    client = FakeClient([], events)
+    gateway = _gateway(tmp_path, client, repository)
+    pdf = _revision(
+        tmp_path / "Lecture 02 - Demyelinating Disease.pdf",
+        2,
+        10,
+        SourceKind.LECTURE_PDF,
+        b"pdf",
+    )
+    transcript = _revision(
+        tmp_path / "Lecture 02 - Demyelinating Disease - Transcript.txt",
+        2,
+        11,
+        SourceKind.CLEANED_TRANSCRIPT,
+        b"transcript",
+    )
+
+    sources = gateway.ensure_sources(
+        NotebookRef("nb-1", "Neuro · Exam 1"),
+        2,
+        pdf,
+        transcript,
+    )
+
+    assert client.sources.upload_titles == [
+        "Lecture 02 - Demyelinating Disease",
+        "Lecture 02 - Demyelinating Disease - Transcript",
+    ]
+    assert sources.remote_ids == ["new-1", "new-2"]
+
+
+def test_changed_revision_binds_replacement_before_old_and_legacy_delete(tmp_path):
+    events = []
+    old = FakeRemote("remote-old", "Lecture 02 - Disease")
+    legacy = FakeRemote(
+        "legacy-old",
+        "OMS-2-lecture_pdf-0123456789abcdef",
+    )
+    other_lecture = FakeRemote(
+        "legacy-other",
+        "OMS-3-lecture_pdf-fedcba9876543210",
+    )
+    transcript_remote = FakeRemote(
+        "transcript-current",
+        "Lecture 02 - Disease - Transcript",
+    )
+    repository = FakeRepository(events)
+    repository.bindings[(1, 2, SourceKind.LECTURE_PDF)] = NotebookSourceBinding(
+        1,
+        1,
+        2,
+        9,
+        SourceKind.LECTURE_PDF,
+        "a" * 64,
+        "remote-old",
+        "Lecture 02 - Disease",
+        "ready",
+    )
+    repository.bindings[(1, 2, SourceKind.CLEANED_TRANSCRIPT)] = (
+        NotebookSourceBinding(
+            2,
+            1,
+            2,
+            11,
+            SourceKind.CLEANED_TRANSCRIPT,
+            hashlib.sha256(b"transcript").hexdigest(),
+            "transcript-current",
+            "Lecture 02 - Disease - Transcript",
+            "ready",
+        )
+    )
+    client = FakeClient(
+        [old, legacy, other_lecture, transcript_remote],
+        events,
+    )
+    gateway = _gateway(tmp_path, client, repository)
+    pdf = _revision(
+        tmp_path / "Lecture 02 - Disease.pdf",
+        2,
+        10,
+        SourceKind.LECTURE_PDF,
+        b"new pdf",
+    )
+    transcript = _revision(
+        tmp_path / "Lecture 02 - Disease - Transcript.txt",
+        2,
+        11,
+        SourceKind.CLEANED_TRANSCRIPT,
+        b"transcript",
+    )
+
+    sources = gateway.ensure_sources(
+        NotebookRef("nb-1", "Neuro · Exam 1"),
+        2,
+        pdf,
+        transcript,
+    )
+
+    assert sources.remote_ids == ["new-1", "transcript-current"]
+    assert events.index(("upload", "new-1")) < events.index(("bind", "new-1"))
+    assert events.index(("bind", "new-1")) < events.index(
+        ("delete", "remote-old")
+    )
+    assert ("delete", "legacy-old") in events
+    assert ("delete", "legacy-other") not in events
+
+
+def test_ask_ignores_other_lecture_sources(tmp_path):
+    events = []
+    repository = FakeRepository(events)
+    selected = LectureSourceSet(
+        2,
+        RemoteSource(
+            "pdf-2",
+            2,
+            10,
+            "a" * 64,
+            SourceKind.LECTURE_PDF,
+            True,
+        ),
+        RemoteSource(
+            "txt-2",
+            2,
+            11,
+            "b" * 64,
+            SourceKind.CLEANED_TRANSCRIPT,
+            True,
+        ),
+    )
+    for source in (selected.pdf, selected.transcript):
+        repository.bindings[(1, 2, source.kind)] = NotebookSourceBinding(
+            len(repository.bindings) + 1,
+            1,
+            2,
+            source.revision_id,
+            source.kind,
+            source.sha256,
+            source.remote_id,
+            source.remote_id,
+            "ready",
+        )
+    client = FakeClient(
+        [
+            FakeRemote("pdf-1", "Lecture 01"),
+            FakeRemote("txt-1", "Lecture 01 - Transcript"),
+            FakeRemote("pdf-2", "Lecture 02"),
+            FakeRemote("txt-2", "Lecture 02 - Transcript"),
+        ],
+        events,
+    )
+    gateway = _gateway(tmp_path, client, repository)
+
+    answer = gateway.ask(
+        NotebookRef("nb-1", "Neuro · Exam 1"),
+        selected,
+        PromptSnapshot(
+            tmp_path / "Outline.md",
+            "Make the outline",
+            "c" * 64,
+            "now",
+        ),
+    )
+
+    assert answer.text == "Selected lecture only"
+    assert client.chat.calls[-1]["source_ids"] == ["pdf-2", "txt-2"]
+
+
+def test_ask_fails_closed_when_selected_remote_is_not_ready(tmp_path):
+    events = []
+    repository = FakeRepository(events)
+    selected = LectureSourceSet(
+        2,
+        RemoteSource(
+            "pdf-2",
+            2,
+            10,
+            "a" * 64,
+            SourceKind.LECTURE_PDF,
+            True,
+        ),
+        RemoteSource(
+            "txt-2",
+            2,
+            11,
+            "b" * 64,
+            SourceKind.CLEANED_TRANSCRIPT,
+            True,
+        ),
+    )
+    for source in (selected.pdf, selected.transcript):
+        repository.bindings[(1, 2, source.kind)] = NotebookSourceBinding(
+            len(repository.bindings) + 1,
+            1,
+            2,
+            source.revision_id,
+            source.kind,
+            source.sha256,
+            source.remote_id,
+            source.remote_id,
+            "ready",
+        )
+    client = FakeClient(
+        [
+            FakeRemote("pdf-2", "Lecture 02", status="processing"),
+            FakeRemote("txt-2", "Lecture 02 - Transcript"),
+        ],
+        events,
+    )
+    gateway = _gateway(tmp_path, client, repository)
+
+    with pytest.raises(SourceIsolationError, match="not ready"):
+        gateway.ask(
+            NotebookRef("nb-1", "Neuro · Exam 1"),
+            selected,
+            PromptSnapshot(
+                tmp_path / "Outline.md",
+                "Make the outline",
+                "c" * 64,
+                "now",
+            ),
+        )
+
+    assert client.chat.calls == []
