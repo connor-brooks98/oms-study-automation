@@ -6,7 +6,10 @@
 
 Make the existing native Study Hub quiz workflow reliably use the Google
 credentials shown on Settings, and make each course Google Doc display a clean
-quiz hyperlink instead of a raw URL.
+quiz hyperlink instead of a raw URL. At the same time, make NotebookLM sources
+readable and revision-safe, prove that each generation uses only its lecture's
+two sources, and preserve the structure of NotebookLM lecture outlines in the
+saved PDF.
 
 This is a focused follow-up to the native quiz implementation. It does not add
 new generation capabilities or replace the Google Docs API.
@@ -38,6 +41,26 @@ look missing.
 Finally, Google Docs currently inserts the complete native quiz URL after the
 lecture label. The long URL is unnecessary visual noise because Google Docs
 can hyperlink readable text.
+
+NotebookLM source uploads currently use internal titles such as
+`OMS-1-cleaned_transcript-2ddfc6dcf8905f73`. Those titles expose implementation
+details instead of the canonical lecture names already used on disk. The hash
+was also serving as an implicit revision identifier, so removing it without a
+replacement mapping could cause a later generation to reuse stale content.
+
+The generation adapter already supplies explicit `source_ids` to NotebookLM,
+but this isolation is not visible in NotebookLM's browser UI. Opening a
+notebook can show all sources checked because that is the website's current
+selection state, not the source list sent by the Study Hub API request. The
+implementation needs stronger end-to-end tests and durable source bindings so
+the worker's actual request, rather than the browser checkbox state, is the
+auditable source of truth.
+
+The outline PDF renderer currently strips leading whitespace and escapes
+Markdown as literal text. As a result, nested bullets lose indentation and
+inline markers such as `**bold**` appear as stars instead of formatting. A line
+containing `***` is also treated as a forced page break rather than a visual
+divider.
 
 ## Decisions
 
@@ -172,6 +195,106 @@ for a lecture, Study Hub replaces that lecture's existing raw-URL line with the
 new linked label while retaining lecture-number ordering. No short URL,
 redirect route, new hostname, or domain purchase is required.
 
+## NotebookLM Source Titles and Revision Bindings
+
+NotebookLM source titles use the stem of each current canonical filed path:
+
+- the lecture PDF uses a title such as
+  `Lecture 02 - Pathology of Degenerative and Demyelinating CNS Disease`; and
+- its cleaned transcript uses
+  `Lecture 02 - Pathology of Degenerative and Demyelinating CNS Disease - Transcript`.
+
+The title does not include `OMS`, a database lecture ID, a source-kind enum, a
+fingerprint, or a file extension. The canonical filenames remain the single
+source of naming truth.
+
+A durable NotebookLM source binding records, for each exam notebook, lecture,
+and source kind:
+
+- NotebookLM notebook ID;
+- Study Hub lecture ID;
+- source kind;
+- current revision ID and SHA-256;
+- NotebookLM remote source ID; and
+- clean display title.
+
+The binding is added in the next additive SQLite schema migration with a
+uniqueness constraint on notebook ID, lecture ID, and source kind. The
+migration does not alter or delete existing generation jobs, quiz outputs,
+outlines, or lecture files.
+
+On generation, Study Hub lists the notebook's current remote sources and:
+
+1. reuses the bound remote source only when its revision ID and SHA-256 match
+   the queued canonical revision and the remote ID still exists;
+2. renames a matching bound source when only its display title is outdated;
+3. uploads the current canonical file with the clean title when the binding is
+   absent, stale, or points to a deleted source;
+4. persists the new binding only after NotebookLM reports the upload ready; and
+5. removes the superseded source after the replacement and binding are safely
+   established.
+
+The first generation after this rollout also recognizes the prior
+`OMS-<lecture-id>-<source-kind>-<fingerprint>` title for the selected lecture as
+a legacy source. It uploads and binds the canonical replacement before
+removing that legacy source. Sources belonging to other lectures are never
+renamed or deleted.
+
+This local binding preserves clean NotebookLM titles without losing the
+revision identity formerly embedded in the display name. It also prevents
+outline and quiz jobs for the same current lecture revision from uploading
+duplicate sources.
+
+## Per-Lecture Source Isolation
+
+Every outline and quiz request must use exactly two ready remote source IDs:
+
+1. the current canonical lecture PDF for the selected lecture; and
+2. the current canonical cleaned transcript for that same lecture.
+
+The request continues to call NotebookLM chat with an explicit
+`source_ids=[pdf_remote_id, transcript_remote_id]`. It never omits
+`source_ids`, never passes `None`, and never derives the selection from the
+NotebookLM website's checked boxes.
+
+Before the prompt is sent, Study Hub verifies that:
+
+- both bindings match the queued lecture and revision fingerprints;
+- both remote IDs still exist in the intended exam notebook;
+- both sources are ready;
+- the two IDs are distinct; and
+- no third source ID is present in the request.
+
+This validation applies identically to outline and quiz generation. Automated
+tests will construct an exam notebook containing sources for multiple lectures
+and capture the final `chat.ask` call, proving that only the chosen lecture's
+PDF and transcript IDs are submitted. The NotebookLM browser may still display
+all sources selected when opened manually; that website-only state does not
+alter the explicit API request.
+
+## Formatted Lecture Outline PDFs
+
+The PDF renderer will interpret the safe Markdown subset produced by
+NotebookLM rather than printing Markdown control characters. It supports:
+
+- headings with distinct size, weight, and spacing;
+- bold and italic inline emphasis;
+- inline code with a monospace face;
+- bulleted and numbered lists;
+- nested list indentation derived from the original leading whitespace;
+- paragraph spacing and line continuations; and
+- horizontal rules rendered as visual dividers rather than page breaks.
+
+Markdown markers used for supported formatting do not appear in extracted PDF
+text. All source text is escaped before ReportLab markup is emitted, so
+NotebookLM output cannot inject arbitrary ReportLab XML. Unsupported Markdown
+is retained as readable plain text rather than silently dropped.
+
+The renderer remains deterministic, creates one validated PDF, uses the
+existing canonical lecture-outline filename and folder, and continues adding
+page numbers after the first page. It does not use a browser, an online
+Markdown renderer, or HTML-to-PDF automation.
+
 ## Security and Storage
 
 - `oauth-client.json` remains under the persistent Study Hub data directory.
@@ -204,7 +327,19 @@ Automated coverage will verify:
 - a worker authentication failure pauses the job and invalidates the correct
   surface;
 - Google Docs inserts `Lecture N Quiz` and hyperlinks the entire label;
-- retrying a paused job remains idempotent; and
+- retrying a paused job remains idempotent;
+- NotebookLM sources use canonical lecture display titles without internal
+  IDs or fingerprints;
+- an unchanged revision reuses its bound remote source;
+- a changed revision uploads and binds the replacement before deleting the
+  superseded source;
+- legacy hashed source titles are migrated only for the selected lecture;
+- a notebook containing several lectures still sends exactly the selected
+  lecture's two remote IDs for both outline and quiz prompts;
+- source isolation fails closed when either binding is stale, missing, or
+  points to a non-ready remote source;
+- outline PDFs render headings, emphasis, nested bullets, numbered lists, and
+  horizontal rules without exposing their Markdown markers; and
 - all existing native quiz, ingestion, security, and JavaScript tests continue
   to pass.
 
@@ -217,7 +352,13 @@ The NUC acceptance test will:
 5. generate one lecture quiz;
 6. confirm the job completes instead of failing with stale NotebookLM
    authentication; and
-7. confirm the course document displays a linked `Lecture N Quiz` label.
+7. confirm NotebookLM shows the canonical PDF and transcript titles;
+8. spot-check that the outline contains only material from the selected
+   lecture, while the automated isolation test verifies the exact two remote
+   IDs submitted;
+9. open the lecture-outline PDF and confirm headings, bold text, numbered and
+   nested bullets, and dividers match the readable NotebookLM structure; and
+10. confirm the course document displays a linked `Lecture N Quiz` label.
 
 ## Deferred Work
 
