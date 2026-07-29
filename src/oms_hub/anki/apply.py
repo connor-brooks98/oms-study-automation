@@ -239,9 +239,20 @@ class LocalEnvelopeExecutor:
         if not expected:
             return
         notes = self._anki.notes_info(sorted(expected))
-        actual = {int(note["noteId"]): self._note_hasher(note) for note in notes}
+        actual: dict[int, set[str]] = {}
+        for note in notes:
+            note_id = int(note["noteId"])
+            accepted_hashes = {self._note_hasher(note)}
+            tags = note.get("tags")
+            if isinstance(tags, list) and envelope.target_tag in tags:
+                without_owned_tag = deepcopy(note)
+                without_owned_tag["tags"] = [
+                    tag for tag in tags if tag != envelope.target_tag
+                ]
+                accepted_hashes.add(self._note_hasher(without_owned_tag))
+            actual[note_id] = accepted_hashes
         if set(actual) != set(expected) or any(
-            actual[note_id] != content_hash
+            content_hash not in actual[note_id]
             for note_id, content_hash in expected.items()
         ):
             raise StaleEnvelopeError("Anki notes changed since indexing")

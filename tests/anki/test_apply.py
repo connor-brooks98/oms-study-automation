@@ -323,6 +323,28 @@ def test_executor_replay_does_not_duplicate_generated_notes_or_sync(
     assert anki.sync_calls == 1
 
 
+def test_executor_replay_accepts_its_own_previously_applied_tag(
+    tmp_path: Path,
+) -> None:
+    envelope = _envelope()
+    anki = FakeAnki()
+    executor = LocalEnvelopeExecutor(
+        anki=anki,
+        ledger=AnkiLedger(tmp_path / "ledger.sqlite3"),
+        operations=MemoryOperationStore(envelope),
+        note_hasher=lambda note: (
+            "b" * 64 if TARGET_TAG in note["tags"] else "a" * 64
+        ),
+    )
+
+    first = executor.execute(envelope)
+    second = executor.execute(envelope)
+
+    assert second == first
+    assert anki.add_notes_calls == 1
+    assert anki.sync_calls == 1
+
+
 def test_executor_refuses_stale_existing_note_before_any_write(
     tmp_path: Path,
 ) -> None:

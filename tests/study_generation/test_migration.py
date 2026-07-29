@@ -32,4 +32,5 @@ def test_schema_v6_adds_native_quiz_and_notebook_source_registry(tmp_path):
         version = session.execute(
             text("SELECT version FROM schema_version WHERE id = 1")
         ).scalar_one()
-    assert version == LATEST_SCHEMA_VERSION == 6
+    assert version == LATEST_SCHEMA_VERSION
+    assert version >= 6
