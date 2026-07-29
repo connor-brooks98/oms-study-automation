@@ -72,13 +72,14 @@ from oms_hub.web.upload_routes import router as upload_router
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or get_settings()
+    legacy_agent_hostname = getattr(resolved, "anki_agent_hostname", None)
     resolved.data_dir.mkdir(parents=True, exist_ok=True)
     app = FastAPI(title="OMS II Study Automation Hub", version=__version__)
     allowed_hosts = ["127.0.0.1", "localhost", "testserver"]
     if resolved.public_hostname:
         allowed_hosts.append(resolved.public_hostname)
-    if resolved.anki_agent_hostname:
-        allowed_hosts.append(resolved.anki_agent_hostname)
+    if legacy_agent_hostname:
+        allowed_hosts.append(legacy_agent_hostname)
     app.add_middleware(
         TrustedHostMiddleware,
         allowed_hosts=allowed_hosts,
@@ -111,7 +112,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         local_hosts = {"127.0.0.1", "localhost", "testserver"}
         is_public = bool(resolved.public_hostname and host == resolved.public_hostname)
         is_agent_host = bool(
-            resolved.anki_agent_hostname and host == resolved.anki_agent_hostname
+            legacy_agent_hostname and host == legacy_agent_hostname
         )
         is_agent_path = request.url.path.startswith("/agent/v1/")
         is_public_quiz = (

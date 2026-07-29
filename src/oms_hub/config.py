@@ -1,6 +1,7 @@
 import re
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from pydantic import Field, field_validator
@@ -17,13 +18,6 @@ def _normalize_hostname(value: str | None, field_name: str) -> str | None:
         normalized,
     ):
         raise ValueError(f"{field_name} must be a hostname without a scheme or port")
-    return normalized
-
-
-def _validate_secret_key_name(value: str) -> str:
-    normalized = value.strip()
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", normalized):
-        raise ValueError("credential key name contains unsupported characters")
     return normalized
 
 
@@ -67,17 +61,19 @@ class Settings(BaseSettings):
     generation_timeout_seconds: int = Field(default=180, ge=30, le=600)
     anki_enabled: bool = False
     anki_data_dir: Path | None = None
-    anki_agent_hostname: str | None = None
-    anki_agent_token_key: str = "anki-agent-token"
-    anki_agent_heartbeat_max_age_seconds: int = Field(
-        default=24 * 60 * 60,
-        ge=60,
-        le=30 * 24 * 60 * 60,
+    anki_connect_url: Literal["http://127.0.0.1:8766"] = (
+        "http://127.0.0.1:8766"
     )
-    anki_agent_max_request_bytes: int = Field(
-        default=100 * 1024 * 1024,
-        ge=256,
-        le=500 * 1024 * 1024,
+    anki_executable_path: Path | None = None
+    anki_startup_timeout_seconds: float = Field(
+        default=60.0,
+        ge=5.0,
+        le=300.0,
+    )
+    anki_startup_poll_seconds: float = Field(
+        default=1.0,
+        ge=0.1,
+        le=10.0,
     )
     anki_snapshot_max_age_hours: int = Field(default=48, ge=1, le=24 * 30)
     anki_worker_poll_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
@@ -107,15 +103,12 @@ class Settings(BaseSettings):
     def normalize_public_hostname(cls, value: str | None) -> str | None:
         return _normalize_hostname(value, "public_hostname")
 
-    @field_validator("anki_agent_hostname")
+    @field_validator("anki_executable_path")
     @classmethod
-    def normalize_anki_agent_hostname(cls, value: str | None) -> str | None:
-        return _normalize_hostname(value, "anki_agent_hostname")
-
-    @field_validator("anki_agent_token_key")
-    @classmethod
-    def validate_anki_agent_token_key(cls, value: str) -> str:
-        return _validate_secret_key_name(value)
+    def validate_anki_executable_path(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
+            raise ValueError("anki_executable_path must be absolute")
+        return value
 
     @field_validator("cloudflare_access_issuer")
     @classmethod
