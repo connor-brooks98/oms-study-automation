@@ -1,1 +1,0 @@
-"""Mac agent test package."""

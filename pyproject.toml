@@ -45,10 +45,9 @@ dev = [
 [project.scripts]
 oms-hub = "oms_hub.cli:main"
 oms-study-hub = "oms_hub.cli:main"
-oms-anki-agent = "oms_anki_agent.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/oms_hub", "src/oms_anki_agent"]
+packages = ["src/oms_hub"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -63,4 +62,4 @@ target-version = "py312"
 [tool.mypy]
 python_version = "3.12"
 strict = true
-packages = ["oms_hub", "oms_anki_agent"]
+packages = ["oms_hub"]

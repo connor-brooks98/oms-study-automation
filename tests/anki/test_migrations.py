@@ -14,7 +14,6 @@ APPROVED_ANKI_TABLES = {
     "anki_verdict_cache",
     "anki_envelopes",
     "anki_envelope_operations",
-    "anki_agent_state",
     "anki_stage_settings",
 }
 
@@ -97,7 +96,8 @@ def test_schema_v3_upgrade_preserves_rows_and_adds_anki_tables(tmp_path) -> None
 
     tables = set(inspect(database.engine).get_table_names())
     assert APPROVED_ANKI_TABLES <= tables
-    assert "anki_agent_commands" in tables
+    assert "anki_agent_commands" not in tables
+    assert "anki_agent_state" not in tables
     with database.session() as session:
         lecture = session.execute(
             text("SELECT subject, topic FROM lectures WHERE id = 7")
@@ -129,3 +129,33 @@ def test_anki_migration_is_repeatable(tmp_path) -> None:
         assert session.execute(
             text("SELECT COUNT(*) FROM anki_stage_settings")
         ).scalar_one() == 0
+
+
+def test_schema_upgrade_retires_only_disposable_agent_tables(tmp_path) -> None:
+    database_path = tmp_path / "hub-v6.db"
+    database = Database(f"sqlite:///{database_path}")
+    database.migrate()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS anki_agent_state "
+                "(id INTEGER PRIMARY KEY)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS anki_agent_commands "
+                "(id VARCHAR(36) PRIMARY KEY)"
+            )
+        )
+        connection.execute(
+            text("UPDATE schema_version SET version = 6 WHERE id = 1")
+        )
+
+    database.migrate()
+
+    tables = set(inspect(database.engine).get_table_names())
+    assert "anki_agent_commands" not in tables
+    assert "anki_agent_state" not in tables
+    assert "anki_curation_jobs" in tables
+    assert "anki_envelopes" in tables

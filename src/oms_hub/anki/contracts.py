@@ -14,8 +14,6 @@ from pydantic import (
     model_validator,
 )
 
-from oms_hub.anki.domain import AgentCommandType
-
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
@@ -35,24 +33,6 @@ class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     contract_version: Literal[1] = 1
-
-
-class AgentHeartbeat(ContractModel):
-    agent_id: Annotated[str, Field(min_length=1, max_length=100)]
-    agent_version: Annotated[str, Field(min_length=1, max_length=100)]
-    anki_version: Annotated[str, Field(min_length=1, max_length=100)]
-    ankiconnect_version: Annotated[int, Field(ge=6)]
-    active_snapshot_id: Annotated[str, Field(max_length=200)] | None
-    health: Literal["ok", "degraded", "error"]
-    observed_at: datetime
-
-
-class AgentCommand(ContractModel):
-    command_id: UUID
-    command_type: AgentCommandType
-    payload: dict[str, Any]
-    payload_sha256: Sha256
-    created_at: datetime
 
 
 class SnapshotManifest(ContractModel):
@@ -90,35 +70,6 @@ class SnapshotDelta(ContractModel):
     upserts: tuple[SnapshotNote, ...]
     deleted_note_ids: tuple[Annotated[int, Field(gt=0)], ...]
     payload_sha256: Sha256
-
-
-class MediaFetchRequest(ContractModel):
-    command_id: UUID
-    filenames: tuple[str, ...]
-    max_bytes: Annotated[int, Field(ge=1, le=100 * 1024 * 1024)]
-
-    @field_validator("filenames")
-    @classmethod
-    def validate_filenames(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        if not values:
-            raise ValueError("filenames cannot be empty")
-        for value in values:
-            _validated_filename(value)
-        return values
-
-
-class MediaUpload(ContractModel):
-    command_id: UUID
-    filename: str
-    mime_type: Literal["image/png", "image/jpeg", "image/webp", "image/gif"]
-    content_base64: Annotated[str, Field(min_length=1)]
-    byte_count: Annotated[int, Field(ge=1, le=100 * 1024 * 1024)]
-    sha256: Sha256
-
-    @field_validator("filename")
-    @classmethod
-    def validate_filename(cls, value: str) -> str:
-        return _validated_filename(value)
 
 
 class EnvelopeOperation(ContractModel):

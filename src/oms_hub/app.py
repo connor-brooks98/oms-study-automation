@@ -4,7 +4,6 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from keyring.errors import KeyringError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import Response
 
@@ -30,7 +29,6 @@ from oms_hub.security.access import (
     AccessIdentityForbidden,
     AccessTokenInvalid,
     CloudflareAccessVerifier,
-    bearer_token_is_valid,
 )
 from oms_hub.security.csrf import (
     CsrfProtector,
@@ -54,7 +52,6 @@ from oms_hub.study_generation.service import GenerationService
 from oms_hub.study_generation.worker import GenerationWorker
 from oms_hub.transcripts.pipeline import TranscriptPipeline as V2TranscriptPipeline
 from oms_hub.transcripts.prompt import PromptLoader as V2PromptLoader
-from oms_hub.web.anki_agent_routes import router as anki_agent_router
 from oms_hub.web.artifact_routes import router as artifact_router
 from oms_hub.web.generation_routes import (
     lecture_router,
@@ -72,14 +69,11 @@ from oms_hub.web.upload_routes import router as upload_router
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or get_settings()
-    legacy_agent_hostname = getattr(resolved, "anki_agent_hostname", None)
     resolved.data_dir.mkdir(parents=True, exist_ok=True)
     app = FastAPI(title="OMS II Study Automation Hub", version=__version__)
     allowed_hosts = ["127.0.0.1", "localhost", "testserver"]
     if resolved.public_hostname:
         allowed_hosts.append(resolved.public_hostname)
-    if legacy_agent_hostname:
-        allowed_hosts.append(legacy_agent_hostname)
     app.add_middleware(
         TrustedHostMiddleware,
         allowed_hosts=allowed_hosts,
@@ -111,10 +105,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         host = (request.url.hostname or "").lower().rstrip(".")
         local_hosts = {"127.0.0.1", "localhost", "testserver"}
         is_public = bool(resolved.public_hostname and host == resolved.public_hostname)
-        is_agent_host = bool(
-            legacy_agent_hostname and host == legacy_agent_hostname
-        )
-        is_agent_path = request.url.path.startswith("/agent/v1/")
         is_public_quiz = (
             request.url.path == "/public/quizzes"
             or request.url.path.startswith("/public/quizzes/")
@@ -153,67 +143,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             return response
 
-        if is_agent_path and not is_agent_host:
-            return harden(JSONResponse({"detail": "Not Found"}, status_code=404))
-        if is_agent_host:
-            if not is_agent_path:
-                return harden(JSONResponse({"detail": "Not Found"}, status_code=404))
-            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-                content_length = request.headers.get("content-length")
-                if content_length is None:
-                    return harden(
-                        JSONResponse(
-                            {"detail": "Content-Length is required"},
-                            status_code=411,
-                        )
-                    )
-                try:
-                    request_bytes = int(content_length)
-                except ValueError:
-                    return harden(
-                        JSONResponse(
-                            {"detail": "Content-Length is invalid"},
-                            status_code=400,
-                        )
-                    )
-                if request_bytes < 0 or request_bytes > resolved.anki_agent_max_request_bytes:
-                    return harden(
-                        JSONResponse(
-                            {"detail": "agent request is too large"},
-                            status_code=413,
-                        )
-                    )
-            try:
-                expected_token = request.app.state.secrets.get(
-                    resolved.anki_agent_token_key
-                )
-            except KeyringError:
-                return harden(
-                    JSONResponse(
-                        {"detail": "agent credential store is unavailable"},
-                        status_code=503,
-                    )
-                )
-            if not bearer_token_is_valid(
-                request.headers.get("authorization"),
-                expected_token,
-            ):
-                return harden(
-                    JSONResponse(
-                        {"detail": "agent authentication is required"},
-                        status_code=401,
-                    )
-                )
-            agent_id = request.headers.get("x-oms-agent-id", "").strip()
-            if not agent_id or len(agent_id) > 100:
-                return harden(
-                    JSONResponse(
-                        {"detail": "agent identity is required"},
-                        status_code=400,
-                    )
-                )
-            request.state.agent_id = agent_id
-            return harden(await call_next(request))
         if is_public:
             if not is_public_quiz:
                 verifier = request.app.state.access_verifier
@@ -413,7 +342,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         name="static",
     )
     app.include_router(router)
-    app.include_router(anki_agent_router)
     app.include_router(artifact_router)
     app.include_router(settings_router)
     app.include_router(upload_router)

@@ -34,13 +34,6 @@ class Verdict(StrEnum):
     DROP = "drop"
 
 
-class AgentCommandType(StrEnum):
-    FULL_SNAPSHOT = "full_snapshot"
-    DELTA_SNAPSHOT = "delta_snapshot"
-    FETCH_MEDIA = "fetch_media"
-    APPLY_ENVELOPE = "apply_envelope"
-
-
 class EnvelopeOperationType(StrEnum):
     STORE_MEDIA = "store_media"
     ADD_TAGS = "add_tags"
@@ -197,23 +190,3 @@ class StoredEnvelopeOperation:
     attempts: int
     result: dict[str, Any] | None
     error: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class AgentState:
-    agent_id: str | None
-    heartbeat_at: str | None
-    versions: dict[str, Any]
-    active_snapshot_id: str | None
-    health: dict[str, Any]
-
-
-@dataclass(frozen=True, slots=True)
-class StoredAgentCommand:
-    id: UUID
-    command_type: AgentCommandType
-    state: str
-    payload: dict[str, Any]
-    payload_sha256: str
-    owner_agent_id: str | None
-    created_at: str

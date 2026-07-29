@@ -1,4 +1,3 @@
-from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
@@ -8,11 +7,7 @@ from oms_hub.anki.contracts import (
     ActionEnvelope,
     AddNotesOperation,
     AddTagsOperation,
-    AgentCommand,
-    AgentHeartbeat,
     EnvelopeReceipt,
-    MediaFetchRequest,
-    MediaUpload,
     OperationReceipt,
     SnapshotDelta,
     SnapshotManifest,
@@ -22,29 +17,6 @@ from oms_hub.anki.contracts import (
     VerifyOperation,
     canonical_payload_sha256,
 )
-from oms_hub.anki.domain import AgentCommandType
-
-
-def test_agent_command_round_trips_and_forbids_extra_fields() -> None:
-    payload = {"reason": "manual full reconciliation"}
-    command = AgentCommand(
-        command_id=UUID("11768ac8-ff59-4732-b6f6-aeebfbc88841"),
-        command_type=AgentCommandType.FULL_SNAPSHOT,
-        payload=payload,
-        payload_sha256=canonical_payload_sha256(payload),
-        created_at=datetime(2026, 7, 27, 15, 0, tzinfo=UTC),
-    )
-
-    restored = AgentCommand.model_validate_json(command.model_dump_json())
-
-    assert restored == command
-    with pytest.raises(ValidationError, match="extra_forbidden"):
-        AgentCommand.model_validate(
-            {
-                **command.model_dump(mode="json"),
-                "unexpected_secret": "must-not-be-accepted",
-            }
-        )
 
 
 def test_snapshot_contract_round_trips_with_note_and_delta_hashes() -> None:
@@ -91,24 +63,6 @@ def test_snapshot_contract_round_trips_with_note_and_delta_hashes() -> None:
 
     assert restored == delta
     assert restored.upserts[0].note_id == 1479430487028
-
-
-def test_media_contracts_reject_path_components_and_bad_hashes() -> None:
-    with pytest.raises(ValidationError, match="filename"):
-        MediaFetchRequest(
-            command_id=UUID("11768ac8-ff59-4732-b6f6-aeebfbc88841"),
-            filenames=("../collection.anki2",),
-            max_bytes=1024,
-        )
-    with pytest.raises(ValidationError, match="sha256"):
-        MediaUpload(
-            command_id=UUID("11768ac8-ff59-4732-b6f6-aeebfbc88841"),
-            filename="anemia.png",
-            mime_type="image/png",
-            content_base64="aGVsbG8=",
-            byte_count=5,
-            sha256="not-a-hash",
-        )
 
 
 def test_action_envelope_and_receipt_round_trip() -> None:
@@ -241,20 +195,3 @@ def test_action_envelope_rejects_unsafe_tag_chunks_and_operation_order() -> None
             payload_sha256="2" * 64,
         )
 
-
-def test_heartbeat_contract_is_strict() -> None:
-    heartbeat = AgentHeartbeat(
-        agent_id="connor-mac",
-        agent_version="0.1.0",
-        anki_version="25.02",
-        ankiconnect_version=6,
-        active_snapshot_id=None,
-        health="ok",
-        observed_at=datetime(2026, 7, 27, 15, 0, tzinfo=UTC),
-    )
-
-    assert heartbeat.contract_version == 1
-    with pytest.raises(ValidationError):
-        AgentHeartbeat.model_validate(
-            {**heartbeat.model_dump(), "health": "contains-token-secret"}
-        )

@@ -20,7 +20,6 @@ class AnkiCurationInstructionModel(Base):
         onupdate=utc_now,
     )
 
-
 class AnkiCurationJobModel(Base):
     __tablename__ = "anki_curation_jobs"
     __table_args__ = (
@@ -201,24 +200,6 @@ class AnkiEnvelopeOperationModel(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class AnkiAgentStateModel(Base):
-    __tablename__ = "anki_agent_state"
-
-    id: Mapped[int] = mapped_column(primary_key=True, default=1)
-    agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    heartbeat_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    versions_json: Mapped[str] = mapped_column(Text, default="{}")
-    active_snapshot_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    last_export_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    last_sync_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    health_json: Mapped[str] = mapped_column(Text, default="{}")
-    updated_at: Mapped[str] = mapped_column(
-        String(40),
-        default=utc_now,
-        onupdate=utc_now,
-    )
-
-
 class AnkiStageSettingModel(Base):
     __tablename__ = "anki_stage_settings"
 
@@ -232,23 +213,3 @@ class AnkiStageSettingModel(Base):
         default=utc_now,
         onupdate=utc_now,
     )
-
-
-class AnkiAgentCommandModel(Base):
-    __tablename__ = "anki_agent_commands"
-    __table_args__ = (
-        Index("ix_anki_agent_commands_state_created", "state", "created_at"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    command_type: Mapped[str] = mapped_column(String(30))
-    state: Mapped[str] = mapped_column(String(30), default="queued")
-    payload_json: Mapped[str] = mapped_column(Text)
-    payload_sha256: Mapped[str] = mapped_column(String(64))
-    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    result_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    owner_agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
-    claimed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    completed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)

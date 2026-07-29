@@ -14,10 +14,8 @@ def origin_is_allowed(origin: str | None, allowed_origins: set[str]) -> bool:
 
 
 def browser_csrf_required(method: str, path: str) -> bool:
-    return (
-        method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
-        and not path.startswith("/agent/v1/")
-    )
+    del path
+    return method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
 
 
 def _normalized_origin(value: str | None) -> tuple[str, str, int] | None:

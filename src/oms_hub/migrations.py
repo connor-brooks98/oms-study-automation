@@ -13,11 +13,20 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 6
+LATEST_SCHEMA_VERSION = 7
 
 
 def migrate_database(database: "Database") -> None:
     database.create_schema()
+    existing_tables = set(inspect(database.engine).get_table_names())
+    retired_agent_tables = existing_tables & {
+        "anki_agent_commands",
+        "anki_agent_state",
+    }
+    if retired_agent_tables:
+        with database.engine.begin() as connection:
+            for table_name in sorted(retired_agent_tables):
+                connection.execute(text(f"DROP TABLE {table_name}"))
     usage_columns = {
         column["name"]
         for column in inspect(database.engine).get_columns("study_usage")
