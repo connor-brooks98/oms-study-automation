@@ -126,5 +126,26 @@ class AnkiLedger:
             )
         return result
 
+    def operation_result(
+        self,
+        operation_id: UUID,
+        content_hash: str,
+    ) -> dict[str, Any] | None:
+        identifier = str(operation_id)
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT content_hash, result_json FROM completed_operations "
+                "WHERE operation_id = ?",
+                (identifier,),
+            ).fetchone()
+        if existing is None:
+            return None
+        stored_hash, stored_result = existing
+        if stored_hash != content_hash:
+            raise OperationIdentityConflict(
+                f"operation {identifier} was reused with different content"
+            )
+        return cast(dict[str, Any], json.loads(stored_result))
+
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path)

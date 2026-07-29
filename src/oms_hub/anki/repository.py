@@ -25,6 +25,7 @@ from oms_hub.anki.domain import (
     StageUsage,
     StoredAgentCommand,
     StoredEnvelope,
+    StoredEnvelopeOperation,
 )
 from oms_hub.anki.models import (
     AnkiAgentCommandModel,
@@ -443,9 +444,108 @@ class AnkiCurationRepository:
             if stored is None:
                 raise KeyError(str(envelope_id))
             stored.receipt_summary_json = _canonical_json(receipt)
-            stored.state = "complete"
+            if receipt.get("sync_status") == "retryable":
+                stored.state = "retryable"
+            elif (
+                receipt.get("sync_status") == "complete"
+                and receipt.get("verified") is True
+            ):
+                stored.state = "complete"
+            else:
+                stored.state = "failed"
             session.flush()
             return self._envelope(stored)
+
+    def start_envelope_operation(
+        self,
+        envelope_id: UUID,
+        operation_id: UUID | str,
+    ) -> StoredEnvelopeOperation:
+        with self.database.session() as session:
+            stored = self._require_envelope_operation(
+                session,
+                envelope_id,
+                operation_id,
+            )
+            if stored.state == "complete":
+                return self._envelope_operation(stored)
+            if stored.state == "failed":
+                raise ValueError("failed envelope operation cannot be retried")
+            if stored.state not in {"pending", "retryable", "applying"}:
+                raise ValueError("envelope operation has an invalid state")
+            stored.state = "applying"
+            stored.attempts += 1
+            stored.error = None
+            session.flush()
+            return self._envelope_operation(stored)
+
+    def complete_envelope_operation(
+        self,
+        envelope_id: UUID,
+        operation_id: UUID | str,
+        result: dict[str, Any],
+    ) -> StoredEnvelopeOperation:
+        with self.database.session() as session:
+            stored = self._require_envelope_operation(
+                session,
+                envelope_id,
+                operation_id,
+            )
+            if stored.state == "complete":
+                return self._envelope_operation(stored)
+            if stored.state != "applying":
+                raise ValueError("envelope operation is not being applied")
+            stored.result_json = _canonical_json(result)
+            stored.state = "complete"
+            stored.error = None
+            session.flush()
+            return self._envelope_operation(stored)
+
+    def fail_envelope_operation(
+        self,
+        envelope_id: UUID,
+        operation_id: UUID | str,
+        safe_error: str,
+        *,
+        retryable: bool,
+    ) -> StoredEnvelopeOperation:
+        normalized_error = safe_error.strip()[:1_000]
+        if not normalized_error:
+            raise ValueError("safe_error cannot be empty")
+        with self.database.session() as session:
+            stored = self._require_envelope_operation(
+                session,
+                envelope_id,
+                operation_id,
+            )
+            if stored.state != "applying":
+                raise ValueError("envelope operation is not being applied")
+            stored.state = "retryable" if retryable else "failed"
+            stored.error = normalized_error
+            session.flush()
+            return self._envelope_operation(stored)
+
+    def operation_results(
+        self,
+        envelope_id: UUID,
+    ) -> dict[str, dict[str, Any]]:
+        with self.database.session() as session:
+            stored = session.scalars(
+                select(AnkiEnvelopeOperationModel)
+                .where(
+                    AnkiEnvelopeOperationModel.envelope_id
+                    == str(envelope_id),
+                    AnkiEnvelopeOperationModel.state == "complete",
+                )
+                .order_by(AnkiEnvelopeOperationModel.position)
+            ).all()
+            return {
+                item.id: cast(
+                    dict[str, Any],
+                    json.loads(item.result_json or "{}"),
+                )
+                for item in stored
+            }
 
     def record_agent_heartbeat(
         self,
@@ -602,6 +702,22 @@ class AnkiCurationRepository:
         return stored
 
     @staticmethod
+    def _require_envelope_operation(
+        session: Session,
+        envelope_id: UUID,
+        operation_id: UUID | str,
+    ) -> AnkiEnvelopeOperationModel:
+        stored = session.scalar(
+            select(AnkiEnvelopeOperationModel).where(
+                AnkiEnvelopeOperationModel.envelope_id == str(envelope_id),
+                AnkiEnvelopeOperationModel.id == str(operation_id),
+            )
+        )
+        if stored is None:
+            raise KeyError(f"{envelope_id}:{operation_id}")
+        return stored
+
+    @staticmethod
     def _job(stored: AnkiCurationJobModel) -> CurationJob:
         return CurationJob(
             id=UUID(stored.id),
@@ -692,6 +808,26 @@ class AnkiCurationRepository:
             payload_sha256=stored.payload_sha256,
             state=stored.state,
             receipt_summary=receipt,
+        )
+
+    @staticmethod
+    def _envelope_operation(
+        stored: AnkiEnvelopeOperationModel,
+    ) -> StoredEnvelopeOperation:
+        return StoredEnvelopeOperation(
+            id=UUID(stored.id),
+            envelope_id=UUID(stored.envelope_id),
+            operation_type=stored.operation_type,
+            content_hash=stored.content_hash,
+            payload=cast(dict[str, Any], json.loads(stored.payload_json)),
+            state=stored.state,
+            attempts=stored.attempts,
+            result=(
+                cast(dict[str, Any], json.loads(stored.result_json))
+                if stored.result_json is not None
+                else None
+            ),
+            error=stored.error,
         )
 
     @staticmethod

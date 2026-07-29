@@ -284,3 +284,124 @@ def test_envelope_is_immutable_and_receipt_updates_delivery_state(tmp_path) -> N
     }
     with pytest.raises(ValueError, match="already has an envelope"):
         repository.create_envelope(job.id, draft)
+
+
+@pytest.mark.parametrize(
+    ("receipt", "expected_state"),
+    [
+        ({"sync_status": "complete", "verified": False}, "failed"),
+        ({"sync_status": "retryable", "verified": False}, "retryable"),
+    ],
+)
+def test_receipt_requires_sync_and_verification_before_completion(
+    tmp_path,
+    receipt,
+    expected_state,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    stored = repository.create_envelope(
+        job.id,
+        EnvelopeDraft(
+            envelope_id="5dc4f15e-df92-4a32-964e-026b5d518a80",
+            snapshot_id="snapshot-1",
+            payload={"target_tag": "lecture-tag"},
+            operations=(
+                EnvelopeOperationDraft(
+                    operation_id="3b9d1dbb-b57b-46f4-8346-fd45e0105042",
+                    operation_type="sync",
+                    payload={},
+                ),
+            ),
+        ),
+    )
+
+    recorded = repository.record_receipt(stored.id, receipt)
+
+    assert recorded.state == expected_state
+
+
+def test_repository_records_idempotent_envelope_operation_results(
+    tmp_path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    operation_id = "3b9d1dbb-b57b-46f4-8346-fd45e0105042"
+    stored = repository.create_envelope(
+        job.id,
+        EnvelopeDraft(
+            envelope_id="5dc4f15e-df92-4a32-964e-026b5d518a80",
+            snapshot_id="snapshot-1",
+            payload={"target_tag": "lecture-tag"},
+            operations=(
+                EnvelopeOperationDraft(
+                    operation_id=operation_id,
+                    operation_type="store_media",
+                    payload={"filename": "lecture.png"},
+                ),
+            ),
+        ),
+    )
+
+    claimed = repository.start_envelope_operation(
+        stored.id,
+        operation_id,
+    )
+    completed = repository.complete_envelope_operation(
+        stored.id,
+        operation_id,
+        {"filename": "lecture.png"},
+    )
+    replay = repository.start_envelope_operation(stored.id, operation_id)
+
+    assert claimed.state == "applying"
+    assert claimed.attempts == 1
+    assert completed.state == "complete"
+    assert replay == completed
+    assert repository.operation_results(stored.id) == {
+        operation_id: {"filename": "lecture.png"}
+    }
+
+
+def test_repository_records_retryable_and_terminal_operation_failures(
+    tmp_path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    operation_id = "3b9d1dbb-b57b-46f4-8346-fd45e0105042"
+    stored = repository.create_envelope(
+        job.id,
+        EnvelopeDraft(
+            envelope_id="5dc4f15e-df92-4a32-964e-026b5d518a80",
+            snapshot_id="snapshot-1",
+            payload={"target_tag": "lecture-tag"},
+            operations=(
+                EnvelopeOperationDraft(
+                    operation_id=operation_id,
+                    operation_type="sync",
+                    payload={},
+                ),
+            ),
+        ),
+    )
+
+    repository.start_envelope_operation(stored.id, operation_id)
+    retryable = repository.fail_envelope_operation(
+        stored.id,
+        operation_id,
+        "AnkiWeb unavailable",
+        retryable=True,
+    )
+    reclaimed = repository.start_envelope_operation(stored.id, operation_id)
+    terminal = repository.fail_envelope_operation(
+        stored.id,
+        operation_id,
+        "invalid operation",
+        retryable=False,
+    )
+
+    assert retryable.state == "retryable"
+    assert reclaimed.state == "applying"
+    assert reclaimed.attempts == 2
+    assert terminal.state == "failed"
+    assert terminal.error == "invalid operation"

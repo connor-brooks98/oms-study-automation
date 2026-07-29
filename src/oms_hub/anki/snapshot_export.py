@@ -155,7 +155,7 @@ class FullSnapshotExporter:
                         "Anki returned an incomplete notesInfo chunk"
                     )
                 parsed = sorted(
-                    (_snapshot_note(record) for record in records),
+                    (snapshot_note_from_info(record) for record in records),
                     key=lambda note: note.note_id,
                 )
                 if [note.note_id for note in parsed] != chunk:
@@ -224,7 +224,7 @@ def snapshot_note_hashes(path: Path) -> dict[int, str]:
     return result
 
 
-def _snapshot_note(raw: dict[str, Any]) -> SnapshotNote:
+def snapshot_note_from_info(raw: dict[str, Any]) -> SnapshotNote:
     try:
         note_id = _positive_int(raw["noteId"])
         model_name = str(raw["modelName"]).strip()

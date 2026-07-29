@@ -168,7 +168,7 @@ def test_action_envelope_and_receipt_round_trip() -> None:
     )
     receipt_payload = {
         "envelope_id": str(envelope.envelope_id),
-        "agent_id": "connor-mac",
+        "executor_id": "nuc-local",
         "operations": [
             {
                 "operation_id": str(operation.operation_id),
@@ -186,7 +186,7 @@ def test_action_envelope_and_receipt_round_trip() -> None:
     }
     receipt = EnvelopeReceipt(
         envelope_id=envelope.envelope_id,
-        agent_id="connor-mac",
+        executor_id="nuc-local",
         operations=tuple(
             OperationReceipt(
                 operation_id=operation.operation_id,

@@ -227,7 +227,7 @@ class OperationReceipt(ContractModel):
 
 class EnvelopeReceipt(ContractModel):
     envelope_id: UUID
-    agent_id: Annotated[str, Field(min_length=1, max_length=100)]
+    executor_id: Literal["nuc-local"]
     operations: tuple[OperationReceipt, ...]
     sync_status: Literal["complete", "retryable", "failed"]
     verified: bool

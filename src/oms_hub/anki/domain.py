@@ -187,6 +187,19 @@ class StoredEnvelope:
 
 
 @dataclass(frozen=True, slots=True)
+class StoredEnvelopeOperation:
+    id: UUID
+    envelope_id: UUID
+    operation_type: str
+    content_hash: str
+    payload: dict[str, Any]
+    state: str
+    attempts: int
+    result: dict[str, Any] | None
+    error: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class AgentState:
     agent_id: str | None
     heartbeat_at: str | None

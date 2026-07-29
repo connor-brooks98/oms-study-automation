@@ -33,6 +33,13 @@ def test_operation_replay_returns_first_durable_result(tmp_path) -> None:
 
     assert first == {"created_note_ids": [33]}
     assert replay == {"created_note_ids": [33]}
+    assert ledger.operation_result(operation_id, "a" * 64) == {
+        "created_note_ids": [33]
+    }
+    assert ledger.operation_result(
+        UUID("9c7be322-d480-4d3e-8527-6af9731fd396"),
+        "a" * 64,
+    ) is None
 
 
 def test_operation_uuid_reuse_with_different_content_fails_closed(
