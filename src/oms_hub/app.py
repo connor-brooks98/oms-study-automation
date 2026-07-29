@@ -8,7 +8,9 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import Response
 
 from oms_hub import __version__
+from oms_hub.anki.apply import LocalEnvelopeExecutor
 from oms_hub.anki.repository import AnkiCurationRepository
+from oms_hub.anki.service import build_local_anki_service
 from oms_hub.config import Settings, get_settings
 from oms_hub.db import Database
 from oms_hub.files.office import SerialOfficeConverter
@@ -251,6 +253,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.secrets = KeyringSecretStore()
     retire_google_docs_credentials(resolved.data_dir, app.state.secrets)
     app.state.anki_repository = AnkiCurationRepository(database)
+    if resolved.anki_enabled and resolved.anki_executable_path is not None:
+        app.state.anki_service = build_local_anki_service(resolved)
+        app.state.anki_executor = LocalEnvelopeExecutor(
+            anki=app.state.anki_service.anki,
+            operations=app.state.anki_repository,
+            ledger=app.state.anki_service.ledger,
+            lock=app.state.anki_service.lock,
+        )
+    else:
+        app.state.anki_service = None
+        app.state.anki_executor = None
     app.state.llm_settings = LLMSettingsRepository(
         database,
         default_openai_model=resolved.openai_model,

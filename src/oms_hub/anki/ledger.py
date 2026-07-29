@@ -11,9 +11,14 @@ class OperationIdentityConflict(RuntimeError):
 
 
 class SnapshotVersionInfo(Protocol):
-    export_version: str
-    normalizer_version: str
-    embedding_model: str
+    @property
+    def export_version(self) -> str: ...
+
+    @property
+    def normalizer_version(self) -> str: ...
+
+    @property
+    def embedding_model(self) -> str: ...
 
 
 class AnkiLedger:

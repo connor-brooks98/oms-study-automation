@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Sequence
 from copy import deepcopy
 from typing import Any, Literal, Protocol, cast
@@ -92,13 +93,19 @@ class LocalEnvelopeExecutor:
         operations: OperationStore,
         ledger: AnkiLedger,
         note_hasher: Callable[[dict[str, Any]], str] = current_note_content_hash,
+        lock: threading.RLock | None = None,
     ) -> None:
         self._anki = anki
         self._operations = operations
         self._ledger = ledger
         self._note_hasher = note_hasher
+        self._lock = lock or threading.RLock()
 
     def execute(self, envelope: ActionEnvelope) -> EnvelopeReceipt:
+        with self._lock:
+            return self._execute(envelope)
+
+    def _execute(self, envelope: ActionEnvelope) -> EnvelopeReceipt:
         self._verify_preconditions(envelope)
         receipts: list[OperationReceipt] = []
         created_note_ids: list[int] = []

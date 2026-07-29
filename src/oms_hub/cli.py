@@ -6,6 +6,11 @@ from pathlib import Path
 
 import uvicorn
 
+from oms_hub.anki.service import (
+    LocalAnkiConfigurationError,
+    LocalAnkiService,
+    build_local_anki_service,
+)
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.db import Database
@@ -160,6 +165,38 @@ def validate_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def _local_anki_service(settings: Settings) -> LocalAnkiService:
+    try:
+        return build_local_anki_service(settings)
+    except LocalAnkiConfigurationError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def anki_doctor(args: argparse.Namespace) -> int:
+    del args
+    result = _local_anki_service(Settings()).doctor()
+    required_fields = {"Text", "Extra"} <= set(result.note_type_fields)
+    print(
+        f"ankiconnect_version={result.ankiconnect_version} "
+        f"source_note_count={result.source_note_count} "
+        f"required_fields={'available' if required_fields else 'missing'}"
+    )
+    return 0
+
+
+def anki_snapshot(args: argparse.Namespace) -> int:
+    if not args.full:
+        raise SystemExit("Only full NUC-local snapshots are supported")
+    service = _local_anki_service(Settings())
+    manifest = service.export_full()
+    print(
+        f"snapshot_id={manifest.snapshot_id} "
+        f"note_count={manifest.note_count} "
+        f"destination={service.snapshot_path}"
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="oms-hub")
     commands = parser.add_subparsers(required=True)
@@ -188,6 +225,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = commands.add_parser("validate-config")
     validate.set_defaults(handler=validate_config)
+
+    doctor = commands.add_parser("anki-doctor")
+    doctor.set_defaults(handler=anki_doctor)
+
+    snapshot = commands.add_parser("anki-snapshot")
+    snapshot.add_argument("--full", action="store_true", required=True)
+    snapshot.set_defaults(handler=anki_snapshot)
     return parser
 
 
