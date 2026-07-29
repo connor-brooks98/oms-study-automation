@@ -170,7 +170,7 @@ neither Cloudflare nor Tailscale can reach AnkiConnect or a separate agent API.
 New Hub settings are intentionally narrow:
 
 - `OMS_HUB_ANKI_CONNECT_URL=http://127.0.0.1:8766`
-- `OMS_HUB_ANKI_EXECUTABLE_PATH=<absolute path to Anki.exe>`
+- `OMS_HUB_ANKI_EXECUTABLE_PATH=C:\Users\conbr\AppData\Local\Programs\Anki\anki.exe`
 - `OMS_HUB_ANKI_STARTUP_TIMEOUT_SECONDS=60`
 - `OMS_HUB_ANKI_STARTUP_POLL_SECONDS=1`
 
@@ -180,9 +180,11 @@ remains the feature gate.
 
 The Windows installer verifies the local configuration and adds NUC doctor
 checks for AnkiConnect v6, a nonempty `Anking Step Deck`, the generated-note
-type and its `Text`/`Extra` fields, and a logged-in AnkiHub profile. The rollout
-guide instructs the operator to install Anki, AnkiConnect, and AnkiHub directly
-on the NUC and to set AnkiHub auto-sync to `on_ankiweb_sync`.
+type, and its `Text`/`Extra` fields. AnkiConnect does not expose AnkiHub's
+private login state or add-on configuration, so the rollout acceptance check
+confirms the AnkiHub login and `on_ankiweb_sync` setting in Anki itself. The
+rollout guide instructs the operator to install Anki, AnkiConnect, and AnkiHub
+directly on the NUC and to set AnkiHub auto-sync to `on_ankiweb_sync`.
 
 The old Mac Keychain bearer credential may be deleted manually after the NUC
 acceptance run. It is not read, migrated, or required by the redesigned code.
