@@ -184,7 +184,7 @@ def _write_checksum(path: Path) -> None:
 
 if __name__ == "__main__":
     project_root = Path(__file__).resolve().parents[1]
-    built = build_releases(project_root, project_root / "dist", "20260728")
+    built = build_releases(project_root, project_root / "dist", "20260729")
     for artifact in built:
         print(artifact)
         print(artifact.with_suffix(artifact.suffix + ".sha256"))

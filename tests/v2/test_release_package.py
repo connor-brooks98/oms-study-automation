@@ -44,3 +44,36 @@ def test_release_builder_creates_secret_safe_hotfix_and_source_archives(tmp_path
         assert not any(name.endswith(("hub.db", ".pyc")) for name in lowered)
         assert not any("__pycache__" in name for name in lowered)
         assert not any("gpt key" in name for name in lowered)
+
+
+def test_release_contains_nuc_anki_runtime_and_no_mac_bridge(tmp_path):
+    builder = load_builder()
+    root = Path(__file__).parents[2]
+
+    hotfix, source = builder.build_releases(root, tmp_path, "20260729")
+
+    for artifact in (hotfix, source):
+        with zipfile.ZipFile(artifact) as archive:
+            names = set(archive.namelist())
+        assert "src/oms_hub/anki/ankiconnect.py" in names
+        assert "src/oms_hub/anki/runtime.py" in names
+        assert "src/oms_hub/anki/apply.py" in names
+        assert "src/oms_hub/anki/service.py" in names
+        assert not any(name.startswith("src/oms_anki_agent/") for name in names)
+        assert not any(name.startswith("scripts/macos/") for name in names)
+
+
+def test_readme_and_installer_describe_nuc_local_anki() -> None:
+    root = Path(__file__).parents[2]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    installer = (root / "scripts" / "install-windows.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "127.0.0.1:8766" in readme
+    assert "anki-doctor" in readme
+    assert "auto_sync" in readme
+    assert "tailscale serve" not in readme.casefold()
+    assert "launchagent" not in readme.casefold()
+    assert "OMS_HUB_ANKI_ENABLED" in installer
+    assert "anki-doctor" in installer

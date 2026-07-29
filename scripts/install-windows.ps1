@@ -60,6 +60,17 @@ if ($PSCmdlet.ShouldProcess($ProjectRoot, "Install Study Hub V2")) {
     throw "Configure $ProjectRoot\.env, then run this installer again"
   }
   & "$ProjectRoot\.venv\Scripts\oms-hub.exe" validate-config
+  $AnkiEnabled = Select-String `
+    -Path "$ProjectRoot\.env" `
+    -Pattern '^\s*OMS_HUB_ANKI_ENABLED\s*=\s*(true|1|yes|on)\s*$' `
+    -CaseSensitive:$false `
+    -Quiet
+  if ($AnkiEnabled) {
+    & "$ProjectRoot\.venv\Scripts\oms-hub.exe" anki-doctor
+    if ($LASTEXITCODE -ne 0) {
+      throw "NUC-local Anki validation failed"
+    }
+  }
 }
 
 if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {

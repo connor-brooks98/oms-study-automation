@@ -92,44 +92,29 @@ The branch setup, Google Cloud setup, Cloudflare quiz-sharing rule, acceptance
 test, and rollback procedure are in
 [docs/native-quizzes-nuc-rollout.md](docs/native-quizzes-nuc-rollout.md).
 
-### Read-only Anki bridge
+### NUC-local Anki curation
 
-The separate Anki curation branch exports and indexes `Anking Step Deck`; it
-does not tag notes, create notes, store media, or sync. On the NUC, expose only
-the loopback Hub port to the tailnet:
+All Anki curation runs on the Windows NUC. Study Hub calls AnkiConnect only at
+`http://127.0.0.1:8766`; the Mac runs no builder, agent, or deck-curation
+process. After a curated deck is verified, the Mac receives it through its
+ordinary AnkiWeb sync.
 
-```text
-tailscale serve --bg 8765
-tailscale serve status
+Install Anki Desktop, AnkiConnect, and AnkiHub in the NUC's interactive Windows
+account. Sign in to AnkiHub and AnkiWeb, keep AnkiConnect bound to
+`127.0.0.1:8766`, and set AnkiHub `auto_sync` to
+`"on_ankiweb_sync"`. Configure `OMS_HUB_ANKI_ENABLED=true` and the absolute
+`OMS_HUB_ANKI_EXECUTABLE_PATH`, then validate the local runtime:
+
+```powershell
+.\.venv\Scripts\oms-hub.exe anki-doctor
+.\.venv\Scripts\oms-hub.exe anki-snapshot --full
 ```
 
-Use the Tailscale hostname as the Mac agent's Hub URL. Store the shared bearer
-value in Windows Credential Manager and macOS Keychain under service
-`OMSStudyHub` and account `anki-agent-token`. Do not put it in the LaunchAgent,
-shell history, `.env`, or a command-line flag.
-
-On the Mac, install the package, confirm AnkiConnect v6 is listening only on
-`127.0.0.1:8765`, then run:
-
-```text
-oms-anki-agent doctor
-scripts/macos/install-anki-agent.sh \
-  --hub-url https://study-hub.example.ts.net
-launchctl print gui/$(id -u)/com.omsstudy.anki-agent
-```
-
-Rotate the bearer value in both Windows Credential Manager and macOS Keychain,
-then restart the Hub and agent. Disable the private route with
-`tailscale serve reset`. Confirm the public Cloudflare hostname does not expose
-the agent family:
-
-```text
-curl -i https://study.example.com/agent/v1/heartbeat
-# Expected: HTTP 404
-```
-
-The agent logs beneath `~/Library/Logs/OMSStudyHub`. A manual read-only export
-is available with `oms-anki-agent snapshot --full`.
+The apply sequence is media, lecture tags on approved AnKing notes, generated
+cards, combined AnkiHub/AnkiWeb sync, then verification. A job is not complete
+unless that post-sync verification succeeds. Anki curation has no cross-machine
+network dependency. Installation, acceptance checks, restart recovery, and
+rollback are in [docs/anki-nuc-rollout.md](docs/anki-nuc-rollout.md).
 
 The multi-provider hotfix procedure is in
 [docs/v2-multi-provider-nuc-rollout.md](docs/v2-multi-provider-nuc-rollout.md).
