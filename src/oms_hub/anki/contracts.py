@@ -62,7 +62,7 @@ class SnapshotManifest(ContractModel):
     id_set_sha256: Sha256
     content_sha256: Sha256
     export_version: Annotated[str, Field(min_length=1, max_length=50)]
-    agent_version: Annotated[str, Field(min_length=1, max_length=100)]
+    producer_version: Annotated[str, Field(min_length=1, max_length=100)]
     ankiconnect_version: Annotated[int, Field(ge=6)]
     exported_at: datetime
     payload_sha256: Sha256

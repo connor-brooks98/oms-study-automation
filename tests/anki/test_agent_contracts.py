@@ -67,7 +67,7 @@ def test_snapshot_contract_round_trips_with_note_and_delta_hashes() -> None:
         "id_set_sha256": "a" * 64,
         "content_sha256": "b" * 64,
         "export_version": "1",
-        "agent_version": "0.1.0",
+        "producer_version": "0.1.0",
         "ankiconnect_version": 6,
         "exported_at": "2026-07-27T15:00:00Z",
     }
