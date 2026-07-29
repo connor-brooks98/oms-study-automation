@@ -2,7 +2,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Annotated, cast
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -23,7 +23,13 @@ templates = Jinja2Templates(
 def upload_page(
     kind: UploadKind,
     request: Request,
+    lecture_id: int | None = None,
 ) -> HTMLResponse:
+    selected_lecture = None
+    if lecture_id is not None:
+        selected_lecture = _catalog(request).get_lecture(lecture_id)
+        if selected_lecture is None:
+            raise HTTPException(404, "lecture was not found")
     return templates.TemplateResponse(
         request=request,
         name="uploads.html",
@@ -34,6 +40,7 @@ def upload_page(
                 if kind is UploadKind.SLIDES
                 else ".txt"
             ),
+            "selected_lecture": selected_lecture,
         },
     )
 
@@ -69,9 +76,11 @@ def upload_files(
     kind: UploadKind,
     request: Request,
     files: Annotated[list[UploadFile], File()],
+    lecture_id: Annotated[int | None, Form()] = None,
 ) -> dict[str, str]:
     if not files:
         raise HTTPException(422, "at least one file is required")
+    _require_lecture(request, lecture_id)
     batch = _staging(request).begin_batch(kind)
     repository = _repository(request)
     repository.create_batch(kind, batch.id)
@@ -83,9 +92,7 @@ def upload_files(
                 upload.file,
             )
             repository.add_item(kind, staged)
-            request.app.state.ingestion_service.match_item(
-                staged.item_id
-            )
+            _assign_or_match(request, staged.item_id, lecture_id)
     except UploadRejected as error:
         repository.set_batch_state(batch.id, UploadState.FAILED)
         raise HTTPException(422, str(error)) from error
@@ -192,7 +199,9 @@ async def append_chunk(
 def finalize_chunks(
     session_id: str,
     request: Request,
+    lecture_id: int | None = None,
 ) -> dict[str, str]:
+    _require_lecture(request, lecture_id)
     try:
         staged = _staging(request).finalize_chunks(session_id)
     except UploadRejected as error:
@@ -201,5 +210,22 @@ def finalize_chunks(
     if batch is None:
         raise HTTPException(409, "chunk upload batch is missing")
     _repository(request).add_item(batch.kind, staged)
-    request.app.state.ingestion_service.match_item(staged.item_id)
+    _assign_or_match(request, staged.item_id, lecture_id)
     return {"batch_id": staged.batch_id, "item_id": staged.item_id}
+
+
+def _require_lecture(request: Request, lecture_id: int | None) -> None:
+    if lecture_id is not None and _catalog(request).get_lecture(lecture_id) is None:
+        raise HTTPException(404, "lecture was not found")
+
+
+def _assign_or_match(
+    request: Request,
+    item_id: str,
+    lecture_id: int | None,
+) -> None:
+    service = _ingestion(request)
+    if lecture_id is None:
+        service.match_item(item_id)
+    else:
+        service.assign(item_id, lecture_id)

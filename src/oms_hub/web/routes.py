@@ -15,6 +15,8 @@ from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.naming import display_title
 from oms_hub.progress import overall_status
 from oms_hub.repositories import CatalogRepository, LectureInput
+from oms_hub.study_generation.domain import GenerationKind
+from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.web.schemas import LectureApi, StepApi
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -162,6 +164,9 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
             request.app.state.database
         ).list_current_revisions(lecture_id)
     }
+    generation = GenerationRepository(request.app.state.database)
+    outline = generation.current_outline(lecture_id)
+    quiz = generation.current_quiz(lecture_id)
     return templates.TemplateResponse(
         request=request,
         name="lecture.html",
@@ -181,6 +186,16 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
                 UploadKind.TRANSCRIPTS
             ),
             "course_hue": _course_hue(lecture.subject),
+            "outline_output": outline,
+            "quiz_output": quiz,
+            "outline_job": generation.current_job(
+                lecture_id,
+                GenerationKind.OUTLINE,
+            ),
+            "quiz_job": generation.current_job(
+                lecture_id,
+                GenerationKind.QUIZ,
+            ),
         },
     )
 

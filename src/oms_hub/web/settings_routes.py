@@ -19,6 +19,8 @@ from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.llm.service import SECRET_KEYS, LLMService
 from oms_hub.repositories import CatalogRepository
 from oms_hub.security.secret_store import SecretStore
+from oms_hub.study_generation.domain import PromptKind
+from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.tracker_preview import TrackerPreview, TrackerPreviewService
 from oms_hub.web.llm_schemas import (
     ActiveProviderUpdate,
@@ -98,6 +100,24 @@ def settings_page(request: Request) -> HTMLResponse:
             "active_provider": _llm_settings(
                 request
             ).active().provider.value,
+            "notebook_status": (
+                request.app.state.notebook_connection.status()
+            ),
+            "prompt_settings": tuple(
+                {
+                    "kind": kind.value,
+                    "label": (
+                        "Lecture outline prompt"
+                        if kind is PromptKind.OUTLINE
+                        else "Lecture quiz prompt"
+                    ),
+                    "path": GenerationRepository(
+                        request.app.state.database
+                    ).prompt_path(kind)
+                    or "",
+                }
+                for kind in PromptKind
+            ),
         },
     )
 

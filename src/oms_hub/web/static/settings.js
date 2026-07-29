@@ -71,6 +71,41 @@
     return payload;
   };
 
+  const getJson = async (fetchImpl, url) => {
+    const response = await fetchImpl(url, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Study Hub rejected the request.");
+    }
+    return payload;
+  };
+
+  const renderNotebookStatus = (card, status) => {
+    const badge = card.querySelector("[data-notebook-badge]");
+    const message = card.querySelector("[data-notebook-status]");
+    const connected = status.state === "connected";
+    const connecting = status.state === "connecting";
+
+    badge.textContent = connecting ? "Connecting" : connected ? "Connected" : "Not connected";
+    badge.classList.toggle("is-configured", connected);
+
+    if (connecting) {
+      message.textContent = status.message
+        || "Finish signing in using the browser window on this Study Hub device.";
+    } else if (connected) {
+      message.textContent = "Gemini Notebook is connected.";
+    } else if (status.message) {
+      message.textContent = status.message;
+    }
+  };
+
+  const promptPathAction = (value) => (
+    String(value || "").trim() ? "save" : "select"
+  );
+
   const setTestState = (button, state) => {
     const presentation = testPresentation(state);
     button.classList.remove("is-testing", "is-connected", "is-failed");
@@ -88,6 +123,14 @@
       container.append(paragraph);
     });
     container.hidden = lines.length === 0;
+  };
+
+  const runWhenReady = (documentRef, callback) => {
+    if (documentRef.readyState === "loading") {
+      documentRef.addEventListener("DOMContentLoaded", callback, { once: true });
+      return;
+    }
+    callback();
   };
 
   const initialize = (documentRef, fetchImpl) => {
@@ -187,6 +230,120 @@
       });
     });
 
+    documentRef.querySelectorAll("[data-prompt-card]").forEach((card) => {
+      const kind = card.dataset.prompt;
+      const input = card.querySelector("[data-prompt-path]");
+      const message = card.querySelector("[data-prompt-message]");
+      const pathButton = card.querySelector("[data-save-prompt]");
+      const updatePromptAction = () => {
+        pathButton.textContent = promptPathAction(input.value) === "select"
+          ? "Select Path"
+          : "Save Path";
+      };
+      input.addEventListener("input", updatePromptAction);
+      pathButton.addEventListener("click", async () => {
+        try {
+          if (promptPathAction(input.value) === "select") {
+            message.textContent = "Choose the Obsidian prompt on the NUC…";
+            const result = await postJson(
+              fetchImpl,
+              `/settings/generation/prompts/${kind}/select`,
+              {},
+              token(),
+            );
+            if (result.selected) {
+              input.value = result.path;
+              updatePromptAction();
+              message.textContent = "Path selected. Click Save Path to keep it.";
+            } else {
+              message.textContent = "No prompt file was selected.";
+            }
+            return;
+          }
+          await postJson(
+            fetchImpl,
+            `/settings/generation/prompts/${kind}`,
+            { path: input.value },
+            token(),
+          );
+          message.textContent = "Prompt path saved.";
+        } catch (error) {
+          message.textContent = error.message;
+        }
+      });
+      card.querySelector("[data-test-prompt]").addEventListener("click", async () => {
+        try {
+          const result = await postJson(
+            fetchImpl,
+            `/settings/generation/prompts/${kind}/test`,
+            {},
+            token(),
+          );
+          message.textContent = result.state === "valid"
+            ? "Prompt file is ready."
+            : result.message;
+        } catch (error) {
+          message.textContent = error.message;
+        }
+      });
+    });
+
+    const notebookCard = documentRef.querySelector("[data-notebook-card]");
+    if (notebookCard) {
+      const connectButton = notebookCard.querySelector("[data-notebook-connect]");
+      const testButton = notebookCard.querySelector("[data-notebook-test]");
+      const message = notebookCard.querySelector("[data-notebook-status]");
+      let notebookPollTimer;
+
+      const refreshNotebook = () => getJson(fetchImpl, "/settings/notebook/status")
+        .then((status) => {
+          renderNotebookStatus(notebookCard, status);
+          if (status.state === "connecting") {
+            notebookPollTimer = root.setTimeout(refreshNotebook, 2000);
+          }
+        })
+        .catch((error) => {
+          message.textContent = error.message;
+        });
+      void refreshNotebook();
+
+      connectButton.addEventListener("click", async () => {
+        connectButton.disabled = true;
+        try {
+          const status = await postJson(
+            fetchImpl,
+            "/settings/notebook/connect",
+            {},
+            token(),
+          );
+          renderNotebookStatus(notebookCard, status);
+          root.clearTimeout(notebookPollTimer);
+          notebookPollTimer = root.setTimeout(refreshNotebook, 1500);
+        } catch (error) {
+          message.textContent = error.message;
+        } finally {
+          connectButton.disabled = false;
+        }
+      });
+
+      testButton.addEventListener("click", async () => {
+        testButton.disabled = true;
+        try {
+          const status = await postJson(
+            fetchImpl,
+            "/settings/notebook/test",
+            {},
+            token(),
+          );
+          renderNotebookStatus(notebookCard, status);
+        } catch (error) {
+          message.textContent = error.message;
+        } finally {
+          testButton.disabled = false;
+        }
+      });
+    }
+
     const active = documentRef.querySelector("[data-active-provider]");
     const saveActive = documentRef.querySelector("[data-save-active]");
     const activeMessage = documentRef.querySelector("[data-active-message]");
@@ -215,8 +372,12 @@
   const api = {
     csrfToken,
     diagnosticLines,
+    getJson,
     initialize,
     postJson,
+    promptPathAction,
+    renderNotebookStatus,
+    runWhenReady,
     testPresentation,
     togglePassword,
   };
@@ -225,7 +386,7 @@
     module.exports = api;
   }
   if (root.document) {
-    root.document.addEventListener("DOMContentLoaded", () => {
+    runWhenReady(root.document, () => {
       initialize(root.document, root.fetch.bind(root));
     });
   }

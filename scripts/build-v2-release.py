@@ -4,7 +4,11 @@ import zipfile
 from pathlib import Path
 
 HOTFIX_FILES = (
+    ".env.example",
+    "README.md",
+    "pyproject.toml",
     "src/oms_hub/app.py",
+    "src/oms_hub/cli.py",
     "src/oms_hub/config.py",
     "src/oms_hub/ingestion/domain.py",
     "src/oms_hub/ingestion/repository.py",
@@ -21,17 +25,38 @@ HOTFIX_FILES = (
     "src/oms_hub/llm/service.py",
     "src/oms_hub/migrations.py",
     "src/oms_hub/models.py",
+    "src/oms_hub/routing.py",
+    "src/oms_hub/study_generation/__init__.py",
+    "src/oms_hub/study_generation/domain.py",
+    "src/oms_hub/study_generation/native_quiz.py",
+    "src/oms_hub/study_generation/notebook.py",
+    "src/oms_hub/study_generation/notebook_connection.py",
+    "src/oms_hub/study_generation/outline.py",
+    "src/oms_hub/study_generation/prompts.py",
+    "src/oms_hub/study_generation/repository.py",
+    "src/oms_hub/study_generation/service.py",
+    "src/oms_hub/study_generation/worker.py",
     "src/oms_hub/transcripts/cleaner.py",
     "src/oms_hub/transcripts/pipeline.py",
     "src/oms_hub/web/llm_schemas.py",
     "src/oms_hub/web/artifact_routes.py",
+    "src/oms_hub/web/generation_routes.py",
+    "src/oms_hub/web/public_quiz_routes.py",
     "src/oms_hub/web/settings_routes.py",
     "src/oms_hub/web/upload_routes.py",
     "src/oms_hub/web/static/app.css",
+    "src/oms_hub/web/static/public_quiz.css",
+    "src/oms_hub/web/static/public_quiz.js",
+    "src/oms_hub/web/static/public_quiz_library.css",
+    "src/oms_hub/web/static/public_quiz_library.js",
     "src/oms_hub/web/static/settings.js",
+    "src/oms_hub/web/static/lecture.js",
     "src/oms_hub/web/static/uploads.js",
     "src/oms_hub/web/templates/artifact_text.html",
     "src/oms_hub/web/templates/settings.html",
+    "src/oms_hub/web/templates/lecture.html",
+    "src/oms_hub/web/templates/public_quiz.html",
+    "src/oms_hub/web/templates/public_quiz_library.html",
     "src/oms_hub/web/templates/uploads.html",
 )
 
@@ -47,7 +72,11 @@ def build_releases(
     )
     source = output_dir / f"Study-Hub-V2-Source-{release_date}.zip"
     source_files = _source_files(root)
-    _write_archive(root, hotfix, HOTFIX_FILES)
+    runtime_files = {
+        path for path in source_files if path.startswith("src/oms_hub/")
+    }
+    hotfix_files = tuple(sorted(set(HOTFIX_FILES) | runtime_files))
+    _write_archive(root, hotfix, hotfix_files)
     _write_archive(root, source, source_files)
     _write_checksum(hotfix)
     _write_checksum(source)
@@ -72,7 +101,7 @@ def _source_files(root: Path) -> tuple[str, ...]:
         sorted(
             path
             for path in result.stdout.splitlines()
-            if path and _allowed(path)
+            if path and _allowed(path) and (root / path).is_file()
         )
     )
     if not files:
@@ -93,10 +122,27 @@ def _allowed(relative: str) -> bool:
             ".pytest_cache",
             ".ruff_cache",
             ".venv",
+            ".superpowers",
             "__pycache__",
+            "browser-profile",
             "dist",
         }
         for part in path.parts
+    ):
+        return False
+    forbidden_names = {
+        "notebooklm-storage.json",
+        "oauth-client.json",
+        "storage-state.json",
+        "storage_state.json",
+        "token.json",
+        "trace.zip",
+    }
+    if path.name.casefold() in forbidden_names:
+        return False
+    if (
+        path.suffix.casefold() == ".pdf"
+        and any(part.casefold() in {"artifacts", "lecture outlines"} for part in path.parts)
     ):
         return False
     return "gpt key" not in lowered
@@ -138,7 +184,7 @@ def _write_checksum(path: Path) -> None:
 
 if __name__ == "__main__":
     project_root = Path(__file__).resolve().parents[1]
-    built = build_releases(project_root, project_root / "dist", "20260726")
+    built = build_releases(project_root, project_root / "dist", "20260728")
     for artifact in built:
         print(artifact)
         print(artifact.with_suffix(artifact.suffix + ".sha256"))

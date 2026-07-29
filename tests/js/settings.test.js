@@ -76,3 +76,74 @@ test("diagnostics return safe text fields without HTML", () => {
     "Study Hub reference: correlation-1",
   ]);
 });
+
+test("settings initialize immediately when the page is already loaded", () => {
+  let starts = 0;
+  const documentRef = {
+    readyState: "complete",
+    addEventListener() {
+      throw new Error("DOMContentLoaded listener should not be registered");
+    },
+  };
+
+  settings.runWhenReady(documentRef, () => {
+    starts += 1;
+  });
+
+  assert.equal(starts, 1);
+});
+
+test("settings wait for DOMContentLoaded while the page is loading", () => {
+  let listener;
+  let starts = 0;
+  const documentRef = {
+    readyState: "loading",
+    addEventListener(name, callback) {
+      assert.equal(name, "DOMContentLoaded");
+      listener = callback;
+    },
+  };
+
+  settings.runWhenReady(documentRef, () => {
+    starts += 1;
+  });
+  assert.equal(starts, 0);
+
+  listener();
+  assert.equal(starts, 1);
+});
+
+test("Notebook connecting state is rendered without Google Docs surfaces", () => {
+  const badge = {
+    textContent: "",
+    classList: { toggle() {} },
+  };
+  const message = { textContent: "" };
+  const card = {
+    querySelector(selector) {
+      if (selector === "[data-notebook-badge]") return badge;
+      if (selector === "[data-notebook-status]") return message;
+      throw new Error(`unexpected selector: ${selector}`);
+    },
+  };
+
+  settings.renderNotebookStatus(card, {
+    state: "connecting",
+    message: "Complete Google sign-in in the browser window.",
+  });
+
+  assert.equal(badge.textContent, "Connecting");
+  assert.equal(
+    message.textContent,
+    "Complete Google sign-in in the browser window.",
+  );
+});
+
+test("prompt action changes from select to save after a path is chosen", () => {
+  assert.equal(settings.promptPathAction(""), "select");
+  assert.equal(settings.promptPathAction("   "), "select");
+  assert.equal(
+    settings.promptPathAction("C:\\Vault\\Outline Prompt.md"),
+    "save",
+  );
+});

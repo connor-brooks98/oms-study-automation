@@ -1,0 +1,219 @@
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+
+from oms_hub.domain import StepStatus, V2StepName
+from oms_hub.ingestion.domain import UploadKind
+from oms_hub.study_generation.domain import (
+    GenerationKind,
+    GenerationState,
+    PromptSnapshot,
+)
+from oms_hub.study_generation.service import (
+    GenerationPrerequisiteError,
+    GenerationService,
+)
+
+
+@dataclass
+class Lecture:
+    id: int = 4
+
+
+@dataclass
+class Revision:
+    id: int
+    kind: UploadKind
+    canonical_derived_path: Path | None
+    derived_sha256: str | None
+    current: bool = True
+
+
+class Catalog:
+    def __init__(self):
+        self.steps = []
+
+    def get_lecture(self, lecture_id):
+        return Lecture(lecture_id)
+
+    def set_step_status(self, lecture_id, name, status, detail=None):
+        self.steps.append((lecture_id, name, status, detail))
+
+
+class Ingestion:
+    def __init__(self, revisions):
+        self.revisions = revisions
+
+    def list_current_revisions(self, lecture_id):
+        return self.revisions
+
+
+class Prompts:
+    def inspect(self, kind):
+        return PromptSnapshot(Path("prompt.md"), "Prompt", "a" * 64, "now")
+
+
+class Google:
+    def __init__(self):
+        self.live_checks = 0
+
+    def status(self):
+        return type("Status", (), {"state": "connected"})()
+
+    def require_live(self):
+        self.live_checks += 1
+        return self.status()
+
+
+class Jobs:
+    def __init__(self):
+        self.advanced = None
+
+    def queue(self, lecture_id, kind):
+        return type(
+            "Job",
+            (),
+            {
+                "id": "job-1",
+                "pdf_revision_id": None,
+                "kind": kind,
+                "state": GenerationState.QUEUED,
+            },
+        )()
+
+    def advance(self, job_id, stage, **fields):
+        self.advanced = fields
+        return type(
+            "Job",
+            (),
+            {"id": job_id, "kind": GenerationKind.OUTLINE, **fields},
+        )()
+
+
+class PausedJobs(Jobs):
+    def queue(self, lecture_id, kind):
+        return type(
+            "Job",
+            (),
+            {
+                "id": "job-1",
+                "pdf_revision_id": 10,
+                "kind": kind,
+                "state": GenerationState.PAUSED,
+            },
+        )()
+
+    def requeue(self, job_id):
+        return type(
+            "Job",
+            (),
+            {
+                "id": job_id,
+                "pdf_revision_id": 10,
+                "kind": GenerationKind.OUTLINE,
+                "state": GenerationState.QUEUED,
+            },
+        )()
+
+
+def test_outline_queue_requires_current_pdf_and_cleaned_transcript(tmp_path):
+    google = Google()
+    service = GenerationService(
+        Catalog(),
+        Ingestion([]),
+        Jobs(),
+        Prompts(),
+        google,
+    )
+
+    with pytest.raises(GenerationPrerequisiteError) as error:
+        service.queue_outline(4)
+
+    assert str(error.value) == "Current lecture PDF and cleaned transcript are required"
+
+
+def test_queue_snapshots_current_revision_ids_and_prompt(tmp_path):
+    pdf = tmp_path / "lecture.pdf"
+    transcript = tmp_path / "transcript.txt"
+    pdf.write_bytes(b"pdf")
+    transcript.write_text("clean", encoding="utf-8")
+    import hashlib
+
+    jobs = Jobs()
+    catalog = Catalog()
+    google = Google()
+    service = GenerationService(
+        catalog,
+        Ingestion(
+            [
+                Revision(
+                    10,
+                    UploadKind.SLIDES,
+                    pdf,
+                    hashlib.sha256(b"pdf").hexdigest(),
+                ),
+                Revision(
+                    11,
+                    UploadKind.TRANSCRIPTS,
+                    transcript,
+                    hashlib.sha256(b"clean").hexdigest(),
+                ),
+            ]
+        ),
+        jobs,
+        Prompts(),
+        google,
+    )
+
+    service.queue_outline(4)
+
+    assert jobs.advanced["pdf_revision_id"] == 10
+    assert jobs.advanced["transcript_revision_id"] == 11
+    assert jobs.advanced["prompt_sha256"] == "a" * 64
+    assert google.live_checks == 1
+    assert catalog.steps[-1][:3] == (
+        4,
+        V2StepName.SUMMARY_FILED,
+        StepStatus.QUEUED,
+    )
+
+
+def test_retrying_paused_generation_returns_progress_to_queued(tmp_path):
+    pdf = tmp_path / "lecture.pdf"
+    transcript = tmp_path / "transcript.txt"
+    pdf.write_bytes(b"pdf")
+    transcript.write_text("clean", encoding="utf-8")
+    import hashlib
+
+    catalog = Catalog()
+    service = GenerationService(
+        catalog,
+        Ingestion(
+            [
+                Revision(
+                    10,
+                    UploadKind.SLIDES,
+                    pdf,
+                    hashlib.sha256(b"pdf").hexdigest(),
+                ),
+                Revision(
+                    11,
+                    UploadKind.TRANSCRIPTS,
+                    transcript,
+                    hashlib.sha256(b"clean").hexdigest(),
+                ),
+            ]
+        ),
+        PausedJobs(),
+        Prompts(),
+        Google(),
+    )
+
+    service.queue_outline(4)
+
+    assert catalog.steps[-1][:3] == (
+        4,
+        V2StepName.SUMMARY_FILED,
+        StepStatus.QUEUED,
+    )

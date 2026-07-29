@@ -39,10 +39,31 @@ from oms_hub.security.csrf import (
 )
 from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.slides.pipeline import SlidePipeline
+from oms_hub.study_generation.native_quiz import NativeQuizPublisher
+from oms_hub.study_generation.notebook import StoredNotebookLMGateway
+from oms_hub.study_generation.notebook_auth import NotebookCLIAuth
+from oms_hub.study_generation.notebook_connection import (
+    NotebookConnectionService,
+    retire_google_docs_credentials,
+)
+from oms_hub.study_generation.outline import OutlineService
+from oms_hub.study_generation.path_picker import SystemPromptPathPicker
+from oms_hub.study_generation.prompts import PromptFileService
+from oms_hub.study_generation.repository import GenerationRepository
+from oms_hub.study_generation.service import GenerationService
+from oms_hub.study_generation.worker import GenerationWorker
 from oms_hub.transcripts.pipeline import TranscriptPipeline as V2TranscriptPipeline
 from oms_hub.transcripts.prompt import PromptLoader as V2PromptLoader
 from oms_hub.web.anki_agent_routes import router as anki_agent_router
 from oms_hub.web.artifact_routes import router as artifact_router
+from oms_hub.web.generation_routes import (
+    lecture_router,
+    notebook_router,
+)
+from oms_hub.web.generation_routes import (
+    router as generation_router,
+)
+from oms_hub.web.public_quiz_routes import router as public_quiz_router
 from oms_hub.web.quarantine_routes import router as quarantine_router
 from oms_hub.web.routes import router
 from oms_hub.web.settings_routes import router as settings_router
@@ -93,6 +114,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved.anki_agent_hostname and host == resolved.anki_agent_hostname
         )
         is_agent_path = request.url.path.startswith("/agent/v1/")
+        is_public_quiz = (
+            request.url.path == "/public/quizzes"
+            or request.url.path.startswith("/public/quizzes/")
+        )
 
         def harden(response: Response) -> Response:
             response.headers["Content-Security-Policy"] = (
@@ -118,6 +143,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 response.status_code in {401, 403, 503}
                 or "text/html" in content_type
                 or request.url.path.startswith("/artifacts/")
+                or is_public_quiz
             ):
                 response.headers.setdefault("Cache-Control", "no-store")
             if is_public:
@@ -188,38 +214,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.state.agent_id = agent_id
             return harden(await call_next(request))
         if is_public:
-            verifier = request.app.state.access_verifier
-            if verifier is None:
-                return harden(
-                    JSONResponse(
-                        {"detail": "Cloudflare Access is not configured"},
-                        status_code=503,
+            if not is_public_quiz:
+                verifier = request.app.state.access_verifier
+                if verifier is None:
+                    return harden(
+                        JSONResponse(
+                            {"detail": "Cloudflare Access is not configured"},
+                            status_code=503,
+                        )
                     )
-                )
-            assertion = request.headers.get("Cf-Access-Jwt-Assertion")
-            if not assertion:
-                return harden(
-                    JSONResponse(
-                        {"detail": "Cloudflare Access identity is required"},
-                        status_code=401,
+                assertion = request.headers.get("Cf-Access-Jwt-Assertion")
+                if not assertion:
+                    return harden(
+                        JSONResponse(
+                            {"detail": "Cloudflare Access identity is required"},
+                            status_code=401,
+                        )
                     )
-                )
-            try:
-                request.state.access_identity = verifier.verify(assertion)
-            except AccessIdentityForbidden:
-                return harden(
-                    JSONResponse(
-                        {"detail": "Cloudflare Access identity is not allowed"},
-                        status_code=403,
+                try:
+                    request.state.access_identity = verifier.verify(assertion)
+                except AccessIdentityForbidden:
+                    return harden(
+                        JSONResponse(
+                            {"detail": "Cloudflare Access identity is not allowed"},
+                            status_code=403,
+                        )
                     )
-                )
-            except AccessTokenInvalid:
-                return harden(
-                    JSONResponse(
-                        {"detail": "Cloudflare Access identity is invalid"},
-                        status_code=401,
+                except AccessTokenInvalid:
+                    return harden(
+                        JSONResponse(
+                            {"detail": "Cloudflare Access identity is invalid"},
+                            status_code=401,
+                        )
                     )
-                )
         elif host in local_hosts:
             if not resolved.allow_local_access:
                 return harden(
@@ -292,6 +319,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     database.migrate()
     app.state.database = database
     app.state.secrets = KeyringSecretStore()
+    retire_google_docs_credentials(resolved.data_dir, app.state.secrets)
     app.state.anki_repository = AnkiCurationRepository(database)
     app.state.llm_settings = LLMSettingsRepository(
         database,
@@ -311,6 +339,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.catalog_repository = CatalogRepository(database)
     app.state.ingestion_repository = IngestionRepository(database)
+    app.state.generation_repository = GenerationRepository(database)
+    notebook_storage_path = (
+        resolved.data_dir / "google" / "notebooklm-storage.json"
+    )
+    app.state.notebook_auth = NotebookCLIAuth(notebook_storage_path)
+    app.state.notebook_connection = NotebookConnectionService(
+        app.state.generation_repository,
+        app.state.notebook_auth,
+    )
+    app.state.prompt_path_picker = SystemPromptPathPicker()
     app.state.upload_staging = StagingService(
         resolved.data_dir / "staging",
         resolved.max_upload_file_bytes,
@@ -343,6 +381,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.slide_pipeline,
         app.state.transcript_pipeline,
     )
+    prompt_files = PromptFileService(app.state.generation_repository)
+    app.state.generation_service = GenerationService(
+        app.state.catalog_repository,
+        app.state.ingestion_repository,
+        app.state.generation_repository,
+        prompt_files,
+        app.state.notebook_connection,
+    )
+    app.state.generation_worker = GenerationWorker(
+        app.state.generation_repository,
+        app.state.catalog_repository,
+        app.state.ingestion_repository,
+        prompt_files,
+        StoredNotebookLMGateway(
+            notebook_storage_path,
+            app.state.generation_repository,
+        ),
+        OutlineService(resolved, app.state.generation_repository),
+        NativeQuizPublisher(
+            app.state.generation_repository,
+            resolved,
+        ),
+        app.state.notebook_connection,
+    )
     web_root = Path(__file__).parent / "web"
     app.mount(
         "/static",
@@ -355,6 +417,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(settings_router)
     app.include_router(upload_router)
     app.include_router(quarantine_router)
+    app.include_router(generation_router)
+    app.include_router(notebook_router)
+    app.include_router(lecture_router)
+    app.include_router(public_quiz_router)
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {

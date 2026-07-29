@@ -20,6 +20,12 @@
       && item.duplicate_warning,
   ) || null;
 
+  const chunkFinalizeUrl = (sessionId, lectureId) => (
+    `/api/upload-chunks/${encodeURIComponent(sessionId)}/finalize${
+      lectureId ? `?lecture_id=${encodeURIComponent(lectureId)}` : ""
+    }`
+  );
+
   const postDecision = async (
     fetchImpl,
     itemId,
@@ -55,6 +61,7 @@
     const progressBar = documentRef.querySelector("[data-progress-bar]");
     const submit = form.querySelector(".upload-submit");
     const kind = form.dataset.kind;
+    const lectureId = form.dataset.lectureId || "";
     const dialog = documentRef.querySelector("[data-duplicate-dialog]");
     const dialogLecture = dialog?.querySelector("[data-duplicate-lecture]");
     const dialogError = dialog?.querySelector("[data-duplicate-error]");
@@ -177,6 +184,7 @@
     const multipartUpload = (files) => new Promise((resolve, reject) => {
       const body = new FormData();
       files.forEach((file) => body.append("files", file));
+      if (lectureId) body.append("lecture_id", lectureId);
       const request = new XMLHttpRequest();
       request.open("POST", `/uploads/${kind}`);
       request.setRequestHeader(
@@ -250,7 +258,7 @@
         setProgress((offset / file.size) * 100);
       }
       const finalized = await fetchImpl(
-        `/api/upload-chunks/${session.session_id}/finalize`,
+        chunkFinalizeUrl(session.session_id, lectureId),
         { method: "POST", headers: csrfHeaders() },
       );
       if (!finalized.ok) {
@@ -359,6 +367,7 @@
   };
 
   const api = {
+    chunkFinalizeUrl,
     csrfToken,
     formatLecture,
     initialize,

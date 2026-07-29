@@ -11,10 +11,14 @@
         {% if is_slides %}Add downloaded PowerPoint files. The NUC will match, preserve, convert, and file them.
         {% else %}Add downloaded text transcripts. The NUC will match, clean, validate, and file them.{% endif %}
       </p>
+      {% if selected_lecture %}
+      <p class="field-help">For {{ selected_lecture.subject }} · Lecture {{ "%02d"|format(selected_lecture.lecture_number) }} · {{ selected_lecture.topic }}</p>
+      {% endif %}
     </div>
   </div>
 
-  <form class="upload-form" action="/uploads/{{ kind.value }}" method="post" enctype="multipart/form-data" data-upload-form data-kind="{{ kind.value }}">
+  <form class="upload-form" action="/uploads/{{ kind.value }}" method="post" enctype="multipart/form-data" data-upload-form data-kind="{{ kind.value }}" data-lecture-id="{{ selected_lecture.id if selected_lecture else '' }}">
+    {% if selected_lecture %}<input type="hidden" name="lecture_id" value="{{ selected_lecture.id }}">{% endif %}
     <div class="upload-zone" data-drop-zone>
       <span class="upload-mark" aria-hidden="true">↑</span>
       <h2>Drop {{ "PowerPoint" if is_slides else "transcript" }} files here</h2>
@@ -58,5 +62,5 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/uploads.js" defer></script>
+<script src="/static/uploads.js?v=20260727.2" defer></script>
 {% endblock %}

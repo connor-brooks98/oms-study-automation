@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5.2"
     openai_input_usd_per_million: float = Field(default=2.50, ge=0)
     openai_output_usd_per_million: float = Field(default=15.00, ge=0)
+    generation_timeout_seconds: int = Field(default=180, ge=30, le=600)
     anki_enabled: bool = False
     anki_data_dir: Path | None = None
     anki_agent_hostname: str | None = None

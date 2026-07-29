@@ -63,3 +63,14 @@ test("decision request posts with CSRF and keeps item data out of URL", async ()
   assert.equal(captured.options.body, undefined);
   assert.equal(captured.url.includes("?"), false);
 });
+
+test("large lecture uploads retain their selected lecture at finalize", () => {
+  assert.equal(
+    uploads.chunkFinalizeUrl("session-1", "42"),
+    "/api/upload-chunks/session-1/finalize?lecture_id=42",
+  );
+  assert.equal(
+    uploads.chunkFinalizeUrl("session-1", ""),
+    "/api/upload-chunks/session-1/finalize",
+  );
+});
