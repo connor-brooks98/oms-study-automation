@@ -22,9 +22,19 @@ from oms_hub.anki.repository import (
 from oms_hub.db import Database
 from oms_hub.models import LectureModel
 
+_OPEN_DATABASES: list[Database] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_databases() -> None:
+    yield
+    while _OPEN_DATABASES:
+        _OPEN_DATABASES.pop().close()
+
 
 def _prepared_repository(tmp_path: Path) -> tuple[AnkiCurationRepository, int]:
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    _OPEN_DATABASES.append(database)
     database.migrate()
     with database.session() as session:
         lecture = LectureModel(

@@ -20,6 +20,16 @@ PUBLIC_HOST = "study.example.com"
 TAILNET_HOST = "study-hub.tailnet-name.ts.net"
 AGENT_ID = "connor-mac"
 TOKEN = "sentinel-agent-bearer-token"
+_OPEN_APPS: list[tuple[TestClient, Any]] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_apps() -> None:
+    yield
+    while _OPEN_APPS:
+        client, app = _OPEN_APPS.pop()
+        client.close()
+        app.state.database.close()
 
 
 class MemorySecretStore:
@@ -69,7 +79,9 @@ def _prepared_client(
     app = create_app(settings)
     app.state.access_verifier = AcceptingAccessVerifier()
     app.state.secrets = MemorySecretStore({"anki-agent-token": TOKEN})
-    return TestClient(app), app
+    prepared = (TestClient(app), app)
+    _OPEN_APPS.append(prepared)
+    return prepared
 
 
 def _agent_headers(token: str = TOKEN, agent_id: str = AGENT_ID) -> dict[str, str]:

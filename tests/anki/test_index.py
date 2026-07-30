@@ -1,5 +1,6 @@
 import sqlite3
 from collections.abc import Sequence
+from contextlib import closing
 from pathlib import Path
 
 import numpy as np
@@ -67,7 +68,9 @@ def test_rebuild_populates_hybrid_index_and_queries(tmp_path: Path) -> None:
     index = AnkiIndex(tmp_path / "index", embedder=FixedEmbedder())
     index.rebuild(_initial_notes(), snapshot_id="snapshot-1", fingerprint="a" * 64)
 
-    with sqlite3.connect(tmp_path / "index" / "cards.sqlite3") as connection:
+    with closing(
+        sqlite3.connect(tmp_path / "index" / "cards.sqlite3")
+    ) as connection:
         tables = {
             row[0]
             for row in connection.execute(

@@ -1,5 +1,6 @@
 from collections.abc import Sequence
-from typing import Any, cast
+from types import TracebackType
+from typing import Any, Self, cast
 
 import httpx
 
@@ -95,6 +96,20 @@ class AnkiConnectClient:
         result = self._invoke("sync", {})
         if result is not None:
             raise AnkiConnectProtocolError("AnkiConnect returned an invalid sync result")
+
+    def close(self) -> None:
+        self.http.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
 
     def _invoke(self, action: str, params: dict[str, Any]) -> Any:
         try:

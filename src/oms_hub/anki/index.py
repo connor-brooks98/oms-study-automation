@@ -3,6 +3,7 @@ import os
 import shutil
 import sqlite3
 from collections.abc import Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -102,7 +103,7 @@ class AnkiIndex:
     def snapshot_id(self) -> str | None:
         if not self.database_path.exists():
             return None
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             row = connection.execute(
                 "SELECT value FROM index_meta WHERE key = 'snapshot_id'"
             ).fetchone()
@@ -111,7 +112,7 @@ class AnkiIndex:
     def get_note(self, note_id: int) -> NormalizedNote | None:
         if not self.database_path.exists():
             return None
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             row = connection.execute(
                 """
                 SELECT note_id, model_name, text, extra, raw_fields_json,
@@ -133,7 +134,7 @@ class AnkiIndex:
         return _row_to_note(row, media_rows)
 
     def search_tag(self, prefix: str) -> list[int]:
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT DISTINCT note_id FROM note_tags
@@ -144,7 +145,7 @@ class AnkiIndex:
         return [int(row[0]) for row in rows]
 
     def search_fts(self, query: str, *, limit: int = 50) -> list[SearchHit]:
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT note_id, bm25(notes_fts) AS rank
@@ -168,7 +169,7 @@ class AnkiIndex:
         note_ids, vectors = self.vector_store.load()
         allowed: set[int] | None = None
         if domain is not None:
-            with sqlite3.connect(self.database_path) as connection:
+            with closing(sqlite3.connect(self.database_path)) as connection, connection:
                 allowed = {
                     int(row[0])
                     for row in connection.execute(
@@ -184,7 +185,7 @@ class AnkiIndex:
         return sorted(scored, key=lambda hit: (-hit.score, hit.note_id))[:limit]
 
     def _all_notes(self) -> list[NormalizedNote]:
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             note_ids = [
                 int(row[0])
                 for row in connection.execute("SELECT note_id FROM notes ORDER BY note_id")
@@ -204,7 +205,7 @@ def _build_database(
     fingerprint: str,
     embedding_model: str,
 ) -> None:
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript(
             """
             PRAGMA journal_mode = DELETE;
@@ -358,7 +359,9 @@ def _json(value: object) -> str:
 
 
 def _validate_build(root: Path, expected_count: int, expected_dimensions: int) -> None:
-    with sqlite3.connect(root / "cards.sqlite3") as connection:
+    with closing(
+        sqlite3.connect(root / "cards.sqlite3")
+    ) as connection, connection:
         count = int(connection.execute("SELECT COUNT(*) FROM notes").fetchone()[0])
     note_ids, vectors = AtomicVectorStore(root).load()
     if count != expected_count or len(note_ids) != count:

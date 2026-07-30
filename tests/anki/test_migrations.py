@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 
 from sqlalchemy import inspect, text
 
@@ -20,9 +21,9 @@ APPROVED_ANKI_TABLES = {
 
 
 def _create_schema_v3_database(path: str) -> None:
-    connection = sqlite3.connect(path)
-    connection.executescript(
-        """
+    with closing(sqlite3.connect(path)) as connection:
+        connection.executescript(
+            """
         CREATE TABLE schema_version (
             id INTEGER PRIMARY KEY,
             version INTEGER NOT NULL,
@@ -82,50 +83,47 @@ def _create_schema_v3_database(path: str) -> None:
         ) VALUES (
             'anthropic', 'claude-sonnet-5', 1, '2026-07-27T00:00:00+00:00'
         );
-        """
-    )
-    connection.commit()
-    connection.close()
+            """
+        )
+        connection.commit()
 
 
 def test_schema_v3_upgrade_preserves_rows_and_adds_anki_tables(tmp_path) -> None:
     database_path = tmp_path / "hub-v3.db"
     _create_schema_v3_database(str(database_path))
-    database = Database(f"sqlite:///{database_path}")
+    with Database(f"sqlite:///{database_path}") as database:
+        database.migrate()
 
-    database.migrate()
-
-    tables = set(inspect(database.engine).get_table_names())
-    assert APPROVED_ANKI_TABLES <= tables
-    assert "anki_agent_commands" in tables
-    with database.session() as session:
-        lecture = session.execute(
-            text("SELECT subject, topic FROM lectures WHERE id = 7")
-        ).one()
-        provider = session.execute(
-            text(
-                "SELECT provider, model FROM llm_provider_settings "
-                "WHERE provider = 'anthropic'"
-            )
-        ).one()
-        version = session.execute(
-            text("SELECT version FROM schema_version WHERE id = 1")
-        ).scalar_one()
+        tables = set(inspect(database.engine).get_table_names())
+        assert APPROVED_ANKI_TABLES <= tables
+        assert "anki_agent_commands" in tables
+        with database.session() as session:
+            lecture = session.execute(
+                text("SELECT subject, topic FROM lectures WHERE id = 7")
+            ).one()
+            provider = session.execute(
+                text(
+                    "SELECT provider, model FROM llm_provider_settings "
+                    "WHERE provider = 'anthropic'"
+                )
+            ).one()
+            version = session.execute(
+                text("SELECT version FROM schema_version WHERE id = 1")
+            ).scalar_one()
     assert lecture == ("Heme Lymph", "Anemia I")
     assert provider == ("anthropic", "claude-sonnet-5")
     assert version == LATEST_SCHEMA_VERSION
 
 
 def test_anki_migration_is_repeatable(tmp_path) -> None:
-    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    with Database(f"sqlite:///{tmp_path / 'hub.db'}") as database:
+        database.migrate()
+        database.migrate()
 
-    database.migrate()
-    database.migrate()
-
-    with database.session() as session:
-        assert session.execute(
-            text("SELECT COUNT(*) FROM schema_version")
-        ).scalar_one() == 1
-        assert session.execute(
-            text("SELECT COUNT(*) FROM anki_stage_settings")
-        ).scalar_one() == 0
+        with database.session() as session:
+            assert session.execute(
+                text("SELECT COUNT(*) FROM schema_version")
+            ).scalar_one() == 1
+            assert session.execute(
+                text("SELECT COUNT(*) FROM anki_stage_settings")
+            ).scalar_one() == 0

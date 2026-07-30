@@ -12,16 +12,27 @@ from oms_anki_agent.ankiconnect import (
     AnkiConnectUnavailable,
 )
 
+_OPEN_CLIENTS: list[AnkiConnectClient] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_clients() -> None:
+    yield
+    while _OPEN_CLIENTS:
+        _OPEN_CLIENTS.pop().close()
+
 
 def _client(
     handler: Callable[[httpx.Request], httpx.Response],
     *,
     url: str = "http://127.0.0.1:8765",
 ) -> AnkiConnectClient:
-    return AnkiConnectClient(
+    client = AnkiConnectClient(
         url=url,
         http=httpx.Client(transport=httpx.MockTransport(handler)),
     )
+    _OPEN_CLIENTS.append(client)
+    return client
 
 
 @pytest.mark.parametrize(

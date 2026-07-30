@@ -1,5 +1,7 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
+from types import TracebackType
+from typing import Self
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -20,6 +22,20 @@ class Database:
         from oms_hub.migrations import migrate_database
 
         migrate_database(self)
+
+    def close(self) -> None:
+        self.engine.dispose()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
 
     @contextmanager
     def session(self) -> Iterator[Session]:

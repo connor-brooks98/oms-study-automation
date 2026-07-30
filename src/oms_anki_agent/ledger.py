@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -20,7 +21,7 @@ class AgentLedger:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS snapshot_notes (
@@ -41,7 +42,7 @@ class AgentLedger:
             )
 
     def replace_note_hashes(self, values: dict[int, str]) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute("DELETE FROM snapshot_notes")
             connection.executemany(
                 "INSERT INTO snapshot_notes (note_id, content_hash) VALUES (?, ?)",
@@ -49,7 +50,7 @@ class AgentLedger:
             )
 
     def note_hashes(self) -> dict[int, str]:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT note_id, content_hash FROM snapshot_notes ORDER BY note_id"
             ).fetchall()
@@ -73,7 +74,7 @@ class AgentLedger:
             sort_keys=True,
             separators=(",", ":"),
         )
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute(
                 """
                 INSERT INTO metadata (key, value) VALUES ('snapshot_state', ?)
@@ -83,7 +84,7 @@ class AgentLedger:
             )
 
     def snapshot_state(self) -> dict[str, Any] | None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 "SELECT value FROM metadata WHERE key = 'snapshot_state'"
             ).fetchone()
@@ -104,7 +105,7 @@ class AgentLedger:
             sort_keys=True,
             separators=(",", ":"),
         )
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             existing = connection.execute(
                 "SELECT content_hash, result_json FROM completed_operations "
                 "WHERE operation_id = ?",
