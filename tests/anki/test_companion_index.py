@@ -1,0 +1,276 @@
+import asyncio
+from collections.abc import Collection, Sequence
+from pathlib import Path
+from typing import Any
+
+from oms_hub.anki.index import AnkiIndex, CompanionFilters
+from oms_hub.anki.normalize import (
+    NormalizedNote,
+    trusted_source_families,
+)
+from oms_hub.anki.semantic.domain import DocumentRecord
+
+
+def _note(
+    note_id: int,
+    text: str,
+    *,
+    tags: tuple[str, ...] = (),
+    decks: tuple[str, ...] = (),
+) -> NormalizedNote:
+    return NormalizedNote(
+        note_id=note_id,
+        model_name="AnKingOverhaul",
+        text=text,
+        extra=f"extra {text}",
+        raw_fields={"Text": text, "Extra": f"extra {text}"},
+        tags=tags,
+        card_ids=(note_id + 1_000,),
+        media=(),
+        token_signature=" ".join(sorted(text.casefold().split())),
+        content_sha256=f"{note_id:064x}",
+        deck_names=decks,
+        source_families=trusted_source_families(tags),
+    )
+
+
+def _built_index(tmp_path: Path) -> AnkiIndex:
+    index = AnkiIndex(tmp_path / "companion")
+    index.rebuild_companion(
+        [
+            _note(
+                10,
+                "iron deficiency anemia",
+                tags=(
+                    "#Pathoma::Hematology::Anemia",
+                    "#Pathoma::Hematology",
+                    "OMS::Heme::Lecture_3",
+                ),
+                decks=("AnKing Step Deck::Heme", "Filtered::Exam 1"),
+            ),
+            _note(
+                20,
+                "warfarin anticoagulation",
+                tags=(
+                    "#Sketchy::Pharm::Warfarin",
+                    "OMS::Heme::Lecture_4",
+                ),
+                decks=("AnKing Step Deck::Heme",),
+            ),
+            _note(
+                30,
+                "staphylococcus aureus",
+                tags=("#Sketchy::Micro::Bacteria", "suspended::local"),
+                decks=("AnKing Step Deck::Micro",),
+            ),
+        ],
+        snapshot_id="companion-1",
+        fingerprint="a" * 64,
+    )
+    return index
+
+
+def test_companion_index_preserves_multi_deck_note_membership(
+    tmp_path: Path,
+) -> None:
+    index = _built_index(tmp_path)
+
+    assert index.eligible_note_ids(
+        CompanionFilters(deck_allowlist=("Filtered::Exam 1",))
+    ) == {10}
+    assert index.eligible_note_ids(
+        CompanionFilters(deck_allowlist=("AnKing Step Deck",))
+    ) == {10, 20, 30}
+    assert index.get_note(10).deck_names == (  # type: ignore[union-attr]
+        "AnKing Step Deck::Heme",
+        "Filtered::Exam 1",
+    )
+
+
+def test_companion_filters_nested_tags_and_exclusions(tmp_path: Path) -> None:
+    index = _built_index(tmp_path)
+
+    assert index.eligible_note_ids(
+        CompanionFilters(tag_allowlist=("#Sketchy",))
+    ) == {20, 30}
+    assert index.eligible_note_ids(
+        CompanionFilters(
+            deck_allowlist=("AnKing Step Deck",),
+            tag_allowlist=("#Sketchy",),
+            excluded_tag_prefixes=("suspended",),
+        )
+    ) == {20}
+    assert index.eligible_note_ids(CompanionFilters()) == {10, 20, 30}
+
+
+def test_companion_fts_escapes_user_syntax_and_filters_before_limit(
+    tmp_path: Path,
+) -> None:
+    index = _built_index(tmp_path)
+
+    hits = index.search_fts(
+        'iron deficiency (anemia) OR "unterminated',
+        filters=CompanionFilters(
+            deck_allowlist=("AnKing Step Deck::Heme",)
+        ),
+        limit=1,
+    )
+
+    assert [hit.note_id for hit in hits] == [10]
+
+
+def test_trusted_source_families_are_distinct_and_persisted(
+    tmp_path: Path,
+) -> None:
+    index = _built_index(tmp_path)
+
+    assert trusted_source_families(
+        (
+            "#Pathoma::Heme",
+            "#Pathoma::Anemia",
+            "#Sketchy::Pharm",
+            "OMS::Lecture_3",
+        )
+    ) == ("pathoma", "sketchy")
+    assert index.source_families(10) == ("pathoma",)
+    assert index.source_count(10) == 1
+
+
+class FakeLocalAnki:
+    def __init__(self) -> None:
+        self.find_cards_queries: list[str] = []
+
+    async def find_notes(self, query: str) -> list[int]:
+        assert query == ""
+        return [101]
+
+    async def find_cards(self, query: str) -> list[int]:
+        self.find_cards_queries.append(query)
+        return [201, 202]
+
+    async def notes_info(
+        self,
+        note_ids: Sequence[int],
+    ) -> list[dict[str, Any]]:
+        assert list(note_ids) == [101]
+        return [
+            {
+                "noteId": 101,
+                "modelName": "AnKingOverhaul",
+                "tags": ["#Pathoma::Hematology::Anemia"],
+                "fields": {
+                    "Text": {"value": "{{c1::Iron deficiency}} anemia"},
+                    "Extra": {"value": "Low ferritin"},
+                },
+                "cards": [201, 202],
+                "mod": 1_752_000_000,
+            }
+        ]
+
+    async def cards_info(
+        self,
+        card_ids: Sequence[int],
+    ) -> list[dict[str, Any]]:
+        assert list(card_ids) == [201, 202]
+        return [
+            {
+                "cardId": 201,
+                "note": 101,
+                "deckName": "AnKing Step Deck::Heme",
+            },
+            {
+                "cardId": 202,
+                "note": 101,
+                "deckName": "Filtered::Exam 1",
+            },
+        ]
+
+
+class FakeSemanticRefresher:
+    def __init__(self, index: AnkiIndex) -> None:
+        self.index = index
+        self.records: list[DocumentRecord] = []
+        self.expected_note_ids: set[int] = set()
+
+    async def refresh(
+        self,
+        records: Sequence[DocumentRecord],
+        *,
+        expected_note_ids: Collection[int] | None = None,
+    ) -> object:
+        assert self.index.snapshot_id() == "local-1"
+        self.records = list(records)
+        self.expected_note_ids = set(expected_note_ids or ())
+        return object()
+
+
+def test_companion_rebuilds_from_local_ankiconnect_metadata(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        index = AnkiIndex(tmp_path / "companion")
+        gateway = FakeLocalAnki()
+        semantic = FakeSemanticRefresher(index)
+
+        notes = await index.refresh_from_anki(
+            gateway,
+            snapshot_id="local-1",
+            fingerprint="b" * 64,
+            semantic_refresher=semantic,
+        )
+
+        assert len(notes) == 1
+        assert notes[0].text == "Iron deficiency anemia"
+        assert notes[0].deck_names == (
+            "AnKing Step Deck::Heme",
+            "Filtered::Exam 1",
+        )
+        assert notes[0].modified_at == 1_752_000_000
+        assert gateway.find_cards_queries == [""]
+        assert [record.note_id for record in semantic.records] == [101]
+        assert semantic.expected_note_ids == {101}
+        assert index.eligible_note_ids(
+            CompanionFilters(deck_allowlist=("Filtered::Exam 1",))
+        ) == {101}
+
+    asyncio.run(scenario())
+
+
+def test_delta_refresh_keeps_note_identity_when_card_moves_decks(
+    tmp_path: Path,
+) -> None:
+    class MovingCardAnki(FakeLocalAnki):
+        deck_name = "Original::Deck"
+
+        async def cards_info(
+            self,
+            card_ids: Sequence[int],
+        ) -> list[dict[str, Any]]:
+            assert list(card_ids) == [201, 202]
+            return [
+                {"cardId": 201, "note": 101, "deckName": self.deck_name},
+                {"cardId": 202, "note": 101, "deckName": self.deck_name},
+            ]
+
+    async def scenario() -> None:
+        index = AnkiIndex(tmp_path / "companion")
+        gateway = MovingCardAnki()
+        await index.refresh_from_anki(
+            gateway,
+            snapshot_id="local-1",
+            fingerprint="b" * 64,
+        )
+        gateway.deck_name = "Moved::Deck"
+        await index.refresh_from_anki(
+            gateway,
+            snapshot_id="local-2",
+            fingerprint="c" * 64,
+        )
+
+        assert index.snapshot_id() == "local-2"
+        assert index.get_note(101).deck_names == ("Moved::Deck",)  # type: ignore[union-attr]
+        assert index.eligible_note_ids(
+            CompanionFilters(deck_allowlist=("Original",))
+        ) == set()
+
+    asyncio.run(scenario())

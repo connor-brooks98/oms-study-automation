@@ -30,6 +30,15 @@ _KEPT_TAG_ROOTS = (
     "#ome",
     "#uworld",
 )
+_TRUSTED_SOURCE_ROOTS = {
+    "#ak_step": "anking",
+    "#pathoma": "pathoma",
+    "#sketchy": "sketchy",
+    "#firstaid": "firstaid",
+    "#boardsandbeyond": "boardsandbeyond",
+    "#ome": "ome",
+    "#uworld": "uworld",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +61,9 @@ class NormalizedNote:
     media: tuple[MediaReference, ...]
     token_signature: str
     content_sha256: str
+    deck_names: tuple[str, ...] = ()
+    source_families: tuple[str, ...] = ()
+    modified_at: int | None = None
 
 
 def normalize_html(value: str) -> str:
@@ -74,6 +86,17 @@ def kept_tags(tags: tuple[str, ...]) -> tuple[str, ...]:
             key=str.casefold,
         )
     )
+
+
+def trusted_source_families(tags: tuple[str, ...]) -> tuple[str, ...]:
+    """Return distinct, stable source families represented by trusted tags."""
+    families = {
+        family
+        for tag in tags
+        for root, family in _TRUSTED_SOURCE_ROOTS.items()
+        if tag.strip().casefold().startswith(root)
+    }
+    return tuple(sorted(families))
 
 
 def extract_media_references(fields: dict[str, str]) -> tuple[MediaReference, ...]:
@@ -138,4 +161,5 @@ def normalize_snapshot_note(note: SnapshotNote) -> NormalizedNote:
         media=media,
         token_signature=signature,
         content_sha256=content_sha256,
+        source_families=trusted_source_families(tags),
     )
