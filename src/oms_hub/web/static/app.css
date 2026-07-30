@@ -579,6 +579,531 @@ select {
 }
 .mono-note { color: var(--text-3) !important; font-size: .72rem; }
 
+.anki-page,
+.anki-review-page { max-width: 1040px; }
+.anki-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: .85rem;
+  padding: 1rem 1.1rem;
+  margin-bottom: 1rem;
+  border: 1px solid oklch(.85 .035 255);
+  border-radius: .7rem;
+  background: oklch(.975 .012 255);
+}
+.anki-notice[data-kind="complete"] {
+  border-color: oklch(.84 .055 150);
+  background: oklch(.975 .018 150);
+}
+.anki-notice[data-kind="retry_sync"],
+.anki-notice-warning {
+  border-color: oklch(.84 .07 70);
+  background: oklch(.98 .025 70);
+}
+.anki-notice[data-kind="sync_blocked"],
+.anki-notice[data-kind="manual_attention"],
+.anki-notice[data-kind="verification_mismatch"] {
+  border-color: oklch(.83 .07 25);
+  background: oklch(.975 .022 25);
+}
+.anki-notice-mark {
+  display: grid;
+  width: 1.8rem;
+  height: 1.8rem;
+  flex: none;
+  place-items: center;
+  border-radius: 50%;
+  color: white;
+  background: var(--brand-mid);
+  font: 700 .78rem/1 "IBM Plex Mono", monospace;
+}
+.anki-notice h2 { margin: .05rem 0 .25rem; font-size: .94rem; }
+.anki-notice p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: .82rem;
+  line-height: 1.5;
+}
+.anki-notice button { margin-top: .75rem; }
+.anki-workflow {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: .4rem;
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+}
+.anki-workflow li {
+  display: grid;
+  grid-template-columns: 1.7rem minmax(0, 1fr);
+  align-items: center;
+  gap: .05rem .55rem;
+  min-width: 0;
+  padding: .7rem .75rem;
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+  background: white;
+}
+.anki-workflow li > span {
+  display: grid;
+  width: 1.7rem;
+  height: 1.7rem;
+  grid-row: 1 / span 2;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--text-3);
+  background: var(--surface);
+  font: 600 .68rem/1 "IBM Plex Mono", monospace;
+}
+.anki-workflow strong { font-size: .78rem; }
+.anki-workflow small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: .66rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.anki-workflow li.is-current {
+  border-color: oklch(.78 .055 255);
+  background: var(--brand-tint);
+}
+.anki-workflow li.is-current > span {
+  color: white;
+  background: var(--brand);
+}
+.card.anki-start-card { padding: 1.35rem 1.4rem; }
+.anki-section-heading,
+.anki-card-choice,
+.anki-tag-heading,
+.anki-form-actions,
+.anki-review-actions,
+.anki-dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.anki-section-heading { align-items: flex-start; margin-bottom: .9rem; }
+.anki-section-heading .mono-label { margin-bottom: .35rem; }
+.anki-safety-label,
+.anki-explainer,
+.anki-lock-key {
+  flex: none;
+  padding: .35rem .55rem;
+  border-radius: 999px;
+  color: var(--text-2);
+  background: var(--surface);
+  font: 500 .64rem/1 "IBM Plex Mono", monospace;
+}
+.anki-safety-label {
+  color: oklch(.34 .09 150);
+  background: oklch(.95 .035 150);
+}
+.anki-create-form { gap: 1rem; }
+.anki-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .85rem 1rem;
+}
+.anki-field-wide { grid-column: 1 / -1; }
+textarea {
+  width: 100%;
+  min-height: 2.6rem;
+  padding: .65rem .7rem;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: .45rem;
+  color: var(--text);
+  background: white;
+  font: inherit;
+}
+.anki-source-field {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.anki-source-field legend {
+  margin-bottom: .45rem;
+  color: var(--text-2);
+  font-size: .8rem;
+  font-weight: 500;
+}
+.anki-source-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .55rem;
+}
+.anki-source-option {
+  display: flex;
+  grid-template-columns: none;
+  align-items: center;
+  gap: .7rem;
+  min-width: 0;
+  padding: .7rem .8rem;
+  border: 1px solid var(--border);
+  border-radius: .5rem;
+  background: var(--surface);
+}
+.anki-source-option input {
+  width: 1.05rem;
+  min-height: 1.05rem;
+  flex: none;
+}
+.anki-source-option span { display: grid; min-width: 0; gap: .15rem; }
+.anki-source-option strong { color: var(--text); font-size: .78rem; }
+.anki-source-option small {
+  overflow: hidden;
+  color: var(--text-3);
+  font: 400 .65rem/1.4 "IBM Plex Mono", monospace;
+  text-overflow: ellipsis;
+}
+.anki-advanced {
+  padding: .75rem .85rem;
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+  background: var(--surface);
+}
+.anki-advanced summary {
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: .78rem;
+  font-weight: 600;
+}
+.anki-advanced[open] summary { margin-bottom: .8rem; }
+.anki-form-actions { align-items: flex-end; margin-top: .2rem; }
+.anki-action-message {
+  min-height: 1.25rem;
+  margin: 0;
+  color: var(--text-2);
+  font-size: .78rem;
+  line-height: 1.45;
+}
+.anki-jobs-section { margin-top: 2rem; }
+.anki-compact-button { min-height: 2.25rem; padding: .5rem .75rem; }
+.anki-job-list { display: grid; gap: .45rem; }
+.anki-job-row {
+  display: grid;
+  grid-template-columns: .5rem minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: .8rem;
+  padding: .75rem .85rem;
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+  color: var(--text);
+  background: white;
+  text-decoration: none;
+}
+.anki-job-row:hover {
+  border-color: oklch(.8 .03 255);
+  color: var(--text);
+}
+.anki-job-row > span:nth-child(2) { display: grid; min-width: 0; gap: .15rem; }
+.anki-job-row strong { font-size: .82rem; }
+.anki-job-row small {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: .69rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.anki-job-row time {
+  color: var(--text-3);
+  font: 400 .65rem/1 "IBM Plex Mono", monospace;
+}
+.anki-empty-compact { padding: 1.5rem; }
+.anki-empty-compact h2 { font-size: .95rem; }
+.status-pill.status-preflight,
+.status-pill.status-building_source_index,
+.status-pill.status-building_lcl,
+.status-pill.status-retrieving_pass_1,
+.status-pill.status-judging_pass_1,
+.status-pill.status-localizing_missed_concepts,
+.status-pill.status-retrieving_pass_2,
+.status-pill.status-judging_pass_2,
+.status-pill.status-deduping,
+.status-pill.status-generating_gaps,
+.status-pill.status-applying_local,
+.status-pill.status-syncing,
+.status-pill.status-verifying {
+  color: oklch(.3 .09 255);
+  background: oklch(.95 .025 255);
+}
+.status-pill.status-ready_for_review,
+.status-pill.status-envelope_pending {
+  color: oklch(.4 .11 70);
+  background: oklch(.95 .035 70);
+}
+.status-pill.status-canceled { color: var(--text-2); background: var(--surface); }
+.anki-review-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: .65rem;
+  margin: 0 0 1.6rem;
+}
+.anki-review-summary div {
+  display: grid;
+  gap: .25rem;
+  padding: .9rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: .6rem;
+  background: white;
+}
+.anki-review-summary strong { color: var(--brand); font-size: 1.45rem; }
+.anki-review-summary span {
+  color: var(--text-3);
+  font: 500 .64rem/1.35 "IBM Plex Mono", monospace;
+  text-transform: uppercase;
+}
+.anki-review-group { margin: 1.8rem 0; }
+.anki-review-group .anki-section-heading { margin-bottom: .35rem; }
+.anki-group-help {
+  max-width: 48rem;
+  margin: 0 0 .85rem;
+  color: var(--text-2);
+  font-size: .8rem;
+  line-height: 1.55;
+}
+.anki-review-list { display: grid; gap: .7rem; }
+.anki-match-card,
+.anki-generated-card,
+.anki-unresolved-card {
+  padding: 1rem 1.05rem;
+  border: 1px solid var(--border);
+  border-radius: .65rem;
+  background: white;
+}
+.anki-card-choice { margin-bottom: .75rem; }
+.anki-select-control {
+  display: flex;
+  grid-template-columns: none;
+  align-items: center;
+  gap: .55rem;
+  color: var(--text);
+  font-weight: 600;
+}
+.anki-select-control input {
+  width: 1.05rem;
+  min-height: 1.05rem;
+}
+.anki-confidence,
+.anki-validation {
+  flex: none;
+  padding: .3rem .48rem;
+  border-radius: 999px;
+  color: var(--text-2);
+  background: var(--surface);
+  font: 500 .63rem/1 "IBM Plex Mono", monospace;
+}
+.anki-validation.is-valid {
+  color: oklch(.34 .1 150);
+  background: oklch(.95 .04 150);
+}
+.anki-validation.is-overlap {
+  color: oklch(.4 .1 70);
+  background: oklch(.96 .04 70);
+}
+.anki-card-front {
+  padding: .8rem .9rem;
+  border-radius: .48rem;
+  background: var(--surface);
+  font-size: .88rem;
+  line-height: 1.55;
+}
+.anki-card-extra {
+  margin: .55rem .1rem;
+  color: var(--text-2);
+  font-size: .76rem;
+  line-height: 1.5;
+}
+.anki-match-details {
+  margin-top: .65rem;
+  padding-top: .65rem;
+  border-top: 1px solid var(--border);
+}
+.anki-match-details summary,
+.anki-citation summary {
+  cursor: pointer;
+  color: var(--brand-mid);
+  font-size: .74rem;
+  font-weight: 600;
+}
+.anki-match-details > p {
+  margin: .55rem 0;
+  color: var(--text-2);
+  font-size: .76rem;
+  line-height: 1.5;
+}
+.anki-score-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .35rem;
+  margin: .55rem 0 0;
+}
+.anki-score-list div {
+  padding: .5rem .55rem;
+  border-radius: .4rem;
+  background: var(--surface);
+}
+.anki-score-list dt {
+  color: var(--text-3);
+  font-size: .62rem;
+}
+.anki-score-list dd {
+  margin: .18rem 0 0;
+  font: 600 .72rem/1 "IBM Plex Mono", monospace;
+}
+.anki-tag-editor {
+  display: grid;
+  gap: .55rem;
+  margin-top: .75rem;
+  padding-top: .75rem;
+  border-top: 1px solid var(--border);
+}
+.anki-tag-heading strong { font-size: .74rem; }
+.anki-tag-heading span { color: var(--text-3); font-size: .68rem; }
+.anki-tag-chips { display: flex; gap: .35rem; flex-wrap: wrap; }
+.anki-tag-chip {
+  max-width: 100%;
+  padding: .3rem .45rem;
+  overflow: hidden;
+  border-radius: .35rem;
+  color: var(--text-2);
+  background: var(--surface);
+  font: 400 .63rem/1 "IBM Plex Mono", monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.anki-tag-chip.is-locked { color: var(--text-3); }
+.anki-editable-tags input { max-width: none; font-size: .74rem; }
+.anki-card-field { margin-top: .65rem; }
+.anki-card-field > span { font-weight: 600; }
+.anki-card-field textarea {
+  max-width: none;
+  font: 400 .78rem/1.55 "IBM Plex Mono", monospace;
+}
+.anki-citations {
+  display: grid;
+  gap: .4rem;
+  margin-top: .75rem;
+  padding: .7rem .8rem;
+  border-radius: .48rem;
+  background: var(--surface);
+}
+.anki-citations > strong { font-size: .7rem; }
+.anki-citation {
+  padding-top: .35rem;
+  border-top: 1px solid var(--border);
+}
+.anki-citation p {
+  margin: .45rem 0 .2rem;
+  color: var(--text-2);
+  font-size: .72rem;
+  line-height: 1.5;
+}
+.anki-unresolved-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: .4rem .8rem;
+}
+.anki-unresolved-card p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text-2);
+  font-size: .76rem;
+  line-height: 1.5;
+}
+.anki-group-empty {
+  padding: 1rem;
+  border: 1px dashed var(--border);
+  border-radius: .55rem;
+  color: var(--text-3);
+  background: white;
+  font-size: .78rem;
+}
+.card.anki-policy-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.1rem 1.2rem;
+}
+.anki-policy-card h2 { font-size: .95rem; }
+.anki-policy-card p:not(.mono-label) {
+  max-width: 45rem;
+  margin: .35rem 0 0;
+  color: var(--text-2);
+  font-size: .78rem;
+  line-height: 1.55;
+}
+.anki-review-actions {
+  position: sticky;
+  z-index: 5;
+  bottom: .75rem;
+  padding: .85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: .65rem;
+  background: oklch(.99 .003 255 / .96);
+  box-shadow: 0 .6rem 1.8rem oklch(.22 .02 255 / .09);
+  backdrop-filter: blur(10px);
+}
+.anki-review-actions > div { display: flex; gap: .55rem; }
+.anki-review-actions button:disabled { opacity: .52; }
+.anki-apply-dialog {
+  width: min(36rem, calc(100% - 1.5rem));
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: .85rem;
+  box-shadow: 0 1.2rem 3rem oklch(.2 .02 255 / .25);
+}
+.anki-apply-dialog::backdrop {
+  background: oklch(.18 .02 250 / .62);
+  backdrop-filter: blur(2px);
+}
+.anki-apply-dialog form { padding: 1.4rem 1.5rem; }
+.anki-apply-dialog h2 { font-size: 1.2rem; }
+.anki-apply-dialog form > p:not(.eyebrow, .anki-dialog-error) {
+  margin: .55rem 0;
+  color: var(--text-2);
+  font-size: .82rem;
+  line-height: 1.55;
+}
+.anki-apply-counts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .5rem;
+  margin: 1rem 0;
+}
+.anki-apply-counts div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .5rem;
+  padding: .65rem .7rem;
+  border-radius: .45rem;
+  background: var(--surface);
+}
+.anki-apply-counts dt { color: var(--text-2); font-size: .72rem; }
+.anki-apply-counts dd {
+  margin: 0;
+  color: var(--brand);
+  font: 700 1rem/1 "IBM Plex Mono", monospace;
+}
+.anki-confirm-note {
+  padding: .65rem .75rem;
+  border-left: 3px solid var(--review);
+  border-radius: .3rem;
+  background: oklch(.98 .02 70);
+}
+.anki-dialog-error {
+  min-height: 1.1rem;
+  margin: .5rem 0;
+  color: var(--failed);
+  font-size: .74rem;
+}
+.anki-dialog-actions { justify-content: flex-end; margin-top: .6rem; }
+
 .card { margin: 1rem 0; padding: 1rem; }
 .issues { padding: 0; list-style: none; }
 .issues > li { margin: 1rem 0; padding: 1rem; border: 1px solid var(--border); border-radius: .7rem; background: white; }
@@ -902,12 +1427,37 @@ code { overflow-wrap: anywhere; }
   .settings-section-heading { align-items: stretch; flex-direction: column; }
   .provider-grid { grid-template-columns: 1fr; }
   .active-provider-control { width: 100%; }
+  .anki-workflow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .anki-form-grid,
+  .anki-source-options { grid-template-columns: 1fr; }
+  .anki-field-wide { grid-column: auto; }
+  .anki-job-row { grid-template-columns: .5rem minmax(0, 1fr) auto; }
+  .anki-job-row time { display: none; }
+  .anki-review-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .anki-section-heading,
+  .anki-policy-card { align-items: flex-start; flex-direction: column; }
+  .anki-score-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .anki-review-actions { align-items: stretch; flex-direction: column; }
+  .anki-review-actions > div { justify-content: flex-end; }
 }
 
 @media (max-width: 430px) {
   .count-pill, .exam-count { display: none; }
   .button { width: 100%; }
   .file-actions { flex-direction: column; }
+  .anki-workflow { grid-template-columns: 1fr; }
+  .anki-workflow small { display: block; }
+  .anki-job-row { grid-template-columns: .5rem minmax(0, 1fr); }
+  .anki-job-row .status-pill { grid-column: 2; width: fit-content; }
+  .anki-card-choice,
+  .anki-tag-heading,
+  .anki-form-actions,
+  .anki-dialog-actions { align-items: stretch; flex-direction: column; }
+  .anki-card-choice { gap: .55rem; }
+  .anki-confidence,
+  .anki-validation { width: fit-content; }
+  .anki-review-actions > div { flex-direction: column; }
+  .anki-apply-counts { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

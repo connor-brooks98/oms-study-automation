@@ -200,15 +200,6 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
     )
 
 
-@router.get("/anki", response_class=HTMLResponse)
-def anki_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(
-        request=request,
-        name="anki.html",
-        context={},
-    )
-
-
 @router.get("/review", response_class=HTMLResponse)
 def review(request: Request) -> HTMLResponse:
     repository = _repo(request)

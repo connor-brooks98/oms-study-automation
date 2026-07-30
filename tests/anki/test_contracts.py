@@ -43,6 +43,26 @@ def test_create_job_normalizes_scope_lists() -> None:
     assert request.source_revision_ids == (101, 102)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("provider", "unsupported"),
+        ("source_revision_ids", []),
+        ("deck_allowlist", []),
+        ("target_tag", "unsafe tag"),
+    ],
+)
+def test_create_job_rejects_invalid_run_scope(
+    field: str,
+    value: object,
+) -> None:
+    payload = _job_payload()
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        CreateCurationJobRequest.model_validate(payload)
+
+
 def test_tag_patch_round_trips_exact_diff() -> None:
     patch = TagPatchContract(
         note_id=42,

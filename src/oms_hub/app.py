@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import cast
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -11,6 +12,7 @@ from starlette.responses import Response
 
 from oms_hub import __version__
 from oms_hub.anki.ankiconnect import AnkiConnectClient
+from oms_hub.anki.apply import ApplyCoordinator, ApplyGateway
 from oms_hub.anki.index import AnkiIndex
 from oms_hub.anki.pipeline import CurationPipeline, StageArtifactStore
 from oms_hub.anki.repository import AnkiCurationRepository
@@ -24,13 +26,16 @@ from oms_hub.anki.stages import (
     CurationServicesRunner,
     PinnedCurationInputValidator,
 )
+from oms_hub.anki.tag_policy import TagPolicy
 from oms_hub.anki.worker import AnkiCurationWorker
 from oms_hub.config import Settings, get_settings
 from oms_hub.db import Database
 from oms_hub.files.office import SerialOfficeConverter
 from oms_hub.ingestion.matcher import UploadMatcher
 from oms_hub.ingestion.repository import IngestionRepository
-from oms_hub.ingestion.service import IngestionService as ManualIngestionService
+from oms_hub.ingestion.service import (
+    IngestionService as ManualIngestionService,
+)
 from oms_hub.ingestion.staging import StagingService
 from oms_hub.ingestion.worker import IngestionWorker
 from oms_hub.llm.anthropic import AnthropicProvider
@@ -68,9 +73,12 @@ from oms_hub.study_generation.prompts import PromptFileService
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.service import GenerationService
 from oms_hub.study_generation.worker import GenerationWorker
-from oms_hub.transcripts.pipeline import TranscriptPipeline as V2TranscriptPipeline
+from oms_hub.transcripts.pipeline import (
+    TranscriptPipeline as V2TranscriptPipeline,
+)
 from oms_hub.transcripts.prompt import PromptLoader as V2PromptLoader
 from oms_hub.web.anki_agent_routes import router as anki_agent_router
+from oms_hub.web.anki_routes import router as anki_router
 from oms_hub.web.artifact_routes import router as artifact_router
 from oms_hub.web.generation_routes import (
     lecture_router,
@@ -216,7 +224,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             status_code=400,
                         )
                     )
-                if request_bytes < 0 or request_bytes > resolved.anki_agent_max_request_bytes:
+                if (
+                    request_bytes < 0
+                    or request_bytes > resolved.anki_agent_max_request_bytes
+                ):
                     return harden(
                         JSONResponse(
                             {"detail": "agent request is too large"},
@@ -291,7 +302,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         elif host in local_hosts:
             if not resolved.allow_local_access:
                 return harden(
-                    JSONResponse({"detail": "Local access is disabled"}, status_code=403)
+                    JSONResponse(
+                        {"detail": "Local access is disabled"}, status_code=403
+                    )
                 )
         else:
             return harden(
@@ -323,7 +336,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             trusted_native_form = bool(
                 (allowed_origin or same_origin_fetch)
                 and content_type.startswith(
-                    ("application/x-www-form-urlencoded", "multipart/form-data")
+                    (
+                        "application/x-www-form-urlencoded",
+                        "multipart/form-data",
+                    )
                 )
             )
             valid_token = csrf.verify(
@@ -372,6 +388,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.secrets = KeyringSecretStore()
     retire_google_docs_credentials(resolved.data_dir, app.state.secrets)
     app.state.anki_repository = AnkiCurationRepository(database)
+    app.state.anki_tag_policy = TagPolicy(
+        pipeline_owned_roots=("OMS",),
+        approved_optional_roots=("AnkiHub_Optional::LMU_OMS_II",),
+        source_managed_roots=(
+            "#AK_Step",
+            "#Pathoma",
+            "#Sketchy",
+            "#FirstAid",
+            "#BoardsAndBeyond",
+            "#OME",
+            "#UWorld",
+            "AnkiHub_",
+        ),
+        version="tags-v1",
+    )
+    app.state.anki_apply_coordinator = None
     app.state.llm_settings = LLMSettingsRepository(
         database,
         default_openai_model=resolved.openai_model,
@@ -391,9 +423,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.catalog_repository = CatalogRepository(database)
     app.state.ingestion_repository = IngestionRepository(database)
     app.state.generation_repository = GenerationRepository(database)
-    notebook_storage_path = (
-        resolved.data_dir / "google" / "notebooklm-storage.json"
-    )
+    notebook_storage_path = resolved.data_dir / "google" / "notebooklm-storage.json"
     app.state.notebook_auth = NotebookCLIAuth(notebook_storage_path)
     app.state.notebook_connection = NotebookConnectionService(
         app.state.generation_repository,
@@ -499,17 +529,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runner = CurationServicesRunner(
             runtime=runtime,
             repository=app.state.anki_repository,
-            source_extractor=LectureSourceExtractor(
-                app.state.ingestion_repository
-            ),
+            source_extractor=LectureSourceExtractor(app.state.ingestion_repository),
             source_indexes=source_index,
             companion=companion,
             semantic=semantic,
             structured=structured,
             embedder=embedder,
-            focused_retrieval_limit=(
-                resolved.anki_focused_retrieval_limit
-            ),
+            focused_retrieval_limit=(resolved.anki_focused_retrieval_limit),
             global_retrieval_limit=resolved.anki_global_retrieval_limit,
         )
         validator = PinnedCurationInputValidator(
@@ -532,15 +558,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.anki_semantic_store = semantic_store
         app.state.anki_source_index = source_index
         app.state.anki_curation_pipeline = pipeline
+        app.state.anki_apply_coordinator = ApplyCoordinator(
+            app.state.anki_repository,
+            cast(ApplyGateway, runtime.gateway),
+            runtime=runtime,
+        )
         app.state.anki_curation_worker = AnkiCurationWorker(
             app.state.anki_repository,
             pipeline,
             worker_id="study-hub",
             lease_seconds=resolved.anki_worker_lease_seconds,
             poll_seconds=resolved.anki_worker_poll_seconds,
-            max_stage_attempts=(
-                resolved.anki_worker_max_stage_attempts
-            ),
+            max_stage_attempts=(resolved.anki_worker_max_stage_attempts),
         )
     web_root = Path(__file__).parent / "web"
     app.mount(
@@ -549,6 +578,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         name="static",
     )
     app.include_router(router)
+    app.include_router(anki_router)
     app.include_router(anki_agent_router)
     app.include_router(artifact_router)
     app.include_router(settings_router)

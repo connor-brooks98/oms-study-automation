@@ -1,20 +1,153 @@
 {% extends "base.html" %}
-{% block title %}Anki · Study Hub{% endblock %}
+{% block title %}Anki Curation · Study Hub{% endblock %}
 {% block content %}
-<section class="page-shell narrow-page">
+<section class="page-shell anki-page" data-anki-home>
   <div class="page-heading">
     <div>
-      <p class="eyebrow">Later workflow</p>
-      <h1>Anki integration</h1>
-      <p class="page-summary">A dedicated review space for generated flashcards.</p>
+      <p class="eyebrow">Lecture-to-card workflow</p>
+      <h1>Anki curation</h1>
+      <p class="page-summary">Find the best existing cards first, search your lecture when a topic is missed, and create only the source-backed cards you approve.</p>
     </div>
-    <span class="status-pill status-not_started">Later phase</span>
+    <span class="status-pill {{ 'status-complete' if anki_enabled else 'status-failed' }}">
+      {{ "Ready" if anki_enabled else "Setup needed" }}
+    </span>
   </div>
-  <section class="empty-state anki-placeholder">
-    <span class="placeholder-mark" aria-hidden="true">A</span>
-    <h2>Card review will live here</h2>
-    <p>Native Study Hub quiz generation is available now. Anki synchronization remains a later milestone.</p>
-    <p class="mono-note">No cards are generated or synced yet.</p>
+
+  {% if not anki_enabled %}
+  <section class="anki-notice anki-notice-warning" role="status">
+    <span class="anki-notice-mark" aria-hidden="true">!</span>
+    <div>
+      <h2>Anki curation is turned off</h2>
+      <p>Enable the local Anki workflow on the Study Hub device, connect AnkiConnect, and build the first index. Existing study files are unaffected.</p>
+    </div>
+  </section>
+  {% endif %}
+
+  <ol class="anki-workflow" aria-label="Anki curation steps">
+    <li class="is-current"><span>1</span><strong>Choose</strong><small>Lecture and scope</small></li>
+    <li><span>2</span><strong>Curate</strong><small>Find and recover</small></li>
+    <li><span>3</span><strong>Review</strong><small>Cards and tags</small></li>
+    <li><span>4</span><strong>Apply</strong><small>Confirm and sync</small></li>
+  </ol>
+
+  <section class="card anki-start-card" aria-labelledby="new-curation-heading">
+    <div class="anki-section-heading">
+      <div>
+        <p class="mono-label">New curation</p>
+        <h2 id="new-curation-heading">Choose what this run should cover</h2>
+      </div>
+      <span class="anki-safety-label">No collection changes during curation</span>
+    </div>
+
+    <form id="anki-create-form" class="anki-create-form">
+      <div class="anki-form-grid">
+        <label class="anki-field-wide">
+          Lecture
+          <select name="lecture_id" required {% if not anki_enabled %}disabled{% endif %}>
+            <option value="">Choose a lecture…</option>
+            {% for lecture in lectures %}
+            <option value="{{ lecture.id }}" data-revisions="{{ lecture.revisions|tojson }}">
+              {{ lecture.subject }} · Exam {{ lecture.exam_number }} · Lecture {{ lecture.lecture_number }} — {{ lecture.topic }}
+            </option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <fieldset class="anki-source-field anki-field-wide">
+          <legend>Lecture sources</legend>
+          <div id="anki-source-revisions" class="anki-source-options">
+            <p class="quiet-state">Choose a lecture to see its current slides and transcript.</p>
+          </div>
+          <p class="field-help">Missed topics are searched against the selected slides and lecture transcript before any new card is proposed.</p>
+        </fieldset>
+
+        <label>
+          Block label
+          <input name="block_id" placeholder="Heme block 1">
+        </label>
+        <label>
+          Existing-card decks
+          <input name="deck_allowlist" value="AnKing Step Deck" required>
+          <span class="field-help">Separate multiple decks with commas.</span>
+        </label>
+        <label>
+          Existing-card tag scope
+          <input name="tag_allowlist" placeholder="#AK_Step2_v12::Hematology">
+          <span class="field-help">Optional. Separate multiple tag roots with commas.</span>
+        </label>
+        <label>
+          New-card deck
+          <input name="target_deck" placeholder="OMS::Heme::Lecture 4" required>
+        </label>
+        <label class="anki-field-wide">
+          Lecture tag
+          <input name="target_tag" placeholder="AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_4" required>
+          <span class="field-help">Selected existing cards and approved generated cards receive this tag.</span>
+        </label>
+        <label>
+          AI provider
+          <select name="provider">
+            <option value="anthropic" {% if defaults.provider == "anthropic" %}selected{% endif %}>Anthropic</option>
+            <option value="openai" {% if defaults.provider == "openai" %}selected{% endif %}>OpenAI</option>
+            <option value="gemini" {% if defaults.provider == "gemini" %}selected{% endif %}>Gemini</option>
+          </select>
+        </label>
+        <label>
+          Model
+          <input name="model" value="{{ defaults.model }}" required>
+        </label>
+        <label class="anki-field-wide">
+          Focus for this lecture
+          <textarea name="instruction_text" rows="3" placeholder="Optional: prioritize lecturer comparisons, red-highlighted facts, or exam framing."></textarea>
+        </label>
+      </div>
+
+      <details class="anki-advanced">
+        <summary>Run details</summary>
+        <div class="anki-form-grid">
+          <label>LCL prompt version <input name="lcl_prompt_version" value="{{ defaults.lcl_prompt_version }}" required></label>
+          <label>Coverage rubric version <input name="judgment_rubric_version" value="{{ defaults.judgment_rubric_version }}" required></label>
+          <label>Card prompt version <input name="gap_prompt_version" value="{{ defaults.gap_prompt_version }}" required></label>
+          <label>Current Anki snapshot <input name="index_snapshot_id" value="{{ defaults.index_snapshot_id or '' }}" readonly required></label>
+        </div>
+      </details>
+
+      <div class="anki-form-actions">
+        <p id="anki-create-message" class="anki-action-message" role="status" aria-live="polite"></p>
+        <button class="button primary" type="submit" {% if not anki_enabled %}disabled{% endif %}>Start curation</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="anki-jobs-section" aria-labelledby="curation-history-heading">
+    <div class="anki-section-heading">
+      <div>
+        <p class="mono-label">Recent activity</p>
+        <h2 id="curation-history-heading">Curation runs</h2>
+      </div>
+      <button class="button secondary anki-compact-button" type="button" data-refresh-jobs>Refresh</button>
+    </div>
+    <div id="anki-job-list" class="anki-job-list" aria-live="polite">
+      {% for job in jobs %}
+      <a class="anki-job-row" href="/anki/jobs/{{ job.id }}" data-job-id="{{ job.id }}">
+        <span class="status-dot status-{{ job.state }}"></span>
+        <span>
+          <strong>Lecture {{ job.lecture_id }}</strong>
+          <small>{{ job.target_deck }}</small>
+        </span>
+        <span class="status-pill status-{{ job.state }}">{{ job.state.replace('_', ' ') }}</span>
+        <time>{{ job.updated_at[:16].replace('T', ' ') }}</time>
+      </a>
+      {% else %}
+      <div class="empty-state anki-empty-compact">
+        <h2>No curation runs yet</h2>
+        <p>Your first run will appear here and remain resumable if the Study Hub restarts.</p>
+      </div>
+      {% endfor %}
+    </div>
   </section>
 </section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/anki.js?v=20260730.1" defer></script>
 {% endblock %}

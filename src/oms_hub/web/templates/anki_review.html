@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}Review Anki Curation · Study Hub{% endblock %}
+{% block content %}
+<article class="page-shell anki-review-page" data-anki-review data-job-id="{{ job.id }}">
+  <nav class="breadcrumbs" aria-label="Breadcrumb">
+    <a href="/anki">Anki curation</a><span aria-hidden="true">/</span>
+    <span>Lecture {{ job.lecture_id }}</span>
+  </nav>
+
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">Review before changing Anki</p>
+      <h1>Curation review</h1>
+      <p class="page-summary">Approve existing cards, inspect recovered matches, edit generated cards, and adjust only the lecture tags you control.</p>
+    </div>
+    <span id="anki-job-state" class="status-pill status-{{ job.state }}">{{ job.state.replace('_', ' ') }}</span>
+  </div>
+
+  <ol class="anki-workflow" aria-label="Anki curation steps">
+    <li><span>1</span><strong>Choose</strong><small>Lecture and scope</small></li>
+    <li><span>2</span><strong>Curate</strong><small>Find and recover</small></li>
+    <li class="is-current"><span>3</span><strong>Review</strong><small>Cards and tags</small></li>
+    <li><span>4</span><strong>Apply</strong><small>Confirm and sync</small></li>
+  </ol>
+
+  <section id="anki-recovery" class="anki-notice" role="status" aria-live="polite" hidden>
+    <span class="anki-notice-mark" aria-hidden="true">i</span>
+    <div>
+      <h2 data-recovery-title>Apply status</h2>
+      <p data-recovery-message></p>
+      <button class="button secondary" type="button" data-retry-sync hidden>Retry cloud sync</button>
+    </div>
+  </section>
+
+  <section id="anki-processing" class="pipeline-card" aria-live="polite">
+    <p class="mono-label">Curation status</p>
+    <div class="pipeline-status">
+      <strong id="anki-processing-label" class="status-text">Loading review…</strong>
+      <span id="anki-processing-count">Pinned inputs</span>
+    </div>
+    <div class="progress-track" aria-hidden="true">
+      <span id="anki-processing-progress" class="progress-fill status-processing" style="width: 8%"></span>
+    </div>
+    <p id="anki-processing-note" class="pipeline-note">Reading the committed curation results.</p>
+  </section>
+
+  <div id="anki-review-content" hidden>
+    <section class="anki-review-summary" aria-label="Review totals">
+      <div><strong data-count-pass1>0</strong><span>Pass 1 matches</span></div>
+      <div><strong data-count-pass2>0</strong><span>Recovered in Pass 2</span></div>
+      <div><strong data-count-generated>0</strong><span>Generated cards</span></div>
+      <div><strong data-count-unresolved>0</strong><span>Unresolved</span></div>
+    </section>
+
+    <section class="anki-review-group" aria-labelledby="pass-one-heading">
+      <div class="anki-section-heading">
+        <div>
+          <p class="mono-label">Existing collection</p>
+          <h2 id="pass-one-heading">Pass 1 matches</h2>
+        </div>
+        <span class="anki-explainer">Direct hybrid search</span>
+      </div>
+      <p class="anki-group-help">These existing notes matched the lecture concept on the first search. Open “Why this matched” to inspect the score and judgment.</p>
+      <div class="anki-review-list" data-group-pass1></div>
+    </section>
+
+    <section class="anki-review-group" aria-labelledby="pass-two-heading">
+      <div class="anki-section-heading">
+        <div>
+          <p class="mono-label">Missed-topic recovery</p>
+          <h2 id="pass-two-heading">Recovered in Pass 2</h2>
+        </div>
+        <span class="anki-explainer">Slides + transcript search</span>
+      </div>
+      <p class="anki-group-help">These notes were found after Study Hub localized a missed concept in your lecture sources and searched again with that context.</p>
+      <div class="anki-review-list" data-group-pass2></div>
+    </section>
+
+    <section class="anki-review-group" aria-labelledby="generated-heading">
+      <div class="anki-section-heading">
+        <div>
+          <p class="mono-label">Source-backed proposals</p>
+          <h2 id="generated-heading">Generated cards</h2>
+        </div>
+        <span class="anki-explainer">Editable before apply</span>
+      </div>
+      <p class="anki-group-help">Every proposal must retain valid cloze syntax and resolvable slide or transcript citations. Editing does not change Anki until the final confirmation.</p>
+      <div class="anki-review-list" data-group-generated></div>
+    </section>
+
+    <section class="anki-review-group" aria-labelledby="unresolved-heading">
+      <div class="anki-section-heading">
+        <div>
+          <p class="mono-label">No automatic change</p>
+          <h2 id="unresolved-heading">Unresolved</h2>
+        </div>
+        <span class="anki-explainer">Held for your attention</span>
+      </div>
+      <p class="anki-group-help">Study Hub could not confidently match or generate a safe card for these concepts. They will not be applied.</p>
+      <div class="anki-review-list" data-group-unresolved></div>
+    </section>
+
+    <section class="card anki-policy-card">
+      <div>
+        <p class="mono-label">Tag safety</p>
+        <h2>Your lecture tags are editable; source tags stay locked</h2>
+        <p>OMS and approved LMU optional tags can be added or removed. AnKing, Pathoma, Sketchy, First Aid, and other source-managed tags are shown with a lock and cannot be changed here.</p>
+      </div>
+      <span class="anki-lock-key"><span aria-hidden="true">⌑</span> Protected</span>
+    </section>
+
+    <section class="anki-review-actions" aria-label="Review actions">
+      <p id="anki-review-message" class="anki-action-message" role="status" aria-live="polite"></p>
+      <div>
+        <button class="button secondary" type="button" data-save-review>Save review</button>
+        <button class="button primary" type="button" data-build-envelope>Review apply plan</button>
+      </div>
+    </section>
+  </div>
+
+  <dialog id="anki-apply-dialog" class="anki-apply-dialog">
+    <form method="dialog">
+      <p class="eyebrow">Final confirmation</p>
+      <h2>Apply these reviewed changes to Anki?</h2>
+      <p>Study Hub will sync first, apply only this frozen plan, sync again, and verify the result.</p>
+      <dl class="anki-apply-counts">
+        <div><dt>New notes</dt><dd data-plan-created>0</dd></div>
+        <div><dt>Existing notes retagged</dt><dd data-plan-retagged>0</dd></div>
+        <div><dt>Tags added</dt><dd data-plan-added>0</dd></div>
+        <div><dt>Tags removed</dt><dd data-plan-removed>0</dd></div>
+      </dl>
+      <p class="anki-confirm-note"><strong>This is the only step that can change your Anki collection.</strong></p>
+      <p class="anki-dialog-error" data-dialog-error role="alert"></p>
+      <div class="anki-dialog-actions">
+        <button class="button secondary" value="cancel">Go back</button>
+        <button class="button primary" type="button" data-confirm-apply>Apply to Anki</button>
+      </div>
+    </form>
+  </dialog>
+</article>
+{% endblock %}
+{% block scripts %}
+<script src="/static/anki.js?v=20260730.1" defer></script>
+{% endblock %}

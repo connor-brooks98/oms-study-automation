@@ -41,8 +41,14 @@ class ContractModel(BaseModel):
 class CreateCurationJobRequest(ContractModel):
     lecture_id: Annotated[int, Field(gt=0)]
     block_id: Annotated[str, Field(min_length=1, max_length=200)] | None = None
-    source_revision_ids: tuple[Annotated[int, Field(gt=0)], ...]
-    deck_allowlist: tuple[Annotated[str, Field(min_length=1, max_length=1_000)], ...]
+    source_revision_ids: tuple[Annotated[int, Field(gt=0)], ...] = Field(
+        min_length=1,
+        max_length=20,
+    )
+    deck_allowlist: tuple[
+        Annotated[str, Field(min_length=1, max_length=1_000)],
+        ...,
+    ] = Field(min_length=1, max_length=100)
     tag_allowlist: tuple[Annotated[str, Field(min_length=1, max_length=1_000)], ...]
     target_deck: Annotated[str, Field(min_length=1, max_length=1_000)]
     target_tag: Annotated[str, Field(min_length=1, max_length=1_000)]
@@ -51,32 +57,51 @@ class CreateCurationJobRequest(ContractModel):
     lcl_prompt_version: Annotated[str, Field(min_length=1, max_length=100)]
     judgment_rubric_version: Annotated[str, Field(min_length=1, max_length=100)]
     gap_prompt_version: Annotated[str, Field(min_length=1, max_length=100)]
-    provider: Annotated[str, Field(min_length=1, max_length=30)]
+    provider: Literal["openai", "gemini", "anthropic"]
     model: Annotated[str, Field(min_length=1, max_length=200)]
     source_revision_hashes: dict[
         Annotated[int, Field(gt=0)],
         Sha256,
     ] = Field(default_factory=dict)
-    semantic_generation: Annotated[
-        str,
-        Field(min_length=1, max_length=200),
-    ] | None = None
-    companion_generation: Annotated[
-        str,
-        Field(min_length=1, max_length=200),
-    ] | None = None
+    semantic_generation: (
+        Annotated[
+            str,
+            Field(min_length=1, max_length=200),
+        ]
+        | None
+    ) = None
+    companion_generation: (
+        Annotated[
+            str,
+            Field(min_length=1, max_length=200),
+        ]
+        | None
+    ) = None
 
     @field_validator("deck_allowlist", "tag_allowlist", mode="before")
     @classmethod
     def normalize_scope_values(cls, values: Any) -> tuple[str, ...]:
         if not isinstance(values, (list, tuple)):
             raise TypeError("scope must be a list")
-        normalized = {
-            str(value).strip()
-            for value in values
-            if str(value).strip()
-        }
+        normalized = {str(value).strip() for value in values if str(value).strip()}
         return tuple(sorted(normalized))
+
+    @field_validator(
+        "target_deck",
+        "model",
+        "lcl_prompt_version",
+        "judgment_rubric_version",
+        "gap_prompt_version",
+        mode="before",
+    )
+    @classmethod
+    def strip_required_text(cls, value: Any) -> str:
+        return str(value).strip()
+
+    @field_validator("target_tag", mode="before")
+    @classmethod
+    def safe_target_tag(cls, value: Any) -> str:
+        return normalize_tag(str(value))
 
     @field_validator("source_revision_ids")
     @classmethod
@@ -87,12 +112,10 @@ class CreateCurationJobRequest(ContractModel):
 
     @model_validator(mode="after")
     def validate_source_hashes(self) -> "CreateCurationJobRequest":
-        if self.source_revision_hashes and set(
-            self.source_revision_hashes
-        ) != set(self.source_revision_ids):
-            raise ValueError(
-                "source revision hashes must match selected revisions"
-            )
+        if self.source_revision_hashes and set(self.source_revision_hashes) != set(
+            self.source_revision_ids
+        ):
+            raise ValueError("source revision hashes must match selected revisions")
         return self
 
     def to_domain(self) -> CreateCurationJob:
@@ -359,7 +382,9 @@ class ActionEnvelope(ContractModel):
         if observed != sorted(observed):
             raise ValueError("envelope operations are out of order")
         if observed.count(4) != 1 or observed.count(5) != 1:
-            raise ValueError("envelope requires exactly one sync and one verify operation")
+            raise ValueError(
+                "envelope requires exactly one sync and one verify operation"
+            )
         touched_ids = set(self.touched_note_hashes)
         if self.expected_tag_hashes and set(self.expected_tag_hashes) != touched_ids:
             raise ValueError("expected tag hashes must match touched note IDs")

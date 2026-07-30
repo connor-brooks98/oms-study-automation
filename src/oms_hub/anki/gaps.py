@@ -33,15 +33,9 @@ class SupportedGap:
 
     def __post_init__(self) -> None:
         if self.outcome != "gap_supported":
-            raise ValueError(
-                "cards can be generated only for supported gaps"
-            )
-        if not self.evidence or any(
-            not passage.text for passage in self.evidence
-        ):
-            raise ValueError(
-                "supported gap requires extracted source evidence"
-            )
+            raise ValueError("cards can be generated only for supported gaps")
+        if not self.evidence or any(not passage.text for passage in self.evidence):
+            raise ValueError("supported gap requires extracted source evidence")
 
 
 class CardDraft(BaseModel):
@@ -103,9 +97,7 @@ class GapCardService:
         prompt_version: str,
     ) -> None:
         if not model.strip() or not prompt_version.strip():
-            raise ValueError(
-                "gap model and prompt version are required"
-            )
+            raise ValueError("gap model and prompt version are required")
         self.structured = structured
         self.provider = provider
         self.model = model
@@ -120,27 +112,15 @@ class GapCardService:
             model=self.model,
         )
         draft = generated.value
-        evidence_by_id = {
-            passage.passage_id: passage for passage in gap.evidence
-        }
+        evidence_by_id = {passage.passage_id: passage for passage in gap.evidence}
         if len(set(draft.evidence_ids)) != len(draft.evidence_ids):
-            raise GapValidationError(
-                "generated evidence citations must be unique"
-            )
-        if any(
-            evidence_id not in evidence_by_id
-            for evidence_id in draft.evidence_ids
-        ):
-            raise GapValidationError(
-                "generated card cites unavailable evidence"
-            )
+            raise GapValidationError("generated evidence citations must be unique")
+        if any(evidence_id not in evidence_by_id for evidence_id in draft.evidence_ids):
+            raise GapValidationError("generated card cites unavailable evidence")
         text = draft.text.strip()
         extra = draft.extra.strip()
-        _validate_card_fields(text, extra)
-        cited = tuple(
-            evidence_by_id[evidence_id]
-            for evidence_id in draft.evidence_ids
-        )
+        validate_gap_card_fields(text, extra)
+        cited = tuple(evidence_by_id[evidence_id] for evidence_id in draft.evidence_ids)
         entailment = self.structured.generate_json(
             _entailment_instruction(self.prompt_version),
             _entailment_input(text, extra, cited),
@@ -205,20 +185,15 @@ class GapCardService:
         )
 
 
-def _validate_card_fields(text: str, extra: str) -> None:
+def validate_gap_card_fields(text: str, extra: str) -> None:
+    """Apply the same deterministic safety checks to generated or edited cards."""
     if not text or len(text) > 10_000 or len(extra) > 20_000:
-        raise GapValidationError(
-            "generated card fields violate length limits"
-        )
+        raise GapValidationError("generated card fields violate length limits")
     if _UNSAFE_HTML.search(f"{text}\n{extra}"):
-        raise GapValidationError(
-            "generated card contains unsafe HTML"
-        )
+        raise GapValidationError("generated card contains unsafe HTML")
     clozes = list(_CLOZE.finditer(text))
     if not clozes:
-        raise GapValidationError(
-            "generated Cloze card contains no cloze deletion"
-        )
+        raise GapValidationError("generated Cloze card contains no cloze deletion")
     numbers = {int(match.group("number")) for match in clozes}
     if numbers != set(range(1, max(numbers) + 1)):
         raise GapValidationError(
@@ -228,9 +203,7 @@ def _validate_card_fields(text: str, extra: str) -> None:
     for match in clozes:
         answer = _normalize_for_leakage(match.group("answer"))
         if not answer:
-            raise GapValidationError(
-                "generated cloze answer cannot be blank"
-            )
+            raise GapValidationError("generated cloze answer cannot be blank")
         if answer in visible:
             raise GapValidationError(
                 "generated card leaks a cloze answer outside the cloze"
