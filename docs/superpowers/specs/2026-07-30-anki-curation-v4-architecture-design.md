@@ -1,6 +1,6 @@
 # Anki Curation Pipeline — Architecture V4
 
-**Status:** Revised architecture design — pending final user review
+**Status:** Approved architecture design
 **Date:** 2026-07-30
 **Supersedes:** `anki_curation_architecture_v3.md`, `anki_curation_one_click_design_v2.md`, and topology-specific portions of `anki_curation_implementation_plan.md`
 
