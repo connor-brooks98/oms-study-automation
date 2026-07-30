@@ -103,6 +103,9 @@ class Settings(BaseSettings):
         le=100_000,
     )
     anki_connect_url: str = "http://127.0.0.1:8765"
+    anki_executable_path: Path = Path(r"C:\Program Files\Anki\anki.exe")
+    anki_startup_attempts: int = Field(default=20, ge=1, le=120)
+    anki_startup_poll_seconds: float = Field(default=1.0, gt=0, le=30.0)
     anki_image_low_estimate_usd: float = Field(default=0.0, ge=0)
     anki_image_medium_estimate_usd: float = Field(default=0.0, ge=0)
     anki_image_high_estimate_usd: float = Field(default=0.0, ge=0)

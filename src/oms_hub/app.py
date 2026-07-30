@@ -1,4 +1,5 @@
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -9,7 +10,9 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import Response
 
 from oms_hub import __version__
+from oms_hub.anki.ankiconnect import AnkiConnectClient
 from oms_hub.anki.repository import AnkiCurationRepository
+from oms_hub.anki.runtime import AnkiRuntime, WindowsAnkiLauncher
 from oms_hub.config import Settings, get_settings
 from oms_hub.db import Database
 from oms_hub.files.office import SerialOfficeConverter
@@ -70,10 +73,27 @@ from oms_hub.web.settings_routes import router as settings_router
 from oms_hub.web.upload_routes import router as upload_router
 
 
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    try:
+        yield
+    finally:
+        runtime = getattr(app.state, "anki_runtime", None)
+        if runtime is not None:
+            await runtime.aclose()
+        database = getattr(app.state, "database", None)
+        if database is not None:
+            database.close()
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or get_settings()
     resolved.data_dir.mkdir(parents=True, exist_ok=True)
-    app = FastAPI(title="OMS II Study Automation Hub", version=__version__)
+    app = FastAPI(
+        title="OMS II Study Automation Hub",
+        version=__version__,
+        lifespan=_app_lifespan,
+    )
     allowed_hosts = ["127.0.0.1", "localhost", "testserver"]
     if resolved.public_hostname:
         allowed_hosts.append(resolved.public_hostname)
@@ -318,6 +338,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     database = Database(resolved.database_url)
     database.migrate()
     app.state.database = database
+    app.state.anki_runtime = (
+        AnkiRuntime(
+            AnkiConnectClient(resolved.anki_connect_url),
+            WindowsAnkiLauncher(resolved.anki_executable_path),
+            startup_attempts=resolved.anki_startup_attempts,
+            startup_poll_seconds=resolved.anki_startup_poll_seconds,
+        )
+        if resolved.anki_enabled
+        else None
+    )
     app.state.secrets = KeyringSecretStore()
     retire_google_docs_credentials(resolved.data_dir, app.state.secrets)
     app.state.anki_repository = AnkiCurationRepository(database)
