@@ -121,6 +121,20 @@ def test_copied_profile_requires_every_manual_acceptance_scenario() -> None:
     assert failed.gates.release_ready is False
 
 
+def test_pass_2_false_recovery_rate_uses_only_attempted_rescues() -> None:
+    payload = _fixture_payload()
+    queries = payload["queries"]
+    assert isinstance(queries, list)
+    genuine_gap = queries[5]
+    assert isinstance(genuine_gap, dict)
+    genuine_gap["pass_2_predicted_recovered"] = True
+
+    report = evaluate_dataset(EvaluationDataset.model_validate(payload))
+
+    assert report.pass_2.false_recoveries == 1
+    assert report.pass_2.false_recovery_rate == 0.5
+
+
 def test_gold_set_rejects_missing_ablation() -> None:
     payload = _fixture_payload()
     queries = payload["queries"]

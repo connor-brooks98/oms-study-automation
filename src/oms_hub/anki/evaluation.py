@@ -510,10 +510,13 @@ def _pass_2_metrics(
         for query in queries
     )
     nonrecoverable = sum(
-        not query.pass_2_expected_recoverable for query in queries
+        not query.pass_1_predicted_covered
+        and not query.pass_2_expected_recoverable
+        for query in queries
     )
     false_recoveries = sum(
-        not query.pass_2_expected_recoverable
+        not query.pass_1_predicted_covered
+        and not query.pass_2_expected_recoverable
         and query.pass_2_predicted_recovered
         for query in queries
     )
