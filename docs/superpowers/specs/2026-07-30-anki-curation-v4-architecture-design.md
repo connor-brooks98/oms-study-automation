@@ -1,0 +1,919 @@
+# Anki Curation Pipeline — Architecture V4
+
+**Status:** Approved architecture design
+**Date:** 2026-07-30
+**Supersedes:** `anki_curation_architecture_v3.md`, `anki_curation_one_click_design_v2.md`, and topology-specific portions of `anki_curation_implementation_plan.md`
+
+## 1. Decision
+
+Adopt the V3 single-NUC topology and use the Semantic Search add-on's `embeddings.db` as the first embedding source, but place it behind a versioned, read-only `EmbeddingCorpus` adapter. The add-on is an interchangeable producer, not the system's permanent data model.
+
+Retain the strongest implemented V2 components:
+
+- Curation domain contracts and job state machine.
+- Durable repository, migrations, candidates, gaps, reviews, envelopes, and receipts.
+- HTML/cloze normalization, tag classification, domain assignment, FTS5, and media extraction.
+- Strict loopback AnkiConnect client.
+- Atomic artifacts, hashes, validation, idempotency, and test patterns.
+
+Replace:
+
+- Mac agent, launchd service, Tailscale transport, bearer authentication, and cross-machine snapshot protocol.
+- FastEmbed as the production embedding source.
+- Raw live-database copying.
+- One-pass gap detection that immediately creates a card.
+
+The defining V4 change is a two-pass retrieval policy:
+
+1. Search the existing card corpus using the Lecture Concept Ledger.
+2. For every uncovered concept, return to the PowerPoint and transcript, locate the best supporting passages, generate source-grounded search variants, and search the existing corpus again.
+3. Generate a new card only when the second search still finds no suitable card and the lecture sources contain sufficient evidence.
+
+## 2. Goals
+
+1. Produce a reviewable set of existing and generated Anki notes for a lecture with one final approval action.
+2. Prefer existing AnKing notes over generated notes.
+3. Recover missed existing notes by re-querying with the lecturer's actual terminology before declaring a gap.
+4. Ground every generated note in identifiable PowerPoint and/or transcript evidence.
+5. Make no destructive changes to existing notes.
+6. Keep every mutation auditable, idempotent, locally verified, and synchronized safely.
+7. Keep the embedding source replaceable without changing retrieval, judgment, review, or apply behavior.
+8. Measure retrieval recall before enabling deterministic auto-include or auto-drop decisions.
+
+## 3. Non-goals for the first V4 release
+
+- Editing, deleting, moving, or suspending existing AnKing notes.
+- Automatically resolving a forced full-sync direction.
+- Treating generated cards as medical evidence independent of lecture sources.
+- Automatically generating images.
+- Multi-job concurrent curation.
+- Depending on the add-on's UI, reranker, or search dialog.
+- Modifying or forking the add-on.
+- Distributing the add-on or its source code.
+
+## 4. Deployment topology
+
+```text
+NUC — Windows 11 Pro, logged-in interactive session
+├── Study Hub
+│   ├── Single curation worker
+│   ├── Source artifact store
+│   ├── EmbeddingCorpus adapter
+│   ├── Companion Index
+│   ├── Curation pipeline
+│   ├── Review UI
+│   └── Audit artifacts and receipts
+├── Anki desktop
+│   ├── AnkiConnect on 127.0.0.1:8765
+│   ├── AnkiHub add-on
+│   └── Semantic Search add-on
+│       └── user_files/embeddings.db
+├── Voyage AI
+│   └── Query-side embeddings using voyage-4-large
+└── Configured LLM providers
+    ├── Gemini for the Lecture Concept Ledger, evidence assessment, and source-grounded query generation
+    └── Claude Sonnet for judgment, close-call dedupe, and gap-card authoring
+
+AnkiWeb
+└── Synchronizes the NUC writer profile with the Mac study profile
+
+MacBook
+└── Study and review device; no automated curation or indexing
+```
+
+Anki remains a GUI application. The NUC must maintain a logged-in session, start Anki at login, and disconnect rather than log off from RDP.
+
+## 5. Trust boundaries and component ownership
+
+### 5.1 Semantic Search add-on
+
+The add-on owns:
+
+- Document-side Voyage embeddings.
+- Card content hashing for incremental re-embedding.
+- Its card-level SQLite database.
+
+The pipeline does not:
+
+- Import the add-on's Python module.
+- Call its UI.
+- write to its database.
+- Assume that its schema is stable.
+- Assume that it updates automatically.
+
+### 5.2 EmbeddingCorpus adapter
+
+The Hub owns a narrow interface:
+
+```text
+EmbeddingCorpus.snapshot() -> EmbeddingSnapshot
+
+EmbeddingSnapshot
+├── source_fingerprint
+├── source_schema_fingerprint
+├── source_addon_fingerprint
+├── embedding_model
+├── dimensions
+├── built_at
+├── note_ids
+├── normalized_vectors
+├── note_decks
+└── coverage_report
+```
+
+The first provider is `AddonEmbeddingCorpus`. A future `OwnedVoyageEmbeddingCorpus` may replace it without changing downstream consumers.
+
+### 5.3 Hub-owned companion data
+
+The Hub owns normalized note text, FTS5, tags, deck membership, block parsing, trusted-source evidence, lecture source passages, retrieval provenance, judgments, gaps, generated notes, envelopes, and receipts.
+
+## 6. Safe add-on database ingestion
+
+### 6.1 Source path
+
+The expected NUC path is resolved from configuration and verified during startup:
+
+```text
+C:\Users\<user>\AppData\Roaming\Anki2\addons21\1311966390\user_files\embeddings.db
+```
+
+The path is not hardcoded into pipeline logic.
+
+### 6.2 Snapshot method
+
+Do not copy the live SQLite file with a filesystem copy. The add-on commits embedding batches while Anki is running, and its observed database uses DELETE journal mode.
+
+The Hub opens the source database read-only and uses SQLite's online backup API to create a job-local snapshot. It then closes the source connection before reading the snapshot.
+
+Every snapshot must pass:
+
+- `PRAGMA integrity_check`.
+- Exact required-column validation.
+- One supported schema fingerprint.
+- Positive integer card and note IDs.
+- Non-empty content hashes.
+- Embedding BLOB length of 2,048 bytes.
+- Declared dimension of 1,024.
+- Finite, non-zero decoded vectors.
+- Model compatibility with `voyage-4-large`.
+- Coverage reconciliation against live Anki note IDs.
+
+If validation fails, the last known-good snapshot remains available for read-only inspection, but a new curation job does not start.
+
+### 6.3 Schema and producer compatibility
+
+The add-on database does not contain a schema version or embedding model record. The adapter therefore records:
+
+- Ordered table and column definition hash.
+- Add-on manifest and source-file hash.
+- Database file hash and modification time.
+- Vector dimensions and sampled vector statistics.
+- Expected producer constant: `voyage-4-large`, document input type.
+
+An unknown schema or add-on fingerprint blocks ingestion until its compatibility contract is reviewed.
+
+### 6.4 Note-level collapse
+
+The source database is card-level. The pipeline produces one vector per note.
+
+For every note:
+
+1. Collect every card row.
+2. Require all non-null content hashes to match.
+3. Require all vectors to have the expected dimension.
+4. Select the row with the smallest `card_id` as the deterministic vector row.
+5. Preserve every distinct deck membership in `note_decks`.
+6. Preserve every source card ID for provenance.
+
+The inspected Mac database had zero notes with conflicting hashes, but V4 treats any future conflict as a quarantined note rather than guessing.
+
+### 6.5 Credential policy
+
+The add-on currently stores Voyage and optional Anthropic keys in Anki collection configuration. V4 does not use the add-on's Anthropic features. Before production:
+
+- Use a dedicated, restricted Voyage key for indexing.
+- Verify whether the Anki configuration containing the key is synchronized or included in backups.
+- Rotate the key after migration testing.
+- Keep all Hub-side provider keys in the existing operating-system secret store.
+
+If acceptable secret isolation cannot be achieved with the add-on, implement `OwnedVoyageEmbeddingCorpus` before production use.
+
+## 7. Companion Index
+
+The companion index joins Hub-owned metadata to the collapsed embedding corpus by note ID.
+
+```text
+notes_meta(
+    nid PRIMARY KEY,
+    guid,
+    model_name,
+    text_norm,
+    extra_norm,
+    raw_fields_json,
+    tags_kept_json,
+    trusted_source_count,
+    norm_hash,
+    block_course,
+    block_exam,
+    block_lecture,
+    modified_at,
+    content_sha256
+)
+
+note_decks(nid, deck_name, PRIMARY KEY(nid, deck_name))
+note_cards(nid, card_id, PRIMARY KEY(nid, card_id))
+note_tags(nid, tag, tag_prefix)
+note_domains(nid, domain)
+note_media(nid, field_name, filename, media_type, source_order)
+notes_fts(nid UNINDEXED, text_norm, extra_norm)
+
+embedding_meta(
+    source_fingerprint,
+    source_schema_fingerprint,
+    source_addon_fingerprint,
+    model,
+    dimensions,
+    source_mtime,
+    snapshot_at,
+    live_note_count,
+    embedded_note_count,
+    coverage_ratio
+)
+
+note_vectors.npy
+note_ids.npy
+```
+
+Vectors are normalized once when loaded into a contiguous NumPy matrix. Retrieval batches all lecture query vectors into matrix operations.
+
+### 7.1 Deck scoping
+
+Every semantic, lexical, and tag retrieval path uses the same eligible-note universe. The initial production universe is notes with at least one card in the configured AnKing deck subtree.
+
+Whole-collection embeddings may remain in the source snapshot, but they do not silently enter an AnKing curation result.
+
+### 7.2 Trusted source count
+
+`trusted_source_count` counts distinct source families, not tags. Multiple tags below one Sketchy or First Aid hierarchy count once.
+
+The initial source-family taxonomy includes Sketchy, First Aid, Pathoma, Boards and Beyond, Bootcamp, Pixorize, Physeo, Ninja Nerd, configured yield flags, and approved local course sources. UWorld, AMBOSS, OME, and AnkiHub identifier tags are not counted as independent trusted sources.
+
+### 7.3 Staleness and coverage
+
+Before a job starts, the Hub compares:
+
+- Live eligible note-ID set.
+- Companion Index note-ID set.
+- Embedded note-ID set.
+- Live note modifications since companion build.
+- Add-on snapshot modification time and latest `updated_at`.
+
+The job is blocked if required AnKing coverage is below 99.5%, any selected candidate lacks live metadata, or the source schema/model contract is invalid. A changed note count alone is never considered a sufficient staleness check.
+
+## 8. Lecture source model
+
+The pipeline ingests the canonical PowerPoint and cleaned transcript already associated with the lecture.
+
+### 8.1 PowerPoint extraction
+
+Extract:
+
+- Slide number and stable slide ID.
+- Shape text in reading order.
+- Grouped-shape text.
+- Tables.
+- Speaker notes.
+- Image references.
+- Vision descriptions for slides with insufficient extractable text.
+
+### 8.2 Transcript segmentation
+
+Split the cleaned transcript into overlapping, stable passages with:
+
+- Passage ID.
+- Start and end timestamps when available.
+- Character offsets.
+- Text.
+- Content hash.
+- Neighboring passage IDs.
+
+Segments are large enough to preserve explanation context but small enough to localize evidence. Passage IDs and hashes remain stable for unchanged text.
+
+### 8.3 Source index
+
+Create a lecture-local source index:
+
+- FTS5 over slide text, speaker notes, vision descriptions, and transcript passages.
+- Voyage `voyage-4-large` document embeddings for slide and transcript passages, generated and stored by the Hub.
+- Query embeddings produced with the same model and `input_type="query"`.
+- Links from passages to neighboring transcript segments and nearby slides where timing/order can be inferred.
+
+This source index searches lecture evidence. It is separate from the Anki card index.
+Lexical and semantic source results are fused before the evidence bundle is assembled.
+
+## 9. Lecture Concept Ledger
+
+Gemini produces a versioned Lecture Concept Ledger from the PowerPoint, transcript, saved lecture instructions, and vision fallbacks.
+
+Each concept contains:
+
+```text
+concept_id
+statement
+objective_ids
+depth
+emphasis
+keywords
+synonyms
+abbreviations
+eponyms
+mechanisms
+context_traps
+excluded_facts
+soft_domains
+source_refs[]
+initial_query
+hypothetical_card
+paraphrases[2]
+```
+
+`source_refs` identify the slides and transcript passages that caused the concept to be included. The LCL does not merely summarize the lecture; it establishes the coverage checklist used by retrieval, gap detection, and generated-card validation.
+
+The hypothetical card is embedded with Voyage `input_type="document"`. The statement and two paraphrases are embedded with `input_type="query"`. This yields four semantic query vectors per concept.
+
+## 10. Curation pipeline
+
+```text
+QUEUED
+→ PREFLIGHT
+→ SNAPSHOTTING_EMBEDDINGS
+→ BUILDING_COMPANION_INDEX
+→ BUILDING_SOURCE_INDEX
+→ BUILDING_LCL
+→ RETRIEVING_PASS_1
+→ JUDGING_PASS_1
+→ LOCALIZING_MISSED_CONCEPTS
+→ RETRIEVING_PASS_2
+→ JUDGING_PASS_2
+→ DEDUPING
+→ GENERATING_GAPS
+→ READY_FOR_REVIEW
+→ APPLYING_LOCAL
+→ SYNCING
+→ VERIFYING
+→ COMPLETE
+```
+
+Jobs may skip index-building states when compatible, fresh artifacts already exist. Every stage has a content-addressed input manifest and an immutable output artifact.
+
+## 11. Retrieval Pass 1
+
+Pass 1 searches every LCL concept against the complete eligible AnKing note universe.
+
+### 11.1 Retrieval signals
+
+1. Lecture-tag matches.
+2. Block-tag matches.
+3. Semantic search using:
+   - Concept statement as query.
+   - Two paraphrases as queries.
+   - Hypothetical card as a document.
+4. FTS5 lexical search using names, mechanisms, abbreviations, organisms, drugs, and exact phrases.
+5. Exact AMBOSS note IDs parsed from the supplied search string.
+
+### 11.2 Semantic multi-query fusion
+
+The four semantic result lists are fused into one semantic ranking before cross-retriever fusion. This prevents semantic retrieval from receiving four independent votes merely because four variants were generated.
+
+### 11.3 Cross-retriever fusion
+
+Use Reciprocal Rank Fusion for genuinely ranked semantic and lexical lists.
+
+Do not assign arbitrary RRF rank to unranked evidence:
+
+- Exact AMBOSS IDs are hard evidence.
+- Exact lecture-tag hits are high-priority evidence.
+- Block-tag membership is a bounded boost whose strength decreases with subtree size.
+- Trusted source count is a tiebreaker, not a primary relevance signal.
+
+Every candidate records:
+
+- Concept ID.
+- Semantic ranks and similarities for each query variant.
+- Combined semantic rank.
+- Lexical rank and matched terms.
+- Lecture/block tag evidence.
+- AMBOSS evidence.
+- Trusted source families.
+- Final fused rank.
+- Index and source fingerprints.
+
+### 11.4 Pass 1 judgment
+
+Claude Sonnet judges compacted candidates against the complete LCL and rubric. Each result contains:
+
+- Note ID.
+- Verdict.
+- Best concept ID.
+- Coverage direction.
+- Reason.
+- Context trap.
+- Confidence.
+- Recall direction.
+- Mnemonic style.
+- Retrieval pass: `pass_1`.
+
+During shadow mode, deterministic bands are recorded but do not bypass model judgment.
+
+## 12. Concept coverage and missed-topic trigger
+
+A concept is covered only when at least one candidate:
+
+- Receives a keep verdict.
+- Maps to that concept.
+- Matches the required recall direction.
+- Is not rejected as a context trap.
+- Survives later deduplication.
+
+A concept enters missed-topic rescue when Pass 1 has:
+
+- No kept candidate.
+- Only low-confidence candidates.
+- Candidates that mention the topic but test the wrong fact or recall direction.
+- Candidates rejected as context traps.
+
+The system does not create a gap card at this point.
+
+## 13. Missed-topic rescue
+
+### 13.1 Source localization
+
+For each missed concept, search the lecture-local source index using:
+
+- Original concept statement.
+- LCL keywords and exact phrases.
+- Synonyms, abbreviations, eponyms, and mechanisms.
+- Terms found in near-miss cards.
+- Objective text.
+
+Retrieve a bounded evidence bundle:
+
+- Up to five primary slides.
+- Speaker notes attached to those slides.
+- Up to five transcript passages.
+- One neighboring passage on each side when needed for context.
+- Vision descriptions when the source slide is image-driven.
+
+The evidence bundle records retrieval scores and content hashes.
+
+### 13.2 Evidence assessment
+
+Before generating new searches, assess whether the evidence bundle actually supports the concept.
+
+Outcomes:
+
+- `supported`: the lecture explicitly teaches the concept.
+- `partially_supported`: the lecture mentions it but lacks enough detail for a standalone card.
+- `unsupported`: the concept was inferred incorrectly or is absent from the sources.
+
+Unsupported concepts are removed from gap generation and shown as LCL corrections. Partially supported concepts remain reviewable but do not automatically produce cards.
+
+### 13.3 Source-grounded query generation
+
+For supported concepts, generate:
+
+- Lecturer-language query using exact terminology from the evidence.
+- Mechanism/relationship query.
+- Alternate-name query.
+- Source-grounded hypothetical Anki card.
+- Exact lexical phrases and entities.
+
+Each query includes its supporting source references. Query generation may paraphrase but may not introduce facts absent from the evidence bundle.
+
+### 13.4 Retrieval Pass 2
+
+Pass 2 searches the same eligible AnKing universe, but uses:
+
+- The source-grounded query variants.
+- Exact phrases from slides and transcript.
+- Near-miss card vocabulary.
+- Expanded synonyms and eponyms supported by the sources.
+- Focused semantic and lexical retrieval with larger candidate limits.
+
+Pass 2 does not weaken deck scoping or admit arbitrary cards from unrelated decks.
+
+### 13.5 Pass 2 judgment
+
+Claude judges Pass 2 candidates using:
+
+- Original LCL concept.
+- Source evidence bundle.
+- Pass 1 near misses and rejection reasons.
+- Pass 2 retrieval provenance.
+
+Every result is labeled `pass_2`. A recovered existing card is preferred over generating a new card when it adequately tests the concept.
+
+### 13.6 Rescue stop conditions
+
+The rescue loop runs once. It does not recursively generate searches.
+
+After Pass 2:
+
+- Kept candidate found: mark `recovered_existing`.
+- No candidate and evidence supported: mark `generation_eligible`.
+- Evidence partial: mark `manual_source_review`.
+- Evidence unsupported: mark `lcl_correction`.
+- Provider or retrieval failure: mark `rescue_failed`, preserve artifacts, and allow retry.
+
+## 14. Deduplication
+
+Combine kept candidates from both retrieval passes and deduplicate only within concept clusters.
+
+- Token-set similarity at or above 0.85 is a deterministic duplicate candidate.
+- Similarity from 0.70 through 0.85 receives close-call model adjudication.
+- Forward and reverse recall directions remain distinct unless the LCL says only one is required.
+- A Pass 2 recovery receives no automatic preference over Pass 1; the survivor is selected by educational quality.
+
+Existing-note losers are simply not tagged. No existing note is edited or suspended.
+
+## 15. Gap-card generation
+
+Only `generation_eligible` concepts enter card generation.
+
+### 15.1 Inputs
+
+Claude Sonnet receives:
+
+- Concept and objectives.
+- Source evidence bundle.
+- Exact slide and transcript references.
+- Pass 1 and Pass 2 search summaries.
+- Reasons near-miss cards were rejected.
+- Accepted, versioned house-style prompt.
+- Runtime note-type field names.
+
+### 15.2 Output rules
+
+Generated notes:
+
+- Use `AnKingOverhaul (AnKing Step Deck / AnKingMed)` unless runtime configuration selects another approved model.
+- Query `modelFieldNames` at runtime.
+- Populate exact `Text` and `Extra` field names.
+- Use one atomic cloze unless the accepted house style explicitly allows another form.
+- Test only the identified concept and recall direction.
+- Include concise explanation in `Extra`.
+- Do not claim facts absent from the source evidence.
+- Do not include unsupported treatment recommendations or numerical values.
+- Carry an invisible deterministic generation marker for idempotency.
+
+### 15.3 Provenance record
+
+The Hub stores, outside the visible card:
+
+- Concept ID.
+- Slide IDs and numbers.
+- Transcript passage IDs and timestamps.
+- Source content hashes.
+- LCL version.
+- Search Pass 1 and Pass 2 fingerprints.
+- Gap prompt version.
+- Model/provider.
+- Generated note content hash.
+
+Visible source citations inside the Anki note are optional and controlled by the accepted house-style prompt.
+
+### 15.4 Validation
+
+A generated note must pass:
+
+- Strict schema validation.
+- Required field validation.
+- Cloze syntax validation.
+- Source-entailment judgment.
+- Duplicate check against existing notes and other generated notes.
+- Medical-number and medication-name consistency check against source text.
+- Note-type rendering test in a disposable profile during acceptance.
+
+Failure routes the proposal to manual review; it is never silently discarded or applied.
+
+## 16. Review experience
+
+The review page has four clearly labeled groups:
+
+1. Existing cards found in Pass 1 — selected by default.
+2. Existing cards recovered from lecture sources in Pass 2 — selected by default and visibly marked as recovered.
+3. Generated gap cards — selected by default, editable, with source evidence available.
+4. Unresolved concepts — unselected, with status `manual_source_review`, `lcl_correction`, or `rescue_failed`.
+
+Each result shows:
+
+- Card text.
+- Concept and objective.
+- Retrieval pass.
+- Short judgment reason.
+- Confidence.
+- Retrieval provenance.
+- Source evidence for Pass 2 and generated notes.
+- Dedupe relationship.
+
+Warnings require acknowledgment before Apply:
+
+- Fewer than 10 selected existing notes.
+- More than 40% of concepts still unresolved after Pass 2.
+- Missing AMBOSS IDs.
+- Low embedding coverage.
+- Stale index.
+- Source-evidence conflicts.
+- Provider failures or manually routed judgments.
+
+## 17. Local apply and synchronization
+
+### 17.1 Preflight
+
+Before any mutation:
+
+1. Verify AnkiConnect on exactly `127.0.0.1:8765`.
+2. Verify the active profile and target note type.
+3. Verify selected existing-note hashes.
+4. Verify no unresolved prior sync-blocked job exists.
+5. Run a leading sync.
+6. Abort before writes if the leading sync fails or requests a full sync.
+
+### 17.2 Apply
+
+Build an immutable envelope containing:
+
+- Selected tag operations.
+- Selected generated notes.
+- Deterministic note markers and content hashes.
+- Expected existing-note hashes.
+- Index and source fingerprints.
+
+Apply locally in bounded, idempotent operations:
+
+1. Add lecture tags to existing notes.
+2. Add selected generated notes.
+3. Verify local tags and generated-note markers.
+4. Run the trailing sync.
+5. Verify local state again and record the final receipt.
+
+### 17.3 Honest sync states
+
+A trailing sync happens after local writes, so it cannot guarantee "apply nothing" on failure.
+
+Required states:
+
+- `complete`: writes verified locally and trailing sync completed.
+- `applied_local_sync_retryable`: local writes verified; transient sync failure; bounded retry allowed.
+- `applied_local_sync_blocked`: local writes verified; full sync or non-retryable sync decision required.
+- `apply_partial`: one or more operations failed; idempotent reconciliation required.
+- `failed_before_apply`: no writes occurred.
+
+When `applied_local_sync_blocked` occurs:
+
+- Stop all subsequent curation writes.
+- Preserve the envelope, operation ledger, created note IDs, and receipt.
+- Surface a blocking alert.
+- Never choose upload or download direction automatically.
+- Require collection backups and deliberate operator recovery.
+
+## 18. AnkiWeb and AnkiHub operating policy
+
+- AnkiHub is authenticated on the NUC only.
+- The Mac has sync on profile open and close enabled.
+- The NUC performs leading and trailing sync around each approved apply.
+- Initial migration is performed with backups of both profiles and a disposable-profile rehearsal.
+- Routine reviews on the Mac are allowed.
+- Automated curation, optional-tag mutation, note creation, and AnkiHub operations occur only on the NUC.
+
+## 19. Artifacts and audit trail
+
+Each job stores:
+
+```text
+jobs/<job_uuid>/
+├── input-manifest.json
+├── embedding-snapshot-manifest.json
+├── companion-index-manifest.json
+├── slides-extracted.json
+├── transcript-passages.jsonl
+├── source-index-manifest.json
+├── lcl.json
+├── retrieval-pass-1.jsonl
+├── judgments-pass-1.jsonl
+├── missed-concepts.json
+├── source-evidence.jsonl
+├── retrieval-pass-2.jsonl
+├── judgments-pass-2.jsonl
+├── dedupe.json
+├── gaps.json
+├── envelope.json
+└── receipt.json
+```
+
+Artifacts are content-addressed. A changed source invalidates the LCL and downstream stages. A changed embedding snapshot invalidates retrieval and downstream stages but does not require re-extracting lecture sources.
+
+## 20. Failure handling
+
+| Failure | Required behavior |
+|---|---|
+| Anki unavailable | Attempt one configured launch, wait, retry, then fail with an actionable message |
+| Add-on database missing | Block new jobs; preserve last known-good snapshot for inspection |
+| Live SQLite backup invalid | Reject snapshot; do not read a raw file copy |
+| Unknown add-on/schema fingerprint | Block ingestion pending compatibility review |
+| Embedding dimension/model mismatch | Block all semantic retrieval |
+| Missing embedded AnKing notes | Block below 99.5% coverage and report exact IDs |
+| Conflicting rows within one note | Quarantine the note and report its card IDs |
+| Voyage query outage | Retry with backoff; reuse content-addressed query cache |
+| LCL concept unsupported by sources | Mark `lcl_correction`; do not generate a card |
+| Pass 2 provider failure | Mark `rescue_failed`; retain Pass 1 results and allow retry |
+| Insufficient source evidence | Mark `manual_source_review`; do not generate |
+| Generated note not entailed | Route to manual review; never apply by default |
+| Open Anki Add/Browse dialog | Retry write twice with backoff, then request that dialogs be closed |
+| Leading sync requires full sync | Fail before apply |
+| Trailing sync requires full sync | Mark `applied_local_sync_blocked` and stop writes |
+| Duplicate apply request | Reconcile operation hashes and deterministic note markers |
+| Thin result set | Warn and require acknowledgment; block if configured minimum safety threshold is violated |
+
+## 21. Security
+
+- AnkiConnect remains loopback-only and is never exposed through Cloudflare or the tailnet.
+- Apply routes require the existing authenticated Hub session, CSRF protection, and explicit review approval.
+- Provider secrets remain in operating-system secret storage, except the restricted add-on Voyage credential addressed in Section 6.5.
+- No API keys appear in artifacts, logs, debug views, envelopes, or receipts.
+- Uploaded lecture sources and generated artifacts use bounded paths and content validation.
+- The add-on database adapter is read-only.
+- Cloudflare access does not grant direct access to AnkiConnect.
+
+## 22. Testing strategy
+
+### 22.1 Unit tests
+
+- Add-on schema fingerprinting and validation.
+- Float16 decoding, normalization, and dimension rejection.
+- Note collapse, conflict quarantine, and multi-deck preservation.
+- Trusted source-family counting.
+- Deck-scoped tag, lexical, and semantic retrieval.
+- Four-query semantic fusion.
+- Ranked RRF versus unranked evidence boosts.
+- Source localization and evidence-bundle boundaries.
+- Missed-topic state transitions.
+- Source-grounded query generation schema.
+- Gap eligibility and unsupported-concept rejection.
+- Generated-note provenance and deterministic markers.
+- Apply and sync state transitions.
+
+### 22.2 Integration tests
+
+- SQLite online backup while a fixture database is receiving commits.
+- Companion rebuild from add-on snapshot plus mocked AnkiConnect metadata.
+- FTS5 and semantic retrieval across the same eligible-note universe.
+- Pass 1 miss followed by Pass 2 recovery.
+- Pass 1 and Pass 2 miss followed by grounded card generation.
+- Unsupported LCL concept corrected without card generation.
+- Interrupted stage recovery using content-addressed artifacts.
+- Leading sync failure with zero mutations.
+- Trailing full-sync simulation after verified local writes.
+- Replayed envelope with no duplicate tag or note effects.
+
+### 22.3 Retrieval evaluation
+
+Build a manually labeled gold set from at least three representative lectures and 40–60 concepts.
+
+Measure:
+
+- Recall@20 and Recall@50 for manually kept existing notes.
+- Mean reciprocal rank.
+- Candidate diversity by distinct note ID.
+- Pass 2 recovery rate.
+- Fraction of gaps avoided by Pass 2.
+- False recovery rate: Pass 2 cards incorrectly accepted.
+- Unnecessary generated-card rate.
+- Per-concept and per-lecture latency.
+
+Compare:
+
+- Current FastEmbed semantic retrieval.
+- Voyage semantic retrieval.
+- Voyage plus lexical/tag/AMBOSS fusion.
+- Full V4 with source-grounded Pass 2.
+
+No manually kept gold note may be absent from the combined candidate set without being recorded as a retrieval defect.
+
+### 22.4 Real-system acceptance
+
+Use a disposable Anki profile before the production collection:
+
+1. Build the add-on index on the NUC.
+2. Produce and validate an online database backup.
+3. Reconcile eligible note and vector coverage.
+4. Run one real lecture through Pass 1 and Pass 2.
+5. Review source evidence for every recovered and generated note.
+6. Apply an envelope that tags three notes and creates one note.
+7. Replay the envelope and confirm no duplicate effects.
+8. Simulate transient and full-sync failures.
+9. Confirm correct rendering with the production note type.
+10. Confirm the Mac receives the changes after a safe sync.
+
+## 23. Calibration gates
+
+Before deterministic triage affects model calls:
+
+- AUTO-INCLUDE agrees with model judgment at least 95%.
+- AUTO-DROP false-drop rate remains below 2%.
+- Both hold for two consecutive representative lectures.
+
+Before generated cards are selected by default:
+
+- Every generated fact is entailed by its recorded source bundle in the acceptance set.
+- Duplicate generation rate is below 2%.
+- Pass 2 has been shown to reduce unnecessary generated cards.
+
+Before production apply:
+
+- Optional-tag namespace survives AnkiHub sync.
+- NUC/Mac full-sync recovery is rehearsed.
+- Embedding coverage meets the threshold.
+- Add-on schema and credential controls pass review.
+- Default test suite passes without suppressed resource warnings.
+
+## 24. Reuse and retirement map
+
+### Retain and adapt
+
+- `oms_hub.anki.domain`
+- `oms_hub.anki.models`
+- `oms_hub.anki.repository`
+- `oms_hub.anki.contracts`
+- `oms_hub.anki.normalize`
+- `oms_hub.anki.domains`
+- `oms_hub.anki.paths`
+- FTS and atomic vector-store patterns from `oms_hub.anki.index`
+- `oms_anki_agent.ankiconnect`, moved behind a local Hub gateway
+- Existing migrations and safety tests
+
+### Replace
+
+- `FastEmbedder` production wiring with `EmbeddingCorpus`.
+- Full/delta Mac snapshot ingestion with local Anki metadata reads and add-on snapshot ingestion.
+- Per-query semantic loops with batched NumPy matrix retrieval.
+- Tag-count `source_count` with distinct source-family counting.
+- The existing single-sync envelope assumption with explicit leading-sync preflight and honest post-write sync states.
+
+### Retire after acceptance
+
+- Mac agent service and CLI.
+- launchd installer and plist.
+- Hub-agent polling, heartbeat, bearer authentication, and snapshot transport.
+- Tailscale-specific agent routes.
+
+Retirement occurs only after the local NUC path passes real-system acceptance. Until then, the old branch remains a rollback reference.
+
+## 25. Delivery phases
+
+1. **Prerequisites and migration safety**
+   Backups, optional-tag test, AnkiHub single-host policy, disposable profiles, NUC auto-start, credential decision.
+
+2. **EmbeddingCorpus adapter**
+   Online SQLite backup, compatibility validation, note collapse, deck preservation, coverage report.
+
+3. **Companion and source indexes**
+   Port normalization/FTS, correct source counting, local Anki metadata, slide/transcript segmentation and search.
+
+4. **Local Anki runtime and apply coordinator**
+   Move the tested AnkiConnect client, add preflight, leading sync, idempotent writes, honest sync states, verification.
+
+5. **LCL V4**
+   Add stable source references, hypothetical card, and paraphrases.
+
+6. **Retrieval Pass 1**
+   Batched Voyage queries, semantic sub-fusion, lexical/tag/AMBOSS evidence, provenance, shadow logging.
+
+7. **Missed-topic rescue and Pass 2**
+   Source localization, evidence assessment, source-grounded queries, second retrieval and judgment.
+
+8. **Dedupe and grounded gap generation**
+   Combine both passes, apply survivor rules, generate only supported gaps, validate provenance.
+
+9. **Review UI and audited apply**
+   Display pass/source distinctions, warnings, edits, envelope, receipt, and sync-blocked recovery.
+
+10. **Calibration and production enablement**
+    Gold-set evaluation, threshold fitting, disposable-profile acceptance, production migration, V2 transport retirement.
+
+The first meaningful milestone is the end of Phase 4: a validated add-on snapshot, companion index, source index, and a hand-written envelope can be applied safely on the NUC. The first quality milestone is the end of Phase 7: a real missed concept can be recovered from an existing card through lecture-source re-querying.
+
+## 26. Architecture acceptance criteria
+
+The V4 architecture is implemented successfully when:
+
+1. The Hub can ingest the add-on database without modifying it and reject incompatible snapshots.
+2. Every vector used for retrieval maps deterministically to one note and all of that note's deck memberships.
+3. Pass 1 and Pass 2 search the same declared eligible-note universe.
+4. An uncovered concept is re-searched using cited lecture evidence before generation.
+5. Unsupported or weakly supported concepts do not produce automatic cards.
+6. Every generated card has durable source provenance and passes source-entailment validation.
+7. Existing cards recovered in Pass 2 are distinguishable in review and audit artifacts.
+8. Apply is idempotent and reports whether failure occurred before writes, after local writes, or during sync.
+9. The system never chooses a full-sync direction.
+10. Retrieval and generation quality meet the calibration gates before production automation is enabled.
