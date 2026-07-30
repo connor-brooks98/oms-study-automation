@@ -84,6 +84,25 @@ def test_full_export_preserves_safe_unicode_anki_media_filenames(
     assert filename in rows[0]["media"]
 
 
+def test_full_export_ignores_external_media_urls(tmp_path: Path) -> None:
+    notes = _fixture_notes()
+    external_url = (
+        "https://ankihub.s3.us-east-2.amazonaws.com/"
+        "2026-07-13%20at%204.38.42%20PM.jpg"
+    )
+    notes[0]["fields"]["Extra"]["value"] += f' <img src="{external_url}">'
+    output = tmp_path / "notes.jsonl.gz"
+
+    FullSnapshotExporter(
+        anki=FakeAnki(notes),
+        producer_version="test",
+    ).export(output)
+
+    with gzip.open(output, "rt", encoding="utf-8") as stream:
+        rows = [json.loads(line) for line in stream]
+    assert external_url not in rows[0]["media"]
+
+
 def test_id_set_hash_changes_for_add_or_delete(tmp_path: Path) -> None:
     notes = _fixture_notes()
     first = FullSnapshotExporter(

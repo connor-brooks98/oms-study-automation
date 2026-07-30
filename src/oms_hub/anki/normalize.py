@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Literal
+from urllib.parse import urlsplit
 
 from selectolax.parser import HTMLParser
 
@@ -82,6 +83,8 @@ def extract_media_references(fields: dict[str, str]) -> tuple[MediaReference, ..
         for order, match in enumerate(_MEDIA.finditer(value)):
             image = match.group("html")
             filename = html.unescape(image or match.group("sound")).strip()
+            if _is_external_media_url(filename):
+                continue
             references.append(
                 MediaReference(
                     field_name=field_name,
@@ -91,6 +94,11 @@ def extract_media_references(fields: dict[str, str]) -> tuple[MediaReference, ..
                 )
             )
     return tuple(references)
+
+
+def _is_external_media_url(value: str) -> bool:
+    parsed = urlsplit(value)
+    return bool(parsed.scheme or parsed.netloc)
 
 
 def normalize_snapshot_note(note: SnapshotNote) -> NormalizedNote:
