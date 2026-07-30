@@ -195,14 +195,30 @@ async def _refresh_local_anki_index(
 
 
 def anki_index_refresh(args: argparse.Namespace) -> int:
+    query = _anki_index_query(args)
     try:
         result = asyncio.run(
-            _refresh_local_anki_index(Settings(), str(args.query))
+            _refresh_local_anki_index(Settings(), query)
         )
     except RuntimeError as exc:
         raise SystemExit(f"Anki index refresh failed: {exc}") from exc
     print(json.dumps(asdict(result), sort_keys=True))
     return 0
+
+
+def _anki_index_query(args: argparse.Namespace) -> str:
+    deck = getattr(args, "deck", None)
+    if deck is not None:
+        normalized_deck = str(deck).strip()
+        if not normalized_deck:
+            raise SystemExit("Anki deck name cannot be empty")
+        if '"' in normalized_deck:
+            raise SystemExit(
+                "Deck names containing double quotes must use --query"
+            )
+        return f'deck:"{normalized_deck}"'
+    query = getattr(args, "query", "")
+    return "" if query is None else str(query)
 
 
 def prompt_initialize(args: argparse.Namespace) -> int:
@@ -285,11 +301,19 @@ def build_parser() -> argparse.ArgumentParser:
     voyage_key.set_defaults(handler=voyage_set_key)
 
     anki_index = commands.add_parser("anki-index-refresh")
-    anki_index.add_argument(
+    anki_scope = anki_index.add_mutually_exclusive_group()
+    anki_scope.add_argument(
         "--query",
-        default="",
+        default=None,
         help=(
             "Optional Anki search query limiting the indexed note universe."
+        ),
+    )
+    anki_scope.add_argument(
+        "--deck",
+        help=(
+            "Deck name to index, including its child decks. Preferred over "
+            "--query in Windows PowerShell."
         ),
     )
     anki_index.set_defaults(handler=anki_index_refresh)

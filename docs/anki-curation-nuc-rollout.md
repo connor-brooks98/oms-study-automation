@@ -133,10 +133,14 @@ generation. Sync Anki first, then run:
 Stop-ScheduledTask -TaskName "OMS Study Hub V2" -ErrorAction SilentlyContinue
 
 .\.venv\Scripts\oms-hub.exe anki-index-refresh `
-  --query 'deck:"AnKing Step Deck"'
+  --deck "AnKing Step Deck"
 
 Start-ScheduledTask -TaskName "OMS Study Hub V2"
 ```
+
+Use `--deck` for ordinary deck refreshes, especially from Windows PowerShell.
+Study Hub constructs the quoted Anki search internally; reserve `--query` for
+advanced Anki searches.
 
 The command reads note, card, deck, field, and tag metadata through local
 AnkiConnect. It publishes the companion SQLite index and the float16 Voyage

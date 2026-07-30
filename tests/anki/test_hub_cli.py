@@ -71,6 +71,38 @@ def test_anki_index_refresh_prints_a_machine_readable_summary(
     assert payload["peak_memory_bytes"] == 300_000_000
 
 
+def test_anki_index_refresh_builds_a_safe_query_from_deck_name(
+    monkeypatch,
+) -> None:
+    received: list[str] = []
+
+    async def refresh(_settings, query: str) -> LocalIndexRefreshResult:
+        received.append(query)
+        return LocalIndexRefreshResult(
+            active_profile="Acceptance Copy",
+            companion_generation="local-1",
+            semantic_generation="semantic-1",
+            note_count=1,
+            semantic_count=1,
+            semantic_coverage=1.0,
+            duration_ms=1.0,
+            semantic_snapshot_size_bytes=1024,
+            peak_memory_bytes=2048,
+        )
+
+    monkeypatch.setattr(cli, "_refresh_local_anki_index", refresh)
+    monkeypatch.setattr(cli, "Settings", lambda: SimpleNamespace())
+
+    assert (
+        cli.anki_index_refresh(
+            argparse.Namespace(query=None, deck="AnKing Step Deck")
+        )
+        == 0
+    )
+
+    assert received == ['deck:"AnKing Step Deck"']
+
+
 def test_parser_exposes_one_package_anki_setup_commands() -> None:
     parser = cli.build_parser()
 
@@ -80,3 +112,7 @@ def test_parser_exposes_one_package_anki_setup_commands() -> None:
     )
     assert refresh.handler is cli.anki_index_refresh
     assert refresh.query == "deck:AnKing"
+    deck = parser.parse_args(
+        ["anki-index-refresh", "--deck", "AnKing Step Deck"]
+    )
+    assert deck.deck == "AnKing Step Deck"

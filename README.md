@@ -109,8 +109,12 @@ build the first index while Anki is open:
 ```powershell
 .\.venv\Scripts\oms-hub.exe voyage-set-key
 .\.venv\Scripts\oms-hub.exe anki-index-refresh `
-  --query 'deck:"AnKing Step Deck"'
+  --deck "AnKing Step Deck"
 ```
+
+Use `--deck` for ordinary deck refreshes, especially from Windows PowerShell.
+Study Hub constructs the required Anki search query internally; reserve
+`--query` for advanced Anki searches.
 
 Open `/anki` in Study Hub to start a run. Existing-card choices, generated
 cards, source citations, and first-release tag edits remain proposals until
