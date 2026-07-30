@@ -60,7 +60,21 @@ def _notes() -> list[dict[str, Any]]:
 
 def test_local_service_exports_to_nuc_data_directory_and_commits_ledger(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    original_open = Path.open
+    opened_modes: list[str] = []
+
+    def recording_open(
+        path: Path,
+        mode: str = "r",
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        opened_modes.append(mode)
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", recording_open)
     runtime = FakeRuntime()
     ledger = AnkiLedger(tmp_path / "ledger.sqlite3")
     service = LocalAnkiService(
@@ -93,6 +107,7 @@ def test_local_service_exports_to_nuc_data_directory_and_commits_ledger(
     }
     assert service.snapshot_path == tmp_path / "snapshots" / "current.jsonl.gz"
     assert service.snapshot_path.exists()
+    assert "r+b" in opened_modes
     assert not list((tmp_path / "snapshots").glob(".current-*.jsonl.gz"))
 
 
@@ -116,6 +131,19 @@ def test_cli_doctor_reports_local_runtime_error_without_traceback(
 
     with pytest.raises(SystemExit, match="Anki doctor failed"):
         cli.anki_doctor(Namespace())
+
+
+def test_cli_snapshot_reports_filesystem_error_without_traceback(
+    monkeypatch,
+) -> None:
+    class FailingService:
+        def export_full(self) -> object:
+            raise OSError("durability check failed")
+
+    monkeypatch.setattr(cli, "_local_anki_service", lambda settings: FailingService())
+
+    with pytest.raises(SystemExit, match="Anki snapshot failed"):
+        cli.anki_snapshot(Namespace(full=True))
 
 
 def test_application_composes_local_anki_without_starting_it(tmp_path: Path) -> None:

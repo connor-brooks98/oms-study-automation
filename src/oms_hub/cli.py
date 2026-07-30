@@ -195,7 +195,7 @@ def anki_snapshot(args: argparse.Namespace) -> int:
     service = _local_anki_service(Settings())
     try:
         manifest = service.export_full()
-    except (AnkiConnectError, LocalAnkiRuntimeError, ValueError) as exc:
+    except (AnkiConnectError, LocalAnkiRuntimeError, OSError, ValueError) as exc:
         raise SystemExit(f"Anki snapshot failed: {exc}") from exc
     print(
         f"snapshot_id={manifest.snapshot_id} "

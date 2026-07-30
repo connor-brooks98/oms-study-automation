@@ -79,7 +79,7 @@ class LocalAnkiService:
                 hashes = snapshot_note_hashes(temporary)
                 if len(hashes) != manifest.note_count:
                     raise ValueError("snapshot note count changed during validation")
-                with temporary.open("rb") as stream:
+                with temporary.open("r+b") as stream:
                     os.fsync(stream.fileno())
                 temporary.replace(self.snapshot_path)
             finally:
