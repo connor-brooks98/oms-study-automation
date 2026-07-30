@@ -306,7 +306,10 @@ def test_agent_accepts_owned_envelope_receipt_and_updates_envelope(tmp_path) -> 
     job = app.state.anki_repository.create_job(
         CreateCurationJob(
             lecture_id=lecture_id,
-            amboss_input="",
+            block_id=None,
+            source_revision_ids=(),
+            deck_allowlist=("AnKing Step Deck",),
+            tag_allowlist=(),
             instruction_text="",
             target_deck="OMS-II_Custom_Cards::Heme_Lymph::Exam_1::Lec4_Anemia_I",
             target_tag=(
@@ -316,6 +319,8 @@ def test_agent_accepts_owned_envelope_receipt_and_updates_envelope(tmp_path) -> 
             lcl_prompt_version="lcl-v1",
             judgment_rubric_version="judgment-v1",
             gap_prompt_version="gap-v1",
+            provider="anthropic",
+            model="claude-sonnet-5",
         )
     )
     envelope = app.state.anki_repository.create_envelope(

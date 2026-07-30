@@ -6,26 +6,71 @@ from uuid import UUID
 
 class CurationState(StrEnum):
     QUEUED = "queued"
+    PREFLIGHT = "preflight"
+    SNAPSHOTTING_EMBEDDINGS = "snapshotting_embeddings"
+    BUILDING_COMPANION_INDEX = "building_companion_index"
+    BUILDING_SOURCE_INDEX = "building_source_index"
     BUILDING_LCL = "building_lcl"
-    RETRIEVING = "retrieving"
-    JUDGING = "judging"
+    RETRIEVING_PASS_1 = "retrieving_pass_1"
+    JUDGING_PASS_1 = "judging_pass_1"
+    LOCALIZING_MISSED_CONCEPTS = "localizing_missed_concepts"
+    RETRIEVING_PASS_2 = "retrieving_pass_2"
+    JUDGING_PASS_2 = "judging_pass_2"
     DEDUPING = "deduping"
-    PROPOSING_GAPS = "proposing_gaps"
+    GENERATING_GAPS = "generating_gaps"
     READY_FOR_REVIEW = "ready_for_review"
     ENVELOPE_PENDING = "envelope_pending"
-    APPLYING = "applying"
+    APPLYING_LOCAL = "applying_local"
+    SYNCING = "syncing"
+    VERIFYING = "verifying"
     COMPLETE = "complete"
     FAILED = "failed"
 
 
 class CurationStage(StrEnum):
+    PREFLIGHT = "preflight"
+    SEMANTIC_SNAPSHOT = "semantic_snapshot"
+    COMPANION_INDEX = "companion_index"
+    SOURCE_INDEX = "source_index"
     LCL = "lcl"
-    RETRIEVAL = "retrieval"
-    JUDGMENT = "judgment"
+    RETRIEVAL_PASS_1 = "retrieval_pass_1"
+    JUDGMENT_PASS_1 = "judgment_pass_1"
+    RESCUE = "rescue"
+    RETRIEVAL_PASS_2 = "retrieval_pass_2"
+    JUDGMENT_PASS_2 = "judgment_pass_2"
     DEDUPE = "dedupe"
     GAPS = "gaps"
-    MEDIA = "media"
     ENVELOPE = "envelope"
+    APPLY = "apply"
+    SYNC = "sync"
+    VERIFY = "verify"
+
+
+class RetrievalPass(StrEnum):
+    PASS_1 = "pass_1"
+    PASS_2_RESCUE = "pass_2_rescue"
+
+
+class EvidenceSupport(StrEnum):
+    SUPPORTED = "supported"
+    PARTIAL = "partial"
+    UNSUPPORTED = "unsupported"
+
+
+class ApplyState(StrEnum):
+    PENDING = "pending"
+    FAILED_BEFORE_APPLY = "failed_before_apply"
+    COMPLETE = "complete"
+    APPLIED_LOCAL_SYNC_RETRYABLE = "applied_local_sync_retryable"
+    APPLIED_LOCAL_SYNC_BLOCKED = "applied_local_sync_blocked"
+    APPLY_PARTIAL = "apply_partial"
+
+
+class SourceKind(StrEnum):
+    SLIDE = "slide"
+    SPEAKER_NOTES = "speaker_notes"
+    TRANSCRIPT = "transcript"
+    VISION = "vision"
 
 
 class Verdict(StrEnum):
@@ -44,6 +89,7 @@ class AgentCommandType(StrEnum):
 class EnvelopeOperationType(StrEnum):
     STORE_MEDIA = "store_media"
     ADD_TAGS = "add_tags"
+    REMOVE_TAGS = "remove_tags"
     ADD_NOTES = "add_notes"
     SYNC = "sync"
     VERIFY = "verify"
@@ -52,7 +98,10 @@ class EnvelopeOperationType(StrEnum):
 @dataclass(frozen=True, slots=True)
 class CreateCurationJob:
     lecture_id: int
-    amboss_input: str
+    block_id: str | None
+    source_revision_ids: tuple[int, ...]
+    deck_allowlist: tuple[str, ...]
+    tag_allowlist: tuple[str, ...]
     instruction_text: str
     target_deck: str
     target_tag: str
@@ -60,6 +109,8 @@ class CreateCurationJob:
     lcl_prompt_version: str
     judgment_rubric_version: str
     gap_prompt_version: str
+    provider: str
+    model: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,8 +119,12 @@ class CurationJob:
     lecture_id: int
     state: CurationState
     attempts: int
-    amboss_input: str
-    amboss_sha256: str
+    block_id: str | None
+    source_revision_ids: tuple[int, ...]
+    deck_allowlist: tuple[str, ...]
+    tag_allowlist: tuple[str, ...]
+    provider: str
+    model: str
     instruction_text: str
     instruction_sha256: str
     target_deck: str
@@ -78,6 +133,11 @@ class CurationJob:
     lcl_prompt_version: str
     judgment_rubric_version: str
     gap_prompt_version: str
+    semantic_generation: str | None
+    companion_generation: str | None
+    source_index_generation: str | None
+    configuration_sha256: str
+    apply_state: ApplyState
     review_revision: int
     error: str | None
     created_at: str
@@ -124,6 +184,36 @@ class Candidate:
     mnemonic_classification: str
     dedupe_disposition: str
     selected: bool
+    retrieval_pass: RetrievalPass = RetrievalPass.PASS_1
+
+
+@dataclass(frozen=True, slots=True)
+class SourceReference:
+    source_kind: SourceKind
+    revision_id: int
+    locator: str
+    content_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class SourceEvidence:
+    evidence_id: str
+    concept_id: str
+    support: EvidenceSupport
+    statement: str
+    source_refs: tuple[SourceReference, ...]
+    content_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class StageArtifact:
+    artifact_id: str
+    stage: CurationStage
+    kind: str
+    relative_path: str
+    input_sha256: str
+    content_sha256: str
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +228,11 @@ class GapCard:
     source_note_id: int | None = None
     generated_image: dict[str, Any] = field(default_factory=dict)
     validation_state: str = "valid"
+    source_refs: tuple[SourceReference, ...] = ()
+    evidence_ids: tuple[str, ...] = ()
+    provenance: dict[str, Any] = field(default_factory=dict)
+    initial_tags: tuple[str, ...] = ()
+    content_hash: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,10 +244,22 @@ class GapCardEdit:
 
 
 @dataclass(frozen=True, slots=True)
+class TagPatch:
+    note_id: int
+    before: tuple[str, ...]
+    after: tuple[str, ...]
+    add_tags: tuple[str, ...]
+    remove_tags: tuple[str, ...]
+    expected_tag_hash: str
+    tag_policy_version: str
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewChangeSet:
     expected_revision: int
     candidate_selections: dict[int, bool] = field(default_factory=dict)
     gap_edits: tuple[GapCardEdit, ...] = ()
+    tag_patches: tuple[TagPatch, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

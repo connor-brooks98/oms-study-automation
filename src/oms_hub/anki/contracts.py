@@ -14,7 +14,7 @@ from pydantic import (
     model_validator,
 )
 
-from oms_hub.anki.domain import AgentCommandType
+from oms_hub.anki.domain import AgentCommandType, CreateCurationJob
 
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
@@ -35,6 +35,84 @@ class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     contract_version: Literal[1] = 1
+
+
+class CreateCurationJobRequest(ContractModel):
+    lecture_id: Annotated[int, Field(gt=0)]
+    block_id: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    source_revision_ids: tuple[Annotated[int, Field(gt=0)], ...]
+    deck_allowlist: tuple[Annotated[str, Field(min_length=1, max_length=1_000)], ...]
+    tag_allowlist: tuple[Annotated[str, Field(min_length=1, max_length=1_000)], ...]
+    target_deck: Annotated[str, Field(min_length=1, max_length=1_000)]
+    target_tag: Annotated[str, Field(min_length=1, max_length=1_000)]
+    index_snapshot_id: Annotated[str, Field(min_length=1, max_length=200)]
+    instruction_text: Annotated[str, Field(max_length=20_000)] = ""
+    lcl_prompt_version: Annotated[str, Field(min_length=1, max_length=100)]
+    judgment_rubric_version: Annotated[str, Field(min_length=1, max_length=100)]
+    gap_prompt_version: Annotated[str, Field(min_length=1, max_length=100)]
+    provider: Annotated[str, Field(min_length=1, max_length=30)]
+    model: Annotated[str, Field(min_length=1, max_length=200)]
+
+    @field_validator("deck_allowlist", "tag_allowlist", mode="before")
+    @classmethod
+    def normalize_scope_values(cls, values: Any) -> tuple[str, ...]:
+        if not isinstance(values, (list, tuple)):
+            raise TypeError("scope must be a list")
+        normalized = {
+            str(value).strip()
+            for value in values
+            if str(value).strip()
+        }
+        return tuple(sorted(normalized))
+
+    @field_validator("source_revision_ids")
+    @classmethod
+    def unique_source_revisions(cls, values: tuple[int, ...]) -> tuple[int, ...]:
+        if len(values) != len(set(values)):
+            raise ValueError("source revision IDs must be unique")
+        return values
+
+    def to_domain(self) -> CreateCurationJob:
+        return CreateCurationJob(
+            lecture_id=self.lecture_id,
+            block_id=self.block_id,
+            source_revision_ids=self.source_revision_ids,
+            deck_allowlist=self.deck_allowlist,
+            tag_allowlist=self.tag_allowlist,
+            instruction_text=self.instruction_text,
+            target_deck=self.target_deck,
+            target_tag=self.target_tag,
+            index_snapshot_id=self.index_snapshot_id,
+            lcl_prompt_version=self.lcl_prompt_version,
+            judgment_rubric_version=self.judgment_rubric_version,
+            gap_prompt_version=self.gap_prompt_version,
+            provider=self.provider,
+            model=self.model,
+        )
+
+
+class TagPatchContract(ContractModel):
+    note_id: Annotated[int, Field(gt=0)]
+    before: tuple[Annotated[str, Field(min_length=1, max_length=500)], ...]
+    after: tuple[Annotated[str, Field(min_length=1, max_length=500)], ...]
+    add_tags: tuple[Annotated[str, Field(min_length=1, max_length=500)], ...]
+    remove_tags: tuple[Annotated[str, Field(min_length=1, max_length=500)], ...]
+    expected_tag_hash: Sha256
+    tag_policy_version: Annotated[str, Field(min_length=1, max_length=100)]
+
+    @model_validator(mode="after")
+    def validate_exact_diff(self) -> "TagPatchContract":
+        sequences = (self.before, self.after, self.add_tags, self.remove_tags)
+        if any(len(values) != len(set(values)) for values in sequences):
+            raise ValueError("tag lists cannot contain duplicates")
+        add = set(self.add_tags)
+        remove = set(self.remove_tags)
+        if add & remove:
+            raise ValueError("the same tag cannot be added and removed")
+        expected = (set(self.before) - remove) | add
+        if set(self.after) != expected:
+            raise ValueError("tag patch does not match its before/after state")
+        return self
 
 
 class AgentHeartbeat(ContractModel):
@@ -156,6 +234,24 @@ class AddTagsOperation(EnvelopeOperation):
         return values
 
 
+class RemoveTagsOperation(EnvelopeOperation):
+    operation_type: Literal["remove_tags"] = "remove_tags"
+    note_ids: tuple[Annotated[int, Field(gt=0)], ...]
+    tag: Annotated[str, Field(min_length=1, max_length=500)]
+
+    @field_validator("note_ids")
+    @classmethod
+    def validate_note_ids(
+        cls,
+        values: tuple[int, ...],
+    ) -> tuple[int, ...]:
+        if not values:
+            raise ValueError("note_ids cannot be empty")
+        if len(values) > 1_000:
+            raise ValueError("remove_tags cannot contain more than 1000 note IDs")
+        return values
+
+
 class AddNotesOperation(EnvelopeOperation):
     operation_type: Literal["add_notes"] = "add_notes"
     notes: tuple[dict[str, Any], ...]
@@ -183,6 +279,7 @@ class VerifyOperation(EnvelopeOperation):
 Operation = Annotated[
     StoreMediaOperation
     | AddTagsOperation
+    | RemoveTagsOperation
     | AddNotesOperation
     | SyncOperation
     | VerifyOperation,
@@ -206,14 +303,15 @@ class ActionEnvelope(ContractModel):
         phases = {
             "store_media": 0,
             "add_tags": 1,
-            "add_notes": 2,
-            "sync": 3,
-            "verify": 4,
+            "remove_tags": 2,
+            "add_notes": 3,
+            "sync": 4,
+            "verify": 5,
         }
         observed = [phases[operation.operation_type] for operation in self.operations]
         if observed != sorted(observed):
             raise ValueError("envelope operations are out of order")
-        if observed.count(3) != 1 or observed.count(4) != 1:
+        if observed.count(4) != 1 or observed.count(5) != 1:
             raise ValueError("envelope requires exactly one sync and one verify operation")
         return self
 

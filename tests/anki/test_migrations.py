@@ -17,6 +17,9 @@ APPROVED_ANKI_TABLES = {
     "anki_envelope_operations",
     "anki_agent_state",
     "anki_stage_settings",
+    "anki_source_evidence",
+    "anki_stage_artifacts",
+    "anki_tag_patches",
 }
 
 
@@ -127,3 +130,102 @@ def test_anki_migration_is_repeatable(tmp_path) -> None:
             assert session.execute(
                 text("SELECT COUNT(*) FROM anki_stage_settings")
             ).scalar_one() == 0
+
+
+def test_schema_v6_upgrade_adds_v4_columns_without_losing_legacy_job(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "hub-v6.db"
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_version (
+                id INTEGER PRIMARY KEY,
+                version INTEGER NOT NULL,
+                updated_at VARCHAR(40) NOT NULL
+            );
+            INSERT INTO schema_version (id, version, updated_at)
+            VALUES (1, 6, '2026-07-27T00:00:00+00:00');
+
+            CREATE TABLE anki_curation_jobs (
+                id VARCHAR(36) PRIMARY KEY,
+                lecture_id INTEGER NOT NULL,
+                state VARCHAR(30) NOT NULL,
+                attempts INTEGER NOT NULL,
+                target_deck TEXT NOT NULL,
+                target_tag TEXT NOT NULL,
+                index_snapshot_id VARCHAR(200) NOT NULL,
+                amboss_input TEXT NOT NULL,
+                amboss_sha256 VARCHAR(64) NOT NULL,
+                instruction_text TEXT NOT NULL,
+                instruction_sha256 VARCHAR(64) NOT NULL,
+                lcl_prompt_version VARCHAR(100) NOT NULL,
+                judgment_rubric_version VARCHAR(100) NOT NULL,
+                gap_prompt_version VARCHAR(100) NOT NULL,
+                warnings_json TEXT NOT NULL,
+                counts_json TEXT NOT NULL,
+                review_revision INTEGER NOT NULL,
+                error TEXT,
+                started_at VARCHAR(40),
+                ready_at VARCHAR(40),
+                completed_at VARCHAR(40),
+                created_at VARCHAR(40) NOT NULL,
+                updated_at VARCHAR(40) NOT NULL
+            );
+            INSERT INTO anki_curation_jobs (
+                id, lecture_id, state, attempts, target_deck, target_tag,
+                index_snapshot_id, amboss_input, amboss_sha256,
+                instruction_text, instruction_sha256, lcl_prompt_version,
+                judgment_rubric_version, gap_prompt_version, warnings_json,
+                counts_json, review_revision, created_at, updated_at
+            ) VALUES (
+                '00000000-0000-0000-0000-000000000001', 7, 'queued', 0,
+                'target', 'tag', 'snapshot-1', 'legacy',
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                '',
+                'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+                'lcl-v1', 'judgment-v1', 'gap-v1', '[]', '{}', 0,
+                '2026-07-27T00:00:00+00:00',
+                '2026-07-27T00:00:00+00:00'
+            );
+            """
+        )
+        connection.commit()
+
+    with Database(f"sqlite:///{database_path}") as database:
+        database.migrate()
+        columns = {
+            column["name"]
+            for column in inspect(database.engine).get_columns(
+                "anki_curation_jobs"
+            )
+        }
+        tables = set(inspect(database.engine).get_table_names())
+        with database.session() as session:
+            row = session.execute(
+                text(
+                    "SELECT id, amboss_input, apply_state "
+                    "FROM anki_curation_jobs"
+                )
+            ).one()
+            version = session.execute(
+                text("SELECT version FROM schema_version WHERE id = 1")
+            ).scalar_one()
+
+    assert {
+        "source_revision_ids_json",
+        "deck_allowlist_json",
+        "tag_allowlist_json",
+        "apply_state",
+    } <= columns
+    assert {
+        "anki_source_evidence",
+        "anki_stage_artifacts",
+        "anki_tag_patches",
+    } <= tables
+    assert row == (
+        "00000000-0000-0000-0000-000000000001",
+        "legacy",
+        "pending",
+    )
+    assert version == 7

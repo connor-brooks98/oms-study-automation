@@ -1,6 +1,7 @@
 import re
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from pydantic import Field, field_validator
@@ -88,6 +89,20 @@ class Settings(BaseSettings):
     )
     anki_focused_retrieval_limit: int = Field(default=200, ge=1, le=5_000)
     anki_global_retrieval_limit: int = Field(default=50, ge=1, le=1_000)
+    anki_semantic_model: str = Field(
+        default="voyage-4-large",
+        min_length=1,
+        max_length=200,
+    )
+    anki_semantic_dimensions: int = Field(default=1024, ge=1, le=16_384)
+    anki_semantic_min_coverage: float = Field(default=0.995, ge=0.0, le=1.0)
+    anki_semantic_batch_size: int = Field(default=128, ge=1, le=1_000)
+    anki_semantic_query_cache_size: int = Field(
+        default=512,
+        ge=1,
+        le=100_000,
+    )
+    anki_connect_url: str = "http://127.0.0.1:8765"
     anki_image_low_estimate_usd: float = Field(default=0.0, ge=0)
     anki_image_medium_estimate_usd: float = Field(default=0.0, ge=0)
     anki_image_high_estimate_usd: float = Field(default=0.0, ge=0)
@@ -116,6 +131,26 @@ class Settings(BaseSettings):
     @classmethod
     def validate_anki_agent_token_key(cls, value: str) -> str:
         return _validate_secret_key_name(value)
+
+    @field_validator("anki_connect_url")
+    @classmethod
+    def validate_anki_connect_url(cls, value: str) -> str:
+        parsed = urlsplit(value.strip())
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname not in {"127.0.0.1", "localhost"}
+            or parsed.port != 8765
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "AnkiConnect must use the loopback URL "
+                "http://127.0.0.1:8765 or http://localhost:8765"
+            )
+        return f"http://{parsed.hostname}:8765"
 
     @field_validator("cloudflare_access_issuer")
     @classmethod

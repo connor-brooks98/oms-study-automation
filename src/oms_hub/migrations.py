@@ -13,11 +13,74 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 6
+LATEST_SCHEMA_VERSION = 7
+
+
+def _ensure_column(
+    database: "Database",
+    table_name: str,
+    column_name: str,
+    definition: str,
+) -> None:
+    inspector = inspect(database.engine)
+    if not inspector.has_table(table_name):
+        return
+    columns = {
+        column["name"]
+        for column in inspector.get_columns(table_name)
+    }
+    if column_name in columns:
+        return
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                f"ALTER TABLE {table_name} "
+                f"ADD COLUMN {column_name} {definition}"
+            )
+        )
+
+
+def _upgrade_anki_v4_columns(database: "Database") -> None:
+    empty_sha256 = (
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+    job_columns = {
+        "block_id": "VARCHAR(200)",
+        "source_revision_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+        "deck_allowlist_json": "TEXT NOT NULL DEFAULT '[]'",
+        "tag_allowlist_json": "TEXT NOT NULL DEFAULT '[]'",
+        "provider": "VARCHAR(30) NOT NULL DEFAULT 'anthropic'",
+        "model": "VARCHAR(200) NOT NULL DEFAULT 'claude-sonnet-5'",
+        "semantic_generation": "VARCHAR(200)",
+        "companion_generation": "VARCHAR(200)",
+        "source_index_generation": "VARCHAR(200)",
+        "configuration_sha256": (
+            f"VARCHAR(64) NOT NULL DEFAULT '{empty_sha256}'"
+        ),
+        "apply_state": "VARCHAR(50) NOT NULL DEFAULT 'pending'",
+    }
+    for name, definition in job_columns.items():
+        _ensure_column(database, "anki_curation_jobs", name, definition)
+    _ensure_column(
+        database,
+        "anki_candidates",
+        "retrieval_pass",
+        "VARCHAR(30) NOT NULL DEFAULT 'pass_1'",
+    )
+    gap_columns = {
+        "source_refs_json": "TEXT NOT NULL DEFAULT '[]'",
+        "evidence_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+        "provenance_json": "TEXT NOT NULL DEFAULT '{}'",
+        "initial_tags_json": "TEXT NOT NULL DEFAULT '[]'",
+        "content_hash": f"VARCHAR(64) NOT NULL DEFAULT '{empty_sha256}'",
+    }
+    for name, definition in gap_columns.items():
+        _ensure_column(database, "anki_gap_cards", name, definition)
 
 
 def migrate_database(database: "Database") -> None:
     database.create_schema()
+    _upgrade_anki_v4_columns(database)
     usage_columns = {
         column["name"]
         for column in inspect(database.engine).get_columns("study_usage")

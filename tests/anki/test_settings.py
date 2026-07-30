@@ -19,6 +19,10 @@ def test_anki_settings_default_to_disabled_and_data_directory_child(
     assert settings.resolved_anki_data_dir == tmp_path / "anki"
     assert settings.anki_agent_token_key == "anki-agent-token"
     assert settings.anki_worker_poll_seconds == 5.0
+    assert settings.anki_semantic_model == "voyage-4-large"
+    assert settings.anki_semantic_dimensions == 1024
+    assert settings.anki_semantic_min_coverage == 0.995
+    assert settings.anki_connect_url == "http://127.0.0.1:8765"
 
 
 def test_explicit_anki_data_directory_and_tailnet_hostname_are_normalized(
@@ -48,3 +52,13 @@ def test_explicit_anki_data_directory_and_tailnet_hostname_are_normalized(
 def test_anki_settings_reject_unsafe_values(field: str, value: object) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **{field: value})
+
+
+def test_anki_connect_url_must_be_loopback(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="loopback"):
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path,
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+            anki_connect_url="http://192.168.1.20:8765",
+        )

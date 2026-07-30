@@ -4,15 +4,22 @@ from pathlib import Path
 import pytest
 
 from oms_hub.anki.domain import (
+    ApplyState,
     Candidate,
     CreateCurationJob,
     CurationStage,
     CurationState,
     EnvelopeDraft,
     EnvelopeOperationDraft,
+    EvidenceSupport,
     GapCard,
     GapCardEdit,
+    RetrievalPass,
     ReviewChangeSet,
+    SourceEvidence,
+    SourceKind,
+    SourceReference,
+    StageArtifact,
     StageUsage,
 )
 from oms_hub.anki.repository import (
@@ -53,7 +60,10 @@ def _prepared_repository(tmp_path: Path) -> tuple[AnkiCurationRepository, int]:
 def _job_request(lecture_id: int, *, snapshot: str = "snapshot-1") -> CreateCurationJob:
     return CreateCurationJob(
         lecture_id=lecture_id,
-        amboss_input="nid:1479430487028 OR nid:1517176548564",
+        block_id="heme-block-1",
+        source_revision_ids=(101, 102),
+        deck_allowlist=("AnKing Step Deck",),
+        tag_allowlist=("#AK_Step2_v12::Hematology",),
         instruction_text="Focus on red-highlighted material.",
         target_deck="OMS-II_Custom_Cards::Heme_Lymph::Exam_1::Lec4_Anemia_I",
         target_tag=(
@@ -63,6 +73,8 @@ def _job_request(lecture_id: int, *, snapshot: str = "snapshot-1") -> CreateCura
         lcl_prompt_version="lcl-v1",
         judgment_rubric_version="judgment-v1",
         gap_prompt_version="gap-v1",
+        provider="anthropic",
+        model="claude-sonnet-5",
     )
 
 
@@ -75,8 +87,11 @@ def test_create_job_snapshots_all_mutable_inputs(tmp_path) -> None:
     assert job.state is CurationState.QUEUED
     assert job.instruction_text == "Focus on red-highlighted material."
     assert len(job.instruction_sha256) == 64
-    assert job.amboss_input == "nid:1479430487028 OR nid:1517176548564"
-    assert len(job.amboss_sha256) == 64
+    assert job.block_id == "heme-block-1"
+    assert job.source_revision_ids == (101, 102)
+    assert job.deck_allowlist == ("AnKing Step Deck",)
+    assert job.tag_allowlist == ("#AK_Step2_v12::Hematology",)
+    assert job.apply_state is ApplyState.PENDING
     assert job.target_deck.endswith("::Lec4_Anemia_I")
     assert job.target_tag.endswith("::Lec4_Anemia_I")
     assert job.index_snapshot_id == "snapshot-1"
@@ -96,7 +111,7 @@ def test_claim_next_job_claims_oldest_queued_job_once(tmp_path) -> None:
 
     assert claimed_first is not None
     assert claimed_first.id == first.id
-    assert claimed_first.state is CurationState.BUILDING_LCL
+    assert claimed_first.state is CurationState.PREFLIGHT
     assert claimed_first.attempts == 1
     assert claimed_second is not None
     assert claimed_second.id == second.id
@@ -111,23 +126,23 @@ def test_transition_requires_expected_state_and_allowed_edge(tmp_path) -> None:
         repository.transition(
             job.id,
             CurationState.QUEUED,
-            CurationState.JUDGING,
+            CurationState.JUDGING_PASS_1,
         )
 
     claimed = repository.claim_next_job(datetime.now(UTC))
     assert claimed is not None
     retrieved = repository.transition(
         claimed.id,
+        CurationState.PREFLIGHT,
         CurationState.BUILDING_LCL,
-        CurationState.RETRIEVING,
     )
-    assert retrieved.state is CurationState.RETRIEVING
+    assert retrieved.state is CurationState.BUILDING_LCL
 
     with pytest.raises(InvalidCurationTransition):
         repository.transition(
             claimed.id,
+            CurationState.PREFLIGHT,
             CurationState.BUILDING_LCL,
-            CurationState.RETRIEVING,
         )
 
 
@@ -142,14 +157,24 @@ def test_recovery_requeues_interrupted_pre_review_jobs_only(tmp_path) -> None:
     repository.transition(
         envelope_pending.id,
         CurationState.QUEUED,
-        CurationState.BUILDING_LCL,
+        CurationState.PREFLIGHT,
     )
     for current, target in [
-        (CurationState.BUILDING_LCL, CurationState.RETRIEVING),
-        (CurationState.RETRIEVING, CurationState.JUDGING),
-        (CurationState.JUDGING, CurationState.DEDUPING),
-        (CurationState.DEDUPING, CurationState.PROPOSING_GAPS),
-        (CurationState.PROPOSING_GAPS, CurationState.READY_FOR_REVIEW),
+        (CurationState.PREFLIGHT, CurationState.BUILDING_LCL),
+        (CurationState.BUILDING_LCL, CurationState.RETRIEVING_PASS_1),
+        (CurationState.RETRIEVING_PASS_1, CurationState.JUDGING_PASS_1),
+        (
+            CurationState.JUDGING_PASS_1,
+            CurationState.LOCALIZING_MISSED_CONCEPTS,
+        ),
+        (
+            CurationState.LOCALIZING_MISSED_CONCEPTS,
+            CurationState.RETRIEVING_PASS_2,
+        ),
+        (CurationState.RETRIEVING_PASS_2, CurationState.JUDGING_PASS_2),
+        (CurationState.JUDGING_PASS_2, CurationState.DEDUPING),
+        (CurationState.DEDUPING, CurationState.GENERATING_GAPS),
+        (CurationState.GENERATING_GAPS, CurationState.READY_FOR_REVIEW),
         (CurationState.READY_FOR_REVIEW, CurationState.ENVELOPE_PENDING),
     ]:
         repository.transition(envelope_pending.id, current, target)
@@ -183,10 +208,10 @@ def test_stage_lifecycle_records_usage_and_safe_failure(tmp_path) -> None:
         ),
         cache_hits=3,
     )
-    failed = repository.start_stage(job.id, CurationStage.RETRIEVAL)
+    failed = repository.start_stage(job.id, CurationStage.RETRIEVAL_PASS_1)
     failed = repository.fail_stage(
         job.id,
-        CurationStage.RETRIEVAL,
+        CurationStage.RETRIEVAL_PASS_1,
         "index is unavailable",
     )
 
@@ -199,6 +224,40 @@ def test_stage_lifecycle_records_usage_and_safe_failure(tmp_path) -> None:
     assert failed.error == "index is unavailable"
 
 
+def test_source_evidence_and_stage_artifacts_round_trip(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    source_ref = SourceReference(
+        source_kind=SourceKind.SLIDE,
+        revision_id=101,
+        locator="slide:7",
+        content_hash="b" * 64,
+    )
+    evidence = SourceEvidence(
+        evidence_id="evidence-1",
+        concept_id="concept-anemia",
+        support=EvidenceSupport.SUPPORTED,
+        statement="Iron deficiency causes microcytic anemia.",
+        source_refs=(source_ref,),
+        content_hash="c" * 64,
+    )
+    artifact = StageArtifact(
+        artifact_id="artifact-1",
+        stage=CurationStage.SOURCE_INDEX,
+        kind="source-index-manifest",
+        relative_path="jobs/example/source-index-manifest.json",
+        input_sha256="d" * 64,
+        content_sha256="e" * 64,
+        metadata={"passages": 12},
+    )
+
+    repository.replace_source_evidence(job.id, (evidence,))
+    repository.save_stage_artifact(job.id, artifact)
+
+    assert repository.list_source_evidence(job.id) == [evidence]
+    assert repository.list_stage_artifacts(job.id) == [artifact]
+
+
 def test_candidates_gaps_and_review_revision_are_persisted(tmp_path) -> None:
     repository, lecture_id = _prepared_repository(tmp_path)
     job = repository.create_job(_job_request(lecture_id))
@@ -209,7 +268,7 @@ def test_candidates_gaps_and_review_revision_are_persisted(tmp_path) -> None:
                 note_id=1479430487028,
                 content_hash="a" * 64,
                 best_concept_id="concept-anemia",
-                provenance={"amboss": True},
+                provenance={"lecture_tag": True},
                 scores={"semantic": 0.91},
                 predicted_band="auto_include",
                 verdict="include",
@@ -220,6 +279,7 @@ def test_candidates_gaps_and_review_revision_are_persisted(tmp_path) -> None:
                 mnemonic_classification="none",
                 dedupe_disposition="survivor",
                 selected=True,
+                retrieval_pass=RetrievalPass.PASS_1,
             )
         ],
     )

@@ -12,16 +12,23 @@ from sqlalchemy.orm import Session
 from oms_hub.anki.domain import (
     AgentCommandType,
     AgentState,
+    ApplyState,
     Candidate,
     CreateCurationJob,
     CurationJob,
     CurationStage,
     CurationState,
     EnvelopeDraft,
+    EvidenceSupport,
     GapCard,
     JobStage,
+    RetrievalPass,
     ReviewChangeSet,
     SavedReview,
+    SourceEvidence,
+    SourceKind,
+    SourceReference,
+    StageArtifact,
     StageUsage,
     StoredAgentCommand,
     StoredEnvelope,
@@ -35,31 +42,99 @@ from oms_hub.anki.models import (
     AnkiEnvelopeOperationModel,
     AnkiGapCardModel,
     AnkiJobStageModel,
+    AnkiSourceEvidenceModel,
+    AnkiStageArtifactModel,
+    AnkiTagPatchModel,
 )
 from oms_hub.db import Database
 from oms_hub.models import LectureModel, utc_now
 
 ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
-    CurationState.QUEUED: {CurationState.BUILDING_LCL, CurationState.FAILED},
-    CurationState.BUILDING_LCL: {CurationState.RETRIEVING, CurationState.FAILED},
-    CurationState.RETRIEVING: {CurationState.JUDGING, CurationState.FAILED},
-    CurationState.JUDGING: {CurationState.DEDUPING, CurationState.FAILED},
-    CurationState.DEDUPING: {CurationState.PROPOSING_GAPS, CurationState.FAILED},
-    CurationState.PROPOSING_GAPS: {
+    CurationState.QUEUED: {CurationState.PREFLIGHT, CurationState.FAILED},
+    CurationState.PREFLIGHT: {
+        CurationState.SNAPSHOTTING_EMBEDDINGS,
+        CurationState.BUILDING_COMPANION_INDEX,
+        CurationState.BUILDING_SOURCE_INDEX,
+        CurationState.BUILDING_LCL,
+        CurationState.FAILED,
+    },
+    CurationState.SNAPSHOTTING_EMBEDDINGS: {
+        CurationState.BUILDING_COMPANION_INDEX,
+        CurationState.FAILED,
+    },
+    CurationState.BUILDING_COMPANION_INDEX: {
+        CurationState.BUILDING_SOURCE_INDEX,
+        CurationState.FAILED,
+    },
+    CurationState.BUILDING_SOURCE_INDEX: {
+        CurationState.BUILDING_LCL,
+        CurationState.FAILED,
+    },
+    CurationState.BUILDING_LCL: {
+        CurationState.RETRIEVING_PASS_1,
+        CurationState.FAILED,
+    },
+    CurationState.RETRIEVING_PASS_1: {
+        CurationState.JUDGING_PASS_1,
+        CurationState.FAILED,
+    },
+    CurationState.JUDGING_PASS_1: {
+        CurationState.LOCALIZING_MISSED_CONCEPTS,
+        CurationState.DEDUPING,
+        CurationState.FAILED,
+    },
+    CurationState.LOCALIZING_MISSED_CONCEPTS: {
+        CurationState.RETRIEVING_PASS_2,
+        CurationState.FAILED,
+    },
+    CurationState.RETRIEVING_PASS_2: {
+        CurationState.JUDGING_PASS_2,
+        CurationState.FAILED,
+    },
+    CurationState.JUDGING_PASS_2: {
+        CurationState.DEDUPING,
+        CurationState.FAILED,
+    },
+    CurationState.DEDUPING: {
+        CurationState.GENERATING_GAPS,
+        CurationState.FAILED,
+    },
+    CurationState.GENERATING_GAPS: {
         CurationState.READY_FOR_REVIEW,
         CurationState.FAILED,
     },
     CurationState.READY_FOR_REVIEW: {CurationState.ENVELOPE_PENDING},
-    CurationState.ENVELOPE_PENDING: {CurationState.APPLYING, CurationState.FAILED},
-    CurationState.APPLYING: {CurationState.COMPLETE, CurationState.FAILED},
+    CurationState.ENVELOPE_PENDING: {
+        CurationState.APPLYING_LOCAL,
+        CurationState.FAILED,
+    },
+    CurationState.APPLYING_LOCAL: {
+        CurationState.SYNCING,
+        CurationState.FAILED,
+    },
+    CurationState.SYNCING: {
+        CurationState.VERIFYING,
+        CurationState.FAILED,
+    },
+    CurationState.VERIFYING: {
+        CurationState.COMPLETE,
+        CurationState.FAILED,
+    },
 }
 
 _INTERRUPTED_PRE_REVIEW_STATES = {
+    CurationState.PREFLIGHT,
+    CurationState.SNAPSHOTTING_EMBEDDINGS,
+    CurationState.BUILDING_COMPANION_INDEX,
+    CurationState.BUILDING_SOURCE_INDEX,
     CurationState.BUILDING_LCL,
-    CurationState.RETRIEVING,
-    CurationState.JUDGING,
+    CurationState.RETRIEVING_PASS_1,
+    CurationState.JUDGING_PASS_1,
+    CurationState.LOCALIZING_MISSED_CONCEPTS,
+    CurationState.RETRIEVING_PASS_2,
+    CurationState.JUDGING_PASS_2,
     CurationState.DEDUPING,
-    CurationState.PROPOSING_GAPS,
+    CurationState.GENERATING_GAPS,
 }
 
 
@@ -80,6 +155,20 @@ class AnkiCurationRepository:
         self.database = database
 
     def create_job(self, request: CreateCurationJob) -> CurationJob:
+        configuration = {
+            "block_id": request.block_id,
+            "source_revision_ids": request.source_revision_ids,
+            "deck_allowlist": request.deck_allowlist,
+            "tag_allowlist": request.tag_allowlist,
+            "target_deck": request.target_deck,
+            "target_tag": request.target_tag,
+            "index_snapshot_id": request.index_snapshot_id,
+            "lcl_prompt_version": request.lcl_prompt_version,
+            "judgment_rubric_version": request.judgment_rubric_version,
+            "gap_prompt_version": request.gap_prompt_version,
+            "provider": request.provider,
+            "model": request.model,
+        }
         with self.database.session() as session:
             if session.get(LectureModel, request.lecture_id) is None:
                 raise KeyError(request.lecture_id)
@@ -90,8 +179,20 @@ class AnkiCurationRepository:
                 target_deck=request.target_deck,
                 target_tag=request.target_tag,
                 index_snapshot_id=request.index_snapshot_id,
-                amboss_input=request.amboss_input,
-                amboss_sha256=_sha256_text(request.amboss_input),
+                _legacy_amboss_input="",
+                _legacy_amboss_sha256=_sha256_text(""),
+                block_id=request.block_id,
+                source_revision_ids_json=_canonical_json(
+                    request.source_revision_ids
+                ),
+                deck_allowlist_json=_canonical_json(request.deck_allowlist),
+                tag_allowlist_json=_canonical_json(request.tag_allowlist),
+                provider=request.provider,
+                model=request.model,
+                configuration_sha256=_sha256_text(
+                    _canonical_json(configuration)
+                ),
+                apply_state=ApplyState.PENDING.value,
                 instruction_text=request.instruction_text,
                 instruction_sha256=_sha256_text(request.instruction_text),
                 lcl_prompt_version=request.lcl_prompt_version,
@@ -126,7 +227,7 @@ class AnkiCurationRepository:
                     AnkiCurationJobModel.state == CurationState.QUEUED.value,
                 )
                 .values(
-                    state=CurationState.BUILDING_LCL.value,
+                    state=CurationState.PREFLIGHT.value,
                     attempts=AnkiCurationJobModel.attempts + 1,
                     started_at=now.isoformat(),
                     error=None,
@@ -261,6 +362,95 @@ class AnkiCurationRepository:
             session.flush()
             return self._stage(stored)
 
+    def replace_source_evidence(
+        self,
+        job_id: UUID,
+        evidence: Sequence[SourceEvidence],
+    ) -> None:
+        with self.database.session() as session:
+            self._require_job_model(session, job_id)
+            session.execute(
+                delete(AnkiSourceEvidenceModel).where(
+                    AnkiSourceEvidenceModel.job_id == str(job_id)
+                )
+            )
+            for item in evidence:
+                session.add(
+                    AnkiSourceEvidenceModel(
+                        job_id=str(job_id),
+                        evidence_id=item.evidence_id,
+                        concept_id=item.concept_id,
+                        support=item.support.value,
+                        statement=item.statement,
+                        source_refs_json=_canonical_json(
+                            [
+                                {
+                                    "source_kind": ref.source_kind.value,
+                                    "revision_id": ref.revision_id,
+                                    "locator": ref.locator,
+                                    "content_hash": ref.content_hash,
+                                }
+                                for ref in item.source_refs
+                            ]
+                        ),
+                        content_hash=item.content_hash,
+                    )
+                )
+
+    def list_source_evidence(self, job_id: UUID) -> list[SourceEvidence]:
+        with self.database.session() as session:
+            stored = session.scalars(
+                select(AnkiSourceEvidenceModel)
+                .where(AnkiSourceEvidenceModel.job_id == str(job_id))
+                .order_by(AnkiSourceEvidenceModel.id)
+            ).all()
+            return [self._source_evidence(item) for item in stored]
+
+    def save_stage_artifact(
+        self,
+        job_id: UUID,
+        artifact: StageArtifact,
+    ) -> None:
+        with self.database.session() as session:
+            self._require_job_model(session, job_id)
+            existing = session.scalar(
+                select(AnkiStageArtifactModel).where(
+                    AnkiStageArtifactModel.job_id == str(job_id),
+                    AnkiStageArtifactModel.artifact_id
+                    == artifact.artifact_id,
+                )
+            )
+            if existing is not None:
+                if (
+                    existing.content_sha256 != artifact.content_sha256
+                    or existing.input_sha256 != artifact.input_sha256
+                ):
+                    raise ValueError(
+                        "artifact identity was reused with different content"
+                    )
+                return
+            session.add(
+                AnkiStageArtifactModel(
+                    job_id=str(job_id),
+                    artifact_id=artifact.artifact_id,
+                    stage=artifact.stage.value,
+                    kind=artifact.kind,
+                    relative_path=artifact.relative_path,
+                    input_sha256=artifact.input_sha256,
+                    content_sha256=artifact.content_sha256,
+                    metadata_json=_canonical_json(artifact.metadata),
+                )
+            )
+
+    def list_stage_artifacts(self, job_id: UUID) -> list[StageArtifact]:
+        with self.database.session() as session:
+            stored = session.scalars(
+                select(AnkiStageArtifactModel)
+                .where(AnkiStageArtifactModel.job_id == str(job_id))
+                .order_by(AnkiStageArtifactModel.id)
+            ).all()
+            return [self._stage_artifact(item) for item in stored]
+
     def replace_candidates(
         self,
         job_id: UUID,
@@ -291,6 +481,7 @@ class AnkiCurationRepository:
                         mnemonic_classification=candidate.mnemonic_classification,
                         dedupe_disposition=candidate.dedupe_disposition,
                         selected=candidate.selected,
+                        retrieval_pass=candidate.retrieval_pass.value,
                     )
                 )
 
@@ -326,6 +517,23 @@ class AnkiCurationRepository:
                         source_note_id=card.source_note_id,
                         generated_image_json=_canonical_json(card.generated_image),
                         validation_state=card.validation_state,
+                        source_refs_json=_canonical_json(
+                            [
+                                {
+                                    "source_kind": ref.source_kind.value,
+                                    "revision_id": ref.revision_id,
+                                    "locator": ref.locator,
+                                    "content_hash": ref.content_hash,
+                                }
+                                for ref in card.source_refs
+                            ]
+                        ),
+                        evidence_ids_json=_canonical_json(card.evidence_ids),
+                        provenance_json=_canonical_json(card.provenance),
+                        initial_tags_json=_canonical_json(card.initial_tags),
+                        content_hash=card.content_hash or _sha256_text(
+                            f"{card.text}\0{card.extra}"
+                        ),
                     )
                 )
 
@@ -370,6 +578,21 @@ class AnkiCurationRepository:
                 gap.extra = edit.extra
                 gap.selected = edit.selected
                 gap.revision += 1
+            next_revision = job.review_revision + 1
+            for patch in change_set.tag_patches:
+                session.add(
+                    AnkiTagPatchModel(
+                        job_id=str(job_id),
+                        note_id=patch.note_id,
+                        revision=next_revision,
+                        before_json=_canonical_json(patch.before),
+                        after_json=_canonical_json(patch.after),
+                        add_tags_json=_canonical_json(patch.add_tags),
+                        remove_tags_json=_canonical_json(patch.remove_tags),
+                        expected_tag_hash=patch.expected_tag_hash,
+                        policy_version=patch.tag_policy_version,
+                    )
+                )
             job.review_revision += 1
             session.flush()
             return SavedReview(job_id=job_id, revision=job.review_revision)
@@ -608,8 +831,21 @@ class AnkiCurationRepository:
             lecture_id=stored.lecture_id,
             state=CurationState(stored.state),
             attempts=stored.attempts,
-            amboss_input=stored.amboss_input,
-            amboss_sha256=stored.amboss_sha256,
+            block_id=stored.block_id,
+            source_revision_ids=tuple(
+                int(value)
+                for value in json.loads(stored.source_revision_ids_json)
+            ),
+            deck_allowlist=tuple(
+                str(value)
+                for value in json.loads(stored.deck_allowlist_json)
+            ),
+            tag_allowlist=tuple(
+                str(value)
+                for value in json.loads(stored.tag_allowlist_json)
+            ),
+            provider=stored.provider,
+            model=stored.model,
             instruction_text=stored.instruction_text,
             instruction_sha256=stored.instruction_sha256,
             target_deck=stored.target_deck,
@@ -618,6 +854,11 @@ class AnkiCurationRepository:
             lcl_prompt_version=stored.lcl_prompt_version,
             judgment_rubric_version=stored.judgment_rubric_version,
             gap_prompt_version=stored.gap_prompt_version,
+            semantic_generation=stored.semantic_generation,
+            companion_generation=stored.companion_generation,
+            source_index_generation=stored.source_index_generation,
+            configuration_sha256=stored.configuration_sha256,
+            apply_state=ApplyState(stored.apply_state),
             review_revision=stored.review_revision,
             error=stored.error,
             created_at=stored.created_at,
@@ -658,10 +899,59 @@ class AnkiCurationRepository:
             mnemonic_classification=stored.mnemonic_classification,
             dedupe_disposition=stored.dedupe_disposition,
             selected=stored.selected,
+            retrieval_pass=RetrievalPass(stored.retrieval_pass),
+        )
+
+    @staticmethod
+    def _source_reference(value: dict[str, Any]) -> SourceReference:
+        return SourceReference(
+            source_kind=SourceKind(str(value["source_kind"])),
+            revision_id=int(value["revision_id"]),
+            locator=str(value["locator"]),
+            content_hash=str(value["content_hash"]),
+        )
+
+    @classmethod
+    def _source_evidence(
+        cls,
+        stored: AnkiSourceEvidenceModel,
+    ) -> SourceEvidence:
+        source_refs = cast(
+            list[dict[str, Any]],
+            json.loads(stored.source_refs_json),
+        )
+        return SourceEvidence(
+            evidence_id=stored.evidence_id,
+            concept_id=stored.concept_id,
+            support=EvidenceSupport(stored.support),
+            statement=stored.statement,
+            source_refs=tuple(
+                cls._source_reference(value) for value in source_refs
+            ),
+            content_hash=stored.content_hash,
+        )
+
+    @staticmethod
+    def _stage_artifact(stored: AnkiStageArtifactModel) -> StageArtifact:
+        return StageArtifact(
+            artifact_id=stored.artifact_id,
+            stage=CurationStage(stored.stage),
+            kind=stored.kind,
+            relative_path=stored.relative_path,
+            input_sha256=stored.input_sha256,
+            content_sha256=stored.content_sha256,
+            metadata=cast(
+                dict[str, Any],
+                json.loads(stored.metadata_json),
+            ),
         )
 
     @staticmethod
     def _gap_card(stored: AnkiGapCardModel) -> GapCard:
+        source_refs = cast(
+            list[dict[str, Any]],
+            json.loads(stored.source_refs_json),
+        )
         return GapCard(
             concept_id=stored.concept_id,
             text=stored.text,
@@ -676,6 +966,17 @@ class AnkiCurationRepository:
                 json.loads(stored.generated_image_json),
             ),
             validation_state=stored.validation_state,
+            source_refs=tuple(
+                AnkiCurationRepository._source_reference(value)
+                for value in source_refs
+            ),
+            evidence_ids=tuple(json.loads(stored.evidence_ids_json)),
+            provenance=cast(
+                dict[str, Any],
+                json.loads(stored.provenance_json),
+            ),
+            initial_tags=tuple(json.loads(stored.initial_tags_json)),
+            content_hash=stored.content_hash,
         )
 
     @staticmethod

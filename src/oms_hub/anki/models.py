@@ -3,6 +3,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from oms_hub.models import Base, utc_now
 
+EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
 
 class AnkiCurationInstructionModel(Base):
     __tablename__ = "anki_curation_instructions"
@@ -34,8 +36,66 @@ class AnkiCurationJobModel(Base):
     target_deck: Mapped[str] = mapped_column(Text)
     target_tag: Mapped[str] = mapped_column(Text)
     index_snapshot_id: Mapped[str] = mapped_column(String(200))
-    amboss_input: Mapped[str] = mapped_column(Text, default="")
-    amboss_sha256: Mapped[str] = mapped_column(String(64))
+    _legacy_amboss_input: Mapped[str] = mapped_column(
+        "amboss_input",
+        Text,
+        default="",
+        server_default="",
+    )
+    _legacy_amboss_sha256: Mapped[str] = mapped_column(
+        "amboss_sha256",
+        String(64),
+        default=EMPTY_SHA256,
+        server_default=EMPTY_SHA256,
+    )
+    block_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    source_revision_ids_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        server_default="[]",
+    )
+    deck_allowlist_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        server_default="[]",
+    )
+    tag_allowlist_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        server_default="[]",
+    )
+    provider: Mapped[str] = mapped_column(
+        String(30),
+        default="anthropic",
+        server_default="anthropic",
+    )
+    model: Mapped[str] = mapped_column(
+        String(200),
+        default="claude-sonnet-5",
+        server_default="claude-sonnet-5",
+    )
+    semantic_generation: Mapped[str | None] = mapped_column(
+        String(200),
+        nullable=True,
+    )
+    companion_generation: Mapped[str | None] = mapped_column(
+        String(200),
+        nullable=True,
+    )
+    source_index_generation: Mapped[str | None] = mapped_column(
+        String(200),
+        nullable=True,
+    )
+    configuration_sha256: Mapped[str] = mapped_column(
+        String(64),
+        default=EMPTY_SHA256,
+        server_default=EMPTY_SHA256,
+    )
+    apply_state: Mapped[str] = mapped_column(
+        String(50),
+        default="pending",
+        server_default="pending",
+    )
     instruction_text: Mapped[str] = mapped_column(Text, default="")
     instruction_sha256: Mapped[str] = mapped_column(String(64))
     lcl_prompt_version: Mapped[str] = mapped_column(String(100))
@@ -103,6 +163,11 @@ class AnkiCandidateModel(Base):
     mnemonic_classification: Mapped[str] = mapped_column(String(50))
     dedupe_disposition: Mapped[str] = mapped_column(String(50))
     selected: Mapped[bool] = mapped_column(default=False)
+    retrieval_pass: Mapped[str] = mapped_column(
+        String(30),
+        default="pass_1",
+        server_default="pass_1",
+    )
 
 
 class AnkiGapCardModel(Base):
@@ -121,6 +186,88 @@ class AnkiGapCardModel(Base):
     source_note_id: Mapped[int | None] = mapped_column(nullable=True)
     generated_image_json: Mapped[str] = mapped_column(Text, default="{}")
     validation_state: Mapped[str] = mapped_column(String(30), default="valid")
+    source_refs_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        server_default="[]",
+    )
+    evidence_ids_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        server_default="[]",
+    )
+    provenance_json: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+        server_default="{}",
+    )
+    initial_tags_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        server_default="[]",
+    )
+    content_hash: Mapped[str] = mapped_column(
+        String(64),
+        default=EMPTY_SHA256,
+        server_default=EMPTY_SHA256,
+    )
+
+
+class AnkiSourceEvidenceModel(Base):
+    __tablename__ = "anki_source_evidence"
+    __table_args__ = (
+        UniqueConstraint("job_id", "evidence_id"),
+        Index("ix_anki_source_evidence_job_concept", "job_id", "concept_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("anki_curation_jobs.id"))
+    evidence_id: Mapped[str] = mapped_column(String(200))
+    concept_id: Mapped[str] = mapped_column(String(200))
+    support: Mapped[str] = mapped_column(String(30))
+    statement: Mapped[str] = mapped_column(Text)
+    source_refs_json: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class AnkiStageArtifactModel(Base):
+    __tablename__ = "anki_stage_artifacts"
+    __table_args__ = (
+        UniqueConstraint("job_id", "artifact_id"),
+        Index("ix_anki_stage_artifacts_job_stage", "job_id", "stage"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("anki_curation_jobs.id"))
+    artifact_id: Mapped[str] = mapped_column(String(200))
+    stage: Mapped[str] = mapped_column(String(30))
+    kind: Mapped[str] = mapped_column(String(100))
+    relative_path: Mapped[str] = mapped_column(Text)
+    input_sha256: Mapped[str] = mapped_column(String(64))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class AnkiTagPatchModel(Base):
+    __tablename__ = "anki_tag_patches"
+    __table_args__ = (
+        UniqueConstraint("job_id", "note_id", "revision"),
+        Index("ix_anki_tag_patches_job_note", "job_id", "note_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("anki_curation_jobs.id"))
+    note_id: Mapped[int]
+    revision: Mapped[int] = mapped_column(default=1)
+    before_json: Mapped[str] = mapped_column(Text)
+    after_json: Mapped[str] = mapped_column(Text)
+    add_tags_json: Mapped[str] = mapped_column(Text)
+    remove_tags_json: Mapped[str] = mapped_column(Text)
+    expected_tag_hash: Mapped[str] = mapped_column(String(64))
+    policy_version: Mapped[str] = mapped_column(String(100))
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
 
 
 class AnkiVerdictCacheModel(Base):
