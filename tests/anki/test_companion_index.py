@@ -1,4 +1,5 @@
 import asyncio
+import errno
 from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,35 @@ def test_companion_index_preserves_multi_deck_note_membership(
         "AnKing Step Deck::Heme",
         "Filtered::Exam 1",
     )
+
+
+def test_companion_rebuild_supports_windows_writable_fsync_requirement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows rejects fsync when the already-written database is reopened read-only."""
+    original_open = Path.open
+
+    def windows_open(
+        self: Path,
+        mode: str = "r",
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        if self.name.startswith(".cards.sqlite3.building-") and mode == "rb":
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        return original_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", windows_open)
+    index = AnkiIndex(tmp_path / "companion")
+
+    index.rebuild_companion(
+        [_note(10, "iron deficiency anemia")],
+        snapshot_id="companion-1",
+        fingerprint="a" * 64,
+    )
+
+    assert index.get_note(10) is not None
 
 
 def test_companion_filters_nested_tags_and_exclusions(tmp_path: Path) -> None:

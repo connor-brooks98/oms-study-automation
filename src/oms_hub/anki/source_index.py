@@ -553,7 +553,7 @@ def _write_fsynced(path: Path, value: str) -> None:
 
 
 def _fsync_file(path: Path) -> None:
-    with path.open("rb") as stream:
+    with path.open("r+b") as stream:
         os.fsync(stream.fileno())
 
 

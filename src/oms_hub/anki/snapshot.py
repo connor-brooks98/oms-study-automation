@@ -137,7 +137,7 @@ def _open_snapshot(path: Path) -> AbstractContextManager[BinaryIO]:
 
 
 def _fsync_file(path: Path) -> None:
-    with path.open("rb") as stream:
+    with path.open("r+b") as stream:
         os.fsync(stream.fileno())
 
 

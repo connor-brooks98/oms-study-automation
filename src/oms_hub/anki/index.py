@@ -886,7 +886,7 @@ def _replace_directory(source: Path, target: Path) -> None:
 
 
 def _fsync_file(path: Path) -> None:
-    with path.open("rb") as stream:
+    with path.open("r+b") as stream:
         os.fsync(stream.fileno())
 
 
