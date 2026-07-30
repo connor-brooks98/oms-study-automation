@@ -257,6 +257,7 @@ class TagPatch:
 @dataclass(frozen=True, slots=True)
 class ReviewChangeSet:
     expected_revision: int
+    reviewer: str = "local-user"
     candidate_selections: dict[int, bool] = field(default_factory=dict)
     gap_edits: tuple[GapCardEdit, ...] = ()
     tag_patches: tuple[TagPatch, ...] = ()
@@ -266,6 +267,16 @@ class ReviewChangeSet:
 class SavedReview:
     job_id: UUID
     revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class StoredReviewChange:
+    job_id: UUID
+    revision: int
+    prior_revision: int
+    reviewer: str
+    payload: dict[str, Any]
+    created_at: str
 
 
 @dataclass(frozen=True, slots=True)

@@ -21,6 +21,7 @@ from oms_hub.anki.domain import (
     SourceReference,
     StageArtifact,
     StageUsage,
+    TagPatch,
 )
 from oms_hub.anki.judgment import JudgmentCacheRecord
 from oms_hub.anki.repository import (
@@ -352,6 +353,57 @@ def test_coverage_judgment_cache_round_trips_immutable_record(
     repository.save_judgment_cache(record)
 
     assert repository.get_judgment_cache(record.cache_key) == record
+
+
+def test_review_changes_and_tag_patches_are_append_only(
+    tmp_path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    first_patch = TagPatch(
+        note_id=42,
+        before=("OMS::Old",),
+        after=("OMS::New",),
+        add_tags=("OMS::New",),
+        remove_tags=("OMS::Old",),
+        expected_tag_hash="a" * 64,
+        tag_policy_version="tags-v1",
+    )
+    second_patch = TagPatch(
+        note_id=42,
+        before=("OMS::New",),
+        after=("OMS::Final",),
+        add_tags=("OMS::Final",),
+        remove_tags=("OMS::New",),
+        expected_tag_hash="b" * 64,
+        tag_policy_version="tags-v1",
+    )
+
+    repository.save_review(
+        job.id,
+        ReviewChangeSet(
+            expected_revision=0,
+            reviewer="connor",
+            tag_patches=(first_patch,),
+        ),
+    )
+    repository.save_review(
+        job.id,
+        ReviewChangeSet(
+            expected_revision=1,
+            reviewer="connor",
+            tag_patches=(second_patch,),
+        ),
+    )
+
+    assert repository.list_tag_patches(job.id) == [
+        first_patch,
+        second_patch,
+    ]
+    changes = repository.list_review_changes(job.id)
+    assert [change.revision for change in changes] == [1, 2]
+    assert [change.prior_revision for change in changes] == [0, 1]
+    assert all(change.reviewer == "connor" for change in changes)
 
 
 def test_envelope_is_immutable_and_receipt_updates_delivery_state(tmp_path) -> None:

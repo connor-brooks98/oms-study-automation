@@ -15,6 +15,7 @@ from pydantic import (
 )
 
 from oms_hub.anki.domain import AgentCommandType, CreateCurationJob
+from oms_hub.anki.tag_policy import normalize_tag
 
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
@@ -99,6 +100,19 @@ class TagPatchContract(ContractModel):
     remove_tags: tuple[Annotated[str, Field(min_length=1, max_length=500)], ...]
     expected_tag_hash: Sha256
     tag_policy_version: Annotated[str, Field(min_length=1, max_length=100)]
+
+    @field_validator(
+        "before",
+        "after",
+        "add_tags",
+        "remove_tags",
+        mode="before",
+    )
+    @classmethod
+    def normalize_tags(cls, values: Any) -> tuple[str, ...]:
+        if not isinstance(values, (list, tuple)):
+            raise TypeError("tag values must be a list")
+        return tuple(normalize_tag(str(value)) for value in values)
 
     @model_validator(mode="after")
     def validate_exact_diff(self) -> "TagPatchContract":

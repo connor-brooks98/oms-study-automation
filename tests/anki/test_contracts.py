@@ -68,3 +68,18 @@ def test_tag_patch_rejects_inexact_or_conflicting_diff() -> None:
             expected_tag_hash="a" * 64,
             tag_policy_version="tag-policy-v1",
         )
+
+
+def test_tag_patch_contract_normalizes_surrounding_whitespace() -> None:
+    patch = TagPatchContract(
+        note_id=42,
+        before=(" OMS::Old ",),
+        after=("OMS::New",),
+        add_tags=(" OMS::New ",),
+        remove_tags=("OMS::Old",),
+        expected_tag_hash="a" * 64,
+        tag_policy_version="tags-v1",
+    )
+
+    assert patch.before == ("OMS::Old",)
+    assert patch.add_tags == ("OMS::New",)

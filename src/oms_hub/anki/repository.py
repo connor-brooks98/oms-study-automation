@@ -32,6 +32,8 @@ from oms_hub.anki.domain import (
     StageUsage,
     StoredAgentCommand,
     StoredEnvelope,
+    StoredReviewChange,
+    TagPatch,
 )
 from oms_hub.anki.judgment import JudgmentCacheRecord
 from oms_hub.anki.models import (
@@ -44,6 +46,7 @@ from oms_hub.anki.models import (
     AnkiEnvelopeOperationModel,
     AnkiGapCardModel,
     AnkiJobStageModel,
+    AnkiReviewChangeSetModel,
     AnkiSourceEvidenceModel,
     AnkiStageArtifactModel,
     AnkiTagPatchModel,
@@ -558,6 +561,15 @@ class AnkiCurationRepository:
             job = self._require_job_model(session, job_id)
             if job.review_revision != change_set.expected_revision:
                 raise ValueError("review revision is stale")
+            reviewer = change_set.reviewer.strip()
+            if not reviewer or len(reviewer) > 200:
+                raise ValueError("reviewer is invalid")
+            if len(
+                {patch.note_id for patch in change_set.tag_patches}
+            ) != len(change_set.tag_patches):
+                raise ValueError(
+                    "a review cannot patch one note more than once"
+                )
             for note_id, selected in change_set.candidate_selections.items():
                 candidate = session.scalar(
                     select(AnkiCandidateModel).where(
@@ -582,6 +594,46 @@ class AnkiCurationRepository:
                 gap.selected = edit.selected
                 gap.revision += 1
             next_revision = job.review_revision + 1
+            session.add(
+                AnkiReviewChangeSetModel(
+                    job_id=str(job_id),
+                    revision=next_revision,
+                    prior_revision=job.review_revision,
+                    reviewer=reviewer,
+                    payload_json=_canonical_json(
+                        {
+                            "candidate_selections": (
+                                change_set.candidate_selections
+                            ),
+                            "gap_edits": [
+                                {
+                                    "concept_id": edit.concept_id,
+                                    "text": edit.text,
+                                    "extra": edit.extra,
+                                    "selected": edit.selected,
+                                }
+                                for edit in change_set.gap_edits
+                            ],
+                            "tag_patches": [
+                                {
+                                    "note_id": patch.note_id,
+                                    "before": patch.before,
+                                    "after": patch.after,
+                                    "add_tags": patch.add_tags,
+                                    "remove_tags": patch.remove_tags,
+                                    "expected_tag_hash": (
+                                        patch.expected_tag_hash
+                                    ),
+                                    "tag_policy_version": (
+                                        patch.tag_policy_version
+                                    ),
+                                }
+                                for patch in change_set.tag_patches
+                            ],
+                        }
+                    ),
+                )
+            )
             for patch in change_set.tag_patches:
                 session.add(
                     AnkiTagPatchModel(
@@ -599,6 +651,58 @@ class AnkiCurationRepository:
             job.review_revision += 1
             session.flush()
             return SavedReview(job_id=job_id, revision=job.review_revision)
+
+    def list_tag_patches(self, job_id: UUID) -> list[TagPatch]:
+        with self.database.session() as session:
+            stored = session.scalars(
+                select(AnkiTagPatchModel)
+                .where(AnkiTagPatchModel.job_id == str(job_id))
+                .order_by(
+                    AnkiTagPatchModel.revision,
+                    AnkiTagPatchModel.id,
+                )
+            ).all()
+            return [
+                TagPatch(
+                    note_id=patch.note_id,
+                    before=tuple(json.loads(patch.before_json)),
+                    after=tuple(json.loads(patch.after_json)),
+                    add_tags=tuple(json.loads(patch.add_tags_json)),
+                    remove_tags=tuple(
+                        json.loads(patch.remove_tags_json)
+                    ),
+                    expected_tag_hash=patch.expected_tag_hash,
+                    tag_policy_version=patch.policy_version,
+                )
+                for patch in stored
+            ]
+
+    def list_review_changes(
+        self,
+        job_id: UUID,
+    ) -> list[StoredReviewChange]:
+        with self.database.session() as session:
+            stored = session.scalars(
+                select(AnkiReviewChangeSetModel)
+                .where(
+                    AnkiReviewChangeSetModel.job_id == str(job_id)
+                )
+                .order_by(AnkiReviewChangeSetModel.revision)
+            ).all()
+            return [
+                StoredReviewChange(
+                    job_id=UUID(change.job_id),
+                    revision=change.revision,
+                    prior_revision=change.prior_revision,
+                    reviewer=change.reviewer,
+                    payload=cast(
+                        dict[str, Any],
+                        json.loads(change.payload_json),
+                    ),
+                    created_at=change.created_at,
+                )
+                for change in stored
+            ]
 
     def get_judgment_cache(
         self,

@@ -270,6 +270,28 @@ class AnkiTagPatchModel(Base):
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
 
 
+class AnkiReviewChangeSetModel(Base):
+    __tablename__ = "anki_review_changesets"
+    __table_args__ = (
+        UniqueConstraint("job_id", "revision"),
+        Index(
+            "ix_anki_review_changesets_job_revision",
+            "job_id",
+            "revision",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("anki_curation_jobs.id")
+    )
+    revision: Mapped[int]
+    prior_revision: Mapped[int]
+    reviewer: Mapped[str] = mapped_column(String(200))
+    payload_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
 class AnkiVerdictCacheModel(Base):
     __tablename__ = "anki_verdict_cache"
     __table_args__ = (
