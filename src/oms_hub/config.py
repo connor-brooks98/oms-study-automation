@@ -5,7 +5,7 @@ from typing import Self
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -105,6 +105,12 @@ class Settings(BaseSettings):
         ge=1,
         le=100_000,
     )
+    voyage_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias="VOYAGE_API_KEY",
+        exclude=True,
+        repr=False,
+    )
     anki_connect_url: str = "http://127.0.0.1:8765"
     anki_executable_path: Path = Path(r"C:\Program Files\Anki\anki.exe")
     anki_startup_attempts: int = Field(default=20, ge=1, le=120)
@@ -116,6 +122,12 @@ class Settings(BaseSettings):
     @property
     def resolved_anki_data_dir(self) -> Path:
         return self.anki_data_dir if self.anki_data_dir is not None else self.data_dir / "anki"
+
+    @property
+    def voyage_api_key_value(self) -> str | None:
+        if self.voyage_api_key is None:
+            return None
+        return self.voyage_api_key.get_secret_value().strip() or None
 
     @field_validator("timezone")
     @classmethod

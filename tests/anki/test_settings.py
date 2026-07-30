@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from oms_hub.config import Settings
 
@@ -25,6 +25,17 @@ def test_anki_settings_default_to_disabled_and_data_directory_child(
     assert settings.anki_semantic_dimensions == 1024
     assert settings.anki_semantic_min_coverage == 0.995
     assert settings.anki_connect_url == "http://127.0.0.1:8765"
+
+
+def test_voyage_key_reads_standard_environment_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VOYAGE_API_KEY", "local-voyage-secret")
+
+    settings = Settings(_env_file=None)
+
+    assert isinstance(settings.voyage_api_key, SecretStr)
+    assert settings.voyage_api_key.get_secret_value() == "local-voyage-secret"
 
 
 def test_explicit_anki_data_directory_and_tailnet_hostname_are_normalized(

@@ -103,11 +103,11 @@ transcript, and proposes source-grounded cards. It has no runtime dependency on
 the semantic-search research add-on or `sbm_smart_anki`, and it performs no
 AMBOSS retrieval.
 
-Enable Anki in `.env`, store the Voyage key in Windows Credential Manager, and
-build the first index while Anki is open:
+Enable Anki and add `VOYAGE_API_KEY=...` to the local, untracked `.env` file,
+then build the first index while Anki is open. The environment value takes
+precedence over Windows Credential Manager, which remains an optional fallback:
 
 ```powershell
-.\.venv\Scripts\oms-hub.exe voyage-set-key
 .\.venv\Scripts\oms-hub.exe anki-index-refresh `
   --deck "AnKing Step Deck"
 ```

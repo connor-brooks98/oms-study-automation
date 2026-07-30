@@ -499,6 +499,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             model=resolved.anki_semantic_model,
             dimensions=resolved.anki_semantic_dimensions,
             batch_size=resolved.anki_semantic_batch_size,
+            api_key=resolved.voyage_api_key_value,
         )
         anki_root = resolved.resolved_anki_data_dir
         companion = AnkiIndex(anki_root / "companion")

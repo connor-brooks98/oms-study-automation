@@ -92,7 +92,7 @@ def test_embed_uses_document_contract_and_normalizes_float32() -> None:
             "input": ["alpha", "beta"],
             "model": "voyage-4-large",
             "input_type": "document",
-            "truncation": False,
+            "truncation": True,
             "output_dimension": 3,
             "output_dtype": "float",
         }
@@ -237,6 +237,35 @@ def test_embed_errors_do_not_expose_api_key_or_input() -> None:
     assert "voyage-secret" not in message
     assert "private lecture text" not in message
     assert "auth-1" in message
+
+
+def test_embed_uses_explicit_api_key_before_credential_manager() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer env-secret"
+        return httpx.Response(
+            200,
+            json=_response([[1.0, 0.0, 0.0]]),
+        )
+
+    async def scenario() -> np.ndarray:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http:
+            client = VoyageEmbeddingClient(
+                MemorySecrets({VOYAGE_API_KEY_SECRET: "keyring-secret"}),
+                model="voyage-4-large",
+                dimensions=3,
+                api_key="env-secret",
+                http=http,
+            )
+            return await client.embed(["alpha"], input_type="document")
+
+    result = asyncio.run(scenario())
+
+    np.testing.assert_array_equal(
+        result,
+        np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32),
+    )
 
 
 def test_voyage_secret_uses_keyring_store(

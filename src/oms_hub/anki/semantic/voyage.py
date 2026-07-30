@@ -28,6 +28,7 @@ class VoyageEmbeddingClient:
         batch_size: int = 128,
         max_attempts: int = 3,
         retry_base_seconds: float = 0.5,
+        api_key: str | None = None,
         http: httpx.AsyncClient | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -47,6 +48,7 @@ class VoyageEmbeddingClient:
         self.batch_size = batch_size
         self.max_attempts = max_attempts
         self.retry_base_seconds = retry_base_seconds
+        self.api_key = api_key.strip() if api_key is not None else None
         self._sleep = sleep
         self._owns_http = http is None
         self._http = http or httpx.AsyncClient(timeout=120.0)
@@ -85,6 +87,8 @@ class VoyageEmbeddingClient:
             await self._http.aclose()
 
     def _credential(self) -> str:
+        if self.api_key:
+            return self.api_key
         try:
             value = self.secrets.get(VOYAGE_API_KEY_SECRET)
         except Exception as exc:
@@ -107,7 +111,7 @@ class VoyageEmbeddingClient:
             "input": list(texts),
             "model": self.model,
             "input_type": input_type,
-            "truncation": False,
+            "truncation": True,
             "output_dimension": self.dimensions,
             "output_dtype": "float",
         }

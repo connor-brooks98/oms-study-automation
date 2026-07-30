@@ -159,6 +159,7 @@ async def _refresh_local_anki_index(
             model=settings.anki_semantic_model,
             dimensions=settings.anki_semantic_dimensions,
             batch_size=settings.anki_semantic_batch_size,
+            api_key=settings.voyage_api_key_value,
         )
         root = settings.resolved_anki_data_dir
         companion = AnkiIndex(root / "companion")
