@@ -5,6 +5,7 @@ import httpx
 from oms_hub.llm.domain import (
     CleanResult,
     DiagnosticSource,
+    GeneratedText,
     LLMRequestError,
     ProviderConnection,
     ProviderName,
@@ -35,6 +36,16 @@ class LLMProvider(Protocol):
         api_key: str,
         model: str,
     ) -> ProviderConnection: ...
+
+    def generate_text(
+        self,
+        instruction: str,
+        input_text: str,
+        *,
+        api_key: str,
+        model: str,
+        output_schema: dict[str, object],
+    ) -> GeneratedText: ...
 
 
 def transcript_input(raw_text: str, prompt: ApprovedPrompt) -> str:

@@ -77,3 +77,45 @@ def test_openai_connection_test_uses_a_real_minimal_generation():
     assert result.request_id == "resp-test"
     assert route.calls.call_count == 1
 
+
+@respx.mock
+def test_openai_structured_generation_sends_json_schema():
+    route = respx.post("https://api.openai.com/v1/responses").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "resp-json",
+                "status": "completed",
+                "model": "gpt-5.2",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": '{"answer":"iron"}',
+                            }
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 10, "output_tokens": 4},
+            },
+        )
+    )
+
+    result = OpenAIProvider().generate_text(
+        "Return a grounded answer.",
+        "Question",
+        api_key="secret",
+        model="gpt-5.2",
+        output_schema={
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+    )
+
+    payload = route.calls.last.request.content.decode()
+    assert '"json_schema"' in payload
+    assert '"structured_output"' in payload
+    assert result.text == '{"answer":"iron"}'

@@ -53,3 +53,46 @@ def test_gemini_provider_sends_generate_content_request_and_parses_usage():
     assert result.output_tokens == 18
     assert result.cost_microusd == 270
 
+
+@respx.mock
+def test_gemini_structured_generation_sends_response_format():
+    route = respx.post(
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-3.6-flash:generateContent"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            headers={"x-request-id": "gemini-json"},
+            json={
+                "modelVersion": "gemini-3.6-flash",
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [{"text": '{"answer":"iron"}'}]
+                        }
+                    }
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 4,
+                },
+            },
+        )
+    )
+
+    result = GeminiProvider().generate_text(
+        "Return a grounded answer.",
+        "Question",
+        api_key="secret",
+        model="gemini-3.6-flash",
+        output_schema={
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+    )
+
+    payload = route.calls.last.request.content.decode()
+    assert '"responseFormat"' in payload
+    assert '"application/json"' in payload
+    assert result.text == '{"answer":"iron"}'

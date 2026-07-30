@@ -4,6 +4,7 @@ import httpx
 
 from oms_hub.llm.domain import (
     CleanResult,
+    GeneratedText,
     ProviderConnection,
     ProviderName,
 )
@@ -53,6 +54,34 @@ class OpenAIProvider:
         )
         return self._clean_result(response, model)
 
+    def generate_text(
+        self,
+        instruction: str,
+        input_text: str,
+        *,
+        api_key: str,
+        model: str,
+        output_schema: dict[str, object],
+    ) -> GeneratedText:
+        response = self._request(
+            api_key,
+            {
+                "model": model,
+                "store": False,
+                "instructions": instruction,
+                "input": input_text,
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": "structured_output",
+                        "schema": output_schema,
+                        "strict": True,
+                    }
+                },
+            },
+        )
+        return self._generated_text(response, model)
+
     def test_connection(
         self,
         api_key: str,
@@ -88,6 +117,22 @@ class OpenAIProvider:
         response: httpx.Response,
         requested_model: str,
     ) -> CleanResult:
+        generated = self._generated_text(response, requested_model)
+        return CleanResult(
+            text=generated.text,
+            provider=generated.provider,
+            model=generated.model,
+            request_id=generated.request_id,
+            input_tokens=generated.input_tokens,
+            output_tokens=generated.output_tokens,
+            cost_microusd=generated.cost_microusd,
+        )
+
+    def _generated_text(
+        self,
+        response: httpx.Response,
+        requested_model: str,
+    ) -> GeneratedText:
         payload = response_object(response, self.name)
         if payload.get("status") != "completed":
             raise invalid_response(self.name, response)
@@ -126,7 +171,7 @@ class OpenAIProvider:
         returned_model = payload.get("model", requested_model)
         if not isinstance(returned_model, str) or not returned_model:
             raise invalid_response(self.name, response)
-        return CleanResult(
+        return GeneratedText(
             text=cleaned,
             provider=self.name,
             model=returned_model,
@@ -140,4 +185,3 @@ class OpenAIProvider:
                 self.output_usd_per_million,
             ),
         )
-

@@ -6,6 +6,7 @@ from oms_hub.db import Database
 from oms_hub.llm.domain import (
     CleanResult,
     DiagnosticSource,
+    GeneratedText,
     LLMRequestError,
     ProviderConnection,
     ProviderName,
@@ -50,6 +51,25 @@ class StubProvider:
 
     def test_connection(self, api_key, model):
         return ProviderConnection(self.name, model, f"{self.name.value}-test")
+
+    def generate_text(
+        self,
+        instruction,
+        input_text,
+        *,
+        api_key,
+        model,
+        output_schema,
+    ):
+        return GeneratedText(
+            text='{"ok":true}',
+            provider=self.name,
+            model=model,
+            request_id=f"{self.name.value}-structured",
+            input_tokens=8,
+            output_tokens=3,
+            cost_microusd=0,
+        )
 
 
 def prepared_service(tmp_path):
@@ -127,3 +147,20 @@ def test_configured_status_fails_closed_when_credential_store_is_unavailable(
     service.secrets = FailingSecrets()
 
     assert service.credential_configured(ProviderName.OPENAI) is False
+
+
+def test_generate_text_uses_explicit_provider_and_model(tmp_path):
+    settings, service = prepared_service(tmp_path)
+    settings.set_active(ProviderName.ANTHROPIC)
+
+    result = service.generate_text(
+        "Return JSON.",
+        "Input",
+        output_schema={"type": "object"},
+        provider=ProviderName.GEMINI,
+        model="gemini-explicit",
+    )
+
+    assert result.provider is ProviderName.GEMINI
+    assert result.model == "gemini-explicit"
+    assert result.text == '{"ok":true}'

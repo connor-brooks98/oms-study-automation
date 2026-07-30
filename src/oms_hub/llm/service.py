@@ -3,6 +3,7 @@ from collections.abc import Mapping
 from oms_hub.llm.domain import (
     CleanResult,
     DiagnosticSource,
+    GeneratedText,
     LLMRequestError,
     ProviderConnection,
     ProviderName,
@@ -58,6 +59,24 @@ class LLMService:
         return self.providers[provider_name].test_connection(
             api_key,
             preference.model,
+        )
+
+    def generate_text(
+        self,
+        instruction: str,
+        input_text: str,
+        *,
+        output_schema: dict[str, object],
+        provider: ProviderName,
+        model: str,
+    ) -> GeneratedText:
+        api_key = self._credential(provider)
+        return self.providers[provider].generate_text(
+            instruction,
+            input_text,
+            api_key=api_key,
+            model=model,
+            output_schema=output_schema,
         )
 
     def credential_configured(self, provider: ProviderName) -> bool:

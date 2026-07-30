@@ -44,6 +44,17 @@ class CleanResult:
 
 
 @dataclass(frozen=True, slots=True)
+class GeneratedText:
+    text: str
+    provider: ProviderName
+    model: str
+    request_id: str
+    input_tokens: int
+    output_tokens: int
+    cost_microusd: int
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderConnection:
     provider: ProviderName
     model: str
