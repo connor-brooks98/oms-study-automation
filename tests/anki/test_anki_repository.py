@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
+from oms_hub.anki.contracts import SyncOperation
 from oms_hub.anki.domain import (
     ApplyState,
     Candidate,
@@ -23,11 +25,13 @@ from oms_hub.anki.domain import (
     StageUsage,
     TagPatch,
 )
+from oms_hub.anki.envelope import EnvelopeBuilder
 from oms_hub.anki.judgment import JudgmentCacheRecord
 from oms_hub.anki.repository import (
     AnkiCurationRepository,
     InvalidCurationTransition,
 )
+from oms_hub.anki.tag_policy import TagPolicy
 from oms_hub.db import Database
 from oms_hub.llm.domain import ProviderName
 from oms_hub.models import LectureModel
@@ -437,3 +441,55 @@ def test_envelope_is_immutable_and_receipt_updates_delivery_state(tmp_path) -> N
     }
     with pytest.raises(ValueError, match="already has an envelope"):
         repository.create_envelope(job.id, draft)
+
+
+def test_action_envelope_operation_journal_is_durable(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    envelope = EnvelopeBuilder(
+        TagPolicy(
+            pipeline_owned_roots=("OMS",),
+            approved_optional_roots=("AnkiHub_Optional::LMU_OMS_II",),
+            source_managed_roots=("#Pathoma",),
+            version="tags-v1",
+        )
+    ).build(
+        ReviewChangeSet(expected_revision=0),
+        {},
+        envelope_id=UUID("5dc4f15e-df92-4a32-964e-026b5d518a80"),
+        snapshot_id="snapshot-1",
+        target_deck="OMS::Heme::Lecture 3",
+        target_tag="AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_3",
+    )
+    sync = next(
+        operation
+        for operation in envelope.operations
+        if isinstance(operation, SyncOperation)
+    )
+
+    stored = repository.create_action_envelope(job.id, envelope)
+    repository.begin_operation(envelope.envelope_id, sync.operation_id)
+    repository.complete_operation(
+        envelope.envelope_id,
+        sync.operation_id,
+        {"sync_status": "complete"},
+    )
+    repository.set_apply_state(
+        envelope.envelope_id,
+        ApplyState.APPLIED_LOCAL_SYNC_RETRYABLE,
+        {"safe_error": "network unavailable"},
+    )
+
+    assert stored.payload_sha256 == envelope.payload_sha256
+    assert repository.get_envelope(envelope.envelope_id) == envelope
+    operation = repository.operation_record(
+        envelope.envelope_id,
+        sync.operation_id,
+    )
+    assert operation.state == "complete"
+    assert operation.attempts == 1
+    assert operation.result == {"sync_status": "complete"}
+    assert (
+        repository.require_job(job.id).apply_state
+        is ApplyState.APPLIED_LOCAL_SYNC_RETRYABLE
+    )

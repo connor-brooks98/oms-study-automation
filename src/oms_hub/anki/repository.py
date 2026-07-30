@@ -9,6 +9,8 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
+from oms_hub.anki.apply import ApplyOperationRecord
+from oms_hub.anki.contracts import ActionEnvelope, canonical_payload_sha256
 from oms_hub.anki.domain import (
     AgentCommandType,
     AgentState,
@@ -841,6 +843,156 @@ class AnkiCurationRepository:
             session.flush()
             return self._envelope(stored)
 
+    def create_action_envelope(
+        self,
+        job_id: UUID,
+        envelope: ActionEnvelope,
+    ) -> StoredEnvelope:
+        if canonical_payload_sha256(envelope) != envelope.payload_sha256:
+            raise ValueError("action envelope payload hash does not match")
+        payload_json = _canonical_json(envelope.model_dump(mode="json"))
+        with self.database.session() as session:
+            job = self._require_job_model(session, job_id)
+            existing = session.scalar(
+                select(AnkiEnvelopeModel).where(
+                    AnkiEnvelopeModel.job_id == str(job_id)
+                )
+            )
+            if existing is not None:
+                raise ValueError("job already has an envelope")
+            stored = AnkiEnvelopeModel(
+                id=str(envelope.envelope_id),
+                job_id=str(job_id),
+                payload_json=payload_json,
+                payload_sha256=envelope.payload_sha256,
+                snapshot_id=envelope.snapshot_id,
+                state=ApplyState.PENDING.value,
+            )
+            session.add(stored)
+            for position, operation in enumerate(envelope.operations):
+                session.add(
+                    AnkiEnvelopeOperationModel(
+                        id=str(operation.operation_id),
+                        envelope_id=str(envelope.envelope_id),
+                        position=position,
+                        operation_type=operation.operation_type,
+                        content_hash=operation.content_sha256,
+                        payload_json=_canonical_json(
+                            operation.model_dump(mode="json")
+                        ),
+                        state="pending",
+                    )
+                )
+            job.apply_state = ApplyState.PENDING.value
+            session.flush()
+            return self._envelope(stored)
+
+    def get_envelope(self, envelope_id: UUID) -> ActionEnvelope:
+        with self.database.session() as session:
+            stored = session.get(AnkiEnvelopeModel, str(envelope_id))
+            if stored is None:
+                raise KeyError(str(envelope_id))
+            try:
+                envelope = ActionEnvelope.model_validate_json(
+                    stored.payload_json
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    "stored envelope is not an action envelope"
+                ) from exc
+            if (
+                envelope.envelope_id != envelope_id
+                or envelope.payload_sha256 != stored.payload_sha256
+                or canonical_payload_sha256(envelope)
+                != envelope.payload_sha256
+            ):
+                raise ValueError("stored action envelope failed integrity checks")
+            return envelope
+
+    def operation_record(
+        self,
+        envelope_id: UUID,
+        operation_id: UUID,
+    ) -> ApplyOperationRecord:
+        with self.database.session() as session:
+            stored = self._require_envelope_operation(
+                session,
+                envelope_id,
+                operation_id,
+            )
+            result = (
+                cast(dict[str, Any], json.loads(stored.result_json))
+                if stored.result_json is not None
+                else None
+            )
+            return ApplyOperationRecord(
+                state=stored.state,
+                attempts=stored.attempts,
+                result=result,
+                error=stored.error,
+            )
+
+    def begin_operation(
+        self,
+        envelope_id: UUID,
+        operation_id: UUID,
+    ) -> None:
+        with self.database.session() as session:
+            stored = self._require_envelope_operation(
+                session,
+                envelope_id,
+                operation_id,
+            )
+            stored.state = "intent"
+            stored.attempts += 1
+            stored.error = None
+
+    def complete_operation(
+        self,
+        envelope_id: UUID,
+        operation_id: UUID,
+        result: dict[str, Any],
+    ) -> None:
+        with self.database.session() as session:
+            stored = self._require_envelope_operation(
+                session,
+                envelope_id,
+                operation_id,
+            )
+            stored.state = "complete"
+            stored.result_json = _canonical_json(result)
+            stored.error = None
+
+    def fail_operation(
+        self,
+        envelope_id: UUID,
+        operation_id: UUID,
+        error: str,
+    ) -> None:
+        with self.database.session() as session:
+            stored = self._require_envelope_operation(
+                session,
+                envelope_id,
+                operation_id,
+            )
+            stored.state = "failed"
+            stored.error = error[:2_000]
+
+    def set_apply_state(
+        self,
+        envelope_id: UUID,
+        state: ApplyState,
+        summary: dict[str, Any],
+    ) -> None:
+        with self.database.session() as session:
+            stored = session.get(AnkiEnvelopeModel, str(envelope_id))
+            if stored is None:
+                raise KeyError(str(envelope_id))
+            job = self._require_job_model(session, UUID(stored.job_id))
+            stored.state = state.value
+            stored.receipt_summary_json = _canonical_json(summary)
+            job.apply_state = state.value
+
     def record_agent_heartbeat(
         self,
         *,
@@ -977,6 +1129,20 @@ class AnkiCurationRepository:
         stored = session.get(AnkiCurationJobModel, str(job_id))
         if stored is None:
             raise KeyError(str(job_id))
+        return stored
+
+    @staticmethod
+    def _require_envelope_operation(
+        session: Session,
+        envelope_id: UUID,
+        operation_id: UUID,
+    ) -> AnkiEnvelopeOperationModel:
+        stored = session.get(
+            AnkiEnvelopeOperationModel,
+            str(operation_id),
+        )
+        if stored is None or stored.envelope_id != str(envelope_id):
+            raise KeyError(str(operation_id))
         return stored
 
     @staticmethod

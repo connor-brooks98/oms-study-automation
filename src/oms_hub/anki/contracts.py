@@ -307,6 +307,14 @@ class ActionEnvelope(ContractModel):
     target_deck: Annotated[str, Field(min_length=1, max_length=1_000)]
     target_tag: Annotated[str, Field(min_length=1, max_length=1_000)]
     touched_note_hashes: dict[Annotated[int, Field(gt=0)], Sha256]
+    expected_tag_hashes: dict[
+        Annotated[int, Field(gt=0)],
+        Sha256,
+    ] = Field(default_factory=dict)
+    expected_note_tags: dict[
+        Annotated[int, Field(gt=0)],
+        tuple[Annotated[str, Field(min_length=1, max_length=500)], ...],
+    ] = Field(default_factory=dict)
     operations: tuple[Operation, ...]
     payload_sha256: Sha256
 
@@ -316,8 +324,8 @@ class ActionEnvelope(ContractModel):
             raise ValueError("operations cannot be empty")
         phases = {
             "store_media": 0,
-            "add_tags": 1,
-            "remove_tags": 2,
+            "remove_tags": 1,
+            "add_tags": 2,
             "add_notes": 3,
             "sync": 4,
             "verify": 5,
@@ -327,6 +335,14 @@ class ActionEnvelope(ContractModel):
             raise ValueError("envelope operations are out of order")
         if observed.count(4) != 1 or observed.count(5) != 1:
             raise ValueError("envelope requires exactly one sync and one verify operation")
+        touched_ids = set(self.touched_note_hashes)
+        if self.expected_tag_hashes and set(self.expected_tag_hashes) != touched_ids:
+            raise ValueError("expected tag hashes must match touched note IDs")
+        if self.expected_note_tags and set(self.expected_note_tags) != touched_ids:
+            raise ValueError("expected note tags must match touched note IDs")
+        operation_ids = [operation.operation_id for operation in self.operations]
+        if len(operation_ids) != len(set(operation_ids)):
+            raise ValueError("envelope operation IDs must be unique")
         return self
 
 
