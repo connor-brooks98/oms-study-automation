@@ -54,7 +54,10 @@ packages = ["src/oms_hub", "src/oms_anki_agent"]
 testpaths = ["tests"]
 addopts = "-q"
 filterwarnings = ["error"]
-markers = ["windows_office: requires Windows with desktop Microsoft Office installed"]
+markers = [
+  "performance: deterministic local performance characterization",
+  "windows_office: requires Windows with desktop Microsoft Office installed",
+]
 
 [tool.ruff]
 line-length = 100

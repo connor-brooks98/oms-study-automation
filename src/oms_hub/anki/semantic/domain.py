@@ -44,6 +44,22 @@ class SemanticSnapshot:
             raise KeyError(note_id) from exc
 
 
+@dataclass(frozen=True, slots=True)
+class SemanticHit:
+    note_id: int
+    score: float
+    content_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticRefreshResult:
+    manifest: SemanticManifest
+    reused_count: int
+    embedded_count: int
+    deleted_count: int
+    coverage: float
+
+
 class EmbeddingClient(Protocol):
     async def embed(
         self,
