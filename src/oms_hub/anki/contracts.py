@@ -1,6 +1,5 @@
 import hashlib
 import json
-import re
 from datetime import datetime
 from pathlib import PurePath
 from typing import Annotated, Any, Literal
@@ -201,9 +200,11 @@ def _validated_filename(value: str) -> str:
         or len(value) > 255
         or PurePath(value).name != value
         or value in {".", ".."}
-        or "/" in value
-        or "\\" in value
-        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]*", value)
+        or value.strip() != value
+        or any(
+            character in '<>:"/\\|?*' or ord(character) < 32
+            for character in value
+        )
     ):
         raise ValueError("filename must be a safe basename")
     return value

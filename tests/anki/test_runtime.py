@@ -3,7 +3,10 @@ from typing import Any
 
 import pytest
 
-from oms_hub.anki.ankiconnect import AnkiConnectUnavailable
+from oms_hub.anki.ankiconnect import (
+    AnkiConnectActionError,
+    AnkiConnectUnavailable,
+)
 from oms_hub.anki.runtime import (
     LocalAnkiRuntime,
     LocalAnkiRuntimeError,
@@ -115,6 +118,18 @@ def test_runtime_does_not_launch_when_ankiconnect_is_available() -> None:
     assert runtime.ensure_available() == 6
     assert launcher.calls == 0
     assert clock.sleeps == []
+
+
+def test_doctor_explains_how_to_create_the_generated_note_type() -> None:
+    class MissingGeneratedModelAnki(SequencedAnki):
+        def model_field_names(self, model_name: str) -> list[str]:
+            del model_name
+            raise AnkiConnectActionError("model was not found")
+
+    runtime, _, _ = _runtime(MissingGeneratedModelAnki([6]))
+
+    with pytest.raises(LocalAnkiRuntimeError, match="clone AnKingOverhaul"):
+        runtime.doctor()
 
 
 def test_runtime_stops_waiting_at_startup_deadline() -> None:

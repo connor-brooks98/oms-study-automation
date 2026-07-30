@@ -1,11 +1,15 @@
 import json
+from argparse import Namespace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
+from oms_hub import cli
 from oms_hub.anki.ledger import AnkiLedger
+from oms_hub.anki.runtime import LocalAnkiRuntimeError
 from oms_hub.anki.service import LocalAnkiService
 from oms_hub.anki.snapshot_export import (
     FullSnapshotExporter,
@@ -99,6 +103,19 @@ def test_cli_exposes_nuc_local_anki_commands() -> None:
     snapshot = parser.parse_args(["anki-snapshot", "--full"])
     assert snapshot.handler is anki_snapshot
     assert snapshot.full is True
+
+
+def test_cli_doctor_reports_local_runtime_error_without_traceback(
+    monkeypatch,
+) -> None:
+    class FailingService:
+        def doctor(self) -> object:
+            raise LocalAnkiRuntimeError("generated note type is missing")
+
+    monkeypatch.setattr(cli, "_local_anki_service", lambda settings: FailingService())
+
+    with pytest.raises(SystemExit, match="Anki doctor failed"):
+        cli.anki_doctor(Namespace())
 
 
 def test_application_composes_local_anki_without_starting_it(tmp_path: Path) -> None:

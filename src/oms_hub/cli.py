@@ -6,6 +6,8 @@ from pathlib import Path
 
 import uvicorn
 
+from oms_hub.anki.ankiconnect import AnkiConnectError
+from oms_hub.anki.runtime import LocalAnkiRuntimeError
 from oms_hub.anki.service import (
     LocalAnkiConfigurationError,
     LocalAnkiService,
@@ -174,7 +176,10 @@ def _local_anki_service(settings: Settings) -> LocalAnkiService:
 
 def anki_doctor(args: argparse.Namespace) -> int:
     del args
-    result = _local_anki_service(Settings()).doctor()
+    try:
+        result = _local_anki_service(Settings()).doctor()
+    except (AnkiConnectError, LocalAnkiRuntimeError) as exc:
+        raise SystemExit(f"Anki doctor failed: {exc}") from exc
     required_fields = {"Text", "Extra"} <= set(result.note_type_fields)
     print(
         f"ankiconnect_version={result.ankiconnect_version} "
@@ -188,7 +193,10 @@ def anki_snapshot(args: argparse.Namespace) -> int:
     if not args.full:
         raise SystemExit("Only full NUC-local snapshots are supported")
     service = _local_anki_service(Settings())
-    manifest = service.export_full()
+    try:
+        manifest = service.export_full()
+    except (AnkiConnectError, LocalAnkiRuntimeError, ValueError) as exc:
+        raise SystemExit(f"Anki snapshot failed: {exc}") from exc
     print(
         f"snapshot_id={manifest.snapshot_id} "
         f"note_count={manifest.note_count} "

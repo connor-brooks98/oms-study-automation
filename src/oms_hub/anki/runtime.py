@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from oms_hub.anki.ankiconnect import AnkiConnectUnavailable
+from oms_hub.anki.ankiconnect import (
+    AnkiConnectActionError,
+    AnkiConnectUnavailable,
+)
 
 SOURCE_DECK_QUERY = 'deck:"Anking Step Deck"'
 TARGET_NOTE_TYPE = "AnKingOverhaul (OMS_II_Extra/JCBrooks)"
@@ -96,7 +99,13 @@ class LocalAnkiRuntime:
         note_ids = self.anki.find_notes(SOURCE_DECK_QUERY)
         if not note_ids:
             raise LocalAnkiRuntimeError("Anking Step Deck is missing or empty")
-        fields = tuple(self.anki.model_field_names(TARGET_NOTE_TYPE))
+        try:
+            fields = tuple(self.anki.model_field_names(TARGET_NOTE_TYPE))
+        except AnkiConnectActionError as exc:
+            raise LocalAnkiRuntimeError(
+                "Generated note type is missing; clone AnKingOverhaul as "
+                f"{TARGET_NOTE_TYPE} in Anki before curation"
+            ) from exc
         if not {"Text", "Extra"} <= set(fields):
             raise LocalAnkiRuntimeError(
                 "Generated note type must provide Text and Extra fields"

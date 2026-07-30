@@ -66,6 +66,24 @@ def test_full_export_streams_sorted_notes_in_bounded_chunks(
     assert set(snapshot_note_hashes(output)) == {101, 102, 103}
 
 
+def test_full_export_preserves_safe_unicode_anki_media_filenames(
+    tmp_path: Path,
+) -> None:
+    notes = _fixture_notes()
+    filename = "University of Michigan’s Pressure–Volume Loops.png"
+    notes[0]["fields"]["Extra"]["value"] += f' <img src="{filename}">'
+    output = tmp_path / "notes.jsonl.gz"
+
+    FullSnapshotExporter(
+        anki=FakeAnki(notes),
+        producer_version="test",
+    ).export(output)
+
+    with gzip.open(output, "rt", encoding="utf-8") as stream:
+        rows = [json.loads(line) for line in stream]
+    assert filename in rows[0]["media"]
+
+
 def test_id_set_hash_changes_for_add_or_delete(tmp_path: Path) -> None:
     notes = _fixture_notes()
     first = FullSnapshotExporter(
