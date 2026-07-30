@@ -47,6 +47,11 @@ class SemanticSearch(Protocol):
     ) -> list[list[SemanticHit]]: ...
 
 
+class GroundedQuery(Protocol):
+    text: str
+    evidence_ids: tuple[str, ...]
+
+
 class RetrievalService:
     def __init__(
         self,
@@ -78,6 +83,29 @@ class RetrievalService:
             concept.queries,
             scope,
             retrieval_pass=RetrievalPass.PASS_1,
+            evidence_ids=(),
+        )
+
+    async def retrieve_pass_2(
+        self,
+        concept: LectureConcept,
+        queries: Sequence[GroundedQuery],
+        scope: RetrievalScope,
+    ) -> list[Candidate]:
+        if not queries:
+            raise ValueError("Pass 2 requires grounded rescue queries")
+        return await self._retrieve(
+            concept,
+            [query.text for query in queries],
+            scope,
+            retrieval_pass=RetrievalPass.PASS_2_RESCUE,
+            evidence_ids=tuple(
+                dict.fromkeys(
+                    evidence_id
+                    for query in queries
+                    for evidence_id in query.evidence_ids
+                )
+            ),
         )
 
     async def _retrieve(
@@ -87,6 +115,7 @@ class RetrievalService:
         scope: RetrievalScope,
         *,
         retrieval_pass: RetrievalPass,
+        evidence_ids: tuple[str, ...],
     ) -> list[Candidate]:
         eligible = self.companion.eligible_note_ids(scope.filters)
         if not eligible:
@@ -127,7 +156,7 @@ class RetrievalService:
             for rank, note_id in enumerate(semantic_order, start=1)
         }
         lexical_hits = self.companion.search_fts(
-            concept.statement,
+            queries[0],
             filters=scope.filters,
             limit=self.candidate_pool_limit,
         )
@@ -148,6 +177,8 @@ class RetrievalService:
                 lexical_ranks=lexical_ranks,
                 variant_ranks=variant_ranks,
                 retrieval_pass=retrieval_pass,
+                queries=queries,
+                evidence_ids=evidence_ids,
             )
             for note_id in candidate_ids
         ]
@@ -174,6 +205,8 @@ class RetrievalService:
         lexical_ranks: dict[int, int],
         variant_ranks: dict[int, dict[str, int]],
         retrieval_pass: RetrievalPass,
+        queries: Sequence[str],
+        evidence_ids: tuple[str, ...],
     ) -> Candidate:
         note = self.companion.get_note(note_id)
         if note is None:
@@ -206,7 +239,8 @@ class RetrievalService:
             content_hash=note.content_sha256,
             best_concept_id=concept.concept_id,
             provenance={
-                "queries": list(concept.queries),
+                "queries": list(queries),
+                "evidence_ids": list(evidence_ids),
                 "variant_ranks": dict(variant_ranks.get(note_id, {})),
                 "semantic_rank": semantic_rank,
                 "lexical_rank": lexical_rank,

@@ -8,6 +8,7 @@ from oms_hub.anki.lcl import (
     LedgerSourceRef,
 )
 from oms_hub.anki.normalize import NormalizedNote
+from oms_hub.anki.rescue import RescueQuery
 from oms_hub.anki.retrieval import RetrievalScope, RetrievalService
 from oms_hub.anki.semantic.domain import SemanticHit
 
@@ -264,5 +265,38 @@ def test_deterministic_ties_and_candidate_caps() -> None:
 
         assert len(candidates) == 1
         assert candidates[0].note_id in {1, 2}
+
+    asyncio.run(scenario())
+
+
+def test_pass_2_keeps_rescue_evidence_lineage() -> None:
+    async def scenario() -> None:
+        concept = _concept()
+        query = RescueQuery(
+            text="Reticulocyte increase after iron replacement",
+            evidence_ids=("b" * 64,),
+            kind="source_statement",
+        )
+        semantic = FakeSemanticSearch({query.text: [1]})
+        companion = FakeCompanionIndex(
+            [_note(1)],
+            eligible={1},
+            lexical=(1,),
+        )
+        service = RetrievalService(
+            companion,
+            semantic,
+            per_concept_limit=5,
+            global_limit=10,
+        )
+
+        candidates = await service.retrieve_pass_2(
+            concept,
+            [query],
+            RetrievalScope(),
+        )
+
+        assert candidates[0].retrieval_pass is RetrievalPass.PASS_2_RESCUE
+        assert candidates[0].provenance["evidence_ids"] == ["b" * 64]
 
     asyncio.run(scenario())
