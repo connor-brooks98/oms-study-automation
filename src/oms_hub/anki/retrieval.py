@@ -6,7 +6,7 @@ from typing import Protocol
 from oms_hub.anki.domain import Candidate, RetrievalPass
 from oms_hub.anki.index import CompanionFilters, SearchHit
 from oms_hub.anki.lcl import LectureConcept
-from oms_hub.anki.normalize import NormalizedNote
+from oms_hub.anki.normalize import NormalizedNote, semantic_text
 from oms_hub.anki.semantic.domain import SemanticHit
 from oms_hub.anki.semantic.service import content_hash
 
@@ -142,7 +142,7 @@ class RetrievalService:
                 note = self.companion.get_note(hit.note_id)
                 if (
                     note is None
-                    or content_hash(note.text) != hit.content_hash
+                    or content_hash(semantic_text(note)) != hit.content_hash
                 ):
                     continue
                 semantic_scores[hit.note_id] += weight / (

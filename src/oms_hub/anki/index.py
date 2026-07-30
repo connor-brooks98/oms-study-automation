@@ -25,6 +25,7 @@ from oms_hub.anki.normalize import (
     MediaReference,
     NormalizedNote,
     normalize_snapshot_note,
+    semantic_text,
 )
 from oms_hub.anki.semantic.domain import DocumentRecord
 from oms_hub.anki.semantic.service import content_hash
@@ -278,16 +279,27 @@ class AnkiIndex:
             fingerprint=fingerprint,
         )
         if semantic_refresher is not None:
+            semantic_records = [
+                (note, semantic_text(note))
+                for note in normalized
+            ]
+            semantic_records = [
+                (note, text)
+                for note, text in semantic_records
+                if text.strip()
+            ]
             await semantic_refresher.refresh(
                 [
                     DocumentRecord(
                         note_id=note.note_id,
-                        text=note.text,
-                        content_hash=content_hash(note.text),
+                        text=text,
+                        content_hash=content_hash(text),
                     )
-                    for note in normalized
+                    for note, text in semantic_records
                 ],
-                expected_note_ids={note.note_id for note in normalized},
+                expected_note_ids={
+                    note.note_id for note, _ in semantic_records
+                },
             )
         return normalized
 
@@ -399,7 +411,13 @@ class AnkiIndex:
             sqlite3.connect(self.database_path)
         ) as connection, connection:
             rows = connection.execute(
-                "SELECT note_id, text FROM notes ORDER BY note_id"
+                """
+                SELECT note_id,
+                       CASE WHEN TRIM(text) <> '' THEN text ELSE extra END
+                FROM notes
+                WHERE TRIM(text) <> '' OR TRIM(extra) <> ''
+                ORDER BY note_id
+                """
             ).fetchall()
         companion_ids = {int(row[0]) for row in rows}
         compatible = {

@@ -9,7 +9,7 @@ from oms_hub.anki.index import (
     LocalAnkiReader,
     SemanticRefresher,
 )
-from oms_hub.anki.normalize import NormalizedNote
+from oms_hub.anki.normalize import NormalizedNote, semantic_text
 from oms_hub.anki.runtime import AnkiPreflight
 from oms_hub.anki.semantic.domain import SemanticSnapshot
 from oms_hub.anki.semantic.service import content_hash
@@ -137,12 +137,17 @@ class LocalIndexMaintainer:
             )
         )
         note_ids = {note.note_id for note in notes}
-        indexed_count = sum(
-            semantic_hashes.get(note.note_id) == content_hash(note.text)
+        semantic_notes = [
+            (note.note_id, semantic_text(note))
             for note in notes
+            if semantic_text(note).strip()
+        ]
+        indexed_count = sum(
+            semantic_hashes.get(note_id) == content_hash(text)
+            for note_id, text in semantic_notes
         )
         coverage = (
-            indexed_count / len(note_ids) if note_ids else 1.0
+            indexed_count / len(semantic_notes) if semantic_notes else 1.0
         )
         if coverage < self.min_coverage:
             raise LocalIndexRefreshError(

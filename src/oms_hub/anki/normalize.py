@@ -163,3 +163,8 @@ def normalize_snapshot_note(note: SnapshotNote) -> NormalizedNote:
         content_sha256=content_sha256,
         source_families=trusted_source_families(tags),
     )
+
+
+def semantic_text(note: NormalizedNote) -> str:
+    """Return the searchable semantic text, preserving Text as primary."""
+    return note.text if note.text.strip() else note.extra

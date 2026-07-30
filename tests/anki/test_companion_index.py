@@ -21,13 +21,15 @@ def _note(
     *,
     tags: tuple[str, ...] = (),
     decks: tuple[str, ...] = (),
+    extra: str | None = None,
 ) -> NormalizedNote:
+    resolved_extra = f"extra {text}" if extra is None else extra
     return NormalizedNote(
         note_id=note_id,
         model_name="AnKingOverhaul",
         text=text,
-        extra=f"extra {text}",
-        raw_fields={"Text": text, "Extra": f"extra {text}"},
+        extra=resolved_extra,
+        raw_fields={"Text": text, "Extra": resolved_extra},
         tags=tags,
         card_ids=(note_id + 1_000,),
         media=(),
@@ -190,6 +192,103 @@ def test_semantic_alignment_counts_missing_stale_and_unexpected_rows(
     assert alignment.unexpected_note_ids == (99,)
 
 
+def test_semantic_alignment_excludes_notes_without_searchable_text(
+    tmp_path: Path,
+) -> None:
+    index = AnkiIndex(tmp_path / "companion")
+    index.rebuild_companion(
+        [
+            _note(10, "iron deficiency anemia"),
+            _note(
+                20,
+                "",
+                decks=("AnKing Step Deck::Image Occlusion",),
+                extra="",
+            ),
+        ],
+        snapshot_id="companion-blank-text",
+        fingerprint="e" * 64,
+    )
+
+    alignment = index.semantic_alignment(
+        note_ids=(10,),
+        content_hashes=(content_hash("iron deficiency anemia"),),
+    )
+
+    assert alignment.eligible_count == 1
+    assert alignment.compatible_count == 1
+    assert alignment.coverage == 1.0
+    assert alignment.missing_or_stale_note_ids == ()
+
+
+def test_companion_uses_extra_for_semantic_fallback_and_skips_blank_note(
+    tmp_path: Path,
+) -> None:
+    class ImageOcclusionAnki:
+        async def find_notes(self, query: str) -> list[int]:
+            assert query == ""
+            return [101, 102]
+
+        async def find_cards(self, query: str) -> list[int]:
+            assert query == ""
+            return [201, 202]
+
+        async def notes_info(
+            self,
+            note_ids: Sequence[int],
+        ) -> list[dict[str, Any]]:
+            assert list(note_ids) == [101, 102]
+            return [
+                {
+                    "noteId": 101,
+                    "modelName": "IO-one by one",
+                    "tags": [],
+                    "fields": {"Text": {"value": ""}, "Extra": {"value": "Image label"}},
+                    "cards": [201],
+                    "mod": 1_752_000_000,
+                },
+                {
+                    "noteId": 102,
+                    "modelName": "IO-one by one",
+                    "tags": [],
+                    "fields": {"Text": {"value": ""}, "Extra": {"value": ""}},
+                    "cards": [202],
+                    "mod": 1_752_000_000,
+                },
+            ]
+
+        async def cards_info(
+            self,
+            card_ids: Sequence[int],
+        ) -> list[dict[str, Any]]:
+            assert list(card_ids) == [201, 202]
+            return [
+                {"cardId": 201, "note": 101, "deckName": "AnKing Step Deck"},
+                {"cardId": 202, "note": 102, "deckName": "AnKing Step Deck"},
+            ]
+
+    async def scenario() -> None:
+        index = AnkiIndex(tmp_path / "companion")
+        semantic = FakeSemanticRefresher(
+            index,
+            expected_snapshot_id="local-image-occlusion",
+        )
+        notes = await index.refresh_from_anki(
+            ImageOcclusionAnki(),
+            snapshot_id="local-image-occlusion",
+            fingerprint="f" * 64,
+            semantic_refresher=semantic,
+        )
+
+        assert [note.note_id for note in notes] == [101, 102]
+        assert [(record.note_id, record.text) for record in semantic.records] == [
+            (101, "Image label")
+        ]
+        assert semantic.expected_note_ids == {101}
+
+    asyncio.run(scenario())
+
+
 class FakeLocalAnki:
     def __init__(self) -> None:
         self.find_cards_queries: list[str] = []
@@ -241,8 +340,14 @@ class FakeLocalAnki:
 
 
 class FakeSemanticRefresher:
-    def __init__(self, index: AnkiIndex) -> None:
+    def __init__(
+        self,
+        index: AnkiIndex,
+        *,
+        expected_snapshot_id: str = "local-1",
+    ) -> None:
         self.index = index
+        self.expected_snapshot_id = expected_snapshot_id
         self.records: list[DocumentRecord] = []
         self.expected_note_ids: set[int] = set()
 
@@ -252,7 +357,7 @@ class FakeSemanticRefresher:
         *,
         expected_note_ids: Collection[int] | None = None,
     ) -> object:
-        assert self.index.snapshot_id() == "local-1"
+        assert self.index.snapshot_id() == self.expected_snapshot_id
         self.records = list(records)
         self.expected_note_ids = set(expected_note_ids or ())
         return object()

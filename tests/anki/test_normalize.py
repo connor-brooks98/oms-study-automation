@@ -2,7 +2,11 @@ import json
 from pathlib import Path
 
 from oms_hub.anki.contracts import SnapshotNote
-from oms_hub.anki.normalize import normalize_html, normalize_snapshot_note
+from oms_hub.anki.normalize import (
+    normalize_html,
+    normalize_snapshot_note,
+    semantic_text,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "anking_notes.json"
 
@@ -81,3 +85,35 @@ def test_kept_tags_and_content_hash_ignore_source_tag_order() -> None:
         "AnkiHub_Optional::LMU_OMS_II::HemeLymph",
     )
     assert first.content_sha256 == second.content_sha256
+
+
+def test_semantic_text_falls_back_to_extra_for_image_occlusion_notes() -> None:
+    extra_only = normalize_snapshot_note(
+        SnapshotNote.model_validate(
+            {
+                "note_id": 103,
+                "model_name": "IO-one by one",
+                "fields": {"Text": "", "Extra": "Identify the structure"},
+                "tags": (),
+                "card_ids": (1004,),
+                "media": (),
+                "content_sha256": "0" * 64,
+            }
+        )
+    )
+    blank = normalize_snapshot_note(
+        SnapshotNote.model_validate(
+            {
+                "note_id": 104,
+                "model_name": "IO-one by one",
+                "fields": {"Text": "", "Extra": ""},
+                "tags": (),
+                "card_ids": (1005,),
+                "media": (),
+                "content_sha256": "0" * 64,
+            }
+        )
+    )
+
+    assert semantic_text(extra_only) == "Identify the structure"
+    assert semantic_text(blank) == ""

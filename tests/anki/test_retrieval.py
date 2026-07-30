@@ -33,13 +33,16 @@ def _note(
     *,
     tags: tuple[str, ...] = (),
     sources: tuple[str, ...] = (),
+    text: str | None = None,
+    extra: str = "",
 ) -> NormalizedNote:
+    resolved_text = f"note {note_id}" if text is None else text
     return NormalizedNote(
         note_id=note_id,
         model_name="AnKingOverhaul",
-        text=f"note {note_id}",
-        extra="",
-        raw_fields={"Text": f"note {note_id}"},
+        text=resolved_text,
+        extra=extra,
+        raw_fields={"Text": resolved_text, "Extra": extra},
         tags=tags,
         card_ids=(note_id + 100,),
         media=(),
@@ -170,6 +173,32 @@ def test_semantic_rows_use_the_production_searchable_text_hash() -> None:
         assert note.content_sha256 != content_hash(note.text)
         semantic = FakeSemanticSearch(
             {query: [1] for query in concept.queries}
+        )
+        companion = FakeCompanionIndex([note], eligible={1})
+        service = RetrievalService(
+            companion,
+            semantic,
+            per_concept_limit=5,
+            global_limit=10,
+        )
+
+        candidates = await service.retrieve_pass_1(
+            concept,
+            RetrievalScope(),
+        )
+
+        assert [candidate.note_id for candidate in candidates] == [1]
+
+    asyncio.run(scenario())
+
+
+def test_semantic_rows_accept_extra_as_image_occlusion_fallback() -> None:
+    async def scenario() -> None:
+        concept = _concept()
+        note = _note(1, text="", extra="Image label")
+        semantic = FakeSemanticSearch(
+            {query: [1] for query in concept.queries},
+            content_hashes={1: content_hash("Image label")},
         )
         companion = FakeCompanionIndex([note], eligible={1})
         service = RetrievalService(

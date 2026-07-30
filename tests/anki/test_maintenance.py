@@ -17,13 +17,19 @@ from oms_hub.anki.semantic.domain import DocumentRecord
 from oms_hub.anki.semantic.service import content_hash
 
 
-def _note(note_id: int) -> NormalizedNote:
+def _note(
+    note_id: int,
+    *,
+    text: str | None = None,
+    extra: str = "",
+) -> NormalizedNote:
+    resolved_text = f"note {note_id}" if text is None else text
     return NormalizedNote(
         note_id=note_id,
         model_name="AnKing",
-        text=f"note {note_id}",
-        extra="",
-        raw_fields={"Text": f"note {note_id}"},
+        text=resolved_text,
+        extra=extra,
+        raw_fields={"Text": resolved_text, "Extra": extra},
         tags=(),
         card_ids=(note_id + 100,),
         media=(),
@@ -179,6 +185,61 @@ def test_local_index_refresh_stops_when_preflight_is_not_safe() -> None:
             await maintainer.refresh()
 
         assert companion.calls == []
+
+    asyncio.run(scenario())
+
+
+def test_local_index_refresh_excludes_blank_notes_from_semantic_coverage() -> None:
+    class BlankNoteCompanion(FakeCompanion):
+        async def refresh_from_anki(
+            self,
+            gateway: object,
+            *,
+            snapshot_id: str,
+            fingerprint: str,
+            query: str = "",
+            semantic_refresher: object | None = None,
+        ) -> list[NormalizedNote]:
+            del gateway, snapshot_id, fingerprint, query, semantic_refresher
+            return [_note(1), _note(2, text="")]
+
+    class OneNoteStore:
+        def load(
+            self,
+            *,
+            expected_model: str | None = None,
+            expected_dimensions: int | None = None,
+        ) -> object:
+            assert expected_model == "voyage-4-large"
+            assert expected_dimensions == 1024
+            return SimpleNamespace(
+                manifest=SimpleNamespace(
+                    generation="semantic-generation",
+                    note_ids=(1,),
+                    content_hashes=(content_hash("note 1"),),
+                ),
+                matrix=SimpleNamespace(nbytes=2048),
+            )
+
+    async def scenario() -> None:
+        maintainer = LocalIndexMaintainer(
+            FakeRuntime(_preflight()),
+            object(),
+            BlankNoteCompanion(),
+            FakeSemantic(),
+            OneNoteStore(),
+            semantic_model="voyage-4-large",
+            semantic_dimensions=1024,
+            min_coverage=0.995,
+            snapshot_id_factory=lambda: "local-fixed",
+            monotonic=_clock(10.0, 12.5),
+        )
+
+        result = await maintainer.refresh()
+
+        assert result.note_count == 2
+        assert result.semantic_count == 1
+        assert result.semantic_coverage == 1.0
 
     asyncio.run(scenario())
 
