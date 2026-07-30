@@ -11,6 +11,7 @@ from oms_hub.anki.normalize import NormalizedNote
 from oms_hub.anki.rescue import RescueQuery
 from oms_hub.anki.retrieval import RetrievalScope, RetrievalService
 from oms_hub.anki.semantic.domain import SemanticHit
+from oms_hub.anki.semantic.service import content_hash
 
 
 def _concept() -> LectureConcept:
@@ -52,8 +53,11 @@ class FakeSemanticSearch:
     def __init__(
         self,
         results: dict[str, list[int]],
+        *,
+        content_hashes: dict[int, str] | None = None,
     ) -> None:
         self.results = results
+        self.content_hashes = content_hashes or {}
         self.eligible_calls: list[set[int] | None] = []
 
     async def search(
@@ -73,7 +77,10 @@ class FakeSemanticSearch:
                 SemanticHit(
                     note_id=note_id,
                     score=1.0 - rank / 100,
-                    content_hash=f"{note_id:064x}",
+                    content_hash=self.content_hashes.get(
+                        note_id,
+                        content_hash(f"note {note_id}"),
+                    ),
                 )
                 for rank, note_id in enumerate(
                     self.results.get(query, [])[:limit],
@@ -152,6 +159,57 @@ def test_semantic_variants_are_fused_before_modalities() -> None:
         assert candidates[0].scores["semantic_variant_fusion"] > (
             candidates[1].scores["semantic_variant_fusion"]
         )
+
+    asyncio.run(scenario())
+
+
+def test_semantic_rows_use_the_production_searchable_text_hash() -> None:
+    async def scenario() -> None:
+        concept = _concept()
+        note = _note(1)
+        assert note.content_sha256 != content_hash(note.text)
+        semantic = FakeSemanticSearch(
+            {query: [1] for query in concept.queries}
+        )
+        companion = FakeCompanionIndex([note], eligible={1})
+        service = RetrievalService(
+            companion,
+            semantic,
+            per_concept_limit=5,
+            global_limit=10,
+        )
+
+        candidates = await service.retrieve_pass_1(
+            concept,
+            RetrievalScope(),
+        )
+
+        assert [candidate.note_id for candidate in candidates] == [1]
+
+    asyncio.run(scenario())
+
+
+def test_stale_semantic_text_hash_is_discarded() -> None:
+    async def scenario() -> None:
+        concept = _concept()
+        semantic = FakeSemanticSearch(
+            {query: [1] for query in concept.queries},
+            content_hashes={1: content_hash("old note text")},
+        )
+        companion = FakeCompanionIndex([_note(1)], eligible={1})
+        service = RetrievalService(
+            companion,
+            semantic,
+            per_concept_limit=5,
+            global_limit=10,
+        )
+
+        candidates = await service.retrieve_pass_1(
+            concept,
+            RetrievalScope(),
+        )
+
+        assert candidates == []
 
     asyncio.run(scenario())
 

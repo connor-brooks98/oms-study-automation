@@ -86,5 +86,5 @@ if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {
 }
 
 Write-Host "Study Hub V2 install complete."
-Write-Host "Local dashboard: http://127.0.0.1:8765"
+Write-Host "Local dashboard: use OMS_HUB_DASHBOARD_PORT from .env (V4 example: http://127.0.0.1:8787)"
 Write-Host "Rollback backup: $BackupPath"

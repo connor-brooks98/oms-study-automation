@@ -1,10 +1,11 @@
 import re
 from functools import lru_cache
 from pathlib import Path
+from typing import Self
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -156,6 +157,20 @@ class Settings(BaseSettings):
                 "http://127.0.0.1:8765 or http://localhost:8765"
             )
         return f"http://{parsed.hostname}:8765"
+
+    @model_validator(mode="after")
+    def validate_local_service_ports(self) -> Self:
+        anki_connect_port = urlsplit(self.anki_connect_url).port
+        if (
+            self.anki_enabled
+            and anki_connect_port == self.dashboard_port
+        ):
+            raise ValueError(
+                "Study Hub and AnkiConnect cannot share port "
+                f"{self.dashboard_port}; set OMS_HUB_DASHBOARD_PORT "
+                "to a distinct loopback port such as 8787"
+            )
+        return self
 
     @field_validator("cloudflare_access_issuer")
     @classmethod

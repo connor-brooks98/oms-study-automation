@@ -8,6 +8,7 @@ from oms_hub.anki.index import CompanionFilters, SearchHit
 from oms_hub.anki.lcl import LectureConcept
 from oms_hub.anki.normalize import NormalizedNote
 from oms_hub.anki.semantic.domain import SemanticHit
+from oms_hub.anki.semantic.service import content_hash
 
 _VARIANT_WEIGHTS = (1.0, 0.9, 0.8, 0.8)
 _RRF_K = 60
@@ -139,7 +140,10 @@ class RetrievalService:
                 if hit.note_id not in eligible:
                     continue
                 note = self.companion.get_note(hit.note_id)
-                if note is None or note.content_sha256 != hit.content_hash:
+                if (
+                    note is None
+                    or content_hash(note.text) != hit.content_hash
+                ):
                     continue
                 semantic_scores[hit.note_id] += weight / (
                     _RRF_K + rank

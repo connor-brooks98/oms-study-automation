@@ -217,6 +217,22 @@ def create_anki_job(
             status_code=status.HTTP_409_CONFLICT,
             detail="The semantic Anki index is unavailable",
         ) from exc
+    alignment = companion.semantic_alignment(
+        note_ids=semantic.manifest.note_ids,
+        content_hashes=semantic.manifest.content_hashes,
+    )
+    minimum_coverage = (
+        request.app.state.settings.anki_semantic_min_coverage
+    )
+    if alignment.coverage < minimum_coverage:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"{alignment.coverage:.3%} semantic coverage is below "
+                f"the required {minimum_coverage:.3%}; refresh the local "
+                "Anki index before starting curation"
+            ),
+        )
 
     revisions = IngestionRepository(request.app.state.database)
     hashes: dict[int, str] = {}

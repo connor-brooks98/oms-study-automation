@@ -304,6 +304,7 @@ def test_application_lifespan_starts_and_stops_curation_worker(
             data_dir=tmp_path / "data",
             database_url=f"sqlite:///{tmp_path / 'hub.db'}",
             anki_enabled=True,
+            dashboard_port=8787,
             anki_worker_poll_seconds=0.5,
         )
     )

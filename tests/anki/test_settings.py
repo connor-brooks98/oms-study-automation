@@ -64,3 +64,28 @@ def test_anki_connect_url_must_be_loopback(tmp_path: Path) -> None:
             database_url=f"sqlite:///{tmp_path / 'hub.db'}",
             anki_connect_url="http://192.168.1.20:8765",
         )
+
+
+def test_enabled_anki_requires_a_distinct_dashboard_port(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValidationError, match="cannot share port"):
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path,
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+            anki_enabled=True,
+            dashboard_port=8765,
+            anki_connect_url="http://127.0.0.1:8765",
+        )
+
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        anki_enabled=True,
+        dashboard_port=8787,
+        anki_connect_url="http://127.0.0.1:8765",
+    )
+
+    assert settings.dashboard_port == 8787

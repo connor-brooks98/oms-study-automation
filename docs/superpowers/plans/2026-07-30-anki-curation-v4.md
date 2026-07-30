@@ -8,6 +8,12 @@
 
 **Tech Stack:** Python 3.12, FastAPI, SQLAlchemy/SQLite, Pydantic, NumPy, Voyage `voyage-4-large` embeddings, existing multi-provider LLM layer, python-pptx, httpx, Jinja/vanilla JavaScript, pytest, Ruff, mypy.
 
+**Implementation status (2026-07-30):** Tasks 1–17 are implemented on
+`codex/anki-v4-implementation`. Task 18's evaluator, deterministic regression
+gold set, first-index command, and NUC runbook are implemented. Automated gates
+pass; copied-profile acceptance and the approval-gated deletion of
+`oms_anki_agent` remain intentionally pending.
+
 ## Global Constraints
 
 - Do not copy code from the unlicensed local add-on or from `SBMatthew/sbm_smart_anki`; use only documented behavior and independently written interfaces.

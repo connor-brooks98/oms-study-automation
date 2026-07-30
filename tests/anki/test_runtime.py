@@ -149,6 +149,7 @@ def test_app_wires_local_runtime_only_when_anki_is_enabled(
             data_dir=tmp_path / "enabled",
             database_url=f"sqlite:///{tmp_path / 'enabled.db'}",
             anki_enabled=True,
+            dashboard_port=8787,
         )
     )
     try:

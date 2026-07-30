@@ -134,8 +134,24 @@ class FakeRuntime:
 
 
 class FakeCompanionIndex:
+    semantic_coverage = 1.0
+
     def snapshot_id(self) -> str:
         return "snapshot-test"
+
+    def semantic_alignment(
+        self,
+        *,
+        note_ids: Sequence[int],
+        content_hashes: Sequence[str],
+    ) -> object:
+        del note_ids, content_hashes
+        return SimpleNamespace(
+            coverage=self.semantic_coverage,
+            missing_or_stale_note_ids=(
+                () if self.semantic_coverage >= 0.995 else (42,)
+            ),
+        )
 
     def get_note(self, note_id: int) -> object | None:
         if note_id != 42:
@@ -158,7 +174,13 @@ class FakeCompanionIndex:
 class FakeSemanticStore:
     def load(self) -> object:
         return SimpleNamespace(
-            manifest=SimpleNamespace(generation=UUID("33a3b975-0e93-41e6-8a44-ec255c7e1269"))
+            manifest=SimpleNamespace(
+                generation=UUID(
+                    "33a3b975-0e93-41e6-8a44-ec255c7e1269"
+                ),
+                note_ids=(42,),
+                content_hashes=("b" * 64,),
+            )
         )
 
 
@@ -377,6 +399,22 @@ def test_create_and_list_job_pins_server_generations_and_rejects_amboss(
     assert created.json()["companion_generation"] == "snapshot-test"
     assert created.json()["semantic_generation"] == "33a3b975-0e93-41e6-8a44-ec255c7e1269"
     assert listed.json()["jobs"][0]["id"] == created.json()["id"]
+
+
+def test_create_job_blocks_when_semantic_alignment_is_below_threshold(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, lecture_id, revision_id, _ = prepared_app
+    app.state.anki_companion_index.semantic_coverage = 0.99
+
+    response = client.post(
+        "/api/anki/jobs",
+        json=_create_payload(lecture_id, revision_id),
+    )
+
+    assert response.status_code == 409
+    assert "99.000%" in response.json()["detail"]
+    assert "refresh" in response.json()["detail"].casefold()
 
 
 def test_review_groups_evidence_and_uses_optimistic_revision(

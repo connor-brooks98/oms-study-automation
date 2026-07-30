@@ -3,12 +3,15 @@ from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from oms_hub.anki.index import AnkiIndex, CompanionFilters
 from oms_hub.anki.normalize import (
     NormalizedNote,
     trusted_source_families,
 )
 from oms_hub.anki.semantic.domain import DocumentRecord
+from oms_hub.anki.semantic.service import content_hash
 
 
 def _note(
@@ -136,6 +139,27 @@ def test_trusted_source_families_are_distinct_and_persisted(
     assert index.source_count(10) == 1
 
 
+def test_semantic_alignment_counts_missing_stale_and_unexpected_rows(
+    tmp_path: Path,
+) -> None:
+    index = _built_index(tmp_path)
+
+    alignment = index.semantic_alignment(
+        note_ids=(10, 20, 99),
+        content_hashes=(
+            content_hash("iron deficiency anemia"),
+            content_hash("stale warfarin text"),
+            content_hash("unexpected note"),
+        ),
+    )
+
+    assert alignment.eligible_count == 3
+    assert alignment.compatible_count == 1
+    assert alignment.coverage == pytest.approx(1 / 3)
+    assert alignment.missing_or_stale_note_ids == (20, 30)
+    assert alignment.unexpected_note_ids == (99,)
+
+
 class FakeLocalAnki:
     def __init__(self) -> None:
         self.find_cards_queries: list[str] = []
@@ -232,6 +256,114 @@ def test_companion_rebuilds_from_local_ankiconnect_metadata(
         assert index.eligible_note_ids(
             CompanionFilters(deck_allowlist=("Filtered::Exam 1",))
         ) == {101}
+
+    asyncio.run(scenario())
+
+
+def test_semantic_refresh_failure_keeps_new_companion_for_alignment_gate(
+    tmp_path: Path,
+) -> None:
+    class FailingSemantic:
+        async def refresh(
+            self,
+            records: Sequence[DocumentRecord],
+            *,
+            expected_note_ids: Collection[int] | None = None,
+        ) -> object:
+            del records, expected_note_ids
+            raise RuntimeError("injected Voyage failure")
+
+    async def scenario() -> None:
+        index = AnkiIndex(tmp_path / "companion")
+        gateway = FakeLocalAnki()
+        await index.refresh_from_anki(
+            gateway,
+            snapshot_id="local-1",
+            fingerprint="b" * 64,
+        )
+
+        with pytest.raises(RuntimeError, match="Voyage"):
+            await index.refresh_from_anki(
+                gateway,
+                snapshot_id="local-2",
+                fingerprint="c" * 64,
+                semantic_refresher=FailingSemantic(),
+            )
+
+        assert index.snapshot_id() == "local-2"
+
+    asyncio.run(scenario())
+
+
+def test_local_refresh_reads_large_collections_in_bounded_batches(
+    tmp_path: Path,
+) -> None:
+    class BatchedAnki:
+        def __init__(self) -> None:
+            self.note_batches: list[tuple[int, ...]] = []
+            self.card_batches: list[tuple[int, ...]] = []
+
+        async def find_notes(self, query: str) -> list[int]:
+            assert query == 'deck:"AnKing Step Deck"'
+            return [1, 2, 3, 4, 5]
+
+        async def find_cards(self, query: str) -> list[int]:
+            assert query == 'deck:"AnKing Step Deck"'
+            return [101, 102, 103, 104, 105]
+
+        async def notes_info(
+            self,
+            note_ids: Sequence[int],
+        ) -> list[dict[str, Any]]:
+            self.note_batches.append(tuple(note_ids))
+            return [
+                {
+                    "noteId": note_id,
+                    "modelName": "AnKingOverhaul",
+                    "tags": ["#AK_Step"],
+                    "fields": {
+                        "Text": {"value": f"note {note_id}"},
+                        "Extra": {"value": ""},
+                    },
+                    "cards": [note_id + 100],
+                    "mod": 1_752_000_000,
+                }
+                for note_id in note_ids
+            ]
+
+        async def cards_info(
+            self,
+            card_ids: Sequence[int],
+        ) -> list[dict[str, Any]]:
+            self.card_batches.append(tuple(card_ids))
+            return [
+                {
+                    "cardId": card_id,
+                    "note": card_id - 100,
+                    "deckName": "AnKing Step Deck",
+                }
+                for card_id in card_ids
+            ]
+
+    async def scenario() -> None:
+        gateway = BatchedAnki()
+        index = AnkiIndex(tmp_path / "companion")
+
+        notes = await index.refresh_from_anki(
+            gateway,
+            snapshot_id="local-batched",
+            fingerprint="d" * 64,
+            query='deck:"AnKing Step Deck"',
+            metadata_batch_size=2,
+        )
+
+        assert len(notes) == 5
+        assert gateway.note_batches == [(1, 2), (3, 4), (5,)]
+        assert gateway.card_batches == [
+            (101, 102),
+            (103, 104),
+            (105,),
+        ]
 
     asyncio.run(scenario())
 

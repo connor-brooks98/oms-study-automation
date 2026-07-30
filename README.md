@@ -22,7 +22,9 @@ Copy-Item .env.example .env
 .\.venv\Scripts\oms-hub.exe serve
 ```
 
-Open `http://127.0.0.1:8765`. Upload the tracker on Settings, then use the
+Open the loopback URL configured by `OMS_HUB_DASHBOARD_PORT`. The example
+configuration uses `http://127.0.0.1:8787` so local AnkiConnect can keep its
+standard loopback port, `8765`. Upload the tracker on Settings, then use the
 Slides and Transcripts pages.
 
 ## Transcript setup
@@ -92,44 +94,37 @@ The branch setup, Google Cloud setup, Cloudflare quiz-sharing rule, acceptance
 test, and rollback procedure are in
 [docs/native-quizzes-nuc-rollout.md](docs/native-quizzes-nuc-rollout.md).
 
-### Read-only Anki bridge
+### Integrated Anki curation
 
-The separate Anki curation branch exports and indexes `Anking Step Deck`; it
-does not tag notes, create notes, store media, or sync. On the NUC, expose only
-the loopback Hub port to the tailnet:
+The V4 workflow is one Study Hub package on the NUC. It reads local Anki through
+loopback-only AnkiConnect, builds its own Voyage and FTS indexes, finds existing
+cards, reruns missed-topic searches against the selected lecture slides and
+transcript, and proposes source-grounded cards. It has no runtime dependency on
+the semantic-search research add-on or `sbm_smart_anki`, and it performs no
+AMBOSS retrieval.
 
-```text
-tailscale serve --bg 8765
-tailscale serve status
+Enable Anki in `.env`, store the Voyage key in Windows Credential Manager, and
+build the first index while Anki is open:
+
+```powershell
+.\.venv\Scripts\oms-hub.exe voyage-set-key
+.\.venv\Scripts\oms-hub.exe anki-index-refresh `
+  --query 'deck:"AnKing Step Deck"'
 ```
 
-Use the Tailscale hostname as the Mac agent's Hub URL. Store the shared bearer
-value in Windows Credential Manager and macOS Keychain under service
-`OMSStudyHub` and account `anki-agent-token`. Do not put it in the LaunchAgent,
-shell history, `.env`, or a command-line flag.
+Open `/anki` in Study Hub to start a run. Existing-card choices, generated
+cards, source citations, and first-release tag edits remain proposals until
+review is saved, the immutable apply plan is frozen, and the user types the
+explicit confirmation. Source-managed tags stay locked. Apply always performs
+a leading sync, local read-back verification, and a trailing sync, with a
+separate retry action when local writes succeeded but sync did not.
 
-On the Mac, install the package, confirm AnkiConnect v6 is listening only on
-`127.0.0.1:8765`, then run:
-
-```text
-oms-anki-agent doctor
-scripts/macos/install-anki-agent.sh \
-  --hub-url https://study-hub.example.ts.net
-launchctl print gui/$(id -u)/com.omsstudy.anki-agent
-```
-
-Rotate the bearer value in both Windows Credential Manager and macOS Keychain,
-then restart the Hub and agent. Disable the private route with
-`tailscale serve reset`. Confirm the public Cloudflare hostname does not expose
-the agent family:
-
-```text
-curl -i https://study.example.com/agent/v1/heartbeat
-# Expected: HTTP 404
-```
-
-The agent logs beneath `~/Library/Logs/OMSStudyHub`. A manual read-only export
-is available with `oms-anki-agent snapshot --full`.
+The installation, backup, copied-profile acceptance, recovery, and Mac sync
+procedure is in
+[docs/anki-curation-nuc-rollout.md](docs/anki-curation-nuc-rollout.md).
+Legacy Mac-agent files remain in this pre-acceptance branch only as a rollback
+path; they are not part of V4 operation and will not be removed until the
+copied-profile report is approved.
 
 The multi-provider hotfix procedure is in
 [docs/v2-multi-provider-nuc-rollout.md](docs/v2-multi-provider-nuc-rollout.md).

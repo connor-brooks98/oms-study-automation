@@ -1,17 +1,34 @@
 import argparse
+import asyncio
 import getpass
+import json
 import logging
 import threading
+import tracemalloc
+from dataclasses import asdict
 from pathlib import Path
 
 import uvicorn
 
+from oms_hub.anki.ankiconnect import AnkiConnectClient
+from oms_hub.anki.index import AnkiIndex
+from oms_hub.anki.maintenance import (
+    LocalIndexMaintainer,
+    LocalIndexRefreshResult,
+)
+from oms_hub.anki.runtime import AnkiRuntime, WindowsAnkiLauncher
+from oms_hub.anki.semantic.service import SemanticIndexService
+from oms_hub.anki.semantic.store import SemanticSnapshotStore
+from oms_hub.anki.semantic.voyage import VoyageEmbeddingClient
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.db import Database
 from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import expanded_path
-from oms_hub.security.secret_store import KeyringSecretStore
+from oms_hub.security.secret_store import (
+    VOYAGE_API_KEY_SECRET,
+    KeyringSecretStore,
+)
 from oms_hub.tracker_import import TrackerImporter
 from oms_hub.transcripts.prompt import PromptLoader
 
@@ -104,6 +121,90 @@ def openai_set_key(args: argparse.Namespace) -> int:
     return 0
 
 
+def voyage_set_key(args: argparse.Namespace) -> int:
+    del args
+    value = getpass.getpass("Voyage API key: ")
+    if not value:
+        raise SystemExit("API key cannot be empty")
+    KeyringSecretStore().set(VOYAGE_API_KEY_SECRET, value)
+    print("Voyage API key stored in Windows Credential Manager")
+    return 0
+
+
+async def _refresh_local_anki_index(
+    settings: Settings,
+    query: str,
+) -> LocalIndexRefreshResult:
+    if not settings.anki_enabled:
+        raise RuntimeError(
+            "Anki curation is disabled; set OMS_HUB_ANKI_ENABLED=true"
+        )
+    owns_trace = not tracemalloc.is_tracing()
+    if owns_trace:
+        tracemalloc.start()
+    gateway: AnkiConnectClient | None = None
+    runtime: AnkiRuntime | None = None
+    embedder: VoyageEmbeddingClient | None = None
+    try:
+        secrets = KeyringSecretStore()
+        gateway = AnkiConnectClient(settings.anki_connect_url)
+        runtime = AnkiRuntime(
+            gateway,
+            WindowsAnkiLauncher(settings.anki_executable_path),
+            startup_attempts=settings.anki_startup_attempts,
+            startup_poll_seconds=settings.anki_startup_poll_seconds,
+        )
+        embedder = VoyageEmbeddingClient(
+            secrets,
+            model=settings.anki_semantic_model,
+            dimensions=settings.anki_semantic_dimensions,
+            batch_size=settings.anki_semantic_batch_size,
+        )
+        root = settings.resolved_anki_data_dir
+        companion = AnkiIndex(root / "companion")
+        semantic_store = SemanticSnapshotStore(root / "semantic")
+        semantic = SemanticIndexService(
+            semantic_store,
+            embedder,
+            model=settings.anki_semantic_model,
+            dimensions=settings.anki_semantic_dimensions,
+            min_coverage=settings.anki_semantic_min_coverage,
+            query_cache_size=settings.anki_semantic_query_cache_size,
+        )
+        maintainer = LocalIndexMaintainer(
+            runtime,
+            gateway,
+            companion,
+            semantic,
+            semantic_store,
+            semantic_model=settings.anki_semantic_model,
+            semantic_dimensions=settings.anki_semantic_dimensions,
+            min_coverage=settings.anki_semantic_min_coverage,
+            peak_memory_bytes=lambda: tracemalloc.get_traced_memory()[1],
+        )
+        return await maintainer.refresh(query=query)
+    finally:
+        if embedder is not None:
+            await embedder.aclose()
+        if runtime is not None:
+            await runtime.aclose()
+        elif gateway is not None:
+            await gateway.aclose()
+        if owns_trace:
+            tracemalloc.stop()
+
+
+def anki_index_refresh(args: argparse.Namespace) -> int:
+    try:
+        result = asyncio.run(
+            _refresh_local_anki_index(Settings(), str(args.query))
+        )
+    except RuntimeError as exc:
+        raise SystemExit(f"Anki index refresh failed: {exc}") from exc
+    print(json.dumps(asdict(result), sort_keys=True))
+    return 0
+
+
 def prompt_initialize(args: argparse.Namespace) -> int:
     del args
     settings = Settings()
@@ -179,6 +280,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     openai_key = commands.add_parser("openai-set-key")
     openai_key.set_defaults(handler=openai_set_key)
+
+    voyage_key = commands.add_parser("voyage-set-key")
+    voyage_key.set_defaults(handler=voyage_set_key)
+
+    anki_index = commands.add_parser("anki-index-refresh")
+    anki_index.add_argument(
+        "--query",
+        default="",
+        help=(
+            "Optional Anki search query limiting the indexed note universe."
+        ),
+    )
+    anki_index.set_defaults(handler=anki_index_refresh)
 
     init_prompt = commands.add_parser("prompt-init")
     init_prompt.set_defaults(handler=prompt_initialize)

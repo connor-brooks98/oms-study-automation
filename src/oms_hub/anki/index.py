@@ -39,6 +39,15 @@ class SearchHit:
 
 
 @dataclass(frozen=True, slots=True)
+class SemanticAlignment:
+    eligible_count: int
+    compatible_count: int
+    coverage: float
+    missing_or_stale_note_ids: tuple[int, ...]
+    unexpected_note_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class CompanionFilters:
     deck_allowlist: tuple[str, ...] = ()
     tag_allowlist: tuple[str, ...] = ()
@@ -173,11 +182,20 @@ class AnkiIndex:
         fingerprint: str,
         query: str = "",
         semantic_refresher: SemanticRefresher | None = None,
+        metadata_batch_size: int = 500,
     ) -> list[NormalizedNote]:
         """Read current note/card metadata from local Anki and publish it."""
+        if metadata_batch_size < 1:
+            raise ValueError("Anki metadata batch size must be positive")
         note_ids = await gateway.find_notes(query)
         found_card_ids = await gateway.find_cards(query)
-        raw_notes = await gateway.notes_info(note_ids)
+        if len(set(note_ids)) != len(note_ids):
+            raise ValueError("Anki returned duplicate note IDs")
+        if len(set(found_card_ids)) != len(found_card_ids):
+            raise ValueError("Anki returned duplicate card IDs")
+        raw_notes: list[dict[str, Any]] = []
+        for batch in _integer_batches(note_ids, metadata_batch_size):
+            raw_notes.extend(await gateway.notes_info(batch))
         if len(raw_notes) != len(note_ids):
             raise ValueError("Anki note metadata count does not reconcile")
 
@@ -213,7 +231,12 @@ class AnkiIndex:
         }
         all_card_ids = list(dict.fromkeys((*found_card_ids, *all_card_ids)))
         if all_card_ids:
-            raw_cards = await gateway.cards_info(all_card_ids)
+            raw_cards: list[dict[str, Any]] = []
+            for batch in _integer_batches(
+                all_card_ids,
+                metadata_batch_size,
+            ):
+                raw_cards.extend(await gateway.cards_info(batch))
             if len(raw_cards) != len(all_card_ids):
                 raise ValueError("Anki card metadata count does not reconcile")
             for raw_card in raw_cards:
@@ -358,6 +381,45 @@ class AnkiIndex:
                 parameters,
             ).fetchall()
         return {int(row[0]) for row in rows}
+
+    def semantic_alignment(
+        self,
+        *,
+        note_ids: Sequence[int],
+        content_hashes: Sequence[str],
+    ) -> SemanticAlignment:
+        if len(note_ids) != len(content_hashes):
+            raise ValueError(
+                "semantic IDs and content hashes do not reconcile"
+            )
+        if len(set(note_ids)) != len(note_ids):
+            raise ValueError("semantic note IDs must be unique")
+        semantic = dict(zip(note_ids, content_hashes, strict=True))
+        with closing(
+            sqlite3.connect(self.database_path)
+        ) as connection, connection:
+            rows = connection.execute(
+                "SELECT note_id, text FROM notes ORDER BY note_id"
+            ).fetchall()
+        companion_ids = {int(row[0]) for row in rows}
+        compatible = {
+            int(row[0])
+            for row in rows
+            if semantic.get(int(row[0])) == content_hash(str(row[1]))
+        }
+        missing_or_stale = tuple(sorted(companion_ids - compatible))
+        unexpected = tuple(sorted(set(semantic) - companion_ids))
+        return SemanticAlignment(
+            eligible_count=len(companion_ids),
+            compatible_count=len(compatible),
+            coverage=(
+                len(compatible) / len(companion_ids)
+                if companion_ids
+                else 1.0
+            ),
+            missing_or_stale_note_ids=missing_or_stale,
+            unexpected_note_ids=unexpected,
+        )
 
     def search_fts(
         self,
@@ -766,6 +828,16 @@ def _anki_fields(value: object) -> dict[str, str]:
             raise TypeError("Anki returned invalid fields")
         fields[name] = payload["value"]
     return fields
+
+
+def _integer_batches(
+    values: Sequence[int],
+    batch_size: int,
+) -> list[Sequence[int]]:
+    return [
+        values[offset : offset + batch_size]
+        for offset in range(0, len(values), batch_size)
+    ]
 
 
 def _validate_database(path: Path, expected_count: int) -> None:
