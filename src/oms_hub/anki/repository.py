@@ -1,11 +1,11 @@
 import hashlib
 import json
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
@@ -145,6 +145,20 @@ _INTERRUPTED_PRE_REVIEW_STATES = {
     CurationState.GENERATING_GAPS,
 }
 
+_CLAIMABLE_STATES = {
+    CurationState.QUEUED,
+    CurationState.PREFLIGHT,
+    CurationState.BUILDING_SOURCE_INDEX,
+    CurationState.BUILDING_LCL,
+    CurationState.RETRIEVING_PASS_1,
+    CurationState.JUDGING_PASS_1,
+    CurationState.LOCALIZING_MISSED_CONCEPTS,
+    CurationState.RETRIEVING_PASS_2,
+    CurationState.JUDGING_PASS_2,
+    CurationState.DEDUPING,
+    CurationState.GENERATING_GAPS,
+}
+
 
 class InvalidCurationTransition(ValueError):
     """A curation job did not match the required state transition."""
@@ -158,6 +172,12 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        raise ValueError("job timestamps must be timezone-aware")
+    return value.astimezone(UTC)
+
+
 class AnkiCurationRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -166,6 +186,7 @@ class AnkiCurationRepository:
         configuration = {
             "block_id": request.block_id,
             "source_revision_ids": request.source_revision_ids,
+            "source_revision_hashes": request.source_revision_hashes,
             "deck_allowlist": request.deck_allowlist,
             "tag_allowlist": request.tag_allowlist,
             "target_deck": request.target_deck,
@@ -176,6 +197,8 @@ class AnkiCurationRepository:
             "gap_prompt_version": request.gap_prompt_version,
             "provider": request.provider,
             "model": request.model,
+            "semantic_generation": request.semantic_generation,
+            "companion_generation": request.companion_generation,
         }
         with self.database.session() as session:
             if session.get(LectureModel, request.lecture_id) is None:
@@ -193,10 +216,15 @@ class AnkiCurationRepository:
                 source_revision_ids_json=_canonical_json(
                     request.source_revision_ids
                 ),
+                source_revision_hashes_json=_canonical_json(
+                    request.source_revision_hashes
+                ),
                 deck_allowlist_json=_canonical_json(request.deck_allowlist),
                 tag_allowlist_json=_canonical_json(request.tag_allowlist),
                 provider=request.provider,
                 model=request.model,
+                semantic_generation=request.semantic_generation,
+                companion_generation=request.companion_generation,
                 configuration_sha256=_sha256_text(
                     _canonical_json(configuration)
                 ),
@@ -218,33 +246,176 @@ class AnkiCurationRepository:
                 raise KeyError(str(job_id))
             return self._job(stored)
 
-    def claim_next_job(self, now: datetime) -> CurationJob | None:
+    def claim_next_job(
+        self,
+        now: datetime,
+        *,
+        worker_id: str = "legacy-worker",
+        lease_seconds: int = 60,
+    ) -> CurationJob | None:
+        worker_id = worker_id.strip()
+        if not worker_id or len(worker_id) > 100:
+            raise ValueError("worker ID is invalid")
+        if lease_seconds < 1:
+            raise ValueError("lease duration must be positive")
+        now = _aware_utc(now)
+        now_text = now.isoformat()
+        lease_expires_at = (
+            now + timedelta(seconds=lease_seconds)
+        ).isoformat()
         with self.database.session() as session:
             stored = session.scalar(
                 select(AnkiCurationJobModel)
-                .where(AnkiCurationJobModel.state == CurationState.QUEUED.value)
+                .where(
+                    AnkiCurationJobModel.state.in_(
+                        [state.value for state in _CLAIMABLE_STATES]
+                    ),
+                    or_(
+                        AnkiCurationJobModel.available_at.is_(None),
+                        AnkiCurationJobModel.available_at <= now_text,
+                    ),
+                    or_(
+                        AnkiCurationJobModel.lease_expires_at.is_(None),
+                        AnkiCurationJobModel.lease_expires_at <= now_text,
+                    ),
+                )
                 .order_by(AnkiCurationJobModel.created_at, AnkiCurationJobModel.id)
                 .limit(1)
             )
             if stored is None:
                 return None
+            queued = stored.state == CurationState.QUEUED.value
             claimed = session.execute(
                 update(AnkiCurationJobModel)
                 .where(
                     AnkiCurationJobModel.id == stored.id,
-                    AnkiCurationJobModel.state == CurationState.QUEUED.value,
+                    AnkiCurationJobModel.state == stored.state,
+                    or_(
+                        AnkiCurationJobModel.lease_expires_at.is_(None),
+                        AnkiCurationJobModel.lease_expires_at <= now_text,
+                    ),
                 )
                 .values(
-                    state=CurationState.PREFLIGHT.value,
-                    attempts=AnkiCurationJobModel.attempts + 1,
-                    started_at=now.isoformat(),
+                    state=(
+                        CurationState.PREFLIGHT.value
+                        if queued
+                        else stored.state
+                    ),
+                    attempts=(
+                        AnkiCurationJobModel.attempts + 1
+                        if queued
+                        else AnkiCurationJobModel.attempts
+                    ),
+                    started_at=now_text if queued else stored.started_at,
                     error=None,
+                    lease_owner=worker_id,
+                    lease_expires_at=lease_expires_at,
+                    available_at=None,
                 )
             )
             if cast(CursorResult[Any], claimed).rowcount != 1:
                 return None
             session.flush()
             session.refresh(stored)
+            return self._job(stored)
+
+    def renew_lease(
+        self,
+        job_id: UUID,
+        worker_id: str,
+        now: datetime,
+        *,
+        lease_seconds: int,
+    ) -> bool:
+        if lease_seconds < 1:
+            raise ValueError("lease duration must be positive")
+        expires = (
+            _aware_utc(now) + timedelta(seconds=lease_seconds)
+        ).isoformat()
+        with self.database.session() as session:
+            changed = session.execute(
+                update(AnkiCurationJobModel)
+                .where(
+                    AnkiCurationJobModel.id == str(job_id),
+                    AnkiCurationJobModel.lease_owner == worker_id,
+                    AnkiCurationJobModel.state.in_(
+                        [state.value for state in _CLAIMABLE_STATES]
+                    ),
+                )
+                .values(lease_expires_at=expires)
+            )
+            return cast(CursorResult[Any], changed).rowcount == 1
+
+    def release_lease(self, job_id: UUID, worker_id: str) -> bool:
+        with self.database.session() as session:
+            changed = session.execute(
+                update(AnkiCurationJobModel)
+                .where(
+                    AnkiCurationJobModel.id == str(job_id),
+                    AnkiCurationJobModel.lease_owner == worker_id,
+                )
+                .values(
+                    lease_owner=None,
+                    lease_expires_at=None,
+                )
+            )
+            return cast(CursorResult[Any], changed).rowcount == 1
+
+    def defer_job(
+        self,
+        job_id: UUID,
+        worker_id: str,
+        safe_error: str,
+        *,
+        available_at: datetime,
+    ) -> CurationJob:
+        with self.database.session() as session:
+            stored = self._require_owned_job(
+                session,
+                job_id,
+                worker_id,
+            )
+            stored.error = safe_error[:1_000]
+            stored.available_at = _aware_utc(available_at).isoformat()
+            stored.lease_owner = None
+            stored.lease_expires_at = None
+            session.flush()
+            return self._job(stored)
+
+    def fail_job(
+        self,
+        job_id: UUID,
+        worker_id: str,
+        safe_error: str,
+    ) -> CurationJob:
+        with self.database.session() as session:
+            stored = self._require_owned_job(
+                session,
+                job_id,
+                worker_id,
+            )
+            stored.state = CurationState.FAILED.value
+            stored.error = safe_error[:1_000]
+            stored.available_at = None
+            stored.lease_owner = None
+            stored.lease_expires_at = None
+            session.flush()
+            return self._job(stored)
+
+    def cancel_job(self, job_id: UUID) -> CurationJob:
+        with self.database.session() as session:
+            stored = self._require_job_model(session, job_id)
+            state = CurationState(stored.state)
+            if state not in _CLAIMABLE_STATES:
+                raise ValueError(
+                    f"job in {state.value} cannot be canceled"
+                )
+            stored.state = CurationState.CANCELED.value
+            stored.error = "Canceled by user"
+            stored.available_at = None
+            stored.lease_owner = None
+            stored.lease_expires_at = None
+            session.flush()
             return self._job(stored)
 
     def transition(
@@ -294,9 +465,9 @@ class AnkiCurationRepository:
                 )
             ).all()
             for job in stored:
-                job.state = CurationState.QUEUED.value
-                job.error = "requeued after an interrupted Hub process"
-                job.started_at = None
+                job.lease_owner = None
+                job.lease_expires_at = None
+                job.error = "resumable after an interrupted Hub process"
             return len(stored)
 
     def start_stage(
@@ -370,6 +541,145 @@ class AnkiCurationRepository:
             session.flush()
             return self._stage(stored)
 
+    def get_stage(
+        self,
+        job_id: UUID,
+        stage: CurationStage,
+    ) -> JobStage | None:
+        with self.database.session() as session:
+            stored = session.scalar(
+                select(AnkiJobStageModel).where(
+                    AnkiJobStageModel.job_id == str(job_id),
+                    AnkiJobStageModel.stage == stage.value,
+                )
+            )
+            return None if stored is None else self._stage(stored)
+
+    def commit_stage(
+        self,
+        job_id: UUID,
+        *,
+        expected_state: CurationState,
+        target_state: CurationState,
+        stage: CurationStage,
+        artifact: StageArtifact,
+        usage: StageUsage | None = None,
+        cache_hits: int = 0,
+        lease_owner: str | None = None,
+        candidates: Sequence[Candidate] | None = None,
+        source_evidence: Sequence[SourceEvidence] | None = None,
+        gap_cards: Sequence[GapCard] | None = None,
+        job_pins: dict[str, str] | None = None,
+    ) -> CurationJob:
+        if target_state not in ALLOWED_TRANSITIONS.get(
+            expected_state,
+            set(),
+        ):
+            raise InvalidCurationTransition(
+                f"transition {expected_state.value} -> "
+                f"{target_state.value} is not allowed"
+            )
+        if artifact.stage is not stage:
+            raise ValueError("stage artifact does not match committed stage")
+        with self.database.session() as session:
+            job = self._require_job_model(session, job_id)
+            if job.state != expected_state.value:
+                raise InvalidCurationTransition(
+                    f"job {job_id} is not in {expected_state.value}"
+                )
+            if lease_owner is not None and job.lease_owner != lease_owner:
+                raise InvalidCurationTransition(
+                    f"worker no longer owns job {job_id}"
+                )
+            stored_stage = self._require_stage(session, job_id, stage)
+            if stored_stage.state != "running":
+                raise InvalidCurationTransition(
+                    f"stage {stage.value} is not running"
+                )
+            existing = session.scalar(
+                select(AnkiStageArtifactModel).where(
+                    AnkiStageArtifactModel.job_id == str(job_id),
+                    AnkiStageArtifactModel.artifact_id
+                    == artifact.artifact_id,
+                )
+            )
+            if existing is None:
+                session.add(
+                    AnkiStageArtifactModel(
+                        job_id=str(job_id),
+                        artifact_id=artifact.artifact_id,
+                        stage=artifact.stage.value,
+                        kind=artifact.kind,
+                        relative_path=artifact.relative_path,
+                        input_sha256=artifact.input_sha256,
+                        content_sha256=artifact.content_sha256,
+                        metadata_json=_canonical_json(
+                            artifact.metadata
+                        ),
+                    )
+                )
+            elif (
+                existing.stage != artifact.stage.value
+                or existing.kind != artifact.kind
+                or existing.relative_path != artifact.relative_path
+                or existing.input_sha256 != artifact.input_sha256
+                or existing.content_sha256 != artifact.content_sha256
+                or cast(
+                    dict[str, Any],
+                    json.loads(existing.metadata_json),
+                )
+                != artifact.metadata
+            ):
+                raise ValueError(
+                    "artifact identity was reused with different content"
+                )
+            stored_stage.state = "complete"
+            stored_stage.finished_at = utc_now()
+            stored_stage.cache_hits = cache_hits
+            stored_stage.error = None
+            if usage is not None:
+                stored_stage.request_id = usage.request_id
+                stored_stage.input_tokens = usage.input_tokens
+                stored_stage.output_tokens = usage.output_tokens
+                stored_stage.cost_microusd = usage.cost_microusd
+            if candidates is not None:
+                self._replace_candidate_models(
+                    session,
+                    job_id,
+                    candidates,
+                )
+            if source_evidence is not None:
+                self._replace_source_evidence_models(
+                    session,
+                    job_id,
+                    source_evidence,
+                )
+            if gap_cards is not None:
+                self._replace_gap_card_models(
+                    session,
+                    job_id,
+                    gap_cards,
+                )
+            for name, value in (job_pins or {}).items():
+                if name not in {
+                    "semantic_generation",
+                    "companion_generation",
+                    "source_index_generation",
+                }:
+                    raise ValueError(f"unsupported job pin {name}")
+                if not value.strip():
+                    raise ValueError(f"job pin {name} cannot be blank")
+                current = cast(str | None, getattr(job, name))
+                if current is not None and current != value:
+                    raise ValueError(f"job pin {name} cannot be changed")
+                setattr(job, name, value)
+            job.state = target_state.value
+            job.error = None
+            if target_state is CurationState.READY_FOR_REVIEW:
+                job.ready_at = utc_now()
+            session.flush()
+            return self._job(job)
+
     def replace_source_evidence(
         self,
         job_id: UUID,
@@ -377,33 +687,11 @@ class AnkiCurationRepository:
     ) -> None:
         with self.database.session() as session:
             self._require_job_model(session, job_id)
-            session.execute(
-                delete(AnkiSourceEvidenceModel).where(
-                    AnkiSourceEvidenceModel.job_id == str(job_id)
-                )
+            self._replace_source_evidence_models(
+                session,
+                job_id,
+                evidence,
             )
-            for item in evidence:
-                session.add(
-                    AnkiSourceEvidenceModel(
-                        job_id=str(job_id),
-                        evidence_id=item.evidence_id,
-                        concept_id=item.concept_id,
-                        support=item.support.value,
-                        statement=item.statement,
-                        source_refs_json=_canonical_json(
-                            [
-                                {
-                                    "source_kind": ref.source_kind.value,
-                                    "revision_id": ref.revision_id,
-                                    "locator": ref.locator,
-                                    "content_hash": ref.content_hash,
-                                }
-                                for ref in item.source_refs
-                            ]
-                        ),
-                        content_hash=item.content_hash,
-                    )
-                )
 
     def list_source_evidence(self, job_id: UUID) -> list[SourceEvidence]:
         with self.database.session() as session:
@@ -466,32 +754,11 @@ class AnkiCurationRepository:
     ) -> None:
         with self.database.session() as session:
             self._require_job_model(session, job_id)
-            session.execute(
-                delete(AnkiCandidateModel).where(
-                    AnkiCandidateModel.job_id == str(job_id)
-                )
+            self._replace_candidate_models(
+                session,
+                job_id,
+                candidates,
             )
-            for candidate in candidates:
-                session.add(
-                    AnkiCandidateModel(
-                        job_id=str(job_id),
-                        note_id=candidate.note_id,
-                        content_hash=candidate.content_hash,
-                        best_concept_id=candidate.best_concept_id,
-                        provenance_json=_canonical_json(candidate.provenance),
-                        scores_json=_canonical_json(candidate.scores),
-                        predicted_band=candidate.predicted_band,
-                        verdict=candidate.verdict,
-                        confidence=candidate.confidence,
-                        reason=candidate.reason,
-                        context_trap=candidate.context_trap,
-                        recall_direction=candidate.recall_direction,
-                        mnemonic_classification=candidate.mnemonic_classification,
-                        dedupe_disposition=candidate.dedupe_disposition,
-                        selected=candidate.selected,
-                        retrieval_pass=candidate.retrieval_pass.value,
-                    )
-                )
 
     def list_candidates(self, job_id: UUID) -> list[Candidate]:
         with self.database.session() as session:
@@ -505,45 +772,7 @@ class AnkiCurationRepository:
     def save_gap_cards(self, job_id: UUID, cards: Sequence[GapCard]) -> None:
         with self.database.session() as session:
             self._require_job_model(session, job_id)
-            session.execute(
-                delete(AnkiGapCardModel).where(
-                    AnkiGapCardModel.job_id == str(job_id)
-                )
-            )
-            for card in cards:
-                session.add(
-                    AnkiGapCardModel(
-                        id=str(uuid4()),
-                        job_id=str(job_id),
-                        concept_id=card.concept_id,
-                        text=card.text,
-                        extra=card.extra,
-                        revision=card.revision,
-                        selected=card.selected,
-                        image_state=card.image_state,
-                        media_filename=card.media_filename,
-                        source_note_id=card.source_note_id,
-                        generated_image_json=_canonical_json(card.generated_image),
-                        validation_state=card.validation_state,
-                        source_refs_json=_canonical_json(
-                            [
-                                {
-                                    "source_kind": ref.source_kind.value,
-                                    "revision_id": ref.revision_id,
-                                    "locator": ref.locator,
-                                    "content_hash": ref.content_hash,
-                                }
-                                for ref in card.source_refs
-                            ]
-                        ),
-                        evidence_ids_json=_canonical_json(card.evidence_ids),
-                        provenance_json=_canonical_json(card.provenance),
-                        initial_tags_json=_canonical_json(card.initial_tags),
-                        content_hash=card.content_hash or _sha256_text(
-                            f"{card.text}\0{card.extra}"
-                        ),
-                    )
-                )
+            self._replace_gap_card_models(session, job_id, cards)
 
     def list_gap_cards(self, job_id: UUID) -> list[GapCard]:
         with self.database.session() as session:
@@ -1132,6 +1361,150 @@ class AnkiCurationRepository:
         return stored
 
     @staticmethod
+    def _require_owned_job(
+        session: Session,
+        job_id: UUID,
+        worker_id: str,
+    ) -> AnkiCurationJobModel:
+        stored = AnkiCurationRepository._require_job_model(
+            session,
+            job_id,
+        )
+        if stored.lease_owner != worker_id:
+            raise InvalidCurationTransition(
+                f"worker no longer owns job {job_id}"
+            )
+        return stored
+
+    @staticmethod
+    def _replace_candidate_models(
+        session: Session,
+        job_id: UUID,
+        candidates: Sequence[Candidate],
+    ) -> None:
+        if len({candidate.note_id for candidate in candidates}) != len(
+            candidates
+        ):
+            raise ValueError("projected candidates must have unique note IDs")
+        session.execute(
+            delete(AnkiCandidateModel).where(
+                AnkiCandidateModel.job_id == str(job_id)
+            )
+        )
+        for candidate in candidates:
+            session.add(
+                AnkiCandidateModel(
+                    job_id=str(job_id),
+                    note_id=candidate.note_id,
+                    content_hash=candidate.content_hash,
+                    best_concept_id=candidate.best_concept_id,
+                    provenance_json=_canonical_json(
+                        candidate.provenance
+                    ),
+                    scores_json=_canonical_json(candidate.scores),
+                    predicted_band=candidate.predicted_band,
+                    verdict=candidate.verdict,
+                    confidence=candidate.confidence,
+                    reason=candidate.reason,
+                    context_trap=candidate.context_trap,
+                    recall_direction=candidate.recall_direction,
+                    mnemonic_classification=(
+                        candidate.mnemonic_classification
+                    ),
+                    dedupe_disposition=candidate.dedupe_disposition,
+                    selected=candidate.selected,
+                    retrieval_pass=candidate.retrieval_pass.value,
+                )
+            )
+
+    @staticmethod
+    def _replace_source_evidence_models(
+        session: Session,
+        job_id: UUID,
+        evidence: Sequence[SourceEvidence],
+    ) -> None:
+        if len({item.evidence_id for item in evidence}) != len(evidence):
+            raise ValueError("projected source evidence IDs must be unique")
+        session.execute(
+            delete(AnkiSourceEvidenceModel).where(
+                AnkiSourceEvidenceModel.job_id == str(job_id)
+            )
+        )
+        for item in evidence:
+            session.add(
+                AnkiSourceEvidenceModel(
+                    job_id=str(job_id),
+                    evidence_id=item.evidence_id,
+                    concept_id=item.concept_id,
+                    support=item.support.value,
+                    statement=item.statement,
+                    source_refs_json=_canonical_json(
+                        [
+                            {
+                                "source_kind": ref.source_kind.value,
+                                "revision_id": ref.revision_id,
+                                "locator": ref.locator,
+                                "content_hash": ref.content_hash,
+                            }
+                            for ref in item.source_refs
+                        ]
+                    ),
+                    content_hash=item.content_hash,
+                )
+            )
+
+    @staticmethod
+    def _replace_gap_card_models(
+        session: Session,
+        job_id: UUID,
+        cards: Sequence[GapCard],
+    ) -> None:
+        if len({card.concept_id for card in cards}) != len(cards):
+            raise ValueError(
+                "projected gap cards must have unique concept IDs"
+            )
+        session.execute(
+            delete(AnkiGapCardModel).where(
+                AnkiGapCardModel.job_id == str(job_id)
+            )
+        )
+        for card in cards:
+            session.add(
+                AnkiGapCardModel(
+                    id=str(uuid4()),
+                    job_id=str(job_id),
+                    concept_id=card.concept_id,
+                    text=card.text,
+                    extra=card.extra,
+                    revision=card.revision,
+                    selected=card.selected,
+                    image_state=card.image_state,
+                    media_filename=card.media_filename,
+                    source_note_id=card.source_note_id,
+                    generated_image_json=_canonical_json(
+                        card.generated_image
+                    ),
+                    validation_state=card.validation_state,
+                    source_refs_json=_canonical_json(
+                        [
+                            {
+                                "source_kind": ref.source_kind.value,
+                                "revision_id": ref.revision_id,
+                                "locator": ref.locator,
+                                "content_hash": ref.content_hash,
+                            }
+                            for ref in card.source_refs
+                        ]
+                    ),
+                    evidence_ids_json=_canonical_json(card.evidence_ids),
+                    provenance_json=_canonical_json(card.provenance),
+                    initial_tags_json=_canonical_json(card.initial_tags),
+                    content_hash=card.content_hash
+                    or _sha256_text(f"{card.text}\0{card.extra}"),
+                )
+            )
+
+    @staticmethod
     def _require_envelope_operation(
         session: Session,
         envelope_id: UUID,
@@ -1173,6 +1546,13 @@ class AnkiCurationRepository:
                 int(value)
                 for value in json.loads(stored.source_revision_ids_json)
             ),
+            source_revision_hashes={
+                int(key): str(value)
+                for key, value in cast(
+                    dict[str, Any],
+                    json.loads(stored.source_revision_hashes_json),
+                ).items()
+            },
             deck_allowlist=tuple(
                 str(value)
                 for value in json.loads(stored.deck_allowlist_json)
@@ -1198,6 +1578,9 @@ class AnkiCurationRepository:
             apply_state=ApplyState(stored.apply_state),
             review_revision=stored.review_revision,
             error=stored.error,
+            lease_owner=stored.lease_owner,
+            lease_expires_at=stored.lease_expires_at,
+            available_at=stored.available_at,
             created_at=stored.created_at,
             updated_at=stored.updated_at,
         )

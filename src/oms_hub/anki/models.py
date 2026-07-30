@@ -54,6 +54,11 @@ class AnkiCurationJobModel(Base):
         default="[]",
         server_default="[]",
     )
+    source_revision_hashes_json: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+        server_default="{}",
+    )
     deck_allowlist_json: Mapped[str] = mapped_column(
         Text,
         default="[]",
@@ -105,6 +110,18 @@ class AnkiCurationJobModel(Base):
     counts_json: Mapped[str] = mapped_column(Text, default="{}")
     review_revision: Mapped[int] = mapped_column(default=0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lease_owner: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+    lease_expires_at: Mapped[str | None] = mapped_column(
+        String(40),
+        nullable=True,
+    )
+    available_at: Mapped[str | None] = mapped_column(
+        String(40),
+        nullable=True,
+    )
     started_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     ready_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     completed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)

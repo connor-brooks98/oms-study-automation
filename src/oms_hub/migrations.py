@@ -13,7 +13,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 7
+LATEST_SCHEMA_VERSION = 8
 
 
 def _ensure_column(
@@ -47,6 +47,7 @@ def _upgrade_anki_v4_columns(database: "Database") -> None:
     job_columns = {
         "block_id": "VARCHAR(200)",
         "source_revision_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+        "source_revision_hashes_json": "TEXT NOT NULL DEFAULT '{}'",
         "deck_allowlist_json": "TEXT NOT NULL DEFAULT '[]'",
         "tag_allowlist_json": "TEXT NOT NULL DEFAULT '[]'",
         "provider": "VARCHAR(30) NOT NULL DEFAULT 'anthropic'",
@@ -58,6 +59,9 @@ def _upgrade_anki_v4_columns(database: "Database") -> None:
             f"VARCHAR(64) NOT NULL DEFAULT '{empty_sha256}'"
         ),
         "apply_state": "VARCHAR(50) NOT NULL DEFAULT 'pending'",
+        "lease_owner": "VARCHAR(100)",
+        "lease_expires_at": "VARCHAR(40)",
+        "available_at": "VARCHAR(40)",
     }
     for name, definition in job_columns.items():
         _ensure_column(database, "anki_curation_jobs", name, definition)

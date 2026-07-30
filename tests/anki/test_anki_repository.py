@@ -153,7 +153,7 @@ def test_transition_requires_expected_state_and_allowed_edge(tmp_path) -> None:
         )
 
 
-def test_recovery_requeues_interrupted_pre_review_jobs_only(tmp_path) -> None:
+def test_recovery_releases_interrupted_pre_review_jobs_in_place(tmp_path) -> None:
     repository, lecture_id = _prepared_repository(tmp_path)
     interrupted = repository.create_job(_job_request(lecture_id, snapshot="snapshot-1"))
     envelope_pending = repository.create_job(
@@ -187,7 +187,10 @@ def test_recovery_requeues_interrupted_pre_review_jobs_only(tmp_path) -> None:
         repository.transition(envelope_pending.id, current, target)
 
     assert repository.recover_interrupted_jobs() == 1
-    assert repository.require_job(interrupted.id).state is CurationState.QUEUED
+    recovered = repository.require_job(interrupted.id)
+    assert recovered.state is CurationState.PREFLIGHT
+    assert recovered.lease_owner is None
+    assert recovered.lease_expires_at is None
     assert (
         repository.require_job(envelope_pending.id).state
         is CurationState.ENVELOPE_PENDING

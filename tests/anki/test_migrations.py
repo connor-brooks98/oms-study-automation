@@ -214,9 +214,13 @@ def test_schema_v6_upgrade_adds_v4_columns_without_losing_legacy_job(
 
     assert {
         "source_revision_ids_json",
+        "source_revision_hashes_json",
         "deck_allowlist_json",
         "tag_allowlist_json",
         "apply_state",
+        "lease_owner",
+        "lease_expires_at",
+        "available_at",
     } <= columns
     assert {
         "anki_source_evidence",
@@ -228,4 +232,4 @@ def test_schema_v6_upgrade_adds_v4_columns_without_losing_legacy_job(
         "legacy",
         "pending",
     )
-    assert version == 7
+    assert version == LATEST_SCHEMA_VERSION

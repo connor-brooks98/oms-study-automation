@@ -154,7 +154,9 @@ def test_app_wires_local_runtime_only_when_anki_is_enabled(
     try:
         assert disabled.state.anki_runtime is None
         assert isinstance(enabled.state.anki_runtime, AnkiRuntime)
+        assert enabled.state.anki_curation_worker is not None
     finally:
         disabled.state.database.close()
         enabled.state.database.close()
+        asyncio.run(enabled.state.anki_embedder.aclose())
         asyncio.run(enabled.state.anki_runtime.aclose())

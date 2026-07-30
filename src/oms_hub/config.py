@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     )
     anki_snapshot_max_age_hours: int = Field(default=48, ge=1, le=24 * 30)
     anki_worker_poll_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
+    anki_worker_lease_seconds: int = Field(default=120, ge=3, le=3_600)
+    anki_worker_max_stage_attempts: int = Field(default=3, ge=1, le=10)
     anki_embedding_model: str = Field(
         default="BAAI/bge-small-en-v1.5",
         min_length=1,

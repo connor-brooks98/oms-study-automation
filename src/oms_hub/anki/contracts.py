@@ -53,6 +53,18 @@ class CreateCurationJobRequest(ContractModel):
     gap_prompt_version: Annotated[str, Field(min_length=1, max_length=100)]
     provider: Annotated[str, Field(min_length=1, max_length=30)]
     model: Annotated[str, Field(min_length=1, max_length=200)]
+    source_revision_hashes: dict[
+        Annotated[int, Field(gt=0)],
+        Sha256,
+    ] = Field(default_factory=dict)
+    semantic_generation: Annotated[
+        str,
+        Field(min_length=1, max_length=200),
+    ] | None = None
+    companion_generation: Annotated[
+        str,
+        Field(min_length=1, max_length=200),
+    ] | None = None
 
     @field_validator("deck_allowlist", "tag_allowlist", mode="before")
     @classmethod
@@ -73,6 +85,16 @@ class CreateCurationJobRequest(ContractModel):
             raise ValueError("source revision IDs must be unique")
         return values
 
+    @model_validator(mode="after")
+    def validate_source_hashes(self) -> "CreateCurationJobRequest":
+        if self.source_revision_hashes and set(
+            self.source_revision_hashes
+        ) != set(self.source_revision_ids):
+            raise ValueError(
+                "source revision hashes must match selected revisions"
+            )
+        return self
+
     def to_domain(self) -> CreateCurationJob:
         return CreateCurationJob(
             lecture_id=self.lecture_id,
@@ -89,6 +111,9 @@ class CreateCurationJobRequest(ContractModel):
             gap_prompt_version=self.gap_prompt_version,
             provider=self.provider,
             model=self.model,
+            source_revision_hashes=dict(self.source_revision_hashes),
+            semantic_generation=self.semantic_generation,
+            companion_generation=self.companion_generation,
         )
 
 

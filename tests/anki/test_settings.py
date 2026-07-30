@@ -19,6 +19,8 @@ def test_anki_settings_default_to_disabled_and_data_directory_child(
     assert settings.resolved_anki_data_dir == tmp_path / "anki"
     assert settings.anki_agent_token_key == "anki-agent-token"
     assert settings.anki_worker_poll_seconds == 5.0
+    assert settings.anki_worker_lease_seconds == 120
+    assert settings.anki_worker_max_stage_attempts == 3
     assert settings.anki_semantic_model == "voyage-4-large"
     assert settings.anki_semantic_dimensions == 1024
     assert settings.anki_semantic_min_coverage == 0.995

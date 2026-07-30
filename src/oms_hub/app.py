@@ -11,8 +11,20 @@ from starlette.responses import Response
 
 from oms_hub import __version__
 from oms_hub.anki.ankiconnect import AnkiConnectClient
+from oms_hub.anki.index import AnkiIndex
+from oms_hub.anki.pipeline import CurationPipeline, StageArtifactStore
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.anki.runtime import AnkiRuntime, WindowsAnkiLauncher
+from oms_hub.anki.semantic.service import SemanticIndexService
+from oms_hub.anki.semantic.store import SemanticSnapshotStore
+from oms_hub.anki.semantic.voyage import VoyageEmbeddingClient
+from oms_hub.anki.source_index import LectureSourceIndex
+from oms_hub.anki.sources import LectureSourceExtractor
+from oms_hub.anki.stages import (
+    CurationServicesRunner,
+    PinnedCurationInputValidator,
+)
+from oms_hub.anki.worker import AnkiCurationWorker
 from oms_hub.config import Settings, get_settings
 from oms_hub.db import Database
 from oms_hub.files.office import SerialOfficeConverter
@@ -27,6 +39,7 @@ from oms_hub.llm.gemini import GeminiProvider
 from oms_hub.llm.openai import OpenAIProvider
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.llm.service import LLMService
+from oms_hub.llm.structured import StructuredTextService
 from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import expanded_path
 from oms_hub.security.access import (
@@ -75,9 +88,17 @@ from oms_hub.web.upload_routes import router as upload_router
 
 @asynccontextmanager
 async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    worker = getattr(app.state, "anki_curation_worker", None)
+    if worker is not None:
+        await worker.start()
     try:
         yield
     finally:
+        if worker is not None:
+            await worker.stop()
+        embedder = getattr(app.state, "anki_embedder", None)
+        if embedder is not None:
+            await embedder.aclose()
         runtime = getattr(app.state, "anki_runtime", None)
         if runtime is not None:
             await runtime.aclose()
@@ -435,6 +456,92 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ),
         app.state.notebook_connection,
     )
+    app.state.anki_curation_worker = None
+    app.state.anki_embedder = None
+    app.state.anki_companion_index = None
+    app.state.anki_semantic_store = None
+    app.state.anki_source_index = None
+    if resolved.anki_enabled:
+        runtime = app.state.anki_runtime
+        assert isinstance(runtime, AnkiRuntime)
+        embedder = VoyageEmbeddingClient(
+            app.state.secrets,
+            model=resolved.anki_semantic_model,
+            dimensions=resolved.anki_semantic_dimensions,
+            batch_size=resolved.anki_semantic_batch_size,
+        )
+        anki_root = resolved.resolved_anki_data_dir
+        companion = AnkiIndex(anki_root / "companion")
+        semantic_store = SemanticSnapshotStore(anki_root / "semantic")
+        semantic = SemanticIndexService(
+            semantic_store,
+            embedder,
+            model=resolved.anki_semantic_model,
+            dimensions=resolved.anki_semantic_dimensions,
+            min_coverage=resolved.anki_semantic_min_coverage,
+            query_cache_size=resolved.anki_semantic_query_cache_size,
+        )
+
+        def source_index(job_id: object) -> LectureSourceIndex:
+            from uuid import UUID
+
+            if not isinstance(job_id, UUID):
+                raise TypeError("job ID is invalid")
+            return LectureSourceIndex(
+                anki_root / "jobs" / str(job_id) / "source-index",
+                embedder,
+                model=resolved.anki_semantic_model,
+                dimensions=resolved.anki_semantic_dimensions,
+                query_cache_size=resolved.anki_semantic_query_cache_size,
+            )
+
+        structured = StructuredTextService(app.state.llm_service)
+        runner = CurationServicesRunner(
+            runtime=runtime,
+            repository=app.state.anki_repository,
+            source_extractor=LectureSourceExtractor(
+                app.state.ingestion_repository
+            ),
+            source_indexes=source_index,
+            companion=companion,
+            semantic=semantic,
+            structured=structured,
+            embedder=embedder,
+            focused_retrieval_limit=(
+                resolved.anki_focused_retrieval_limit
+            ),
+            global_retrieval_limit=resolved.anki_global_retrieval_limit,
+        )
+        validator = PinnedCurationInputValidator(
+            app.state.anki_repository,
+            app.state.ingestion_repository,
+            companion,
+            semantic_store,
+            source_index,
+            semantic_model=resolved.anki_semantic_model,
+            semantic_dimensions=resolved.anki_semantic_dimensions,
+        )
+        pipeline = CurationPipeline(
+            app.state.anki_repository,
+            StageArtifactStore(anki_root / "artifacts"),
+            runner,
+            input_validator=validator,
+        )
+        app.state.anki_embedder = embedder
+        app.state.anki_companion_index = companion
+        app.state.anki_semantic_store = semantic_store
+        app.state.anki_source_index = source_index
+        app.state.anki_curation_pipeline = pipeline
+        app.state.anki_curation_worker = AnkiCurationWorker(
+            app.state.anki_repository,
+            pipeline,
+            worker_id="study-hub",
+            lease_seconds=resolved.anki_worker_lease_seconds,
+            poll_seconds=resolved.anki_worker_poll_seconds,
+            max_stage_attempts=(
+                resolved.anki_worker_max_stage_attempts
+            ),
+        )
     web_root = Path(__file__).parent / "web"
     app.mount(
         "/static",

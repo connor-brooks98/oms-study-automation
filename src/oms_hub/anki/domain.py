@@ -25,6 +25,7 @@ class CurationState(StrEnum):
     VERIFYING = "verifying"
     COMPLETE = "complete"
     FAILED = "failed"
+    CANCELED = "canceled"
 
 
 class CurationStage(StrEnum):
@@ -111,6 +112,9 @@ class CreateCurationJob:
     gap_prompt_version: str
     provider: str
     model: str
+    source_revision_hashes: dict[int, str] = field(default_factory=dict)
+    semantic_generation: str | None = None
+    companion_generation: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +125,7 @@ class CurationJob:
     attempts: int
     block_id: str | None
     source_revision_ids: tuple[int, ...]
+    source_revision_hashes: dict[int, str]
     deck_allowlist: tuple[str, ...]
     tag_allowlist: tuple[str, ...]
     provider: str
@@ -140,6 +145,9 @@ class CurationJob:
     apply_state: ApplyState
     review_revision: int
     error: str | None
+    lease_owner: str | None
+    lease_expires_at: str | None
+    available_at: str | None
     created_at: str
     updated_at: str
 
