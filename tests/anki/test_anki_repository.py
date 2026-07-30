@@ -22,11 +22,13 @@ from oms_hub.anki.domain import (
     StageArtifact,
     StageUsage,
 )
+from oms_hub.anki.judgment import JudgmentCacheRecord
 from oms_hub.anki.repository import (
     AnkiCurationRepository,
     InvalidCurationTransition,
 )
 from oms_hub.db import Database
+from oms_hub.llm.domain import ProviderName
 from oms_hub.models import LectureModel
 
 _OPEN_DATABASES: list[Database] = []
@@ -321,6 +323,35 @@ def test_candidates_gaps_and_review_revision_are_persisted(tmp_path) -> None:
             job.id,
             ReviewChangeSet(expected_revision=0),
         )
+
+
+def test_coverage_judgment_cache_round_trips_immutable_record(
+    tmp_path,
+) -> None:
+    repository, _ = _prepared_repository(tmp_path)
+    record = JudgmentCacheRecord(
+        cache_key="a" * 64,
+        concept_content_hash="b" * 64,
+        candidate_digest="c" * 64,
+        prompt_version="judgment-v1",
+        provider=ProviderName.OPENAI,
+        model="gpt-5.2",
+        result={
+            "status": "missing",
+            "supporting_note_ids": [],
+            "missing_facts": ["Treatment response is absent."],
+            "rationale": "No candidate covers treatment response.",
+        },
+        input_tokens=20,
+        output_tokens=10,
+        cost_microusd=5,
+        created_at="2026-07-30T12:00:00+00:00",
+    )
+
+    repository.save_judgment_cache(record)
+    repository.save_judgment_cache(record)
+
+    assert repository.get_judgment_cache(record.cache_key) == record
 
 
 def test_envelope_is_immutable_and_receipt_updates_delivery_state(tmp_path) -> None:

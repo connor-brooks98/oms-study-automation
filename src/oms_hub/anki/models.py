@@ -307,6 +307,22 @@ class AnkiVerdictCacheModel(Base):
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
 
 
+class AnkiCoverageJudgmentCacheModel(Base):
+    __tablename__ = "anki_coverage_judgment_cache"
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    concept_content_hash: Mapped[str] = mapped_column(String(64))
+    candidate_digest: Mapped[str] = mapped_column(String(64))
+    prompt_version: Mapped[str] = mapped_column(String(100))
+    provider: Mapped[str] = mapped_column(String(30))
+    model: Mapped[str] = mapped_column(String(200))
+    result_json: Mapped[str] = mapped_column(Text)
+    input_tokens: Mapped[int] = mapped_column(default=0)
+    output_tokens: Mapped[int] = mapped_column(default=0)
+    cost_microusd: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
 class AnkiEnvelopeModel(Base):
     __tablename__ = "anki_envelopes"
     __table_args__ = (

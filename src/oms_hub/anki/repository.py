@@ -33,10 +33,12 @@ from oms_hub.anki.domain import (
     StoredAgentCommand,
     StoredEnvelope,
 )
+from oms_hub.anki.judgment import JudgmentCacheRecord
 from oms_hub.anki.models import (
     AnkiAgentCommandModel,
     AnkiAgentStateModel,
     AnkiCandidateModel,
+    AnkiCoverageJudgmentCacheModel,
     AnkiCurationJobModel,
     AnkiEnvelopeModel,
     AnkiEnvelopeOperationModel,
@@ -47,6 +49,7 @@ from oms_hub.anki.models import (
     AnkiTagPatchModel,
 )
 from oms_hub.db import Database
+from oms_hub.llm.domain import ProviderName
 from oms_hub.models import LectureModel, utc_now
 
 ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
@@ -596,6 +599,70 @@ class AnkiCurationRepository:
             job.review_revision += 1
             session.flush()
             return SavedReview(job_id=job_id, revision=job.review_revision)
+
+    def get_judgment_cache(
+        self,
+        cache_key: str,
+    ) -> JudgmentCacheRecord | None:
+        with self.database.session() as session:
+            stored = session.get(
+                AnkiCoverageJudgmentCacheModel,
+                cache_key,
+            )
+            return (
+                None
+                if stored is None
+                else self._judgment_cache_record(stored)
+            )
+
+    def save_judgment_cache(
+        self,
+        record: JudgmentCacheRecord,
+    ) -> None:
+        with self.database.session() as session:
+            stored = session.get(
+                AnkiCoverageJudgmentCacheModel,
+                record.cache_key,
+            )
+            if stored is not None:
+                if self._judgment_cache_record(stored) != record:
+                    raise ValueError(
+                        "judgment cache key has conflicting content"
+                    )
+                return
+            session.add(
+                AnkiCoverageJudgmentCacheModel(
+                    cache_key=record.cache_key,
+                    concept_content_hash=record.concept_content_hash,
+                    candidate_digest=record.candidate_digest,
+                    prompt_version=record.prompt_version,
+                    provider=record.provider.value,
+                    model=record.model,
+                    result_json=_canonical_json(record.result),
+                    input_tokens=record.input_tokens,
+                    output_tokens=record.output_tokens,
+                    cost_microusd=record.cost_microusd,
+                    created_at=record.created_at,
+                )
+            )
+
+    @staticmethod
+    def _judgment_cache_record(
+        stored: AnkiCoverageJudgmentCacheModel,
+    ) -> JudgmentCacheRecord:
+        return JudgmentCacheRecord(
+            cache_key=stored.cache_key,
+            concept_content_hash=stored.concept_content_hash,
+            candidate_digest=stored.candidate_digest,
+            prompt_version=stored.prompt_version,
+            provider=ProviderName(stored.provider),
+            model=stored.model,
+            result=dict(json.loads(stored.result_json)),
+            input_tokens=stored.input_tokens,
+            output_tokens=stored.output_tokens,
+            cost_microusd=stored.cost_microusd,
+            created_at=stored.created_at,
+        )
 
     def create_envelope(
         self,
