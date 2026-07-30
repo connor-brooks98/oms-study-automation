@@ -1,12 +1,27 @@
-from oms_hub.anki.semantic.domain import EmbeddingClient, InputType
+from oms_hub.anki.semantic.domain import (
+    DocumentRecord,
+    EmbeddingClient,
+    InputType,
+    SemanticManifest,
+    SemanticSnapshot,
+)
+from oms_hub.anki.semantic.store import (
+    SemanticSnapshotError,
+    SemanticSnapshotStore,
+)
 from oms_hub.anki.semantic.voyage import (
     VoyageEmbeddingClient,
     VoyageEmbeddingError,
 )
 
 __all__ = [
+    "DocumentRecord",
     "EmbeddingClient",
     "InputType",
+    "SemanticManifest",
+    "SemanticSnapshot",
+    "SemanticSnapshotError",
+    "SemanticSnapshotStore",
     "VoyageEmbeddingClient",
     "VoyageEmbeddingError",
 ]
