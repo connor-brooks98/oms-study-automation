@@ -1,21 +1,32 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
 from oms_hub.models import (
     PublishedQuizModel,
+    StudioQuizImageOverrideModel,
+    StudioQuizImageRequirementModel,
     StudioRunAttemptModel,
     StudioRunModel,
     StudioRunSourceModel,
     StudioSourceModel,
 )
+from oms_hub.study_generation.domain import NativeQuiz
+from oms_hub.study_generation.native_quiz import (
+    image_requirements,
+    parse_native_quiz,
+    serialize_native_quiz,
+)
 from oms_hub.study_generation.studio_domain import (
+    StudioQuizImageRequirement,
+    StudioQuizReview,
     StudioRun,
     StudioRunAttempt,
     StudioRunSource,
@@ -24,6 +35,7 @@ from oms_hub.study_generation.studio_domain import (
     StudioSource,
     StudioSourceState,
     StudioSourceType,
+    StudioStoredImage,
 )
 
 
@@ -426,6 +438,142 @@ class StudioRepository:
                 raise KeyError(run_id)
             model.raw_response = raw_response
 
+    def await_image_review(
+        self,
+        run_id: str,
+        notebook_id: str,
+        raw_response: str,
+        quiz: NativeQuiz,
+    ) -> StudioRun:
+        requirements = image_requirements(quiz)
+        if not requirements:
+            raise ValueError("quiz does not require image review")
+        with self.database.session() as session:
+            model = session.get(StudioRunModel, run_id)
+            if model is None:
+                raise KeyError(run_id)
+            session.execute(
+                delete(StudioQuizImageOverrideModel).where(
+                    StudioQuizImageOverrideModel.run_id == run_id
+                )
+            )
+            session.execute(
+                delete(StudioQuizImageRequirementModel).where(
+                    StudioQuizImageRequirementModel.run_id == run_id
+                )
+            )
+            for requirement in requirements:
+                session.add(
+                    StudioQuizImageRequirementModel(
+                        run_id=run_id,
+                        image_key=requirement.key,
+                        source_title=requirement.source_title,
+                        locator=requirement.locator,
+                        description=requirement.description,
+                    )
+                )
+            model.state = StudioRunState.AWAITING_IMAGES.value
+            model.stage = StudioRunStage.IMAGE_REVIEW.value
+            model.notebook_id = notebook_id
+            model.raw_response = raw_response
+            model.draft_payload_json = serialize_native_quiz(quiz)
+            model.error = None
+            model.next_attempt_at = None
+            session.flush()
+            return self._run_domain(session, model)
+
+    def quiz_review(self, run_id: str) -> StudioQuizReview:
+        with self.database.session() as session:
+            model = session.get(StudioRunModel, run_id)
+            if model is None:
+                raise KeyError(run_id)
+            return self._review_domain(session, model)
+
+    def bind_image(
+        self,
+        run_id: str,
+        image_key: str,
+        image: StudioStoredImage,
+    ) -> StudioQuizReview:
+        with self.database.session() as session:
+            run = session.get(StudioRunModel, run_id)
+            if run is None:
+                raise KeyError(run_id)
+            if run.state != StudioRunState.AWAITING_IMAGES.value:
+                raise ValueError("Studio run is not awaiting images")
+            model = session.scalar(
+                select(StudioQuizImageRequirementModel).where(
+                    StudioQuizImageRequirementModel.run_id == run_id,
+                    StudioQuizImageRequirementModel.image_key == image_key,
+                )
+            )
+            if model is None:
+                raise KeyError(image_key)
+            model.asset_path = str(image.path)
+            model.asset_sha256 = image.sha256
+            model.media_type = image.media_type
+            model.width = image.width
+            model.height = image.height
+            model.original_filename = image.original_filename
+            session.flush()
+            return self._review_domain(session, run)
+
+    def set_image_override(
+        self,
+        run_id: str,
+        question_id: str,
+        enabled: bool,
+    ) -> StudioQuizReview:
+        with self.database.session() as session:
+            run = session.get(StudioRunModel, run_id)
+            if run is None:
+                raise KeyError(run_id)
+            if run.state != StudioRunState.AWAITING_IMAGES.value:
+                raise ValueError("Studio run is not awaiting images")
+            if not run.draft_payload_json:
+                raise ValueError("Studio quiz draft is missing")
+            quiz = parse_native_quiz(run.draft_payload_json)
+            question = next(
+                (item for item in quiz.questions if item.id == question_id),
+                None,
+            )
+            if question is None or question.image_ref is None:
+                raise ValueError("question does not have an image requirement")
+            existing = session.scalar(
+                select(StudioQuizImageOverrideModel).where(
+                    StudioQuizImageOverrideModel.run_id == run_id,
+                    StudioQuizImageOverrideModel.question_id == question_id,
+                )
+            )
+            if enabled and existing is None:
+                session.add(
+                    StudioQuizImageOverrideModel(
+                        run_id=run_id,
+                        question_id=question_id,
+                        image_key=question.image_ref.key,
+                    )
+                )
+            elif not enabled and existing is not None:
+                session.delete(existing)
+            session.flush()
+            return self._review_domain(session, run)
+
+    def resolved_quiz(self, run_id: str) -> NativeQuiz:
+        review = self.quiz_review(run_id)
+        if review.unresolved_keys:
+            raise ValueError(
+                "quiz images are still required: " + ", ".join(review.unresolved_keys)
+            )
+        return replace(
+            review.quiz,
+            questions=tuple(
+                replace(question, image_ref=None)
+                if question.id in review.overridden_question_ids
+                else question
+                for question in review.quiz.questions
+            ),
+        )
+
     def mark_run_attempt_error(
         self,
         run_id: str,
@@ -580,6 +728,7 @@ class StudioRepository:
             model.error,
             model.notebook_id,
             model.raw_response,
+            model.draft_payload_json,
             model.published_token,
             model.supersedes_run_id,
             tuple(
@@ -590,6 +739,65 @@ class StudioRepository:
                 )
                 for snapshot in snapshots
             ),
+        )
+
+    @classmethod
+    def _review_domain(
+        cls,
+        session: Session,
+        model: StudioRunModel,
+    ) -> StudioQuizReview:
+        if not model.draft_payload_json:
+            raise ValueError("Studio quiz draft is missing")
+        quiz = parse_native_quiz(model.draft_payload_json)
+        requirement_models = session.scalars(
+            select(StudioQuizImageRequirementModel)
+            .where(StudioQuizImageRequirementModel.run_id == model.id)
+            .order_by(StudioQuizImageRequirementModel.id)
+        ).all()
+        overridden = frozenset(
+            session.scalars(
+                select(StudioQuizImageOverrideModel.question_id).where(
+                    StudioQuizImageOverrideModel.run_id == model.id
+                )
+            ).all()
+        )
+        question_ids_by_key: dict[str, list[str]] = {}
+        for question in quiz.questions:
+            if question.image_ref is not None:
+                question_ids_by_key.setdefault(question.image_ref.key, []).append(question.id)
+        requirements = tuple(
+            StudioQuizImageRequirement(
+                requirement.image_key,
+                requirement.source_title,
+                requirement.locator,
+                requirement.description,
+                tuple(question_ids_by_key.get(requirement.image_key, ())),
+                (
+                    StudioStoredImage(
+                        Path(requirement.asset_path),
+                        requirement.asset_sha256,
+                        requirement.media_type,
+                        requirement.width,
+                        requirement.height,
+                        requirement.original_filename,
+                    )
+                    if requirement.asset_path is not None
+                    and requirement.asset_sha256 is not None
+                    and requirement.media_type is not None
+                    and requirement.width is not None
+                    and requirement.height is not None
+                    and requirement.original_filename is not None
+                    else None
+                ),
+            )
+            for requirement in requirement_models
+        )
+        return StudioQuizReview(
+            cls._run_domain(session, model),
+            quiz,
+            requirements,
+            overridden,
         )
 
 

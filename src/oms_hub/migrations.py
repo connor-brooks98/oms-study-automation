@@ -13,7 +13,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 10
+LATEST_SCHEMA_VERSION = 11
 
 
 def migrate_database(database: "Database") -> None:
@@ -32,6 +32,11 @@ def migrate_database(database: "Database") -> None:
         with database.engine.begin() as connection:
             connection.execute(
                 text("ALTER TABLE studio_runs ADD COLUMN published_token VARCHAR(64)")
+            )
+    if "draft_payload_json" not in run_columns:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE studio_runs ADD COLUMN draft_payload_json TEXT")
             )
     usage_columns = {
         column["name"] for column in inspect(database.engine).get_columns("study_usage")

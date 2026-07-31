@@ -60,7 +60,7 @@ def test_v9_published_lecture_quiz_is_backfilled_with_destination(tmp_path):
     database.close()
 
 
-def test_schema_v10_adds_native_quiz_and_studio_job_registries(tmp_path):
+def test_schema_v11_adds_native_quiz_studio_jobs_and_image_review(tmp_path):
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()
 
@@ -81,6 +81,9 @@ def test_schema_v10_adds_native_quiz_and_studio_job_registries(tmp_path):
         "studio_runs",
         "studio_run_sources",
         "studio_run_attempts",
+        "studio_quiz_image_requirements",
+        "studio_quiz_image_overrides",
+        "published_quiz_media",
     } <= names
     source_columns = {
         column["name"]
@@ -127,6 +130,10 @@ def test_schema_v10_adds_native_quiz_and_studio_job_registries(tmp_path):
         "ix_studio_runs_scope",
         "ix_studio_runs_supersedes",
     } <= run_indexes
+    run_columns = {
+        column["name"] for column in inspect(database.engine).get_columns("studio_runs")
+    }
+    assert "draft_payload_json" in run_columns
     published_columns = {
         column["name"] for column in inspect(database.engine).get_columns("published_quizzes")
     }
@@ -145,7 +152,7 @@ def test_schema_v10_adds_native_quiz_and_studio_job_registries(tmp_path):
         "uq_published_lecture_origin",
         "uq_published_studio_label",
     } <= published_indexes
-    assert version == LATEST_SCHEMA_VERSION == 10
+    assert version == LATEST_SCHEMA_VERSION == 11
 
 
 def test_v6_generation_jobs_are_upgraded_without_losing_rows(tmp_path):

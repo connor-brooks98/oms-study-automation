@@ -364,6 +364,7 @@ class StudioRunModel(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     notebook_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     raw_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    draft_payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
     supersedes_run_id: Mapped[str | None] = mapped_column(
         ForeignKey("studio_runs.id"),
@@ -401,6 +402,43 @@ class StudioRunAttemptModel(Base):
     diagnostic_source: Mapped[str] = mapped_column(String(40))
     raw_response: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class StudioQuizImageRequirementModel(Base):
+    __tablename__ = "studio_quiz_image_requirements"
+    __table_args__ = (
+        UniqueConstraint("run_id", "image_key"),
+        Index("ix_studio_quiz_image_requirements_run", "run_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("studio_runs.id"))
+    image_key: Mapped[str] = mapped_column(String(64))
+    source_title: Mapped[str] = mapped_column(String(500))
+    locator: Mapped[str] = mapped_column(String(1000))
+    description: Mapped[str] = mapped_column(String(1000))
+    asset_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    asset_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    media_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    width: Mapped[int | None] = mapped_column(nullable=True)
+    height: Mapped[int | None] = mapped_column(nullable=True)
+    original_filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class StudioQuizImageOverrideModel(Base):
+    __tablename__ = "studio_quiz_image_overrides"
+    __table_args__ = (
+        UniqueConstraint("run_id", "question_id"),
+        Index("ix_studio_quiz_image_overrides_run", "run_id", "question_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("studio_runs.id"))
+    question_id: Mapped[str] = mapped_column(String(4))
+    image_key: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
 
 
@@ -560,3 +598,22 @@ class PublishedQuizModel(Base):
         default=utc_now,
         onupdate=utc_now,
     )
+
+
+class PublishedQuizMediaModel(Base):
+    __tablename__ = "published_quiz_media"
+    __table_args__ = (
+        UniqueConstraint("quiz_token", "image_key"),
+        Index("ix_published_quiz_media_token", "quiz_token", "image_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    quiz_token: Mapped[str] = mapped_column(ForeignKey("published_quizzes.token"))
+    image_key: Mapped[str] = mapped_column(String(64))
+    path: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(String(64))
+    media_type: Mapped[str] = mapped_column(String(50))
+    width: Mapped[int]
+    height: Mapped[int]
+    alt_text: Mapped[str] = mapped_column(String(1000))
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)

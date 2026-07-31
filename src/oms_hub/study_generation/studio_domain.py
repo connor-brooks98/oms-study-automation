@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from oms_hub.study_generation.domain import NativeQuiz
+
 
 class StudioSourceType(StrEnum):
     FILE = "file"
@@ -21,6 +23,7 @@ class StudioRunState(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     RETRYING = "retrying"
+    AWAITING_IMAGES = "awaiting_images"
     COMPLETE = "complete"
     FAILED = "failed"
 
@@ -30,6 +33,7 @@ class StudioRunStage(StrEnum):
     NOTEBOOK = "notebook"
     CHAT = "chat"
     QUIZ_VALIDATE = "quiz_validate"
+    IMAGE_REVIEW = "image_review"
     PUBLISH = "publish"
     COMPLETE = "complete"
 
@@ -81,6 +85,7 @@ class StudioRun:
     error: str | None
     notebook_id: str | None
     raw_response: str | None
+    draft_payload_json: str | None
     published_token: str | None
     supersedes_run_id: str | None
     sources: tuple[StudioRunSource, ...]
@@ -93,3 +98,47 @@ class StudioRunAttempt:
     raw_response: str | None
     error: str | None
     created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class StudioStoredImage:
+    path: Path
+    sha256: str
+    media_type: str
+    width: int
+    height: int
+    original_filename: str
+
+
+@dataclass(frozen=True, slots=True)
+class StudioQuizImageRequirement:
+    image_key: str
+    source_title: str
+    locator: str
+    description: str
+    question_ids: tuple[str, ...]
+    image: StudioStoredImage | None
+
+
+@dataclass(frozen=True, slots=True)
+class StudioQuizReview:
+    run: StudioRun
+    quiz: NativeQuiz
+    requirements: tuple[StudioQuizImageRequirement, ...]
+    overridden_question_ids: frozenset[str]
+
+    @property
+    def unresolved_keys(self) -> tuple[str, ...]:
+        return tuple(
+            requirement.image_key
+            for requirement in self.requirements
+            if requirement.image is None
+            and any(
+                question_id not in self.overridden_question_ids
+                for question_id in requirement.question_ids
+            )
+        )
+
+    @property
+    def resolved(self) -> bool:
+        return not self.unresolved_keys
