@@ -166,6 +166,39 @@ def test_source_scope_is_applied_before_result_limit(
     asyncio.run(scenario())
 
 
+def test_summary_metadata_round_trips_through_source_index(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        index = LectureSourceIndex(
+            tmp_path / "source-index",
+            KeywordEmbedder(),
+            model="voyage-4-large",
+            dimensions=3,
+        )
+        summary = SourcePassage.create(
+            revision_id=9,
+            lecture_id=12,
+            artifact_id="outline:9",
+            source_kind=SourceKind.SUMMARY,
+            locator="summary:depth:1",
+            text="DEEP: ferritin regulation [27, 28]",
+            source_id="SUM:12:DEPTH:D1",
+            summary_backrefs=("27", "28"),
+            summary_section="depth",
+        )
+
+        await index.refresh([summary])
+        restored = index.get_passage(summary.passage_id)
+
+        assert restored == summary
+        assert restored is not None
+        assert restored.source_id == "SUM:12:DEPTH:D1"
+        assert restored.summary_backrefs == ("27", "28")
+
+    asyncio.run(scenario())
+
+
 def test_failed_refresh_keeps_previous_generation_searchable(
     tmp_path: Path,
 ) -> None:

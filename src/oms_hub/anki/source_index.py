@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -273,9 +274,9 @@ class LectureSourceIndex:
 
 
 _PASSAGE_SELECT = """
-SELECT passage_id, revision_id, lecture_id, artifact_id, source_kind,
+SELECT passage_id, source_id, revision_id, lecture_id, artifact_id, source_kind,
        locator, text, content_hash, extraction_status, slide_number,
-       start_seconds, end_seconds
+       start_seconds, end_seconds, summary_backrefs_json, summary_section
 FROM passages
 """
 
@@ -293,6 +294,7 @@ def _build_database(
             PRAGMA journal_mode = DELETE;
             CREATE TABLE passages (
                 passage_id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL UNIQUE,
                 semantic_id INTEGER UNIQUE,
                 revision_id INTEGER NOT NULL,
                 lecture_id INTEGER NOT NULL,
@@ -305,6 +307,8 @@ def _build_database(
                 slide_number INTEGER,
                 start_seconds REAL,
                 end_seconds REAL,
+                summary_backrefs_json TEXT NOT NULL,
+                summary_section TEXT,
                 indexed INTEGER NOT NULL
             );
             CREATE INDEX ix_passages_scope
@@ -322,14 +326,15 @@ def _build_database(
             connection.execute(
                 """
                 INSERT INTO passages (
-                    passage_id, semantic_id, revision_id, lecture_id,
+                    passage_id, source_id, semantic_id, revision_id, lecture_id,
                     artifact_id, source_kind, locator, text, content_hash,
                     extraction_status, slide_number, start_seconds,
-                    end_seconds, indexed
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    end_seconds, summary_backrefs_json, summary_section, indexed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     passage.passage_id,
+                    passage.source_id,
                     semantic_id,
                     passage.revision_id,
                     passage.lecture_id,
@@ -342,6 +347,8 @@ def _build_database(
                     passage.slide_number,
                     passage.start_seconds,
                     passage.end_seconds,
+                    json.dumps(passage.summary_backrefs),
+                    passage.summary_section,
                     int(semantic_id is not None),
                 ),
             )
@@ -518,21 +525,24 @@ def _passages_by_semantic_id(
 def _row_to_passage(row: tuple[object, ...]) -> SourcePassage:
     return SourcePassage(
         passage_id=str(row[0]),
-        revision_id=int(str(row[1])),
-        lecture_id=int(str(row[2])),
-        artifact_id=str(row[3]),
-        source_kind=SourceKind(str(row[4])),
-        locator=str(row[5]),
-        text=str(row[6]),
-        content_hash=str(row[7]),
-        extraction_status=str(row[8]),  # type: ignore[arg-type]
-        slide_number=None if row[9] is None else int(str(row[9])),
+        source_id=str(row[1]),
+        revision_id=int(str(row[2])),
+        lecture_id=int(str(row[3])),
+        artifact_id=str(row[4]),
+        source_kind=SourceKind(str(row[5])),
+        locator=str(row[6]),
+        text=str(row[7]),
+        content_hash=str(row[8]),
+        extraction_status=str(row[9]),  # type: ignore[arg-type]
+        slide_number=None if row[10] is None else int(str(row[10])),
         start_seconds=(
-            None if row[10] is None else float(str(row[10]))
-        ),
-        end_seconds=(
             None if row[11] is None else float(str(row[11]))
         ),
+        end_seconds=(
+            None if row[12] is None else float(str(row[12]))
+        ),
+        summary_backrefs=tuple(str(value) for value in json.loads(str(row[13]))),
+        summary_section=(None if row[14] is None else str(row[14])),  # type: ignore[arg-type]
     )
 
 

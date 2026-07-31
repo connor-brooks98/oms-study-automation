@@ -49,12 +49,15 @@ from oms_hub.anki.repository import (
     AnkiCurationRepository,
     InvalidCurationTransition,
 )
+from oms_hub.anki.sources import NotebookSummaryParser, SummaryMalformedError
 from oms_hub.anki.stages import revision_fingerprint
 from oms_hub.anki.tag_policy import TagPolicy, TagPolicyError, tag_hash
+from oms_hub.ingestion.domain import UploadKind
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.llm.domain import ProviderName
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.repositories import CatalogRepository
+from oms_hub.study_generation.repository import GenerationRepository
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -240,6 +243,7 @@ def create_anki_job(
 
     revisions = IngestionRepository(request.app.state.database)
     hashes: dict[int, str] = {}
+    selected_kinds: set[UploadKind] = set()
     for revision_id in payload.source_revision_ids:
         try:
             revision = revisions.get_study_revision(revision_id)
@@ -258,13 +262,58 @@ def create_anki_job(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Source revision {revision_id} is no longer current",
             )
+        if not revision.immutable_source_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Source revision {revision_id} file is unavailable",
+            )
+        selected_kinds.add(revision.kind)
         hashes[revision_id] = revision_fingerprint(revision)
+
+    required_kinds = {UploadKind.SLIDES, UploadKind.TRANSCRIPTS}
+    if not required_kinds.issubset(selected_kinds):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Curation requires the current lecture slides, transcript, "
+                "and NotebookLM outline"
+            ),
+        )
+
+    outlines = GenerationRepository(request.app.state.database)
+    outline = outlines.current_outline(payload.lecture_id)
+    if outline is None or not outline.path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Curation requires a current NotebookLM outline PDF",
+        )
+    if payload.summary_outline_id not in {None, outline.id} or (
+        payload.summary_outline_sha256 not in {None, outline.sha256}
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The selected NotebookLM outline is stale; reload and try again",
+        )
+    try:
+        NotebookSummaryParser().parse(outline)
+    except SummaryMalformedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"summary_malformed: {exc}",
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"NotebookLM outline could not be validated: {exc}",
+        ) from exc
 
     domain = replace(
         payload.to_domain(),
         source_revision_hashes=hashes,
         semantic_generation=str(semantic.manifest.generation),
         companion_generation=snapshot_id,
+        summary_outline_id=outline.id,
+        summary_outline_sha256=outline.sha256,
     )
     try:
         job = _repository(request).create_job(domain)
@@ -635,9 +684,17 @@ async def retry_anki_sync(
 def _page_context(request: Request) -> dict[str, Any]:
     catalog = CatalogRepository(request.app.state.database)
     revisions = IngestionRepository(request.app.state.database)
+    outlines = GenerationRepository(request.app.state.database)
     lectures: list[dict[str, Any]] = []
     for lecture in catalog.list_lectures():
         current = revisions.list_current_revisions(lecture.id)
+        outline = outlines.current_outline(lecture.id)
+        current_kinds = {revision.kind for revision in current}
+        outline_available = (
+            outline is not None
+            and outline.current
+            and outline.path.is_file()
+        )
         identity = LectureIdentity(
             course=lecture.subject,
             exam_number=lecture.exam_number,
@@ -660,6 +717,21 @@ def _page_context(request: Request) -> dict[str, Any]:
                     }
                     for revision in current
                 ],
+                "outline": (
+                    {
+                        "id": outline.id,
+                        "kind": "summary",
+                        "sha256": outline.sha256,
+                    }
+                    if outline_available and outline is not None
+                    else None
+                ),
+                "source_ready": (
+                    {UploadKind.SLIDES, UploadKind.TRANSCRIPTS}.issubset(
+                        current_kinds
+                    )
+                    and outline_available
+                ),
             }
         )
     lecture_groups: list[dict[str, Any]] = []
@@ -731,6 +803,8 @@ def _job_payload(job: CurationJob) -> dict[str, Any]:
         "source_revision_hashes": {
             str(key): value for key, value in job.source_revision_hashes.items()
         },
+        "summary_outline_id": job.summary_outline_id,
+        "summary_outline_sha256": job.summary_outline_sha256,
         "deck_allowlist": list(job.deck_allowlist),
         "tag_allowlist": list(job.tag_allowlist),
         "target_deck": job.target_deck,

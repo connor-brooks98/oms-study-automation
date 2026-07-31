@@ -65,6 +65,7 @@ from oms_hub.anki.source_index import (
 )
 from oms_hub.anki.sources import (
     LectureSourceExtractor,
+    OutlineRepository,
     SourcePassage,
 )
 from oms_hub.ingestion.domain import StudyRevision
@@ -84,6 +85,7 @@ class PinnedCurationInputValidator:
         semantic_store: SemanticSnapshotStore,
         source_indexes: SourceIndexFactory,
         *,
+        outlines: OutlineRepository | None = None,
         semantic_model: str,
         semantic_dimensions: int,
     ) -> None:
@@ -92,6 +94,7 @@ class PinnedCurationInputValidator:
         self.companion = companion
         self.semantic_store = semantic_store
         self.source_indexes = source_indexes
+        self.outlines = outlines
         self.semantic_model = semantic_model
         self.semantic_dimensions = semantic_dimensions
 
@@ -128,6 +131,33 @@ class PinnedCurationInputValidator:
                 raise PinnedInputChanged(
                     f"Selected source revision {revision_id} file is "
                     "unavailable"
+                )
+
+        if job.summary_outline_id is not None:
+            if job.summary_outline_sha256 is None or self.outlines is None:
+                raise PinnedInputChanged(
+                    "The job has an incomplete summary pin; start a new "
+                    "curation job"
+                )
+            outline = self.outlines.outline(job.summary_outline_id)
+            if outline is None:
+                raise PinnedInputChanged("Pinned NotebookLM summary is unavailable")
+            if outline.lecture_id != job.lecture_id:
+                raise PinnedInputChanged(
+                    "Pinned NotebookLM summary belongs to another lecture"
+                )
+            if not outline.current:
+                raise PinnedInputChanged(
+                    "Pinned NotebookLM summary is no longer current"
+                )
+            if (
+                outline.sha256 != job.summary_outline_sha256
+                or not outline.path.is_file()
+                or hashlib.sha256(outline.path.read_bytes()).hexdigest()
+                != job.summary_outline_sha256
+            ):
+                raise PinnedInputChanged(
+                    "Pinned NotebookLM summary changed after the job was queued"
                 )
 
         companion_generation = self.companion.snapshot_id()
@@ -276,6 +306,7 @@ class CurationServicesRunner:
         passages = await asyncio.to_thread(
             self.source_extractor.extract,
             context.job.source_revision_ids,
+            summary_outline_id=context.job.summary_outline_id,
         )
         if any(
             passage.lecture_id != context.job.lecture_id
@@ -844,6 +875,7 @@ def _retrieval_scope(context: StageContext) -> RetrievalScope:
 def _passage_payload(passage: SourcePassage) -> dict[str, Any]:
     return {
         "passage_id": passage.passage_id,
+        "source_id": passage.source_id,
         "revision_id": passage.revision_id,
         "lecture_id": passage.lecture_id,
         "artifact_id": passage.artifact_id,
@@ -855,6 +887,8 @@ def _passage_payload(passage: SourcePassage) -> dict[str, Any]:
         "slide_number": passage.slide_number,
         "start_seconds": passage.start_seconds,
         "end_seconds": passage.end_seconds,
+        "summary_backrefs": list(passage.summary_backrefs),
+        "summary_section": passage.summary_section,
     }
 
 
@@ -864,6 +898,7 @@ def _passage_from_payload(value: object) -> SourcePassage:
     try:
         return SourcePassage(
             passage_id=str(value["passage_id"]),
+            source_id=str(value.get("source_id", value["passage_id"])),
             revision_id=int(value["revision_id"]),
             lecture_id=int(value["lecture_id"]),
             artifact_id=str(value["artifact_id"]),
@@ -890,6 +925,10 @@ def _passage_from_payload(value: object) -> SourcePassage:
                 if value.get("end_seconds") is None
                 else float(value["end_seconds"])
             ),
+            summary_backrefs=tuple(
+                str(item) for item in value.get("summary_backrefs", [])
+            ),
+            summary_section=cast(Any, value.get("summary_section")),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise PinnedInputChanged(

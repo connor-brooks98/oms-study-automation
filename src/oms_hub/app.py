@@ -549,7 +549,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runner = CurationServicesRunner(
             runtime=runtime,
             repository=app.state.anki_repository,
-            source_extractor=LectureSourceExtractor(app.state.ingestion_repository),
+            source_extractor=LectureSourceExtractor(
+                app.state.ingestion_repository,
+                outlines=app.state.generation_repository,
+            ),
             source_indexes=source_index,
             companion=companion,
             semantic=semantic,
@@ -566,6 +569,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             companion,
             semantic_store,
             source_index,
+            outlines=app.state.generation_repository,
             semantic_model=resolved.anki_semantic_model,
             semantic_dimensions=resolved.anki_semantic_dimensions,
         )

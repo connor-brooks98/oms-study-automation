@@ -13,7 +13,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 8
+LATEST_SCHEMA_VERSION = 9
 
 
 def _ensure_column(
@@ -48,6 +48,8 @@ def _upgrade_anki_v4_columns(database: "Database") -> None:
         "block_id": "VARCHAR(200)",
         "source_revision_ids_json": "TEXT NOT NULL DEFAULT '[]'",
         "source_revision_hashes_json": "TEXT NOT NULL DEFAULT '{}'",
+        "summary_outline_id": "INTEGER",
+        "summary_outline_sha256": "VARCHAR(64)",
         "deck_allowlist_json": "TEXT NOT NULL DEFAULT '[]'",
         "tag_allowlist_json": "TEXT NOT NULL DEFAULT '[]'",
         "provider": "VARCHAR(30) NOT NULL DEFAULT 'anthropic'",

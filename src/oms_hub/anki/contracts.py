@@ -63,6 +63,8 @@ class CreateCurationJobRequest(ContractModel):
         Annotated[int, Field(gt=0)],
         Sha256,
     ] = Field(default_factory=dict)
+    summary_outline_id: Annotated[int, Field(gt=0)] | None = None
+    summary_outline_sha256: Sha256 | None = None
     semantic_generation: (
         Annotated[
             str,
@@ -116,6 +118,10 @@ class CreateCurationJobRequest(ContractModel):
             self.source_revision_ids
         ):
             raise ValueError("source revision hashes must match selected revisions")
+        if (self.summary_outline_id is None) != (
+            self.summary_outline_sha256 is None
+        ):
+            raise ValueError("summary outline ID and hash must be supplied together")
         return self
 
     def to_domain(self) -> CreateCurationJob:
@@ -137,6 +143,8 @@ class CreateCurationJobRequest(ContractModel):
             source_revision_hashes=dict(self.source_revision_hashes),
             semantic_generation=self.semantic_generation,
             companion_generation=self.companion_generation,
+            summary_outline_id=self.summary_outline_id,
+            summary_outline_sha256=self.summary_outline_sha256,
         )
 
 

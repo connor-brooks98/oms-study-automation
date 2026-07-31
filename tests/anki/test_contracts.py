@@ -20,6 +20,8 @@ def _job_payload() -> dict[str, object]:
         "gap_prompt_version": "gap-v4",
         "provider": "anthropic",
         "model": "claude-sonnet-5",
+        "summary_outline_id": 91,
+        "summary_outline_sha256": "b" * 64,
     }
 
 
@@ -41,6 +43,16 @@ def test_create_job_normalizes_scope_lists() -> None:
     assert request.deck_allowlist == ("AnKing Step Deck",)
     assert request.tag_allowlist == ("#AK_Step2_v12::Hematology",)
     assert request.source_revision_ids == (101, 102)
+    assert request.summary_outline_id == 91
+    assert request.summary_outline_sha256 == "b" * 64
+
+
+def test_create_job_requires_complete_summary_pin() -> None:
+    payload = _job_payload()
+    payload["summary_outline_sha256"] = None
+
+    with pytest.raises(ValidationError, match="summary outline"):
+        CreateCurationJobRequest.model_validate(payload)
 
 
 @pytest.mark.parametrize(

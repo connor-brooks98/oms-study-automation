@@ -1,5 +1,7 @@
+import hashlib
 from pathlib import Path
 
+import pytest
 from PIL import Image
 from pptx import Presentation
 from pptx.util import Inches
@@ -7,9 +9,13 @@ from pptx.util import Inches
 from oms_hub.anki.domain import SourceKind
 from oms_hub.anki.sources import (
     LectureSourceExtractor,
+    NotebookSummaryParser,
     SourcePassage,
+    SummaryMalformedError,
 )
 from oms_hub.ingestion.domain import StudyRevision, UploadKind
+from oms_hub.study_generation.domain import OutlineRecord
+from oms_hub.study_generation.outline import OutlinePdfRenderer
 
 
 class FakeRevisionRepository:
@@ -18,6 +24,14 @@ class FakeRevisionRepository:
 
     def get_study_revision(self, revision_id: int) -> StudyRevision:
         return self.revisions[revision_id]
+
+
+class FakeOutlineRepository:
+    def __init__(self, outlines: dict[int, OutlineRecord]) -> None:
+        self.outlines = outlines
+
+    def outline(self, outline_id: int) -> OutlineRecord | None:
+        return self.outlines.get(outline_id)
 
 
 def _revision(
@@ -153,3 +167,109 @@ def test_passage_rejects_blank_non_vision_evidence() -> None:
         assert "blank" in str(error)
     else:
         raise AssertionError("blank source evidence was accepted")
+
+
+def test_parses_notebook_outline_into_authority_labeled_passages(
+    tmp_path: Path,
+) -> None:
+    payload = OutlinePdfRenderer().render(
+        "Lecture 12 Outline",
+        "# CORE CONCEPTS\n"
+        "- Hereditary spherocytosis has increased MCHC [27, 28]\n\n"
+        "# DEPTH MAP\n"
+        "- DEEP: HS genes and EMA binding [31]\n\n"
+        "# PROFESSOR EMPHASIS FLAGS\n"
+        "- Repeated 3+ Times: distinguish HS from AIHA [42]",
+    )
+    path = tmp_path / "outline.pdf"
+    path.write_bytes(payload)
+    record = OutlineRecord(
+        id=9,
+        lecture_id=12,
+        job_id="outline-job",
+        path=path,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        current=True,
+    )
+
+    passages = NotebookSummaryParser().parse(record)
+
+    assert [passage.source_id for passage in passages] == [
+        "SUM:12:CORE:01",
+        "SUM:12:DEPTH:D1",
+        "SUM:12:EMPH:E1",
+    ]
+    assert all(passage.source_kind is SourceKind.SUMMARY for passage in passages)
+    assert passages[0].summary_backrefs == ("27", "28")
+    assert passages[1].summary_backrefs == ("31",)
+    assert passages[2].summary_backrefs == ("42",)
+    assert passages[0].text.startswith("Hereditary spherocytosis")
+
+
+def test_summary_requires_depth_and_professor_emphasis_sections() -> None:
+    with pytest.raises(SummaryMalformedError, match="DEPTH MAP"):
+        NotebookSummaryParser().parse_text(
+            lecture_id=12,
+            outline_id=9,
+            text="# CORE CONCEPTS\n- Ferritin falls early",
+        )
+
+
+def test_summary_rejects_unreadable_pdf(tmp_path: Path) -> None:
+    path = tmp_path / "outline.pdf"
+    payload = b"not a PDF"
+    path.write_bytes(payload)
+    record = OutlineRecord(
+        id=9,
+        lecture_id=12,
+        job_id="outline-job",
+        path=path,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        current=True,
+    )
+
+    with pytest.raises(SummaryMalformedError, match="readable PDF"):
+        NotebookSummaryParser().parse(record)
+
+
+def test_extractor_combines_pinned_revisions_and_notebook_summary(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "transcript.txt"
+    transcript.write_text("[00:00] Ferritin falls early.", encoding="utf-8")
+    summary = OutlinePdfRenderer().render(
+        "Lecture 12 Outline",
+        "# DEPTH MAP\n- DEEP: iron homeostasis [1]\n\n"
+        "# PROFESSOR EMPHASIS FLAGS\n- Repeated: ferritin [2]",
+    )
+    summary_path = tmp_path / "outline.pdf"
+    summary_path.write_bytes(summary)
+    outline = OutlineRecord(
+        id=9,
+        lecture_id=12,
+        job_id="outline-job",
+        path=summary_path,
+        sha256=hashlib.sha256(summary).hexdigest(),
+        current=True,
+    )
+    extractor = LectureSourceExtractor(
+        FakeRevisionRepository(
+            {
+                8: _revision(
+                    8,
+                    UploadKind.TRANSCRIPTS,
+                    transcript,
+                    derived=transcript,
+                )
+            }
+        ),
+        outlines=FakeOutlineRepository({9: outline}),
+    )
+
+    passages = extractor.extract([8], summary_outline_id=9)
+
+    assert [passage.source_kind for passage in passages] == [
+        SourceKind.TRANSCRIPT,
+        SourceKind.SUMMARY,
+        SourceKind.SUMMARY,
+    ]

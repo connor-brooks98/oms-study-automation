@@ -2,14 +2,18 @@ import hashlib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from io import BytesIO
 from pathlib import Path
 from typing import Literal, Protocol
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 from oms_hub.anki.domain import SourceKind
 from oms_hub.ingestion.domain import StudyRevision, UploadKind
+from oms_hub.study_generation.domain import OutlineRecord
 
 EXTRACTION_VERSION = "source-passages-v1"
 ExtractionStatus = Literal["text", "vision", "vision_unavailable"]
@@ -23,11 +27,19 @@ _TIMESTAMP_RANGE = re.compile(
 _TIMESTAMP_PREFIX = re.compile(
     rf"^\s*\[?(?P<start>{_TIME})\]?\s+(?P<text>.+?)\s*$"
 )
+_SUMMARY_CITATION = re.compile(r"\[([0-9,\s]+)\]")
+SummarySection = Literal["core", "depth", "emphasis"]
+_SUMMARY_HEADINGS: dict[str, SummarySection] = {
+    "CORE CONCEPTS": "core",
+    "DEPTH MAP": "depth",
+    "PROFESSOR EMPHASIS FLAGS": "emphasis",
+}
 
 
 @dataclass(frozen=True, slots=True)
 class SourcePassage:
     passage_id: str
+    source_id: str
     revision_id: int
     lecture_id: int
     artifact_id: str
@@ -39,6 +51,8 @@ class SourcePassage:
     slide_number: int | None = None
     start_seconds: float | None = None
     end_seconds: float | None = None
+    summary_backrefs: tuple[str, ...] = ()
+    summary_section: SummarySection | None = None
 
     @classmethod
     def create(
@@ -54,6 +68,9 @@ class SourcePassage:
         slide_number: int | None = None,
         start_seconds: float | None = None,
         end_seconds: float | None = None,
+        source_id: str | None = None,
+        summary_backrefs: tuple[str, ...] = (),
+        summary_section: SummarySection | None = None,
     ) -> "SourcePassage":
         normalized = _normalize_text(text)
         if revision_id <= 0 or lecture_id <= 0:
@@ -87,6 +104,12 @@ class SourcePassage:
         )
         return cls(
             passage_id=hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+            source_id=source_id or _default_source_id(
+                lecture_id=lecture_id,
+                source_kind=source_kind,
+                locator=locator,
+                slide_number=slide_number,
+            ),
             revision_id=revision_id,
             lecture_id=lecture_id,
             artifact_id=artifact_id.strip(),
@@ -98,6 +121,8 @@ class SourcePassage:
             slide_number=slide_number,
             start_seconds=start_seconds,
             end_seconds=end_seconds,
+            summary_backrefs=summary_backrefs,
+            summary_section=summary_section,
         )
 
     @property
@@ -119,7 +144,113 @@ class SourcePassage:
                     f"{interval}\N{EN DASH}{_format_time(self.end_seconds)}"
                 )
             return f"Lecture {self.lecture_id}, transcript {interval}"
+        if self.source_kind is SourceKind.SUMMARY:
+            return f"Lecture {self.lecture_id}, NotebookLM summary"
         return f"Lecture {self.lecture_id}, transcript"
+
+
+class SummaryMalformedError(ValueError):
+    """Raised when a NotebookLM outline is missing required V2 sections."""
+
+
+class NotebookSummaryParser:
+    def parse(self, record: OutlineRecord) -> list[SourcePassage]:
+        if not record.path.is_file():
+            raise FileNotFoundError(record.path)
+        payload = record.path.read_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        if digest != record.sha256:
+            raise ValueError("NotebookLM summary SHA-256 does not match its pin")
+        try:
+            text = "\n".join(
+                page.extract_text() or ""
+                for page in PdfReader(BytesIO(payload)).pages
+            )
+        except PdfReadError as exc:
+            raise SummaryMalformedError(
+                "NotebookLM summary is not a readable PDF"
+            ) from exc
+        return self.parse_text(
+            lecture_id=record.lecture_id,
+            outline_id=record.id,
+            text=text,
+        )
+
+    def parse_text(
+        self,
+        *,
+        lecture_id: int,
+        outline_id: int,
+        text: str,
+    ) -> list[SourcePassage]:
+        sections: dict[SummarySection, list[str]] = {
+            "core": [],
+            "depth": [],
+            "emphasis": [],
+        }
+        current: SummarySection | None = None
+        seen: set[SummarySection] = set()
+        for raw_line in text.splitlines():
+            line = raw_line.strip().lstrip("#").strip()
+            heading = _SUMMARY_HEADINGS.get(line.upper())
+            if heading is not None:
+                current = heading
+                seen.add(heading)
+                continue
+            if current is None or not line:
+                continue
+            cleaned = re.sub(
+                r"^(?:[-*•\x7f]|\d+[.)])\s*",
+                "",
+                line,
+            ).strip()
+            if cleaned:
+                sections[current].append(cleaned)
+
+        missing = [
+            heading
+            for heading, section in _SUMMARY_HEADINGS.items()
+            if section in {"depth", "emphasis"} and section not in seen
+        ]
+        if missing:
+            raise SummaryMalformedError(
+                "NotebookLM summary is missing required section(s): "
+                + ", ".join(missing)
+            )
+
+        passages: list[SourcePassage] = []
+        prefixes = {"core": "CORE", "depth": "DEPTH", "emphasis": "EMPH"}
+        counters = {"core": 0, "depth": 0, "emphasis": 0}
+        for section in ("core", "depth", "emphasis"):
+            for item in sections[section]:
+                counters[section] += 1
+                number = counters[section]
+                suffix = (
+                    f"{number:02d}"
+                    if section == "core"
+                    else f"{'D' if section == 'depth' else 'E'}{number}"
+                )
+                backrefs = tuple(
+                    value
+                    for match in _SUMMARY_CITATION.findall(item)
+                    for value in re.findall(r"\d+", match)
+                )
+                passages.append(
+                    SourcePassage.create(
+                        revision_id=outline_id,
+                        lecture_id=lecture_id,
+                        artifact_id=f"outline:{outline_id}",
+                        source_kind=SourceKind.SUMMARY,
+                        locator=f"summary:{section}:{number}",
+                        text=item,
+                        source_id=(
+                            f"SUM:{lecture_id}:{prefixes[section]}:{suffix}"
+                        ),
+                        summary_backrefs=backrefs,
+                        summary_section=section,
+                    )
+                )
+        return passages
 
 
 class RevisionRepository(Protocol):
@@ -127,6 +258,10 @@ class RevisionRepository(Protocol):
         self,
         revision_id: int,
     ) -> StudyRevision: ...
+
+
+class OutlineRepository(Protocol):
+    def outline(self, outline_id: int) -> OutlineRecord | None: ...
 
 
 class SlideVisionExtractor(Protocol):
@@ -149,6 +284,8 @@ class LectureSourceExtractor:
         self,
         revisions: RevisionRepository,
         *,
+        outlines: OutlineRepository | None = None,
+        summary_parser: NotebookSummaryParser | None = None,
         vision: SlideVisionExtractor | None = None,
         transcript_max_chars: int = 800,
         transcript_overlap_sentences: int = 1,
@@ -158,6 +295,8 @@ class LectureSourceExtractor:
         if transcript_overlap_sentences < 0:
             raise ValueError("transcript overlap cannot be negative")
         self.revisions = revisions
+        self.outlines = outlines
+        self.summary_parser = summary_parser or NotebookSummaryParser()
         self.vision = vision
         self.transcript_max_chars = transcript_max_chars
         self.transcript_overlap_sentences = (
@@ -167,6 +306,8 @@ class LectureSourceExtractor:
     def extract(
         self,
         revision_ids: Sequence[int],
+        *,
+        summary_outline_id: int | None = None,
     ) -> list[SourcePassage]:
         if len(set(revision_ids)) != len(revision_ids):
             raise ValueError("source revision IDs must be unique")
@@ -181,6 +322,16 @@ class LectureSourceExtractor:
                 raise ValueError(
                     f"unsupported source revision kind: {revision.kind}"
                 )
+        if summary_outline_id is not None:
+            if self.outlines is None:
+                raise ValueError("summary outline repository is not configured")
+            outline = self.outlines.outline(summary_outline_id)
+            if outline is None:
+                raise KeyError(summary_outline_id)
+            lecture_ids = {passage.lecture_id for passage in passages}
+            if lecture_ids and lecture_ids != {outline.lecture_id}:
+                raise ValueError("summary outline belongs to another lecture")
+            passages.extend(self.summary_parser.parse(outline))
         return passages
 
     def _extract_slides(
@@ -408,6 +559,32 @@ def _format_time(value: float) -> str:
 
 def _compact_time(value: float | None) -> str:
     return "open" if value is None else str(int(value))
+
+
+def _default_source_id(
+    *,
+    lecture_id: int,
+    source_kind: SourceKind,
+    locator: str,
+    slide_number: int | None,
+) -> str:
+    if source_kind in {
+        SourceKind.SLIDE,
+        SourceKind.SPEAKER_NOTES,
+        SourceKind.VISION,
+    }:
+        number = slide_number or 0
+        suffix = {
+            SourceKind.SLIDE: "",
+            SourceKind.SPEAKER_NOTES: ":NOTES",
+            SourceKind.VISION: ":IMAGE",
+        }[source_kind]
+        return f"SLD:{lecture_id}:{number:04d}{suffix}"
+    if source_kind is SourceKind.TRANSCRIPT:
+        match = re.match(r"transcript:(\d+):", locator)
+        position = int(match.group(1)) if match is not None else 0
+        return f"TRX:{lecture_id}:{position:04d}"
+    return f"SUM:{lecture_id}:UNKNOWN:00"
 
 
 def _normalize_text(value: str) -> str:

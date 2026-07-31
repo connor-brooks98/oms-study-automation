@@ -82,6 +82,8 @@ def _job_request(lecture_id: int, *, snapshot: str = "snapshot-1") -> CreateCura
         gap_prompt_version="gap-v1",
         provider="anthropic",
         model="claude-sonnet-5",
+        summary_outline_id=91,
+        summary_outline_sha256="b" * 64,
     )
 
 
@@ -96,6 +98,8 @@ def test_create_job_snapshots_all_mutable_inputs(tmp_path) -> None:
     assert len(job.instruction_sha256) == 64
     assert job.block_id == "heme-block-1"
     assert job.source_revision_ids == (101, 102)
+    assert job.summary_outline_id == 91
+    assert job.summary_outline_sha256 == "b" * 64
     assert job.deck_allowlist == ("AnKing Step Deck",)
     assert job.tag_allowlist == ("#AK_Step2_v12::Hematology",)
     assert job.apply_state is ApplyState.PENDING

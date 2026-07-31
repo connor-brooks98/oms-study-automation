@@ -73,6 +73,7 @@ class SourceKind(StrEnum):
     SPEAKER_NOTES = "speaker_notes"
     TRANSCRIPT = "transcript"
     VISION = "vision"
+    SUMMARY = "summary"
 
 
 class Verdict(StrEnum):
@@ -116,6 +117,8 @@ class CreateCurationJob:
     source_revision_hashes: dict[int, str] = field(default_factory=dict)
     semantic_generation: str | None = None
     companion_generation: str | None = None
+    summary_outline_id: int | None = None
+    summary_outline_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +154,8 @@ class CurationJob:
     available_at: str | None
     created_at: str
     updated_at: str
+    summary_outline_id: int | None = None
+    summary_outline_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

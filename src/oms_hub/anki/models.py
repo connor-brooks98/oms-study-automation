@@ -59,6 +59,11 @@ class AnkiCurationJobModel(Base):
         default="{}",
         server_default="{}",
     )
+    summary_outline_id: Mapped[int | None] = mapped_column(nullable=True)
+    summary_outline_sha256: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
     deck_allowlist_json: Mapped[str] = mapped_column(
         Text,
         default="[]",

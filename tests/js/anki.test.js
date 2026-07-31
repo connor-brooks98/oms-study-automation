@@ -15,7 +15,13 @@ const lectures = [{
     id: 7,
     kind: "slides",
     source_sha256: "a".repeat(64),
+  }, {
+    id: 8,
+    kind: "transcripts",
+    source_sha256: "b".repeat(64),
   }],
+  outline: { id: 9, kind: "summary", sha256: "c".repeat(64) },
+  source_ready: true,
 }, {
   id: 55,
   subject: "Heme Lymph",
@@ -52,6 +58,15 @@ test("lecture selection resolves sources and editable tag by numeric id", () => 
     "AnkiHub_Optional::LMU_OMS_II::HemeLymph::Block1::Lec4_Anemia_I",
   );
   assert.equal(anki.resolveLecture(lectures, "999"), null);
+});
+
+test("curation requires slides, transcript, and NotebookLM outline", () => {
+  assert.equal(anki.hasRequiredSources(lectures[0]), true);
+  assert.equal(anki.hasRequiredSources(lectures[1]), false);
+  assert.equal(anki.hasRequiredSources({
+    revisions: [{ kind: "slides" }, { kind: "transcripts" }],
+    outline: null,
+  }), false);
 });
 
 test("dependent selector options stay inside the selected pathway", () => {

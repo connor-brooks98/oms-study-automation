@@ -62,7 +62,19 @@
   const sourceLabel = (kind) => ({
     slides: "Lecture slides",
     transcripts: "Lecture transcript",
+    summary: "NotebookLM outline",
   })[kind] || readableState(kind);
+
+  const hasRequiredSources = (lecture) => {
+    const kinds = new Set(
+      (Array.isArray(lecture?.revisions) ? lecture.revisions : [])
+        .map((revision) => revision.kind),
+    );
+    return kinds.has("slides")
+      && kinds.has("transcripts")
+      && Boolean(lecture?.outline)
+      && lecture?.source_ready !== false;
+  };
 
   const parseLecturePayload = (value) => {
     const payload = JSON.parse(String(value || "[]"));
@@ -127,18 +139,24 @@
     const container = documentRef.querySelector("#anki-source-revisions");
     if (!container) return;
     container.replaceChildren();
+    const submit = container.closest("form")?.querySelector("[type=submit]");
+    const ready = hasRequiredSources(lecture);
+    container.dataset.ready = ready ? "true" : "false";
+    if (submit) {
+      submit.disabled = submit.dataset.ankiEnabled !== "true" || !ready;
+    }
     const revisions = Array.isArray(lecture?.revisions)
       ? lecture.revisions
       : [];
-    if (!revisions.length) {
+    if (!revisions.length && !lecture?.outline) {
       container.append(
         element(
           documentRef,
           "p",
           "quiet-state",
           lecture
-            ? "This lecture has no current slides or transcript."
-            : "Choose a lecture to see its current slides and transcript.",
+            ? "This lecture is missing its current slides, transcript, and NotebookLM outline."
+            : "Choose a lecture to see its required source bundle.",
         ),
       );
       return;
@@ -150,6 +168,7 @@
       input.name = "source_revision_ids";
       input.value = revision.id;
       input.checked = true;
+      input.disabled = true;
       const copy = element(documentRef, "span");
       copy.append(
         element(documentRef, "strong", "", sourceLabel(revision.kind)),
@@ -163,6 +182,30 @@
       label.append(input, copy);
       container.append(label);
     });
+    if (lecture?.outline) {
+      const label = element(documentRef, "div", "anki-source-option");
+      const marker = element(documentRef, "span", "anki-source-lock", "✓");
+      const copy = element(documentRef, "span");
+      copy.append(
+        element(documentRef, "strong", "", sourceLabel("summary")),
+        element(
+          documentRef,
+          "small",
+          "",
+          `Current output · ${String(lecture.outline.sha256).slice(0, 10)}`,
+        ),
+      );
+      label.append(marker, copy);
+      container.append(label);
+    }
+    if (lecture && !ready) {
+      container.append(element(
+        documentRef,
+        "p",
+        "quiet-state",
+        "Curation unlocks when current slides, transcript, and NotebookLM outline are all available.",
+      ));
+    }
   };
 
   const jobRow = (documentRef, job) => {
@@ -457,8 +500,13 @@
           "input[name=source_revision_ids]:checked",
         ),
       ].map((input) => Number(input.value));
-      if (!selectedSources.length) {
-        message.textContent = "Choose at least one lecture source.";
+      if (
+        documentRef.querySelector("#anki-source-revisions")?.dataset.ready
+        !== "true"
+      ) {
+        message.textContent = (
+          "Current slides, transcript, and NotebookLM outline are required."
+        );
         return;
       }
       const body = {
@@ -1136,6 +1184,7 @@
     courseOptions,
     editableTagPatch,
     examOptions,
+    hasRequiredSources,
     initialize,
     lectureOptions,
     parseLecturePayload,

@@ -73,9 +73,9 @@
         <fieldset class="anki-source-field anki-field-wide">
           <legend>Lecture sources</legend>
           <div id="anki-source-revisions" class="anki-source-options">
-            <p class="quiet-state">Choose a lecture to see its current slides and transcript.</p>
+            <p class="quiet-state">Choose a lecture to see its required source bundle.</p>
           </div>
-          <p class="field-help">Missed topics are searched against the selected slides and lecture transcript before any new card is proposed.</p>
+          <p class="field-help">Current slides, transcript, and NotebookLM outline are required. The outline guides concept coverage but cannot support a keep or generated card by itself.</p>
         </fieldset>
 
         <label>
@@ -131,7 +131,7 @@
 
       <div class="anki-form-actions">
         <p id="anki-create-message" class="anki-action-message" role="status" aria-live="polite"></p>
-        <button class="button primary" type="submit" {% if not anki_enabled %}disabled{% endif %}>Start curation</button>
+        <button class="button primary" type="submit" data-anki-enabled="{{ 'true' if anki_enabled else 'false' }}" disabled>Start curation</button>
       </div>
     </form>
   </section>

@@ -215,6 +215,8 @@ def test_schema_v6_upgrade_adds_v4_columns_without_losing_legacy_job(
     assert {
         "source_revision_ids_json",
         "source_revision_hashes_json",
+        "summary_outline_id",
+        "summary_outline_sha256",
         "deck_allowlist_json",
         "tag_allowlist_json",
         "apply_state",

@@ -213,6 +213,8 @@ class AnkiCurationRepository:
             "block_id": request.block_id,
             "source_revision_ids": request.source_revision_ids,
             "source_revision_hashes": request.source_revision_hashes,
+            "summary_outline_id": request.summary_outline_id,
+            "summary_outline_sha256": request.summary_outline_sha256,
             "deck_allowlist": request.deck_allowlist,
             "tag_allowlist": request.tag_allowlist,
             "target_deck": request.target_deck,
@@ -243,6 +245,8 @@ class AnkiCurationRepository:
                 source_revision_hashes_json=_canonical_json(
                     request.source_revision_hashes
                 ),
+                summary_outline_id=request.summary_outline_id,
+                summary_outline_sha256=request.summary_outline_sha256,
                 deck_allowlist_json=_canonical_json(request.deck_allowlist),
                 tag_allowlist_json=_canonical_json(request.tag_allowlist),
                 provider=request.provider,
@@ -1624,6 +1628,8 @@ class AnkiCurationRepository:
             available_at=stored.available_at,
             created_at=stored.created_at,
             updated_at=stored.updated_at,
+            summary_outline_id=stored.summary_outline_id,
+            summary_outline_sha256=stored.summary_outline_sha256,
         )
 
     @staticmethod

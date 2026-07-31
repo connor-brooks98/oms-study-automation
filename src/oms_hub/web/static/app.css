@@ -778,7 +778,7 @@ textarea {
 }
 .anki-source-options {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: .55rem;
 }
 .anki-source-option {
@@ -796,6 +796,17 @@ textarea {
   width: 1.05rem;
   min-height: 1.05rem;
   flex: none;
+}
+.anki-source-option .anki-source-lock {
+  display: grid;
+  width: 1.05rem;
+  height: 1.05rem;
+  flex: none;
+  place-items: center;
+  border-radius: .25rem;
+  color: var(--surface);
+  background: var(--accent);
+  font: 700 .7rem/1 sans-serif;
 }
 .anki-source-option span { display: grid; min-width: 0; gap: .15rem; }
 .anki-source-option strong { color: var(--text); font-size: .78rem; }

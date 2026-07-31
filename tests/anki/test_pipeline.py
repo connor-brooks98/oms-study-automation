@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +29,7 @@ from oms_hub.anki.stages import (
 from oms_hub.db import Database
 from oms_hub.ingestion.domain import StudyRevision, UploadKind
 from oms_hub.models import LectureModel
+from oms_hub.study_generation.domain import OutlineRecord
 
 
 class RecordingRunner:
@@ -238,6 +240,17 @@ def test_production_input_validator_detects_revision_and_semantic_drift(
         state="approved",
         current=True,
     )
+    summary_path = tmp_path / "outline.pdf"
+    summary_path.write_bytes(b"immutable summary")
+    summary_sha = hashlib.sha256(summary_path.read_bytes()).hexdigest()
+    outline = OutlineRecord(
+        id=9,
+        lecture_id=repository._test_lecture_id,  # type: ignore[attr-defined]
+        job_id="outline-job",
+        path=summary_path,
+        sha256=summary_sha,
+        current=True,
+    )
 
     class Revisions:
         current = revision
@@ -249,6 +262,11 @@ def test_production_input_validator_detects_revision_and_semantic_drift(
     class Companion:
         def snapshot_id(self) -> str:
             return "companion-1"
+
+    class Outlines:
+        def outline(self, outline_id: int) -> OutlineRecord | None:
+            assert outline_id == 9
+            return outline
 
     class Semantic:
         generation = UUID("4438eabc-3da1-4d6d-a6af-2302de092f8e")
@@ -280,6 +298,8 @@ def test_production_input_validator_detects_revision_and_semantic_drift(
             },
             semantic_generation=str(Semantic.generation),
             companion_generation="companion-1",
+            summary_outline_id=9,
+            summary_outline_sha256=summary_sha,
         )
     )
     revisions = Revisions()
@@ -292,11 +312,16 @@ def test_production_input_validator_detects_revision_and_semantic_drift(
         lambda _: (_ for _ in ()).throw(
             AssertionError("source index should not be read before pinning")
         ),
+        outlines=Outlines(),
         semantic_model="voyage-4-large",
         semantic_dimensions=1024,
     )
 
     validator.validate(job.id)
+    summary_path.write_bytes(b"mutated summary")
+    with pytest.raises(PinnedInputChanged, match="summary changed"):
+        validator.validate(job.id)
+    summary_path.write_bytes(b"immutable summary")
     revisions.current = replace(revision, source_sha256="b" * 64)
     with pytest.raises(PinnedInputChanged, match="revision 11 changed"):
         validator.validate(job.id)

@@ -170,7 +170,9 @@ Start the scheduled task, then open
 `http://127.0.0.1:8787/anki` locally or `/anki` through the protected Study Hub
 hostname.
 
-1. Choose the lecture and select its current PowerPoint and cleaned transcript.
+1. Choose the lecture. Study Hub requires and pins its current PowerPoint,
+   cleaned transcript, and generated NotebookLM outline PDF. The start button
+   remains disabled until all three are available.
 2. Choose the existing-card deck and optional tag scope.
 3. Set the target deck and lecture tag.
 4. Choose the configured language-model provider and start curation.
@@ -178,9 +180,11 @@ hostname.
 
 For every lecture concept, V4 searches the existing-card index first. If
 judgment says the concept is still missing or partial, it locates supporting
-passages in the selected slides and transcript, generates evidence-grounded
-rescue queries, and searches Anki again. It proposes a new card only when the
-second pass still misses and cited source evidence supports the card.
+passages in the slides, transcript, and outline, generates evidence-grounded
+rescue queries, and searches Anki again. The outline provides the concept index,
+depth map, and emphasis flags, but it cannot independently justify keeping or
+generating a card. A malformed outline missing `DEPTH MAP` or
+`PROFESSOR EMPHASIS FLAGS` is rejected before any model tokens are spent.
 
 ## 8. Review cards and first-release tag edits
 
@@ -240,7 +244,8 @@ Do not run the first acceptance pass against the production profile.
    memory.
 5. Change one harmless note in the copy, rerun refresh, and record incremental
    duration.
-6. Run one real lecture curation using both slides and transcript.
+6. Run one real lecture curation with current slides, transcript, and
+   NotebookLM outline.
 7. Review a permitted tag edit and one grounded generated card.
 8. Apply, confirm the leading sync/no-write failure behavior in a controlled
    failure scenario, confirm the trailing-sync recovery state, retry, and

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -35,6 +36,9 @@ from oms_hub.config import Settings
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.llm.domain import ProviderName
 from oms_hub.models import LectureModel, StudyRevisionModel
+from oms_hub.study_generation.domain import GenerationKind
+from oms_hub.study_generation.outline import OutlinePdfRenderer
+from oms_hub.study_generation.repository import GenerationRepository
 
 SHA = "a" * 64
 TARGET_TAG = "AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_4"
@@ -198,6 +202,10 @@ def prepared_app(tmp_path: Path) -> tuple[TestClient, Any, int, int, FakeGateway
             database_url=f"sqlite:///{tmp_path / 'hub.db'}",
         )
     )
+    slides_path = tmp_path / "slides.pptx"
+    transcript_path = tmp_path / "transcript.txt"
+    slides_path.write_bytes(b"test presentation fixture")
+    transcript_path.write_text("Ferritin falls early.", encoding="utf-8")
     with app.state.database.session() as session:
         lecture = LectureModel(
             subject="Heme Lymph",
@@ -213,14 +221,42 @@ def prepared_app(tmp_path: Path) -> tuple[TestClient, Any, int, int, FakeGateway
             lecture_id=lecture.id,
             kind="slides",
             source_sha256=SHA,
-            immutable_source_path=str(tmp_path / "slides.pptx"),
+            immutable_source_path=str(slides_path),
             state="accepted",
             current=True,
         )
         session.add(revision)
         session.flush()
+        transcript = StudyRevisionModel(
+            upload_item_id="test-transcript",
+            lecture_id=lecture.id,
+            kind="transcripts",
+            source_sha256="c" * 64,
+            immutable_source_path=str(transcript_path),
+            state="accepted",
+            current=True,
+        )
+        session.add(transcript)
+        session.flush()
         lecture_id = lecture.id
         revision_id = revision.id
+
+    summary_payload = OutlinePdfRenderer().render(
+        "Lecture 4 Outline",
+        "# CORE CONCEPTS\n- Iron deficiency [1]\n\n"
+        "# DEPTH MAP\n- DEEP: iron absorption [2]\n\n"
+        "# PROFESSOR EMPHASIS FLAGS\n- Repeated: ferritin falls early [3]",
+    )
+    summary_path = tmp_path / "outline.pdf"
+    summary_path.write_bytes(summary_payload)
+    generation = GenerationRepository(app.state.database)
+    outline_job = generation.queue(lecture_id, GenerationKind.OUTLINE)
+    generation.record_outline(
+        lecture_id,
+        outline_job.id,
+        summary_path,
+        hashlib.sha256(summary_payload).hexdigest(),
+    )
 
     gateway = FakeGateway()
     runtime = FakeRuntime(gateway)
@@ -250,7 +286,7 @@ def _create_payload(lecture_id: int, revision_id: int) -> dict[str, Any]:
         "contract_version": 1,
         "lecture_id": lecture_id,
         "block_id": "heme-block-1",
-        "source_revision_ids": [revision_id],
+        "source_revision_ids": [revision_id, revision_id + 1],
         "deck_allowlist": ["AnKing Step Deck"],
         "tag_allowlist": ["#AK_Step2_v12::Hematology"],
         "target_deck": "OMS::Heme::Lecture 4",
@@ -398,8 +434,15 @@ def test_anki_bootstrap_exposes_grouped_current_sources_and_editable_tag(
             "id": revision_id,
             "kind": "slides",
             "source_sha256": SHA,
-        }
+        },
+        {
+            "id": revision_id + 1,
+            "kind": "transcripts",
+            "source_sha256": "c" * 64,
+        },
     ]
+    assert lecture["source_ready"] is True
+    assert lecture["outline"]["kind"] == "summary"
     assert lecture["target_tag"] == (
         "AnkiHub_Optional::LMU_OMS_II::HemeLymph::Block1::Lec4_Anemia_I"
     )
@@ -494,13 +537,61 @@ def test_create_and_list_job_pins_server_generations_and_rejects_amboss(
 
     assert rejected.status_code == 422
     assert created.status_code == 201
-    revision = IngestionRepository(app.state.database).get_study_revision(revision_id)
+    ingestion = IngestionRepository(app.state.database)
+    revision = ingestion.get_study_revision(revision_id)
+    transcript = ingestion.get_study_revision(revision_id + 1)
     assert created.json()["source_revision_hashes"] == {
-        str(revision_id): revision_fingerprint(revision)
+        str(revision_id): revision_fingerprint(revision),
+        str(revision_id + 1): revision_fingerprint(transcript),
     }
+    assert created.json()["summary_outline_id"] is not None
+    assert len(created.json()["summary_outline_sha256"]) == 64
     assert created.json()["companion_generation"] == "snapshot-test"
     assert created.json()["semantic_generation"] == "33a3b975-0e93-41e6-8a44-ec255c7e1269"
     assert listed.json()["jobs"][0]["id"] == created.json()["id"]
+
+
+def test_create_job_requires_complete_three_source_bundle(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, _, lecture_id, revision_id, _ = prepared_app
+    payload = _create_payload(lecture_id, revision_id)
+    payload["source_revision_ids"] = [revision_id]
+
+    response = client.post("/api/anki/jobs", json=payload)
+
+    assert response.status_code == 409
+    assert "slides, transcript" in response.json()["detail"]
+
+
+def test_create_job_rejects_malformed_notebook_summary_before_queueing(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+    tmp_path: Path,
+) -> None:
+    client, app, lecture_id, revision_id, _ = prepared_app
+    payload = OutlinePdfRenderer().render(
+        "Wrong Outline",
+        "# CORE CONCEPTS\n- Ferritin falls early",
+    )
+    path = tmp_path / "malformed-outline.pdf"
+    path.write_bytes(payload)
+    generation = GenerationRepository(app.state.database)
+    job = generation.current_job(lecture_id, GenerationKind.OUTLINE)
+    assert job is not None
+    generation.record_outline(
+        lecture_id,
+        job.id,
+        path,
+        hashlib.sha256(payload).hexdigest(),
+    )
+
+    response = client.post(
+        "/api/anki/jobs",
+        json=_create_payload(lecture_id, revision_id),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"].startswith("summary_malformed:")
 
 
 def test_failed_curation_job_can_be_retried_through_api(
