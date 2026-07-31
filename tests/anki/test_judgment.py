@@ -2,18 +2,21 @@ from collections.abc import Sequence
 
 import pytest
 
-from oms_hub.anki.domain import Candidate, RetrievalPass
+from oms_hub.anki.domain import Candidate, RetrievalPass, SourceKind
 from oms_hub.anki.judgment import (
     CoverageJudgment,
     JudgmentCacheRecord,
     JudgmentService,
     JudgmentValidationError,
+    runtime_judgment_from_v2,
 )
 from oms_hub.anki.lcl import (
     LectureConcept,
     LedgerSourceRef,
 )
 from oms_hub.anki.normalize import NormalizedNote
+from oms_hub.anki.sources import SourcePassage
+from oms_hub.anki.v2_contracts import CoverageJudgmentV2, MissingFactV2
 from oms_hub.llm.domain import ProviderName
 from oms_hub.llm.structured import StructuredJSONResult
 
@@ -133,6 +136,34 @@ class NoteReader:
         return self.notes.get(note_id)
 
 
+class V2Structured:
+    def __init__(self, judgment: CoverageJudgmentV2) -> None:
+        self.judgment = judgment
+        self.requests: list[tuple[str, str]] = []
+
+    def generate_json(
+        self,
+        instruction: str,
+        input_text: str,
+        *,
+        output_model: type[CoverageJudgmentV2],
+        provider: ProviderName,
+        model: str,
+    ) -> StructuredJSONResult[CoverageJudgmentV2]:
+        assert output_model is CoverageJudgmentV2
+        self.requests.append((instruction, input_text))
+        return StructuredJSONResult(
+            value=self.judgment,
+            raw_text=self.judgment.model_dump_json(),
+            provider=provider,
+            model=model,
+            request_id="request-v2",
+            input_tokens=24,
+            output_tokens=12,
+            cost_microusd=6,
+        )
+
+
 def _service(
     structured: QueueStructured,
     cache: MemoryCache,
@@ -146,6 +177,123 @@ def _service(
         model="gpt-5.2",
         prompt_version="judgment-v1",
     )
+
+
+def _v2_concept() -> LectureConcept:
+    return LectureConcept(
+        concept_id="C01",
+        source_refs=(LedgerSourceRef(passage_id="a" * 64),),
+        statement="Iron deficiency lowers ferritin.",
+        hypothetical_card="Iron deficiency causes {{c1::low ferritin}}.",
+        paraphrases=(
+            "iron deficiency low ferritin",
+            "iron deficiency depleted stores",
+            "iron deficiency laboratory sequence",
+        ),
+        importance="high",
+        primary_entity="iron deficiency",
+        aliases=("low ferritin",),
+        depth="deep",
+        source_passage_ids=("SLD:07:0031", "TRX:07:0198"),
+    )
+
+
+def _coverage_passages() -> tuple[SourcePassage, ...]:
+    return (
+        SourcePassage.create(
+            revision_id=7,
+            lecture_id=7,
+            artifact_id="slides-7",
+            source_kind=SourceKind.SLIDE,
+            locator="slide:31",
+            text="Iron deficiency lowers ferritin.",
+            slide_number=31,
+            source_id="SLD:07:0031",
+        ),
+        SourcePassage.create(
+            revision_id=8,
+            lecture_id=7,
+            artifact_id="transcript-8",
+            source_kind=SourceKind.TRANSCRIPT,
+            locator="transcript:198:12-24",
+            text="Iron stores fall before microcytosis develops.",
+            source_id="TRX:07:0198",
+            start_seconds=12,
+            end_seconds=24,
+        ),
+    )
+
+
+def test_v2_judgment_preserves_atomic_fact_ids_and_omits_retrieval_scores() -> None:
+    judgment = CoverageJudgmentV2(
+        concept_id="C01",
+        supporting_note_ids=(1,),
+        missing_facts=(
+            MissingFactV2(
+                fact_id="C01-M1",
+                statement="Iron stores fall before microcytosis develops.",
+                passage_ids=("TRX:07:0198",),
+            ),
+        ),
+        rationale="The note omits the laboratory sequence.",
+    )
+    structured = V2Structured(judgment)
+    service = JudgmentService(
+        structured,  # type: ignore[arg-type]
+        MemoryCache(),
+        NoteReader([_note(1)]),
+        provider=ProviderName.OPENAI,
+        model="gpt-5.2",
+        prompt_version="coverage-rubric",
+        prompt_text="# Coverage rubric V2",
+        prompt_hash="123456789abc",
+        schema_name="coverage_v2",
+    )
+
+    result = service.judge(
+        _v2_concept(),
+        [_candidate(1)],
+        passages=_coverage_passages(),
+    )
+
+    assert result.judgment == judgment
+    runtime = runtime_judgment_from_v2(judgment)
+    assert runtime.status == "partial"
+    assert runtime.missing_facts == (
+        "Iron stores fall before microcytosis develops.",
+    )
+    assert runtime.missing_fact_records == judgment.missing_facts
+    assert '"retrieval_scores"' not in structured.requests[0][1]
+    assert "Iron stores fall before microcytosis develops" in (
+        structured.requests[0][1]
+    )
+
+
+def test_v2_judgment_rejects_missing_fact_outside_concept_evidence() -> None:
+    judgment = CoverageJudgmentV2(
+        concept_id="C01",
+        supporting_note_ids=(),
+        missing_facts=(
+            MissingFactV2(
+                fact_id="C01-M1",
+                statement="Iron deficiency changes transferrin saturation.",
+                passage_ids=("SLD:07:0999",),
+            ),
+        ),
+        rationale="No candidate covers the fact.",
+    )
+    service = JudgmentService(
+        V2Structured(judgment),  # type: ignore[arg-type]
+        MemoryCache(),
+        NoteReader([]),
+        provider=ProviderName.OPENAI,
+        model="gpt-5.2",
+        prompt_version="coverage-rubric",
+        schema_name="coverage_v2",
+    )
+
+    with pytest.raises(JudgmentValidationError, match="concept evidence"):
+        service.judge(_v2_concept(), [], passages=_coverage_passages())
 
 
 def test_valid_judgment_is_cached_and_reused() -> None:

@@ -1,12 +1,23 @@
 import asyncio
+import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import oms_hub.anki.stages as stages_module
-from oms_hub.anki.domain import CurationStage, SourceKind
+from oms_hub.anki.audit import AuditBatchV2, AuditCacheRecord
+from oms_hub.anki.domain import Candidate, CurationStage, RetrievalPass, SourceKind
+from oms_hub.anki.judgment import JudgmentCacheRecord
+from oms_hub.anki.normalize import NormalizedNote
 from oms_hub.anki.prompts import AnkiPromptLibrary, StaticPromptSynchronizer
 from oms_hub.anki.sources import SourcePassage
 from oms_hub.anki.stages import CurationServicesRunner
-from oms_hub.anki.v2_contracts import LectureConceptLedgerV2, LectureConceptV2
+from oms_hub.anki.v2_contracts import (
+    AuditVerdictV2,
+    CoverageJudgmentV2,
+    LectureConceptLedgerV2,
+    LectureConceptV2,
+    MissingFactV2,
+)
 from oms_hub.llm.domain import ProviderName
 from oms_hub.llm.structured import StructuredJSONResult
 
@@ -208,3 +219,694 @@ def test_downstream_ledger_reader_adapts_v2_artifact() -> None:
     )
     assert runtime.concepts[0].source_refs[0].passage_id == passage.passage_id
     assert runtime.concepts[0].primary_entity == "iron deficiency"
+
+
+class CoverageCache:
+    def __init__(self) -> None:
+        self.records: dict[str, JudgmentCacheRecord] = {}
+
+    def get_judgment_cache(
+        self,
+        cache_key: str,
+    ) -> JudgmentCacheRecord | None:
+        return self.records.get(cache_key)
+
+    def save_judgment_cache(self, record: JudgmentCacheRecord) -> None:
+        self.records.setdefault(record.cache_key, record)
+
+
+class CompanionNotes:
+    def __init__(self, note: NormalizedNote) -> None:
+        self.note = note
+
+    def get_note(self, note_id: int) -> NormalizedNote | None:
+        return self.note if note_id == self.note.note_id else None
+
+
+class V2CoverageStructuredService:
+    def __init__(self, judgment: CoverageJudgmentV2) -> None:
+        self.judgment = judgment
+
+    def generate_json(
+        self,
+        instruction: str,
+        input_text: str,
+        *,
+        output_model: type[CoverageJudgmentV2],
+        provider: ProviderName,
+        model: str,
+    ) -> StructuredJSONResult[CoverageJudgmentV2]:
+        del instruction, input_text
+        assert output_model is CoverageJudgmentV2
+        return StructuredJSONResult(
+            value=self.judgment,
+            raw_text=self.judgment.model_dump_json(),
+            provider=provider,
+            model=model,
+            request_id="coverage-v2-request",
+            input_tokens=30,
+            output_tokens=15,
+            cost_microusd=8,
+        )
+
+
+def test_judgment_stage_activates_v2_coverage_from_prompt_metadata() -> None:
+    passage = SourcePassage.create(
+        revision_id=7,
+        lecture_id=12,
+        artifact_id="slides-7",
+        source_kind=SourceKind.SLIDE,
+        locator="slide:3",
+        text="Iron deficiency causes low ferritin.",
+        slide_number=3,
+    )
+    ledger = LectureConceptLedgerV2(
+        lecture_entity_count=2,
+        concepts=(
+            LectureConceptV2(
+                concept_id="C01",
+                canonical_statement="Iron deficiency causes low ferritin.",
+                hypothetical_card="Iron deficiency causes {{c1::low ferritin}}.",
+                primary_entity="iron deficiency",
+                aliases=("low ferritin",),
+                paraphrases=(
+                    "iron deficiency low ferritin",
+                    "iron deficiency depleted stores",
+                    "iron deficiency laboratory findings",
+                ),
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+                passage_ids=(passage.source_id,),
+            ),
+        ),
+        intentionally_uncited=(),
+    )
+    judgment = CoverageJudgmentV2(
+        concept_id="C01",
+        supporting_note_ids=(1,),
+        missing_facts=(
+            MissingFactV2(
+                fact_id="C01-M1",
+                statement="Iron stores fall before microcytosis.",
+                passage_ids=(passage.source_id,),
+            ),
+        ),
+        rationale="The note omits the laboratory sequence.",
+    )
+    note = NormalizedNote(
+        note_id=1,
+        model_name="AnKingOverhaul",
+        text="Iron deficiency causes low ferritin.",
+        extra="Ferritin reflects iron stores.",
+        raw_fields={"Text": "Iron deficiency causes low ferritin."},
+        tags=("#Pathoma",),
+        card_ids=(101,),
+        media=(),
+        token_signature="iron deficiency ferritin",
+        content_sha256="1" * 64,
+    )
+    candidate = Candidate(
+        note_id=1,
+        content_hash="1" * 64,
+        best_concept_id="C01",
+        provenance={},
+        scores={"boosted_score": 0.9},
+        predicted_band="unjudged",
+        verdict="pending",
+        confidence=0,
+        reason="retrieved",
+        context_trap=False,
+        recall_direction="unknown",
+        mnemonic_classification="unknown",
+        dedupe_disposition="pending",
+        selected=False,
+        retrieval_pass=RetrievalPass.PASS_1,
+    )
+    runner = CurationServicesRunner.__new__(CurationServicesRunner)
+    runner.structured = V2CoverageStructuredService(judgment)
+    runner.repository = CoverageCache()
+    runner.companion = CompanionNotes(note)
+    context = SimpleNamespace(
+        job=SimpleNamespace(
+            judgment_rubric_version="coverage-rubric",
+            provider="openai",
+            model="gpt-5.2",
+        ),
+        prior_payloads={
+            CurationStage.PREFLIGHT: {
+                "prompt_snapshot": [
+                    {
+                        "id": "coverage-rubric",
+                        "content": "# Coverage rubric V2",
+                        "prompt_hash": "123456789abc",
+                        "metadata": {"schema": "coverage_v2"},
+                    }
+                ]
+            },
+            CurationStage.SOURCE_INDEX: {
+                "passages": [stages_module._passage_payload(passage)]
+            },
+            CurationStage.LCL: {
+                "ledger": ledger.model_dump(mode="json"),
+                "schema_name": "lcl_v2",
+            },
+            CurationStage.RETRIEVAL_PASS_1: {
+                "groups": {"C01": [stages_module._candidate_payload(candidate)]}
+            },
+        },
+    )
+
+    product = asyncio.run(runner._judgment_pass_1(context))
+
+    assert product.payload["schema_name"] == "coverage_v2"
+    assert product.payload["judgments"]["C01"]["judgment"] == (
+        judgment.model_dump(mode="json")
+    )
+    assert product.candidates is not None
+    assert product.candidates[0].predicted_band == "partial"
+
+
+def test_downstream_coverage_reader_adapts_v2_artifact() -> None:
+    judgment = CoverageJudgmentV2(
+        concept_id="C01",
+        supporting_note_ids=(1,),
+        missing_facts=(
+            MissingFactV2(
+                fact_id="C01-M1",
+                statement="Iron stores fall before microcytosis.",
+                passage_ids=("TRX:07:0198",),
+            ),
+        ),
+        rationale="The note omits the laboratory sequence.",
+    )
+    context = SimpleNamespace(
+        prior_payloads={
+            CurationStage.JUDGMENT_PASS_1: {
+                "schema_name": "coverage_v2",
+                "judgments": {
+                    "C01": {"judgment": judgment.model_dump(mode="json")}
+                },
+            }
+        }
+    )
+
+    runtime = stages_module._coverage_judgment(
+        context,
+        CurationStage.JUDGMENT_PASS_1,
+        "C01",
+    )
+
+    assert runtime.status == "partial"
+    assert runtime.missing_fact_records[0].fact_id == "C01-M1"
+
+
+class AuditRepository(CoverageCache):
+    def __init__(self, candidate: Candidate) -> None:
+        super().__init__()
+        self.candidate = candidate
+        self.audit_records: dict[str, AuditCacheRecord] = {}
+
+    def list_candidates(self, job_id: object) -> list[Candidate]:
+        del job_id
+        return [self.candidate]
+
+    def lecture_title(self, lecture_id: int) -> str:
+        assert lecture_id == 12
+        return "Heme Exam 1 Lecture 7: Anemia IV"
+
+    def get_audit_cache(self, cache_key: str) -> AuditCacheRecord | None:
+        return self.audit_records.get(cache_key)
+
+    def save_audit_cache(self, record: AuditCacheRecord) -> None:
+        self.audit_records.setdefault(record.cache_key, record)
+
+
+class AuditStructuredService:
+    def __init__(self, verdict: AuditVerdictV2) -> None:
+        self.verdict = verdict
+
+    def generate_json(
+        self,
+        instruction: str,
+        input_text: str,
+        *,
+        output_model: type[AuditBatchV2],
+        provider: ProviderName,
+        model: str,
+    ) -> StructuredJSONResult[AuditBatchV2]:
+        del instruction, input_text
+        assert output_model is AuditBatchV2
+        batch = AuditBatchV2(verdicts=(self.verdict,))
+        return StructuredJSONResult(
+            value=batch,
+            raw_text=batch.model_dump_json(),
+            provider=provider,
+            model=model,
+            request_id="audit-request",
+            input_tokens=100,
+            output_tokens=20,
+            cost_microusd=30,
+        )
+
+
+def _audit_stage_fixture() -> tuple[
+    SourcePassage,
+    LectureConceptLedgerV2,
+    Candidate,
+    NormalizedNote,
+]:
+    passage = SourcePassage.create(
+        revision_id=7,
+        lecture_id=12,
+        artifact_id="slides-7",
+        source_kind=SourceKind.SLIDE,
+        locator="slide:3",
+        text="Iron deficiency causes low ferritin.",
+        slide_number=3,
+    )
+    ledger = LectureConceptLedgerV2(
+        lecture_entity_count=2,
+        concepts=(
+            LectureConceptV2(
+                concept_id="C01",
+                canonical_statement="Iron deficiency causes low ferritin.",
+                hypothetical_card="Iron deficiency causes {{c1::low ferritin}}.",
+                primary_entity="iron deficiency",
+                aliases=("low ferritin",),
+                paraphrases=(
+                    "iron deficiency low ferritin",
+                    "iron deficiency depleted stores",
+                    "iron deficiency laboratory findings",
+                ),
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+                passage_ids=(passage.source_id,),
+            ),
+        ),
+        intentionally_uncited=(),
+    )
+    candidate = Candidate(
+        note_id=1,
+        content_hash="1" * 64,
+        best_concept_id="C01",
+        provenance={"query": "hidden retrieval reason"},
+        scores={"boosted_score": 0.9},
+        predicted_band="covered",
+        verdict="include",
+        confidence=1,
+        reason="old coverage rationale",
+        context_trap=False,
+        recall_direction="unknown",
+        mnemonic_classification="unknown",
+        dedupe_disposition="pending",
+        selected=True,
+        retrieval_pass=RetrievalPass.PASS_1,
+    )
+    note = NormalizedNote(
+        note_id=1,
+        model_name="AnKingOverhaul",
+        text="Hemophilia A is inherited in an X-linked recessive pattern.",
+        extra="Factor VIII deficiency.",
+        raw_fields={"Text": "Hemophilia A is X-linked recessive."},
+        tags=("#Pathoma",),
+        card_ids=(101,),
+        media=(),
+        token_signature="hemophilia x linked",
+        content_sha256="1" * 64,
+    )
+    return passage, ledger, candidate, note
+
+
+def test_card_audit_stage_replaces_coverage_selection_with_blind_verdict() -> None:
+    passage, ledger, candidate, note = _audit_stage_fixture()
+    verdict = AuditVerdictV2(
+        nid=1,
+        verdict="drop",
+        primary_subject="hemophilia A",
+        support="none",
+        reason="Different disease sharing only an inheritance pattern",
+        structure_issue=("context_trap",),
+    )
+    runner = CurationServicesRunner.__new__(CurationServicesRunner)
+    runner.structured = AuditStructuredService(verdict)
+    runner.repository = AuditRepository(candidate)
+    runner.companion = CompanionNotes(note)
+    context = SimpleNamespace(
+        job=SimpleNamespace(
+            id="job-1",
+            lecture_id=12,
+            provider="openai",
+            model="gpt-5.2",
+        ),
+        prior_payloads={
+            CurationStage.PREFLIGHT: {
+                "prompt_snapshot": [
+                    {
+                        "id": "card-relevance-audit",
+                        "content": "# Blind audit",
+                        "prompt_hash": "123456789abc",
+                        "metadata": {
+                            "schema": "audit_verdict_v2",
+                            "batch_size": 30,
+                        },
+                    }
+                ]
+            },
+            CurationStage.SOURCE_INDEX: {
+                "passages": [stages_module._passage_payload(passage)]
+            },
+            CurationStage.LCL: {
+                "ledger": ledger.model_dump(mode="json"),
+                "schema_name": "lcl_v2",
+            },
+        },
+    )
+
+    product = asyncio.run(runner._card_audit(context))
+
+    assert product.payload["verdicts"] == [verdict.model_dump(mode="json")]
+    assert product.candidates is not None
+    audited = product.candidates[0]
+    assert audited.verdict == "drop"
+    assert audited.selected is False
+    assert audited.context_trap is True
+    assert audited.provenance["audit"]["primary_subject"] == "hemophilia A"
+
+
+class MissingCoverageStructuredService:
+    def __init__(self, judgment: CoverageJudgmentV2) -> None:
+        self.judgment = judgment
+        self.calls = 0
+        self.inputs: list[str] = []
+
+    def generate_json(
+        self,
+        instruction: str,
+        input_text: str,
+        *,
+        output_model: type[CoverageJudgmentV2],
+        provider: ProviderName,
+        model: str,
+    ) -> StructuredJSONResult[CoverageJudgmentV2]:
+        del instruction
+        assert output_model is CoverageJudgmentV2
+        self.calls += 1
+        self.inputs.append(input_text)
+        return StructuredJSONResult(
+            value=self.judgment,
+            raw_text=self.judgment.model_dump_json(),
+            provider=provider,
+            model=model,
+            request_id="recompute-request",
+            input_tokens=25,
+            output_tokens=15,
+            cost_microusd=9,
+        )
+
+
+def test_coverage_recompute_creates_missing_fact_after_audit_drop() -> None:
+    passage, ledger, candidate, note = _audit_stage_fixture()
+    original = CoverageJudgmentV2(
+        concept_id="C01",
+        supporting_note_ids=(1,),
+        missing_facts=(),
+        rationale="The candidate appears to cover the concept.",
+    )
+    recomputed = CoverageJudgmentV2(
+        concept_id="C01",
+        supporting_note_ids=(),
+        missing_facts=(
+            MissingFactV2(
+                fact_id="C01-M1",
+                statement="Iron deficiency causes low ferritin.",
+                passage_ids=(passage.source_id,),
+            ),
+        ),
+        rationale="No audited candidate covers this lecture fact.",
+    )
+    structured = MissingCoverageStructuredService(recomputed)
+    audited_candidate = replace(candidate, verdict="drop", selected=False)
+    repository = AuditRepository(audited_candidate)
+    runner = CurationServicesRunner.__new__(CurationServicesRunner)
+    runner.structured = structured
+    runner.repository = repository
+    runner.companion = CompanionNotes(note)
+    context = SimpleNamespace(
+        job=SimpleNamespace(
+            id="job-1",
+            judgment_rubric_version="coverage-rubric",
+            provider="openai",
+            model="gpt-5.2",
+        ),
+        prior_payloads={
+            CurationStage.PREFLIGHT: {
+                "prompt_snapshot": [
+                    {
+                        "id": "coverage-rubric",
+                        "content": "# Coverage rubric V2",
+                        "prompt_hash": "123456789abc",
+                        "metadata": {"schema": "coverage_v2"},
+                    }
+                ]
+            },
+            CurationStage.SOURCE_INDEX: {
+                "passages": [stages_module._passage_payload(passage)]
+            },
+            CurationStage.LCL: {
+                "ledger": ledger.model_dump(mode="json"),
+                "schema_name": "lcl_v2",
+            },
+            CurationStage.JUDGMENT_PASS_1: {
+                "schema_name": "coverage_v2",
+                "judgments": {
+                    "C01": {"judgment": original.model_dump(mode="json")}
+                },
+            },
+            CurationStage.JUDGMENT_PASS_2: {
+                "schema_name": "coverage_v2",
+                "judgments": {},
+            },
+            CurationStage.CARD_AUDIT: {
+                "verdicts": [
+                    AuditVerdictV2(
+                        nid=1,
+                        verdict="drop",
+                        primary_subject="hemophilia A",
+                        support="none",
+                        reason="Different disease",
+                        structure_issue=(),
+                    ).model_dump(mode="json")
+                ]
+            },
+        },
+    )
+
+    product = asyncio.run(runner._coverage_recompute(context))
+
+    assert structured.calls == 1
+    assert product.payload["schema_name"] == "coverage_v2"
+    assert product.payload["judgments"]["C01"]["recomputed"] is True
+    assert product.payload["judgments"]["C01"]["judgment"] == (
+        recomputed.model_dump(mode="json")
+    )
+
+
+class MultipleCompanionNotes:
+    def __init__(self, notes: tuple[NormalizedNote, ...]) -> None:
+        self.notes = {note.note_id: note for note in notes}
+
+    def get_note(self, note_id: int) -> NormalizedNote | None:
+        return self.notes.get(note_id)
+
+
+class MultipleAuditRepository(CoverageCache):
+    def __init__(self, candidates: tuple[Candidate, ...]) -> None:
+        super().__init__()
+        self.candidates = candidates
+
+    def list_candidates(self, job_id: object) -> list[Candidate]:
+        del job_id
+        return list(self.candidates)
+
+
+def test_coverage_recompute_combines_surviving_supports_from_both_passes() -> None:
+    passage, ledger, first_candidate, first_note = _audit_stage_fixture()
+    second_candidate = replace(
+        first_candidate,
+        note_id=2,
+        content_hash="2" * 64,
+        retrieval_pass=RetrievalPass.PASS_2_RESCUE,
+    )
+    second_note = replace(
+        first_note,
+        note_id=2,
+        content_sha256="2" * 64,
+        text="Iron deficiency depletes iron stores before microcytosis.",
+    )
+    first = CoverageJudgmentV2(
+        concept_id="C01",
+        supporting_note_ids=(1,),
+        missing_facts=(
+            MissingFactV2(
+                fact_id="C01-M1",
+                statement="Iron stores fall before microcytosis.",
+                passage_ids=(passage.source_id,),
+            ),
+        ),
+        rationale="The first card covers ferritin but not the sequence.",
+    )
+    second = CoverageJudgmentV2(
+        concept_id="C01",
+        supporting_note_ids=(2,),
+        missing_facts=(
+            MissingFactV2(
+                fact_id="C01-M1",
+                statement="Iron deficiency causes low ferritin.",
+                passage_ids=(passage.source_id,),
+            ),
+        ),
+        rationale="The rescue card covers the sequence but not ferritin.",
+    )
+    combined = CoverageJudgmentV2(
+        concept_id="C01",
+        supporting_note_ids=(1, 2),
+        missing_facts=(),
+        rationale="Together the audited cards cover the concept.",
+    )
+    structured = MissingCoverageStructuredService(combined)
+    runner = CurationServicesRunner.__new__(CurationServicesRunner)
+    runner.structured = structured
+    runner.repository = MultipleAuditRepository(
+        (first_candidate, second_candidate)
+    )
+    runner.companion = MultipleCompanionNotes((first_note, second_note))
+    context = SimpleNamespace(
+        job=SimpleNamespace(
+            id="job-1",
+            judgment_rubric_version="coverage-rubric",
+            provider="openai",
+            model="gpt-5.2",
+        ),
+        prior_payloads={
+            CurationStage.PREFLIGHT: {
+                "prompt_snapshot": [
+                    {
+                        "id": "coverage-rubric",
+                        "content": "# Coverage rubric V2",
+                        "prompt_hash": "123456789abc",
+                        "metadata": {"schema": "coverage_v2"},
+                    }
+                ]
+            },
+            CurationStage.SOURCE_INDEX: {
+                "passages": [stages_module._passage_payload(passage)]
+            },
+            CurationStage.LCL: {
+                "ledger": ledger.model_dump(mode="json"),
+                "schema_name": "lcl_v2",
+            },
+            CurationStage.JUDGMENT_PASS_1: {
+                "schema_name": "coverage_v2",
+                "judgments": {
+                    "C01": {"judgment": first.model_dump(mode="json")}
+                },
+            },
+            CurationStage.JUDGMENT_PASS_2: {
+                "schema_name": "coverage_v2",
+                "judgments": {
+                    "C01": {"judgment": second.model_dump(mode="json")}
+                },
+            },
+            CurationStage.CARD_AUDIT: {
+                "verdicts": [
+                    AuditVerdictV2(
+                        nid=note_id,
+                        verdict="keep",
+                        primary_subject="iron deficiency",
+                        support="slides",
+                        reason="Directly supported by the lecture slide",
+                        structure_issue=(),
+                    ).model_dump(mode="json")
+                    for note_id in (1, 2)
+                ]
+            },
+        },
+    )
+
+    product = asyncio.run(runner._coverage_recompute(context))
+
+    assert structured.calls == 1
+    assert [
+        candidate["note_id"]
+        for candidate in json.loads(structured.inputs[0])["candidates"]
+    ] == [1, 2]
+    assert product.payload["judgments"]["C01"]["judgment"] == (
+        combined.model_dump(mode="json")
+    )
+
+
+def test_audit_created_gap_localization_excludes_summary_only_evidence() -> None:
+    slide = SourcePassage.create(
+        revision_id=7,
+        lecture_id=12,
+        artifact_id="slides-7",
+        source_kind=SourceKind.SLIDE,
+        locator="slide:3",
+        text="Iron deficiency causes low ferritin.",
+        slide_number=3,
+    )
+    summary = SourcePassage.create(
+        revision_id=9,
+        lecture_id=12,
+        artifact_id="summary-9",
+        source_kind=SourceKind.SUMMARY,
+        locator="summary:core:1",
+        text="Iron deficiency causes low ferritin.",
+        source_id="SUM:12:CORE:01",
+    )
+    ledger = LectureConceptLedgerV2(
+        lecture_entity_count=1,
+        concepts=(
+            LectureConceptV2(
+                concept_id="C01",
+                canonical_statement="Iron deficiency causes low ferritin.",
+                hypothetical_card="Iron deficiency causes {{c1::low ferritin}}.",
+                primary_entity="iron deficiency",
+                aliases=("low ferritin",),
+                paraphrases=(
+                    "iron deficiency low ferritin",
+                    "iron deficiency depleted stores",
+                    "iron deficiency laboratory findings",
+                ),
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+                passage_ids=(slide.source_id, summary.source_id),
+            ),
+        ),
+        intentionally_uncited=(),
+    )
+    context = SimpleNamespace(
+        prior_payloads={
+            CurationStage.SOURCE_INDEX: {
+                "passages": [
+                    stages_module._passage_payload(slide),
+                    stages_module._passage_payload(summary),
+                ]
+            },
+            CurationStage.LCL: {
+                "ledger": ledger.model_dump(mode="json"),
+                "schema_name": "lcl_v2",
+            },
+        }
+    )
+    concept = stages_module._ledger(context).concepts[0]
+
+    localization = stages_module._localization_from_concept(
+        concept,
+        (slide, summary),
+    )
+
+    assert localization.evidence == (slide,)

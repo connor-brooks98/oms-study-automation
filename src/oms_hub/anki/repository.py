@@ -10,6 +10,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from oms_hub.anki.apply import ApplyOperationRecord
+from oms_hub.anki.audit import AuditCacheRecord
 from oms_hub.anki.contracts import ActionEnvelope, canonical_payload_sha256
 from oms_hub.anki.domain import (
     AgentCommandType,
@@ -42,6 +43,7 @@ from oms_hub.anki.models import (
     AnkiAgentCommandModel,
     AnkiAgentStateModel,
     AnkiCandidateModel,
+    AnkiCardAuditCacheModel,
     AnkiCoverageJudgmentCacheModel,
     AnkiCurationJobModel,
     AnkiEnvelopeModel,
@@ -100,6 +102,15 @@ ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
         CurationState.FAILED,
     },
     CurationState.JUDGING_PASS_2: {
+        CurationState.AUDITING_CANDIDATES,
+        CurationState.DEDUPING,
+        CurationState.FAILED,
+    },
+    CurationState.AUDITING_CANDIDATES: {
+        CurationState.RECOMPUTING_COVERAGE,
+        CurationState.FAILED,
+    },
+    CurationState.RECOMPUTING_COVERAGE: {
         CurationState.DEDUPING,
         CurationState.FAILED,
     },
@@ -137,6 +148,8 @@ ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
         CurationState.LOCALIZING_MISSED_CONCEPTS,
         CurationState.RETRIEVING_PASS_2,
         CurationState.JUDGING_PASS_2,
+        CurationState.AUDITING_CANDIDATES,
+        CurationState.RECOMPUTING_COVERAGE,
         CurationState.DEDUPING,
         CurationState.GENERATING_GAPS,
         CurationState.REMOVED,
@@ -154,6 +167,8 @@ _INTERRUPTED_PRE_REVIEW_STATES = {
     CurationState.LOCALIZING_MISSED_CONCEPTS,
     CurationState.RETRIEVING_PASS_2,
     CurationState.JUDGING_PASS_2,
+    CurationState.AUDITING_CANDIDATES,
+    CurationState.RECOMPUTING_COVERAGE,
     CurationState.DEDUPING,
     CurationState.GENERATING_GAPS,
 }
@@ -168,6 +183,8 @@ _CLAIMABLE_STATES = {
     CurationState.LOCALIZING_MISSED_CONCEPTS,
     CurationState.RETRIEVING_PASS_2,
     CurationState.JUDGING_PASS_2,
+    CurationState.AUDITING_CANDIDATES,
+    CurationState.RECOMPUTING_COVERAGE,
     CurationState.DEDUPING,
     CurationState.GENERATING_GAPS,
 }
@@ -181,6 +198,8 @@ _RETRY_STATE_BY_STAGE = {
     CurationStage.RESCUE: CurationState.LOCALIZING_MISSED_CONCEPTS,
     CurationStage.RETRIEVAL_PASS_2: CurationState.RETRIEVING_PASS_2,
     CurationStage.JUDGMENT_PASS_2: CurationState.JUDGING_PASS_2,
+    CurationStage.CARD_AUDIT: CurationState.AUDITING_CANDIDATES,
+    CurationStage.COVERAGE_RECOMPUTE: CurationState.RECOMPUTING_COVERAGE,
     CurationStage.DEDUPE: CurationState.DEDUPING,
     CurationStage.GAPS: CurationState.GENERATING_GAPS,
 }
@@ -271,6 +290,16 @@ class AnkiCurationRepository:
             if stored is None:
                 raise KeyError(str(job_id))
             return self._job(stored)
+
+    def lecture_title(self, lecture_id: int) -> str:
+        with self.database.session() as session:
+            lecture = session.get(LectureModel, lecture_id)
+            if lecture is None:
+                raise KeyError(lecture_id)
+            return (
+                f"{lecture.subject} Exam {lecture.exam_number} "
+                f"Lecture {lecture.lecture_number}: {lecture.topic}"
+            )
 
     def list_jobs(self, *, limit: int = 100) -> list[CurationJob]:
         if not 1 <= limit <= 500:
@@ -1046,6 +1075,59 @@ class AnkiCurationRepository:
             concept_content_hash=stored.concept_content_hash,
             candidate_digest=stored.candidate_digest,
             prompt_version=stored.prompt_version,
+            provider=ProviderName(stored.provider),
+            model=stored.model,
+            result=dict(json.loads(stored.result_json)),
+            input_tokens=stored.input_tokens,
+            output_tokens=stored.output_tokens,
+            cost_microusd=stored.cost_microusd,
+            created_at=stored.created_at,
+        )
+
+    def get_audit_cache(
+        self,
+        cache_key: str,
+    ) -> AuditCacheRecord | None:
+        with self.database.session() as session:
+            stored = session.get(AnkiCardAuditCacheModel, cache_key)
+            return None if stored is None else self._audit_cache_record(stored)
+
+    def save_audit_cache(self, record: AuditCacheRecord) -> None:
+        with self.database.session() as session:
+            stored = session.get(AnkiCardAuditCacheModel, record.cache_key)
+            if stored is not None:
+                if self._audit_cache_record(stored) != record:
+                    raise ValueError("audit cache key has conflicting content")
+                return
+            session.add(
+                AnkiCardAuditCacheModel(
+                    cache_key=record.cache_key,
+                    note_id=record.note_id,
+                    lecture_id=record.lecture_id,
+                    note_content_hash=record.note_content_hash,
+                    source_digest=record.source_digest,
+                    prompt_hash=record.prompt_hash,
+                    provider=record.provider.value,
+                    model=record.model,
+                    result_json=_canonical_json(record.result),
+                    input_tokens=record.input_tokens,
+                    output_tokens=record.output_tokens,
+                    cost_microusd=record.cost_microusd,
+                    created_at=record.created_at,
+                )
+            )
+
+    @staticmethod
+    def _audit_cache_record(
+        stored: AnkiCardAuditCacheModel,
+    ) -> AuditCacheRecord:
+        return AuditCacheRecord(
+            cache_key=stored.cache_key,
+            note_id=stored.note_id,
+            lecture_id=stored.lecture_id,
+            note_content_hash=stored.note_content_hash,
+            source_digest=stored.source_digest,
+            prompt_hash=stored.prompt_hash,
             provider=ProviderName(stored.provider),
             model=stored.model,
             result=dict(json.loads(stored.result_json)),

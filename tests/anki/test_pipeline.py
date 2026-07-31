@@ -20,6 +20,7 @@ from oms_hub.anki.pipeline import (
     StageArtifactStore,
     StageContext,
     StageProduct,
+    stage_definition,
 )
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.anki.stages import (
@@ -113,6 +114,21 @@ def _claimed_job(repository: AnkiCurationRepository):
     assert claimed.id == job.id
     repository.release_lease(job.id, "worker-1")
     return claimed
+
+
+def test_audit_and_recompute_precede_dedupe() -> None:
+    audit = stage_definition(CurationState.AUDITING_CANDIDATES)
+    recompute = stage_definition(CurationState.RECOMPUTING_COVERAGE)
+    after_pass_two = stage_definition(CurationState.JUDGING_PASS_2)
+
+    assert after_pass_two is not None
+    assert after_pass_two.next_state is CurationState.AUDITING_CANDIDATES
+    assert audit is not None
+    assert audit.stage is CurationStage.CARD_AUDIT
+    assert audit.next_state is CurationState.RECOMPUTING_COVERAGE
+    assert recompute is not None
+    assert recompute.stage is CurationStage.COVERAGE_RECOMPUTE
+    assert recompute.next_state is CurationState.DEDUPING
 
 
 def test_complete_pipeline_commits_one_immutable_artifact_per_stage(

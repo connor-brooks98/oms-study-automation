@@ -1,6 +1,6 @@
 ---
 id: card-relevance-audit
-version: 2.0.0
+version: 2.0.1
 model: claude-sonnet-4-6
 temperature: 0
 max_tokens: 8000
@@ -72,17 +72,21 @@ Independent of verdict. Apply to any card, including KEEPs.
 
 ## Output
 
-Strict JSON array. One object per input `nid`, every `nid` represented exactly
-once.
+Return one object containing a `verdicts` array. Include one verdict per input
+`nid`, with every `nid` represented exactly once.
 
 ```json
 {
-  "nid": 1234567890,
-  "verdict": "keep",
-  "primary_subject": "hereditary spherocytosis",
-  "support": "both",
-  "reason": "EMA binding assay named on slide 30 and in transcript",
-  "structure_issue": []
+  "verdicts": [
+    {
+      "nid": 1234567890,
+      "verdict": "keep",
+      "primary_subject": "hereditary spherocytosis",
+      "support": "both",
+      "reason": "EMA binding assay named on slide 30 and in transcript",
+      "structure_issue": []
+    }
+  ]
 }
 ```
 

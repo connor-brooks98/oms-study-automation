@@ -13,6 +13,7 @@ APPROVED_ANKI_TABLES = {
     "anki_candidates",
     "anki_gap_cards",
     "anki_verdict_cache",
+    "anki_card_audit_cache",
     "anki_envelopes",
     "anki_envelope_operations",
     "anki_agent_state",

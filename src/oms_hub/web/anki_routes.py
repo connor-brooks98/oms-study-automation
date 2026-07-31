@@ -780,7 +780,7 @@ def _page_context(request: Request) -> dict[str, Any]:
             "provider": active_provider.provider.value,
             "model": active_provider.model,
             "lcl_prompt_version": "lecture-concept-ledger",
-            "judgment_rubric_version": "judgment-v1",
+            "judgment_rubric_version": "coverage-rubric",
             "gap_prompt_version": "gap-v1",
             "index_snapshot_id": snapshot_id,
             "semantic_model": settings.anki_semantic_model,

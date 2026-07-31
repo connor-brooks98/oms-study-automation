@@ -4,6 +4,7 @@ from uuid import UUID
 
 import pytest
 
+from oms_hub.anki.audit import AuditCacheRecord
 from oms_hub.anki.contracts import SyncOperation
 from oms_hub.anki.domain import (
     ApplyState,
@@ -434,6 +435,45 @@ def test_coverage_judgment_cache_round_trips_immutable_record(
     repository.save_judgment_cache(record)
 
     assert repository.get_judgment_cache(record.cache_key) == record
+
+
+def test_card_audit_cache_round_trips_immutable_record(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    record = AuditCacheRecord(
+        cache_key="d" * 64,
+        note_id=123,
+        lecture_id=lecture_id,
+        note_content_hash="a" * 64,
+        source_digest="b" * 64,
+        prompt_hash="123456789abc",
+        provider=ProviderName.OPENAI,
+        model="gpt-5.2",
+        result={
+            "nid": 123,
+            "verdict": "keep",
+            "primary_subject": "iron deficiency",
+            "support": "both",
+            "reason": "Supported by slides and transcript",
+            "structure_issue": [],
+        },
+        input_tokens=100,
+        output_tokens=20,
+        cost_microusd=30,
+        created_at="2026-07-31T12:00:00+00:00",
+    )
+
+    repository.save_audit_cache(record)
+    repository.save_audit_cache(record)
+
+    assert repository.get_audit_cache(record.cache_key) == record
+
+
+def test_lecture_title_is_available_for_blind_audit_context(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+
+    assert repository.lecture_title(lecture_id) == (
+        "Heme Lymph Exam 1 Lecture 4: Anemia I"
+    )
 
 
 def test_review_changes_and_tag_patches_are_append_only(

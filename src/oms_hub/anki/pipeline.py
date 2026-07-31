@@ -71,6 +71,16 @@ PIPELINE_STAGES = (
     PipelineStageDefinition(
         CurationState.JUDGING_PASS_2,
         CurationStage.JUDGMENT_PASS_2,
+        CurationState.AUDITING_CANDIDATES,
+    ),
+    PipelineStageDefinition(
+        CurationState.AUDITING_CANDIDATES,
+        CurationStage.CARD_AUDIT,
+        CurationState.RECOMPUTING_COVERAGE,
+    ),
+    PipelineStageDefinition(
+        CurationState.RECOMPUTING_COVERAGE,
+        CurationStage.COVERAGE_RECOMPUTE,
         CurationState.DEDUPING,
     ),
     PipelineStageDefinition(

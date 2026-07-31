@@ -478,6 +478,9 @@ def test_anki_bootstrap_uses_saved_active_provider_and_models(
     assert payload["defaults"]["lcl_prompt_version"] == (
         "lecture-concept-ledger"
     )
+    assert payload["defaults"]["judgment_rubric_version"] == (
+        "coverage-rubric"
+    )
     assert payload["provider_models"] == {
         "anthropic": "claude-sonnet-4-6",
         "gemini": "gemini-3.6-flash",

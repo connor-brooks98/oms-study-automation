@@ -59,6 +59,28 @@
     .replaceAll("_", " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 
+  const candidateAudit = (candidate) => {
+    const audit = candidate?.provenance?.audit;
+    if (!audit || typeof audit !== "object") {
+      return {
+        label: "Coverage assessment",
+        reason: String(candidate?.reason || "No assessment available."),
+        subject: "",
+        support: "",
+        structureIssues: [],
+      };
+    }
+    return {
+      label: `Audit: ${readableState(audit.verdict)}`,
+      reason: String(audit.reason || candidate?.reason || ""),
+      subject: String(audit.primary_subject || ""),
+      support: readableState(audit.support),
+      structureIssues: (Array.isArray(audit.structure_issue)
+        ? audit.structure_issue
+        : []).map(readableState),
+    };
+  };
+
   const sourceLabel = (kind) => ({
     slides: "Lecture slides",
     transcripts: "Lecture transcript",
@@ -638,11 +660,12 @@
       checkbox,
       element(documentRef, "span", "", "Use this existing card"),
     );
+    const audit = candidateAudit(candidate);
     const score = element(
       documentRef,
       "span",
       "anki-confidence",
-      `${Math.round(candidate.confidence * 100)}% confidence`,
+      audit.label,
     );
     header.append(label, score);
 
@@ -661,19 +684,22 @@
     const details = documentRef.createElement("details");
     details.className = "anki-match-details";
     const summary = documentRef.createElement("summary");
-    summary.textContent = "Why this matched";
-    const reason = element(documentRef, "p", "", candidate.reason);
+    summary.textContent = candidate?.provenance?.audit
+      ? "Audit verdict"
+      : "Coverage assessment";
+    const reason = element(documentRef, "p", "", audit.reason);
     const facts = element(documentRef, "dl", "anki-score-list");
-    Object.entries(candidate.scores || {}).forEach(([name, value]) => {
+    Object.entries({
+      ...(audit.subject ? { primary_subject: audit.subject } : {}),
+      ...(audit.support ? { source_support: audit.support } : {}),
+      ...(audit.structureIssues.length
+        ? { structure_issues: audit.structureIssues.join(", ") }
+        : {}),
+    }).forEach(([name, value]) => {
       const row = element(documentRef, "div");
       row.append(
         element(documentRef, "dt", "", readableState(name)),
-        element(
-          documentRef,
-          "dd",
-          "",
-          Number(value).toFixed(3),
-        ),
+        element(documentRef, "dd", "", value),
       );
       facts.append(row);
     });
@@ -843,19 +869,25 @@
     "localizing_missed_concepts",
     "retrieving_pass_2",
     "judging_pass_2",
+    "auditing_candidates",
+    "recomputing_coverage",
     "deduping",
     "generating_gaps",
     "ready_for_review",
   ];
 
-  const canRetryCuration = (state) => state === "failed";
-
-  const renderProcessing = (documentRef, job) => {
-    const index = Math.max(stageOrder.indexOf(job.state), 0);
-    const percent = Math.max(
+  const processingPercent = (state) => {
+    const index = Math.max(stageOrder.indexOf(state), 0);
+    return Math.max(
       6,
       Math.round(((index + 1) / stageOrder.length) * 100),
     );
+  };
+
+  const canRetryCuration = (state) => state === "failed";
+
+  const renderProcessing = (documentRef, job) => {
+    const percent = processingPercent(job.state);
     documentRef.querySelector("#anki-job-state").textContent =
       readableState(job.state);
     documentRef.querySelector("#anki-job-state").className =
@@ -1178,6 +1210,7 @@
 
   const api = {
     canRetryCuration,
+    candidateAudit,
     collectReview,
     commaValues,
     csrfToken,
@@ -1188,6 +1221,7 @@
     initialize,
     lectureOptions,
     parseLecturePayload,
+    processingPercent,
     readableState,
     renderProcessing,
     resolveLecture,

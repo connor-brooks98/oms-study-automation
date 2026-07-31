@@ -367,6 +367,31 @@ class AnkiCoverageJudgmentCacheModel(Base):
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
 
 
+class AnkiCardAuditCacheModel(Base):
+    __tablename__ = "anki_card_audit_cache"
+    __table_args__ = (
+        Index(
+            "ix_anki_card_audit_cache_note_lecture",
+            "note_id",
+            "lecture_id",
+        ),
+    )
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    note_id: Mapped[int]
+    lecture_id: Mapped[int] = mapped_column(ForeignKey("lectures.id"))
+    note_content_hash: Mapped[str] = mapped_column(String(64))
+    source_digest: Mapped[str] = mapped_column(String(64))
+    prompt_hash: Mapped[str] = mapped_column(String(12))
+    provider: Mapped[str] = mapped_column(String(30))
+    model: Mapped[str] = mapped_column(String(200))
+    result_json: Mapped[str] = mapped_column(Text)
+    input_tokens: Mapped[int] = mapped_column(default=0)
+    output_tokens: Mapped[int] = mapped_column(default=0)
+    cost_microusd: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
 class AnkiEnvelopeModel(Base):
     __tablename__ = "anki_envelopes"
     __table_args__ = (

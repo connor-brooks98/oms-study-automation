@@ -99,6 +99,41 @@ test("only failed curation jobs expose pipeline retry", () => {
   assert.equal(anki.canRetryCuration("complete"), false);
 });
 
+test("audit and coverage recompute advance processing progress", () => {
+  const judged = anki.processingPercent("judging_pass_2");
+  const audited = anki.processingPercent("auditing_candidates");
+  const recomputed = anki.processingPercent("recomputing_coverage");
+  const deduped = anki.processingPercent("deduping");
+
+  assert.ok(judged < audited);
+  assert.ok(audited < recomputed);
+  assert.ok(recomputed < deduped);
+});
+
+test("candidate review uses the blind audit instead of fake confidence", () => {
+  const review = anki.candidateAudit({
+    verdict: "drop",
+    reason: "Different disease",
+    provenance: {
+      audit: {
+        verdict: "drop",
+        primary_subject: "hemophilia A",
+        support: "none",
+        reason: "Different disease",
+        structure_issue: ["context_trap"],
+      },
+    },
+  });
+
+  assert.deepEqual(review, {
+    label: "Audit: Drop",
+    reason: "Different disease",
+    subject: "hemophilia A",
+    support: "None",
+    structureIssues: ["Context Trap"],
+  });
+});
+
 test("failed-run actions use CSRF-protected retry and remove endpoints", async () => {
   const requests = [];
   const documentRef = { cookie: "study_hub_csrf=test-token" };

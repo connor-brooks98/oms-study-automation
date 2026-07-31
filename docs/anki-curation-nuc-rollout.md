@@ -192,6 +192,19 @@ paraphrases that retain the primary entity, depth, emphasis, importance, and
 readable source IDs for each concept. Existing jobs pinned to `lcl-v1` remain
 resumable.
 
+New runs also use the `coverage-rubric` v2 contract. Missing facts retain stable
+fact IDs and readable passage IDs so later card generation can reconcile every
+fact explicitly. After retrieval and coverage judgment, Study Hub audits every
+candidate without exposing its matched concept, retrieval query, score, or
+earlier rationale. Audit results are cached against the note content, lecture
+sources, prompt, provider, and model. Only `keep` verdicts remain selected;
+`uncertain` and `drop` remain visible but unchecked.
+
+Coverage is then recomputed from the surviving `keep` supports before dedupe or
+gap generation. This ordering means an off-topic card removed by the audit can
+create a real, source-grounded missing fact instead of silently making the deck
+thinner.
+
 ## 8. Review cards and first-release tag edits
 
 The review page groups existing matches, recovered matches, grounded gaps, and

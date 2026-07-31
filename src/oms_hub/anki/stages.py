@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import Any, Literal, cast
 from uuid import UUID
 
+from oms_hub.anki.audit import AuditRunResult, CardAuditService
 from oms_hub.anki.dedupe import DeduplicationService
 from oms_hub.anki.domain import (
     Candidate,
@@ -28,6 +29,7 @@ from oms_hub.anki.judgment import (
     CoverageJudgment,
     JudgmentResult,
     JudgmentService,
+    runtime_judgment_from_v2,
 )
 from oms_hub.anki.lcl import (
     LCLService,
@@ -69,7 +71,11 @@ from oms_hub.anki.sources import (
     OutlineRepository,
     SourcePassage,
 )
-from oms_hub.anki.v2_contracts import LectureConceptLedgerV2
+from oms_hub.anki.v2_contracts import (
+    AuditVerdictV2,
+    CoverageJudgmentV2,
+    LectureConceptLedgerV2,
+)
 from oms_hub.ingestion.domain import StudyRevision
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.llm.domain import ProviderName
@@ -244,6 +250,8 @@ class CurationServicesRunner:
             CurationStage.RESCUE: self._rescue,
             CurationStage.RETRIEVAL_PASS_2: self._retrieval_pass_2,
             CurationStage.JUDGMENT_PASS_2: self._judgment_pass_2,
+            CurationStage.CARD_AUDIT: self._card_audit,
+            CurationStage.COVERAGE_RECOMPUTE: self._coverage_recompute,
             CurationStage.DEDUPE: self._finalize_outcomes,
             CurationStage.GAPS: self._generate_gaps,
         }
@@ -412,10 +420,6 @@ class CurationServicesRunner:
 
     async def _rescue(self, context: StageContext) -> StageProduct:
         ledger = _ledger(context)
-        judgments = _judgment_payload(
-            context,
-            CurationStage.JUDGMENT_PASS_1,
-        )
         service = RescueService(
             self.source_indexes(context.job.id),
             self.structured,
@@ -426,8 +430,10 @@ class CurationServicesRunner:
         localizations: dict[str, dict[str, Any]] = {}
         evidence_records: list[SourceEvidence] = []
         for concept in ledger.concepts:
-            judgment = CoverageJudgment.model_validate(
-                judgments[concept.concept_id]["judgment"]
+            judgment = _coverage_judgment(
+                context,
+                CurationStage.JUDGMENT_PASS_1,
+                concept.concept_id,
             )
             if judgment.status == "covered":
                 continue
@@ -521,18 +527,184 @@ class CurationServicesRunner:
         )
         return replace(product, candidates=merged)
 
+    async def _card_audit(self, context: StageContext) -> StageProduct:
+        candidates = tuple(self.repository.list_candidates(context.job.id))
+        prompt_text, prompt_hash = _resolved_prompt(
+            context,
+            "card-relevance-audit",
+        )
+        metadata = _resolved_prompt_metadata(
+            context,
+            "card-relevance-audit",
+        )
+        if metadata.get("schema") != "audit_verdict_v2":
+            raise PinnedInputChanged(
+                "Pinned card-audit prompt schema is unsupported"
+            )
+        batch_size = metadata.get("batch_size", 30)
+        if not isinstance(batch_size, int) or batch_size < 1:
+            raise PinnedInputChanged(
+                "Pinned card-audit batch size is malformed"
+            )
+        service = CardAuditService(
+            self.structured,
+            self.repository,
+            self.companion,
+            provider=_provider(context),
+            model=context.job.model,
+            prompt_text=prompt_text,
+            prompt_hash=prompt_hash,
+            batch_size=batch_size,
+        )
+        result = await asyncio.to_thread(
+            service.audit,
+            lecture_id=context.job.lecture_id,
+            lecture_title=self.repository.lecture_title(
+                context.job.lecture_id
+            ),
+            lecture_entity_count=_ledger(context).lecture_entity_count,
+            candidates=candidates,
+            passages=_source_passages(context),
+        )
+        verdict_by_id = {verdict.nid: verdict for verdict in result.verdicts}
+        audited = tuple(
+            _audited_candidate(candidate, verdict_by_id[candidate.note_id])
+            for candidate in candidates
+        )
+        counts = {
+            verdict: sum(item.verdict == verdict for item in result.verdicts)
+            for verdict in ("keep", "drop", "uncertain")
+        }
+        return StageProduct(
+            kind="card_relevance_audit",
+            payload={
+                "schema_name": "audit_verdict_v2",
+                "prompt_hash": prompt_hash,
+                "verdicts": [
+                    verdict.model_dump(mode="json")
+                    for verdict in result.verdicts
+                ],
+                "counts": counts,
+            },
+            candidates=audited,
+            usage=_audit_usage(result),
+            cache_hits=result.cache_hits,
+        )
+
+    async def _coverage_recompute(
+        self,
+        context: StageContext,
+    ) -> StageProduct:
+        ledger = _ledger(context)
+        prompt_text, prompt_hash = _resolved_prompt(
+            context,
+            context.job.judgment_rubric_version,
+        )
+        schema_name = _resolved_prompt_schema(
+            context,
+            context.job.judgment_rubric_version,
+        )
+        if schema_name not in {"coverage_v1", "coverage_v2"}:
+            raise PinnedInputChanged(
+                "Pinned coverage prompt schema is unsupported"
+            )
+        coverage_schema = cast(
+            Literal["coverage_v1", "coverage_v2"],
+            schema_name,
+        )
+        service = JudgmentService(
+            self.structured,
+            self.repository,
+            self.companion,
+            provider=_provider(context),
+            model=context.job.model,
+            prompt_version=context.job.judgment_rubric_version,
+            prompt_text=prompt_text,
+            prompt_hash=prompt_hash,
+            schema_name=coverage_schema,
+        )
+        audit_payload = _payload(context, CurationStage.CARD_AUDIT)
+        raw_verdicts = audit_payload.get("verdicts")
+        if not isinstance(raw_verdicts, list):
+            raise PinnedInputChanged("Card-audit artifact is malformed")
+        verdicts = tuple(
+            AuditVerdictV2.model_validate(value) for value in raw_verdicts
+        )
+        keep_ids = {
+            verdict.nid for verdict in verdicts if verdict.verdict == "keep"
+        }
+        candidates_by_id = {
+            candidate.note_id: candidate
+            for candidate in self.repository.list_candidates(context.job.id)
+        }
+        if set(candidates_by_id) != {verdict.nid for verdict in verdicts}:
+            raise PinnedInputChanged(
+                "Card-audit artifact does not partition current candidates"
+            )
+        results: dict[str, dict[str, Any]] = {}
+        usages: list[JudgmentResult] = []
+        for concept in ledger.concepts:
+            prior_stage = _final_judgment_stage(context, concept.concept_id)
+            prior = _coverage_judgment(
+                context,
+                prior_stage,
+                concept.concept_id,
+            )
+            prior_support_ids = _combined_support_ids(
+                context,
+                concept.concept_id,
+            )
+            unknown_support_ids = prior_support_ids - set(candidates_by_id)
+            if unknown_support_ids:
+                raise PinnedInputChanged(
+                    "Coverage support is absent from current candidates"
+                )
+            surviving_ids = tuple(
+                sorted(prior_support_ids & keep_ids)
+            )
+            if (
+                surviving_ids == tuple(sorted(prior_support_ids))
+                and prior_support_ids == set(prior.supporting_note_ids)
+            ):
+                results[concept.concept_id] = {
+                    **_judgment_record(
+                        context,
+                        prior_stage,
+                        concept.concept_id,
+                    ),
+                    "recomputed": False,
+                }
+                continue
+            recomputed = await asyncio.to_thread(
+                service.judge,
+                concept,
+                [candidates_by_id[nid] for nid in surviving_ids],
+                passages=_source_passages(context),
+            )
+            usages.append(recomputed)
+            results[concept.concept_id] = {
+                "judgment": recomputed.judgment.model_dump(mode="json"),
+                "cache_key": recomputed.cache_key,
+                "cache_hit": recomputed.cache_hit,
+                "provider": recomputed.provider.value,
+                "model": recomputed.model,
+                "request_id": recomputed.request_id,
+                "recomputed": True,
+            }
+        return StageProduct(
+            kind="audited_coverage_judgments",
+            payload={
+                "schema_name": schema_name,
+                "judgments": results,
+            },
+            usage=_judgment_usage("coverage_recompute", usages),
+            cache_hits=sum(result.cache_hit for result in usages),
+        )
+
     async def _finalize_outcomes(
         self,
         context: StageContext,
     ) -> StageProduct:
-        pass_1 = _judgment_payload(
-            context,
-            CurationStage.JUDGMENT_PASS_1,
-        )
-        pass_2 = _judgment_payload(
-            context,
-            CurationStage.JUDGMENT_PASS_2,
-        )
         rescue_payload = _payload(context, CurationStage.RESCUE)
         localizations = cast(
             dict[str, dict[str, Any]],
@@ -540,31 +712,25 @@ class CurationServicesRunner:
         )
         outcomes: dict[str, str] = {}
         for concept in _ledger(context).concepts:
-            first = CoverageJudgment.model_validate(
-                pass_1[concept.concept_id]["judgment"]
+            judgment = _coverage_judgment(
+                context,
+                CurationStage.COVERAGE_RECOMPUTE,
+                concept.concept_id,
             )
-            if first.status == "covered":
-                outcomes[concept.concept_id] = "covered_pass_1"
+            if judgment.status == "covered":
+                outcomes[concept.concept_id] = "covered_audited"
                 continue
             raw_localization = localizations.get(concept.concept_id)
             if raw_localization is None:
-                outcomes[concept.concept_id] = "unsupported"
+                outcomes[concept.concept_id] = "gap_supported"
                 continue
             localization = _localization(
                 concept,
                 raw_localization,
             )
-            raw_second = pass_2.get(concept.concept_id)
-            second = (
-                CoverageJudgment.model_validate(
-                    raw_second["judgment"]
-                )
-                if raw_second is not None
-                else None
-            )
             outcomes[concept.concept_id] = RescueService.finalize(
                 localization,
-                second,
+                judgment,
             )
         return StageProduct(
             kind="final_coverage_outcomes",
@@ -609,9 +775,16 @@ class CurationServicesRunner:
         for concept_id, outcome in outcomes.items():
             if outcome != "gap_supported":
                 continue
-            localization = _localization(
-                ledger_by_id[concept_id],
-                localizations[concept_id],
+            localization = (
+                _localization(
+                    ledger_by_id[concept_id],
+                    localizations[concept_id],
+                )
+                if concept_id in localizations
+                else _localization_from_concept(
+                    ledger_by_id[concept_id],
+                    _source_passages(context),
+                )
             )
             generated = await asyncio.to_thread(
                 service.generate,
@@ -731,6 +904,18 @@ class CurationServicesRunner:
             context,
             context.job.judgment_rubric_version,
         )
+        schema_name = _resolved_prompt_schema(
+            context,
+            context.job.judgment_rubric_version,
+        )
+        if schema_name not in {"coverage_v1", "coverage_v2"}:
+            raise PinnedInputChanged(
+                "Pinned coverage prompt schema is unsupported"
+            )
+        coverage_schema = cast(
+            Literal["coverage_v1", "coverage_v2"],
+            schema_name,
+        )
         service = JudgmentService(
             self.structured,
             self.repository,
@@ -740,6 +925,7 @@ class CurationServicesRunner:
             prompt_version=context.job.judgment_rubric_version,
             prompt_text=prompt_text,
             prompt_hash=prompt_hash,
+            schema_name=coverage_schema,
         )
         results: dict[str, dict[str, Any]] = {}
         projected: list[Candidate] = []
@@ -752,6 +938,7 @@ class CurationServicesRunner:
                 service.judge,
                 ledger_by_id[concept_id],
                 candidates,
+                passages=_source_passages(context),
             )
             usages.append(result)
             results[concept_id] = {
@@ -762,11 +949,16 @@ class CurationServicesRunner:
                 "model": result.model,
                 "request_id": result.request_id,
             }
-            supporting = set(result.judgment.supporting_note_ids)
+            runtime = (
+                runtime_judgment_from_v2(result.judgment)
+                if isinstance(result.judgment, CoverageJudgmentV2)
+                else result.judgment
+            )
+            supporting = set(runtime.supporting_note_ids)
             projected.extend(
                 _judged_candidate(
                     candidate,
-                    result.judgment,
+                    runtime,
                     selected=candidate.note_id in supporting,
                 )
                 for candidate in candidates
@@ -775,6 +967,7 @@ class CurationServicesRunner:
         return StageProduct(
             kind=kind,
             payload={
+                "schema_name": schema_name,
                 "judgments": results,
                 "projected_candidates": [
                     _candidate_payload(candidate)
@@ -844,6 +1037,28 @@ def _resolved_prompt_schema(
     )
 
 
+def _resolved_prompt_metadata(
+    context: StageContext,
+    prompt_id: str,
+) -> dict[str, Any]:
+    raw_snapshot = _payload(context, CurationStage.PREFLIGHT).get(
+        "prompt_snapshot",
+        [],
+    )
+    if not isinstance(raw_snapshot, list):
+        raise PinnedInputChanged("Pinned prompt snapshot is malformed")
+    for value in raw_snapshot:
+        if not isinstance(value, dict) or value.get("id") != prompt_id:
+            continue
+        metadata = value.get("metadata")
+        if not isinstance(metadata, dict):
+            raise PinnedInputChanged("Pinned prompt metadata is malformed")
+        return dict(metadata)
+    raise PinnedInputChanged(
+        f"Pinned prompt {prompt_id} is unavailable; start a new curation job"
+    )
+
+
 def revision_fingerprint(revision: StudyRevision) -> str:
     payload = {
         "revision_id": revision.id,
@@ -906,6 +1121,84 @@ def _judgment_payload(
         dict[str, dict[str, Any]],
         _payload(context, stage).get("judgments", {}),
     )
+
+
+def _coverage_judgment(
+    context: StageContext,
+    stage: CurationStage,
+    concept_id: str,
+) -> CoverageJudgment:
+    payload = _payload(context, stage)
+    schema_name = payload.get("schema_name", "coverage_v1")
+    raw = _judgment_payload(context, stage).get(concept_id)
+    if not isinstance(raw, dict) or not isinstance(raw.get("judgment"), dict):
+        raise PinnedInputChanged("Coverage judgment artifact is malformed")
+    if schema_name == "coverage_v2":
+        return runtime_judgment_from_v2(
+            CoverageJudgmentV2.model_validate(raw["judgment"])
+        )
+    if schema_name != "coverage_v1":
+        raise PinnedInputChanged("Committed coverage schema is unsupported")
+    return CoverageJudgment.model_validate(raw["judgment"])
+
+
+def _judgment_record(
+    context: StageContext,
+    stage: CurationStage,
+    concept_id: str,
+) -> dict[str, Any]:
+    raw = _judgment_payload(context, stage).get(concept_id)
+    if not isinstance(raw, dict) or not isinstance(raw.get("judgment"), dict):
+        raise PinnedInputChanged("Coverage judgment artifact is malformed")
+    return dict(raw)
+
+
+def _final_judgment_stage(
+    context: StageContext,
+    concept_id: str,
+) -> CurationStage:
+    first = _coverage_judgment(
+        context,
+        CurationStage.JUDGMENT_PASS_1,
+        concept_id,
+    )
+    if first.status == "covered":
+        return CurationStage.JUDGMENT_PASS_1
+    second = _judgment_payload(
+        context,
+        CurationStage.JUDGMENT_PASS_2,
+    )
+    return (
+        CurationStage.JUDGMENT_PASS_2
+        if concept_id in second
+        else CurationStage.JUDGMENT_PASS_1
+    )
+
+
+def _combined_support_ids(
+    context: StageContext,
+    concept_id: str,
+) -> set[int]:
+    supports = set(
+        _coverage_judgment(
+            context,
+            CurationStage.JUDGMENT_PASS_1,
+            concept_id,
+        ).supporting_note_ids
+    )
+    second = _judgment_payload(
+        context,
+        CurationStage.JUDGMENT_PASS_2,
+    )
+    if concept_id in second:
+        supports.update(
+            _coverage_judgment(
+                context,
+                CurationStage.JUDGMENT_PASS_2,
+                concept_id,
+            ).supporting_note_ids
+        )
+    return supports
 
 
 def _retrieval_scope(context: StageContext) -> RetrievalScope:
@@ -1055,6 +1348,29 @@ def _judged_candidate(
     )
 
 
+def _audited_candidate(
+    candidate: Candidate,
+    audit: AuditVerdictV2,
+) -> Candidate:
+    provenance = dict(candidate.provenance)
+    provenance["audit"] = audit.model_dump(mode="json")
+    return replace(
+        candidate,
+        provenance=provenance,
+        verdict={
+            "keep": "include",
+            "drop": "drop",
+            "uncertain": "uncertain",
+        }[audit.verdict],
+        confidence={"keep": 1.0, "drop": 0.0, "uncertain": 0.5}[
+            audit.verdict
+        ],
+        reason=audit.reason,
+        context_trap="context_trap" in audit.structure_issue,
+        selected=audit.verdict == "keep",
+    )
+
+
 def _merge_candidates(
     candidates: Sequence[Candidate],
 ) -> tuple[Candidate, ...]:
@@ -1114,6 +1430,32 @@ def _localization(
             for passage in raw_evidence
         ),
         rationale=str(value["rationale"]),
+    )
+
+
+def _localization_from_concept(
+    concept: LectureConcept,
+    passages: Sequence[SourcePassage],
+) -> RescueLocalization:
+    by_id = {passage.passage_id: passage for passage in passages}
+    try:
+        evidence = tuple(
+            passage
+            for reference in concept.source_refs
+            if (passage := by_id[reference.passage_id]).source_kind
+            is not SourceKind.SUMMARY
+        )
+    except KeyError as exc:
+        raise PinnedInputChanged(
+            "Concept evidence is absent from the source artifact"
+        ) from exc
+    if not evidence:
+        raise PinnedInputChanged("Concept has no primary source evidence")
+    return RescueLocalization(
+        concept=concept,
+        support="supported",
+        evidence=evidence,
+        rationale="The audited coverage gap is grounded in the LCL evidence.",
     )
 
 
@@ -1196,6 +1538,25 @@ def _judgment_usage(
         input_tokens=sum(result.input_tokens for result in results),
         output_tokens=sum(result.output_tokens for result in results),
         cost_microusd=sum(result.cost_microusd for result in results),
+    )
+
+
+def _audit_usage(result: AuditRunResult) -> StageUsage | None:
+    if not result.request_ids:
+        return None
+    identity = json.dumps(
+        result.request_ids,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return StageUsage(
+        request_id=(
+            "card_audit:"
+            f"{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
+        ),
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        cost_microusd=result.cost_microusd,
     )
 
 

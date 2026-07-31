@@ -20,6 +20,8 @@ def test_v4_pipeline_states_are_explicit() -> None:
         "localizing_missed_concepts",
         "retrieving_pass_2",
         "judging_pass_2",
+        "auditing_candidates",
+        "recomputing_coverage",
         "deduping",
         "generating_gaps",
         "ready_for_review",
@@ -37,6 +39,8 @@ def test_v4_pipeline_states_are_explicit() -> None:
 def test_v4_stage_and_recovery_vocabularies_are_stable() -> None:
     assert CurationStage.SOURCE_INDEX.value == "source_index"
     assert CurationStage.RETRIEVAL_PASS_2.value == "retrieval_pass_2"
+    assert CurationStage.CARD_AUDIT.value == "card_audit"
+    assert CurationStage.COVERAGE_RECOMPUTE.value == "coverage_recompute"
     assert RetrievalPass.PASS_2_RESCUE.value == "pass_2_rescue"
     assert EvidenceSupport.PARTIAL.value == "partial"
     assert ApplyState.APPLIED_LOCAL_SYNC_BLOCKED.value == (
