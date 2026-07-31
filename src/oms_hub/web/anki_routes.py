@@ -332,7 +332,7 @@ def retry_anki_job(request: Request, job_id: UUID) -> dict[str, Any]:
     return _job_payload(job)
 
 
-@router.delete("/api/anki/jobs/{job_id}")
+@router.post("/api/anki/jobs/{job_id}/remove")
 def remove_failed_anki_job(
     request: Request,
     job_id: UUID,

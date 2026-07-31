@@ -239,8 +239,8 @@
       return requestJson(
         documentRef,
         fetchImpl,
-        `/api/anki/jobs/${jobId}`,
-        { method: "DELETE" },
+        `/api/anki/jobs/${jobId}/remove`,
+        { method: "POST" },
       );
     }
     throw new Error("Unsupported failed-run action.");

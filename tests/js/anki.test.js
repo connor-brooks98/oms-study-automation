@@ -123,8 +123,8 @@ test("failed-run actions use CSRF-protected retry and remove endpoints", async (
         csrf: "test-token",
       },
       {
-        url: "/api/anki/jobs/job-1",
-        method: "DELETE",
+        url: "/api/anki/jobs/job-1/remove",
+        method: "POST",
         csrf: "test-token",
       },
     ],

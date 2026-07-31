@@ -587,7 +587,7 @@ def test_failed_curation_job_can_be_removed_through_api(
     assert remove is not None
     assert remove.attributes["aria-label"] == "Remove failed run"
 
-    removed = client.delete(f"/api/anki/jobs/{created.id}")
+    removed = client.post(f"/api/anki/jobs/{created.id}/remove")
     listed = client.get("/api/anki/jobs")
 
     assert removed.status_code == 200
@@ -604,7 +604,7 @@ def test_remove_job_api_rejects_nonfailed_runs(
         json=_create_payload(lecture_id, revision_id),
     )
 
-    response = client.delete(f"/api/anki/jobs/{created.json()['id']}")
+    response = client.post(f"/api/anki/jobs/{created.json()['id']}/remove")
 
     assert response.status_code == 409
     assert "failed" in response.json()["detail"]
