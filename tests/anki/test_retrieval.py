@@ -387,3 +387,38 @@ def test_pass_2_keeps_rescue_evidence_lineage() -> None:
         assert candidates[0].provenance["evidence_ids"] == ["b" * 64]
 
     asyncio.run(scenario())
+
+
+def test_convergence_retrieval_records_queries_and_pass_number() -> None:
+    async def scenario() -> None:
+        concept = _concept()
+        queries = (
+            "iron deficiency transferrin saturation",
+            "iron deficiency zinc protoporphyrin",
+            "iron deficiency reticulocyte response",
+        )
+        semantic = FakeSemanticSearch({query: [1] for query in queries})
+        companion = FakeCompanionIndex(
+            [_note(1)],
+            eligible={1},
+            lexical=(1,),
+        )
+        service = RetrievalService(
+            companion,
+            semantic,
+            per_concept_limit=5,
+            global_limit=10,
+        )
+
+        candidates = await service.retrieve_convergence(
+            concept,
+            queries,
+            RetrievalScope(),
+            pass_number=3,
+        )
+
+        assert candidates[0].retrieval_pass is RetrievalPass.CONVERGENCE
+        assert candidates[0].provenance["convergence_pass"] == 3
+        assert candidates[0].provenance["queries"] == list(queries)
+
+    asyncio.run(scenario())

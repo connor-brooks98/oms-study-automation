@@ -48,10 +48,12 @@
   <div id="anki-review-content" hidden>
     <section class="anki-review-summary" aria-label="Review totals">
       <div><strong data-count-pass1>0</strong><span>Pass 1 matches</span></div>
-      <div><strong data-count-pass2>0</strong><span>Recovered in Pass 2</span></div>
+      <div><strong data-count-pass2>0</strong><span>Recovered after Pass 1</span></div>
+      <div><strong data-count-convergence>—</strong><span data-label-convergence>Convergence</span></div>
       <div><strong data-count-generated>0</strong><span>Generated cards</span></div>
       <div><strong data-count-unresolved>0</strong><span>Unresolved</span></div>
     </section>
+    <p class="pipeline-note" data-convergence-warning hidden></p>
 
     <section class="anki-review-group" aria-labelledby="pass-one-heading">
       <div class="anki-section-heading">
@@ -69,11 +71,11 @@
       <div class="anki-section-heading">
         <div>
           <p class="mono-label">Missed-topic recovery</p>
-          <h2 id="pass-two-heading">Recovered in Pass 2</h2>
+          <h2 id="pass-two-heading">Recovered after Pass 1</h2>
         </div>
         <span class="anki-explainer">Slides + transcript search</span>
       </div>
-      <p class="anki-group-help">These notes were found after Study Hub localized a missed concept in your lecture sources and searched again with that context.</p>
+      <p class="anki-group-help">These notes were found during missed-topic recovery or later convergence passes.</p>
       <div class="anki-review-list" data-group-pass2></div>
     </section>
 
@@ -141,5 +143,5 @@
 </article>
 {% endblock %}
 {% block scripts %}
-<script src="/static/anki.js?v=20260730.1" defer></script>
+<script src="/static/anki.js?v=20260731.1" defer></script>
 {% endblock %}

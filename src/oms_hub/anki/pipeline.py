@@ -71,6 +71,21 @@ PIPELINE_STAGES = (
     PipelineStageDefinition(
         CurationState.JUDGING_PASS_2,
         CurationStage.JUDGMENT_PASS_2,
+        CurationState.CONVERGING_PASS_3,
+    ),
+    PipelineStageDefinition(
+        CurationState.CONVERGING_PASS_3,
+        CurationStage.CONVERGENCE_PASS_3,
+        CurationState.CONVERGING_PASS_4,
+    ),
+    PipelineStageDefinition(
+        CurationState.CONVERGING_PASS_4,
+        CurationStage.CONVERGENCE_PASS_4,
+        CurationState.CONVERGING_PASS_5,
+    ),
+    PipelineStageDefinition(
+        CurationState.CONVERGING_PASS_5,
+        CurationStage.CONVERGENCE_PASS_5,
         CurationState.AUDITING_CANDIDATES,
     ),
     PipelineStageDefinition(

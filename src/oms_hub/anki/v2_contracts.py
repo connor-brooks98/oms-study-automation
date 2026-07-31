@@ -193,12 +193,41 @@ class PromptManifestEntryV2(V2Contract):
     prompt_hash: str = Field(pattern=r"^[0-9a-f]{12}$")
 
 
+class ParaphraseExpansionV2(V2Contract):
+    concept_id: ConceptId
+    paraphrases: tuple[str, ...] = Field(min_length=3, max_length=3)
+    targeting: str = Field(min_length=1, max_length=1_000)
+
+    @field_validator("paraphrases")
+    @classmethod
+    def normalize_unique_paraphrases(
+        cls,
+        values: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        normalized = tuple(value.strip() for value in values)
+        if any(not value for value in normalized):
+            raise ValueError("expanded paraphrases cannot be blank")
+        if len({value.casefold() for value in normalized}) != len(normalized):
+            raise ValueError("expanded paraphrases must be unique")
+        return normalized
+
+
 class ConvergenceConceptV2(V2Contract):
     concept_id: ConceptId
     passes_run: int = Field(ge=1, le=5)
     seen_note_ids: tuple[int, ...]
     growth: tuple[float, ...] = Field(min_length=1, max_length=5)
     converged: bool
+
+    @model_validator(mode="after")
+    def reconcile_history(self) -> "ConvergenceConceptV2":
+        if self.passes_run != len(self.growth):
+            raise ValueError("convergence pass count must match growth history")
+        if len(self.seen_note_ids) != len(set(self.seen_note_ids)):
+            raise ValueError("convergence note IDs must be unique")
+        if any(value < 0 or value > 1 for value in self.growth):
+            raise ValueError("convergence growth must be between zero and one")
+        return self
 
 
 class CoverageLedgerEntryV2(V2Contract):

@@ -101,11 +101,17 @@ test("only failed curation jobs expose pipeline retry", () => {
 
 test("audit and coverage recompute advance processing progress", () => {
   const judged = anki.processingPercent("judging_pass_2");
+  const passThree = anki.processingPercent("converging_pass_3");
+  const passFour = anki.processingPercent("converging_pass_4");
+  const passFive = anki.processingPercent("converging_pass_5");
   const audited = anki.processingPercent("auditing_candidates");
   const recomputed = anki.processingPercent("recomputing_coverage");
   const deduped = anki.processingPercent("deduping");
 
-  assert.ok(judged < audited);
+  assert.ok(judged < passThree);
+  assert.ok(passThree < passFour);
+  assert.ok(passFour < passFive);
+  assert.ok(passFive < audited);
   assert.ok(audited < recomputed);
   assert.ok(recomputed < deduped);
 });
@@ -131,6 +137,20 @@ test("candidate review uses the blind audit instead of fake confidence", () => {
     subject: "hemophilia A",
     support: "None",
     structureIssues: ["Context Trap"],
+  });
+});
+
+test("convergence summary surfaces pass count and manual review state", () => {
+  assert.deepEqual(anki.convergenceDisplay({
+    passes_run: 5,
+    concepts_converged: 31,
+    concepts_total: 33,
+    needs_manual_review: true,
+    manual_review_concept_ids: ["C17", "C28"],
+  }), {
+    count: "31 / 33",
+    label: "Manual review · 5 passes",
+    warning: "2 concepts were still growing after pass 5.",
   });
 });
 

@@ -109,6 +109,27 @@ class RetrievalService:
             ),
         )
 
+    async def retrieve_convergence(
+        self,
+        concept: LectureConcept,
+        queries: Sequence[str],
+        scope: RetrievalScope,
+        *,
+        pass_number: int,
+    ) -> list[Candidate]:
+        if len(queries) != 3 or not 3 <= pass_number <= 5:
+            raise ValueError(
+                "convergence retrieval requires three queries for pass 3-5"
+            )
+        return await self._retrieve(
+            concept,
+            queries,
+            scope,
+            retrieval_pass=RetrievalPass.CONVERGENCE,
+            evidence_ids=(),
+            convergence_pass=pass_number,
+        )
+
     async def _retrieve(
         self,
         concept: LectureConcept,
@@ -117,6 +138,7 @@ class RetrievalService:
         *,
         retrieval_pass: RetrievalPass,
         evidence_ids: tuple[str, ...],
+        convergence_pass: int | None = None,
     ) -> list[Candidate]:
         eligible = self.companion.eligible_note_ids(scope.filters)
         if not eligible:
@@ -183,6 +205,7 @@ class RetrievalService:
                 retrieval_pass=retrieval_pass,
                 queries=queries,
                 evidence_ids=evidence_ids,
+                convergence_pass=convergence_pass,
             )
             for note_id in candidate_ids
         ]
@@ -211,6 +234,7 @@ class RetrievalService:
         retrieval_pass: RetrievalPass,
         queries: Sequence[str],
         evidence_ids: tuple[str, ...],
+        convergence_pass: int | None,
     ) -> Candidate:
         note = self.companion.get_note(note_id)
         if note is None:
@@ -238,18 +262,21 @@ class RetrievalService:
             boost_total += min(len(set(note.source_families)), 3) * 0.005
             reasons.append("trusted_source")
         boost_total = min(boost_total, 0.05)
+        provenance = {
+            "queries": list(queries),
+            "evidence_ids": list(evidence_ids),
+            "variant_ranks": dict(variant_ranks.get(note_id, {})),
+            "semantic_rank": semantic_rank,
+            "lexical_rank": lexical_rank,
+            "reasons": reasons,
+        }
+        if convergence_pass is not None:
+            provenance["convergence_pass"] = convergence_pass
         return Candidate(
             note_id=note.note_id,
             content_hash=note.content_sha256,
             best_concept_id=concept.concept_id,
-            provenance={
-                "queries": list(queries),
-                "evidence_ids": list(evidence_ids),
-                "variant_ranks": dict(variant_ranks.get(note_id, {})),
-                "semantic_rank": semantic_rank,
-                "lexical_rank": lexical_rank,
-                "reasons": reasons,
-            },
+            provenance=provenance,
             scores={
                 "semantic_variant_fusion": semantic_scores.get(
                     note_id,

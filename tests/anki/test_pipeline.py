@@ -116,13 +116,25 @@ def _claimed_job(repository: AnkiCurationRepository):
     return claimed
 
 
-def test_audit_and_recompute_precede_dedupe() -> None:
+def test_convergence_passes_are_restart_safe_and_precede_audit() -> None:
     audit = stage_definition(CurationState.AUDITING_CANDIDATES)
     recompute = stage_definition(CurationState.RECOMPUTING_COVERAGE)
     after_pass_two = stage_definition(CurationState.JUDGING_PASS_2)
+    pass_three = stage_definition(CurationState.CONVERGING_PASS_3)
+    pass_four = stage_definition(CurationState.CONVERGING_PASS_4)
+    pass_five = stage_definition(CurationState.CONVERGING_PASS_5)
 
     assert after_pass_two is not None
-    assert after_pass_two.next_state is CurationState.AUDITING_CANDIDATES
+    assert after_pass_two.next_state is CurationState.CONVERGING_PASS_3
+    assert pass_three is not None
+    assert pass_three.stage is CurationStage.CONVERGENCE_PASS_3
+    assert pass_three.next_state is CurationState.CONVERGING_PASS_4
+    assert pass_four is not None
+    assert pass_four.stage is CurationStage.CONVERGENCE_PASS_4
+    assert pass_four.next_state is CurationState.CONVERGING_PASS_5
+    assert pass_five is not None
+    assert pass_five.stage is CurationStage.CONVERGENCE_PASS_5
+    assert pass_five.next_state is CurationState.AUDITING_CANDIDATES
     assert audit is not None
     assert audit.stage is CurationStage.CARD_AUDIT
     assert audit.next_state is CurationState.RECOMPUTING_COVERAGE

@@ -200,6 +200,15 @@ earlier rationale. Audit results are cached against the note content, lecture
 sources, prompt, provider, and model. Only `keep` verdicts remain selected;
 `uncertain` and `drop` remain visible but unchecked.
 
+Concepts with grounded missing facts now continue through convergence passes
+3–5. Each pass is its own immutable, restart-safe artifact. Study Hub generates
+three primary-entity-preserving search paraphrases, retrieves only previously
+unseen notes for that concept, and measures growth as new unique notes divided
+by the cumulative concept set. A concept stops independently when coverage is
+complete or growth falls below 5%. Concepts still growing after pass 5 do not
+fail the run; the review header marks them for manual review. Existing jobs
+pinned to the legacy LCL contract retain their prior two-pass behavior.
+
 Coverage is then recomputed from the surviving `keep` supports before dedupe or
 gap generation. This ordering means an off-topic card removed by the audit can
 create a real, source-grounded missing fact instead of silently making the deck

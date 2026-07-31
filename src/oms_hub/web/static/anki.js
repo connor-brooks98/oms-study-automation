@@ -81,6 +81,27 @@
     };
   };
 
+  const convergenceDisplay = (summary) => {
+    if (!summary || typeof summary !== "object") {
+      return { count: "—", label: "Convergence", warning: "" };
+    }
+    const total = Number(summary.concepts_total || 0);
+    const converged = Number(summary.concepts_converged || 0);
+    const passes = Number(summary.passes_run || 0);
+    const manual = Array.isArray(summary.manual_review_concept_ids)
+      ? summary.manual_review_concept_ids.length
+      : 0;
+    return {
+      count: `${converged} / ${total}`,
+      label: summary.needs_manual_review
+        ? `Manual review · ${passes} passes`
+        : `Converged · ${passes} passes`,
+      warning: manual
+        ? `${manual} ${manual === 1 ? "concept was" : "concepts were"} still growing after pass 5.`
+        : "",
+    };
+  };
+
   const sourceLabel = (kind) => ({
     slides: "Lecture slides",
     transcripts: "Lecture transcript",
@@ -807,6 +828,16 @@
 
   const renderReview = (documentRef, review) => {
     const groups = review.groups;
+    const convergence = convergenceDisplay(review.convergence);
+    documentRef.querySelector("[data-count-convergence]").textContent =
+      convergence.count;
+    documentRef.querySelector("[data-label-convergence]").textContent =
+      convergence.label;
+    const convergenceWarning = documentRef.querySelector(
+      "[data-convergence-warning]",
+    );
+    convergenceWarning.textContent = convergence.warning;
+    convergenceWarning.hidden = !convergence.warning;
     documentRef.querySelector("[data-count-pass1]").textContent =
       groups.pass_1_matches.length;
     documentRef.querySelector("[data-count-pass2]").textContent =
@@ -869,6 +900,9 @@
     "localizing_missed_concepts",
     "retrieving_pass_2",
     "judging_pass_2",
+    "converging_pass_3",
+    "converging_pass_4",
+    "converging_pass_5",
     "auditing_candidates",
     "recomputing_coverage",
     "deduping",
@@ -1211,6 +1245,7 @@
   const api = {
     canRetryCuration,
     candidateAudit,
+    convergenceDisplay,
     collectReview,
     commaValues,
     csrfToken,

@@ -7,6 +7,12 @@ from typing import Any, Literal, cast
 from uuid import UUID
 
 from oms_hub.anki.audit import AuditRunResult, CardAuditService
+from oms_hub.anki.convergence import (
+    ConvergenceState,
+    ExpansionResult,
+    ParaphraseExpansionService,
+    update_growth,
+)
 from oms_hub.anki.dedupe import DeduplicationService
 from oms_hub.anki.domain import (
     Candidate,
@@ -250,6 +256,9 @@ class CurationServicesRunner:
             CurationStage.RESCUE: self._rescue,
             CurationStage.RETRIEVAL_PASS_2: self._retrieval_pass_2,
             CurationStage.JUDGMENT_PASS_2: self._judgment_pass_2,
+            CurationStage.CONVERGENCE_PASS_3: self._convergence_pass_3,
+            CurationStage.CONVERGENCE_PASS_4: self._convergence_pass_4,
+            CurationStage.CONVERGENCE_PASS_5: self._convergence_pass_5,
             CurationStage.CARD_AUDIT: self._card_audit,
             CurationStage.COVERAGE_RECOMPUTE: self._coverage_recompute,
             CurationStage.DEDUPE: self._finalize_outcomes,
@@ -526,6 +535,281 @@ class CurationServicesRunner:
             (*pass_1, *(product.candidates or ()))
         )
         return replace(product, candidates=merged)
+
+    async def _convergence_pass_3(
+        self,
+        context: StageContext,
+    ) -> StageProduct:
+        return await self._convergence_pass(context, pass_number=3)
+
+    async def _convergence_pass_4(
+        self,
+        context: StageContext,
+    ) -> StageProduct:
+        return await self._convergence_pass(context, pass_number=4)
+
+    async def _convergence_pass_5(
+        self,
+        context: StageContext,
+    ) -> StageProduct:
+        return await self._convergence_pass(context, pass_number=5)
+
+    async def _convergence_pass(
+        self,
+        context: StageContext,
+        *,
+        pass_number: int,
+    ) -> StageProduct:
+        if not 3 <= pass_number <= 5:
+            raise ValueError("convergence pass number must be between 3 and 5")
+        ledger = _ledger(context)
+        states, expanded_by_id = _prior_convergence(
+            context,
+            ledger,
+            pass_number=pass_number,
+        )
+        concepts = {concept.concept_id: concept for concept in ledger.concepts}
+        next_states: dict[str, ConvergenceState] = dict(states)
+        compatibility_skipped: list[str] = []
+        active: list[
+            tuple[str, ConvergenceState, CoverageJudgment]
+        ] = []
+        for concept_id, state in states.items():
+            if state.converged:
+                continue
+            judgment = _coverage_judgment(
+                context,
+                _final_judgment_stage(context, concept_id),
+                concept_id,
+            )
+            if not judgment.missing_facts:
+                next_states[concept_id] = state.model_copy(
+                    update={"converged": True}
+                )
+            elif not concepts[concept_id].primary_entity:
+                compatibility_skipped.append(concept_id)
+                next_states[concept_id] = state.model_copy(
+                    update={"converged": True}
+                )
+            else:
+                active.append((concept_id, state, judgment))
+        existing = tuple(self.repository.list_candidates(context.job.id))
+        if not active:
+            ordered_states = tuple(
+                next_states[concept.concept_id]
+                for concept in ledger.concepts
+            )
+            schema_name = _payload(
+                context,
+                _final_judgment_stage(
+                    context,
+                    ledger.concepts[0].concept_id,
+                ),
+            ).get("schema_name", "coverage_v1")
+            return StageProduct(
+                kind=f"convergence_pass_{pass_number}",
+                payload={
+                    "pass_number": pass_number,
+                    "schema_name": schema_name,
+                    "concepts": [
+                        state.model_dump(mode="json")
+                        for state in ordered_states
+                    ],
+                    "active_concept_ids": [],
+                    "groups": {},
+                    "expanded_paraphrases": expanded_by_id,
+                    "expansions": {},
+                    "judgments": {},
+                    "needs_manual_review": False,
+                    "manual_review_concept_ids": [],
+                    "compatibility_skipped_concept_ids": (
+                        compatibility_skipped
+                    ),
+                },
+                candidates=existing,
+            )
+        prompt_text, prompt_hash = _resolved_prompt(
+            context,
+            "paraphrase-expansion",
+        )
+        if _resolved_prompt_schema(
+            context,
+            "paraphrase-expansion",
+        ) != "paraphrase_v2":
+            raise PinnedInputChanged(
+                "Pinned paraphrase-expansion schema is unsupported"
+            )
+        expansion_service = ParaphraseExpansionService(
+            self.structured,
+            provider=_provider(context),
+            model=context.job.model,
+            prompt_text=prompt_text,
+            prompt_hash=prompt_hash,
+        )
+        coverage_text, coverage_hash = _resolved_prompt(
+            context,
+            context.job.judgment_rubric_version,
+        )
+        coverage_schema_name = _resolved_prompt_schema(
+            context,
+            context.job.judgment_rubric_version,
+        )
+        if coverage_schema_name not in {"coverage_v1", "coverage_v2"}:
+            raise PinnedInputChanged(
+                "Pinned coverage prompt schema is unsupported"
+            )
+        coverage_service = JudgmentService(
+            self.structured,
+            self.repository,
+            self.companion,
+            provider=_provider(context),
+            model=context.job.model,
+            prompt_version=context.job.judgment_rubric_version,
+            prompt_text=coverage_text,
+            prompt_hash=coverage_hash,
+            schema_name=cast(
+                Literal["coverage_v1", "coverage_v2"],
+                coverage_schema_name,
+            ),
+        )
+        candidates_by_id = {
+            candidate.note_id: candidate for candidate in existing
+        }
+        passages = _source_passages(context)
+        scope = _retrieval_scope(context)
+        groups: dict[str, list[dict[str, Any]]] = {}
+        judgments: dict[str, dict[str, Any]] = {}
+        expansions: dict[str, dict[str, Any]] = {}
+        active_ids: list[str] = []
+        expansion_results: list[ExpansionResult] = []
+        judgment_results: list[JudgmentResult] = []
+        projected: list[Candidate] = []
+        for concept_id, prior_state, prior_judgment in active:
+            concept = concepts[concept_id]
+            active_ids.append(concept_id)
+            used = (*concept.queries, *expanded_by_id.get(concept_id, ()))
+            found_notes = tuple(
+                note
+                for nid in prior_state.seen_note_ids
+                if (note := self.companion.get_note(nid)) is not None
+            )
+            expansion = await asyncio.to_thread(
+                expansion_service.expand,
+                concept,
+                used_paraphrases=used,
+                found_notes=found_notes,
+                missing_facts=prior_judgment.missing_facts,
+            )
+            expansion_results.append(expansion)
+            queries = expansion.expansion.paraphrases
+            expanded_by_id.setdefault(concept_id, []).extend(queries)
+            expansions[concept_id] = {
+                **expansion.expansion.model_dump(mode="json"),
+                "request_ids": list(expansion.request_ids),
+            }
+            retrieved = await self.retrieval.retrieve_convergence(
+                concept,
+                queries,
+                scope,
+                pass_number=pass_number,
+            )
+            growth = update_growth(
+                seen_note_ids=prior_state.seen_note_ids,
+                retrieved_note_ids=tuple(
+                    candidate.note_id for candidate in retrieved
+                ),
+            )
+            new_ids = set(growth.new_note_ids)
+            new_candidates = [
+                candidate
+                for candidate in retrieved
+                if candidate.note_id in new_ids
+            ]
+            groups[concept_id] = [
+                _candidate_payload(candidate) for candidate in new_candidates
+            ]
+            for candidate in new_candidates:
+                candidates_by_id[candidate.note_id] = candidate
+            coverage_complete = not prior_judgment.missing_facts
+            if new_candidates:
+                support_ids = _combined_support_ids(context, concept_id)
+                unknown = support_ids - set(candidates_by_id)
+                if unknown:
+                    raise PinnedInputChanged(
+                        "Coverage support is absent from current candidates"
+                    )
+                judge_ids = support_ids | new_ids
+                result = await asyncio.to_thread(
+                    coverage_service.judge,
+                    concept,
+                    [candidates_by_id[nid] for nid in sorted(judge_ids)],
+                    passages=passages,
+                )
+                judgment_results.append(result)
+                judgments[concept_id] = {
+                    "judgment": result.judgment.model_dump(mode="json"),
+                    "cache_key": result.cache_key,
+                    "cache_hit": result.cache_hit,
+                    "provider": result.provider.value,
+                    "model": result.model,
+                    "request_id": result.request_id,
+                }
+                runtime = (
+                    runtime_judgment_from_v2(result.judgment)
+                    if isinstance(result.judgment, CoverageJudgmentV2)
+                    else result.judgment
+                )
+                supporting = set(runtime.supporting_note_ids)
+                projected.extend(
+                    _judged_candidate(
+                        candidates_by_id[nid],
+                        runtime,
+                        selected=nid in supporting,
+                    )
+                    for nid in sorted(judge_ids)
+                )
+                coverage_complete = not runtime.missing_facts
+            next_states[concept_id] = ConvergenceState(
+                concept_id=concept_id,
+                passes_run=pass_number,
+                seen_note_ids=growth.seen_note_ids,
+                growth=(*prior_state.growth, growth.growth),
+                converged=growth.converged or coverage_complete,
+            )
+        ordered_states = tuple(
+            next_states[concept.concept_id] for concept in ledger.concepts
+        )
+        manual_review = tuple(
+            state.concept_id
+            for state in ordered_states
+            if pass_number == 5 and not state.converged
+        )
+        candidates = _merge_candidates((*existing, *projected))
+        return StageProduct(
+            kind=f"convergence_pass_{pass_number}",
+            payload={
+                "pass_number": pass_number,
+                "schema_name": coverage_schema_name,
+                "concepts": [
+                    state.model_dump(mode="json") for state in ordered_states
+                ],
+                "active_concept_ids": active_ids,
+                "groups": groups,
+                "expanded_paraphrases": expanded_by_id,
+                "expansions": expansions,
+                "judgments": judgments,
+                "needs_manual_review": bool(manual_review),
+                "manual_review_concept_ids": list(manual_review),
+                "compatibility_skipped_concept_ids": compatibility_skipped,
+            },
+            usage=_convergence_usage(
+                pass_number,
+                expansion_results,
+                judgment_results,
+            ),
+            cache_hits=sum(result.cache_hit for result in judgment_results),
+            candidates=candidates,
+        )
 
     async def _card_audit(self, context: StageContext) -> StageProduct:
         candidates = tuple(self.repository.list_candidates(context.job.id))
@@ -1157,21 +1441,15 @@ def _final_judgment_stage(
     context: StageContext,
     concept_id: str,
 ) -> CurationStage:
-    first = _coverage_judgment(
-        context,
-        CurationStage.JUDGMENT_PASS_1,
-        concept_id,
-    )
-    if first.status == "covered":
-        return CurationStage.JUDGMENT_PASS_1
-    second = _judgment_payload(
-        context,
-        CurationStage.JUDGMENT_PASS_2,
-    )
-    return (
-        CurationStage.JUDGMENT_PASS_2
-        if concept_id in second
-        else CurationStage.JUDGMENT_PASS_1
+    for stage in reversed(_COVERAGE_JUDGMENT_STAGES):
+        payload = context.prior_payloads.get(stage)
+        if not isinstance(payload, dict):
+            continue
+        judgments = payload.get("judgments")
+        if isinstance(judgments, dict) and concept_id in judgments:
+            return stage
+    raise PinnedInputChanged(
+        "Coverage judgment artifact is absent for a lecture concept"
     )
 
 
@@ -1179,26 +1457,135 @@ def _combined_support_ids(
     context: StageContext,
     concept_id: str,
 ) -> set[int]:
-    supports = set(
-        _coverage_judgment(
-            context,
-            CurationStage.JUDGMENT_PASS_1,
-            concept_id,
-        ).supporting_note_ids
-    )
-    second = _judgment_payload(
-        context,
-        CurationStage.JUDGMENT_PASS_2,
-    )
-    if concept_id in second:
+    supports: set[int] = set()
+    for stage in _COVERAGE_JUDGMENT_STAGES:
+        payload = context.prior_payloads.get(stage)
+        if not isinstance(payload, dict):
+            continue
+        judgments = payload.get("judgments")
+        if not isinstance(judgments, dict) or concept_id not in judgments:
+            continue
         supports.update(
             _coverage_judgment(
                 context,
-                CurationStage.JUDGMENT_PASS_2,
+                stage,
                 concept_id,
             ).supporting_note_ids
         )
     return supports
+
+
+_COVERAGE_JUDGMENT_STAGES = (
+    CurationStage.JUDGMENT_PASS_1,
+    CurationStage.JUDGMENT_PASS_2,
+    CurationStage.CONVERGENCE_PASS_3,
+    CurationStage.CONVERGENCE_PASS_4,
+    CurationStage.CONVERGENCE_PASS_5,
+)
+
+
+def _prior_convergence(
+    context: StageContext,
+    ledger: LectureConceptLedger,
+    *,
+    pass_number: int,
+) -> tuple[dict[str, ConvergenceState], dict[str, list[str]]]:
+    if pass_number == 3:
+        states: dict[str, ConvergenceState] = {}
+        first_groups = _retrieval_groups(
+            context,
+            CurationStage.RETRIEVAL_PASS_1,
+        )
+        second_groups = _retrieval_groups(
+            context,
+            CurationStage.RETRIEVAL_PASS_2,
+        )
+        for concept in ledger.concepts:
+            first_ids = _group_note_ids(
+                first_groups.get(concept.concept_id, [])
+            )
+            judgment = _coverage_judgment(
+                context,
+                _final_judgment_stage(context, concept.concept_id),
+                concept.concept_id,
+            )
+            if concept.concept_id not in second_groups:
+                states[concept.concept_id] = ConvergenceState(
+                    concept_id=concept.concept_id,
+                    passes_run=1,
+                    seen_note_ids=first_ids,
+                    growth=(1.0 if first_ids else 0.0,),
+                    converged=not judgment.missing_facts,
+                )
+                continue
+            second_update = update_growth(
+                seen_note_ids=first_ids,
+                retrieved_note_ids=_group_note_ids(
+                    second_groups.get(concept.concept_id, [])
+                ),
+            )
+            states[concept.concept_id] = ConvergenceState(
+                concept_id=concept.concept_id,
+                passes_run=2,
+                seen_note_ids=second_update.seen_note_ids,
+                growth=(
+                    1.0 if first_ids else 0.0,
+                    second_update.growth,
+                ),
+                converged=(
+                    not judgment.missing_facts or second_update.converged
+                ),
+            )
+        return states, {concept.concept_id: [] for concept in ledger.concepts}
+    previous_stage = {
+        4: CurationStage.CONVERGENCE_PASS_3,
+        5: CurationStage.CONVERGENCE_PASS_4,
+    }[pass_number]
+    payload = _payload(context, previous_stage)
+    raw_states = payload.get("concepts")
+    if not isinstance(raw_states, list):
+        raise PinnedInputChanged("Convergence artifact is malformed")
+    states = {
+        state.concept_id: state
+        for value in raw_states
+        for state in (ConvergenceState.model_validate(value),)
+    }
+    expected = {concept.concept_id for concept in ledger.concepts}
+    if set(states) != expected or len(states) != len(raw_states):
+        raise PinnedInputChanged(
+            "Convergence artifact does not partition lecture concepts"
+        )
+    raw_expanded = payload.get("expanded_paraphrases", {})
+    if not isinstance(raw_expanded, dict):
+        raise PinnedInputChanged("Convergence paraphrases are malformed")
+    expanded: dict[str, list[str]] = {}
+    for concept_id in expected:
+        values = raw_expanded.get(concept_id, [])
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) or not value.strip()
+            for value in values
+        ):
+            raise PinnedInputChanged("Convergence paraphrases are malformed")
+        expanded[concept_id] = list(values)
+    return states, expanded
+
+
+def _retrieval_groups(
+    context: StageContext,
+    stage: CurationStage,
+) -> dict[str, list[dict[str, Any]]]:
+    groups = _payload(context, stage).get("groups", {})
+    if not isinstance(groups, dict) or any(
+        not isinstance(values, list) for values in groups.values()
+    ):
+        raise PinnedInputChanged("Retrieval artifact is malformed")
+    return cast(dict[str, list[dict[str, Any]]], groups)
+
+
+def _group_note_ids(values: Sequence[dict[str, Any]]) -> tuple[int, ...]:
+    return tuple(
+        sorted({_candidate_from_payload(value).note_id for value in values})
+    )
 
 
 def _retrieval_scope(context: StageContext) -> RetrievalScope:
@@ -1538,6 +1925,46 @@ def _judgment_usage(
         input_tokens=sum(result.input_tokens for result in results),
         output_tokens=sum(result.output_tokens for result in results),
         cost_microusd=sum(result.cost_microusd for result in results),
+    )
+
+
+def _convergence_usage(
+    pass_number: int,
+    expansions: Sequence[ExpansionResult],
+    judgments: Sequence[JudgmentResult],
+) -> StageUsage | None:
+    request_ids = [
+        request_id
+        for expansion in expansions
+        for request_id in expansion.request_ids
+    ]
+    request_ids.extend(
+        result.request_id or result.cache_key for result in judgments
+    )
+    if not request_ids:
+        return None
+    identity = json.dumps(
+        request_ids,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return StageUsage(
+        request_id=(
+            f"convergence_pass_{pass_number}:"
+            f"{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
+        ),
+        input_tokens=(
+            sum(result.input_tokens for result in expansions)
+            + sum(result.input_tokens for result in judgments)
+        ),
+        output_tokens=(
+            sum(result.output_tokens for result in expansions)
+            + sum(result.output_tokens for result in judgments)
+        ),
+        cost_microusd=(
+            sum(result.cost_microusd for result in expansions)
+            + sum(result.cost_microusd for result in judgments)
+        ),
     )
 
 

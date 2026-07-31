@@ -16,6 +16,9 @@ class CurationState(StrEnum):
     LOCALIZING_MISSED_CONCEPTS = "localizing_missed_concepts"
     RETRIEVING_PASS_2 = "retrieving_pass_2"
     JUDGING_PASS_2 = "judging_pass_2"
+    CONVERGING_PASS_3 = "converging_pass_3"
+    CONVERGING_PASS_4 = "converging_pass_4"
+    CONVERGING_PASS_5 = "converging_pass_5"
     AUDITING_CANDIDATES = "auditing_candidates"
     RECOMPUTING_COVERAGE = "recomputing_coverage"
     DEDUPING = "deduping"
@@ -42,6 +45,9 @@ class CurationStage(StrEnum):
     RESCUE = "rescue"
     RETRIEVAL_PASS_2 = "retrieval_pass_2"
     JUDGMENT_PASS_2 = "judgment_pass_2"
+    CONVERGENCE_PASS_3 = "convergence_pass_3"
+    CONVERGENCE_PASS_4 = "convergence_pass_4"
+    CONVERGENCE_PASS_5 = "convergence_pass_5"
     CARD_AUDIT = "card_audit"
     COVERAGE_RECOMPUTE = "coverage_recompute"
     DEDUPE = "dedupe"
@@ -55,6 +61,7 @@ class CurationStage(StrEnum):
 class RetrievalPass(StrEnum):
     PASS_1 = "pass_1"
     PASS_2_RESCUE = "pass_2_rescue"
+    CONVERGENCE = "convergence"
 
 
 class EvidenceSupport(StrEnum):

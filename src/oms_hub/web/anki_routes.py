@@ -21,6 +21,7 @@ from oms_hub.anki.contracts import (
     RemoveTagsOperation,
     TagPatchContract,
 )
+from oms_hub.anki.convergence import ConvergenceState
 from oms_hub.anki.domain import (
     ApplyState,
     Candidate,
@@ -29,6 +30,7 @@ from oms_hub.anki.domain import (
     CurationState,
     GapCard,
     GapCardEdit,
+    RetrievalPass,
     ReviewChangeSet,
     SourceEvidence,
     SourceReference,
@@ -434,11 +436,13 @@ async def read_anki_review(
             reviewed_patch=reviewed_patches.get(candidate.note_id),
         )
         for candidate in candidates
-        if candidate.retrieval_pass.value == "pass_2_rescue"
+        if candidate.retrieval_pass
+        in {RetrievalPass.PASS_2_RESCUE, RetrievalPass.CONVERGENCE}
     ]
     unresolved = _unresolved_payload(request, job_id, candidates, gaps, evidence)
     return {
         "job": _job_payload(job),
+        "convergence": _convergence_summary(request, job_id),
         "groups": {
             "pass_1_matches": pass_1,
             "recovered_in_pass_2": pass_2,
@@ -965,6 +969,53 @@ def _unresolved_payload(
     ]
 
 
+def _convergence_summary(
+    request: Request,
+    job_id: UUID,
+) -> dict[str, Any] | None:
+    pipeline = getattr(request.app.state, "anki_curation_pipeline", None)
+    artifacts = getattr(pipeline, "artifacts", None)
+    if artifacts is None:
+        return None
+    convergence_stages = {
+        CurationStage.CONVERGENCE_PASS_3,
+        CurationStage.CONVERGENCE_PASS_4,
+        CurationStage.CONVERGENCE_PASS_5,
+    }
+    artifact = next(
+        (
+            item
+            for item in reversed(
+                _repository(request).list_stage_artifacts(job_id)
+            )
+            if item.stage in convergence_stages
+        ),
+        None,
+    )
+    if artifact is None:
+        return None
+    try:
+        payload = artifacts.read(artifact)
+        raw_states = payload.get("concepts")
+        if not isinstance(raw_states, list) or not raw_states:
+            return None
+        states = tuple(
+            ConvergenceState.model_validate(value) for value in raw_states
+        )
+    except (OSError, ValueError):
+        return None
+    manual_review = [
+        state.concept_id for state in states if not state.converged
+    ]
+    return {
+        "passes_run": max(state.passes_run for state in states),
+        "concepts_converged": sum(state.converged for state in states),
+        "concepts_total": len(states),
+        "needs_manual_review": bool(manual_review),
+        "manual_review_concept_ids": manual_review,
+    }
+
+
 def _tag_policy_payload(policy: object) -> dict[str, Any]:
     if not isinstance(policy, TagPolicy):
         return {
@@ -1230,7 +1281,9 @@ def _review_counts(
     return {
         "pass_1_matches": sum(item.retrieval_pass.value == "pass_1" for item in candidates),
         "recovered_in_pass_2": sum(
-            item.retrieval_pass.value == "pass_2_rescue" for item in candidates
+            item.retrieval_pass
+            in {RetrievalPass.PASS_2_RESCUE, RetrievalPass.CONVERGENCE}
+            for item in candidates
         ),
         "generated_cards": len(gaps),
         "selected_existing_notes": sum(item.selected for item in candidates),

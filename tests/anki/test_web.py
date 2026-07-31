@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +26,7 @@ from oms_hub.anki.domain import (
     SourceEvidence,
     SourceKind,
     SourceReference,
+    StageArtifact,
 )
 from oms_hub.anki.models import AnkiCurationJobModel
 from oms_hub.anki.repository import AnkiCurationRepository
@@ -39,6 +41,7 @@ from oms_hub.models import LectureModel, StudyRevisionModel
 from oms_hub.study_generation.domain import GenerationKind
 from oms_hub.study_generation.outline import OutlinePdfRenderer
 from oms_hub.study_generation.repository import GenerationRepository
+from oms_hub.web.anki_routes import _convergence_summary
 
 SHA = "a" * 64
 TARGET_TAG = "AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_4"
@@ -759,6 +762,101 @@ def test_review_groups_evidence_and_uses_optimistic_revision(
     assert saved.json()["revision"] == 1
     assert stale.status_code == 409
     assert evidence.json()["source_refs"][0]["locator"] == "slide 12"
+
+
+def test_review_keeps_convergence_candidates_visible_with_recovered_matches(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, lecture_id, revision_id, gateway = prepared_app
+    job_id = _ready_job(app, lecture_id, revision_id)
+    repository: AnkiCurationRepository = app.state.anki_repository
+    first = repository.list_candidates(job_id)[0]
+    convergence = replace(
+        first,
+        note_id=43,
+        content_hash="4" * 64,
+        retrieval_pass=RetrievalPass.CONVERGENCE,
+    )
+    repository.replace_candidates(job_id, (first, convergence))
+    gateway.notes[43] = {
+        **gateway.notes[42],
+        "noteId": 43,
+        "fields": {
+            "Text": {
+                "value": "Iron deficiency lowers transferrin saturation.",
+                "order": 0,
+            },
+            "Extra": {
+                "value": "Recovered during convergence.",
+                "order": 1,
+            },
+        },
+        "cards": [1_043],
+    }
+
+    review = client.get(f"/api/anki/jobs/{job_id}/review")
+
+    assert review.status_code == 200
+    recovered = review.json()["groups"]["recovered_in_pass_2"]
+    assert [candidate["note_id"] for candidate in recovered] == [43]
+
+
+def test_review_convergence_summary_exposes_manual_review_warning() -> None:
+    job_id = UUID("00000000-0000-0000-0000-000000000001")
+    artifact = StageArtifact(
+        artifact_id="convergence_pass_5:" + "a" * 64,
+        stage=CurationStage.CONVERGENCE_PASS_5,
+        kind="convergence_pass_5",
+        relative_path="job/convergence.json",
+        input_sha256="b" * 64,
+        content_sha256="c" * 64,
+    )
+    repository = SimpleNamespace(
+        list_stage_artifacts=lambda requested: (
+            [artifact] if requested == job_id else []
+        )
+    )
+    payload = {
+        "pass_number": 5,
+        "concepts": [
+            {
+                "concept_id": "C01",
+                "passes_run": 3,
+                "seen_note_ids": [1, 2],
+                "growth": [1.0, 0.5, 0.0],
+                "converged": True,
+            },
+            {
+                "concept_id": "C02",
+                "passes_run": 5,
+                "seen_note_ids": [3, 4, 5],
+                "growth": [1.0, 0.5, 0.4, 0.3, 0.2],
+                "converged": False,
+            },
+        ],
+        "needs_manual_review": True,
+        "manual_review_concept_ids": ["C02"],
+    }
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                anki_repository=repository,
+                anki_curation_pipeline=SimpleNamespace(
+                    artifacts=SimpleNamespace(read=lambda item: payload)
+                ),
+            )
+        )
+    )
+
+    summary = _convergence_summary(request, job_id)
+
+    assert summary == {
+        "passes_run": 5,
+        "concepts_converged": 1,
+        "concepts_total": 2,
+        "needs_manual_review": True,
+        "manual_review_concept_ids": ["C02"],
+    }
 
 
 def test_review_rejects_protected_tag_changes(
