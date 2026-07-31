@@ -228,3 +228,15 @@ class PublishedQuizRecord:
     quiz: NativeQuiz
     version: int
     active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedQuizMediaRecord:
+    quiz_token: str
+    image_key: str
+    path: Path
+    sha256: str
+    media_type: str
+    width: int
+    height: int
+    alt_text: str

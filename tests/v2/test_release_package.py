@@ -45,6 +45,12 @@ def test_release_builder_creates_secret_safe_hotfix_and_source_archives(tmp_path
     }
     assert image_review_files <= hotfix_names
     assert image_review_files <= source_names
+    preview_files = {
+        "src/oms_hub/web/templates/studio_quiz_preview.html",
+        "src/oms_hub/web/static/studio_quiz_preview.js",
+    }
+    assert preview_files <= hotfix_names
+    assert preview_files <= source_names
     for names in (hotfix_names, source_names):
         lowered = {name.casefold() for name in names}
         assert ".env" not in lowered

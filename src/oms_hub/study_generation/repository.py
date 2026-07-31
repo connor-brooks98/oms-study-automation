@@ -1,5 +1,6 @@
 import re
 import secrets
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -9,6 +10,7 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 
 from oms_hub.db import Database
+from oms_hub.files.atomic import sha256_file
 from oms_hub.models import (
     CourseQuizDocumentModel,
     ExamQuizTabModel,
@@ -19,8 +21,11 @@ from oms_hub.models import (
     NotebookMappingModel,
     NotebookSourceMappingModel,
     OutlineOutputModel,
+    PublishedQuizMediaModel,
     PublishedQuizModel,
     QuizOutputModel,
+    StudioQuizImageOverrideModel,
+    StudioQuizImageRequirementModel,
     StudioRunModel,
     StudyPromptSettingModel,
 )
@@ -34,14 +39,17 @@ from oms_hub.study_generation.domain import (
     NotebookSourceBinding,
     OutlineRecord,
     PromptKind,
+    PublishedQuizMediaRecord,
     PublishedQuizRecord,
     QuizRecord,
     SourceKind,
 )
 from oms_hub.study_generation.native_quiz import (
+    image_requirements,
     parse_native_quiz,
     serialize_native_quiz,
 )
+from oms_hub.study_generation.studio_domain import StudioRunStage, StudioRunState
 
 _ACTIVE_STATES = {
     GenerationState.QUEUED.value,
@@ -695,6 +703,192 @@ class GenerationRepository:
             session.flush()
             return self._published_quiz(model)
 
+    def publish_reviewed_studio_quiz(
+        self,
+        run_id: str,
+    ) -> PublishedQuizRecord:
+        with self.database.session() as session:
+            run = session.get(StudioRunModel, run_id)
+            if run is None:
+                raise KeyError(run_id)
+            if run.published_token:
+                existing = session.get(PublishedQuizModel, run.published_token)
+                if (
+                    existing is not None
+                    and existing.active
+                    and existing.studio_run_id == run_id
+                ):
+                    return self._published_quiz(existing)
+            if run.state != StudioRunState.AWAITING_IMAGES.value:
+                raise ValueError("Studio run is not awaiting image publication")
+            if not run.draft_payload_json:
+                raise ValueError("Studio quiz draft is missing")
+
+            draft = parse_native_quiz(run.draft_payload_json)
+            requirement_models = session.scalars(
+                select(StudioQuizImageRequirementModel)
+                .where(StudioQuizImageRequirementModel.run_id == run_id)
+                .order_by(StudioQuizImageRequirementModel.id)
+            ).all()
+            requirements_by_key = {
+                requirement.image_key: requirement
+                for requirement in requirement_models
+            }
+            overridden = frozenset(
+                session.scalars(
+                    select(StudioQuizImageOverrideModel.question_id).where(
+                        StudioQuizImageOverrideModel.run_id == run_id
+                    )
+                ).all()
+            )
+            active_question_ids_by_key: dict[str, list[str]] = {}
+            for question in draft.questions:
+                if question.image_ref is not None and question.id not in overridden:
+                    active_question_ids_by_key.setdefault(
+                        question.image_ref.key,
+                        [],
+                    ).append(question.id)
+            unresolved = [
+                requirement.key
+                for requirement in image_requirements(draft)
+                if active_question_ids_by_key.get(requirement.key)
+                and not self._stored_image_is_complete(
+                    requirements_by_key.get(requirement.key)
+                )
+            ]
+            if unresolved:
+                raise ValueError(
+                    "quiz images are still required: " + ", ".join(unresolved)
+                )
+            quiz = replace(
+                draft,
+                questions=tuple(
+                    replace(question, image_ref=None)
+                    if question.id in overridden
+                    else question
+                    for question in draft.questions
+                ),
+            )
+
+            model = None
+            if run.supersedes_run_id:
+                model = session.scalar(
+                    select(PublishedQuizModel).where(
+                        PublishedQuizModel.studio_run_id == run.supersedes_run_id
+                    )
+                )
+            if model is None:
+                duplicate = session.scalar(
+                    select(PublishedQuizModel).where(
+                        PublishedQuizModel.studio_run_id.is_not(None),
+                        PublishedQuizModel.destination_subject_key
+                        == run.destination_subject_key,
+                        PublishedQuizModel.destination_exam_number
+                        == run.destination_exam_number,
+                        PublishedQuizModel.label_key == run.label_key,
+                        PublishedQuizModel.active.is_(True),
+                    )
+                )
+                if duplicate is not None:
+                    raise ValueError(
+                        "a published Studio quiz already uses this label for that exam"
+                    )
+                model = PublishedQuizModel(
+                    token=secrets.token_hex(32),
+                    lecture_id=None,
+                    job_id=None,
+                    studio_run_id=run.id,
+                    destination_subject=run.destination_subject,
+                    destination_subject_key=run.destination_subject_key,
+                    destination_exam_number=run.destination_exam_number,
+                    label=run.label,
+                    label_key=run.label_key,
+                    title=quiz.title,
+                    payload_json=serialize_native_quiz(quiz),
+                    version=1,
+                    active=True,
+                )
+                session.add(model)
+                session.flush()
+            else:
+                previous = session.get(StudioRunModel, run.supersedes_run_id)
+                if previous is not None:
+                    previous.published_token = None
+                model.studio_run_id = run.id
+                model.destination_subject = run.destination_subject
+                model.destination_subject_key = run.destination_subject_key
+                model.destination_exam_number = run.destination_exam_number
+                model.label = run.label
+                model.label_key = run.label_key
+                model.title = quiz.title
+                model.payload_json = serialize_native_quiz(quiz)
+                model.version += 1
+                model.active = True
+
+            session.execute(
+                delete(PublishedQuizMediaModel).where(
+                    PublishedQuizMediaModel.quiz_token == model.token
+                )
+            )
+            for image_key in active_question_ids_by_key:
+                requirement = requirements_by_key[image_key]
+                assert requirement.asset_path is not None
+                assert requirement.asset_sha256 is not None
+                assert requirement.media_type is not None
+                assert requirement.width is not None
+                assert requirement.height is not None
+                session.add(
+                    PublishedQuizMediaModel(
+                        quiz_token=model.token,
+                        image_key=image_key,
+                        path=requirement.asset_path,
+                        sha256=requirement.asset_sha256,
+                        media_type=requirement.media_type,
+                        width=requirement.width,
+                        height=requirement.height,
+                        alt_text=requirement.description,
+                    )
+                )
+            run.state = StudioRunState.COMPLETE.value
+            run.stage = StudioRunStage.COMPLETE.value
+            run.published_token = model.token
+            run.error = None
+            run.next_attempt_at = None
+            session.flush()
+            return self._published_quiz(model)
+
+    def published_quiz_media(
+        self,
+        token: str,
+    ) -> tuple[PublishedQuizMediaRecord, ...]:
+        with self.database.session() as session:
+            published = session.get(PublishedQuizModel, token)
+            if published is None or not published.active:
+                return ()
+            models = session.scalars(
+                select(PublishedQuizMediaModel)
+                .where(PublishedQuizMediaModel.quiz_token == token)
+                .order_by(PublishedQuizMediaModel.id)
+            ).all()
+            return tuple(self._published_quiz_media(model) for model in models)
+
+    def published_quiz_media_item(
+        self,
+        token: str,
+        image_key: str,
+    ) -> PublishedQuizMediaRecord | None:
+        with self.database.session() as session:
+            published = session.get(PublishedQuizModel, token)
+            if published is None or not published.active:
+                return None
+            model = session.scalar(
+                select(PublishedQuizMediaModel).where(
+                    PublishedQuizMediaModel.quiz_token == token,
+                    PublishedQuizMediaModel.image_key == image_key,
+                )
+            )
+            return None if model is None else self._published_quiz_media(model)
+
     def unpublish_studio_quiz(self, run_id: str) -> str:
         with self.database.session() as session:
             model = session.scalar(
@@ -862,6 +1056,40 @@ class GenerationRepository:
             quiz,
             model.version,
             model.active,
+        )
+
+    @staticmethod
+    def _stored_image_is_complete(
+        model: StudioQuizImageRequirementModel | None,
+    ) -> bool:
+        if not (
+            model is not None
+            and model.asset_path
+            and model.asset_sha256
+            and model.media_type
+            and model.width is not None
+            and model.height is not None
+        ):
+            return False
+        path = Path(model.asset_path)
+        try:
+            return path.is_file() and sha256_file(path) == model.asset_sha256
+        except OSError:
+            return False
+
+    @staticmethod
+    def _published_quiz_media(
+        model: PublishedQuizMediaModel,
+    ) -> PublishedQuizMediaRecord:
+        return PublishedQuizMediaRecord(
+            model.quiz_token,
+            model.image_key,
+            Path(model.path),
+            model.sha256,
+            model.media_type,
+            model.width,
+            model.height,
+            model.alt_text,
         )
 
     @staticmethod

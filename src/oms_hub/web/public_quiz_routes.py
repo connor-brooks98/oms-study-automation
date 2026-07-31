@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import Annotated, cast
 
@@ -6,6 +7,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, StringConstraints
 
+from oms_hub.files.atomic import sha256_file
 from oms_hub.security.rate_limit import (
     PublicQuizRateLimiter,
     public_client_identifier,
@@ -228,12 +230,41 @@ def quiz_content(request: Request, token: str) -> JSONResponse:
         "version": published.version,
         "course": published.destination_subject,
         "exam_number": published.destination_exam_number,
-        **public_quiz_content(published.quiz),
+        **public_quiz_content(
+            published.quiz,
+            {
+                media.image_key: (
+                    f"/public/quizzes/{token}/media/{media.image_key}",
+                    media.alt_text,
+                )
+                for media in _repository(request).published_quiz_media(token)
+            },
+        ),
     }
     if lecture is not None:
         payload.update({"lecture_number": lecture.lecture_number, "topic": lecture.topic})
     return JSONResponse(
         payload,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/{token}/media/{image_key}")
+def quiz_media(request: Request, token: str, image_key: str) -> FileResponse:
+    _enforce_rate_limit(request)
+    _published(request, token)
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?", image_key):
+        raise HTTPException(404, "quiz image was not found")
+    media = _repository(request).published_quiz_media_item(token, image_key)
+    if (
+        media is None
+        or not media.path.is_file()
+        or sha256_file(media.path) != media.sha256
+    ):
+        raise HTTPException(404, "quiz image was not found")
+    return FileResponse(
+        media.path,
+        media_type=media.media_type,
         headers={"Cache-Control": "no-store"},
     )
 

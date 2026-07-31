@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Annotated
 from urllib.parse import urlsplit
@@ -266,18 +267,26 @@ def image_requirements(quiz: NativeQuiz) -> tuple[QuizImageRef, ...]:
     return tuple(by_key.values())
 
 
-def public_quiz_content(quiz: NativeQuiz) -> dict[str, object]:
-    return {
-        "title": quiz.title,
-        "questions": [
-            {
-                "id": question.id,
-                "stem": question.stem,
-                "choices": [{"id": choice.id, "text": choice.text} for choice in question.choices],
-            }
-            for question in quiz.questions
-        ],
-    }
+def public_quiz_content(
+    quiz: NativeQuiz,
+    image_urls: Mapping[str, tuple[str, str]] | None = None,
+) -> dict[str, object]:
+    questions: list[dict[str, object]] = []
+    for question in quiz.questions:
+        item: dict[str, object] = {
+            "id": question.id,
+            "stem": question.stem,
+            "choices": [
+                {"id": choice.id, "text": choice.text}
+                for choice in question.choices
+            ],
+        }
+        if question.image_ref is not None and image_urls is not None:
+            media = image_urls.get(question.image_ref.key)
+            if media is not None:
+                item["image_url"], item["image_alt"] = media
+        questions.append(item)
+    return {"title": quiz.title, "questions": questions}
 
 
 def grade_answer(

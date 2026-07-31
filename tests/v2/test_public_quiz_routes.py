@@ -1,8 +1,10 @@
 import hashlib
 import json
 import os
+from io import BytesIO
 
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from oms_hub.app import create_app
 from oms_hub.config import Settings
@@ -11,7 +13,9 @@ from oms_hub.security.rate_limit import PublicQuizRateLimiter, RatePolicy
 from oms_hub.study_generation.domain import GenerationKind
 from oms_hub.study_generation.native_quiz import parse_native_quiz
 from oms_hub.study_generation.outline import OutlinePdfRenderer
+from oms_hub.study_generation.studio_domain import StudioStoredImage
 from oms_hub.web import artifact_routes
+from tests.support import csrf_client
 
 
 def _quiz():
@@ -59,6 +63,68 @@ def _published_app(tmp_path, *, public=False):
         _quiz(),
     )
     return app, published
+
+
+def _published_studio_image_app(tmp_path):
+    app, _lecture_quiz = _published_app(tmp_path)
+    run = app.state.studio_repository.queue_run(
+        "Neuro",
+        1,
+        "Prompt",
+        [],
+        "Shared image review",
+        "Neuro",
+        1,
+    )
+    image_ref = {
+        "key": "image-1",
+        "source_title": "Slides",
+        "locator": "Slide 4",
+        "description": "Shared pathology image",
+    }
+    quiz = parse_native_quiz(
+        json.dumps(
+            {
+                "title": "Shared image review",
+                "questions": [
+                    {
+                        "stem": f"Question {number}",
+                        "choices": ["A", "B"],
+                        "correct_index": 0,
+                        "rationale": "A is correct.",
+                        "image_ref": image_ref,
+                    }
+                    for number in (1, 2)
+                ],
+            }
+        )
+    )
+    app.state.studio_repository.await_image_review(
+        run.id,
+        "notebook-1",
+        "raw",
+        quiz,
+    )
+    output = BytesIO()
+    Image.new("RGB", (10, 6), "green").save(output, format="PNG")
+    payload = output.getvalue()
+    path = tmp_path / "media" / "image.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    app.state.studio_repository.bind_image(
+        run.id,
+        "image-1",
+        StudioStoredImage(
+            path,
+            hashlib.sha256(payload).hexdigest(),
+            "image/png",
+            10,
+            6,
+            "image.png",
+        ),
+    )
+    published = app.state.generation_repository.publish_reviewed_studio_quiz(run.id)
+    return app, run, published
 
 
 def test_public_library_groups_only_published_quizzes(tmp_path):
@@ -147,6 +213,54 @@ def test_public_quiz_page_and_content_do_not_expose_answer_key(tmp_path):
     assert "correct_index" not in content.text
     assert "correct_choice_id" not in content.text
     assert "rationale" not in content.text
+
+
+def test_public_image_quiz_reuses_bound_media_without_private_metadata(tmp_path):
+    app, _run, published = _published_studio_image_app(tmp_path)
+    client = TestClient(app)
+
+    content = client.get(f"/public/quizzes/{published.token}/content")
+    media = client.get(f"/public/quizzes/{published.token}/media/image-1")
+    missing = client.get(f"/public/quizzes/{published.token}/media/image-9")
+
+    expected_url = f"/public/quizzes/{published.token}/media/image-1"
+    assert [question["image_url"] for question in content.json()["questions"]] == [
+        expected_url,
+        expected_url,
+    ]
+    assert [question["image_alt"] for question in content.json()["questions"]] == [
+        "Shared pathology image",
+        "Shared pathology image",
+    ]
+    assert "locator" not in content.text
+    assert "source_title" not in content.text
+    assert media.status_code == 200
+    assert media.headers["content-type"] == "image/png"
+    assert media.headers["cache-control"] == "no-store"
+    assert missing.status_code == 404
+
+
+def test_unpublishing_image_quiz_removes_public_media_access(tmp_path):
+    app, run, published = _published_studio_image_app(tmp_path)
+    client = csrf_client(app)
+    path = f"/public/quizzes/{published.token}/media/image-1"
+    assert client.get(path).status_code == 200
+
+    assert client.delete(f"/studio/runs/{run.id}/publication").status_code == 200
+
+    assert client.get(path).status_code == 404
+
+
+def test_tampered_published_image_is_not_served(tmp_path):
+    app, _run, published = _published_studio_image_app(tmp_path)
+    media = app.state.generation_repository.published_quiz_media(published.token)[0]
+    media.path.write_bytes(b"tampered")
+
+    response = TestClient(app).get(
+        f"/public/quizzes/{published.token}/media/{media.image_key}"
+    )
+
+    assert response.status_code == 404
 
 
 def test_studio_quiz_is_grouped_by_destination_without_lecture_metadata(tmp_path):

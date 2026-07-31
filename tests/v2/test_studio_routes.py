@@ -74,6 +74,17 @@ def _awaiting_image_run(app):
     return app.state.studio_repository.get_run(run.id)
 
 
+def _resolved_image_run(app):
+    run = _awaiting_image_run(app)
+    app.state.studio_quiz_image_service.upload(
+        run.id,
+        "image-1",
+        "figure.png",
+        _png(),
+    )
+    return run
+
+
 def test_studio_page_uses_course_and_exam_scope_without_lecture(tmp_path):
     response = TestClient(_app(tmp_path)).get("/studio")
 
@@ -267,6 +278,66 @@ def test_question_image_override_is_confirmable_and_reversible(tmp_path):
     assert overridden.json()["requirements"][0]["questions"][0]["overridden"] is True
     assert restored.status_code == 200
     assert restored.json()["requirements"][0]["questions"][0]["overridden"] is False
+
+
+def test_unresolved_images_block_preview_and_explicit_publication(tmp_path):
+    app = _app(tmp_path)
+    run = _awaiting_image_run(app)
+    client = csrf_client(app)
+
+    preview = client.get(f"/studio/runs/{run.id}/preview")
+    publish = client.post(f"/studio/runs/{run.id}/publication")
+
+    assert preview.status_code == 409
+    assert publish.status_code == 409
+    assert app.state.generation_repository.published_quizzes() == ()
+
+
+def test_resolved_private_preview_reuses_player_and_grades_without_publication(tmp_path):
+    app = _app(tmp_path)
+    run = _resolved_image_run(app)
+    client = csrf_client(app)
+
+    page = client.get(f"/studio/runs/{run.id}/preview")
+    content = client.get(f"/studio/runs/{run.id}/preview/content")
+    media = client.get(f"/studio/runs/{run.id}/preview/media/image-1")
+    answer = client.post(
+        f"/studio/runs/{run.id}/preview/answer",
+        json={"question_id": "q1", "choice_id": "c1"},
+    )
+
+    assert page.status_code == 200
+    assert "Publish quiz" in page.text
+    assert "/public/quizzes/assets/player.js" in page.text
+    assert content.status_code == 200
+    payload = content.json()
+    assert payload["token"] == f"preview-{run.id}"
+    assert {item["image_url"] for item in payload["questions"]} == {
+        f"/studio/runs/{run.id}/preview/media/image-1"
+    }
+    assert "locator" not in content.text
+    assert "correct_index" not in content.text
+    assert "rationale" not in content.text
+    assert media.status_code == 200
+    assert media.headers["content-type"] == "image/png"
+    assert answer.status_code == 200
+    assert answer.json()["correct"] is True
+    assert app.state.generation_repository.published_quizzes() == ()
+
+
+def test_explicit_publish_returns_public_url_and_completes_run(tmp_path):
+    app = _app(tmp_path)
+    run = _resolved_image_run(app)
+    client = csrf_client(app)
+
+    response = client.post(f"/studio/runs/{run.id}/publication")
+
+    assert response.status_code == 200
+    token = response.json()["token"]
+    assert response.json()["published_url"] == f"/public/quizzes/{token}"
+    completed = app.state.studio_repository.get_run(run.id)
+    assert completed.state.value == "complete"
+    assert completed.published_token == token
 
 
 def test_delete_source_removes_remote_binding_and_hides_it_from_future_picker(tmp_path):

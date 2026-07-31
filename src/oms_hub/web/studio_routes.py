@@ -1,11 +1,19 @@
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, cast
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
+from oms_hub.files.atomic import sha256_file
+from oms_hub.study_generation.domain import NativeQuiz
+from oms_hub.study_generation.native_quiz import (
+    grade_answer,
+    image_requirements,
+    public_quiz_content,
+)
 from oms_hub.study_generation.notebook import StoredNotebookLMGateway
 from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
@@ -34,6 +42,11 @@ class StudioRunRequest(BaseModel):
     label: str = Field(min_length=1, max_length=300)
     destination_subject: str = Field(min_length=1, max_length=100)
     destination_exam_number: int = Field(ge=1)
+
+
+class PreviewAnswerSubmission(BaseModel):
+    question_id: str = Field(pattern=r"^q[0-9]{1,3}$", max_length=4)
+    choice_id: str = Field(pattern=r"^c[0-9]{1,2}$", max_length=3)
 
 
 def _choices(request: Request) -> tuple[dict[str, object], ...]:
@@ -299,6 +312,153 @@ def clear_image_override(
     question_id: str,
 ) -> JSONResponse:
     return _set_override(request, run_id, question_id, False)
+
+
+def _resolved_review(request: Request, run_id: str) -> StudioQuizReview:
+    review = _require_review(request, run_id)
+    if not review.resolved:
+        raise HTTPException(
+            409,
+            "quiz images are still required: " + ", ".join(review.unresolved_keys),
+        )
+    return review
+
+
+def _preview_image_urls(review: StudioQuizReview) -> dict[str, tuple[str, str]]:
+    active_keys = {
+        requirement.key
+        for requirement in image_requirements(
+            _replace_overridden_image_refs(review)
+        )
+    }
+    return {
+        requirement.image_key: (
+            f"/studio/runs/{review.run.id}/preview/media/{requirement.image_key}",
+            requirement.description,
+        )
+        for requirement in review.requirements
+        if requirement.image_key in active_keys and requirement.image is not None
+    }
+
+
+def _replace_overridden_image_refs(review: StudioQuizReview) -> NativeQuiz:
+    return replace(
+        review.quiz,
+        questions=tuple(
+            replace(question, image_ref=None)
+            if question.id in review.overridden_question_ids
+            else question
+            for question in review.quiz.questions
+        ),
+    )
+
+
+@router.get("/runs/{run_id}/preview", response_class=HTMLResponse)
+def preview_quiz_page(request: Request, run_id: str) -> HTMLResponse:
+    review = _resolved_review(request, run_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="studio_quiz_preview.html",
+        context={
+            "run": review.run,
+            "content_url": f"/studio/runs/{run_id}/preview/content",
+            "answer_url": f"/studio/runs/{run_id}/preview/answer",
+            "publish_url": f"/studio/runs/{run_id}/publication",
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/runs/{run_id}/preview/content")
+def preview_quiz_content(request: Request, run_id: str) -> JSONResponse:
+    review = _resolved_review(request, run_id)
+    quiz = _replace_overridden_image_refs(review)
+    return JSONResponse(
+        {
+            "token": f"preview-{run_id}",
+            "version": 1,
+            "course": review.run.destination_subject,
+            "exam_number": review.run.destination_exam_number,
+            **public_quiz_content(quiz, _preview_image_urls(review)),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/runs/{run_id}/preview/media/{image_key}")
+def preview_quiz_media(
+    request: Request,
+    run_id: str,
+    image_key: str,
+) -> FileResponse:
+    review = _resolved_review(request, run_id)
+    urls = _preview_image_urls(review)
+    requirement = next(
+        (
+            item
+            for item in review.requirements
+            if item.image_key == image_key and image_key in urls
+        ),
+        None,
+    )
+    if requirement is None or requirement.image is None:
+        raise HTTPException(404, "quiz image was not found")
+    image = requirement.image
+    if not image.path.is_file() or sha256_file(image.path) != image.sha256:
+        raise HTTPException(404, "quiz image was not found")
+    return FileResponse(
+        image.path,
+        media_type=image.media_type,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/runs/{run_id}/preview/answer")
+def preview_quiz_answer(
+    request: Request,
+    run_id: str,
+    submission: PreviewAnswerSubmission,
+) -> JSONResponse:
+    review = _resolved_review(request, run_id)
+    quiz = _replace_overridden_image_refs(review)
+    try:
+        feedback = grade_answer(
+            quiz,
+            submission.question_id,
+            submission.choice_id,
+        )
+    except KeyError as error:
+        raise HTTPException(404, "quiz question was not found") from error
+    return JSONResponse(
+        {
+            "correct": feedback.correct,
+            "correct_choice_id": feedback.correct_choice_id,
+            "rationale": feedback.rationale,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/runs/{run_id}/publication")
+def publish_reviewed_quiz(request: Request, run_id: str) -> JSONResponse:
+    require_form_csrf(request, None)
+    repository = cast(
+        GenerationRepository,
+        request.app.state.generation_repository,
+    )
+    try:
+        published = repository.publish_reviewed_studio_quiz(run_id)
+    except KeyError as error:
+        raise HTTPException(404, "Studio run was not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return JSONResponse(
+        {
+            "token": published.token,
+            "published_url": f"/public/quizzes/{published.token}",
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.delete("/sources/{source_id}")

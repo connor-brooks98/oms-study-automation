@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import pytest
 
 from oms_hub.db import Database
 from oms_hub.study_generation.native_quiz import parse_native_quiz
+from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.studio_domain import (
     StudioRunStage,
     StudioRunState,
@@ -68,10 +70,11 @@ def _awaiting_run(tmp_path, question_count: int = 2):
 
 def _stored_image(tmp_path: Path) -> StudioStoredImage:
     path = tmp_path / "image.png"
-    path.write_bytes(b"sanitized png")
+    payload = b"sanitized png"
+    path.write_bytes(payload)
     return StudioStoredImage(
         path=path,
-        sha256="a" * 64,
+        sha256=hashlib.sha256(payload).hexdigest(),
         media_type="image/png",
         width=1200,
         height=800,
@@ -191,4 +194,100 @@ def test_restart_recovery_leaves_awaiting_images_run_untouched(tmp_path):
     waiting = repository.get_run(run.id)
     assert waiting.state is StudioRunState.AWAITING_IMAGES
     assert waiting.stage is StudioRunStage.IMAGE_REVIEW
+    database.close()
+
+
+def test_unresolved_review_cannot_create_any_publication_row(tmp_path):
+    database, _repository, run = _awaiting_run(tmp_path)
+    published = GenerationRepository(database)
+
+    with pytest.raises(ValueError, match="image-1"):
+        published.publish_reviewed_studio_quiz(run.id)
+
+    assert published.published_quizzes() == ()
+    database.close()
+
+
+def test_tampered_review_image_blocks_publication_before_any_row_changes(tmp_path):
+    database, repository, run = _awaiting_run(tmp_path)
+    image = _stored_image(tmp_path)
+    repository.bind_image(run.id, "image-1", image)
+    image.path.write_bytes(b"tampered")
+    published = GenerationRepository(database)
+
+    with pytest.raises(ValueError, match="image-1"):
+        published.publish_reviewed_studio_quiz(run.id)
+
+    assert published.published_quizzes() == ()
+    assert repository.get_run(run.id).state is StudioRunState.AWAITING_IMAGES
+    database.close()
+
+
+def test_reviewed_publication_copies_shared_image_binding_atomically(tmp_path):
+    database, repository, run = _awaiting_run(tmp_path, question_count=4)
+    repository.bind_image(run.id, "image-1", _stored_image(tmp_path))
+    published = GenerationRepository(database)
+
+    record = published.publish_reviewed_studio_quiz(run.id)
+    media = published.published_quiz_media(record.token)
+
+    assert record.studio_run_id == run.id
+    assert record.version == 1
+    assert [question.image_ref.key for question in record.quiz.questions] == [
+        "image-1",
+        "image-1",
+        "image-1",
+        "image-1",
+    ]
+    assert len(media) == 1
+    assert media[0].image_key == "image-1"
+    assert media[0].alt_text == "Reference image used for questions 4-7"
+    completed = repository.get_run(run.id)
+    assert completed.state is StudioRunState.COMPLETE
+    assert completed.published_token == record.token
+
+    repeated = published.publish_reviewed_studio_quiz(run.id)
+    assert repeated.token == record.token
+    assert repeated.version == 1
+    database.close()
+
+
+def test_all_overridden_questions_publish_without_media_binding(tmp_path):
+    database, repository, run = _awaiting_run(tmp_path)
+    repository.set_image_override(run.id, "q1", True)
+    repository.set_image_override(run.id, "q2", True)
+    published = GenerationRepository(database)
+
+    record = published.publish_reviewed_studio_quiz(run.id)
+
+    assert [question.image_ref for question in record.quiz.questions] == [None, None]
+    assert published.published_quiz_media(record.token) == ()
+    database.close()
+
+
+def test_reviewed_replacement_reuses_token_and_changes_media_in_one_version(tmp_path):
+    database, repository, first = _queued_run(tmp_path)
+    published = GenerationRepository(database)
+    original = parse_native_quiz(
+        '{"title":"Original","questions":[{"stem":"Original question?",'
+        '"choices":["A","B"],"correct_index":0,"rationale":"A."}]}'
+    )
+    first_record = published.publish_studio_quiz(first.id, original)
+    replacement = repository.rerun(first.id)
+    repository.await_image_review(
+        replacement.id,
+        "notebook-1",
+        "replacement raw",
+        _quiz_with_shared_image(2),
+    )
+    repository.bind_image(replacement.id, "image-1", _stored_image(tmp_path))
+
+    updated = published.publish_reviewed_studio_quiz(replacement.id)
+
+    assert updated.token == first_record.token
+    assert updated.version == 2
+    assert updated.studio_run_id == replacement.id
+    assert updated.quiz.questions[0].stem == "Question 1"
+    assert len(published.published_quiz_media(updated.token)) == 1
+    assert repository.get_run(first.id).published_token is None
     database.close()

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#273958">
+  <title>{{ run.label }} preview · Study Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/public/quizzes/assets/tokens.css">
+  <link rel="stylesheet" href="/public/quizzes/assets/player.css">
+</head>
+<body class="public-quiz-page">
+  <a class="skip-link" href="#quiz-player">Skip to quiz</a>
+  <nav class="quiz-app"><a href="/studio/runs/{{ run.id }}/images">← Back to image review</a></nav>
+  <section
+    class="quiz-app studio-preview-actions"
+    data-studio-preview
+    data-publish-url="{{ publish_url }}"
+  >
+    <p><strong>Private final preview</strong></p>
+    <button class="quiz-primary" type="button" data-publish-quiz>Publish quiz</button>
+    <p data-publish-message aria-live="polite"></p>
+  </section>
+  <main
+    id="quiz-player"
+    class="quiz-app"
+    data-quiz-token="preview-{{ run.id }}"
+    data-quiz-version="1"
+    data-content-url="{{ content_url }}"
+    data-answer-url="{{ answer_url }}"
+  >
+    <section class="quiz-loading" aria-live="polite">
+      <p class="quiz-brand">Study Hub</p>
+      <h1>{{ run.label }}</h1>
+      <p>{{ run.destination_subject }} · Exam {{ run.destination_exam_number }}</p>
+      <p>Loading preview…</p>
+    </section>
+  </main>
+  <script src="/public/quizzes/assets/player.js" defer></script>
+  <script src="/static/studio_quiz_preview.js" defer></script>
+</body>
+</html>
