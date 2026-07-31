@@ -184,12 +184,21 @@ class QuizChoice:
 
 
 @dataclass(frozen=True, slots=True)
+class QuizImageRef:
+    key: str
+    source_title: str
+    locator: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
 class QuizQuestion:
     id: str
     stem: str
     choices: tuple[QuizChoice, ...]
     correct_choice_id: str
     rationale: str
+    image_ref: QuizImageRef | None = None
 
 
 @dataclass(frozen=True, slots=True)

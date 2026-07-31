@@ -20,6 +20,7 @@ from oms_hub.study_generation.domain import (
     PromptSnapshot,
     QuizChoice,
     QuizFeedback,
+    QuizImageRef,
     QuizQuestion,
 )
 
@@ -34,6 +35,23 @@ _Text = Annotated[
 _Title = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=300),
+]
+_ImageKey = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+    ),
+]
+_ImageSource = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=500),
+]
+_ImageMetadata = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
 ]
 
 _QUIZ_OUTPUT_CONTRACT = """
@@ -55,6 +73,42 @@ Use this exact shape:
 }
 `correct_index` is zero-based. Include 1 to 100 questions, 2 to 8 distinct
 choices per question, and a non-empty expert rationale for every question.
+""".strip()
+
+_STUDIO_QUIZ_OUTPUT_CONTRACT = """
+
+STUDY HUB OUTPUT CONTRACT
+Return exactly one JSON object. Do not add prose before or after it. Do not use
+Markdown except that a single ```json code fence around the object is allowed.
+Use this exact shape:
+{
+  "title": "Lecture quiz title",
+  "questions": [
+    {
+      "stem": "Question text",
+      "choices": ["Choice A", "Choice B", "Choice C", "Choice D"],
+      "correct_index": 0,
+      "rationale": "Why the correct answer is correct and the others are not.",
+      "image_ref": null
+    }
+  ]
+}
+`correct_index` is zero-based. Include 1 to 100 questions, 2 to 8 distinct
+choices per question, and a non-empty expert rationale for every question.
+
+For every question, set `image_ref` to null when it can be answered without a
+specific source image. If the question depends on a particular diagram,
+photograph, scan, graph, table, or other source image, use this shape instead:
+{
+  "key": "image-1",
+  "source_title": "Name of the source containing the image",
+  "locator": "Where the user can find the image in that source",
+  "description": "Short accessible description of the required image"
+}
+Use lowercase image keys containing only letters, numbers, and hyphens. When multiple
+questions use the same source image, repeat the exact same key and metadata on every
+question. Do not invent image contents, image URLs, or source locations.
+Identify the source and locator so the user can upload the image.
 """.strip()
 
 
@@ -85,6 +139,15 @@ class NativeQuizPublisher:
         return quiz_url(published.token, self.settings)
 
 
+class _ImageRefInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: _ImageKey
+    source_title: _ImageSource
+    locator: _ImageMetadata
+    description: _ImageMetadata
+
+
 class _QuestionInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -92,6 +155,7 @@ class _QuestionInput(BaseModel):
     choices: Annotated[list[_Text], Field(min_length=2, max_length=8)]
     correct_index: int = Field(ge=0)
     rationale: _Text
+    image_ref: _ImageRefInput | None = None
 
     @field_validator("choices")
     @classmethod
@@ -133,7 +197,7 @@ def studio_quiz_prompt(prompt: str) -> str:
     normalized = prompt.strip()
     if not normalized:
         raise ValueError("Studio prompt is empty")
-    return f"{normalized}\n\n{_QUIZ_OUTPUT_CONTRACT}"
+    return f"{normalized}\n\n{_STUDIO_QUIZ_OUTPUT_CONTRACT}"
 
 
 def parse_native_quiz(raw: str) -> NativeQuiz:
@@ -150,6 +214,16 @@ def parse_native_quiz(raw: str) -> NativeQuiz:
         validated = _QuizInput.model_validate(decoded)
     except (json.JSONDecodeError, ValidationError, TypeError) as error:
         raise QuizContractError(f"NotebookLM quiz JSON is invalid: {error}") from error
+    images_by_key: dict[str, _ImageRefInput] = {}
+    for question in validated.questions:
+        image_ref = question.image_ref
+        if image_ref is None:
+            continue
+        existing = images_by_key.setdefault(image_ref.key, image_ref)
+        if existing != image_ref:
+            raise QuizContractError(
+                f"NotebookLM quiz JSON has conflicting metadata for image key {image_ref.key}"
+            )
     return NativeQuiz(
         validated.title,
         tuple(
@@ -165,6 +239,16 @@ def parse_native_quiz(raw: str) -> NativeQuiz:
                 ),
                 f"c{question.correct_index + 1}",
                 question.rationale,
+                (
+                    QuizImageRef(
+                        question.image_ref.key,
+                        question.image_ref.source_title,
+                        question.image_ref.locator,
+                        question.image_ref.description,
+                    )
+                    if question.image_ref is not None
+                    else None
+                ),
             )
             for question_index, question in enumerate(
                 validated.questions,
@@ -172,6 +256,14 @@ def parse_native_quiz(raw: str) -> NativeQuiz:
             )
         ),
     )
+
+
+def image_requirements(quiz: NativeQuiz) -> tuple[QuizImageRef, ...]:
+    by_key: dict[str, QuizImageRef] = {}
+    for question in quiz.questions:
+        if question.image_ref is not None:
+            by_key.setdefault(question.image_ref.key, question.image_ref)
+    return tuple(by_key.values())
 
 
 def public_quiz_content(quiz: NativeQuiz) -> dict[str, object]:
@@ -222,6 +314,16 @@ def serialize_native_quiz(quiz: NativeQuiz) -> str:
                         if choice.id == question.correct_choice_id
                     ),
                     "rationale": question.rationale,
+                    "image_ref": (
+                        {
+                            "key": question.image_ref.key,
+                            "source_title": question.image_ref.source_title,
+                            "locator": question.image_ref.locator,
+                            "description": question.image_ref.description,
+                        }
+                        if question.image_ref is not None
+                        else None
+                    ),
                 }
                 for question in quiz.questions
             ],

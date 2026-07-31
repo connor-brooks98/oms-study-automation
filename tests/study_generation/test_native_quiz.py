@@ -4,15 +4,18 @@ from pathlib import Path
 import pytest
 
 from oms_hub.config import Settings
-from oms_hub.study_generation.domain import PromptSnapshot
+from oms_hub.study_generation.domain import PromptSnapshot, QuizImageRef
 from oms_hub.study_generation.native_quiz import (
     QuizContractError,
     grade_answer,
+    image_requirements,
     parse_native_quiz,
     public_quiz_content,
     quiz_origin,
     quiz_prompt,
     quiz_url,
+    serialize_native_quiz,
+    studio_quiz_prompt,
     validate_native_quiz_url,
 )
 
@@ -70,6 +73,125 @@ def test_quiz_prompt_preserves_obsidian_snapshot_and_appends_json_contract():
     assert enhanced.content.startswith(original.content)
     assert '"correct_index": 0' in enhanced.content
     assert "Return exactly one JSON object" in enhanced.content
+    assert "image_ref" not in enhanced.content
+
+
+def test_studio_prompt_requests_image_locations_without_changing_user_prompt():
+    enhanced = studio_quiz_prompt("Preserve every question verbatim.")
+
+    assert enhanced.startswith("Preserve every question verbatim.")
+    assert '"image_ref": null' in enhanced
+    assert "repeat the exact same key and metadata" in enhanced
+    assert "Do not invent image contents" in enhanced
+
+
+def test_shared_image_reference_parses_and_groups_once_in_question_order():
+    image_ref = {
+        "key": "image-1",
+        "source_title": "Dr. Wang's website",
+        "locator": "Image immediately before question 4",
+        "description": "Reference image used for questions 4-7",
+    }
+    payload = _payload(image_ref=image_ref)
+    payload["questions"].append(
+        {
+            **payload["questions"][0],
+            "stem": "Which additional finding is visible?",
+        }
+    )
+
+    quiz = parse_native_quiz(json.dumps(payload))
+
+    expected = QuizImageRef(
+        "image-1",
+        "Dr. Wang's website",
+        "Image immediately before question 4",
+        "Reference image used for questions 4-7",
+    )
+    assert quiz.questions[0].image_ref == expected
+    assert quiz.questions[1].image_ref == expected
+    assert image_requirements(quiz) == (expected,)
+
+
+def test_legacy_question_without_image_reference_remains_valid():
+    quiz = parse_native_quiz(json.dumps(_payload()))
+
+    assert quiz.questions[0].image_ref is None
+
+
+def test_image_reference_survives_native_quiz_serialization():
+    payload = _payload(
+        image_ref={
+            "key": "slide-12",
+            "source_title": "Lecture slides",
+            "locator": "Slide 12, upper-right panel",
+            "description": "Chest radiograph",
+        }
+    )
+
+    restored = parse_native_quiz(serialize_native_quiz(parse_native_quiz(json.dumps(payload))))
+
+    assert restored.questions[0].image_ref == QuizImageRef(
+        "slide-12",
+        "Lecture slides",
+        "Slide 12, upper-right panel",
+        "Chest radiograph",
+    )
+
+
+def test_conflicting_metadata_for_a_shared_image_key_is_rejected():
+    payload = _payload(
+        image_ref={
+            "key": "image-1",
+            "source_title": "Professor website",
+            "locator": "Before question 4",
+            "description": "Gross pathology",
+        }
+    )
+    payload["questions"].append(
+        {
+            **payload["questions"][0],
+            "stem": "Second question",
+            "image_ref": {
+                "key": "image-1",
+                "source_title": "Professor website",
+                "locator": "Before question 8",
+                "description": "Gross pathology",
+            },
+        }
+    )
+
+    with pytest.raises(QuizContractError, match="conflicting metadata"):
+        parse_native_quiz(json.dumps(payload))
+
+
+@pytest.mark.parametrize(
+    "image_ref",
+    [
+        {
+            "key": "Image 1",
+            "source_title": "Slides",
+            "locator": "Slide 1",
+            "description": "Figure",
+        },
+        {
+            "key": "image-1",
+            "source_title": "",
+            "locator": "Slide 1",
+            "description": "Figure",
+        },
+        {
+            "key": "image-1",
+            "source_title": "Slides",
+            "locator": "Slide 1",
+            "description": "Figure",
+            "url": "https://example.com/figure.png",
+        },
+    ],
+)
+def test_malformed_image_reference_is_rejected(image_ref):
+    with pytest.raises(QuizContractError, match="image_ref"):
+        parse_native_quiz(json.dumps(_payload(image_ref=image_ref)))
 
 
 @pytest.mark.parametrize(
