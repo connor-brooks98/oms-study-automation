@@ -1,3 +1,4 @@
+import asyncio
 from io import BytesIO
 from pathlib import Path
 from typing import Annotated, cast
@@ -84,6 +85,13 @@ def upload_files(
     if not files:
         raise HTTPException(422, "at least one file is required")
     _require_lecture(request, lecture_id)
+    try:
+        _staging(request).prevalidate_files(
+            kind,
+            ((upload.filename or "", upload.file) for upload in files),
+        )
+    except UploadRejected as error:
+        raise HTTPException(422, str(error)) from error
     batch = _staging(request).begin_batch(kind)
     repository = _repository(request)
     repository.create_batch(kind, batch.id)
@@ -188,7 +196,8 @@ async def append_chunk(
 ) -> dict[str, int]:
     body = await request.body()
     try:
-        received = _staging(request).append_chunk(
+        received = await asyncio.to_thread(
+            _staging(request).append_chunk,
             session_id,
             offset,
             BytesIO(body),

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
 from oms_hub.ingestion.domain import (
+    FailedRevision,
     IngestionJob,
     MatchDecision,
     StagedUpload,
@@ -322,12 +323,17 @@ class IngestionRepository:
                     StudyRevisionModel.upload_item_id == item_id
                 )
             )
+            if revision is not None and revision.state in {"failed", "retrying"}:
+                revision.state = "proposed"
             if revision is None:
                 revision = session.scalar(
                     select(StudyRevisionModel).where(
                         StudyRevisionModel.lecture_id == item.lecture_id,
                         StudyRevisionModel.kind == item.kind,
                         StudyRevisionModel.source_sha256 == item.sha256,
+                        StudyRevisionModel.state.in_(
+                            {"current", "proposed", "promoting"}
+                        ),
                     )
                 )
             if revision is None:
@@ -412,6 +418,56 @@ class IngestionRepository:
                 .order_by(StudyRevisionModel.created_at, StudyRevisionModel.id)
             ).all()
             return [self._study_revision(item) for item in revisions]
+
+    def list_failed_revisions(self) -> list[FailedRevision]:
+        with self.database.session() as session:
+            rows = session.execute(
+                select(StudyRevisionModel, UploadItemModel.error)
+                .join(
+                    UploadItemModel,
+                    UploadItemModel.id == StudyRevisionModel.upload_item_id,
+                )
+                .where(
+                    StudyRevisionModel.state == "failed",
+                    StudyRevisionModel.kind == UploadKind.TRANSCRIPTS.value,
+                    UploadItemModel.state.in_(
+                        {
+                            UploadState.NEEDS_REVIEW.value,
+                            UploadState.QUARANTINED.value,
+                            UploadState.FAILED.value,
+                        }
+                    ),
+                )
+                .order_by(StudyRevisionModel.created_at, StudyRevisionModel.id)
+            ).all()
+            return [
+                FailedRevision(self._study_revision(revision), error or "Unknown failure")
+                for revision, error in rows
+            ]
+
+    def retry_failed_revision(self, revision_id: int) -> StudyRevision:
+        with self.database.session() as session:
+            revision = session.get(StudyRevisionModel, revision_id)
+            if revision is None:
+                raise KeyError(revision_id)
+            if revision.state != "failed":
+                raise ValueError("revision is not failed")
+            item = session.get(UploadItemModel, revision.upload_item_id)
+            if item is None:
+                raise ValueError("revision upload item is missing")
+            if item.state in {
+                UploadState.QUEUED.value,
+                UploadState.PROCESSING.value,
+            }:
+                raise ValueError("revision retry is already in progress")
+            revision.state = "retrying"
+            revision.current = False
+            item.state = UploadState.QUEUED.value
+            item.error = None
+            self._enqueue(session, item.id, "process")
+            self._sync_batch_state(session, item.batch_id)
+            session.flush()
+            return self._study_revision(revision)
 
     def list_current_revisions(
         self,
@@ -741,6 +797,7 @@ class IngestionRepository:
             )
         else:
             stored.state = UploadState.QUEUED.value
+            stored.next_attempt_at = None
             stored.error = None
 
     def _enqueue_unless_current_duplicate(

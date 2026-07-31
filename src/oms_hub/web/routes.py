@@ -230,6 +230,9 @@ def review(request: Request) -> HTMLResponse:
             "proposed_revisions": IngestionRepository(
                 request.app.state.database
             ).list_proposed_revisions(),
+            "failed_revisions": IngestionRepository(
+                request.app.state.database
+            ).list_failed_revisions(),
         },
     )
 

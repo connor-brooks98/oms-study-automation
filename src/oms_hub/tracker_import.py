@@ -89,6 +89,8 @@ def parse_tracker(path: Path) -> ParsedTracker:
         )
         issues: list[TrackerParseIssue] = []
         lectures: list[LectureInput] = []
+        seen: dict[tuple[str, int, int], tuple[str, int, str]] = {}
+        reported_first_duplicates: set[tuple[str, int, int]] = set()
 
         for sheet in workbook.worksheets:
             if sheet.title in _SKIP_SHEETS:
@@ -142,6 +144,35 @@ def parse_tracker(path: Path) -> ParsedTracker:
                         )
                     )
                     continue
+                key = (subject, exam_number, int(first))
+                if key in seen:
+                    first_sheet, first_row, first_raw = seen[key]
+                    if key not in reported_first_duplicates:
+                        issues.append(
+                            TrackerParseIssue(
+                                first_sheet,
+                                first_row,
+                                f"duplicate lecture number also appears at "
+                                f"{sheet.title} row {row_number}",
+                                first_raw,
+                            )
+                        )
+                        reported_first_duplicates.add(key)
+                    issues.append(
+                        TrackerParseIssue(
+                            sheet.title,
+                            row_number,
+                            f"duplicate lecture number first appears at "
+                            f"{first_sheet} row {first_row}",
+                            json.dumps(row[:3], default=str),
+                        )
+                    )
+                    continue
+                seen[key] = (
+                    sheet.title,
+                    row_number,
+                    json.dumps(row[:3], default=str),
+                )
                 lectures.append(
                     LectureInput(
                         subject=subject,

@@ -40,6 +40,25 @@
   </section>
 
   <section class="review-section">
+    <h2>Failed transcript cleanings</h2>
+    {% for failed in failed_revisions %}
+    <article class="card review-card">
+      <div>
+        <p class="mono-label">Transcript · Revision {{ failed.revision.id }}</p>
+        <h3>Lecture {{ failed.revision.lecture_id }}</h3>
+        <p>{{ failed.error }}</p>
+      </div>
+      <form method="post" action="/review/replacements/{{ failed.revision.id }}/retry">
+        <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+        <button class="button primary" type="submit">Retry cleaning</button>
+      </form>
+    </article>
+    {% else %}
+    <p class="quiet-state">No failed transcript cleanings.</p>
+    {% endfor %}
+  </section>
+
+  <section class="review-section">
     <h2>Lecture steps</h2>
     <ul class="plain-list">
     {% for lecture in lectures %}

@@ -6,9 +6,9 @@ from oms_hub.db import Database
 from oms_hub.domain import LectureKey, StepStatus, V2StepName
 from oms_hub.files.atomic import (
     sha256_file,
-    verified_atomic_copy,
     verified_atomic_write,
 )
+from oms_hub.files.promotion import PromotionCoordinator
 from oms_hub.ingestion.domain import (
     StudyRevision,
     UploadKind,
@@ -57,6 +57,7 @@ class TranscriptPipeline:
         self.settings = settings
         self.prompt = prompt
         self.cleaner = cleaner
+        self.promotion = PromotionCoordinator()
         self.repository = IngestionRepository(database)
         self.catalog = CatalogRepository(database)
 
@@ -167,26 +168,17 @@ class TranscriptPipeline:
                     error="transcript replacement awaits approval",
                 )
 
-            copied_sha256 = verified_atomic_copy(
-                cleaned_path,
-                destination,
+            revision = self._promote_revision(
+                revision,
+                [(cleaned_path, destination)],
             )
-            if copied_sha256 != cleaned_sha256:
-                raise TranscriptValidationError(
-                    "filed transcript checksum mismatch"
-                )
             self.catalog.set_step_status(
                 revision.lecture_id,
                 V2StepName.TRANSCRIPT_FILED,
                 StepStatus.COMPLETE,
                 "Cleaned transcript filed on the NUC",
             )
-            return self.repository.finish_revision(
-                item_id,
-                revision.id,
-                UploadState.COMPLETE,
-                current=True,
-            )
+            return revision
         except Exception as error:
             self._set_steps(
                 revision.lecture_id,
@@ -236,6 +228,32 @@ class TranscriptPipeline:
             cleaned_path,
         )
         return cleaned_sha256, result
+
+    def _promote_revision(
+        self,
+        revision: StudyRevision,
+        pairs: list[tuple[Path, Path]],
+    ) -> StudyRevision:
+        if revision.state == "promoting":
+            recovered = self.promotion.recover(
+                pairs,
+                revision.id,
+                lambda: self.repository.promote_study_revision(revision.id),
+                lambda: self.repository.reset_study_promotion(revision.id),
+            )
+            if recovered is not None:
+                return recovered
+            revision = self.repository.get_study_revision(revision.id)
+        self.repository.begin_study_promotion(revision.id)
+        try:
+            return self.promotion.promote(
+                pairs,
+                revision.id,
+                lambda: self.repository.promote_study_revision(revision.id),
+            )
+        except Exception:
+            self.repository.reset_study_promotion(revision.id)
+            raise
 
     def _validate_cleaned(self, raw_text: str, cleaned: str) -> None:
         if not cleaned.strip():

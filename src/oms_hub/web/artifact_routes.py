@@ -200,3 +200,20 @@ def keep_replacement(
     except ArtifactConflict as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return RedirectResponse("/review", status_code=303)
+
+
+@router.post("/review/replacements/{revision_id}/retry")
+def retry_failed_revision(
+    request: Request,
+    revision_id: int,
+    csrf_token: str | None = Form(default=None),
+) -> RedirectResponse:
+    require_form_csrf(request, csrf_token)
+    repository = IngestionRepository(request.app.state.database)
+    try:
+        repository.retry_failed_revision(revision_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="revision not found") from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return RedirectResponse("/review", status_code=303)

@@ -1,8 +1,9 @@
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, BinaryIO, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -300,17 +301,23 @@ async def preview_tracker(
     if Path(filename).suffix.casefold() != ".xlsx":
         raise HTTPException(415, "tracker must be an .xlsx workbook")
     incoming_root = request.app.state.settings.data_dir / "tracker-previews" / "incoming"
-    incoming_root.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(incoming_root.mkdir, parents=True, exist_ok=True)
     incoming = incoming_root / f"{uuid4()}.xlsx"
     size = 0
     try:
-        with incoming.open("xb") as output:
-            while chunk := await workbook.read(1024 * 1024):
-                size += len(chunk)
-                if size > _MAX_TRACKER_BYTES:
-                    raise HTTPException(413, "tracker workbook is too large")
-                output.write(chunk)
-        preview = _service(request).preview(incoming, source_name=filename)
+        await workbook.seek(0)
+        size = await asyncio.to_thread(
+            _write_tracker_upload,
+            workbook.file,
+            incoming,
+        )
+        if size > _MAX_TRACKER_BYTES:
+            raise HTTPException(413, "tracker workbook is too large")
+        preview = await asyncio.to_thread(
+            _service(request).preview,
+            incoming,
+            filename,
+        )
         if "application/json" in request.headers.get("accept", "").casefold():
             return JSONResponse(preview.public_dict())
         courses = _preview_courses(preview)
@@ -330,7 +337,18 @@ async def preview_tracker(
             },
         )
     finally:
-        incoming.unlink(missing_ok=True)
+        await asyncio.to_thread(incoming.unlink, missing_ok=True)
+
+
+def _write_tracker_upload(source: BinaryIO, destination: Path) -> int:
+    size = 0
+    with destination.open("xb") as output:
+        while chunk := source.read(1024 * 1024):
+            size += len(chunk)
+            if size > _MAX_TRACKER_BYTES:
+                break
+            output.write(chunk)
+    return size
 
 
 @router.post("/tracker/apply")

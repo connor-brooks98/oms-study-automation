@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from oms_hub.config import Settings
@@ -7,6 +6,7 @@ from oms_hub.domain import LectureKey, StepStatus, V2StepName
 from oms_hub.files.atomic import sha256_file, verified_atomic_copy
 from oms_hub.files.office import OfficeConverter
 from oms_hub.files.pdf import validate_pdf
+from oms_hub.files.promotion import PromotionCoordinator
 from oms_hub.ingestion.domain import (
     StudyRevision,
     UploadKind,
@@ -27,6 +27,7 @@ class SlidePipeline:
     ):
         self.settings = settings
         self.converter = converter
+        self.promotion = PromotionCoordinator()
         self.repository = IngestionRepository(database)
         self.catalog = CatalogRepository(database)
 
@@ -113,13 +114,13 @@ class SlidePipeline:
                     error="lecture replacement awaits approval",
                 )
 
-            self._promote_group(
+            revision = self._promote_revision(
+                revision,
                 [
                     (revision.immutable_source_path, destinations.source),
                     (derived, destinations.pdf),
                     (derived, destinations.icloud_pdf),
                 ],
-                revision.id,
             )
             self.catalog.set_step_status(
                 revision.lecture_id,
@@ -133,12 +134,7 @@ class SlidePipeline:
                 StepStatus.COMPLETE,
                 "PDF staged in iCloud",
             )
-            return self.repository.finish_revision(
-                item_id,
-                revision.id,
-                UploadState.COMPLETE,
-                current=True,
-            )
+            return revision
         except Exception as error:
             self._mark_failed(revision.lecture_id, str(error))
             self.repository.finish_revision(
@@ -184,35 +180,31 @@ class SlidePipeline:
         validate_pdf(destination)
         return sha256_file(destination)
 
-    @staticmethod
-    def _promote_group(
+    def _promote_revision(
+        self,
+        revision: StudyRevision,
         pairs: list[tuple[Path, Path]],
-        revision_id: int,
-    ) -> None:
-        backups: dict[Path, Path | None] = {}
+    ) -> StudyRevision:
+        if revision.state == "promoting":
+            recovered = self.promotion.recover(
+                pairs,
+                revision.id,
+                lambda: self.repository.promote_study_revision(revision.id),
+                lambda: self.repository.reset_study_promotion(revision.id),
+            )
+            if recovered is not None:
+                return recovered
+            revision = self.repository.get_study_revision(revision.id)
+        self.repository.begin_study_promotion(revision.id)
         try:
-            for _, destination in pairs:
-                if destination.exists():
-                    existing_backup = destination.with_name(
-                        f".{destination.name}.oms-backup-{revision_id}"
-                    )
-                    verified_atomic_copy(destination, existing_backup)
-                    backups[destination] = existing_backup
-                else:
-                    backups[destination] = None
-            for source, destination in pairs:
-                verified_atomic_copy(source, destination)
+            return self.promotion.promote(
+                pairs,
+                revision.id,
+                lambda: self.repository.promote_study_revision(revision.id),
+            )
         except Exception:
-            for destination, saved_path in backups.items():
-                if saved_path is not None and saved_path.exists():
-                    os.replace(saved_path, destination)
-                elif saved_path is None:
-                    destination.unlink(missing_ok=True)
+            self.repository.reset_study_promotion(revision.id)
             raise
-        finally:
-            for saved_path in backups.values():
-                if saved_path is not None:
-                    saved_path.unlink(missing_ok=True)
 
     def _set_slide_steps(
         self,

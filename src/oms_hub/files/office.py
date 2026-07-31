@@ -1,10 +1,11 @@
-import sys
+import multiprocessing
 import threading
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
+from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
+
+from oms_hub.files.office_worker import convert_office_file
 
 
 class OfficeUnavailableError(RuntimeError):
@@ -19,34 +20,23 @@ class OfficeConversionError(RuntimeError):
     pass
 
 
+OfficeWorker = Callable[[Path, Path], None]
+
+
 class OfficeConverter(Protocol):
     def convert(self, source: Path, destination: Path) -> None: ...
 
 
-OfficeFactory = Callable[[str], Any]
-
-
-def _dispatch_factory(progid: str) -> Any:
-    if sys.platform != "win32":
-        raise OfficeUnavailableError("Microsoft Office conversion is available only on Windows")
-    import pythoncom  # type: ignore[import-untyped]
-    import win32com.client  # type: ignore[import-untyped]
-
-    pythoncom.CoInitialize()
-    return win32com.client.DispatchEx(progid)
-
-
 class SerialOfficeConverter:
-    _lock = threading.Lock()
-
     def __init__(
         self,
-        timeout_seconds: int = 180,
-        factory: OfficeFactory = _dispatch_factory,
-    ):
+        timeout_seconds: float = 180,
+        worker: OfficeWorker = convert_office_file,
+    ) -> None:
         self.timeout_seconds = timeout_seconds
-        self.factory = factory
-        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="oms-office")
+        self.worker = worker
+        self._lock = threading.Lock()
+        self._context = multiprocessing.get_context("spawn")
 
     def convert(self, source: Path, destination: Path) -> None:
         suffix = source.suffix.casefold()
@@ -55,44 +45,57 @@ class SerialOfficeConverter:
         if not self._lock.acquire(blocking=False):
             raise OfficeConversionError("another Office conversion is already running")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        future = self.executor.submit(self._convert_sync, source, destination)
-        future.add_done_callback(lambda _: self._lock.release())
+        receiver, sender = self._context.Pipe(duplex=False)
+        process = self._context.Process(
+            target=_run_child,
+            args=(self.worker, source, destination, sender),
+            name="oms-office-conversion",
+            daemon=True,
+        )
         try:
-            future.result(timeout=self.timeout_seconds)
-        except FutureTimeoutError as error:
-            raise OfficeTimeoutError(
-                f"Office conversion exceeded {self.timeout_seconds} seconds"
-            ) from error
-        except OfficeUnavailableError:
-            raise
-        except Exception as error:
-            raise OfficeConversionError("Microsoft Office could not export the PDF") from error
-
-    def _convert_sync(self, source: Path, destination: Path) -> None:
-        application: Any = None
-        document: Any = None
-        try:
-            if source.suffix.casefold() in {".ppt", ".pptx"}:
-                application = self.factory("PowerPoint.Application")
-                application.DisplayAlerts = 1
-                document = application.Presentations.Open(
-                    str(source),
-                    ReadOnly=True,
-                    WithWindow=False,
+            process.start()
+            sender.close()
+            process.join(self.timeout_seconds)
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
+                if process.is_alive():
+                    process.kill()
+                    process.join(5)
+                destination.unlink(missing_ok=True)
+                raise OfficeTimeoutError(
+                    f"Office conversion exceeded {self.timeout_seconds:g} seconds"
                 )
-                document.SaveAs(str(destination), 32)
-            else:
-                application = self.factory("Word.Application")
-                application.Visible = False
-                application.DisplayAlerts = 0
-                document = application.Documents.Open(str(source), ReadOnly=True)
-                document.ExportAsFixedFormat(str(destination), 17)
+            result = receiver.recv() if receiver.poll() else None
+            if result == ("ok", "") and process.exitcode == 0:
+                return
+            destination.unlink(missing_ok=True)
+            error_type, _detail = result or ("OfficeConversionError", "")
+            if error_type == "OfficeUnavailableError":
+                raise OfficeUnavailableError(
+                    "Microsoft Office conversion is available only on Windows"
+                )
+            raise OfficeConversionError("Microsoft Office could not export the PDF")
         finally:
-            if document is not None:
-                document.Close()
-            if application is not None:
-                application.Quit()
-            if sys.platform == "win32" and self.factory is _dispatch_factory:
-                import pythoncom  # type: ignore[import-untyped]
+            receiver.close()
+            sender.close()
+            if process.is_alive():
+                process.kill()
+                process.join(5)
+            self._lock.release()
 
-                pythoncom.CoUninitialize()
+
+def _run_child(
+    worker: OfficeWorker,
+    source: Path,
+    destination: Path,
+    sender: Connection,
+) -> None:
+    try:
+        worker(source, destination)
+    except Exception as error:  # noqa: BLE001 - serialized child boundary
+        sender.send((type(error).__name__, str(error)[:500]))
+    else:
+        sender.send(("ok", ""))
+    finally:
+        sender.close()

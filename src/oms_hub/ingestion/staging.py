@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import BinaryIO
@@ -83,6 +84,30 @@ class StagingService:
             )
         finally:
             temporary.unlink(missing_ok=True)
+
+    def prevalidate_files(
+        self,
+        kind: UploadKind,
+        files: Iterable[tuple[str, BinaryIO]],
+    ) -> None:
+        batch_size = 0
+        for filename, stream in files:
+            self._validate_filename(kind, filename)
+            stream.seek(0, 2)
+            size = stream.tell()
+            stream.seek(0)
+            if size < 1:
+                raise UploadRejected("uploaded file is empty")
+            if size > self.max_file_bytes:
+                raise UploadRejected("file exceeds upload limit")
+            batch_size += size
+            if batch_size > self.max_batch_bytes:
+                raise UploadRejected("batch exceeds upload limit")
+            if kind is UploadKind.SLIDES:
+                self._validate_pptx_stream(stream)
+            else:
+                self._validate_text_bytes(stream.read())
+            stream.seek(0)
 
     def begin_chunks(
         self,
@@ -216,8 +241,22 @@ class StagingService:
                 "file is not a valid PowerPoint presentation"
             ) from error
 
+    def _validate_pptx_stream(self, stream: BinaryIO) -> None:
+        try:
+            with ZipFile(stream) as archive:
+                if not _PPTX_REQUIRED.issubset(archive.namelist()):
+                    raise UploadRejected(
+                        "file is not a valid PowerPoint presentation"
+                    )
+        except BadZipFile as error:
+            raise UploadRejected(
+                "file is not a valid PowerPoint presentation"
+            ) from error
+
     def _validate_text(self, path: Path) -> None:
-        raw = path.read_bytes()
+        self._validate_text_bytes(path.read_bytes())
+
+    def _validate_text_bytes(self, raw: bytes) -> None:
         if b"\x00" in raw:
             raise UploadRejected("transcript contains binary data")
         try:
