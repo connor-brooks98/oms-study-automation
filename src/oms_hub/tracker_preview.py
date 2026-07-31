@@ -26,6 +26,8 @@ class TrackerPreview:
     missing: tuple[LectureInput, ...]
     issues: tuple[TrackerParseIssue, ...]
     unchanged: int
+    current_count: int
+    resulting_count: int
 
     def public_dict(self) -> dict[str, object]:
         return {
@@ -39,6 +41,8 @@ class TrackerPreview:
             "missing": [asdict(item) for item in self.missing],
             "issues": [asdict(item) for item in self.issues],
             "unchanged": self.unchanged,
+            "current_count": self.current_count,
+            "resulting_count": self.resulting_count,
         }
 
 
@@ -106,6 +110,8 @@ class TrackerPreviewService:
             missing=missing,
             issues=parsed.issues,
             unchanged=unchanged,
+            current_count=len(current),
+            resulting_count=len(current) + len(new),
         )
         self._store(preview, path)
         return preview
@@ -183,6 +189,13 @@ class TrackerPreviewService:
                 TrackerParseIssue(**item) for item in raw["issues"]
             ),
             unchanged=int(raw["unchanged"]),
+            current_count=int(raw.get("current_count", 0)),
+            resulting_count=int(
+                raw.get(
+                    "resulting_count",
+                    len(raw.get("detected", [])),
+                )
+            ),
         )
 
     def _preview_dir(self, preview_id: str) -> Path:

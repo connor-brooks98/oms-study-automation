@@ -12,8 +12,7 @@
       {% if review_count %}
       <a class="review-count" href="/review">{{ review_count }} needs review</a>
       {% endif %}
-      <a class="button secondary" href="/uploads/transcripts">+ Upload transcript</a>
-      <a class="button primary" href="/uploads/slides">+ Upload lecture</a>
+      <a class="button primary" href="/uploads">+ Upload files</a>
     </div>
   </div>
 
@@ -39,13 +38,9 @@
           <div class="lecture-list" id="{{ exam_id }}" {% if not loop.first %}hidden{% endif %}>
             {% for row in exam.lectures %}
             <a class="lecture-row" href="/lectures/{{ row.lecture.id }}">
-              <span class="status-dot status-{{ row.status }}" aria-hidden="true"></span>
+              <span class="status-marker status-{{ row.status }} {{ 'has-slides' if row.has_slides }} {{ 'has-transcript' if row.has_transcript }}" aria-label="{{ row.status_label }}. Slides {{ 'available' if row.has_slides else 'missing' }}. Transcript {{ 'available' if row.has_transcript else 'missing' }}."></span>
               <span class="lecture-title">{{ row.title }}</span>
               <span class="status-pill status-{{ row.status }}">{{ row.status_label }}</span>
-              <span class="file-flags" aria-label="Available files">
-                <span class="{{ 'available' if row.has_slides else 'missing' }}">PPTX</span>
-                <span class="{{ 'available' if row.has_transcript else 'missing' }}">TXT</span>
-              </span>
               <span class="row-progress">{{ row.percent }}%</span>
             </a>
             {% endfor %}

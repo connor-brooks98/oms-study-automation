@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Annotated, cast
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
@@ -21,9 +21,8 @@ templates = Jinja2Templates(
 )
 
 
-@router.get("/uploads/{kind}", response_class=HTMLResponse)
+@router.get("/uploads", response_class=HTMLResponse)
 def upload_page(
-    kind: UploadKind,
     request: Request,
     lecture_id: int | None = None,
 ) -> HTMLResponse:
@@ -36,15 +35,20 @@ def upload_page(
         request=request,
         name="uploads.html",
         context={
-            "kind": kind,
-            "accept": (
-                ".pptx"
-                if kind is UploadKind.SLIDES
-                else ".txt"
-            ),
             "selected_lecture": selected_lecture,
         },
     )
+
+
+@router.get("/uploads/{kind}")
+def legacy_upload_page(
+    kind: UploadKind,
+    lecture_id: int | None = None,
+) -> RedirectResponse:
+    destination = "/uploads"
+    if lecture_id is not None:
+        destination += f"?lecture_id={lecture_id}"
+    return RedirectResponse(destination, status_code=307)
 
 
 class ChunkCreate(BaseModel):

@@ -51,11 +51,29 @@
     callback();
   };
 
+  const shortcutTarget = (key, previousUrl, nextUrl, tagName = "") => {
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(tagName.toUpperCase())) return null;
+    if (key === "[") return previousUrl || null;
+    if (key === "]") return nextUrl || null;
+    return null;
+  };
+
   const initialize = (documentRef, fetchImpl = root.fetch.bind(root)) => {
     const match = root.location.pathname.match(/^\/lectures\/(\d+)/);
     if (!match) return;
     const lectureId = match[1];
     let pollTimer;
+    const previousUrl = documentRef.querySelector("[data-previous-lecture]")?.href;
+    const nextUrl = documentRef.querySelector("[data-next-lecture]")?.href;
+    documentRef.addEventListener("keydown", (event) => {
+      const target = shortcutTarget(
+        event.key,
+        previousUrl,
+        nextUrl,
+        event.target?.tagName,
+      );
+      if (target) root.location.assign(target);
+    });
 
     const refresh = async () => {
       const response = await fetchImpl(`/lectures/${lectureId}/generation-status`, {
@@ -104,7 +122,7 @@
     void refresh();
   };
 
-  const api = { csrfToken, initialize, render, runWhenReady };
+  const api = { csrfToken, initialize, render, runWhenReady, shortcutTarget };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) {
     runWhenReady(

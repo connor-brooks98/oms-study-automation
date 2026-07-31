@@ -1,31 +1,24 @@
 {% extends "base.html" %}
-{% set is_slides = kind.value == "slides" %}
-{% block title %}Upload {{ "slides" if is_slides else "transcripts" }} · Study Hub{% endblock %}
+{% block title %}Upload files · Study Hub{% endblock %}
 {% block content %}
 <section class="page-shell upload-page">
   <div class="page-heading">
     <div>
       <p class="eyebrow">Manual ingestion</p>
-      <h1>Upload {{ "lecture slides" if is_slides else "lecture transcripts" }}</h1>
-      <p class="page-summary">
-        {% if is_slides %}Add downloaded PowerPoint files. The NUC will match, preserve, convert, and file them.
-        {% else %}Add downloaded text transcripts. The NUC will match, clean, validate, and file them.{% endif %}
-      </p>
-      {% if selected_lecture %}
-      <p class="field-help">For {{ selected_lecture.subject }} · Lecture {{ "%02d"|format(selected_lecture.lecture_number) }} · {{ selected_lecture.topic }}</p>
-      {% endif %}
+      <h1>Upload lecture files</h1>
+      <p class="page-summary">Drop PowerPoint slides and text transcripts together. Study Hub sorts each file into the correct pipeline.</p>
+      {% if selected_lecture %}<p class="field-help">For {{ selected_lecture.subject }} · Lecture {{ "%02d"|format(selected_lecture.lecture_number) }} · {{ selected_lecture.topic }}</p>{% endif %}
     </div>
   </div>
 
-  <form class="upload-form" action="/uploads/{{ kind.value }}" method="post" enctype="multipart/form-data" data-upload-form data-kind="{{ kind.value }}" data-lecture-id="{{ selected_lecture.id if selected_lecture else '' }}">
-    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+  <form class="upload-form" method="post" enctype="multipart/form-data" data-upload-form data-lecture-id="{{ selected_lecture.id if selected_lecture else '' }}">
     {% if selected_lecture %}<input type="hidden" name="lecture_id" value="{{ selected_lecture.id }}">{% endif %}
     <div class="upload-zone" data-drop-zone>
       <span class="upload-mark" aria-hidden="true">↑</span>
-      <h2>Drop {{ "PowerPoint" if is_slides else "transcript" }} files here</h2>
-      <p id="upload-help">{{ "PPTX only" if is_slides else "TXT only" }} · multiple files supported · up to 100 MB each</p>
-      <label for="upload-files" class="sr-only">Choose {{ "PowerPoint" if is_slides else "transcript" }} files</label>
-      <input id="upload-files" class="sr-only" name="files" type="file" accept="{{ accept }}" multiple required aria-describedby="upload-help">
+      <h2>Drop slides or transcripts here</h2>
+      <p id="upload-help">PPTX or TXT · mixed selections supported · up to 100 MB each</p>
+      <label for="upload-files" class="sr-only">Choose PowerPoint or transcript files</label>
+      <input id="upload-files" class="sr-only" name="files" type="file" accept=".pptx,.txt" multiple required aria-describedby="upload-help">
       <button class="button secondary upload-browse" type="button">Choose files</button>
     </div>
     <div class="selected-files" data-selected-files aria-live="polite"></div>
@@ -35,18 +28,12 @@
   <section class="upload-results" aria-labelledby="upload-status-heading">
     <h2 id="upload-status-heading">Upload status</h2>
     <div class="upload-status" data-upload-status role="status" aria-live="polite">Ready for files.</div>
-    <div class="upload-progress" hidden data-progress-wrap>
-      <span data-progress-bar></span>
-    </div>
+    <div class="upload-progress" hidden data-progress-wrap><span data-progress-bar></span></div>
     <ul class="upload-items" data-upload-items></ul>
   </section>
 
-  <aside class="info-card">
-    <strong>What happens next</strong>
-    <p>Confident matches enter processing automatically. Anything ambiguous stays in <a href="/quarantine">Quarantine</a> until you choose its lecture.</p>
-  </aside>
+  <aside class="info-card"><strong>What happens next</strong><p>Confident matches enter processing automatically. Anything ambiguous stays in <a href="/quarantine">Quarantine</a> until you choose its lecture.</p></aside>
 
-  {% if not is_slides %}
   <dialog class="duplicate-dialog" data-duplicate-dialog aria-labelledby="duplicate-dialog-title" aria-describedby="duplicate-dialog-copy">
     <div class="duplicate-dialog-mark" aria-hidden="true">!</div>
     <p class="eyebrow">API cost safeguard</p>
@@ -54,14 +41,8 @@
     <p id="duplicate-dialog-copy">A cleaned lecture transcript has already been processed for this lecture. Are you sure you want to process another?</p>
     <p class="duplicate-lecture" data-duplicate-lecture></p>
     <p class="duplicate-error" data-duplicate-error role="alert" aria-live="assertive"></p>
-    <div class="duplicate-actions">
-      <button class="button danger" type="button" data-discard-duplicate>Discard upload</button>
-      <button class="button primary" type="button" data-confirm-duplicate>Process anyway</button>
-    </div>
+    <div class="duplicate-actions"><button class="button danger" type="button" data-discard-duplicate>Discard upload</button><button class="button primary" type="button" data-confirm-duplicate>Process anyway</button></div>
   </dialog>
-  {% endif %}
 </section>
 {% endblock %}
-{% block scripts %}
-<script src="/static/uploads.js?v=20260727.2" defer></script>
-{% endblock %}
+{% block scripts %}<script src="/static/uploads.js?v=20260731.1" defer></script>{% endblock %}

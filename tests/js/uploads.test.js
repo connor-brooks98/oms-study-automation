@@ -86,3 +86,9 @@ test("large lecture uploads retain their selected lecture at finalize", () => {
     "/api/upload-chunks/session-1/finalize",
   );
 });
+
+test("mixed upload files are partitioned by extension", () => {
+  assert.equal(uploads.fileKind("lecture.PPTX"), "slides");
+  assert.equal(uploads.fileKind("lecture.txt"), "transcripts");
+  assert.equal(uploads.fileKind("lecture.pdf"), null);
+});

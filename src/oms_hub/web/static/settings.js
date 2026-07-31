@@ -367,6 +367,32 @@
         }
       });
     }
+
+    const trackerInput = documentRef.querySelector("[data-tracker-input]");
+    const trackerZone = documentRef.querySelector("[data-tracker-dropzone]");
+    if (trackerInput && trackerZone) {
+      const selection = trackerZone.querySelector("[data-tracker-selection]");
+      const showTracker = () => {
+        selection.textContent = trackerInput.files?.[0]?.name || "XLSX only";
+      };
+      trackerZone.querySelector("[data-tracker-browse]").addEventListener(
+        "click",
+        () => trackerInput.click(),
+      );
+      trackerInput.addEventListener("change", showTracker);
+      ["dragenter", "dragover"].forEach((name) => trackerZone.addEventListener(
+        name,
+        (event) => { event.preventDefault(); trackerZone.classList.add("is-dragging"); },
+      ));
+      ["dragleave", "drop"].forEach((name) => trackerZone.addEventListener(
+        name,
+        (event) => { event.preventDefault(); trackerZone.classList.remove("is-dragging"); },
+      ));
+      trackerZone.addEventListener("drop", (event) => {
+        trackerInput.files = event.dataTransfer.files;
+        showTracker();
+      });
+    }
   };
 
   const api = {

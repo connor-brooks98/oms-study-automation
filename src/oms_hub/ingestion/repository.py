@@ -23,6 +23,7 @@ from oms_hub.ingestion.domain import (
 )
 from oms_hub.models import (
     IngestionJobModel,
+    LectureModel,
     StudyRevisionModel,
     StudyUsageModel,
     UploadBatchModel,
@@ -146,6 +147,50 @@ class IngestionRepository:
             item.error = None
             self._enqueue_unless_current_duplicate(session, item)
             self._sync_batch_state(session, item.batch_id)
+
+    def assign_quarantined_items(
+        self,
+        item_ids: list[str],
+        lecture_id: int,
+    ) -> list[StoredUploadItem]:
+        unique_ids = list(dict.fromkeys(item_ids))
+        if not unique_ids:
+            raise ValueError("select at least one quarantined file")
+        with self.database.session() as session:
+            if session.get(LectureModel, lecture_id) is None:
+                raise KeyError(lecture_id)
+            items = list(
+                session.scalars(
+                    select(UploadItemModel).where(
+                        UploadItemModel.id.in_(unique_ids)
+                    )
+                ).all()
+            )
+            by_id = {item.id: item for item in items}
+            if set(by_id) != set(unique_ids):
+                raise KeyError("one or more upload items were not found")
+            if any(
+                item.state != UploadState.QUARANTINED.value
+                for item in items
+            ):
+                raise ValueError("all selected files must still be quarantined")
+            for item_id in unique_ids:
+                item = by_id[item_id]
+                item.lecture_id = lecture_id
+                item.confidence = 1.0
+                item.evidence_json = json.dumps(
+                    [
+                        *json.loads(item.evidence_json),
+                        "Assigned manually in Quarantine",
+                    ]
+                )
+                item.manual_assignment = True
+                item.state = UploadState.QUEUED.value
+                item.error = None
+                self._enqueue_unless_current_duplicate(session, item)
+                self._sync_batch_state(session, item.batch_id)
+            session.flush()
+            return [self._stored_item(by_id[item_id]) for item_id in unique_ids]
 
     def count_jobs(self, item_id: str, action: str) -> int:
         with self.database.session() as session:

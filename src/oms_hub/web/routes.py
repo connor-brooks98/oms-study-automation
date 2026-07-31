@@ -130,7 +130,8 @@ def dashboard(request: Request) -> HTMLResponse:
 
 @router.get("/lectures/{lecture_id}", response_class=HTMLResponse)
 def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
-    lecture = _repo(request).get_lecture(lecture_id)
+    repository = _repo(request)
+    lecture = repository.get_lecture(lecture_id)
     if lecture is None:
         return HTMLResponse("Lecture not found", status_code=404)
     key = LectureKey(
@@ -168,6 +169,7 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
     generation = GenerationRepository(request.app.state.database)
     outline = generation.current_outline(lecture_id)
     quiz = generation.current_quiz(lecture_id)
+    previous_lecture, next_lecture = repository.get_adjacent_lectures(lecture_id)
     return templates.TemplateResponse(
         request=request,
         name="lecture.html",
@@ -197,6 +199,8 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
                 lecture_id,
                 GenerationKind.QUIZ,
             ),
+            "previous_lecture": previous_lecture,
+            "next_lecture": next_lecture,
         },
     )
 

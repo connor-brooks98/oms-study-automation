@@ -26,6 +26,13 @@
     }`
   );
 
+  const fileKind = (name) => {
+    const extension = String(name).toLowerCase().split(".").pop();
+    if (extension === "pptx") return "slides";
+    if (extension === "txt") return "transcripts";
+    return null;
+  };
+
   const postDecision = async (
     fetchImpl,
     itemId,
@@ -60,7 +67,6 @@
     const progressWrap = documentRef.querySelector("[data-progress-wrap]");
     const progressBar = documentRef.querySelector("[data-progress-bar]");
     const submit = form.querySelector(".upload-submit");
-    const kind = form.dataset.kind;
     const lectureId = form.dataset.lectureId || "";
     const dialog = documentRef.querySelector("[data-duplicate-dialog]");
     const dialogLecture = dialog?.querySelector("[data-duplicate-lecture]");
@@ -73,6 +79,7 @@
     let pausedItem = null;
     let pausedBatchId = null;
     let resumeDecision = null;
+    const batchItems = new Map();
 
     const csrfHeaders = (headers = {}) => ({
       ...headers,
@@ -123,8 +130,9 @@
     };
 
     const renderBatch = (batch) => {
+      batchItems.set(batch.id, batch.items);
       items.replaceChildren();
-      batch.items.forEach((item) => {
+      Array.from(batchItems.values()).flat().forEach((item) => {
         const row = documentRef.createElement("li");
         const name = documentRef.createElement("span");
         const state = documentRef.createElement("span");
@@ -183,7 +191,7 @@
       return null;
     };
 
-    const multipartUpload = (files) => new Promise((resolve, reject) => {
+    const multipartUpload = (files, kind) => new Promise((resolve, reject) => {
       const body = new FormData();
       files.forEach((file) => body.append("files", file));
       if (lectureId) body.append("lecture_id", lectureId);
@@ -227,7 +235,7 @@
         .join("");
     };
 
-    const chunkUpload = async (file) => {
+    const chunkUpload = async (file, kind) => {
       const created = await fetchImpl("/api/upload-chunks", {
         method: "POST",
         headers: csrfHeaders({ "Content-Type": "application/json" }),
@@ -360,17 +368,28 @@
       submit.disabled = true;
       status.textContent = "Uploading to the NUC…";
       items.replaceChildren();
+      batchItems.clear();
       try {
-        if (chosenFiles.some((file) => file.size > chunkThreshold)) {
-          for (let index = 0; index < chosenFiles.length; index += 1) {
-            status.textContent = `Uploading ${chosenFiles[index].name}…`;
-            const result = await chunkUpload(chosenFiles[index]);
+        const unsupported = chosenFiles.find((file) => !fileKind(file.name));
+        if (unsupported) {
+          throw new Error(`${unsupported.name} is not a PPTX or TXT file.`);
+        }
+        const groups = ["slides", "transcripts"].map((kind) => ({
+          kind,
+          files: chosenFiles.filter((file) => fileKind(file.name) === kind),
+        })).filter((group) => group.files.length);
+        for (const group of groups) {
+          if (group.files.some((file) => file.size > chunkThreshold)) {
+            for (const file of group.files) {
+              status.textContent = `Uploading ${file.name}…`;
+              const result = await chunkUpload(file, group.kind);
+              await pollBatch(result.batch_id);
+            }
+          } else {
+            const result = await multipartUpload(group.files, group.kind);
+            setProgress(100);
             await pollBatch(result.batch_id);
           }
-        } else {
-          const result = await multipartUpload(chosenFiles);
-          setProgress(100);
-          await pollBatch(result.batch_id);
         }
       } catch (error) {
         status.textContent = error instanceof Error
@@ -386,6 +405,7 @@
     chunkFinalizeUrl,
     csrfToken,
     formatLecture,
+    fileKind,
     initialize,
     nextConfirmation,
     postDecision,

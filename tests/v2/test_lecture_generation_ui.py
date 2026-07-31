@@ -29,12 +29,12 @@ def test_lecture_page_shows_separate_outline_and_quiz_controls(tmp_path):
     assert "Built from this lecture's PDF and cleaned transcript only." in page.text
     assert "Gemini Quiz Gem" not in page.text
     assert (
-        f'href="/uploads/slides?lecture_id={lecture_id}"'
+        f'href="/uploads?lecture_id={lecture_id}"'
         in page.text
     )
     assert "Upload Lecture PPTX" in page.text
     assert (
-        f'href="/uploads/transcripts?lecture_id={lecture_id}"'
+        f'href="/uploads?lecture_id={lecture_id}"'
         in page.text
     )
     assert "Upload Lecture Transcript" in page.text
@@ -42,7 +42,7 @@ def test_lecture_page_shows_separate_outline_and_quiz_controls(tmp_path):
     assert "Lecture Quiz Generation" in page.text
 
 
-def test_dashboard_has_separate_slide_and_transcript_uploads(tmp_path):
+def test_dashboard_has_unified_upload_entry_point(tmp_path):
     app = create_app(
         Settings(
             _env_file=None,
@@ -53,10 +53,10 @@ def test_dashboard_has_separate_slide_and_transcript_uploads(tmp_path):
 
     page = TestClient(app).get("/")
 
-    assert 'href="/uploads/slides"' in page.text
-    assert "+ Upload lecture" in page.text
-    assert 'href="/uploads/transcripts"' in page.text
-    assert "+ Upload transcript" in page.text
+    assert 'href="/uploads"' in page.text
+    assert "+ Upload files" in page.text
+    assert 'href="/uploads/slides"' not in page.text
+    assert 'href="/uploads/transcripts"' not in page.text
 
 
 def test_lecture_upload_page_targets_the_selected_lecture(tmp_path):

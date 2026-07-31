@@ -258,7 +258,7 @@ button.secondary:hover { border-color: oklch(0.78 0.025 255); color: var(--brand
 .lecture-list { display: flex; flex-direction: column; gap: .2rem; margin: .35rem 0 .6rem 1.4rem; }
 .lecture-row {
   display: grid;
-  grid-template-columns: .5rem minmax(12rem, 1fr) auto auto 3rem;
+  grid-template-columns: 1.15rem minmax(12rem, 1fr) auto 3rem;
   align-items: center;
   gap: .75rem;
   min-height: 2.65rem;
@@ -269,15 +269,25 @@ button.secondary:hover { border-color: oklch(0.78 0.025 255); color: var(--brand
 }
 .lecture-row:hover { color: var(--text); background: var(--surface); }
 .lecture-title { min-width: 0; font-size: .86rem; }
-.status-dot { width: .42rem; height: .42rem; border-radius: 50%; background: var(--not-started); }
+.status-dot { width: .55rem; height: .55rem; border: 2px solid transparent; border-radius: 50%; background: var(--not-started); }
 .status-dot.status-processing,
 .status-dot.status-queued,
 .status-dot.status-running { background: var(--processing); }
-.status-dot.status-needs_review { background: var(--review); }
-.status-dot.status-quarantined { background: var(--quarantined); }
+.status-dot.status-needs_review { border-radius: 0; background: var(--review); transform: rotate(45deg); }
+.status-dot.status-quarantined { border-radius: 0; background: var(--quarantined); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
 .status-dot.status-complete,
 .status-dot.status-skipped { background: var(--complete); }
-.status-dot.status-failed { background: var(--failed); }
+.status-dot.status-failed { border-color: var(--failed); background: transparent; }
+.status-marker { position: relative; width: 1rem; height: 1rem; border: 2px solid var(--not-started); border-radius: 50%; }
+.status-marker.status-processing { border-color: var(--processing); }
+.status-marker.status-needs_review { border-color: var(--review); border-radius: .1rem; transform: rotate(45deg); }
+.status-marker.status-quarantined { border: 0; background: var(--quarantined); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.status-marker.status-complete { border-color: var(--complete); }
+.status-marker.status-failed { border-color: var(--failed); border-style: double; }
+.status-marker::before, .status-marker::after { position: absolute; bottom: -.32rem; width: .38rem; height: .18rem; border: 1px solid white; border-radius: .1rem; background: var(--text-3); content: ""; }
+.status-marker::before { left: -.08rem; }
+.status-marker::after { right: -.08rem; }
+.status-marker.has-slides::before, .status-marker.has-transcript::after { background: var(--complete); }
 .status-pill,
 .status {
   display: inline-flex;
@@ -307,9 +317,6 @@ button.secondary:hover { border-color: oklch(0.78 0.025 255); color: var(--brand
 .status.complete { color: oklch(0.3 0.09 150); background: oklch(0.95 0.03 150); }
 .status-pill.status-failed,
 .status.failed { color: oklch(0.4 0.12 25); background: oklch(0.95 0.035 25); }
-.file-flags { display: flex; gap: .5rem; font: 500 .65rem/1 "IBM Plex Mono", monospace; }
-.file-flags .available { color: var(--text-2); }
-.file-flags .missing { color: oklch(0.82 0.005 255); }
 .row-progress { color: var(--text-3); font: 400 .68rem/1 "IBM Plex Mono", monospace; text-align: right; }
 
 .breadcrumbs {
@@ -320,6 +327,8 @@ button.secondary:hover { border-color: oklch(0.78 0.025 255); color: var(--brand
   color: var(--text-3);
   font-size: .8rem;
 }
+.lecture-adjacent { display: flex; justify-content: space-between; gap: .75rem; margin: -0.5rem 0 1.25rem; }
+.lecture-adjacent [data-next-lecture] { margin-left: auto; }
 .lecture-heading {
   display: flex;
   align-items: flex-start;
@@ -366,15 +375,16 @@ button.secondary:hover { border-color: oklch(0.78 0.025 255); color: var(--brand
 .status-text.status-failed { color: var(--failed); }
 .progress-track { height: .5rem; overflow: hidden; border-radius: 999px; background: var(--surface); }
 .progress-fill { display: block; height: 100%; border-radius: inherit; background: var(--not-started); }
-.progress-fill.status-processing { background: var(--processing); }
-.progress-fill.status-needs_review { background: var(--review); }
-.progress-fill.status-quarantined { background: var(--quarantined); }
+.progress-fill.status-processing { background: repeating-linear-gradient(135deg, var(--processing) 0 .45rem, oklch(.68 .06 255) .45rem .75rem); }
+.progress-fill.status-needs_review { background: repeating-linear-gradient(135deg, var(--review) 0 .45rem, oklch(.8 .08 70) .45rem .75rem); }
+.progress-fill.status-quarantined { background: repeating-linear-gradient(135deg, var(--quarantined) 0 .45rem, oklch(.7 .1 25) .45rem .75rem); }
 .progress-fill.status-complete { background: var(--complete); }
-.progress-fill.status-failed { background: var(--failed); }
+.progress-fill.status-failed { background: repeating-linear-gradient(90deg, var(--failed) 0 .3rem, transparent .3rem .48rem); }
 .pipeline-note { margin: .75rem 0 0; color: var(--text-2); font-size: .82rem; }
 .file-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .85rem; margin-bottom: 1rem; }
 .file-card { min-width: 0; padding: 1.15rem 1.25rem; }
-.file-card.missing { border-style: dashed; }
+.file-card.missing { border-color: oklch(.88 .006 255); background: var(--surface); }
+.generation-action { font-family: "IBM Plex Mono", monospace; letter-spacing: .02em; }
 .file-card-title { display: flex; align-items: center; gap: .65rem; }
 .file-card-title h2 { font-size: .9rem; }
 .file-state-icon {
@@ -857,6 +867,16 @@ code { overflow-wrap: anywhere; }
   font-weight: 700;
 }
 .tracker-settings { margin-top: 1.5rem; }
+.settings-nav { position: sticky; z-index: 5; top: 0; display: flex; gap: .45rem; margin-bottom: 1.25rem; padding: .55rem; overflow-x: auto; border: 1px solid var(--border); border-radius: .6rem; background: color-mix(in oklch, var(--page) 92%, transparent); backdrop-filter: blur(8px); }
+.settings-nav a { flex: none; padding: .45rem .65rem; border-radius: .4rem; color: var(--text-2); font-size: .75rem; font-weight: 600; text-decoration: none; }
+.settings-nav a:hover { color: var(--brand); background: white; }
+.tracker-dropzone { margin: 1rem 0; padding: 1.5rem; }
+.catalog-size-summary { margin: -.5rem 0 1.25rem; color: var(--text-2); text-align: center; }
+.quarantine-controls { position: sticky; z-index: 4; top: .5rem; margin-bottom: 1rem; padding: 1rem; }
+.quarantine-picker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .65rem; }
+.quarantine-actions { display: flex; gap: .65rem; margin-top: .8rem; }
+.quarantine-item { margin-bottom: .75rem; padding: 1rem; }
+.quarantine-check { display: flex; align-items: center; gap: .5rem; margin-bottom: .8rem; font-weight: 600; }
 
 @media (max-width: 720px) {
   .utility-nav { padding-inline: 1rem; }
@@ -868,9 +888,8 @@ code { overflow-wrap: anywhere; }
   .course-toggle { padding-inline: .8rem; }
   .exam-list { margin-left: .75rem; }
   .lecture-list { margin-left: .35rem; }
-  .lecture-row { grid-template-columns: .5rem minmax(0, 1fr) auto; gap: .55rem; }
+  .lecture-row { grid-template-columns: 1.15rem minmax(0, 1fr) auto; gap: .55rem; }
   .lecture-row .status-pill { display: none; }
-  .file-flags { grid-column: 2; }
   .row-progress { grid-column: 3; grid-row: 2; }
   .file-card-grid,
   .compact-checklist,
@@ -884,6 +903,7 @@ code { overflow-wrap: anywhere; }
   .settings-section-heading { align-items: stretch; flex-direction: column; }
   .provider-grid { grid-template-columns: 1fr; }
   .active-provider-control { width: 100%; }
+  .quarantine-picker { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 430px) {

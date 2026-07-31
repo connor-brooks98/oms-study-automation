@@ -10,7 +10,11 @@
     </div>
   </div>
 
-  <section class="settings-section" aria-labelledby="ai-provider-heading">
+  <nav class="settings-nav" aria-label="Settings sections">
+    <a href="#ai-providers">AI providers</a><a href="#notebook-account">Notebook</a><a href="#notebook-prompts">Prompts</a><a href="#tracker-import">Tracker</a>
+  </nav>
+
+  <section id="ai-providers" class="settings-section" aria-labelledby="ai-provider-heading">
     <div class="settings-section-heading">
       <div>
         <p class="mono-label">Transcript cleaning</p>
@@ -100,7 +104,7 @@
     </div>
   </section>
 
-  <section class="settings-section" aria-labelledby="google-heading">
+  <section id="notebook-account" class="settings-section" aria-labelledby="google-heading">
     <div class="settings-section-heading">
       <div>
         <p class="mono-label">Account connection</p>
@@ -128,7 +132,7 @@
     </article>
   </section>
 
-  <section class="settings-section" aria-labelledby="notebook-prompts-heading">
+  <section id="notebook-prompts" class="settings-section" aria-labelledby="notebook-prompts-heading">
     <div class="settings-section-heading">
       <div>
         <p class="mono-label">NotebookLM</p>
@@ -159,13 +163,17 @@
     </div>
   </section>
 
-  <section class="card settings-card tracker-settings">
+  <section id="tracker-import" class="card settings-card tracker-settings">
     <p class="mono-label">Course structure</p>
     <h2>Lecture exam tracker</h2>
     <p>Upload an Excel tracker to preview courses, exams, and lecture changes before applying them.</p>
-    <form action="/settings/tracker/preview" method="post" enctype="multipart/form-data">
+    <form action="/settings/tracker/preview" method="post" enctype="multipart/form-data" data-tracker-form>
       <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
-      <label>Tracker workbook <input type="file" name="workbook" accept=".xlsx" required></label>
+      <div class="upload-zone tracker-dropzone" data-tracker-dropzone>
+        <span class="upload-mark" aria-hidden="true">↑</span><h3>Drop tracker workbook here</h3><p data-tracker-selection>XLSX only</p>
+        <label class="sr-only" for="tracker-workbook">Tracker workbook</label><input class="sr-only" id="tracker-workbook" type="file" name="workbook" accept=".xlsx" required data-tracker-input>
+        <button class="button secondary" type="button" data-tracker-browse>Choose workbook</button>
+      </div>
       <button class="button primary" type="submit">Preview tracker</button>
     </form>
   </section>
