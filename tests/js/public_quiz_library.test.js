@@ -53,3 +53,29 @@ test("corrupt browser progress is treated as not started", () => {
 
   assert.equal(library.readProgress(storage, "token", 1), "Not started");
 });
+
+test("blocked localStorage access is treated as unavailable", () => {
+  const view = {};
+  Object.defineProperty(view, "localStorage", {
+    get() { throw new Error("blocked"); },
+  });
+
+  assert.equal(library.acquireStorage(view), null);
+  assert.equal(library.readProgress(null, "token", 1), "Not started");
+});
+
+test("resetting progress requires confirmation", () => {
+  const removed = [];
+  const storage = {
+    length: 2,
+    key(index) {
+      return ["oms-study-hub-quiz:first:v1", "unrelated"][index];
+    },
+    removeItem(key) { removed.push(key); },
+  };
+
+  assert.equal(library.resetProgress(storage, () => false), "cancelled");
+  assert.deepEqual(removed, []);
+  assert.equal(library.resetProgress(storage, () => true), "reset");
+  assert.deepEqual(removed, ["oms-study-hub-quiz:first:v1"]);
+});

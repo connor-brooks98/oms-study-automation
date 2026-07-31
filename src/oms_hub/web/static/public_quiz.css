@@ -1,20 +1,4 @@
 :root {
-  color-scheme: light;
-  --quiz-page: oklch(0.985 0.004 255);
-  --quiz-card: #fff;
-  --quiz-border: oklch(0.91 0.006 255);
-  --quiz-surface: oklch(0.965 0.005 255);
-  --quiz-text: oklch(0.24 0.014 255);
-  --quiz-muted: oklch(0.48 0.012 255);
-  --quiz-faint: oklch(0.64 0.01 255);
-  --quiz-brand: oklch(0.32 0.07 255);
-  --quiz-brand-mid: oklch(0.48 0.09 255);
-  --quiz-brand-tint: oklch(0.94 0.02 255);
-  --quiz-correct: oklch(0.58 0.11 150);
-  --quiz-correct-tint: oklch(0.96 0.025 150);
-  --quiz-incorrect: oklch(0.52 0.18 25);
-  --quiz-incorrect-tint: oklch(0.96 0.025 25);
-  --quiz-highlight: #fff0a8;
   font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
   color: var(--quiz-text);
   background: var(--quiz-page);
@@ -173,7 +157,7 @@ button:disabled { cursor: not-allowed; }
 
 .quiz-answer {
   display: grid;
-  grid-template-columns: 1.75rem minmax(0, 1fr);
+  grid-template-columns: 1.75rem minmax(0, 1fr) auto;
   align-items: center;
   gap: .65rem;
   padding: .72rem .85rem;
@@ -197,6 +181,10 @@ button:disabled { cursor: not-allowed; }
 }
 
 .quiz-choice-text { line-height: 1.4; }
+.quiz-choice-result {
+  font: 700 .72rem/1.25 "IBM Plex Mono", monospace;
+  white-space: nowrap;
+}
 
 .quiz-strike {
   color: var(--quiz-muted);

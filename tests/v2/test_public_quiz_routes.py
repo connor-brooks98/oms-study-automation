@@ -1,14 +1,17 @@
 import hashlib
 import json
+import os
 
 from fastapi.testclient import TestClient
 
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.repositories import LectureInput
+from oms_hub.security.rate_limit import PublicQuizRateLimiter, RatePolicy
 from oms_hub.study_generation.domain import GenerationKind
 from oms_hub.study_generation.native_quiz import parse_native_quiz
 from oms_hub.study_generation.outline import OutlinePdfRenderer
+from oms_hub.web import artifact_routes
 
 
 def _quiz():
@@ -158,6 +161,7 @@ def test_public_quiz_assets_are_served_inside_the_bypass_path(tmp_path):
         styles = client.get("/public/quizzes/assets/player.css")
         library_script = client.get("/public/quizzes/assets/library.js")
         library_styles = client.get("/public/quizzes/assets/library.css")
+        tokens = client.get("/public/quizzes/assets/tokens.css")
 
     assert script.status_code == 200
     assert script.headers["content-type"].startswith("text/javascript")
@@ -165,6 +169,8 @@ def test_public_quiz_assets_are_served_inside_the_bypass_path(tmp_path):
     assert styles.headers["content-type"].startswith("text/css")
     assert library_script.status_code == 200
     assert library_styles.status_code == 200
+    assert tokens.status_code == 200
+    assert "--brand:" in tokens.text
 
 
 def test_answer_feedback_is_limited_to_the_requested_question(tmp_path):
@@ -235,3 +241,65 @@ def test_public_answer_submission_still_requires_csrf(tmp_path):
     assert rejected.status_code == 403
     assert accepted.status_code == 200
     assert accepted.json()["correct"] is True
+
+
+def test_public_quiz_limit_returns_friendly_retry_response(tmp_path):
+    app, published = _published_app(tmp_path)
+    app.state.public_quiz_rate_limiter = PublicQuizRateLimiter(
+        general_client=RatePolicy(1, 0),
+        general_global=RatePolicy(10, 0),
+    )
+    path = f"/public/quizzes/{published.token}"
+
+    with TestClient(app) as client:
+        assert client.get(path).status_code == 200
+        limited = client.get(path)
+
+    assert limited.status_code == 429
+    assert limited.headers["retry-after"] == "60"
+    assert limited.json()["detail"] == (
+        "Too many quiz requests. Please wait a moment and try again."
+    )
+
+
+def test_unchanged_outline_validation_is_cached_by_file_metadata(
+    tmp_path,
+    monkeypatch,
+):
+    app, published = _published_app(tmp_path)
+    path = tmp_path / "study" / "Neuro" / "outline.pdf"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = OutlinePdfRenderer().render("Neuro Outline", "# Topic\nContent")
+    path.write_bytes(payload)
+    job = app.state.generation_repository.queue(
+        published.lecture_id,
+        GenerationKind.OUTLINE,
+    )
+    app.state.generation_repository.record_outline(
+        published.lecture_id,
+        job.id,
+        path,
+        hashlib.sha256(payload).hexdigest(),
+    )
+    calls = 0
+    original = artifact_routes.sha256_file
+
+    def counted(candidate):
+        nonlocal calls
+        calls += 1
+        return original(candidate)
+
+    artifact_routes._validate_outline_pdf.cache_clear()
+    monkeypatch.setattr(artifact_routes, "sha256_file", counted)
+    url = f"/public/quizzes/{published.token}/outline"
+    with TestClient(app) as client:
+        assert client.get(url).status_code == 200
+        assert client.get(url).status_code == 200
+        metadata = path.stat()
+        os.utime(
+            path,
+            ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1_000_000),
+        )
+        assert client.get(url).status_code == 200
+
+    assert calls == 2

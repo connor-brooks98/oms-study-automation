@@ -64,7 +64,7 @@
       body: JSON.stringify(body),
       cache: "no-store",
     });
-    const payload = await response.json();
+    const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(payload.detail || "Study Hub rejected the request.");
     }
@@ -76,7 +76,7 @@
       headers: { Accept: "application/json" },
       cache: "no-store",
     });
-    const payload = await response.json();
+    const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(payload.detail || "Study Hub rejected the request.");
     }

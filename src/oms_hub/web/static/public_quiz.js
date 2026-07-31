@@ -7,6 +7,8 @@
     eliminatedChoiceIds: [],
     highlights: [],
     submitted: false,
+    submitting: false,
+    submissionError: null,
     feedback: null,
   });
 
@@ -44,6 +46,7 @@
       }
       if (
         question.submitted
+        || question.submitting
         || question.eliminatedChoiceIds.includes(choiceId)
       ) {
         return question;
@@ -57,7 +60,7 @@
       if (!question.choiceIds.includes(choiceId)) {
         throw new Error(`Unknown choice: ${choiceId}`);
       }
-      if (question.submitted) return question;
+      if (question.submitted || question.submitting) return question;
       const eliminated = question.eliminatedChoiceIds.includes(choiceId);
       return {
         ...question,
@@ -107,16 +110,47 @@
     }))
   );
 
-  const recordFeedback = (state, questionId, feedback) => {
+  const beginSubmission = (state, questionId) => (
+    updateQuestion(state, questionId, (question) => {
+      if (question.submitted || question.submitting) return question;
+      if (!question.selectedChoiceId) {
+        throw new Error("Choose an answer before submitting.");
+      }
+      return {
+        ...question,
+        submitting: true,
+        submissionError: null,
+      };
+    })
+  );
+
+  const cancelSubmission = (state, questionId, message) => (
+    updateQuestion(state, questionId, (question) => ({
+      ...question,
+      submitting: false,
+      submissionError: message,
+    }))
+  );
+
+  const recordFeedback = (
+    state,
+    questionId,
+    feedback,
+    gradedChoiceId = null,
+  ) => {
     const current = state.questions[questionId];
     if (!current) throw new Error(`Unknown question: ${questionId}`);
     if (current.submitted) return state;
-    if (!current.selectedChoiceId) {
+    const selectedChoiceId = gradedChoiceId || current.selectedChoiceId;
+    if (!selectedChoiceId || !current.choiceIds.includes(selectedChoiceId)) {
       throw new Error("Choose an answer before submitting.");
     }
     const next = updateQuestion(state, questionId, (question) => ({
       ...question,
+      selectedChoiceId,
       submitted: true,
+      submitting: false,
+      submissionError: null,
       feedback,
     }));
     return {
@@ -205,6 +239,14 @@
     return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : "";
   };
 
+  const safeJson = async (response) => {
+    try {
+      return await response.json();
+    } catch (_error) {
+      return {};
+    }
+  };
+
   const answerRequest = async (
     fetchImpl,
     url,
@@ -224,11 +266,52 @@
       }),
       cache: "no-store",
     });
-    const payload = await response.json();
+    const payload = await safeJson(response);
     if (!response.ok) {
       throw new Error(payload.detail || "Your answer could not be submitted.");
     }
+    if (
+      typeof payload.correct !== "boolean"
+      || typeof payload.correct_choice_id !== "string"
+      || typeof payload.rationale !== "string"
+    ) {
+      throw new Error("Your answer could not be submitted.");
+    }
     return payload;
+  };
+
+  const loadQuizContent = async (fetchImpl, url) => {
+    const response = await fetchImpl(url, { cache: "no-store" });
+    const payload = await safeJson(response);
+    if (!response.ok || !Array.isArray(payload.questions)) {
+      throw new Error(
+        payload.detail || "This quiz could not be loaded.",
+      );
+    }
+    return payload;
+  };
+
+  const acquireStorage = (view) => {
+    try {
+      return view?.localStorage || null;
+    } catch (_error) {
+      return null;
+    }
+  };
+
+  const persistProgress = (storage, key, state) => {
+    try {
+      storage?.setItem(key, serializeProgress(state));
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  };
+
+  const choiceResultLabel = (correct, incorrect) => {
+    if (correct) return "✓ Correct";
+    if (incorrect) return "✗ Your answer";
+    return "";
   };
 
   const element = (documentRef, tag, className, text) => {
@@ -291,20 +374,25 @@
   ) => {
     const app = documentRef.querySelector("[data-quiz-token]");
     if (!app) return;
-    const response = await fetchImpl(app.dataset.contentUrl, {
-      cache: "no-store",
-    });
-    if (!response.ok) {
+    let content;
+    try {
+      content = await loadQuizContent(fetchImpl, app.dataset.contentUrl);
+    } catch (_error) {
       app.textContent = "This quiz could not be loaded.";
       return;
     }
-    const content = await response.json();
-    const storage = documentRef.defaultView?.localStorage;
+    const storage = acquireStorage(documentRef.defaultView);
     const key = storageKey(content);
-    let state = restoreProgress(content, storage?.getItem(key));
+    let savedProgress = null;
+    try {
+      savedProgress = storage?.getItem(key) || null;
+    } catch (_error) {
+      savedProgress = null;
+    }
+    let state = restoreProgress(content, savedProgress);
 
     const persist = () => {
-      storage?.setItem(key, serializeProgress(state));
+      persistProgress(storage, key, state);
     };
 
     const render = () => {
@@ -335,7 +423,11 @@
         );
         restart.type = "button";
         restart.addEventListener("click", () => {
-          storage?.removeItem(key);
+          try {
+            storage?.removeItem(key);
+          } catch (_error) {
+            // The quiz can restart even when browser storage is unavailable.
+          }
           state = createQuizState(content);
           render();
         });
@@ -450,7 +542,9 @@
 
         const answer = element(documentRef, "button", "quiz-answer");
         answer.type = "button";
-        answer.disabled = questionProgress.submitted;
+        answer.disabled = (
+          questionProgress.submitted || questionProgress.submitting
+        );
         answer.setAttribute("aria-pressed", String(selected));
         answer.append(
           element(
@@ -461,6 +555,21 @@
           ),
           element(documentRef, "span", "quiz-choice-text", choice.text),
         );
+        if (correct || incorrect) {
+          const resultText = choiceResultLabel(correct, incorrect);
+          answer.append(
+            element(
+              documentRef,
+              "span",
+              "quiz-choice-result",
+              resultText,
+            ),
+          );
+          answer.setAttribute(
+            "aria-label",
+            `Answer ${String.fromCharCode(65 + index)}: ${choice.text}. ${resultText}`,
+          );
+        }
         answer.addEventListener("click", () => {
           state = selectChoice(state, question.id, choice.id);
           persist();
@@ -474,7 +583,9 @@
           "S",
         );
         strike.type = "button";
-        strike.disabled = questionProgress.submitted;
+        strike.disabled = (
+          questionProgress.submitted || questionProgress.submitting
+        );
         strike.setAttribute("aria-pressed", String(eliminated));
         strike.setAttribute(
           "aria-label",
@@ -540,6 +651,16 @@
         });
         body.append(continueButton);
       } else {
+        if (questionProgress.submissionError) {
+          const message = element(
+            documentRef,
+            "p",
+            "quiz-error",
+            questionProgress.submissionError,
+          );
+          message.setAttribute("role", "alert");
+          body.append(message);
+        }
         body.append(
           element(
             documentRef,
@@ -552,35 +673,45 @@
           documentRef,
           "button",
           "quiz-primary quiz-submit",
-          "Submit Answer",
+          questionProgress.submitting ? "Checking…" : "Submit Answer",
         );
         submit.type = "button";
-        submit.disabled = !questionProgress.selectedChoiceId;
+        submit.disabled = (
+          !questionProgress.selectedChoiceId || questionProgress.submitting
+        );
         submit.addEventListener("click", async () => {
-          submit.disabled = true;
-          submit.textContent = "Checking…";
+          const gradedChoiceId = state.questions[question.id].selectedChoiceId;
+          const next = beginSubmission(state, question.id);
+          if (next === state) return;
+          state = next;
+          persist();
+          render();
           try {
             const feedback = await answerRequest(
               fetchImpl,
               app.dataset.answerUrl,
               question.id,
-              questionProgress.selectedChoiceId,
+              gradedChoiceId,
               csrfToken(documentRef),
             );
-            state = recordFeedback(state, question.id, feedback);
+            state = recordFeedback(
+              state,
+              question.id,
+              feedback,
+              gradedChoiceId,
+            );
             persist();
             render();
           } catch (error) {
-            submit.disabled = false;
-            submit.textContent = "Submit Answer";
-            const message = element(
-              documentRef,
-              "p",
-              "quiz-error",
-              error.message,
+            state = cancelSubmission(
+              state,
+              question.id,
+              error instanceof Error
+                ? error.message
+                : "Your answer could not be submitted.",
             );
-            message.setAttribute("role", "alert");
-            submit.before(message);
+            persist();
+            render();
           }
         });
         body.append(submit);
@@ -594,10 +725,16 @@
 
   const api = {
     addHighlight,
+    acquireStorage,
     answerRequest,
+    beginSubmission,
+    cancelSubmission,
+    choiceResultLabel,
     clearHighlights,
     createQuizState,
     initialize,
+    loadQuizContent,
+    persistProgress,
     recordFeedback,
     restoreProgress,
     selectChoice,

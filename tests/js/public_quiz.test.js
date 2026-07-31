@@ -66,6 +66,40 @@ test("submitted feedback locks the question and changes score only once", () => 
   assert.equal(changed.questions.q1.selectedChoiceId, "c1");
 });
 
+test("submission state blocks double-submit and answer changes", () => {
+  let state = quiz.selectChoice(quiz.createQuizState(content), "q1", "c1");
+
+  state = quiz.beginSubmission(state, "q1");
+  const repeated = quiz.beginSubmission(state, "q1");
+  const changed = quiz.selectChoice(repeated, "q1", "c2");
+
+  assert.equal(state.questions.q1.submitting, true);
+  assert.equal(repeated, state);
+  assert.equal(changed, state);
+  assert.equal(changed.questions.q1.selectedChoiceId, "c1");
+});
+
+test("feedback is pinned to the choice that was graded", () => {
+  let state = quiz.selectChoice(quiz.createQuizState(content), "q1", "c1");
+  state = quiz.beginSubmission(state, "q1");
+  state = {
+    ...state,
+    questions: {
+      ...state.questions,
+      q1: { ...state.questions.q1, selectedChoiceId: "c2" },
+    },
+  };
+
+  state = quiz.recordFeedback(state, "q1", {
+    correct: true,
+    correct_choice_id: "c1",
+    rationale: "First is correct.",
+  }, "c1");
+
+  assert.equal(state.questions.q1.selectedChoiceId, "c1");
+  assert.equal(state.questions.q1.submitting, false);
+});
+
 test("highlight ranges merge and can be cleared", () => {
   let state = quiz.createQuizState(content);
 
@@ -141,4 +175,62 @@ test("answer request sends CSRF protection and keeps answers out of URL", async 
     choice_id: "c2",
   });
   assert.equal(feedback.correct, false);
+});
+
+test("answer request gives a friendly error for an HTML error body", async () => {
+  const fakeFetch = async () => ({
+    ok: false,
+    json: async () => { throw new SyntaxError("HTML is not JSON"); },
+  });
+
+  await assert.rejects(
+    quiz.answerRequest(fakeFetch, "/answer", "q1", "c1", "csrf"),
+    /Your answer could not be submitted/,
+  );
+});
+
+test("quiz loading rejects network failures and invalid response bodies", async () => {
+  await assert.rejects(
+    quiz.loadQuizContent(
+      async () => { throw new Error("offline"); },
+      "/content",
+    ),
+    /offline/,
+  );
+  await assert.rejects(
+    quiz.loadQuizContent(
+      async () => ({
+        ok: true,
+        json: async () => { throw new SyntaxError("HTML"); },
+      }),
+      "/content",
+    ),
+    /This quiz could not be loaded/,
+  );
+});
+
+test("blocked and quota-limited browser storage never break quiz state", () => {
+  const view = {};
+  Object.defineProperty(view, "localStorage", {
+    get() { throw new Error("blocked"); },
+  });
+  const quotaStorage = {
+    setItem() { throw new Error("quota exceeded"); },
+  };
+
+  assert.equal(quiz.acquireStorage(view), null);
+  assert.equal(
+    quiz.persistProgress(
+      quotaStorage,
+      "quiz-key",
+      quiz.createQuizState(content),
+    ),
+    false,
+  );
+});
+
+test("graded choices have visible correctness labels", () => {
+  assert.equal(quiz.choiceResultLabel(true, false), "✓ Correct");
+  assert.equal(quiz.choiceResultLabel(false, true), "✗ Your answer");
+  assert.equal(quiz.choiceResultLabel(false, false), "");
 });

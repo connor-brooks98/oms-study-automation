@@ -1,3 +1,4 @@
+from functools import lru_cache
 from pathlib import Path
 from typing import cast
 
@@ -27,6 +28,10 @@ router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
+class _OutlineChecksumError(ValueError):
+    pass
+
+
 @router.get("/artifacts/outlines/{outline_id}")
 def outline_artifact(request: Request, outline_id: int) -> FileResponse:
     repository = GenerationRepository(request.app.state.database)
@@ -46,10 +51,21 @@ def outline_pdf_response(
     path = record.path.resolve()
     if not path.is_relative_to(root):
         raise HTTPException(409, "outline path is outside the study folder")
-    if not path.is_file() or sha256_file(path) != record.sha256:
+    try:
+        metadata = path.stat()
+    except OSError as error:
+        raise HTTPException(409, "outline file no longer matches its record") from error
+    if not path.is_file():
         raise HTTPException(409, "outline file no longer matches its record")
     try:
-        validate_pdf(path)
+        _validate_outline_pdf(
+            str(path),
+            metadata.st_mtime_ns,
+            metadata.st_size,
+            record.sha256,
+        )
+    except (_OutlineChecksumError, OSError) as error:
+        raise HTTPException(409, "outline file no longer matches its record") from error
     except Exception as error:
         raise HTTPException(409, "outline PDF is not valid") from error
     return FileResponse(
@@ -60,6 +76,19 @@ def outline_pdf_response(
             "Content-Disposition": f'inline; filename="{path.name}"',
         },
     )
+
+
+@lru_cache(maxsize=256)
+def _validate_outline_pdf(
+    path_value: str,
+    _mtime_ns: int,
+    _size: int,
+    expected_sha256: str,
+) -> None:
+    path = Path(path_value)
+    if sha256_file(path) != expected_sha256:
+        raise _OutlineChecksumError("outline checksum mismatch")
+    validate_pdf(path)
 
 
 def _service(request: Request) -> ArtifactService:

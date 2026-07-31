@@ -1,22 +1,4 @@
 :root {
-  color-scheme: light;
-  --page: oklch(0.985 0.004 255);
-  --card: #fff;
-  --border: oklch(0.91 0.006 255);
-  --surface: oklch(0.965 0.005 255);
-  --text: oklch(0.24 0.014 255);
-  --text-2: oklch(0.48 0.012 255);
-  --text-3: oklch(0.64 0.01 255);
-  --brand: oklch(0.32 0.07 255);
-  --brand-mid: oklch(0.48 0.09 255);
-  --brand-tint: oklch(0.94 0.02 255);
-  --not-started: oklch(0.6 0.008 255);
-  --processing: oklch(0.55 0.11 255);
-  --review: oklch(0.68 0.14 70);
-  --complete: oklch(0.58 0.11 150);
-  --quarantined: oklch(0.58 0.15 25);
-  --failed: oklch(0.52 0.18 25);
-  --focus: oklch(0.67 0.16 255);
   font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
   color: var(--text);
   background: var(--page);

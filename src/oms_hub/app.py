@@ -34,6 +34,7 @@ from oms_hub.security.access import (
     CloudflareAccessVerifier,
 )
 from oms_hub.security.csrf import CsrfProtector, origin_is_allowed
+from oms_hub.security.rate_limit import PublicQuizRateLimiter
 from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.slides.pipeline import SlidePipeline
 from oms_hub.study_generation.native_quiz import NativeQuizPublisher
@@ -130,6 +131,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     csrf = CsrfProtector.from_data_dir(resolved.data_dir)
     app.state.csrf = csrf
+    app.state.public_quiz_rate_limiter = PublicQuizRateLimiter()
     access_values = (
         resolved.cloudflare_access_issuer,
         resolved.cloudflare_access_audience,

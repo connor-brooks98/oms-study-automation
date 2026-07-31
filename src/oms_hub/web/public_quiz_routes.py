@@ -6,6 +6,10 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, StringConstraints
 
+from oms_hub.security.rate_limit import (
+    PublicQuizRateLimiter,
+    public_client_identifier,
+)
 from oms_hub.study_generation.domain import PublishedQuizRecord
 from oms_hub.study_generation.native_quiz import (
     grade_answer,
@@ -50,6 +54,15 @@ def player_styles() -> FileResponse:
     )
 
 
+@router.get("/assets/tokens.css", include_in_schema=False)
+def shared_tokens() -> FileResponse:
+    return FileResponse(
+        _STATIC_ROOT / "tokens.css",
+        media_type="text/css",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
 @router.get("/assets/library.js", include_in_schema=False)
 def library_javascript() -> FileResponse:
     return FileResponse(
@@ -82,8 +95,39 @@ def _published(request: Request, token: str) -> PublishedQuizRecord:
     return published
 
 
+def _enforce_rate_limit(
+    request: Request,
+    category: str = "general",
+) -> None:
+    limiter = cast(
+        PublicQuizRateLimiter,
+        request.app.state.public_quiz_rate_limiter,
+    )
+    public_hostname = request.app.state.settings.public_hostname
+    forwarded_address = (
+        request.headers.get("CF-Connecting-IP")
+        if public_hostname
+        and (request.url.hostname or "").casefold() == public_hostname.casefold()
+        else None
+    )
+    decision = limiter.check(
+        public_client_identifier(
+            forwarded_address,
+            request.client.host if request.client else None,
+        ),
+        category,
+    )
+    if not decision.allowed:
+        raise HTTPException(
+            429,
+            "Too many quiz requests. Please wait a moment and try again.",
+            headers={"Retry-After": str(decision.retry_after_seconds)},
+        )
+
+
 @router.get("", response_class=HTMLResponse)
 def quiz_library(request: Request) -> HTMLResponse:
+    _enforce_rate_limit(request)
     courses: dict[str, dict[int, list[dict[str, object]]]] = {}
     repository = _repository(request)
     for published in repository.published_quizzes():
@@ -143,6 +187,7 @@ def quiz_library(request: Request) -> HTMLResponse:
 
 @router.get("/{token}", response_class=HTMLResponse)
 def quiz_page(request: Request, token: str) -> HTMLResponse:
+    _enforce_rate_limit(request)
     published = _published(request, token)
     lecture = request.app.state.catalog_repository.get_lecture(
         published.lecture_id
@@ -164,6 +209,7 @@ def quiz_page(request: Request, token: str) -> HTMLResponse:
 
 @router.get("/{token}/content")
 def quiz_content(request: Request, token: str) -> JSONResponse:
+    _enforce_rate_limit(request)
     published = _published(request, token)
     lecture = request.app.state.catalog_repository.get_lecture(
         published.lecture_id
@@ -186,6 +232,7 @@ def quiz_content(request: Request, token: str) -> JSONResponse:
 
 @router.get("/{token}/outline")
 def public_outline(request: Request, token: str) -> FileResponse:
+    _enforce_rate_limit(request, "outline")
     published = _published(request, token)
     record = _repository(request).current_outline(published.lecture_id)
     if record is None:
@@ -199,6 +246,7 @@ def answer_question(
     token: str,
     submission: AnswerSubmission,
 ) -> JSONResponse:
+    _enforce_rate_limit(request)
     published = _published(request, token)
     try:
         feedback = grade_answer(

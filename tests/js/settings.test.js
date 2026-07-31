@@ -60,6 +60,18 @@ test("postJson sends CSRF protection and never puts a credential in the URL", as
   assert.equal(captured.options.body.includes("sentinel-secret"), true);
 });
 
+test("postJson reports a friendly message for an HTML error body", async () => {
+  const fakeFetch = async () => ({
+    ok: false,
+    json: async () => { throw new SyntaxError("HTML"); },
+  });
+
+  await assert.rejects(
+    settings.postJson(fakeFetch, "/settings/action", {}, "csrf"),
+    /Study Hub rejected the request/,
+  );
+});
+
 test("diagnostics return safe text fields without HTML", () => {
   const lines = settings.diagnosticLines({
     source: "provider_authentication",

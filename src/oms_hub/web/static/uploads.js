@@ -40,7 +40,7 @@
         cache: "no-store",
       },
     );
-    const payload = await response.json();
+    const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(payload.detail || "Study Hub rejected the decision.");
     }
@@ -163,8 +163,10 @@
           headers: { Accept: "application/json" },
           cache: "no-store",
         });
-        if (!response.ok) throw new Error("Could not read upload status.");
-        const batch = await response.json();
+        const batch = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(batch.detail || "Could not read upload status.");
+        }
         renderBatch(batch);
         if (showConfirmation(batch, batchId)) {
           await new Promise((resolve) => {
@@ -236,12 +238,15 @@
           sha256: await sha256(file),
         }),
       });
+      const session = await created.json().catch(() => ({}));
       if (!created.ok) {
         throw new Error(
-          (await created.json()).detail || "Upload could not start.",
+          session.detail || "Upload could not start.",
         );
       }
-      const session = await created.json();
+      if (typeof session.session_id !== "string") {
+        throw new Error("Upload could not start.");
+      }
       let offset = 0;
       while (offset < file.size) {
         const chunk = file.slice(offset, offset + chunkSize);
@@ -249,24 +254,35 @@
           `/api/upload-chunks/${session.session_id}?offset=${offset}`,
           { method: "PUT", headers: csrfHeaders(), body: chunk },
         );
+        const chunkResult = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(
-            (await response.json()).detail || "A file chunk failed.",
+            chunkResult.detail || "A file chunk failed.",
           );
         }
-        offset = (await response.json()).received;
+        if (
+          !Number.isInteger(chunkResult.received)
+          || chunkResult.received <= offset
+        ) {
+          throw new Error("A file chunk failed.");
+        }
+        offset = chunkResult.received;
         setProgress((offset / file.size) * 100);
       }
       const finalized = await fetchImpl(
         chunkFinalizeUrl(session.session_id, lectureId),
         { method: "POST", headers: csrfHeaders() },
       );
+      const result = await finalized.json().catch(() => ({}));
       if (!finalized.ok) {
         throw new Error(
-          (await finalized.json()).detail || "Upload could not finish.",
+          result.detail || "Upload could not finish.",
         );
       }
-      return finalized.json();
+      if (typeof result.batch_id !== "string") {
+        throw new Error("Upload could not finish.");
+      }
+      return result;
     };
 
     browse.addEventListener("click", () => input.click());
