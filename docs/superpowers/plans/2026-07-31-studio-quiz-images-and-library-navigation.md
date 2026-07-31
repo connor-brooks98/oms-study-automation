@@ -36,7 +36,7 @@
 - Produces: `image_requirements(NativeQuiz) -> tuple[QuizImageRef, ...]`, deduplicated in first-question order.
 - Preserves: `quiz_prompt(PromptSnapshot)` as the lecture text-only contract.
 
-- [ ] **Step 1: Write failing parser and prompt tests**
+- [x] **Step 1: Write failing parser and prompt tests**
 
 Add literal fixtures proving a shared image key becomes the same value object on questions 4-7, a missing field remains `None`, and conflicting metadata fails:
 
@@ -87,13 +87,13 @@ def test_studio_prompt_requests_image_locations_without_changing_lecture_contrac
     assert "image_ref" not in lecture
 ```
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
 Run: `.venv/bin/pytest tests/study_generation/test_native_quiz.py tests/study_generation/test_prompts.py -q`
 
 Expected: FAIL because `QuizImageRef`, `image_requirements`, and the image-aware Studio contract do not exist.
 
-- [ ] **Step 3: Implement the minimal domain and parser changes**
+- [x] **Step 3: Implement the minimal domain and parser changes**
 
 Add the frozen domain value and optional question field:
 
@@ -137,13 +137,13 @@ def image_requirements(quiz: NativeQuiz) -> tuple[QuizImageRef, ...]:
     return tuple(by_key.values())
 ```
 
-- [ ] **Step 4: Run the focused tests and verify GREEN**
+- [x] **Step 4: Run the focused tests and verify GREEN**
 
 Run: `.venv/bin/pytest tests/study_generation/test_native_quiz.py tests/study_generation/test_prompts.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the contract slice**
+- [x] **Step 5: Commit the contract slice**
 
 ```bash
 git add src/oms_hub/study_generation/domain.py src/oms_hub/study_generation/native_quiz.py tests/study_generation/test_native_quiz.py tests/study_generation/test_prompts.py
@@ -169,7 +169,7 @@ git commit -m "feat: add Studio quiz image references"
 - Produces: `StudioRepository.quiz_review(run_id) -> StudioQuizReview`.
 - Produces: `StudioRepository.bind_image(...)`, `set_image_override(...)`, and `resolved_quiz(run_id)`.
 
-- [ ] **Step 1: Write failing migration and repository tests**
+- [x] **Step 1: Write failing migration and repository tests**
 
 Add a schema assertion for version 11, `studio_runs.draft_payload_json`, and the
 three new tables. Add repository behavior using a real temporary SQLite file:
@@ -201,13 +201,13 @@ def test_no_image_override_affects_only_selected_question(tmp_path):
     assert studio.quiz_review(run.id).overridden_question_ids == frozenset()
 ```
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
 Run: `.venv/bin/pytest tests/study_generation/test_migration.py tests/study_generation/test_studio_image_review.py -q`
 
 Expected: FAIL because schema version 11, review models, states, and repository methods are absent.
 
-- [ ] **Step 3: Add additive SQLAlchemy models and migration**
+- [x] **Step 3: Add additive SQLAlchemy models and migration**
 
 Add nullable `StudioRunModel.draft_payload_json`. Add:
 
@@ -256,7 +256,7 @@ Set `LATEST_SCHEMA_VERSION = 11`; after `create_schema()`, add the nullable
 draft column with `ALTER TABLE` when upgrading an existing database. Tables are
 created by SQLAlchemy metadata and require no legacy backfill.
 
-- [ ] **Step 4: Implement immutable review domain and repository behavior**
+- [x] **Step 4: Implement immutable review domain and repository behavior**
 
 Add `StudioStoredImage`, `StudioQuizImageRequirement`, and `StudioQuizReview`.
 Include `draft_payload_json` on `StudioRun`. In `await_image_review`, serialize
@@ -273,13 +273,13 @@ an existing requirement in an awaiting-images run. `resolved_quiz` must raise
 `ValueError("quiz images are still required: ...")` until resolved, then return
 a copy with overridden question image references removed.
 
-- [ ] **Step 5: Run focused repository tests and verify GREEN**
+- [x] **Step 5: Run focused repository tests and verify GREEN**
 
 Run: `.venv/bin/pytest tests/study_generation/test_migration.py tests/study_generation/test_studio_image_review.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the persistence slice**
+- [x] **Step 6: Commit the persistence slice**
 
 ```bash
 git add src/oms_hub/models.py src/oms_hub/migrations.py src/oms_hub/study_generation/studio_domain.py src/oms_hub/study_generation/studio_repository.py tests/study_generation/test_migration.py tests/study_generation/test_studio_image_review.py
@@ -301,13 +301,13 @@ git commit -m "feat: persist Studio quiz image reviews"
 - Produces: `StudioQuizImageService.upload(run_id, image_key, original_filename, payload)`.
 - Consumes: `StudioRepository.bind_image(...)` from Task 2.
 
-- [ ] **Step 1: Add Pillow to the environment for the test cycle**
+- [x] **Step 1: Add Pillow to the environment for the test cycle**
 
 Run: `.venv/bin/pip install 'Pillow>=11,<13'`
 
 Expected: installation succeeds in the branch-local virtual environment.
 
-- [ ] **Step 2: Write failing real-image tests**
+- [x] **Step 2: Write failing real-image tests**
 
 Create in-memory PNG, JPEG-with-orientation, animated WebP, and oversized
 fixtures using Pillow. Assert observable decoded output rather than internal
@@ -342,13 +342,13 @@ def test_failed_replacement_keeps_existing_bound_image(tmp_path):
     assert repository.quiz_review(run.id).requirements[0].image == first
 ```
 
-- [ ] **Step 3: Run the image tests and verify RED**
+- [x] **Step 3: Run the image tests and verify RED**
 
 Run: `.venv/bin/pytest tests/study_generation/test_quiz_images.py tests/test_packaging_dependencies.py -q`
 
 Expected: FAIL because the sanitizer/service and Pillow runtime declaration do not exist.
 
-- [ ] **Step 4: Implement safe decoding and storage**
+- [x] **Step 4: Implement safe decoding and storage**
 
 Declare `Pillow>=11,<13` in runtime dependencies. In `quiz_images.py`, reject
 empty and over-10-MiB payloads before decoding. Use `Image.open(BytesIO(...))`,
@@ -376,13 +376,13 @@ class SanitizedQuizImage:
 `verified_atomic_write`, then calls `repository.bind_image`. It never deletes or
 changes the previous binding unless all three steps succeed.
 
-- [ ] **Step 5: Run the image tests and verify GREEN**
+- [x] **Step 5: Run the image tests and verify GREEN**
 
 Run: `.venv/bin/pytest tests/study_generation/test_quiz_images.py tests/test_packaging_dependencies.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the media slice**
+- [x] **Step 6: Commit the media slice**
 
 ```bash
 git add pyproject.toml src/oms_hub/study_generation/quiz_images.py tests/study_generation/test_quiz_images.py tests/test_packaging_dependencies.py
@@ -403,7 +403,7 @@ git commit -m "feat: sanitize Studio quiz images"
 - Consumes: `image_requirements(quiz)` and `StudioRepository.await_image_review(...)`.
 - Preserves: existing `GenerationRepository.publish_studio_quiz` path for image-free Studio quizzes.
 
-- [ ] **Step 1: Write failing worker-state tests**
+- [x] **Step 1: Write failing worker-state tests**
 
 ```python
 def test_image_dependent_chat_answer_waits_for_private_review(tmp_path):
@@ -471,13 +471,13 @@ def test_replacement_waiting_for_images_leaves_current_quiz_active(tmp_path):
     assert still_public.quiz.questions[0].stem == "Original?"
 ```
 
-- [ ] **Step 2: Run worker tests and verify RED**
+- [x] **Step 2: Run worker tests and verify RED**
 
 Run: `.venv/bin/pytest tests/study_generation/test_studio_publication.py tests/study_generation/test_studio_runs.py -q`
 
 Expected: FAIL because every valid Studio quiz currently publishes immediately.
 
-- [ ] **Step 3: Add the minimal worker branch**
+- [x] **Step 3: Add the minimal worker branch**
 
 After parsing and relabeling the quiz, check `image_requirements(quiz)`. When
 non-empty, call `await_image_review` and return without entering `PUBLISH`.
@@ -485,13 +485,13 @@ When empty, retain the current publication and completion path unchanged.
 Ensure `recover_interrupted_jobs` requeues only `RUNNING` rows, so the new
 awaiting state is stable across restart.
 
-- [ ] **Step 4: Run worker tests and verify GREEN**
+- [x] **Step 4: Run worker tests and verify GREEN**
 
 Run: `.venv/bin/pytest tests/study_generation/test_studio_publication.py tests/study_generation/test_studio_runs.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the worker slice**
+- [x] **Step 5: Commit the worker slice**
 
 ```bash
 git add src/oms_hub/study_generation/studio_worker.py src/oms_hub/study_generation/studio_repository.py tests/study_generation/test_studio_publication.py tests/study_generation/test_studio_runs.py
@@ -520,7 +520,7 @@ git commit -m "feat: hold image quizzes for Studio review"
 - Produces: `POST /studio/runs/{run_id}/images/{image_key}` multipart upload.
 - Produces: `PUT` and `DELETE /studio/runs/{run_id}/questions/{question_id}/image-override`.
 
-- [ ] **Step 1: Write failing route and browser-behavior tests**
+- [x] **Step 1: Write failing route and browser-behavior tests**
 
 Use a real app and CSRF client to prove the page is private, upload is bounded,
 shared keys are grouped, overrides reverse, and invalid uploads preserve the
@@ -558,7 +558,7 @@ before creating the new files and assert that both `hotfix_names` and
 `source_names` contain `quiz_images.py`, `studio_quiz_images.html`, and
 `studio_quiz_images.js`.
 
-- [ ] **Step 2: Run focused route and JS tests and verify RED**
+- [x] **Step 2: Run focused route and JS tests and verify RED**
 
 Run: `.venv/bin/pytest tests/v2/test_studio_routes.py -q`
 
@@ -568,7 +568,7 @@ Run: `.venv/bin/pytest tests/v2/test_release_package.py -q`
 
 Expected: FAIL because the routes, template, service state, and UI module are missing.
 
-- [ ] **Step 3: Wire the media service and private routes**
+- [x] **Step 3: Wire the media service and private routes**
 
 Construct `StudioQuizImageService` in `create_app` with
 `resolved.data_dir / "studio-quiz-media"`. Add route helpers that map `KeyError`
@@ -580,7 +580,7 @@ Return review JSON containing only the run ID, label, state, resolved status,
 question number/stem, reference metadata, override flag, and safe upload
 metadata. Never return `asset_path`, digest, raw response, or answers.
 
-- [ ] **Step 4: Build the grouped review UI**
+- [x] **Step 4: Build the grouped review UI**
 
 Create a base-template page headed **Quiz images**. Render groups using DOM
 creation and `textContent`; each group includes source, locator, description,
@@ -601,7 +601,7 @@ if (run.state === "awaiting_images") {
 }
 ```
 
-- [ ] **Step 5: Run focused route and JS tests and verify GREEN**
+- [x] **Step 5: Run focused route and JS tests and verify GREEN**
 
 Run: `.venv/bin/pytest tests/v2/test_studio_routes.py -q`
 
@@ -611,7 +611,7 @@ Run: `.venv/bin/pytest tests/v2/test_release_package.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the private review slice**
+- [x] **Step 6: Commit the private review slice**
 
 ```bash
 git add src/oms_hub/app.py src/oms_hub/web/studio_routes.py src/oms_hub/web/templates/studio_quiz_images.html src/oms_hub/web/static/studio_quiz_images.js src/oms_hub/web/static/app.css src/oms_hub/web/static/notebook_studio.js tests/v2/test_studio_routes.py tests/v2/test_release_package.py tests/js/studio_quiz_images.test.js tests/js/notebook_studio.test.js
@@ -643,7 +643,7 @@ git commit -m "feat: add Studio image review interface"
 - Produces: public `GET /public/quizzes/{token}/media/{image_key}`.
 - Extends: `public_quiz_content(quiz, image_urls=None)` with optional image URL and alt text only.
 
-- [ ] **Step 1: Write failing preview, transaction, and public-boundary tests**
+- [x] **Step 1: Write failing preview, transaction, and public-boundary tests**
 
 ```python
 def test_publish_is_blocked_until_every_non_overridden_key_has_an_image(tmp_path):
@@ -684,7 +684,7 @@ switch in the same transaction. Before creating the preview files, extend the
 release test to require `studio_quiz_preview.html` and
 `studio_quiz_preview.js` in both `hotfix_names` and `source_names`.
 
-- [ ] **Step 2: Run focused publication tests and verify RED**
+- [x] **Step 2: Run focused publication tests and verify RED**
 
 Run: `.venv/bin/pytest tests/study_generation/test_studio_image_review.py tests/v2/test_studio_routes.py tests/v2/test_public_quiz_routes.py -q`
 
@@ -694,7 +694,7 @@ Run: `.venv/bin/pytest tests/v2/test_release_package.py -q`
 
 Expected: FAIL because reviewed publication, preview, and media routes are absent.
 
-- [ ] **Step 3: Implement atomic reviewed publication**
+- [x] **Step 3: Implement atomic reviewed publication**
 
 In one `GenerationRepository` session, reload the awaiting run, validated draft,
 requirements, and overrides. Recompute unresolved keys. Create or update the
@@ -707,7 +707,7 @@ If a run is already complete with a matching active publication, return it
 without incrementing the version. If any requirement is unresolved, raise the
 exact conflict before changing a publication row.
 
-- [ ] **Step 4: Implement private preview and public media routes**
+- [x] **Step 4: Implement private preview and public media routes**
 
 Use a dedicated preview template with the existing player assets, a back link to
 the image review, and a CSRF-protected **Publish quiz** button. Preview content
@@ -752,7 +752,7 @@ def public_quiz_content(
     return {"title": quiz.title, "questions": questions}
 ```
 
-- [ ] **Step 5: Run focused publication tests and verify GREEN**
+- [x] **Step 5: Run focused publication tests and verify GREEN**
 
 Run: `.venv/bin/pytest tests/study_generation/test_studio_image_review.py tests/v2/test_studio_routes.py tests/v2/test_public_quiz_routes.py -q`
 
@@ -762,7 +762,7 @@ Run: `.venv/bin/pytest tests/v2/test_release_package.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the publication slice**
+- [x] **Step 6: Commit the publication slice**
 
 ```bash
 git add src/oms_hub/study_generation/repository.py src/oms_hub/study_generation/quiz_images.py src/oms_hub/study_generation/native_quiz.py src/oms_hub/web/studio_routes.py src/oms_hub/web/templates/studio_quiz_preview.html src/oms_hub/web/static/studio_quiz_preview.js src/oms_hub/web/public_quiz_routes.py tests/study_generation/test_studio_image_review.py tests/v2/test_studio_routes.py tests/v2/test_public_quiz_routes.py tests/v2/test_release_package.py tests/js/studio_quiz_preview.test.js
@@ -785,7 +785,7 @@ git commit -m "feat: preview and publish Studio image quizzes"
 - Produces: safe responsive image rendering above the stem with click/tap enlargement.
 - Produces: persistent private **Quiz Library** navigation link to `/public/quizzes`.
 
-- [ ] **Step 1: Write failing player and navigation tests**
+- [x] **Step 1: Write failing player and navigation tests**
 
 Add a DOM test around an exported helper that verifies real element attributes:
 
@@ -806,7 +806,7 @@ test("question image is rendered above the stem with safe enlargement", () => {
 Add a rendered-page assertion that private navigation contains exactly one
 `href="/public/quizzes"` link labeled **Quiz Library**.
 
-- [ ] **Step 2: Run player and interface tests and verify RED**
+- [x] **Step 2: Run player and interface tests and verify RED**
 
 Run: `node --test tests/js/public_quiz.test.js`
 
@@ -814,7 +814,7 @@ Run: `.venv/bin/pytest tests/test_interface_improvements.py -q`
 
 Expected: FAIL because the renderer and navigation link are absent.
 
-- [ ] **Step 3: Implement safe player rendering and responsive CSS**
+- [x] **Step 3: Implement safe player rendering and responsive CSS**
 
 Build all nodes with `createElement`, set `src`, `alt`, `loading="eager"`, and
 `decoding="async"`, and wrap the image in a same-origin anchor whose `href`
@@ -834,7 +834,7 @@ Add this item to `base.html` after NotebookLM Studio and before Settings:
 <a href="/public/quizzes" {% if current_path.startswith("/public/quizzes") %}aria-current="page"{% endif %}>Quiz Library</a>
 ```
 
-- [ ] **Step 4: Run player and interface tests and verify GREEN**
+- [x] **Step 4: Run player and interface tests and verify GREEN**
 
 Run: `node --test tests/js/public_quiz.test.js`
 
@@ -842,7 +842,7 @@ Run: `.venv/bin/pytest tests/test_interface_improvements.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the player/navigation slice**
+- [x] **Step 5: Commit the player/navigation slice**
 
 ```bash
 git add src/oms_hub/web/static/public_quiz.js src/oms_hub/web/static/public_quiz.css src/oms_hub/web/templates/base.html tests/js/public_quiz.test.js tests/test_interface_improvements.py
@@ -861,7 +861,7 @@ git commit -m "feat: render quiz images and link quiz library"
 - Verifies: the release coverage added in Tasks 3, 5, and 6 includes Pillow, new runtime modules, templates, scripts, styles, and schema migration.
 - Verifies: the complete Python, JavaScript, lint, and type-check suites.
 
-- [ ] **Step 1: Update rollout guidance**
+- [x] **Step 1: Update rollout guidance**
 
 Update the Studio rollout guidance to state that an upgrade must reinstall
 dependencies for Pillow, restart once for schema version 11, then test one
@@ -869,13 +869,13 @@ image-free auto-publication and one image-review publication. Include the
 expected **Images needed**, **Add images**, **Preview quiz**, and **Publish
 quiz** checkpoints plus the persistent **Quiz Library** navigation link.
 
-- [ ] **Step 2: Re-run release coverage**
+- [x] **Step 2: Re-run release coverage**
 
 Run: `.venv/bin/pytest tests/v2/test_release_package.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 3: Run fresh full verification**
+- [x] **Step 3: Run fresh full verification**
 
 Run: `.venv/bin/pytest`
 
@@ -897,7 +897,7 @@ Run: `git diff --check`
 
 Expected: no whitespace errors.
 
-- [ ] **Step 4: Review requirements against the approved specification**
+- [x] **Step 4: Review requirements against the approved specification**
 
 Confirm with fresh evidence that image-free Studio output auto-publishes,
 image-dependent output waits, shared keys reuse one upload, per-question
@@ -905,7 +905,7 @@ overrides reverse, final preview precedes explicit publish, existing quizzes
 still parse, public responses omit private data, public media follows active
 tokens, and the private nav exposes Quiz Library.
 
-- [ ] **Step 5: Commit the rollout and verification slice**
+- [x] **Step 5: Commit the rollout and verification slice**
 
 ```bash
 git add docs/notebooklm-studio-rollout.md docs/superpowers/plans/2026-07-31-studio-quiz-images-and-library-navigation.md
