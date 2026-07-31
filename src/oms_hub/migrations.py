@@ -12,14 +12,13 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 7
+LATEST_SCHEMA_VERSION = 8
 
 
 def migrate_database(database: "Database") -> None:
     database.create_schema()
     usage_columns = {
-        column["name"]
-        for column in inspect(database.engine).get_columns("study_usage")
+        column["name"] for column in inspect(database.engine).get_columns("study_usage")
     }
     if "provider" not in usage_columns:
         with database.engine.begin() as connection:
@@ -31,9 +30,7 @@ def migrate_database(database: "Database") -> None:
             )
     source_columns = {
         column["name"]
-        for column in inspect(database.engine).get_columns(
-            "notebook_source_mappings"
-        )
+        for column in inspect(database.engine).get_columns("notebook_source_mappings")
     }
     if "display_title" not in source_columns:
         with database.engine.begin() as connection:
@@ -44,8 +41,7 @@ def migrate_database(database: "Database") -> None:
                 )
             )
     generation_columns = {
-        column["name"]
-        for column in inspect(database.engine).get_columns("generation_jobs")
+        column["name"] for column in inspect(database.engine).get_columns("generation_jobs")
     }
     if "supersedes_job_id" not in generation_columns:
         with database.engine.begin() as connection:
@@ -57,9 +53,7 @@ def migrate_database(database: "Database") -> None:
             )
     if "gemini_quiz_id" in generation_columns:
         with database.engine.begin() as connection:
-            connection.execute(
-                text("ALTER TABLE generation_jobs DROP COLUMN gemini_quiz_id")
-            )
+            connection.execute(text("ALTER TABLE generation_jobs DROP COLUMN gemini_quiz_id"))
     with database.engine.begin() as connection:
         connection.execute(
             text(
@@ -85,9 +79,7 @@ def migrate_database(database: "Database") -> None:
             return
 
         existing_steps = set(
-            session.execute(
-                select(LectureStepModel.lecture_id, LectureStepModel.name)
-            ).all()
+            session.execute(select(LectureStepModel.lecture_id, LectureStepModel.name)).all()
         )
         lecture_ids = session.scalars(select(LectureModel.id)).all()
         for lecture_id in lecture_ids:
@@ -102,8 +94,6 @@ def migrate_database(database: "Database") -> None:
                     )
 
         if version is None:
-            session.add(
-                SchemaVersionModel(id=1, version=LATEST_SCHEMA_VERSION)
-            )
+            session.add(SchemaVersionModel(id=1, version=LATEST_SCHEMA_VERSION))
         else:
             version.version = LATEST_SCHEMA_VERSION

@@ -30,14 +30,18 @@ def test_application_lifespan_recovers_starts_and_stops_workers(tmp_path):
     )
     ingestion = RecordingWorker()
     generation = RecordingWorker()
+    studio = RecordingWorker()
     app.state.ingestion_worker = ingestion
     app.state.generation_worker = generation
+    app.state.studio_worker = studio
 
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200
         assert ingestion.ran.wait(1)
         assert generation.ran.wait(1)
+        assert studio.ran.wait(1)
         assert ingestion.recovered == 1
         assert generation.recovered == 1
+        assert studio.recovered == 1
 
     assert all(not thread.is_alive() for thread in app.state.worker_threads)

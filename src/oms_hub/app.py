@@ -50,6 +50,9 @@ from oms_hub.study_generation.path_picker import SystemPromptPathPicker
 from oms_hub.study_generation.prompts import PromptFileService
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.service import GenerationService
+from oms_hub.study_generation.studio_repository import StudioRepository
+from oms_hub.study_generation.studio_service import StudioService
+from oms_hub.study_generation.studio_worker import StudioWorker
 from oms_hub.study_generation.worker import GenerationWorker
 from oms_hub.transcripts.pipeline import TranscriptPipeline as V2TranscriptPipeline
 from oms_hub.transcripts.prompt import PromptLoader as V2PromptLoader
@@ -65,6 +68,7 @@ from oms_hub.web.public_quiz_routes import router as public_quiz_router
 from oms_hub.web.quarantine_routes import router as quarantine_router
 from oms_hub.web.routes import router
 from oms_hub.web.settings_routes import router as settings_router
+from oms_hub.web.studio_routes import router as studio_router
 from oms_hub.web.upload_routes import router as upload_router
 
 logger = logging.getLogger(__name__)
@@ -83,8 +87,10 @@ def _run_worker(stop: threading.Event, worker: object, name: str) -> None:
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     ingestion_worker = app.state.ingestion_worker
     generation_worker = app.state.generation_worker
+    studio_worker = app.state.studio_worker
     ingestion_worker.recover_interrupted_jobs()
     generation_worker.recover_interrupted_jobs()
+    studio_worker.recover_interrupted_jobs()
     stop = threading.Event()
     worker_threads = [
         threading.Thread(
@@ -96,6 +102,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         for name, worker in (
             ("ingestion", ingestion_worker),
             ("study-generation", generation_worker),
+            ("studio-sources", studio_worker),
         )
     ]
     app.state.worker_threads = tuple(worker_threads)
@@ -106,10 +113,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         stop.set()
         await asyncio.gather(
-            *(
-                asyncio.to_thread(worker_thread.join, 10)
-                for worker_thread in worker_threads
-            )
+            *(asyncio.to_thread(worker_thread.join, 10) for worker_thread in worker_threads)
         )
         app.state.database.close()
 
@@ -157,9 +161,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         host = (request.url.hostname or "").lower().rstrip(".")
         local_hosts = {"127.0.0.1", "localhost", "testserver"}
         is_public = bool(resolved.public_hostname and host == resolved.public_hostname)
-        is_public_quiz = (
-            request.url.path == "/public/quizzes"
-            or request.url.path.startswith("/public/quizzes/")
+        is_public_quiz = request.url.path == "/public/quizzes" or request.url.path.startswith(
+            "/public/quizzes/"
         )
 
         def harden(response: Response) -> Response:
@@ -175,9 +178,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "script-src 'self'; "
                 "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com"
             )
-            response.headers["Permissions-Policy"] = (
-                "camera=(), microphone=(), geolocation=()"
-            )
+            response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
             response.headers["Referrer-Policy"] = "no-referrer"
             response.headers["X-Content-Type-Options"] = "nosniff"
             response.headers["X-Frame-Options"] = "DENY"
@@ -231,13 +232,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
         elif host in local_hosts:
             if not resolved.allow_local_access:
-                return harden(
-                    JSONResponse({"detail": "Local access is disabled"}, status_code=403)
-                )
+                return harden(JSONResponse({"detail": "Local access is disabled"}, status_code=403))
         else:
-            return harden(
-                JSONResponse({"detail": "Host is not allowed"}, status_code=400)
-            )
+            return harden(JSONResponse({"detail": "Host is not allowed"}, status_code=400))
 
         origin = request.headers.get("origin")
         allowed_origins = {
@@ -248,9 +245,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if resolved.public_hostname:
             allowed_origins.add(f"https://{resolved.public_hostname}")
         allowed_origin = origin_is_allowed(origin, allowed_origins)
-        same_origin_fetch = (
-            request.headers.get("sec-fetch-site", "").casefold() == "same-origin"
-        )
+        same_origin_fetch = request.headers.get("sec-fetch-site", "").casefold() == "same-origin"
         is_mutation = request.method in {"POST", "PUT", "PATCH", "DELETE"}
         if is_mutation:
             if origin and not (allowed_origin or same_origin_fetch):
@@ -321,9 +316,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.catalog_repository = CatalogRepository(database)
     app.state.ingestion_repository = IngestionRepository(database)
     app.state.generation_repository = GenerationRepository(database)
-    notebook_storage_path = (
-        resolved.data_dir / "google" / "notebooklm-storage.json"
-    )
+    notebook_storage_path = resolved.data_dir / "google" / "notebooklm-storage.json"
     notebook_storage = EncryptedNotebookStorage(
         notebook_storage_path.with_suffix(".enc"),
         app.state.secrets,
@@ -348,10 +341,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         UploadMatcher(),
         app.state.upload_staging,
     )
+    app.state.office_converter = SerialOfficeConverter(resolved.office_timeout_seconds)
     app.state.slide_pipeline = SlidePipeline(
         database,
         resolved,
-        SerialOfficeConverter(resolved.office_timeout_seconds),
+        app.state.office_converter,
     )
     app.state.transcript_prompt = V2PromptLoader(
         expanded_path(resolved.transcript_prompt_path),
@@ -376,20 +370,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         prompt_files,
         app.state.notebook_connection,
     )
+    notebook_gateway = StoredNotebookLMGateway(
+        notebook_storage,
+        app.state.generation_repository,
+    )
     app.state.generation_worker = GenerationWorker(
         app.state.generation_repository,
         app.state.catalog_repository,
         app.state.ingestion_repository,
         prompt_files,
-        StoredNotebookLMGateway(
-            notebook_storage,
-            app.state.generation_repository,
-        ),
+        notebook_gateway,
         OutlineService(resolved, app.state.generation_repository),
         NativeQuizPublisher(
             app.state.generation_repository,
             resolved,
         ),
+        app.state.notebook_connection,
+    )
+    app.state.studio_repository = StudioRepository(database)
+    app.state.studio_service = StudioService(
+        app.state.studio_repository,
+        resolved.data_dir / "studio-sources",
+        resolved.max_upload_file_bytes,
+    )
+    app.state.studio_worker = StudioWorker(
+        app.state.studio_repository,
+        notebook_gateway,
+        app.state.office_converter,
         app.state.notebook_connection,
     )
     web_root = Path(__file__).parent / "web"
@@ -406,6 +413,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(generation_router)
     app.include_router(notebook_router)
     app.include_router(lecture_router)
+    app.include_router(studio_router)
     app.include_router(public_quiz_router)
 
     @app.get("/health")

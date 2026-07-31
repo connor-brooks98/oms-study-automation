@@ -26,9 +26,7 @@ class SchemaVersionModel(Base):
 
 class LectureModel(Base):
     __tablename__ = "lectures"
-    __table_args__ = (
-        UniqueConstraint("subject", "exam_number", "lecture_number"),
-    )
+    __table_args__ = (UniqueConstraint("subject", "exam_number", "lecture_number"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     subject: Mapped[str] = mapped_column(String(100))
@@ -297,9 +295,7 @@ class NotebookMappingModel(Base):
 
 class NotebookSourceMappingModel(Base):
     __tablename__ = "notebook_source_mappings"
-    __table_args__ = (
-        UniqueConstraint("notebook_mapping_id", "study_revision_id", "source_kind"),
-    )
+    __table_args__ = (UniqueConstraint("notebook_mapping_id", "study_revision_id", "source_kind"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     notebook_mapping_id: Mapped[int] = mapped_column(ForeignKey("notebook_mappings.id"))
@@ -312,6 +308,33 @@ class NotebookSourceMappingModel(Base):
     state: Mapped[str] = mapped_column(String(30), default="ready")
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
     verified_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+class StudioSourceModel(Base):
+    __tablename__ = "studio_sources"
+    __table_args__ = (
+        Index("ix_studio_sources_scope_state", "subject_key", "exam_number", "state"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(100))
+    subject_key: Mapped[str] = mapped_column(String(100))
+    exam_number: Mapped[int]
+    source_type: Mapped[str] = mapped_column(String(20))
+    title: Mapped[str] = mapped_column(String(500))
+    original_filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    payload_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    state: Mapped[str] = mapped_column(String(30), default="pending")
+    attempts: Mapped[int] = mapped_column(default=0)
+    next_attempt_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    diagnostic_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    remote_notebook_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    remote_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    converted_from_pptx: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
 
 
 class CourseQuizDocumentModel(Base):
@@ -329,9 +352,7 @@ class ExamQuizTabModel(Base):
     __table_args__ = (UniqueConstraint("subject_key", "exam_number"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    subject_key: Mapped[str] = mapped_column(
-        ForeignKey("course_quiz_documents.subject_key")
-    )
+    subject_key: Mapped[str] = mapped_column(ForeignKey("course_quiz_documents.subject_key"))
     exam_number: Mapped[int]
     tab_id: Mapped[str] = mapped_column(String(200))
     updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)

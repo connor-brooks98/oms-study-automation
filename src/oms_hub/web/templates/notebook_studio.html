@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}NotebookLM Studio · Study Hub{% endblock %}
+{% block content %}
+<section class="page-shell" data-studio-page>
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">Notebook chat workspace</p>
+      <h1>NotebookLM Studio</h1>
+      <p class="page-summary">Attach course-wide sources now; quiz prompts and generation run only through NotebookLM chat.</p>
+    </div>
+  </div>
+  <section class="card studio-scope">
+    <h2>Course and exam</h2>
+    <div class="studio-scope-fields">
+      <label>Course
+        <select data-studio-course>
+          <option value="">Select course</option>
+          {% for course in courses %}
+          <option value="{{ course.subject }}" data-exams="{{ course.exams|join(',') }}">{{ course.subject }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Exam
+        <select data-studio-exam disabled><option value="">Select exam</option></select>
+      </label>
+    </div>
+  </section>
+<div class="studio-source-grid">
+  <form class="card" data-source-form data-source-type="file">
+    <h2>File source</h2>
+    <label>Label<input name="title" required></label>
+    <label>PDF or PPTX<input name="file" type="file" accept=".pdf,.pptx" required></label>
+    <button class="button primary" type="submit">Attach file</button>
+    <p data-form-message aria-live="polite"></p>
+  </form>
+  <form class="card" data-source-form data-source-type="text">
+    <h2>Pasted text</h2>
+    <label>Label<input name="title" required></label>
+    <label>Text<textarea name="text" required></textarea></label>
+    <button class="button primary" type="submit">Attach text</button>
+    <p data-form-message aria-live="polite"></p>
+  </form>
+  <form class="card" data-source-form data-source-type="url">
+    <h2>Website or YouTube</h2>
+    <label>Label<input name="title" required></label>
+    <label>URL<input name="url" type="url" required></label>
+    <button class="button primary" type="submit">Attach URL</button>
+    <p data-form-message aria-live="polite"></p>
+  </form>
+  </div>
+  <section class="card studio-status">
+    <h2>Sources</h2>
+    <ul data-source-list aria-live="polite">
+      <li>Select a course and exam to view sources.</li>
+    </ul>
+  </section>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/notebook_studio.js" defer></script>{% endblock %}

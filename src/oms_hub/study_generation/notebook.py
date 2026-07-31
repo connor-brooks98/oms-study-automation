@@ -207,6 +207,71 @@ class StoredNotebookLMGateway:
             ),
         )
 
+    def attach_studio_source(
+        self,
+        subject: str,
+        exam_number: int,
+        source_type: str,
+        title: str,
+        *,
+        path: Path | None = None,
+        text: str | None = None,
+        url: str | None = None,
+    ) -> tuple[str, str]:
+        return cast(
+            tuple[str, str],
+            _run(
+                self._attach_studio_source(
+                    subject,
+                    exam_number,
+                    source_type,
+                    title,
+                    path=path,
+                    text=text,
+                    url=url,
+                )
+            ),
+        )
+
+    async def _attach_studio_source(
+        self,
+        subject: str,
+        exam_number: int,
+        source_type: str,
+        title: str,
+        *,
+        path: Path | None,
+        text: str | None,
+        url: str | None,
+    ) -> tuple[str, str]:
+        async with self._with_client() as client:
+            token = _active_client.set(client)
+            try:
+                notebook = await self._ensure_notebook(subject, exam_number)
+                if source_type == "file" and path is not None:
+                    remote = await client.sources.add_file(
+                        notebook.id,
+                        path,
+                        wait=True,
+                        title=title,
+                    )
+                elif source_type == "text" and text is not None:
+                    remote = await client.sources.add_text(
+                        notebook.id,
+                        title,
+                        text,
+                        wait=True,
+                    )
+                elif source_type == "url" and url is not None:
+                    remote = await client.sources.add_url(notebook.id, url, wait=True)
+                else:
+                    raise ValueError("Studio source payload is incomplete")
+                if not _remote_ready(remote):
+                    raise SourceIsolationError("NotebookLM source did not become ready")
+                return notebook.id, str(remote.id)
+            finally:
+                _active_client.reset(token)
+
     async def _generate(
         self,
         subject: str,
@@ -242,10 +307,7 @@ class StoredNotebookLMGateway:
             notebooks = await client.notebooks.list()
             by_id = {str(notebook.id): notebook for notebook in notebooks}
             stored = self.repository.notebook_mapping(subject_key, exam_number)
-            if (
-                stored is not None
-                and stored.remote_notebook_id in by_id
-            ):
+            if stored is not None and stored.remote_notebook_id in by_id:
                 remote = by_id[stored.remote_notebook_id]
                 return NotebookRef(str(remote.id), title)
             for notebook in notebooks:
@@ -281,13 +343,9 @@ class StoredNotebookLMGateway:
             lecture_id,
             SourceKind.CLEANED_TRANSCRIPT,
         )
-        notebook_mapping = self.repository.notebook_mapping_by_remote_id(
-            notebook.id
-        )
+        notebook_mapping = self.repository.notebook_mapping_by_remote_id(notebook.id)
         if notebook_mapping is None:
-            raise SourceIsolationError(
-                "NotebookLM notebook is not bound to this exam"
-            )
+            raise SourceIsolationError("NotebookLM notebook is not bound to this exam")
         async with self._with_client() as client:
             existing = await client.sources.list(notebook.id)
             by_id = {str(source.id): source for source in existing}
@@ -299,11 +357,7 @@ class StoredNotebookLMGateway:
                     lecture_id,
                     source.kind,
                 )
-                remote = (
-                    by_id.get(binding.remote_source_id)
-                    if binding is not None
-                    else None
-                )
+                remote = by_id.get(binding.remote_source_id) if binding is not None else None
                 if (
                     binding is not None
                     and binding.revision_id == source.revision_id
@@ -344,9 +398,7 @@ class StoredNotebookLMGateway:
                     title=display_title,
                 )
                 if not _remote_ready(uploaded):
-                    raise SourceIsolationError(
-                        "NotebookLM source did not become ready"
-                    )
+                    raise SourceIsolationError("NotebookLM source did not become ready")
                 remote_id = str(uploaded.id)
                 self.repository.bind_source(
                     notebook_mapping.id,
@@ -365,10 +417,7 @@ class StoredNotebookLMGateway:
                     str(item.id)
                     for item in existing
                     if str(item.id) != remote_id
-                    and (
-                        str(item.title) == display_title
-                        or legacy.fullmatch(str(item.title))
-                    )
+                    and (str(item.title) == display_title or legacy.fullmatch(str(item.title)))
                 }
                 if binding is not None and binding.remote_source_id != remote_id:
                     stale_ids.add(binding.remote_source_id)
@@ -406,20 +455,13 @@ class StoredNotebookLMGateway:
     ) -> NotebookAnswer:
         selected_ids = sources.remote_ids
         if len(selected_ids) != 2 or len(set(selected_ids)) != 2:
-            raise SourceIsolationError(
-                "exactly two distinct lecture sources are required"
-            )
-        notebook_mapping = self.repository.notebook_mapping_by_remote_id(
-            notebook.id
-        )
+            raise SourceIsolationError("exactly two distinct lecture sources are required")
+        notebook_mapping = self.repository.notebook_mapping_by_remote_id(notebook.id)
         if notebook_mapping is None:
-            raise SourceIsolationError(
-                "NotebookLM notebook is not bound to this exam"
-            )
+            raise SourceIsolationError("NotebookLM notebook is not bound to this exam")
         async with self._with_client() as client:
             remote_by_id = {
-                str(remote.id): remote
-                for remote in await client.sources.list(notebook.id)
+                str(remote.id): remote for remote in await client.sources.list(notebook.id)
             }
             for selected in (sources.pdf, sources.transcript):
                 binding = self.repository.source_binding(
@@ -433,18 +475,12 @@ class StoredNotebookLMGateway:
                     or binding.source_sha256 != selected.sha256
                     or binding.remote_source_id != selected.remote_id
                 ):
-                    raise SourceIsolationError(
-                        "NotebookLM source binding is stale"
-                    )
+                    raise SourceIsolationError("NotebookLM source binding is stale")
                 remote = remote_by_id.get(selected.remote_id)
                 if remote is None:
-                    raise SourceIsolationError(
-                        "NotebookLM selected source is missing"
-                    )
+                    raise SourceIsolationError("NotebookLM selected source is missing")
                 if not _remote_ready(remote):
-                    raise SourceIsolationError(
-                        "NotebookLM selected source is not ready"
-                    )
+                    raise SourceIsolationError("NotebookLM selected source is not ready")
             result = await client.chat.ask(
                 notebook.id,
                 prompt.content,

@@ -877,6 +877,11 @@ code { overflow-wrap: anywhere; }
 .quarantine-actions { display: flex; gap: .65rem; margin-top: .8rem; }
 .quarantine-item { margin-bottom: .75rem; padding: 1rem; }
 .quarantine-check { display: flex; align-items: center; gap: .5rem; margin-bottom: .8rem; font-weight: 600; }
+.studio-scope, .studio-status { padding: 1rem; margin-bottom: 1rem; }
+.studio-scope-fields, .studio-source-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
+.studio-source-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 1rem; }
+.studio-source-grid .card { display: grid; align-content: start; gap: .7rem; padding: 1rem; }
+.studio-source-grid textarea { min-height: 8rem; resize: vertical; }
 
 @media (max-width: 720px) {
   .utility-nav { padding-inline: 1rem; }
@@ -904,6 +909,7 @@ code { overflow-wrap: anywhere; }
   .provider-grid { grid-template-columns: 1fr; }
   .active-provider-control { width: 100%; }
   .quarantine-picker { grid-template-columns: 1fr; }
+  .studio-source-grid, .studio-scope-fields { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 430px) {

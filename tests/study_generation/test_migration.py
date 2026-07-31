@@ -4,7 +4,7 @@ from oms_hub.db import Database
 from oms_hub.migrations import LATEST_SCHEMA_VERSION
 
 
-def test_schema_v7_adds_native_quiz_and_notebook_source_registry(tmp_path):
+def test_schema_v8_adds_native_quiz_and_studio_source_registry(tmp_path):
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()
 
@@ -21,23 +21,20 @@ def test_schema_v7_adds_native_quiz_and_notebook_source_registry(tmp_path):
         "outline_outputs",
         "quiz_outputs",
         "published_quizzes",
+        "studio_sources",
     } <= names
     source_columns = {
         column["name"]
-        for column in inspect(database.engine).get_columns(
-            "notebook_source_mappings"
-        )
+        for column in inspect(database.engine).get_columns("notebook_source_mappings")
     }
     assert "display_title" in source_columns
     generation_columns = {
-        column["name"]
-        for column in inspect(database.engine).get_columns("generation_jobs")
+        column["name"] for column in inspect(database.engine).get_columns("generation_jobs")
     }
     assert "supersedes_job_id" in generation_columns
     assert "gemini_quiz_id" not in generation_columns
     generation_indexes = {
-        index["name"]
-        for index in inspect(database.engine).get_indexes("generation_jobs")
+        index["name"] for index in inspect(database.engine).get_indexes("generation_jobs")
     }
     assert {
         "ix_generation_jobs_poll",
@@ -47,7 +44,25 @@ def test_schema_v7_adds_native_quiz_and_notebook_source_registry(tmp_path):
         version = session.execute(
             text("SELECT version FROM schema_version WHERE id = 1")
         ).scalar_one()
-    assert version == LATEST_SCHEMA_VERSION == 7
+    studio_columns = {
+        column["name"] for column in inspect(database.engine).get_columns("studio_sources")
+    }
+    assert {
+        "subject_key",
+        "exam_number",
+        "state",
+        "attempts",
+        "next_attempt_at",
+        "remote_notebook_id",
+        "remote_source_id",
+        "created_at",
+        "updated_at",
+    } <= studio_columns
+    studio_indexes = {
+        index["name"] for index in inspect(database.engine).get_indexes("studio_sources")
+    }
+    assert "ix_studio_sources_scope_state" in studio_indexes
+    assert version == LATEST_SCHEMA_VERSION == 8
 
 
 def test_v6_generation_jobs_are_upgraded_without_losing_rows(tmp_path):
@@ -102,13 +117,8 @@ def test_v6_generation_jobs_are_upgraded_without_losing_rows(tmp_path):
 
     database.migrate()
 
-    columns = {
-        column["name"]
-        for column in inspect(database.engine).get_columns("generation_jobs")
-    }
+    columns = {column["name"] for column in inspect(database.engine).get_columns("generation_jobs")}
     assert "supersedes_job_id" in columns
     assert "gemini_quiz_id" not in columns
     with database.engine.connect() as connection:
-        assert connection.execute(
-            text("SELECT id FROM generation_jobs")
-        ).scalar_one() == "job-v6"
+        assert connection.execute(text("SELECT id FROM generation_jobs")).scalar_one() == "job-v6"
