@@ -701,10 +701,20 @@ select {
   background: oklch(.95 .035 150);
 }
 .anki-create-form { gap: 1rem; }
+.anki-create-form input:not([type="checkbox"]):not([type="hidden"]),
+.anki-create-form select,
+.anki-create-form textarea {
+  width: 100%;
+  max-width: none;
+}
 .anki-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: .85rem 1rem;
+}
+.anki-form-grid > label {
+  min-width: 0;
+  align-self: start;
 }
 .anki-field-wide { grid-column: 1 / -1; }
 textarea {
@@ -718,18 +728,121 @@ textarea {
   background: white;
   font: inherit;
 }
+.anki-lecture-field,
 .anki-source-field {
   min-width: 0;
   margin: 0;
   padding: 0;
   border: 0;
 }
+.anki-lecture-field legend,
 .anki-source-field legend {
   margin-bottom: .45rem;
   color: var(--text-2);
   font-size: .8rem;
   font-weight: 500;
 }
+.anki-lecture-selector {
+  display: grid;
+  gap: .55rem;
+}
+.anki-course-group,
+.anki-exam-group {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+  background: white;
+}
+.anki-course-group > summary,
+.anki-exam-group > summary {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  cursor: pointer;
+  list-style: none;
+}
+.anki-course-group > summary::-webkit-details-marker,
+.anki-exam-group > summary::-webkit-details-marker { display: none; }
+.anki-course-group > summary::before,
+.anki-exam-group > summary::before {
+  content: "›";
+  color: var(--text-3);
+  font-size: 1rem;
+  line-height: 1;
+  transition: transform 140ms ease;
+}
+.anki-course-group[open] > summary::before,
+.anki-exam-group[open] > summary::before { transform: rotate(90deg); }
+.anki-course-group > summary {
+  min-height: 3rem;
+  padding: .7rem .85rem;
+  color: var(--text);
+  font-size: .84rem;
+  font-weight: 650;
+}
+.anki-course-group > summary small {
+  margin-left: auto;
+  color: var(--text-3);
+  font: 500 .65rem/1 "IBM Plex Mono", monospace;
+}
+.anki-course-group[open] > summary {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.anki-course-exams {
+  display: grid;
+  gap: .55rem;
+  padding: .65rem;
+}
+.anki-exam-group { background: var(--surface); }
+.anki-exam-group > summary {
+  min-height: 2.65rem;
+  padding: .55rem .7rem;
+  color: var(--text-2);
+  font-size: .78rem;
+  font-weight: 600;
+}
+.anki-exam-group[open] > summary { border-bottom: 1px solid var(--border); }
+.anki-lecture-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .5rem;
+  padding: .6rem;
+  background: white;
+}
+.anki-lecture-option {
+  display: grid;
+  min-width: 0;
+  gap: .2rem;
+  padding: .7rem .75rem;
+  border: 1px solid var(--border);
+  border-radius: .45rem;
+  color: var(--text);
+  background: white;
+  text-align: left;
+  cursor: pointer;
+}
+.anki-lecture-option:hover:not(:disabled) {
+  border-color: oklch(.7 .055 255);
+  background: oklch(.98 .012 255);
+}
+.anki-lecture-option[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: oklch(.96 .025 255);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.anki-lecture-option span {
+  overflow: hidden;
+  font-size: .78rem;
+  font-weight: 600;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+}
+.anki-lecture-option small {
+  color: var(--text-3);
+  font: 400 .64rem/1.4 "IBM Plex Mono", monospace;
+}
+.anki-lecture-option:disabled { cursor: not-allowed; opacity: .55; }
 .anki-source-options {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1429,6 +1542,7 @@ code { overflow-wrap: anywhere; }
   .active-provider-control { width: 100%; }
   .anki-workflow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .anki-form-grid,
+  .anki-lecture-options,
   .anki-source-options { grid-template-columns: 1fr; }
   .anki-field-wide { grid-column: auto; }
   .anki-job-row { grid-template-columns: .5rem minmax(0, 1fr) auto; }

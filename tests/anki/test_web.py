@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from selectolax.parser import HTMLParser
 
 from oms_hub.anki.apply import ApplyCoordinator
 from oms_hub.anki.domain import (
@@ -198,7 +200,7 @@ def prepared_app(tmp_path: Path) -> tuple[TestClient, Any, int, int, FakeGateway
             subject="Heme Lymph",
             exam_number=1,
             lecture_number=4,
-            topic="Anemia I",
+            topic='Anemia "I"',
             lecturer="Professor",
         )
         session.add(lecture)
@@ -375,6 +377,58 @@ def test_api_requires_dashboard_auth_on_public_host(tmp_path: Path) -> None:
     assert response.status_code == 401
     client.close()
     app.state.database.close()
+
+
+def test_anki_bootstrap_exposes_grouped_current_sources_and_editable_tag(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, _, lecture_id, revision_id, _ = prepared_app
+
+    response = client.get("/api/anki/bootstrap")
+
+    assert response.status_code == 200
+    payload = response.json()
+    lecture = next(item for item in payload["lectures"] if item["id"] == lecture_id)
+    assert lecture["topic"] == 'Anemia "I"'
+    assert lecture["revisions"] == [
+        {
+            "id": revision_id,
+            "kind": "slides",
+            "source_sha256": SHA,
+        }
+    ]
+    assert lecture["target_tag"] == (
+        "AnkiHub_Optional::LMU_OMS_II::HemeLymph::Block1::Lec4_Anemia_I"
+    )
+    assert payload["lecture_groups"] == [
+        {
+            "course": "Heme Lymph",
+            "exams": [
+                {
+                    "exam_number": 1,
+                    "lectures": [lecture],
+                }
+            ],
+        }
+    ]
+
+
+def test_anki_page_embeds_quote_safe_lecture_json(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, _, lecture_id, revision_id, _ = prepared_app
+
+    response = client.get("/anki")
+
+    assert response.status_code == 200
+    document = HTMLParser(response.text)
+    payload_node = document.css_first("#anki-lecture-data")
+    assert payload_node is not None
+    lectures = json.loads(payload_node.text())
+    lecture = next(item for item in lectures if item["id"] == lecture_id)
+    assert lecture["topic"] == 'Anemia "I"'
+    assert lecture["revisions"][0]["id"] == revision_id
+    assert document.css_first("[data-revisions]") is None
 
 
 def test_create_and_list_job_pins_server_generations_and_rejects_amboss(

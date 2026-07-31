@@ -64,24 +64,35 @@
     transcripts: "Lecture transcript",
   })[kind] || readableState(kind);
 
-  const renderSourceChoices = (documentRef, select) => {
+  const parseLecturePayload = (value) => {
+    const payload = JSON.parse(String(value || "[]"));
+    if (!Array.isArray(payload)) {
+      throw new Error("Lecture data must be a list.");
+    }
+    return payload;
+  };
+
+  const resolveLecture = (lectures, lectureId) => {
+    const selectedId = Number(lectureId);
+    if (!Number.isInteger(selectedId) || selectedId < 1) return null;
+    return lectures.find((lecture) => Number(lecture.id) === selectedId)
+      || null;
+  };
+
+  const renderSourceChoices = (documentRef, lecture) => {
     const container = documentRef.querySelector("#anki-source-revisions");
     if (!container) return;
     container.replaceChildren();
-    const option = select.options[select.selectedIndex];
-    let revisions = [];
-    try {
-      revisions = JSON.parse(option?.dataset.revisions || "[]");
-    } catch {
-      revisions = [];
-    }
+    const revisions = Array.isArray(lecture?.revisions)
+      ? lecture.revisions
+      : [];
     if (!revisions.length) {
       container.append(
         element(
           documentRef,
           "p",
           "quiet-state",
-          select.value
+          lecture
             ? "This lecture has no current slides or transcript."
             : "Choose a lecture to see its current slides and transcript.",
         ),
@@ -169,12 +180,55 @@
   const initializeHome = (documentRef, fetchImpl) => {
     const form = documentRef.querySelector("#anki-create-form");
     if (!form) return;
-    const lecture = form.elements.lecture_id;
-    lecture.addEventListener(
-      "change",
-      () => renderSourceChoices(documentRef, lecture),
+    const lectureId = form.elements.lecture_id;
+    const targetTag = form.elements.target_tag;
+    const selectedLabel = documentRef.querySelector(
+      "[data-selected-lecture]",
     );
-    renderSourceChoices(documentRef, lecture);
+    const lectureButtons = [
+      ...documentRef.querySelectorAll("[data-lecture-id]"),
+    ];
+    let lectures;
+    try {
+      lectures = parseLecturePayload(
+        documentRef.querySelector("#anki-lecture-data")?.textContent,
+      );
+    } catch {
+      lectures = [];
+      lectureButtons.forEach((button) => {
+        button.disabled = true;
+      });
+      documentRef.querySelector("#anki-source-revisions").replaceChildren(
+        element(
+          documentRef,
+          "p",
+          "quiet-state",
+          "Study Hub could not load the lecture source catalog. Reload the page.",
+        ),
+      );
+    }
+    lectureButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const lecture = resolveLecture(lectures, button.dataset.lectureId);
+        if (!lecture) return;
+        lectureId.value = String(lecture.id);
+        targetTag.value = String(lecture.target_tag || "");
+        lectureButtons.forEach((candidate) => {
+          candidate.setAttribute(
+            "aria-pressed",
+            String(candidate === button),
+          );
+        });
+        if (selectedLabel) {
+          selectedLabel.textContent = (
+            `${lecture.subject} · Exam ${lecture.exam_number} · `
+            + `Lecture ${lecture.lecture_number} — ${lecture.topic}`
+          );
+        }
+        renderSourceChoices(documentRef, lecture);
+      });
+    });
+    renderSourceChoices(documentRef, null);
 
     const refresh = documentRef.querySelector("[data-refresh-jobs]");
     refresh?.addEventListener("click", async () => {
@@ -190,6 +244,11 @@
       event.preventDefault();
       const message = documentRef.querySelector("#anki-create-message");
       const submit = form.querySelector("[type=submit]");
+      const values = new FormData(form);
+      if (!String(values.get("lecture_id") || "").trim()) {
+        message.textContent = "Choose a lecture.";
+        return;
+      }
       const selectedSources = [
         ...form.querySelectorAll(
           "input[name=source_revision_ids]:checked",
@@ -199,7 +258,6 @@
         message.textContent = "Choose at least one lecture source.";
         return;
       }
-      const values = new FormData(form);
       const body = {
         contract_version: 1,
         lecture_id: Number(values.get("lecture_id")),
@@ -847,8 +905,10 @@
     csrfToken,
     editableTagPatch,
     initialize,
+    parseLecturePayload,
     readableState,
     renderProcessing,
+    resolveLecture,
     runWhenReady,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

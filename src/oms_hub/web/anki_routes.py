@@ -44,6 +44,7 @@ from oms_hub.anki.gaps import (
     GapValidationError,
     validate_gap_card_fields,
 )
+from oms_hub.anki.paths import LectureIdentity, target_tag
 from oms_hub.anki.repository import (
     AnkiCurationRepository,
     InvalidCurationTransition,
@@ -171,6 +172,7 @@ def anki_bootstrap(request: Request) -> dict[str, Any]:
     return {
         "enabled": context["anki_enabled"],
         "lectures": context["lectures"],
+        "lecture_groups": context["lecture_groups"],
         "defaults": context["defaults"],
         "tag_policy": context["tag_policy"],
     }
@@ -594,9 +596,15 @@ async def retry_anki_sync(
 def _page_context(request: Request) -> dict[str, Any]:
     catalog = CatalogRepository(request.app.state.database)
     revisions = IngestionRepository(request.app.state.database)
-    lectures = []
+    lectures: list[dict[str, Any]] = []
     for lecture in catalog.list_lectures():
         current = revisions.list_current_revisions(lecture.id)
+        identity = LectureIdentity(
+            course=lecture.subject,
+            exam_number=lecture.exam_number,
+            lecture_number=lecture.lecture_number,
+            topic=lecture.topic,
+        )
         lectures.append(
             {
                 "id": lecture.id,
@@ -604,6 +612,7 @@ def _page_context(request: Request) -> dict[str, Any]:
                 "exam_number": lecture.exam_number,
                 "lecture_number": lecture.lecture_number,
                 "topic": lecture.topic,
+                "target_tag": target_tag(identity),
                 "revisions": [
                     {
                         "id": revision.id,
@@ -614,12 +623,38 @@ def _page_context(request: Request) -> dict[str, Any]:
                 ],
             }
         )
+    lecture_groups: list[dict[str, Any]] = []
+    groups_by_course: dict[str, dict[str, Any]] = {}
+    exams_by_course: dict[str, dict[int, dict[str, Any]]] = {}
+    for lecture_payload in lectures:
+        course = str(lecture_payload["subject"])
+        course_group = groups_by_course.get(course)
+        if course_group is None:
+            course_group = {"course": course, "exams": []}
+            groups_by_course[course] = course_group
+            exams_by_course[course] = {}
+            lecture_groups.append(course_group)
+        exam_number = int(lecture_payload["exam_number"])
+        exam_group = exams_by_course[course].get(exam_number)
+        if exam_group is None:
+            exam_group = {
+                "exam_number": exam_number,
+                "lectures": [],
+            }
+            exams_by_course[course][exam_number] = exam_group
+            cast(list[dict[str, Any]], course_group["exams"]).append(
+                exam_group
+            )
+        cast(list[dict[str, Any]], exam_group["lectures"]).append(
+            lecture_payload
+        )
     settings = request.app.state.settings
     companion = getattr(request.app.state, "anki_companion_index", None)
     snapshot_id = companion.snapshot_id() if companion is not None else None
     return {
         "anki_enabled": (getattr(request.app.state, "anki_runtime", None) is not None),
         "lectures": lectures,
+        "lecture_groups": lecture_groups,
         "defaults": {
             "provider": "anthropic",
             "model": "claude-sonnet-5",

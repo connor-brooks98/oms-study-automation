@@ -41,17 +41,50 @@
 
     <form id="anki-create-form" class="anki-create-form">
       <div class="anki-form-grid">
-        <label class="anki-field-wide">
-          Lecture
-          <select name="lecture_id" required {% if not anki_enabled %}disabled{% endif %}>
-            <option value="">Choose a lecture…</option>
-            {% for lecture in lectures %}
-            <option value="{{ lecture.id }}" data-revisions="{{ lecture.revisions|tojson }}">
-              {{ lecture.subject }} · Exam {{ lecture.exam_number }} · Lecture {{ lecture.lecture_number }} — {{ lecture.topic }}
-            </option>
+        <fieldset class="anki-lecture-field anki-field-wide">
+          <legend>Lecture</legend>
+          <input name="lecture_id" type="hidden">
+          <div class="anki-lecture-selector" data-lecture-selector>
+            {% for course in lecture_groups %}
+            <details class="anki-course-group">
+              <summary>
+                <span>{{ course.course }}</span>
+                <small>{{ course.exams|length }} exam{{ "" if course.exams|length == 1 else "s" }}</small>
+              </summary>
+              <div class="anki-course-exams">
+                {% for exam in course.exams %}
+                <details class="anki-exam-group">
+                  <summary>Exam {{ exam.exam_number }}</summary>
+                  <div class="anki-lecture-options" role="group" aria-label="{{ course.course }} Exam {{ exam.exam_number }} lectures">
+                    {% for lecture in exam.lectures %}
+                    <button
+                      class="anki-lecture-option"
+                      type="button"
+                      data-lecture-id="{{ lecture.id }}"
+                      aria-pressed="false"
+                      {% if not anki_enabled %}disabled{% endif %}
+                    >
+                      <span>Lecture {{ lecture.lecture_number }} — {{ lecture.topic }}</span>
+                      <small>
+                        {% if lecture.revisions %}
+                          {{ lecture.revisions|map(attribute="kind")|join(" + ") }}
+                        {% else %}
+                          No current sources
+                        {% endif %}
+                      </small>
+                    </button>
+                    {% endfor %}
+                  </div>
+                </details>
+                {% endfor %}
+              </div>
+            </details>
+            {% else %}
+            <p class="quiet-state">No lectures are available in the Study Hub catalog.</p>
             {% endfor %}
-          </select>
-        </label>
+          </div>
+          <p class="field-help" data-selected-lecture>Choose a course, exam, and lecture.</p>
+        </fieldset>
 
         <fieldset class="anki-source-field anki-field-wide">
           <legend>Lecture sources</legend>
@@ -81,7 +114,7 @@
         </label>
         <label class="anki-field-wide">
           Lecture tag
-          <input name="target_tag" placeholder="AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_4" required>
+          <input name="target_tag" required>
           <span class="field-help">Selected existing cards and approved generated cards receive this tag.</span>
         </label>
         <label>
@@ -147,7 +180,8 @@
     </div>
   </section>
 </section>
+<script id="anki-lecture-data" type="application/json">{{ lectures|tojson }}</script>
 {% endblock %}
 {% block scripts %}
-<script src="/static/anki.js?v=20260730.1" defer></script>
+<script src="/static/anki.js?v=20260730.2" defer></script>
 {% endblock %}
