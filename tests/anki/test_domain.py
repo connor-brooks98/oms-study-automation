@@ -30,6 +30,7 @@ def test_v4_pipeline_states_are_explicit() -> None:
         "complete",
         "failed",
         "canceled",
+        "removed",
     )
 
 

@@ -166,9 +166,10 @@
   };
 
   const jobRow = (documentRef, job) => {
-    const row = element(documentRef, "a", "anki-job-row");
-    row.href = `/anki/jobs/${job.id}`;
+    const row = element(documentRef, "div", "anki-job-row");
     row.dataset.jobId = job.id;
+    const link = element(documentRef, "a", "anki-job-link");
+    link.href = `/anki/jobs/${job.id}`;
     const dot = element(
       documentRef,
       "span",
@@ -191,8 +192,58 @@
       "",
       String(job.updated_at || "").slice(0, 16).replace("T", " "),
     );
-    row.append(dot, description, state, time);
+    link.append(dot, description, state, time);
+    row.append(link);
+    if (canRetryCuration(job.state)) {
+      const actions = element(documentRef, "span", "anki-job-actions");
+      actions.setAttribute("aria-label", "Failed run actions");
+      const retry = element(documentRef, "button", "anki-icon-button");
+      retry.type = "button";
+      retry.dataset.retryQueuedJob = "";
+      retry.setAttribute("aria-label", "Retry failed run");
+      retry.title = "Retry failed run";
+      retry.append(element(documentRef, "span", "", "↻"));
+      retry.firstChild.setAttribute("aria-hidden", "true");
+      const remove = element(
+        documentRef,
+        "button",
+        "anki-icon-button is-danger",
+      );
+      remove.type = "button";
+      remove.dataset.removeFailedJob = "";
+      remove.setAttribute("aria-label", "Remove failed run");
+      remove.title = "Remove failed run";
+      remove.append(element(documentRef, "span", "", "×"));
+      remove.firstChild.setAttribute("aria-hidden", "true");
+      actions.append(retry, remove);
+      row.append(actions);
+    }
     return row;
+  };
+
+  const runFailedJobAction = (
+    documentRef,
+    fetchImpl,
+    jobId,
+    action,
+  ) => {
+    if (action === "retry") {
+      return requestJson(
+        documentRef,
+        fetchImpl,
+        `/api/anki/jobs/${jobId}/retry`,
+        { method: "POST" },
+      );
+    }
+    if (action === "remove") {
+      return requestJson(
+        documentRef,
+        fetchImpl,
+        `/api/anki/jobs/${jobId}`,
+        { method: "DELETE" },
+      );
+    }
+    throw new Error("Unsupported failed-run action.");
   };
 
   const refreshJobs = async (documentRef, fetchImpl) => {
@@ -349,6 +400,46 @@
         await refreshJobs(documentRef, fetchImpl);
       } finally {
         refresh.disabled = false;
+      }
+    });
+
+    const jobList = documentRef.querySelector("#anki-job-list");
+    jobList?.addEventListener("click", async (event) => {
+      const button = event.target.closest?.(
+        "[data-retry-queued-job], [data-remove-failed-job]",
+      );
+      if (!button) return;
+      const row = button.closest("[data-job-id]");
+      if (!row) return;
+      const removing = button.hasAttribute("data-remove-failed-job");
+      if (
+        removing
+        && root.confirm
+        && !root.confirm("Remove this failed curation run from the queue?")
+      ) return;
+      const message = documentRef.querySelector("#anki-jobs-message");
+      button.disabled = true;
+      if (message) {
+        message.textContent = removing
+          ? "Removing the failed run…"
+          : "Retrying the failed run…";
+      }
+      try {
+        await runFailedJobAction(
+          documentRef,
+          fetchImpl,
+          row.dataset.jobId,
+          removing ? "remove" : "retry",
+        );
+        await refreshJobs(documentRef, fetchImpl);
+        if (message) {
+          message.textContent = removing
+            ? "Failed run removed."
+            : "Failed run returned to the queue.";
+        }
+      } catch (error) {
+        if (message) message.textContent = error.message;
+        button.disabled = false;
       }
     });
 
@@ -1052,6 +1143,7 @@
     renderProcessing,
     resolveLecture,
     resolveProviderModel,
+    runFailedJobAction,
     runWhenReady,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

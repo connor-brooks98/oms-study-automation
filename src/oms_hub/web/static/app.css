@@ -830,22 +830,28 @@ textarea {
 .anki-compact-button { min-height: 2.25rem; padding: .5rem .75rem; }
 .anki-job-list { display: grid; gap: .45rem; }
 .anki-job-row {
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+  background: white;
+}
+.anki-job-link {
   display: grid;
   grid-template-columns: .5rem minmax(0, 1fr) auto auto;
+  flex: 1;
   align-items: center;
   gap: .8rem;
   padding: .75rem .85rem;
-  border: 1px solid var(--border);
-  border-radius: .55rem;
   color: var(--text);
-  background: white;
   text-decoration: none;
 }
 .anki-job-row:hover {
   border-color: oklch(.8 .03 255);
-  color: var(--text);
 }
-.anki-job-row > span:nth-child(2) { display: grid; min-width: 0; gap: .15rem; }
+.anki-job-link:hover { color: var(--text); }
+.anki-job-link > span:nth-child(2) { display: grid; min-width: 0; gap: .15rem; }
 .anki-job-row strong { font-size: .82rem; }
 .anki-job-row small {
   overflow: hidden;
@@ -858,6 +864,39 @@ textarea {
   color: var(--text-3);
   font: 400 .65rem/1 "IBM Plex Mono", monospace;
 }
+.anki-job-actions {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  padding-right: .65rem;
+}
+.anki-icon-button {
+  display: inline-grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: .45rem;
+  color: oklch(.42 .11 250);
+  background: var(--surface);
+  cursor: pointer;
+  font: 700 1.15rem/1 "IBM Plex Sans", sans-serif;
+}
+.anki-icon-button:hover {
+  border-color: oklch(.68 .08 250);
+  background: oklch(.96 .02 250);
+}
+.anki-icon-button.is-danger {
+  border-color: oklch(.82 .07 25);
+  color: var(--failed);
+  background: oklch(.97 .02 25);
+}
+.anki-icon-button.is-danger:hover {
+  border-color: var(--failed);
+  background: oklch(.94 .04 25);
+}
+.anki-icon-button:disabled { cursor: wait; opacity: .55; }
 .anki-empty-compact { padding: 1.5rem; }
 .anki-empty-compact h2 { font-size: .95rem; }
 .status-pill.status-preflight,
@@ -1478,7 +1517,7 @@ code { overflow-wrap: anywhere; }
   .anki-lecture-selector,
   .anki-source-options { grid-template-columns: 1fr; }
   .anki-field-wide { grid-column: auto; }
-  .anki-job-row { grid-template-columns: .5rem minmax(0, 1fr) auto; }
+  .anki-job-link { grid-template-columns: .5rem minmax(0, 1fr) auto; }
   .anki-job-row time { display: none; }
   .anki-review-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .anki-section-heading,
@@ -1494,8 +1533,8 @@ code { overflow-wrap: anywhere; }
   .file-actions { flex-direction: column; }
   .anki-workflow { grid-template-columns: 1fr; }
   .anki-workflow small { display: block; }
-  .anki-job-row { grid-template-columns: .5rem minmax(0, 1fr); }
-  .anki-job-row .status-pill { grid-column: 2; width: fit-content; }
+  .anki-job-link { grid-template-columns: .5rem minmax(0, 1fr); }
+  .anki-job-link .status-pill { grid-column: 2; width: fit-content; }
   .anki-card-choice,
   .anki-tag-heading,
   .anki-form-actions,

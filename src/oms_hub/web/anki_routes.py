@@ -332,6 +332,26 @@ def retry_anki_job(request: Request, job_id: UUID) -> dict[str, Any]:
     return _job_payload(job)
 
 
+@router.delete("/api/anki/jobs/{job_id}")
+def remove_failed_anki_job(
+    request: Request,
+    job_id: UUID,
+) -> dict[str, Any]:
+    try:
+        _repository(request).remove_failed_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Curation job was not found",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    return {"job_id": str(job_id), "removed": True}
+
+
 @router.get("/api/anki/jobs/{job_id}/review")
 async def read_anki_review(
     request: Request,

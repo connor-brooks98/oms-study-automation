@@ -26,6 +26,7 @@ class CurationState(StrEnum):
     COMPLETE = "complete"
     FAILED = "failed"
     CANCELED = "canceled"
+    REMOVED = "removed"
 
 
 class CurationStage(StrEnum):

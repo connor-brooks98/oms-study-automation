@@ -139,6 +139,7 @@ ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
         CurationState.JUDGING_PASS_2,
         CurationState.DEDUPING,
         CurationState.GENERATING_GAPS,
+        CurationState.REMOVED,
     },
 }
 
@@ -273,6 +274,10 @@ class AnkiCurationRepository:
         with self.database.session() as session:
             stored = session.scalars(
                 select(AnkiCurationJobModel)
+                .where(
+                    AnkiCurationJobModel.state
+                    != CurationState.REMOVED.value
+                )
                 .order_by(
                     AnkiCurationJobModel.created_at.desc(),
                     AnkiCurationJobModel.id.desc(),
@@ -455,6 +460,25 @@ class AnkiCurationRepository:
                 )
             stored.state = target_state.value
             stored.error = None
+            stored.available_at = None
+            stored.lease_owner = None
+            stored.lease_expires_at = None
+            session.flush()
+            return self._job(stored)
+
+    def remove_failed_job(self, job_id: UUID) -> CurationJob:
+        with self.database.session() as session:
+            stored = self._require_job_model(session, job_id)
+            if stored.state != CurationState.FAILED.value:
+                raise ValueError("only a failed curation job can be removed")
+            if (
+                CurationState.REMOVED
+                not in ALLOWED_TRANSITIONS[CurationState.FAILED]
+            ):
+                raise InvalidCurationTransition(
+                    "transition failed -> removed is not allowed"
+                )
+            stored.state = CurationState.REMOVED.value
             stored.available_at = None
             stored.lease_owner = None
             stored.lease_expires_at = None

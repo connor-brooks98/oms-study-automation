@@ -272,6 +272,38 @@ def test_failed_job_can_retry_its_failed_stage_without_losing_artifacts(
     assert claimed_again.id == job.id
 
 
+def test_failed_job_can_be_removed_from_the_run_list(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    now = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
+    claimed = repository.claim_next_job(
+        now,
+        worker_id="worker-1",
+        lease_seconds=30,
+    )
+    assert claimed is not None
+    repository.start_stage(job.id, CurationStage.PREFLIGHT)
+    repository.fail_stage(job.id, CurationStage.PREFLIGHT, "malformed output")
+    repository.fail_job(job.id, "worker-1", "malformed output")
+
+    removed = repository.remove_failed_job(job.id)
+
+    assert removed.state.value == "removed"
+    assert repository.list_jobs() == []
+
+
+def test_nonfailed_job_cannot_be_removed_from_the_run_list(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+
+    with pytest.raises(ValueError, match="failed"):
+        repository.remove_failed_job(job.id)
+
+    assert [listed.id for listed in repository.list_jobs()] == [job.id]
+
+
 def test_source_evidence_and_stage_artifacts_round_trip(tmp_path) -> None:
     repository, lecture_id = _prepared_repository(tmp_path)
     job = repository.create_job(_job_request(lecture_id))

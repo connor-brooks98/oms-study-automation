@@ -543,6 +543,73 @@ def test_failed_curation_job_can_be_retried_through_api(
     assert response.json()["error"] is None
 
 
+def test_failed_curation_job_can_be_removed_through_api(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, lecture_id, revision_id, _ = prepared_app
+    repository: AnkiCurationRepository = app.state.anki_repository
+    created = repository.create_job(
+        CreateCurationJob(
+            lecture_id=lecture_id,
+            block_id="heme-block-1",
+            source_revision_ids=(revision_id,),
+            deck_allowlist=("AnKing Step Deck",),
+            tag_allowlist=("#AK_Step2_v12::Hematology",),
+            instruction_text="",
+            target_deck="OMS::Heme::Lecture 4",
+            target_tag=TARGET_TAG,
+            index_snapshot_id="snapshot-test",
+            lcl_prompt_version="lcl-v1",
+            judgment_rubric_version="judgment-v1",
+            gap_prompt_version="gap-v1",
+            provider="anthropic",
+            model="claude-sonnet-5",
+        )
+    )
+    claimed = repository.claim_next_job(
+        datetime.now(UTC),
+        worker_id="worker-1",
+        lease_seconds=30,
+    )
+    assert claimed is not None
+    repository.start_stage(created.id, CurationStage.PREFLIGHT)
+    repository.fail_stage(created.id, CurationStage.PREFLIGHT, "malformed output")
+    repository.fail_job(created.id, "worker-1", "malformed output")
+
+    page = client.get("/anki")
+    document = HTMLParser(page.text)
+    row = document.css_first(f'[data-job-id="{created.id}"]')
+    assert row is not None
+    retry = row.css_first("[data-retry-queued-job]")
+    remove = row.css_first("[data-remove-failed-job]")
+    assert retry is not None
+    assert retry.attributes["aria-label"] == "Retry failed run"
+    assert remove is not None
+    assert remove.attributes["aria-label"] == "Remove failed run"
+
+    removed = client.delete(f"/api/anki/jobs/{created.id}")
+    listed = client.get("/api/anki/jobs")
+
+    assert removed.status_code == 200
+    assert removed.json() == {"job_id": str(created.id), "removed": True}
+    assert listed.json()["jobs"] == []
+
+
+def test_remove_job_api_rejects_nonfailed_runs(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, _, lecture_id, revision_id, _ = prepared_app
+    created = client.post(
+        "/api/anki/jobs",
+        json=_create_payload(lecture_id, revision_id),
+    )
+
+    response = client.delete(f"/api/anki/jobs/{created.json()['id']}")
+
+    assert response.status_code == 409
+    assert "failed" in response.json()["detail"]
+
+
 def test_create_job_blocks_when_semantic_alignment_is_below_threshold(
     prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
 ) -> None:

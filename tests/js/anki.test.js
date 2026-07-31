@@ -83,3 +83,50 @@ test("only failed curation jobs expose pipeline retry", () => {
   assert.equal(anki.canRetryCuration("judging_pass_1"), false);
   assert.equal(anki.canRetryCuration("complete"), false);
 });
+
+test("failed-run actions use CSRF-protected retry and remove endpoints", async () => {
+  const requests = [];
+  const documentRef = { cookie: "study_hub_csrf=test-token" };
+  const fetchImpl = async (url, options) => {
+    requests.push({ url, options });
+    return {
+      ok: true,
+      async json() {
+        return { job_id: "job-1" };
+      },
+    };
+  };
+
+  await anki.runFailedJobAction(
+    documentRef,
+    fetchImpl,
+    "job-1",
+    "retry",
+  );
+  await anki.runFailedJobAction(
+    documentRef,
+    fetchImpl,
+    "job-1",
+    "remove",
+  );
+
+  assert.deepEqual(
+    requests.map(({ url, options }) => ({
+      url,
+      method: options.method,
+      csrf: options.headers["X-CSRF-Token"],
+    })),
+    [
+      {
+        url: "/api/anki/jobs/job-1/retry",
+        method: "POST",
+        csrf: "test-token",
+      },
+      {
+        url: "/api/anki/jobs/job-1",
+        method: "DELETE",
+        csrf: "test-token",
+      },
+    ],
+  );
+});

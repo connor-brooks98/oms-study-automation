@@ -146,15 +146,23 @@
     </div>
     <div id="anki-job-list" class="anki-job-list" aria-live="polite">
       {% for job in jobs %}
-      <a class="anki-job-row" href="/anki/jobs/{{ job.id }}" data-job-id="{{ job.id }}">
-        <span class="status-dot status-{{ job.state }}"></span>
-        <span>
-          <strong>Lecture {{ job.lecture_id }}</strong>
-          <small>{{ job.target_deck }}</small>
+      <div class="anki-job-row" data-job-id="{{ job.id }}">
+        <a class="anki-job-link" href="/anki/jobs/{{ job.id }}">
+          <span class="status-dot status-{{ job.state }}"></span>
+          <span>
+            <strong>Lecture {{ job.lecture_id }}</strong>
+            <small>{{ job.target_deck }}</small>
+          </span>
+          <span class="status-pill status-{{ job.state }}">{{ job.state.replace('_', ' ') }}</span>
+          <time>{{ job.updated_at[:16].replace('T', ' ') }}</time>
+        </a>
+        {% if job.state == 'failed' %}
+        <span class="anki-job-actions" aria-label="Failed run actions">
+          <button class="anki-icon-button" type="button" data-retry-queued-job aria-label="Retry failed run" title="Retry failed run"><span aria-hidden="true">↻</span></button>
+          <button class="anki-icon-button is-danger" type="button" data-remove-failed-job aria-label="Remove failed run" title="Remove failed run"><span aria-hidden="true">×</span></button>
         </span>
-        <span class="status-pill status-{{ job.state }}">{{ job.state.replace('_', ' ') }}</span>
-        <time>{{ job.updated_at[:16].replace('T', ' ') }}</time>
-      </a>
+        {% endif %}
+      </div>
       {% else %}
       <div class="empty-state anki-empty-compact">
         <h2>No curation runs yet</h2>
@@ -162,11 +170,12 @@
       </div>
       {% endfor %}
     </div>
+    <p id="anki-jobs-message" class="anki-action-message" role="status" aria-live="polite"></p>
   </section>
 </section>
 <script id="anki-lecture-data" type="application/json">{{ lectures|tojson }}</script>
 <script id="anki-provider-models" type="application/json">{{ provider_models|tojson }}</script>
 {% endblock %}
 {% block scripts %}
-<script src="/static/anki.js?v=20260730.3" defer></script>
+<script src="/static/anki.js?v=20260731.1" defer></script>
 {% endblock %}
