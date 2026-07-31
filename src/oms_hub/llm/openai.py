@@ -20,6 +20,42 @@ from oms_hub.llm.provider import (
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
 
+def openai_output_schema(
+    schema: dict[str, object],
+) -> dict[str, object]:
+    normalized = _normalize_schema_value(schema)
+    if not isinstance(normalized, dict):
+        raise TypeError("OpenAI output schema must be an object")
+    return normalized
+
+
+def _normalize_schema_value(value: object) -> object:
+    if isinstance(value, list):
+        return [_normalize_schema_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    prefix_items = value.get("prefixItems")
+    normalized = {
+        str(key): _normalize_schema_value(item)
+        for key, item in value.items()
+        if key != "prefixItems"
+    }
+    if (
+        "items" not in normalized
+        and isinstance(prefix_items, list)
+        and prefix_items
+    ):
+        candidates = [
+            _normalize_schema_value(item) for item in prefix_items
+        ]
+        normalized["items"] = (
+            candidates[0]
+            if all(item == candidates[0] for item in candidates[1:])
+            else {"anyOf": candidates}
+        )
+    return normalized
+
+
 class OpenAIProvider:
     name = ProviderName.OPENAI
     url = "https://api.openai.com/v1/responses"
@@ -74,7 +110,7 @@ class OpenAIProvider:
                     "format": {
                         "type": "json_schema",
                         "name": "structured_output",
-                        "schema": output_schema,
+                        "schema": openai_output_schema(output_schema),
                         "strict": True,
                     }
                 },

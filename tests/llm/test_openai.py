@@ -1,3 +1,6 @@
+import copy
+import json
+
 import httpx
 import respx
 
@@ -119,3 +122,71 @@ def test_openai_structured_generation_sends_json_schema():
     assert '"json_schema"' in payload
     assert '"structured_output"' in payload
     assert result.text == '{"answer":"iron"}'
+
+
+@respx.mock
+def test_openai_structured_generation_sends_provider_safe_schema_copy():
+    route = respx.post("https://api.openai.com/v1/responses").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "resp-schema",
+                "status": "completed",
+                "model": "gpt-5.6-terra",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": '{"values":["a","b"]}',
+                            }
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 12, "output_tokens": 5},
+            },
+        )
+    )
+    schema = {
+        "type": "object",
+        "properties": {
+            "values": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "prefixItems": [
+                    {"type": "string", "minLength": 1},
+                    {"type": "string", "minLength": 1},
+                ],
+            }
+        },
+        "required": ["values"],
+        "additionalProperties": False,
+    }
+    original = copy.deepcopy(schema)
+
+    OpenAIProvider().generate_text(
+        "Return two values.",
+        "Question",
+        api_key="secret",
+        model="gpt-5.6-terra",
+        output_schema=schema,
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    sent = payload["text"]["format"]["schema"]
+    assert sent == {
+        "type": "object",
+        "properties": {
+            "values": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {"type": "string", "minLength": 1},
+            }
+        },
+        "required": ["values"],
+        "additionalProperties": False,
+    }
+    assert schema == original
