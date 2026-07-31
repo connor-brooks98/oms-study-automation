@@ -25,6 +25,7 @@ dependencies = [
   "sqlalchemy>=2.0,<3",
   "uvicorn[standard]>=0.34,<1",
   "pywin32==312; sys_platform == 'win32'",
+  "tzdata>=2025.2; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
