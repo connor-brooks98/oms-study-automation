@@ -104,7 +104,7 @@ def test_generates_validated_ledger_with_four_queries_per_concept() -> None:
         "Low ferritin indicates depleted iron stores in iron deficiency.",
     )
     ledger = LectureConceptLedger(concepts=(_concept(passage),))
-    structured = QueueStructuredService([_result(ledger)])
+    structured = QueueStructuredService([_result(ledger), _result(ledger)])
     service = LCLService(
         structured,
         provider=ProviderName.OPENAI,
@@ -185,12 +185,12 @@ def test_unresolved_source_reference_fails_after_one_repair() -> None:
     assert len(structured.calls) == 2
 
 
-def test_duplicate_concept_ids_are_rejected() -> None:
+def test_duplicate_concept_ids_are_rekeyed_deterministically() -> None:
     passage = _passage("3", "Ferritin reflects iron stores.")
     ledger = LectureConceptLedger(
         concepts=(_concept(passage), _concept(passage))
     )
-    structured = QueueStructuredService([_result(ledger), _result(ledger)])
+    structured = QueueStructuredService([_result(ledger)])
     service = LCLService(
         structured,
         provider=ProviderName.OPENAI,
@@ -198,5 +198,9 @@ def test_duplicate_concept_ids_are_rejected() -> None:
         prompt_version="lcl-v1",
     )
 
-    with pytest.raises(LCLGenerationError, match="duplicate"):
-        service.generate([passage])
+    artifact = service.generate([passage])
+
+    assert [
+        concept.concept_id for concept in artifact.ledger.concepts
+    ] == ["iron-stores", "iron-stores-2"]
+    assert len(structured.calls) == 1

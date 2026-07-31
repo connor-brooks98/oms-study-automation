@@ -4,13 +4,18 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from oms_hub.anki.domain import SourceReference
 from oms_hub.anki.lcl import LectureConcept
 from oms_hub.anki.sources import SourcePassage
 from oms_hub.llm.domain import ProviderName
-from oms_hub.llm.structured import StructuredTextService
+from oms_hub.llm.structured import (
+    StructuredJSONResult,
+    StructuredOutputError,
+    StructuredTextService,
+    sanitize_model_text,
+)
 
 _CLOZE = re.compile(
     r"\{\{c(?P<number>\d+)::(?P<answer>.*?)(?:::[^{}]*?)?\}\}",
@@ -47,6 +52,21 @@ class CardDraft(BaseModel):
     evidence_ids: tuple[str, ...] = Field(min_length=1)
     confidence: float = Field(ge=0, le=1)
 
+    @field_validator("note_type", mode="before")
+    @classmethod
+    def normalize_note_type(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip().casefold() == "cloze":
+            return "Cloze"
+        return value
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def dedupe_evidence_ids(
+        cls,
+        values: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(values))
+
 
 class EntailmentDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -58,6 +78,11 @@ class EntailmentDecision(BaseModel):
         "uncertain",
     ]
     rationale: str = Field(min_length=1, max_length=4_000)
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, value: object) -> object:
+        return value.strip().casefold() if isinstance(value, str) else value
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,30 +129,77 @@ class GapCardService:
         self.prompt_version = prompt_version
 
     def generate(self, gap: SupportedGap) -> GapGenerationResult:
-        generated = self.structured.generate_json(
-            _generation_instruction(self.prompt_version),
-            _generation_input(gap),
-            output_model=CardDraft,
-            provider=self.provider,
-            model=self.model,
-        )
-        draft = generated.value
+        generation_input = _generation_input(gap)
         evidence_by_id = {passage.passage_id: passage for passage in gap.evidence}
-        if len(set(draft.evidence_ids)) != len(draft.evidence_ids):
-            raise GapValidationError("generated evidence citations must be unique")
-        if any(evidence_id not in evidence_by_id for evidence_id in draft.evidence_ids):
-            raise GapValidationError("generated card cites unavailable evidence")
-        text = draft.text.strip()
-        extra = draft.extra.strip()
-        validate_gap_card_fields(text, extra)
+        try:
+            generated = self._draft_request(
+                _generation_instruction(self.prompt_version),
+                generation_input,
+            )
+            text, extra = _validate_draft(
+                generated.value,
+                evidence_by_id,
+            )
+        except (
+            StructuredOutputError,
+            GapValidationError,
+        ) as first_error:
+            raw = (
+                first_error.raw_text
+                if isinstance(first_error, StructuredOutputError)
+                else (
+                    sanitize_model_text(generated.raw_text)
+                    if "generated" in locals()
+                    else ""
+                )
+            )
+            repair_input = json.dumps(
+                {
+                    "generation_input": json.loads(generation_input),
+                    "invalid_response": raw,
+                    "validation_error": str(first_error),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            generated = self._draft_request(
+                _repair_instruction(self.prompt_version),
+                repair_input,
+            )
+            text, extra = _validate_draft(
+                generated.value,
+                evidence_by_id,
+            )
+        draft = generated.value
         cited = tuple(evidence_by_id[evidence_id] for evidence_id in draft.evidence_ids)
-        entailment = self.structured.generate_json(
-            _entailment_instruction(self.prompt_version),
-            _entailment_input(text, extra, cited),
-            output_model=EntailmentDecision,
-            provider=self.provider,
-            model=self.model,
-        )
+        entailment_input = _entailment_input(text, extra, cited)
+        try:
+            entailment = self.structured.generate_json(
+                _entailment_instruction(self.prompt_version),
+                entailment_input,
+                output_model=EntailmentDecision,
+                provider=self.provider,
+                model=self.model,
+            )
+        except StructuredOutputError as first_error:
+            repair_input = json.dumps(
+                {
+                    "entailment_input": json.loads(entailment_input),
+                    "invalid_response": first_error.raw_text,
+                    "validation_error": str(first_error),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            entailment = self.structured.generate_json(
+                _entailment_repair_instruction(self.prompt_version),
+                repair_input,
+                output_model=EntailmentDecision,
+                provider=self.provider,
+                model=self.model,
+            )
         if entailment.value.status in {
             "not_supported",
             "contradicted",
@@ -184,6 +256,34 @@ class GapCardService:
             reason=entailment.value.rationale,
         )
 
+    def _draft_request(
+        self,
+        instruction: str,
+        input_text: str,
+    ) -> StructuredJSONResult[CardDraft]:
+        return self.structured.generate_json(
+            instruction,
+            input_text,
+            output_model=CardDraft,
+            provider=self.provider,
+            model=self.model,
+        )
+
+
+def _validate_draft(
+    draft: CardDraft,
+    evidence_by_id: dict[str, SourcePassage],
+) -> tuple[str, str]:
+    if any(
+        evidence_id not in evidence_by_id
+        for evidence_id in draft.evidence_ids
+    ):
+        raise GapValidationError("generated card cites unavailable evidence")
+    text = draft.text.strip()
+    extra = draft.extra.strip()
+    validate_gap_card_fields(text, extra)
+    return text, extra
+
 
 def validate_gap_card_fields(text: str, extra: str) -> None:
     """Apply the same deterministic safety checks to generated or edited cards."""
@@ -214,8 +314,16 @@ def _generation_instruction(prompt_version: str) -> str:
     return (
         f"Generate one source-grounded Anki Cloze card using prompt "
         f"{prompt_version}. Use only the supplied concept and evidence. "
-        "Cite the passage IDs used. Keep the front concise and put only "
-        "source-supported explanation in Extra."
+        "Cite each passage ID used at most once. Keep the front concise and "
+        "put only source-supported explanation in Extra."
+    )
+
+
+def _repair_instruction(prompt_version: str) -> str:
+    return (
+        f"Repair the invalid source-grounded Anki card for {prompt_version}. "
+        "Correct only the reported validation defects, use and cite only the "
+        "supplied evidence, and return the complete corrected card draft."
     )
 
 
@@ -245,6 +353,14 @@ def _entailment_instruction(prompt_version: str) -> str:
         "in the proposed card using only the cited passages. Return supported, "
         "not_supported, contradicted, or uncertain. Do not use outside "
         "medical knowledge."
+    )
+
+
+def _entailment_repair_instruction(prompt_version: str) -> str:
+    return (
+        f"Repair the invalid entailment decision for {prompt_version}. "
+        "Correct only the reported schema defect, use only the supplied "
+        "card and passages, and return the complete corrected decision."
     )
 
 

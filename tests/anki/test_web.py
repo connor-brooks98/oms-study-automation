@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -15,6 +16,7 @@ from oms_hub.anki.apply import ApplyCoordinator
 from oms_hub.anki.domain import (
     Candidate,
     CreateCurationJob,
+    CurationStage,
     CurationState,
     EvidenceSupport,
     GapCard,
@@ -499,6 +501,46 @@ def test_create_and_list_job_pins_server_generations_and_rejects_amboss(
     assert created.json()["companion_generation"] == "snapshot-test"
     assert created.json()["semantic_generation"] == "33a3b975-0e93-41e6-8a44-ec255c7e1269"
     assert listed.json()["jobs"][0]["id"] == created.json()["id"]
+
+
+def test_failed_curation_job_can_be_retried_through_api(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, lecture_id, revision_id, _ = prepared_app
+    repository: AnkiCurationRepository = app.state.anki_repository
+    created = repository.create_job(
+        CreateCurationJob(
+            lecture_id=lecture_id,
+            block_id="heme-block-1",
+            source_revision_ids=(revision_id,),
+            deck_allowlist=("AnKing Step Deck",),
+            tag_allowlist=("#AK_Step2_v12::Hematology",),
+            instruction_text="",
+            target_deck="OMS::Heme::Lecture 4",
+            target_tag=TARGET_TAG,
+            index_snapshot_id="snapshot-test",
+            lcl_prompt_version="lcl-v1",
+            judgment_rubric_version="judgment-v1",
+            gap_prompt_version="gap-v1",
+            provider="anthropic",
+            model="claude-sonnet-5",
+        )
+    )
+    claimed = repository.claim_next_job(
+        datetime.now(UTC),
+        worker_id="worker-1",
+        lease_seconds=30,
+    )
+    assert claimed is not None
+    repository.start_stage(created.id, CurationStage.PREFLIGHT)
+    repository.fail_stage(created.id, CurationStage.PREFLIGHT, "malformed output")
+    repository.fail_job(created.id, "worker-1", "malformed output")
+
+    response = client.post(f"/api/anki/jobs/{created.id}/retry")
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "preflight"
+    assert response.json()["error"] is None
 
 
 def test_create_job_blocks_when_semantic_alignment_is_below_threshold(

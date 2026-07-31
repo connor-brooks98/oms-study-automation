@@ -47,6 +47,7 @@ class FakeGateway:
         self.sync_failures: dict[int, Exception] = {}
         self.mutation_failures: dict[str, Exception] = {}
         self.ignore_mutation: set[str] = set()
+        self.reject_generated_duplicates = False
 
     async def sync(self) -> None:
         self.sync_calls += 1
@@ -111,13 +112,15 @@ class FakeGateway:
     async def add_notes(
         self,
         notes: Sequence[dict[str, Any]],
-    ) -> list[int]:
+    ) -> list[int | None]:
         self.mutation_calls.append("add_notes")
         failure = self.mutation_failures.get("add_notes")
         if failure is not None:
             raise failure
         created: list[int] = []
         for note in notes:
+            if self.reject_generated_duplicates:
+                return [None for _ in notes]
             note_id = self.next_note_id
             self.next_note_id += 1
             self.notes[note_id] = {
@@ -320,6 +323,40 @@ def test_generated_note_retry_discovers_marker_and_does_not_duplicate() -> None:
         assert len(gateway.notes) == 2
         assert gateway.mutation_calls.count("add_notes") == 1
         assert result.created_note_ids == (100,)
+
+    asyncio.run(scenario())
+
+
+def test_duplicate_rejected_generated_note_is_terminal_not_retryable() -> None:
+    async def scenario() -> None:
+        gateway = FakeGateway()
+        gateway.reject_generated_duplicates = True
+        envelope = _envelope(gateway, generated=True)
+        store = InMemoryApplyStore((envelope,))
+
+        result = await ApplyCoordinator(store, gateway).apply(
+            envelope.envelope_id
+        )
+
+        assert result.state is ApplyState.COMPLETE
+        assert result.created_note_ids == ()
+        assert result.rejected_duplicates == (
+            {
+                "position": 0,
+                "status": "rejected_duplicate",
+            },
+        )
+        add_notes = next(
+            operation
+            for operation in envelope.operations
+            if operation.operation_type == "add_notes"
+        )
+        record = store.operation_record(
+            envelope.envelope_id,
+            add_notes.operation_id,
+        )
+        assert record.state == "complete"
+        assert record.attempts == 1
 
     asyncio.run(scenario())
 

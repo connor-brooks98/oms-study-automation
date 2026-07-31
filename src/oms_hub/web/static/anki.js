@@ -709,6 +709,8 @@
     "ready_for_review",
   ];
 
+  const canRetryCuration = (state) => state === "failed";
+
   const renderProcessing = (documentRef, job) => {
     const index = Math.max(stageOrder.indexOf(job.state), 0);
     const percent = Math.max(
@@ -731,6 +733,8 @@
           ? "Curation stopped. The details above explain what needs attention."
           : "This run is resumable. You may leave this page while Study Hub works."
       );
+    const retry = documentRef.querySelector("[data-retry-job]");
+    if (retry) retry.hidden = !canRetryCuration(job.state);
   };
 
   const editableTagPatch = (input) => {
@@ -984,6 +988,28 @@
         }
       });
 
+    documentRef.querySelector("[data-retry-job]")
+      ?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        documentRef.querySelector("#anki-processing-note").textContent =
+          "Retrying the failed stage…";
+        try {
+          await requestJson(
+            documentRef,
+            fetchImpl,
+            `/api/anki/jobs/${jobId}/retry`,
+            { method: "POST" },
+          );
+          await refreshJob();
+        } catch (error) {
+          documentRef.querySelector("#anki-processing-note").textContent =
+            error.message;
+        } finally {
+          button.disabled = false;
+        }
+      });
+
     void refreshJob().catch((error) => {
       documentRef.querySelector("#anki-processing-label").textContent =
         "Review unavailable";
@@ -1012,6 +1038,7 @@
   };
 
   const api = {
+    canRetryCuration,
     collectReview,
     commaValues,
     csrfToken,

@@ -315,6 +315,23 @@ def cancel_anki_job(request: Request, job_id: UUID) -> dict[str, Any]:
     return _job_payload(job)
 
 
+@router.post("/api/anki/jobs/{job_id}/retry")
+def retry_anki_job(request: Request, job_id: UUID) -> dict[str, Any]:
+    try:
+        job = _repository(request).retry_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Curation job was not found",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    return _job_payload(job)
+
+
 @router.get("/api/anki/jobs/{job_id}/review")
 async def read_anki_review(
     request: Request,
@@ -1053,6 +1070,7 @@ def _apply_payload(job: CurationJob, result: ApplyResult) -> dict[str, Any]:
         "state": job.state.value,
         "apply_state": result.state.value,
         "created_note_ids": list(result.created_note_ids),
+        "rejected_duplicates": list(result.rejected_duplicates),
         "differences": list(result.differences),
         "safe_error": result.safe_error,
         "recovery": _recovery_payload(result.state, result),
@@ -1064,6 +1082,16 @@ def _recovery_payload(
     result: ApplyResult | None = None,
 ) -> dict[str, str]:
     if state is ApplyState.COMPLETE:
+        if result is not None and result.rejected_duplicates:
+            count = len(result.rejected_duplicates)
+            return {
+                "kind": "complete",
+                "message": (
+                    "Local changes, sync, and verification completed. "
+                    f"Anki rejected {count} generated card"
+                    f"{'s' if count != 1 else ''} as duplicate."
+                ),
+            }
         return {
             "kind": "complete",
             "message": "Local changes, sync, and verification completed.",

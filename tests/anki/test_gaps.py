@@ -14,8 +14,11 @@ from oms_hub.anki.gaps import (
 )
 from oms_hub.anki.lcl import LectureConcept, LedgerSourceRef
 from oms_hub.anki.sources import SourcePassage
-from oms_hub.llm.domain import ProviderName
-from oms_hub.llm.structured import StructuredJSONResult
+from oms_hub.llm.domain import GeneratedText, ProviderName
+from oms_hub.llm.structured import (
+    StructuredJSONResult,
+    StructuredOutputError,
+)
 
 
 def _concept() -> LectureConcept:
@@ -71,6 +74,7 @@ class QueueStructured:
     def __init__(self, values: Sequence[BaseModel | Exception]) -> None:
         self.values = list(values)
         self.calls: list[type[BaseModel]] = []
+        self.requests: list[tuple[str, str]] = []
 
     def generate_json(
         self,
@@ -82,6 +86,7 @@ class QueueStructured:
         model: str,
     ) -> StructuredJSONResult[Any]:
         self.calls.append(output_model)
+        self.requests.append((instruction, input_text))
         value = self.values.pop(0)
         if isinstance(value, Exception):
             raise value
@@ -172,10 +177,99 @@ def test_uncertain_entailment_goes_to_unresolved_review() -> None:
 
 def test_absent_citation_is_rejected_before_entailment() -> None:
     gap = _gap()
-    service = _service(_draft("f" * 64))
+    invalid = _draft("f" * 64)
+    service = _service(invalid, invalid)
 
     with pytest.raises(GapValidationError, match="evidence"):
         service.generate(gap)
+
+
+def test_duplicate_card_evidence_ids_are_normalized() -> None:
+    gap = _gap()
+    evidence_id = gap.evidence[0].passage_id
+    result = _service(
+        CardDraft(
+            note_type="Cloze",
+            text="After iron replacement, {{c1::reticulocytes rise}}.",
+            extra="This reflects the marrow response.",
+            evidence_ids=(evidence_id, evidence_id),
+            confidence=0.94,
+        ),
+        EntailmentDecision(
+            status="supported",
+            rationale="Every claim appears in the cited slide.",
+        ),
+    ).generate(gap)
+
+    assert result.proposal is not None
+    assert result.proposal.evidence_ids == (evidence_id,)
+
+
+def test_gap_enums_are_case_and_whitespace_tolerant() -> None:
+    draft = CardDraft(
+        note_type=" cloze ",  # type: ignore[arg-type]
+        text="{{c1::Reticulocytes}} rise.",
+        extra="",
+        evidence_ids=("passage-1",),
+        confidence=0.9,
+    )
+    entailment = EntailmentDecision(
+        status=" Supported ",  # type: ignore[arg-type]
+        rationale="The source supports it.",
+    )
+
+    assert draft.note_type == "Cloze"
+    assert entailment.status == "supported"
+
+
+def test_invalid_card_draft_gets_one_repair() -> None:
+    gap = _gap()
+    service = _service(
+        _draft("f" * 64),
+        _draft(gap.evidence[0].passage_id),
+        EntailmentDecision(
+            status="supported",
+            rationale="Every claim appears in the cited slide.",
+        ),
+    )
+
+    result = service.generate(gap)
+
+    assert result.status == "proposed"
+    assert len(service.structured.requests) == 3  # type: ignore[attr-defined]
+    repair_instruction, repair_input = service.structured.requests[1]  # type: ignore[attr-defined]
+    assert "repair" in repair_instruction.casefold()
+    assert "unavailable evidence" in repair_input
+
+
+def test_malformed_entailment_gets_one_repair() -> None:
+    gap = _gap()
+    malformed = StructuredOutputError(
+        "structured output failed JSON schema validation",
+        raw_text='{"status":',
+        generation=GeneratedText(
+            text='{"status":',
+            provider=ProviderName.OPENAI,
+            model="gpt-5.2",
+            request_id="request-malformed",
+            input_tokens=20,
+            output_tokens=4,
+            cost_microusd=2,
+        ),
+    )
+    service = _service(
+        _draft(gap.evidence[0].passage_id),
+        malformed,
+        EntailmentDecision(
+            status="supported",
+            rationale="Every claim appears in the cited slide.",
+        ),
+    )
+
+    result = service.generate(gap)
+
+    assert result.status == "proposed"
+    assert "repair" in service.structured.requests[2][0].casefold()  # type: ignore[attr-defined]
 
 
 @pytest.mark.parametrize(
@@ -195,9 +289,8 @@ def test_deterministic_card_validation_blocks_unsafe_drafts(
     message: str,
 ) -> None:
     gap = _gap()
-    service = _service(
-        _draft(gap.evidence[0].passage_id, text=text)
-    )
+    invalid = _draft(gap.evidence[0].passage_id, text=text)
+    service = _service(invalid, invalid)
 
     with pytest.raises(GapValidationError, match=message):
         service.generate(gap)

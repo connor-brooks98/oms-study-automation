@@ -77,3 +77,9 @@ test("provider changes resolve that provider's saved model", () => {
   );
   assert.equal(anki.resolveProviderModel(models, "gemini"), "");
 });
+
+test("only failed curation jobs expose pipeline retry", () => {
+  assert.equal(anki.canRetryCuration("failed"), true);
+  assert.equal(anki.canRetryCuration("judging_pass_1"), false);
+  assert.equal(anki.canRetryCuration("complete"), false);
+});

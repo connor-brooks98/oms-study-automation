@@ -38,6 +38,7 @@ class ApplyResult:
     envelope_id: UUID
     state: ApplyState
     created_note_ids: tuple[int, ...] = ()
+    rejected_duplicates: tuple[dict[str, Any], ...] = ()
     differences: tuple[dict[str, Any], ...] = ()
     safe_error: str | None = None
 
@@ -67,7 +68,7 @@ class ApplyGateway(Protocol):
     async def add_notes(
         self,
         notes: Sequence[dict[str, Any]],
-    ) -> list[int]: ...
+    ) -> list[int | None]: ...
 
 
 class ApplyRuntime(Protocol):
@@ -362,11 +363,17 @@ class ApplyCoordinator:
                     "tag": operation.tag,
                 }
             elif isinstance(operation, AddNotesOperation):
-                note_ids, added_count = await self._add_missing_notes(operation)
+                (
+                    note_ids,
+                    added_count,
+                    recovered_count,
+                    rejected_duplicates,
+                ) = await self._add_missing_notes(operation)
                 result = {
                     "note_ids": list(note_ids),
                     "added_count": added_count,
-                    "recovered_count": len(note_ids) - added_count,
+                    "recovered_count": recovered_count,
+                    "rejected_duplicates": list(rejected_duplicates),
                 }
         except AnkiConnectError as exc:
             error = f"{operation.operation_type}: {_safe_error(exc)}"
@@ -408,7 +415,12 @@ class ApplyCoordinator:
     async def _add_missing_notes(
         self,
         operation: AddNotesOperation,
-    ) -> tuple[tuple[int, ...], int]:
+    ) -> tuple[
+        tuple[int | None, ...],
+        int,
+        int,
+        tuple[dict[str, Any], ...],
+    ]:
         resolved: list[int | None] = []
         missing_notes: list[dict[str, Any]] = []
         missing_positions: list[int] = []
@@ -425,6 +437,7 @@ class ApplyCoordinator:
                 resolved.append(None)
                 missing_notes.append(note)
                 missing_positions.append(position)
+        recovered_count = len(operation.notes) - len(missing_notes)
         created = (
             await self.gateway.add_notes(missing_notes)
             if missing_notes
@@ -436,9 +449,21 @@ class ApplyCoordinator:
             )
         for position, note_id in zip(missing_positions, created, strict=True):
             resolved[position] = note_id
-        if any(note_id is None for note_id in resolved):
-            raise AnkiConnectError("generated note IDs did not reconcile")
-        return tuple(cast(int, note_id) for note_id in resolved), len(created)
+        rejected_duplicates = tuple(
+            {
+                "position": position,
+                "status": "rejected_duplicate",
+            }
+            for position, note_id in enumerate(resolved)
+            if note_id is None
+        )
+        added_count = sum(note_id is not None for note_id in created)
+        return (
+            tuple(resolved),
+            added_count,
+            recovered_count,
+            rejected_duplicates,
+        )
 
     async def _trailing_sync(
         self,
@@ -665,6 +690,27 @@ class ApplyCoordinator:
     ) -> tuple[int, ...]:
         return tuple(self._created_note_specs(envelope))
 
+    def _rejected_duplicates(
+        self,
+        envelope: ActionEnvelope,
+    ) -> tuple[dict[str, Any], ...]:
+        rejected: list[dict[str, Any]] = []
+        for operation in envelope.operations:
+            if not isinstance(operation, AddNotesOperation):
+                continue
+            record = self.store.operation_record(
+                envelope.envelope_id,
+                operation.operation_id,
+            )
+            if record.state != "complete" or record.result is None:
+                continue
+            values = record.result.get("rejected_duplicates")
+            if isinstance(values, list):
+                rejected.extend(
+                    value for value in values if isinstance(value, dict)
+                )
+        return tuple(rejected)
+
     def _finish(
         self,
         envelope: ActionEnvelope,
@@ -674,9 +720,11 @@ class ApplyCoordinator:
         safe_error: str | None = None,
     ) -> ApplyResult:
         created_note_ids = self._created_note_ids(envelope)
+        rejected_duplicates = self._rejected_duplicates(envelope)
         summary = {
             "state": state.value,
             "created_note_ids": list(created_note_ids),
+            "rejected_duplicates": list(rejected_duplicates),
             "differences": list(differences),
             "safe_error": safe_error,
         }
@@ -689,6 +737,7 @@ class ApplyCoordinator:
             envelope_id=envelope.envelope_id,
             state=state,
             created_note_ids=created_note_ids,
+            rejected_duplicates=rejected_duplicates,
             differences=differences,
             safe_error=safe_error,
         )

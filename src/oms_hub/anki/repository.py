@@ -128,6 +128,18 @@ ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
         CurationState.COMPLETE,
         CurationState.FAILED,
     },
+    CurationState.FAILED: {
+        CurationState.PREFLIGHT,
+        CurationState.BUILDING_SOURCE_INDEX,
+        CurationState.BUILDING_LCL,
+        CurationState.RETRIEVING_PASS_1,
+        CurationState.JUDGING_PASS_1,
+        CurationState.LOCALIZING_MISSED_CONCEPTS,
+        CurationState.RETRIEVING_PASS_2,
+        CurationState.JUDGING_PASS_2,
+        CurationState.DEDUPING,
+        CurationState.GENERATING_GAPS,
+    },
 }
 
 _INTERRUPTED_PRE_REVIEW_STATES = {
@@ -157,6 +169,19 @@ _CLAIMABLE_STATES = {
     CurationState.JUDGING_PASS_2,
     CurationState.DEDUPING,
     CurationState.GENERATING_GAPS,
+}
+
+_RETRY_STATE_BY_STAGE = {
+    CurationStage.PREFLIGHT: CurationState.PREFLIGHT,
+    CurationStage.SOURCE_INDEX: CurationState.BUILDING_SOURCE_INDEX,
+    CurationStage.LCL: CurationState.BUILDING_LCL,
+    CurationStage.RETRIEVAL_PASS_1: CurationState.RETRIEVING_PASS_1,
+    CurationStage.JUDGMENT_PASS_1: CurationState.JUDGING_PASS_1,
+    CurationStage.RESCUE: CurationState.LOCALIZING_MISSED_CONCEPTS,
+    CurationStage.RETRIEVAL_PASS_2: CurationState.RETRIEVING_PASS_2,
+    CurationStage.JUDGMENT_PASS_2: CurationState.JUDGING_PASS_2,
+    CurationStage.DEDUPE: CurationState.DEDUPING,
+    CurationStage.GAPS: CurationState.GENERATING_GAPS,
 }
 
 
@@ -398,6 +423,38 @@ class AnkiCurationRepository:
             )
             stored.state = CurationState.FAILED.value
             stored.error = safe_error[:1_000]
+            stored.available_at = None
+            stored.lease_owner = None
+            stored.lease_expires_at = None
+            session.flush()
+            return self._job(stored)
+
+    def retry_job(self, job_id: UUID) -> CurationJob:
+        with self.database.session() as session:
+            stored = self._require_job_model(session, job_id)
+            if stored.state != CurationState.FAILED.value:
+                raise ValueError("only a failed curation job can be retried")
+            failed_stage = session.scalar(
+                select(AnkiJobStageModel)
+                .where(
+                    AnkiJobStageModel.job_id == str(job_id),
+                    AnkiJobStageModel.state == "failed",
+                )
+                .order_by(AnkiJobStageModel.started_at.desc())
+            )
+            if failed_stage is None:
+                raise ValueError("failed curation job has no resumable stage")
+            target_state = _RETRY_STATE_BY_STAGE.get(
+                CurationStage(failed_stage.stage)
+            )
+            if target_state is None:
+                raise ValueError("failed curation stage cannot be retried")
+            if target_state not in ALLOWED_TRANSITIONS[CurationState.FAILED]:
+                raise InvalidCurationTransition(
+                    f"transition failed -> {target_state.value} is not allowed"
+                )
+            stored.state = target_state.value
+            stored.error = None
             stored.available_at = None
             stored.lease_owner = None
             stored.lease_expires_at = None

@@ -4,7 +4,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from oms_hub.anki.sources import SourcePassage
 from oms_hub.llm.domain import ProviderName
@@ -92,6 +98,25 @@ class LectureConceptLedger(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     concepts: tuple[LectureConcept, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def rekey_duplicate_concept_ids(self) -> "LectureConceptLedger":
+        used: set[str] = set()
+        normalized: list[LectureConcept] = []
+        for concept in self.concepts:
+            concept_id = concept.concept_id
+            suffix = 2
+            while concept_id in used:
+                concept_id = f"{concept.concept_id}-{suffix}"
+                suffix += 1
+            used.add(concept_id)
+            normalized.append(
+                concept
+                if concept_id == concept.concept_id
+                else concept.model_copy(update={"concept_id": concept_id})
+            )
+        object.__setattr__(self, "concepts", tuple(normalized))
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,9 +254,6 @@ def _validate_ledger(
     ledger: LectureConceptLedger,
     source_by_id: dict[str, SourcePassage],
 ) -> None:
-    concept_ids = [concept.concept_id for concept in ledger.concepts]
-    if len(set(concept_ids)) != len(concept_ids):
-        raise LCLGenerationError("ledger contains duplicate concept IDs")
     for concept in ledger.concepts:
         cited = []
         for source_ref in concept.source_refs:
@@ -296,8 +318,8 @@ def _generation_instruction(prompt_version: str) -> str:
         f"Generate lecture concept ledger {prompt_version}. Use only the "
         "provided passages. Cite one or more passage_id values for every "
         "concept. Produce a concise canonical statement, a hypothetical "
-        "Anki card, exactly two distinct search paraphrases, and importance. "
-        "Do not add unsupported medical facts."
+        "Anki card, exactly two distinct search paraphrases, importance, and "
+        "a unique concept_id. Do not add unsupported medical facts."
     )
 
 

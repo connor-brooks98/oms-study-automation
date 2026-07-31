@@ -136,10 +136,15 @@ class AnkiConnectClient:
     async def add_notes(
         self,
         notes: Sequence[dict[str, Any]],
-    ) -> list[int]:
-        return self._integer_list(
+    ) -> list[int | None]:
+        result = self._optional_integer_list(
             await self._invoke("addNotes", notes=list(notes))
         )
+        if len(result) != len(notes):
+            raise AnkiConnectProtocolError(
+                "AnkiConnect did not return one addNotes result per note"
+            )
+        return result
 
     async def sync(self) -> None:
         await self._empty_result("sync")
@@ -203,6 +208,22 @@ class AnkiConnectClient:
                 "AnkiConnect returned an invalid ID list"
             )
         return cast(list[int], result)
+
+    @staticmethod
+    def _optional_integer_list(result: Any) -> list[int | None]:
+        if not isinstance(result, list) or not all(
+            item is None
+            or (
+                isinstance(item, int)
+                and not isinstance(item, bool)
+                and item > 0
+            )
+            for item in result
+        ):
+            raise AnkiConnectProtocolError(
+                "AnkiConnect returned an invalid addNotes result"
+            )
+        return cast(list[int | None], result)
 
     @staticmethod
     def _object_list(

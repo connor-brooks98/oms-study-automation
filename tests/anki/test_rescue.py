@@ -98,8 +98,12 @@ def _structured_result(
 
 
 class QueueStructured:
-    def __init__(self, decisions: Sequence[LocalizationDecision]) -> None:
+    def __init__(
+        self,
+        decisions: Sequence[LocalizationDecision | Exception],
+    ) -> None:
         self.decisions = list(decisions)
+        self.requests: list[tuple[str, str]] = []
 
     def generate_json(
         self,
@@ -110,7 +114,11 @@ class QueueStructured:
         provider: ProviderName,
         model: str,
     ) -> StructuredJSONResult[LocalizationDecision]:
-        return _structured_result(self.decisions.pop(0))
+        self.requests.append((instruction, input_text))
+        decision = self.decisions.pop(0)
+        if isinstance(decision, Exception):
+            raise decision
+        return _structured_result(decision)
 
 
 def _service(
@@ -208,6 +216,86 @@ def test_localization_can_fuse_slide_and_transcript_evidence() -> None:
         assert {
             evidence.source_kind for evidence in localized.evidence
         } == {SourceKind.SLIDE, SourceKind.TRANSCRIPT}
+
+    asyncio.run(scenario())
+
+
+def test_duplicate_localization_evidence_ids_are_normalized() -> None:
+    async def scenario() -> None:
+        passage = _passage(
+            7,
+            SourceKind.SLIDE,
+            "Reticulocytes rise after iron treatment.",
+            "slide:5",
+        )
+        service = _service(
+            [_hit(passage)],
+            LocalizationDecision(
+                support="supported",
+                evidence_ids=(passage.passage_id, passage.passage_id),
+                rationale="The passage supports the concept.",
+            ),
+        )
+
+        localized = await service.localize(
+            _concept(),
+            SourceScope(revision_ids=(7,)),
+        )
+
+        assert localized.evidence == (passage,)
+
+    asyncio.run(scenario())
+
+
+def test_localization_support_is_case_and_whitespace_tolerant() -> None:
+    decision = LocalizationDecision(
+        support=" Supported ",  # type: ignore[arg-type]
+        evidence_ids=("passage-1",),
+        rationale="The supplied passage supports the concept.",
+    )
+
+    assert decision.support == "supported"
+
+
+def test_invalid_localization_gets_one_repair() -> None:
+    async def scenario() -> None:
+        passage = _passage(
+            7,
+            SourceKind.SLIDE,
+            "Reticulocytes rise after iron treatment.",
+            "slide:5",
+        )
+        structured = QueueStructured(
+            [
+                LocalizationDecision(
+                    support="supported",
+                    evidence_ids=("f" * 64,),
+                    rationale="The passage supports the concept.",
+                ),
+                LocalizationDecision(
+                    support="supported",
+                    evidence_ids=(passage.passage_id,),
+                    rationale="The supplied passage supports the concept.",
+                ),
+            ]
+        )
+        service = RescueService(
+            FakeSourceIndex([_hit(passage)]),
+            structured,
+            provider=ProviderName.OPENAI,
+            model="gpt-5.2",
+            prompt_version="rescue-v1",
+        )
+
+        localized = await service.localize(
+            _concept(),
+            SourceScope(revision_ids=(7,)),
+        )
+
+        assert localized.evidence == (passage,)
+        assert len(structured.requests) == 2
+        assert "repair" in structured.requests[1][0].casefold()
+        assert "not a localized source passage" in structured.requests[1][1]
 
     asyncio.run(scenario())
 

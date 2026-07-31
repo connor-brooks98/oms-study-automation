@@ -156,3 +156,23 @@ def test_ankiconnect_classifies_action_and_network_errors() -> None:
 
     with pytest.raises(AnkiConnectUnavailable, match="unavailable"):
         _run_client(unavailable, find_notes)
+
+
+def test_add_notes_preserves_partial_duplicate_rejections() -> None:
+    async def add_notes(client: AnkiConnectClient) -> list[int | None]:
+        return await client.add_notes(
+            [
+                {"deckName": "custom", "fields": {"Text": "new"}},
+                {"deckName": "custom", "fields": {"Text": "duplicate"}},
+            ]
+        )
+
+    result = _run_client(
+        lambda request: httpx.Response(
+            200,
+            json={"result": [31, None], "error": None},
+        ),
+        add_notes,
+    )
+
+    assert result == [31, None]

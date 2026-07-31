@@ -234,6 +234,44 @@ def test_stage_lifecycle_records_usage_and_safe_failure(tmp_path) -> None:
     assert failed.error == "index is unavailable"
 
 
+def test_failed_job_can_retry_its_failed_stage_without_losing_artifacts(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    now = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
+    claimed = repository.claim_next_job(
+        now,
+        worker_id="worker-1",
+        lease_seconds=30,
+    )
+    assert claimed is not None
+    repository.start_stage(job.id, CurationStage.PREFLIGHT)
+    repository.fail_stage(
+        job.id,
+        CurationStage.PREFLIGHT,
+        "provider returned malformed output",
+    )
+    repository.fail_job(
+        job.id,
+        "worker-1",
+        "provider returned malformed output",
+    )
+
+    retried = repository.retry_job(job.id)
+
+    assert retried.state is CurationState.PREFLIGHT
+    assert retried.error is None
+    assert retried.available_at is None
+    claimed_again = repository.claim_next_job(
+        now,
+        worker_id="worker-2",
+        lease_seconds=30,
+    )
+    assert claimed_again is not None
+    assert claimed_again.id == job.id
+
+
 def test_source_evidence_and_stage_artifacts_round_trip(tmp_path) -> None:
     repository, lecture_id = _prepared_repository(tmp_path)
     job = repository.create_job(_job_request(lecture_id))

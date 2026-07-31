@@ -89,6 +89,7 @@ class QueueStructured:
     ) -> None:
         self.judgments = list(judgments)
         self.calls = 0
+        self.requests: list[tuple[str, str]] = []
 
     def generate_json(
         self,
@@ -100,6 +101,7 @@ class QueueStructured:
         model: str,
     ) -> StructuredJSONResult[CoverageJudgment]:
         self.calls += 1
+        self.requests.append((instruction, input_text))
         value = self.judgments.pop(0)
         if isinstance(value, Exception):
             raise value
@@ -191,15 +193,14 @@ def test_changed_candidate_content_hash_invalidates_cache() -> None:
 
 
 def test_supporting_note_ids_must_be_supplied_candidates() -> None:
+    invalid = CoverageJudgment(
+        status="covered",
+        supporting_note_ids=(999,),
+        missing_facts=(),
+        rationale="A different note covers it.",
+    )
     structured = QueueStructured(
-        [
-            CoverageJudgment(
-                status="covered",
-                supporting_note_ids=(999,),
-                missing_facts=(),
-                rationale="A different note covers it.",
-            )
-        ]
+        [invalid, invalid]
     )
     service = _service(structured, MemoryCache(), [_note(1)])
 
@@ -207,20 +208,96 @@ def test_supporting_note_ids_must_be_supplied_candidates() -> None:
         service.judge(_concept(), [_candidate(1)])
 
 
-def test_contradictory_status_and_explanation_are_rejected() -> None:
+def test_duplicate_supporting_note_ids_are_normalized_before_caching() -> None:
+    judgment = CoverageJudgment(
+        status="covered",
+        supporting_note_ids=(1, 1, 2, 1),
+        missing_facts=(),
+        rationale="The supplied notes cover the concept.",
+    )
+    cache = MemoryCache()
+    service = _service(
+        QueueStructured([judgment]),
+        cache,
+        [_note(1), _note(2)],
+    )
+
+    result = service.judge(_concept(), [_candidate(1), _candidate(2)])
+
+    assert result.judgment.supporting_note_ids == (1, 2)
+    cached = next(iter(cache.values.values()))
+    assert cached.result["supporting_note_ids"] == [1, 2]
+
+
+def test_judgment_status_is_case_and_whitespace_tolerant() -> None:
+    judgment = CoverageJudgment(
+        status=" Covered ",  # type: ignore[arg-type]
+        supporting_note_ids=(1,),
+        missing_facts=(),
+        rationale="The supplied note covers the concept.",
+    )
+
+    assert judgment.status == "covered"
+
+
+def test_missing_judgment_accepts_negated_coverage_language_and_strips_facts() -> None:
     structured = QueueStructured(
         [
             CoverageJudgment(
                 status="missing",
                 supporting_note_ids=(),
-                missing_facts=("No gap.",),
-                rationale="The concept is fully covered with no gap.",
+                missing_facts=("  Treatment timing is absent.  ",),
+                rationale="The concept is not fully covered by any candidate.",
             )
         ]
     )
     service = _service(structured, MemoryCache(), [_note(1)])
 
-    with pytest.raises(JudgmentValidationError, match="contradict"):
+    result = service.judge(_concept(), [_candidate(1)])
+
+    assert result.judgment.missing_facts == ("Treatment timing is absent.",)
+
+
+def test_invalid_judgment_gets_one_repair_before_it_is_cached() -> None:
+    invalid = CoverageJudgment(
+        status="covered",
+        supporting_note_ids=(999,),
+        missing_facts=(),
+        rationale="An unavailable note covers it.",
+    )
+    repaired = CoverageJudgment(
+        status="covered",
+        supporting_note_ids=(1,),
+        missing_facts=(),
+        rationale="The supplied note covers it.",
+    )
+    structured = QueueStructured([invalid, repaired])
+    cache = MemoryCache()
+    service = _service(structured, cache, [_note(1)])
+
+    result = service.judge(_concept(), [_candidate(1)])
+
+    assert result.judgment == repaired
+    assert structured.calls == 2
+    assert "repair" in structured.requests[1][0].casefold()
+    assert "not a supplied candidate" in structured.requests[1][1]
+    assert len(cache.values) == 1
+
+
+def test_blank_missing_fact_is_still_rejected_after_one_repair() -> None:
+    invalid = CoverageJudgment(
+        status="missing",
+        supporting_note_ids=(),
+        missing_facts=("   ",),
+        rationale="No candidate covers the concept.",
+    )
+    service = _service(
+        QueueStructured([invalid, invalid]),
+        MemoryCache(),
+        [_note(1)],
+    )
+
+    with pytest.raises(JudgmentValidationError, match="blank"):
         service.judge(_concept(), [_candidate(1)])
 
 

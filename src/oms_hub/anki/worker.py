@@ -17,6 +17,7 @@ from oms_hub.anki.repository import (
 )
 from oms_hub.anki.semantic.voyage import VoyageEmbeddingError
 from oms_hub.llm.domain import DiagnosticSource, LLMRequestError
+from oms_hub.llm.structured import StructuredOutputError
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +198,8 @@ def _is_retryable(error: Exception) -> bool:
             DiagnosticSource.QUOTA,
             DiagnosticSource.SERVICE,
         }
+    if isinstance(error, StructuredOutputError):
+        return True
     return isinstance(
         error,
         (

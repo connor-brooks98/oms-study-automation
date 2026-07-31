@@ -23,7 +23,13 @@ from oms_hub.anki.worker import AnkiCurationWorker
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.db import Database
-from oms_hub.llm.domain import DiagnosticSource, LLMRequestError
+from oms_hub.llm.domain import (
+    DiagnosticSource,
+    GeneratedText,
+    LLMRequestError,
+    ProviderName,
+)
+from oms_hub.llm.structured import StructuredOutputError
 from oms_hub.models import LectureModel
 
 
@@ -243,6 +249,37 @@ def test_transient_stage_failure_retries_from_the_same_stage(
             CurationStage.PREFLIGHT,
             CurationStage.PREFLIGHT,
         ]
+
+    asyncio.run(scenario())
+
+
+def test_malformed_structured_output_retries_from_the_same_stage(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        job = _create_job(repository)
+        runner = ControlledRunner()
+        runner.error = StructuredOutputError(
+            "structured output failed JSON schema validation",
+            raw_text='{"status":',
+            generation=GeneratedText(
+                text='{"status":',
+                provider=ProviderName.OPENAI,
+                model="gpt-5.2",
+                request_id="request-malformed",
+                input_tokens=20,
+                output_tokens=4,
+                cost_microusd=2,
+            ),
+        )
+        worker = _worker(repository, tmp_path, runner)
+
+        assert await worker.run_once()
+
+        retryable = repository.require_job(job.id)
+        assert retryable.state is CurationState.PREFLIGHT
+        assert retryable.available_at is not None
 
     asyncio.run(scenario())
 

@@ -4,14 +4,18 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from oms_hub.anki.judgment import CoverageJudgment
 from oms_hub.anki.lcl import LectureConcept
 from oms_hub.anki.source_index import SourceScope, SourceSearchHit
 from oms_hub.anki.sources import SourcePassage
 from oms_hub.llm.domain import ProviderName
-from oms_hub.llm.structured import StructuredJSONResult
+from oms_hub.llm.structured import (
+    StructuredJSONResult,
+    StructuredOutputError,
+    sanitize_model_text,
+)
 
 RescueSupport = Literal["supported", "partial", "unsupported"]
 RescueOutcome = Literal[
@@ -58,6 +62,19 @@ class LocalizationDecision(BaseModel):
     ]
     rationale: str = Field(min_length=1, max_length=4_000)
 
+    @field_validator("support", mode="before")
+    @classmethod
+    def normalize_support(cls, value: object) -> object:
+        return value.strip().casefold() if isinstance(value, str) else value
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def dedupe_evidence_ids(
+        cls,
+        values: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(values))
+
 
 class RescueQuery(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -77,6 +94,10 @@ class RescueLocalization:
 
 class SourceRevisionStale(ValueError):
     """Source search returned evidence outside the selected revisions."""
+
+
+class RescueValidationError(ValueError):
+    """A localization decision contradicts the supplied evidence."""
 
 
 class SourceEvidenceIndex(Protocol):
@@ -167,35 +188,45 @@ class RescueService:
             raise SourceRevisionStale(
                 "source search returned evidence outside source scope"
             )
-        generated = self.structured.generate_json(
-            _localization_instruction(self.prompt_version),
-            _localization_input(concept, hits),
-            output_model=LocalizationDecision,
-            provider=self.provider,
-            model=self.model,
-        )
+        localization_input = _localization_input(concept, hits)
         evidence_by_id = {
             hit.passage.passage_id: hit.passage for hit in hits
         }
-        decision = generated.value
-        if len(set(decision.evidence_ids)) != len(decision.evidence_ids):
-            raise ValueError("rescue evidence IDs must be unique")
-        if any(
-            evidence_id not in evidence_by_id
-            for evidence_id in decision.evidence_ids
-        ):
-            raise ValueError(
-                "rescue evidence ID was not a localized source passage"
+        try:
+            generated = self._request(
+                _localization_instruction(self.prompt_version),
+                localization_input,
             )
-        if decision.support == "unsupported":
-            if decision.evidence_ids:
-                raise ValueError(
-                    "unsupported localization cannot cite evidence"
+            _validate_localization(generated.value, evidence_by_id)
+        except (
+            StructuredOutputError,
+            RescueValidationError,
+        ) as first_error:
+            raw = (
+                first_error.raw_text
+                if isinstance(first_error, StructuredOutputError)
+                else (
+                    sanitize_model_text(generated.raw_text)
+                    if "generated" in locals()
+                    else ""
                 )
-        elif not decision.evidence_ids:
-            raise ValueError(
-                "supported localization requires source evidence"
             )
+            repair_input = json.dumps(
+                {
+                    "localization_input": json.loads(localization_input),
+                    "invalid_response": raw,
+                    "validation_error": str(first_error),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            generated = self._request(
+                _repair_instruction(self.prompt_version),
+                repair_input,
+            )
+            _validate_localization(generated.value, evidence_by_id)
+        decision = generated.value
         return RescueLocalization(
             concept=concept,
             support=decision.support,
@@ -204,6 +235,19 @@ class RescueService:
                 for evidence_id in decision.evidence_ids
             ),
             rationale=decision.rationale.strip(),
+        )
+
+    def _request(
+        self,
+        instruction: str,
+        input_text: str,
+    ) -> StructuredJSONResult[LocalizationDecision]:
+        return self.structured.generate_json(
+            instruction,
+            input_text,
+            output_model=LocalizationDecision,
+            provider=self.provider,
+            model=self.model,
         )
 
     def build_queries(
@@ -266,12 +310,44 @@ class RescueService:
         return "unresolved_partial"
 
 
+def _validate_localization(
+    decision: LocalizationDecision,
+    evidence_by_id: dict[str, SourcePassage],
+) -> None:
+    if any(
+        evidence_id not in evidence_by_id
+        for evidence_id in decision.evidence_ids
+    ):
+        raise RescueValidationError(
+            "rescue evidence ID was not a localized source passage"
+        )
+    if decision.support == "unsupported":
+        if decision.evidence_ids:
+            raise RescueValidationError(
+                "unsupported localization cannot cite evidence"
+            )
+    elif not decision.evidence_ids:
+        raise RescueValidationError(
+            "supported localization requires source evidence"
+        )
+
+
 def _localization_instruction(prompt_version: str) -> str:
     return (
         f"Apply source rescue rubric {prompt_version}. Determine whether the "
         "candidate slide and transcript passages explicitly support, "
         "partially support, or do not support the lecture concept. Cite only "
-        "candidate passage IDs. Do not create card text or add medical facts."
+        "candidate passage IDs and list each passage ID at most once. Do not "
+        "create card text or add medical facts."
+    )
+
+
+def _repair_instruction(prompt_version: str) -> str:
+    return (
+        f"Repair the invalid source localization decision for "
+        f"{prompt_version}. Correct only the reported validation defects, "
+        "cite only the supplied passage IDs, and return the complete corrected "
+        "decision."
     )
 
 

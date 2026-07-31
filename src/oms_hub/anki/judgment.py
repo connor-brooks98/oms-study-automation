@@ -5,13 +5,17 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from oms_hub.anki.domain import Candidate
 from oms_hub.anki.lcl import LectureConcept
 from oms_hub.anki.normalize import NormalizedNote
 from oms_hub.llm.domain import ProviderName
-from oms_hub.llm.structured import StructuredJSONResult
+from oms_hub.llm.structured import (
+    StructuredJSONResult,
+    StructuredOutputError,
+    sanitize_model_text,
+)
 
 
 class CoverageJudgment(BaseModel):
@@ -21,6 +25,27 @@ class CoverageJudgment(BaseModel):
     supporting_note_ids: tuple[int, ...]
     missing_facts: tuple[str, ...]
     rationale: str = Field(min_length=1, max_length=4_000)
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, value: object) -> object:
+        return value.strip().casefold() if isinstance(value, str) else value
+
+    @field_validator("supporting_note_ids")
+    @classmethod
+    def dedupe_supporting_ids(
+        cls,
+        values: tuple[int, ...],
+    ) -> tuple[int, ...]:
+        return tuple(dict.fromkeys(values))
+
+    @field_validator("missing_facts")
+    @classmethod
+    def strip_missing_facts(
+        cls,
+        values: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        return tuple(value.strip() for value in values)
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,14 +181,45 @@ class JudgmentService:
                     cost_microusd=cached.cost_microusd,
                 )
 
-        generated = self.structured.generate_json(
-            _judgment_instruction(self.prompt_version),
-            _judgment_input(concept, candidates, candidate_notes),
-            output_model=CoverageJudgment,
-            provider=self.provider,
-            model=self.model,
+        judgment_input = _judgment_input(
+            concept,
+            candidates,
+            candidate_notes,
         )
-        _validate_judgment(generated.value, candidate_ids)
+        try:
+            generated = self._request(
+                _judgment_instruction(self.prompt_version),
+                judgment_input,
+            )
+            _validate_judgment(generated.value, candidate_ids)
+        except (
+            StructuredOutputError,
+            JudgmentValidationError,
+        ) as first_error:
+            raw = (
+                first_error.raw_text
+                if isinstance(first_error, StructuredOutputError)
+                else (
+                    sanitize_model_text(generated.raw_text)
+                    if "generated" in locals()
+                    else ""
+                )
+            )
+            repair_input = json.dumps(
+                {
+                    "judgment_input": json.loads(judgment_input),
+                    "invalid_response": raw,
+                    "validation_error": str(first_error),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            generated = self._request(
+                _repair_instruction(self.prompt_version),
+                repair_input,
+            )
+            _validate_judgment(generated.value, candidate_ids)
         record = JudgmentCacheRecord(
             cache_key=cache_key,
             concept_content_hash=concept_hash,
@@ -188,6 +244,19 @@ class JudgmentService:
             input_tokens=generated.input_tokens,
             output_tokens=generated.output_tokens,
             cost_microusd=generated.cost_microusd,
+        )
+
+    def _request(
+        self,
+        instruction: str,
+        input_text: str,
+    ) -> StructuredJSONResult[CoverageJudgment]:
+        return self.structured.generate_json(
+            instruction,
+            input_text,
+            output_model=CoverageJudgment,
+            provider=self.provider,
+            model=self.model,
         )
 
     def _candidate_notes(
@@ -223,20 +292,13 @@ def _validate_judgment(
     candidate_ids: set[int],
 ) -> None:
     supporting = judgment.supporting_note_ids
-    if len(set(supporting)) != len(supporting):
-        raise JudgmentValidationError(
-            "supporting candidate note IDs must be unique"
-        )
     if any(note_id not in candidate_ids for note_id in supporting):
         raise JudgmentValidationError(
             "supporting note ID is not a supplied candidate"
         )
-    missing_facts = tuple(
-        fact.strip() for fact in judgment.missing_facts
-    )
+    missing_facts = judgment.missing_facts
     if any(not fact for fact in missing_facts):
         raise JudgmentValidationError("missing facts cannot be blank")
-    rationale = judgment.rationale.casefold()
     if judgment.status == "covered":
         if not supporting:
             raise JudgmentValidationError(
@@ -255,13 +317,6 @@ def _validate_judgment(
             raise JudgmentValidationError(
                 "missing judgment requires missing facts"
             )
-        if any(
-            phrase in rationale
-            for phrase in ("fully covered", "adequately covered", "no gap")
-        ):
-            raise JudgmentValidationError(
-                "missing judgment rationale contradicts its status"
-            )
     elif not missing_facts:
         raise JudgmentValidationError(
             "partial judgment requires missing facts"
@@ -272,8 +327,17 @@ def _judgment_instruction(prompt_version: str) -> str:
     return (
         f"Apply coverage rubric {prompt_version}. Decide whether the supplied "
         "Anki candidates fully cover, partially cover, or miss the lecture "
-        "concept. Use only supplied note IDs. List exact missing facts and "
-        "give a concise rationale. Do not treat retrieval rank as coverage."
+        "concept. Use only supplied note IDs and list each supporting note ID "
+        "at most once. List exact missing facts and give a concise rationale. "
+        "Do not treat retrieval rank as coverage."
+    )
+
+
+def _repair_instruction(prompt_version: str) -> str:
+    return (
+        f"Repair the invalid coverage judgment for {prompt_version}. Correct "
+        "only the reported validation defects, use only the supplied "
+        "candidate note IDs, and return the complete corrected judgment."
     )
 
 
