@@ -5,7 +5,11 @@ from typing import Protocol
 from oms_hub.files.office import OfficeConverter
 from oms_hub.files.pdf import validate_pdf
 from oms_hub.llm.domain import DiagnosticSource
-from oms_hub.study_generation.native_quiz import QuizContractError, parse_native_quiz
+from oms_hub.study_generation.native_quiz import (
+    QuizContractError,
+    image_requirements,
+    parse_native_quiz,
+)
 from oms_hub.study_generation.notebook import StoredNotebookLMGateway
 from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
@@ -106,7 +110,7 @@ class StudioWorker:
             return True
         self.repository.set_run_stage(run.id, StudioRunStage.QUIZ_VALIDATE)
         try:
-            quiz = parse_native_quiz(answer)
+            quiz = replace(parse_native_quiz(answer), title=run.label)
         except QuizContractError as error:
             self.repository.mark_run_attempt_error(
                 run.id,
@@ -128,11 +132,19 @@ class StudioWorker:
                     str(error),
                 )
             return True
+        if image_requirements(quiz):
+            self.repository.await_image_review(
+                run.id,
+                notebook_id,
+                answer,
+                quiz,
+            )
+            return True
         try:
             self.repository.set_run_stage(run.id, StudioRunStage.PUBLISH)
             published = self.publisher.publish_studio_quiz(
                 run.id,
-                replace(quiz, title=run.label),
+                quiz,
             )
             self.repository.complete_published_run(
                 run.id,

@@ -5,7 +5,11 @@ import pytest
 
 from oms_hub.db import Database
 from oms_hub.study_generation.repository import GenerationRepository
-from oms_hub.study_generation.studio_domain import StudioRunState, StudioSourceType
+from oms_hub.study_generation.studio_domain import (
+    StudioRunStage,
+    StudioRunState,
+    StudioSourceType,
+)
 from oms_hub.study_generation.studio_repository import StudioRepository
 from oms_hub.study_generation.studio_service import StudioService
 from oms_hub.study_generation.studio_worker import StudioWorker
@@ -21,6 +25,28 @@ def _quiz(title: str = "Notebook title", stem: str = "Question?") -> str:
                     "choices": ["A", "B"],
                     "correct_index": 0,
                     "rationale": "A is correct and B is not.",
+                }
+            ],
+        }
+    )
+
+
+def _image_quiz(title: str = "Notebook title", stem: str = "Use the image.") -> str:
+    return json.dumps(
+        {
+            "title": title,
+            "questions": [
+                {
+                    "stem": stem,
+                    "choices": ["A", "B"],
+                    "correct_index": 0,
+                    "rationale": "A is correct and B is not.",
+                    "image_ref": {
+                        "key": "image-1",
+                        "source_title": "Professor website",
+                        "locator": "Image immediately before question 4",
+                        "description": "Reference image used for questions 4-7",
+                    },
                 }
             ],
         }
@@ -100,6 +126,65 @@ def test_professor_url_chat_answer_is_relabelled_and_published_to_destination(tm
     assert gateway.calls == [["remote-professor"]]
     studio.mark_source_deleted(source.id)
     assert published.published_quiz(record.token) is not None
+    database.close()
+
+
+def test_image_dependent_chat_answer_waits_for_private_review(tmp_path):
+    database, studio, service, published, _gateway, worker = _components(
+        tmp_path,
+        [_image_quiz()],
+    )
+    run = service.queue_run(
+        "Neuro",
+        1,
+        "Create a quiz",
+        [],
+        "Image review",
+        "Neuro",
+        1,
+    )
+
+    worker.run_once()
+
+    waiting = studio.get_run(run.id)
+    assert waiting.state is StudioRunState.AWAITING_IMAGES
+    assert waiting.stage is StudioRunStage.IMAGE_REVIEW
+    assert waiting.published_token is None
+    assert published.published_quizzes() == ()
+    assert studio.quiz_review(run.id).requirements[0].question_ids == ("q1",)
+    database.close()
+
+
+def test_replacement_waiting_for_images_leaves_current_quiz_active(tmp_path):
+    database, studio, service, published, _gateway, worker = _components(
+        tmp_path,
+        [_quiz(stem="Original question?"), _image_quiz(stem="Replacement question?")],
+    )
+    first = service.queue_run(
+        "Neuro",
+        1,
+        "Create a quiz",
+        [],
+        "Exam review",
+        "Neuro",
+        1,
+    )
+    worker.run_once()
+    original_run = studio.get_run(first.id)
+    original = published.published_quiz(original_run.published_token or "")
+    assert original is not None
+
+    replacement = studio.rerun(first.id)
+    worker.run_once()
+
+    waiting = studio.get_run(replacement.id)
+    still_public = published.published_quiz(original.token)
+    assert waiting.state is StudioRunState.AWAITING_IMAGES
+    assert waiting.published_token is None
+    assert still_public is not None
+    assert still_public.version == 1
+    assert still_public.studio_run_id == first.id
+    assert still_public.quiz.questions[0].stem == "Original question?"
     database.close()
 
 
