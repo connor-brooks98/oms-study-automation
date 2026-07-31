@@ -39,6 +39,11 @@ from oms_hub.anki.pipeline import (
     StageContext,
     StageProduct,
 )
+from oms_hub.anki.prompts import (
+    AnkiPromptLibrary,
+    PromptSynchronizer,
+    StaticPromptSynchronizer,
+)
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.anki.rescue import (
     RescueLocalization,
@@ -178,6 +183,8 @@ class CurationServicesRunner:
         embedder: EmbeddingClient,
         focused_retrieval_limit: int,
         global_retrieval_limit: int,
+        prompts: AnkiPromptLibrary | None = None,
+        prompt_sync: PromptSynchronizer | None = None,
     ) -> None:
         self.runtime = runtime
         self.repository = repository
@@ -192,6 +199,8 @@ class CurationServicesRunner:
             global_limit=global_retrieval_limit,
         )
         self.embedder = embedder
+        self.prompts = prompts or AnkiPromptLibrary()
+        self.prompt_sync = prompt_sync or StaticPromptSynchronizer()
 
     async def run(self, context: StageContext) -> StageProduct:
         handlers = {
@@ -218,6 +227,18 @@ class CurationServicesRunner:
             raise RuntimeError(
                 result.blocking_reason or "Local Anki preflight failed"
             )
+        sync_result = await asyncio.to_thread(self.prompt_sync.sync)
+        prompt_ids = (
+            context.job.lcl_prompt_version,
+            context.job.judgment_rubric_version,
+            "card-relevance-audit",
+            context.job.gap_prompt_version,
+            "paraphrase-expansion",
+        )
+        prompt_snapshot = await asyncio.to_thread(
+            self.prompts.load_many,
+            prompt_ids,
+        )
         return StageProduct(
             kind="anki_preflight",
             payload={
@@ -226,6 +247,25 @@ class CurationServicesRunner:
                 "active_profile": result.active_profile,
                 "collection_accessible": result.collection_accessible,
                 "sync_available": result.sync_available,
+                "prompt_snapshot": [
+                    {
+                        "id": prompt.metadata.id,
+                        "version": prompt.metadata.version,
+                        "prompt_hash": prompt.prompt_hash,
+                        "content": prompt.content,
+                        "path": str(prompt.path),
+                        "source_paths": [
+                            str(path) for path in prompt.source_paths
+                        ],
+                        "metadata": prompt.metadata.model_dump(
+                            mode="json",
+                            by_alias=True,
+                        ),
+                    }
+                    for prompt in prompt_snapshot.prompts
+                ],
+                "prompt_sync_stale": sync_result.stale,
+                "prompt_sync_detail": sync_result.detail,
             },
         )
 
@@ -264,11 +304,17 @@ class CurationServicesRunner:
 
     async def _lcl(self, context: StageContext) -> StageProduct:
         passages = _source_passages(context)
+        prompt_text, prompt_hash = _resolved_prompt(
+            context,
+            context.job.lcl_prompt_version,
+        )
         service = LCLService(
             self.structured,
             provider=_provider(context),
             model=context.job.model,
             prompt_version=context.job.lcl_prompt_version,
+            prompt_text=prompt_text,
+            prompt_hash=prompt_hash,
         )
         generated = await asyncio.to_thread(service.generate, passages)
         return StageProduct(
@@ -277,6 +323,7 @@ class CurationServicesRunner:
                 "ledger": generated.ledger.model_dump(mode="json"),
                 "raw_response": generated.raw_response,
                 "prompt_version": generated.prompt_version,
+                "prompt_hash": generated.prompt_hash,
                 "provider": generated.provider.value,
                 "model": generated.model,
                 "request_id": generated.request_id,
@@ -501,11 +548,17 @@ class CurationServicesRunner:
             dict[str, dict[str, Any]],
             rescue_payload.get("localizations", {}),
         )
+        prompt_text, prompt_hash = _resolved_prompt(
+            context,
+            context.job.gap_prompt_version,
+        )
         service = GapCardService(
             self.structured,
             provider=_provider(context),
             model=context.job.model,
             prompt_version=context.job.gap_prompt_version,
+            prompt_text=prompt_text,
+            prompt_hash=prompt_hash,
         )
         proposed: list[GapCardProposal] = []
         unresolved: list[dict[str, str]] = []
@@ -630,6 +683,10 @@ class CurationServicesRunner:
             concept.concept_id: concept
             for concept in _ledger(context).concepts
         }
+        prompt_text, prompt_hash = _resolved_prompt(
+            context,
+            context.job.judgment_rubric_version,
+        )
         service = JudgmentService(
             self.structured,
             self.repository,
@@ -637,6 +694,8 @@ class CurationServicesRunner:
             provider=_provider(context),
             model=context.job.model,
             prompt_version=context.job.judgment_rubric_version,
+            prompt_text=prompt_text,
+            prompt_hash=prompt_hash,
         )
         results: dict[str, dict[str, Any]] = {}
         projected: list[Candidate] = []
@@ -686,6 +745,34 @@ class CurationServicesRunner:
 
 def _provider(context: StageContext) -> ProviderName:
     return ProviderName(context.job.provider)
+
+
+def _resolved_prompt(
+    context: StageContext,
+    prompt_id: str,
+) -> tuple[str, str]:
+    raw_snapshot = _payload(context, CurationStage.PREFLIGHT).get(
+        "prompt_snapshot",
+        [],
+    )
+    if not isinstance(raw_snapshot, list):
+        raise PinnedInputChanged("Pinned prompt snapshot is malformed")
+    for value in raw_snapshot:
+        if not isinstance(value, dict) or value.get("id") != prompt_id:
+            continue
+        content = value.get("content")
+        prompt_hash = value.get("prompt_hash")
+        if (
+            not isinstance(content, str)
+            or not content.strip()
+            or not isinstance(prompt_hash, str)
+            or len(prompt_hash) != 12
+        ):
+            raise PinnedInputChanged("Pinned prompt snapshot is malformed")
+        return content, prompt_hash
+    raise PinnedInputChanged(
+        f"Pinned prompt {prompt_id} is unavailable; start a new curation job"
+    )
 
 
 def revision_fingerprint(revision: StudyRevision) -> str:

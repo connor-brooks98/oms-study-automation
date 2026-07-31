@@ -144,6 +144,35 @@ def test_valid_card_has_complete_grounded_provenance() -> None:
     assert result.proposal.source_refs[0].locator == "slide:5"
 
 
+def test_uses_resolved_markdown_prompt_for_card_generation() -> None:
+    gap = _gap()
+    structured = QueueStructured(
+        (
+            _draft(gap.evidence[0].passage_id),
+            EntailmentDecision(
+                status="supported",
+                rationale="Every claim appears in the cited slide.",
+            ),
+        )
+    )
+    service = GapCardService(
+        structured,
+        provider=ProviderName.OPENAI,
+        model="gpt-5.2",
+        prompt_version="gap-card-generation",
+        prompt_text="# Gap generation\n\nWrite grounded cards.",
+        prompt_hash="abcdef123456",
+    )
+
+    result = service.generate(gap)
+
+    assert result.proposal is not None
+    assert result.proposal.prompt_hash == "abcdef123456"
+    assert structured.requests[0][0] == (
+        "# Gap generation\n\nWrite grounded cards."
+    )
+
+
 @pytest.mark.parametrize("status", ["not_supported", "contradicted"])
 def test_unsupported_or_contradicted_answer_is_rejected(
     status: str,

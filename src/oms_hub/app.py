@@ -15,6 +15,12 @@ from oms_hub.anki.ankiconnect import AnkiConnectClient
 from oms_hub.anki.apply import ApplyCoordinator, ApplyGateway
 from oms_hub.anki.index import AnkiIndex
 from oms_hub.anki.pipeline import CurationPipeline, StageArtifactStore
+from oms_hub.anki.prompts import (
+    AnkiPromptLibrary,
+    GitPromptSynchronizer,
+    PromptSynchronizer,
+    StaticPromptSynchronizer,
+)
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.anki.runtime import AnkiRuntime, WindowsAnkiLauncher
 from oms_hub.anki.semantic.service import SemanticIndexService
@@ -527,6 +533,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         structured = StructuredTextService(app.state.llm_service)
+        prompt_sync: PromptSynchronizer
+        if resolved.anki_prompt_git_sync:
+            if resolved.anki_prompt_directory is None:
+                raise ValueError(
+                    "Anki prompt Git sync requires "
+                    "OMS_HUB_ANKI_PROMPT_DIRECTORY"
+                )
+            prompt_sync = GitPromptSynchronizer(
+                resolved.anki_prompt_directory,
+                timeout_seconds=resolved.anki_prompt_git_timeout_seconds,
+            )
+        else:
+            prompt_sync = StaticPromptSynchronizer()
         runner = CurationServicesRunner(
             runtime=runtime,
             repository=app.state.anki_repository,
@@ -538,6 +557,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             embedder=embedder,
             focused_retrieval_limit=(resolved.anki_focused_retrieval_limit),
             global_retrieval_limit=resolved.anki_global_retrieval_limit,
+            prompts=AnkiPromptLibrary(resolved.anki_prompt_directory),
+            prompt_sync=prompt_sync,
         )
         validator = PinnedCurationInputValidator(
             app.state.anki_repository,

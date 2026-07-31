@@ -99,6 +99,7 @@ class GapCardProposal:
     confidence: float
     content_hash: str
     provenance: dict[str, Any]
+    prompt_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +121,8 @@ class GapCardService:
         provider: ProviderName,
         model: str,
         prompt_version: str,
+        prompt_text: str | None = None,
+        prompt_hash: str | None = None,
     ) -> None:
         if not model.strip() or not prompt_version.strip():
             raise ValueError("gap model and prompt version are required")
@@ -127,13 +130,17 @@ class GapCardService:
         self.provider = provider
         self.model = model
         self.prompt_version = prompt_version
+        self.prompt_text = prompt_text.strip() if prompt_text is not None else None
+        self.prompt_hash = prompt_hash
+        if prompt_text is not None and not self.prompt_text:
+            raise ValueError("gap prompt text cannot be blank")
 
     def generate(self, gap: SupportedGap) -> GapGenerationResult:
         generation_input = _generation_input(gap)
         evidence_by_id = {passage.passage_id: passage for passage in gap.evidence}
         try:
             generated = self._draft_request(
-                _generation_instruction(self.prompt_version),
+                self.prompt_text or _generation_instruction(self.prompt_version),
                 generation_input,
             )
             text, extra = _validate_draft(
@@ -164,7 +171,10 @@ class GapCardService:
                 ensure_ascii=False,
             )
             generated = self._draft_request(
-                _repair_instruction(self.prompt_version),
+                _repair_instruction(
+                    self.prompt_version,
+                    prompt_text=self.prompt_text,
+                ),
                 repair_input,
             )
             text, extra = _validate_draft(
@@ -249,6 +259,7 @@ class GapCardService:
                 "entailment_output_tokens": entailment.output_tokens,
                 "entailment_cost_microusd": entailment.cost_microusd,
             },
+            prompt_hash=self.prompt_hash,
         )
         return GapGenerationResult(
             status="proposed",
@@ -319,12 +330,17 @@ def _generation_instruction(prompt_version: str) -> str:
     )
 
 
-def _repair_instruction(prompt_version: str) -> str:
-    return (
+def _repair_instruction(
+    prompt_version: str,
+    *,
+    prompt_text: str | None = None,
+) -> str:
+    repair = (
         f"Repair the invalid source-grounded Anki card for {prompt_version}. "
         "Correct only the reported validation defects, use and cite only the "
         "supplied evidence, and return the complete corrected card draft."
     )
+    return repair if prompt_text is None else f"{prompt_text}\n\n{repair}"
 
 
 def _generation_input(gap: SupportedGap) -> str:

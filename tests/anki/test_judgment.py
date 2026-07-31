@@ -168,6 +168,46 @@ def test_valid_judgment_is_cached_and_reused() -> None:
     assert structured.calls == 1
 
 
+def test_prompt_hash_invalidates_judgment_cache() -> None:
+    judgment = CoverageJudgment(
+        status="covered",
+        supporting_note_ids=(1,),
+        missing_facts=(),
+        rationale="The note directly covers low ferritin.",
+    )
+    structured = QueueStructured([judgment, judgment])
+    cache = MemoryCache()
+    notes = NoteReader([_note(1)])
+    first = JudgmentService(
+        structured,
+        cache,
+        notes,
+        provider=ProviderName.OPENAI,
+        model="gpt-5.2",
+        prompt_version="coverage-rubric",
+        prompt_text="# Coverage rubric\n\nFirst rule.",
+        prompt_hash="111111111111",
+    )
+    changed = JudgmentService(
+        structured,
+        cache,
+        notes,
+        provider=ProviderName.OPENAI,
+        model="gpt-5.2",
+        prompt_version="coverage-rubric",
+        prompt_text="# Coverage rubric\n\nChanged rule.",
+        prompt_hash="222222222222",
+    )
+
+    first.judge(_concept(), [_candidate(1)])
+    result = changed.judge(_concept(), [_candidate(1)])
+
+    assert result.cache_hit is False
+    assert structured.calls == 2
+    assert structured.requests[0][0] == "# Coverage rubric\n\nFirst rule."
+    assert structured.requests[1][0] == "# Coverage rubric\n\nChanged rule."
+
+
 def test_changed_candidate_content_hash_invalidates_cache() -> None:
     judgment = CoverageJudgment(
         status="partial",

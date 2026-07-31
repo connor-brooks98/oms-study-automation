@@ -76,7 +76,16 @@ OMS_HUB_ANKI_SEMANTIC_DIMENSIONS=1024
 OMS_HUB_ANKI_SEMANTIC_MIN_COVERAGE=0.995
 OMS_HUB_ANKI_SEMANTIC_BATCH_SIZE=128
 OMS_HUB_ANKI_SEMANTIC_QUERY_CACHE_SIZE=512
+OMS_HUB_ANKI_PROMPT_DIRECTORY=C:\Services\AnkiPipeline\prompts
+OMS_HUB_ANKI_PROMPT_GIT_SYNC=true
+OMS_HUB_ANKI_PROMPT_GIT_TIMEOUT_SECONDS=30
 ```
+
+The prompt directory is a Git checkout of the `AnkiPipeline/prompts` folder
+managed from the Obsidian vault. Study Hub pulls it once during job preflight,
+resolves the Markdown includes, and pins the resulting content hashes for the
+entire run. A pull failure uses the last readable checkout and displays a stale
+prompt warning; missing or malformed local prompt files still block the run.
 
 If Cloudflare Tunnel currently targets port 8765, change only its local Study
 Hub origin to `http://127.0.0.1:8787`. The external hostname does not need to

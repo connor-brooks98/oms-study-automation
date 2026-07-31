@@ -118,6 +118,8 @@ class JudgmentService:
         provider: ProviderName,
         model: str,
         prompt_version: str,
+        prompt_text: str | None = None,
+        prompt_hash: str | None = None,
     ) -> None:
         if not model.strip() or not prompt_version.strip():
             raise ValueError(
@@ -129,6 +131,10 @@ class JudgmentService:
         self.provider = provider
         self.model = model
         self.prompt_version = prompt_version
+        self.prompt_text = prompt_text.strip() if prompt_text is not None else None
+        self.prompt_hash = prompt_hash
+        if prompt_text is not None and not self.prompt_text:
+            raise ValueError("judgment prompt text cannot be blank")
 
     def judge(
         self,
@@ -157,6 +163,7 @@ class JudgmentService:
                 "concept_content_hash": concept_hash,
                 "candidate_digest": candidate_digest,
                 "prompt_version": self.prompt_version,
+                "prompt_hash": self.prompt_hash or self.prompt_version,
                 "provider": self.provider.value,
                 "model": self.model,
             }
@@ -188,7 +195,7 @@ class JudgmentService:
         )
         try:
             generated = self._request(
-                _judgment_instruction(self.prompt_version),
+                self.prompt_text or _judgment_instruction(self.prompt_version),
                 judgment_input,
             )
             _validate_judgment(generated.value, candidate_ids)
@@ -216,7 +223,10 @@ class JudgmentService:
                 ensure_ascii=False,
             )
             generated = self._request(
-                _repair_instruction(self.prompt_version),
+                _repair_instruction(
+                    self.prompt_version,
+                    prompt_text=self.prompt_text,
+                ),
                 repair_input,
             )
             _validate_judgment(generated.value, candidate_ids)
@@ -333,12 +343,17 @@ def _judgment_instruction(prompt_version: str) -> str:
     )
 
 
-def _repair_instruction(prompt_version: str) -> str:
-    return (
+def _repair_instruction(
+    prompt_version: str,
+    *,
+    prompt_text: str | None = None,
+) -> str:
+    repair = (
         f"Repair the invalid coverage judgment for {prompt_version}. Correct "
         "only the reported validation defects, use only the supplied "
         "candidate note IDs, and return the complete corrected judgment."
     )
+    return repair if prompt_text is None else f"{prompt_text}\n\n{repair}"
 
 
 def _judgment_input(

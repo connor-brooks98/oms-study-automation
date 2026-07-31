@@ -124,6 +124,27 @@ def test_generates_validated_ledger_with_four_queries_per_concept() -> None:
     assert passage.passage_id in structured.calls[0][1]
 
 
+def test_uses_resolved_markdown_prompt_for_generation() -> None:
+    passage = _passage("3", "Ferritin reflects iron stores.")
+    ledger = LectureConceptLedger(concepts=(_concept(passage),))
+    structured = QueueStructuredService([_result(ledger)])
+    service = LCLService(
+        structured,
+        provider=ProviderName.OPENAI,
+        model="gpt-5.2",
+        prompt_version="lecture-concept-ledger",
+        prompt_text="# Custom ledger rubric\n\nUse the supplied passages.",
+        prompt_hash="123456789abc",
+    )
+
+    artifact = service.generate([passage])
+
+    assert structured.calls[0][0] == (
+        "# Custom ledger rubric\n\nUse the supplied passages."
+    )
+    assert artifact.prompt_hash == "123456789abc"
+
+
 def test_invalid_first_ledger_gets_one_deterministic_repair() -> None:
     passage = _passage(
         "3",
