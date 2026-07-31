@@ -337,6 +337,70 @@ class StudioSourceModel(Base):
     updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
 
 
+class StudioRunModel(Base):
+    __tablename__ = "studio_runs"
+    __table_args__ = (
+        Index("ix_studio_runs_poll", "state", "next_attempt_at", "created_at"),
+        Index("ix_studio_runs_scope", "subject_key", "exam_number", "created_at"),
+        Index("ix_studio_runs_supersedes", "supersedes_run_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(100))
+    subject_key: Mapped[str] = mapped_column(String(100))
+    exam_number: Mapped[int]
+    destination_subject: Mapped[str] = mapped_column(String(100))
+    destination_subject_key: Mapped[str] = mapped_column(String(100))
+    destination_exam_number: Mapped[int]
+    label: Mapped[str] = mapped_column(String(300))
+    prompt: Mapped[str] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(String(30), default="queued")
+    stage: Mapped[str] = mapped_column(String(30), default="validate")
+    attempts: Mapped[int] = mapped_column(default=0)
+    next_attempt_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    diagnostic_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notebook_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    raw_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    supersedes_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("studio_runs.id"),
+        nullable=True,
+    )
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class StudioRunSourceModel(Base):
+    __tablename__ = "studio_run_sources"
+    __table_args__ = (
+        UniqueConstraint("run_id", "source_id"),
+        Index("ix_studio_run_sources_run", "run_id", "position"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("studio_runs.id"))
+    source_id: Mapped[str] = mapped_column(ForeignKey("studio_sources.id"))
+    remote_source_id: Mapped[str] = mapped_column(String(200))
+    source_title: Mapped[str] = mapped_column(String(500))
+    position: Mapped[int]
+
+
+class StudioRunAttemptModel(Base):
+    __tablename__ = "studio_run_attempts"
+    __table_args__ = (
+        UniqueConstraint("run_id", "attempt_number"),
+        Index("ix_studio_run_attempts_run", "run_id", "attempt_number"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("studio_runs.id"))
+    attempt_number: Mapped[int]
+    diagnostic_source: Mapped[str] = mapped_column(String(40))
+    raw_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
 class CourseQuizDocumentModel(Base):
     __tablename__ = "course_quiz_documents"
 

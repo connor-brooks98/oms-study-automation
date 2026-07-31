@@ -233,6 +233,54 @@ class StoredNotebookLMGateway:
             ),
         )
 
+    def ask_studio(
+        self,
+        subject: str,
+        exam_number: int,
+        prompt: str,
+        source_ids: list[str],
+    ) -> tuple[str, str]:
+        return cast(
+            tuple[str, str],
+            _run(self._ask_studio(subject, exam_number, prompt, source_ids)),
+        )
+
+    async def _ask_studio(
+        self,
+        subject: str,
+        exam_number: int,
+        prompt: str,
+        source_ids: list[str],
+    ) -> tuple[str, str]:
+        if not prompt.strip():
+            raise ValueError("Studio prompt is empty")
+        if len(source_ids) != len(set(source_ids)):
+            raise SourceIsolationError("Studio source selection contains duplicates")
+        async with self._with_client() as client:
+            token = _active_client.set(client)
+            try:
+                notebook = await self._ensure_notebook(subject, exam_number)
+                remote_by_id = {
+                    str(remote.id): remote for remote in await client.sources.list(notebook.id)
+                }
+                for source_id in source_ids:
+                    remote = remote_by_id.get(source_id)
+                    if remote is None or not _remote_ready(remote):
+                        raise SourceIsolationError(
+                            "A selected Studio source is missing or not ready"
+                        )
+                result = await client.chat.ask(
+                    notebook.id,
+                    prompt,
+                    source_ids=list(source_ids),
+                )
+                text = getattr(result, "answer", None) or getattr(result, "text", None)
+                if not isinstance(text, str) or not text.strip():
+                    raise RuntimeError("NotebookLM returned an empty answer")
+                return notebook.id, text.strip()
+            finally:
+                _active_client.reset(token)
+
     async def _attach_studio_source(
         self,
         subject: str,

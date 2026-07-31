@@ -4,7 +4,7 @@ from oms_hub.db import Database
 from oms_hub.migrations import LATEST_SCHEMA_VERSION
 
 
-def test_schema_v8_adds_native_quiz_and_studio_source_registry(tmp_path):
+def test_schema_v9_adds_native_quiz_and_studio_job_registries(tmp_path):
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()
 
@@ -22,6 +22,9 @@ def test_schema_v8_adds_native_quiz_and_studio_source_registry(tmp_path):
         "quiz_outputs",
         "published_quizzes",
         "studio_sources",
+        "studio_runs",
+        "studio_run_sources",
+        "studio_run_attempts",
     } <= names
     source_columns = {
         column["name"]
@@ -62,7 +65,13 @@ def test_schema_v8_adds_native_quiz_and_studio_source_registry(tmp_path):
         index["name"] for index in inspect(database.engine).get_indexes("studio_sources")
     }
     assert "ix_studio_sources_scope_state" in studio_indexes
-    assert version == LATEST_SCHEMA_VERSION == 8
+    run_indexes = {index["name"] for index in inspect(database.engine).get_indexes("studio_runs")}
+    assert {
+        "ix_studio_runs_poll",
+        "ix_studio_runs_scope",
+        "ix_studio_runs_supersedes",
+    } <= run_indexes
+    assert version == LATEST_SCHEMA_VERSION == 9
 
 
 def test_v6_generation_jobs_are_upgraded_without_losing_rows(tmp_path):

@@ -882,6 +882,14 @@ code { overflow-wrap: anywhere; }
 .studio-source-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 1rem; }
 .studio-source-grid .card { display: grid; align-content: start; gap: .7rem; padding: 1rem; }
 .studio-source-grid textarea { min-height: 8rem; resize: vertical; }
+.studio-runner, .studio-runs { padding: 1rem; margin-bottom: 1rem; }
+.studio-runner form { display: grid; gap: .9rem; }
+.studio-source-picker { display: grid; gap: .45rem; margin-top: .5rem; }
+.studio-source-picker label { display: flex; align-items: center; gap: .5rem; }
+.studio-source-picker input { width: auto; }
+.studio-run { border-top: 1px solid var(--border); padding: .85rem 0; }
+.studio-run:first-child { border-top: 0; }
+.studio-run pre { max-height: 24rem; overflow: auto; white-space: pre-wrap; }
 
 @media (max-width: 720px) {
   .utility-nav { padding-inline: 1rem; }

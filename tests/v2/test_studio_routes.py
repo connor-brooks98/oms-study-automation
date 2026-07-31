@@ -85,3 +85,29 @@ def test_studio_page_is_not_public_without_access_identity(tmp_path):
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Cloudflare Access is not configured"
+
+
+def test_prompt_only_run_is_queued_with_explicit_empty_source_snapshot(tmp_path):
+    app = _app(tmp_path)
+    client = csrf_client(app)
+
+    response = client.post(
+        "/studio/runs",
+        json={
+            "subject": "Neuro Science",
+            "exam_number": 2,
+            "prompt": "Create a board-style quiz.",
+            "source_ids": [],
+            "label": "Board review",
+            "destination_subject": "Neuro Science",
+            "destination_exam_number": 2,
+        },
+    )
+
+    assert response.status_code == 202
+    run = app.state.studio_repository.get_run(response.json()["id"])
+    assert run.sources == ()
+    assert "Return exactly one JSON object" in run.prompt
+    history = client.get("/studio/runs?subject_key=neuro%20science&exam_number=2")
+    assert history.headers["cache-control"] == "no-store"
+    assert history.json()["runs"][0]["source_ids"] == []

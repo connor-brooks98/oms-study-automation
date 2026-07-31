@@ -129,6 +129,13 @@ def quiz_prompt(prompt: PromptSnapshot) -> PromptSnapshot:
     )
 
 
+def studio_quiz_prompt(prompt: str) -> str:
+    normalized = prompt.strip()
+    if not normalized:
+        raise ValueError("Studio prompt is empty")
+    return f"{normalized}\n\n{_QUIZ_OUTPUT_CONTRACT}"
+
+
 def parse_native_quiz(raw: str) -> NativeQuiz:
     text = raw.strip()
     fenced = re.fullmatch(
@@ -142,9 +149,7 @@ def parse_native_quiz(raw: str) -> NativeQuiz:
         decoded = json.loads(text)
         validated = _QuizInput.model_validate(decoded)
     except (json.JSONDecodeError, ValidationError, TypeError) as error:
-        raise QuizContractError(
-            f"NotebookLM quiz JSON is invalid: {error}"
-        ) from error
+        raise QuizContractError(f"NotebookLM quiz JSON is invalid: {error}") from error
     return NativeQuiz(
         validated.title,
         tuple(
@@ -176,10 +181,7 @@ def public_quiz_content(quiz: NativeQuiz) -> dict[str, object]:
             {
                 "id": question.id,
                 "stem": question.stem,
-                "choices": [
-                    {"id": choice.id, "text": choice.text}
-                    for choice in question.choices
-                ],
+                "choices": [{"id": choice.id, "text": choice.text} for choice in question.choices],
             }
             for question in quiz.questions
         ],
@@ -213,10 +215,7 @@ def serialize_native_quiz(quiz: NativeQuiz) -> str:
             "questions": [
                 {
                     "stem": question.stem,
-                    "choices": [
-                        choice.text
-                        for choice in question.choices
-                    ],
+                    "choices": [choice.text for choice in question.choices],
                     "correct_index": next(
                         index
                         for index, choice in enumerate(question.choices)

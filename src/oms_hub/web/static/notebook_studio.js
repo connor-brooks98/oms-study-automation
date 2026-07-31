@@ -15,6 +15,10 @@
     (source) => source.state === "pending" || source.state === "attaching",
   );
 
+  const hasActiveRuns = (runs) => runs.some(
+    (run) => ["queued", "running", "retrying"].includes(run.state),
+  );
+
   const renderSources = (documentRef, list, sources) => {
     list.replaceChildren();
     if (!sources.length) {
@@ -33,12 +37,123 @@
     return hasActiveSources(sources);
   };
 
+  const renderSourcePicker = (documentRef, picker, sources) => {
+    const selected = new Set(
+      Array.from(picker.querySelectorAll("input:checked"), (input) => input.value),
+    );
+    picker.replaceChildren();
+    const attached = sources.filter((source) => source.state === "attached");
+    if (!attached.length) {
+      const note = documentRef.createElement("p");
+      note.textContent = "No attached sources are available. You can still run with no sources.";
+      picker.append(note);
+      return;
+    }
+    attached.forEach((source) => {
+      const label = documentRef.createElement("label");
+      const checkbox = documentRef.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = source.id;
+      checkbox.checked = selected.has(source.id);
+      label.append(checkbox);
+      const text = documentRef.createElement("span");
+      text.textContent = `${source.title} · ${source.type}`;
+      label.append(text);
+      picker.append(label);
+    });
+  };
+
+  const filterSourcePicker = (picker, query) => {
+    const normalized = query.trim().toLowerCase();
+    picker.querySelectorAll("label").forEach((label) => {
+      label.hidden = normalized !== "" && !label.textContent.toLowerCase().includes(normalized);
+    });
+  };
+
+  const retryStatus = (run, now = Date.now()) => {
+    if (run.state !== "retrying" || !run.next_attempt_at) return run.state;
+    const seconds = Math.max(0, Math.ceil((Date.parse(run.next_attempt_at) - now) / 1000));
+    return `retrying in ${seconds}s`;
+  };
+
+  const renderRuns = (documentRef, container, runs) => {
+    container.replaceChildren();
+    if (!runs.length) {
+      const note = documentRef.createElement("p");
+      note.textContent = "No prompt runs yet.";
+      container.append(note);
+      return false;
+    }
+    runs.forEach((run) => {
+      const card = documentRef.createElement("article");
+      card.className = "studio-run";
+      const heading = documentRef.createElement("h3");
+      heading.textContent = run.label;
+      card.append(heading);
+      const status = documentRef.createElement("p");
+      const error = run.error ? ` · ${run.error}` : "";
+      status.textContent = `${retryStatus(run)} · ${run.stage} · attempt ${run.attempts}${error}`;
+      card.append(status);
+      const attempts = run.attempt_history || [];
+      attempts.forEach((attempt) => {
+        if (!attempt.raw_response && !attempt.error) return;
+        const details = documentRef.createElement("details");
+        const summary = documentRef.createElement("summary");
+        summary.textContent = `Attempt ${attempt.attempt_number} · ${attempt.diagnostic_source}`;
+        const response = documentRef.createElement("pre");
+        response.textContent = attempt.raw_response || attempt.error;
+        details.append(summary, response);
+        card.append(details);
+      });
+      container.append(card);
+    });
+    return hasActiveRuns(runs);
+  };
+
+  const buildRunPayload = (form, course, exam, destinationCourse, destinationExam) => ({
+    subject: course.value,
+    exam_number: Number(exam.value),
+    prompt: form.elements.prompt.value,
+    source_ids: Array.from(
+      form.ownerDocument.querySelectorAll("[data-source-picker] input:checked"),
+      (input) => input.value,
+    ),
+    label: form.elements.label.value,
+    destination_subject: destinationCourse.value,
+    destination_exam_number: Number(destinationExam.value),
+  });
+
+  const populateExams = (documentRef, course, exam) => {
+    exam.replaceChildren();
+    const placeholder = documentRef.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select exam";
+    exam.append(placeholder);
+    const selected = course.options[course.selectedIndex];
+    String(selected?.dataset.exams || "")
+      .split(",")
+      .filter(Boolean)
+      .forEach((number) => {
+        const option = documentRef.createElement("option");
+        option.value = number;
+        option.textContent = `Exam ${number}`;
+        exam.append(option);
+      });
+    exam.disabled = !course.value;
+  };
+
   const initialize = (documentRef, fetchImpl = root.fetch.bind(root)) => {
     const page = documentRef.querySelector("[data-studio-page]");
     if (!page) return;
     const course = page.querySelector("[data-studio-course]");
     const exam = page.querySelector("[data-studio-exam]");
     const list = page.querySelector("[data-source-list]");
+    const picker = page.querySelector("[data-source-picker]");
+    const sourceFilter = page.querySelector("[data-source-filter]");
+    const runList = page.querySelector("[data-run-list]");
+    const runForm = page.querySelector("[data-run-form]");
+    const destinationCourse = page.querySelector("[data-destination-course]");
+    const destinationExam = page.querySelector("[data-destination-exam]");
     let pollHandle = null;
 
     const scheduleRefresh = () => {
@@ -46,45 +161,49 @@
       pollHandle = root.setTimeout(refresh, 2000);
     };
 
+    const loadJson = async (url) => {
+      const response = await fetchImpl(url, { cache: "no-store" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || "Studio status could not be loaded.");
+      return payload;
+    };
+
     const refresh = async () => {
       pollHandle = null;
       if (!course.value || !exam.value) return;
+      const query = `subject_key=${encodeURIComponent(normalizeSubject(course.value))}&exam_number=${encodeURIComponent(exam.value)}`;
       try {
-        const subjectKey = normalizeSubject(course.value);
-        const response = await fetchImpl(
-          `/studio/sources?subject_key=${encodeURIComponent(subjectKey)}&exam_number=${encodeURIComponent(exam.value)}`,
-          { cache: "no-store" },
-        );
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.detail || "Sources could not be loaded.");
-        if (renderSources(documentRef, list, payload.sources || [])) scheduleRefresh();
+        const [sourcePayload, runPayload] = await Promise.all([
+          loadJson(`/studio/sources?${query}`),
+          loadJson(`/studio/runs?${query}`),
+        ]);
+        const activeSources = renderSources(documentRef, list, sourcePayload.sources || []);
+        renderSourcePicker(documentRef, picker, sourcePayload.sources || []);
+        filterSourcePicker(picker, sourceFilter.value);
+        const activeRuns = renderRuns(documentRef, runList, runPayload.runs || []);
+        if (activeSources || activeRuns) scheduleRefresh();
       } catch (error) {
-        list.textContent = error instanceof Error ? error.message : "Sources could not be loaded.";
+        const message = error instanceof Error ? error.message : "Studio status could not be loaded.";
+        list.textContent = message;
+        runList.textContent = message;
       }
     };
 
     course.addEventListener("change", () => {
       if (pollHandle !== null) root.clearTimeout(pollHandle);
       pollHandle = null;
-      exam.replaceChildren();
-      const placeholder = documentRef.createElement("option");
-      placeholder.value = "";
-      placeholder.textContent = "Select exam";
-      exam.append(placeholder);
-      const selected = course.options[course.selectedIndex];
-      String(selected?.dataset.exams || "")
-        .split(",")
-        .filter(Boolean)
-        .forEach((number) => {
-          const option = documentRef.createElement("option");
-          option.value = number;
-          option.textContent = `Exam ${number}`;
-          exam.append(option);
-        });
-      exam.disabled = !course.value;
+      populateExams(documentRef, course, exam);
       list.textContent = "Select an exam to view sources.";
+      picker.textContent = "Select a source course and exam first.";
+      runList.textContent = "Select a source course and exam to view runs.";
     });
     exam.addEventListener("change", refresh);
+    destinationCourse.addEventListener("change", () => {
+      populateExams(documentRef, destinationCourse, destinationExam);
+    });
+    sourceFilter.addEventListener("input", () => {
+      filterSourcePicker(picker, sourceFilter.value);
+    });
 
     page.querySelectorAll("[data-source-form]").forEach((form) => {
       form.addEventListener("submit", async (event) => {
@@ -115,9 +234,45 @@
         }
       });
     });
+
+    runForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const message = runForm.querySelector("[data-run-message]");
+      if (!course.value || !exam.value || !destinationCourse.value || !destinationExam.value) {
+        message.textContent = "Select both the source and publication course/exam.";
+        return;
+      }
+      const token = csrf(documentRef);
+      try {
+        const response = await fetchImpl("/studio/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": token },
+          body: JSON.stringify(
+            buildRunPayload(runForm, course, exam, destinationCourse, destinationExam),
+          ),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.detail || "Prompt run could not be queued.");
+        message.textContent = "Prompt queued in NotebookLM chat.";
+        runForm.elements.prompt.value = "";
+        await refresh();
+      } catch (error) {
+        message.textContent = error instanceof Error ? error.message : "Prompt run could not be queued.";
+      }
+    });
   };
 
-  const api = { hasActiveSources, initialize, normalizeSubject, renderSources };
+  const api = {
+    buildRunPayload,
+    filterSourcePicker,
+    hasActiveRuns,
+    hasActiveSources,
+    initialize,
+    normalizeSubject,
+    renderRuns,
+    renderSources,
+    retryStatus,
+  };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) {
     root.document.addEventListener("DOMContentLoaded", () => initialize(root.document), { once: true });

@@ -5,10 +5,21 @@ from uuid import uuid4
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
-from oms_hub.models import StudioSourceModel
+from oms_hub.models import (
+    StudioRunAttemptModel,
+    StudioRunModel,
+    StudioRunSourceModel,
+    StudioSourceModel,
+)
 from oms_hub.study_generation.studio_domain import (
+    StudioRun,
+    StudioRunAttempt,
+    StudioRunSource,
+    StudioRunStage,
+    StudioRunState,
     StudioSource,
     StudioSourceState,
     StudioSourceType,
@@ -161,14 +172,256 @@ class StudioRepository:
 
     def recover_interrupted_jobs(self) -> int:
         with self.database.session() as session:
-            models = session.scalars(
+            source_models = session.scalars(
                 select(StudioSourceModel).where(
                     StudioSourceModel.state == StudioSourceState.ATTACHING.value
                 )
             ).all()
-            for model in models:
-                model.state = StudioSourceState.PENDING.value
-            return len(models)
+            for source_model in source_models:
+                source_model.state = StudioSourceState.PENDING.value
+            run_models = session.scalars(
+                select(StudioRunModel).where(StudioRunModel.state == StudioRunState.RUNNING.value)
+            ).all()
+            for run_model in run_models:
+                run_model.state = StudioRunState.QUEUED.value
+                run_model.error = "requeued after an interrupted Hub process"
+                run_model.next_attempt_at = None
+            return len(source_models) + len(run_models)
+
+    def queue_run(
+        self,
+        subject: str,
+        exam_number: int,
+        prompt: str,
+        source_ids: list[str],
+        label: str,
+        destination_subject: str,
+        destination_exam_number: int,
+        *,
+        supersedes_run_id: str | None = None,
+    ) -> StudioRun:
+        if len(source_ids) != len(set(source_ids)):
+            raise ValueError("selected Studio sources contain duplicates")
+        subject_key = normalize_subject(subject)
+        with self.database.session() as session:
+            sources = list(
+                session.scalars(
+                    select(StudioSourceModel).where(StudioSourceModel.id.in_(source_ids))
+                ).all()
+            )
+            by_id = {source.id: source for source in sources}
+            if len(by_id) != len(source_ids):
+                raise ValueError("a selected Studio source no longer exists")
+            ordered = [by_id[source_id] for source_id in source_ids]
+            if any(
+                source.subject_key != subject_key or source.exam_number != exam_number
+                for source in ordered
+            ):
+                raise ValueError("selected Studio sources belong to another course or exam")
+            if any(
+                source.state != StudioSourceState.ATTACHED.value or not source.remote_source_id
+                for source in ordered
+            ):
+                raise ValueError("all selected Studio sources must be attached")
+            if (
+                supersedes_run_id is not None
+                and session.get(StudioRunModel, supersedes_run_id) is None
+            ):
+                raise ValueError("the Studio run being replaced no longer exists")
+            model = StudioRunModel(
+                id=str(uuid4()),
+                subject=subject,
+                subject_key=subject_key,
+                exam_number=exam_number,
+                destination_subject=destination_subject,
+                destination_subject_key=normalize_subject(destination_subject),
+                destination_exam_number=destination_exam_number,
+                label=label,
+                prompt=prompt,
+                state=StudioRunState.QUEUED.value,
+                stage=StudioRunStage.VALIDATE.value,
+                supersedes_run_id=supersedes_run_id,
+            )
+            session.add(model)
+            session.flush()
+            for position, source in enumerate(ordered):
+                assert source.remote_source_id is not None
+                session.add(
+                    StudioRunSourceModel(
+                        run_id=model.id,
+                        source_id=source.id,
+                        remote_source_id=source.remote_source_id,
+                        source_title=source.title,
+                        position=position,
+                    )
+                )
+            session.flush()
+            return self._run_domain(session, model)
+
+    def get_run(self, run_id: str) -> StudioRun:
+        with self.database.session() as session:
+            model = session.get(StudioRunModel, run_id)
+            if model is None:
+                raise KeyError(run_id)
+            return self._run_domain(session, model)
+
+    def list_runs(
+        self,
+        subject_key: str | None = None,
+        exam_number: int | None = None,
+    ) -> list[StudioRun]:
+        with self.database.session() as session:
+            statement = select(StudioRunModel).order_by(
+                StudioRunModel.created_at.desc(), StudioRunModel.id.desc()
+            )
+            if subject_key is not None:
+                statement = statement.where(
+                    StudioRunModel.subject_key == normalize_subject(subject_key)
+                )
+            if exam_number is not None:
+                statement = statement.where(StudioRunModel.exam_number == exam_number)
+            return [self._run_domain(session, model) for model in session.scalars(statement).all()]
+
+    def claim_next_run(self, now: datetime | None = None) -> StudioRun | None:
+        now = now or datetime.now(UTC)
+        with self.database.session() as session:
+            model = session.scalar(
+                select(StudioRunModel)
+                .where(
+                    StudioRunModel.state.in_(
+                        {
+                            StudioRunState.QUEUED.value,
+                            StudioRunState.RETRYING.value,
+                        }
+                    ),
+                    or_(
+                        StudioRunModel.next_attempt_at.is_(None),
+                        StudioRunModel.next_attempt_at <= now.isoformat(),
+                    ),
+                )
+                .order_by(StudioRunModel.created_at, StudioRunModel.id)
+                .limit(1)
+            )
+            if model is None:
+                return None
+            claimed = session.execute(
+                update(StudioRunModel)
+                .where(
+                    StudioRunModel.id == model.id,
+                    StudioRunModel.state.in_(
+                        {
+                            StudioRunState.QUEUED.value,
+                            StudioRunState.RETRYING.value,
+                        }
+                    ),
+                )
+                .values(
+                    state=StudioRunState.RUNNING.value,
+                    stage=StudioRunStage.NOTEBOOK.value,
+                    attempts=StudioRunModel.attempts + 1,
+                    error=None,
+                    next_attempt_at=None,
+                )
+            )
+            if cast(CursorResult[Any], claimed).rowcount != 1:
+                return None
+            session.flush()
+            session.refresh(model)
+            return self._run_domain(session, model)
+
+    def set_run_stage(self, run_id: str, stage: StudioRunStage) -> None:
+        with self.database.session() as session:
+            model = session.get(StudioRunModel, run_id)
+            if model is None:
+                raise KeyError(run_id)
+            model.stage = stage.value
+
+    def list_run_attempts(self, run_id: str) -> tuple[StudioRunAttempt, ...]:
+        with self.database.session() as session:
+            models = session.scalars(
+                select(StudioRunAttemptModel)
+                .where(StudioRunAttemptModel.run_id == run_id)
+                .order_by(StudioRunAttemptModel.attempt_number)
+            ).all()
+            return tuple(
+                StudioRunAttempt(
+                    model.attempt_number,
+                    model.diagnostic_source,
+                    model.raw_response,
+                    model.error,
+                    model.created_at,
+                )
+                for model in models
+            )
+
+    def complete_run(self, run_id: str, notebook_id: str, raw_response: str) -> StudioRun:
+        with self.database.session() as session:
+            model = session.get(StudioRunModel, run_id)
+            if model is None:
+                raise KeyError(run_id)
+            model.state = StudioRunState.COMPLETE.value
+            model.stage = StudioRunStage.COMPLETE.value
+            model.notebook_id = notebook_id
+            model.raw_response = raw_response
+            model.error = None
+            model.next_attempt_at = None
+            session.flush()
+            return self._run_domain(session, model)
+
+    def retry_run(
+        self,
+        run_id: str,
+        diagnostic_source: str,
+        error: str,
+        delay: timedelta,
+    ) -> StudioRun:
+        with self.database.session() as session:
+            model = session.get(StudioRunModel, run_id)
+            if model is None:
+                raise KeyError(run_id)
+            model.state = StudioRunState.RETRYING.value
+            model.stage = StudioRunStage.CHAT.value
+            model.diagnostic_source = diagnostic_source
+            model.error = error[:1000]
+            model.next_attempt_at = (datetime.now(UTC) + delay).isoformat()
+            session.flush()
+            return self._run_domain(session, model)
+
+    def fail_run(
+        self,
+        run_id: str,
+        diagnostic_source: str,
+        error: str,
+    ) -> StudioRun:
+        with self.database.session() as session:
+            model = session.get(StudioRunModel, run_id)
+            if model is None:
+                raise KeyError(run_id)
+            model.state = StudioRunState.FAILED.value
+            model.diagnostic_source = diagnostic_source
+            model.error = error[:1000]
+            model.next_attempt_at = None
+            session.flush()
+            return self._run_domain(session, model)
+
+    def record_run_attempt(
+        self,
+        run_id: str,
+        attempt_number: int,
+        diagnostic_source: str,
+        raw_response: str | None,
+        error: str | None,
+    ) -> None:
+        with self.database.session() as session:
+            session.add(
+                StudioRunAttemptModel(
+                    run_id=run_id,
+                    attempt_number=attempt_number,
+                    diagnostic_source=diagnostic_source,
+                    raw_response=raw_response,
+                    error=error[:1000] if error else None,
+                )
+            )
 
     @staticmethod
     def _domain(model: StudioSourceModel) -> StudioSource:
@@ -190,6 +443,42 @@ class StudioRepository:
             model.remote_notebook_id,
             model.remote_source_id,
             model.converted_from_pptx,
+        )
+
+    @staticmethod
+    def _run_domain(session: Session, model: StudioRunModel) -> StudioRun:
+        snapshots = session.scalars(
+            select(StudioRunSourceModel)
+            .where(StudioRunSourceModel.run_id == model.id)
+            .order_by(StudioRunSourceModel.position)
+        ).all()
+        return StudioRun(
+            model.id,
+            model.subject,
+            model.subject_key,
+            model.exam_number,
+            model.destination_subject,
+            model.destination_subject_key,
+            model.destination_exam_number,
+            model.label,
+            model.prompt,
+            StudioRunState(model.state),
+            StudioRunStage(model.stage),
+            model.attempts,
+            model.next_attempt_at,
+            model.diagnostic_source,
+            model.error,
+            model.notebook_id,
+            model.raw_response,
+            model.supersedes_run_id,
+            tuple(
+                StudioRunSource(
+                    snapshot.source_id,
+                    snapshot.remote_source_id,
+                    snapshot.source_title,
+                )
+                for snapshot in snapshots
+            ),
         )
 
 

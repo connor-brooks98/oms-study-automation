@@ -4,12 +4,23 @@ from typing import Annotated, cast
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
 
 from oms_hub.study_generation.studio_service import StudioService
 from oms_hub.web.csrf import require_form_csrf
 
 router = APIRouter(prefix="/studio")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+
+class StudioRunRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=100)
+    exam_number: int = Field(ge=1)
+    prompt: str = Field(min_length=1, max_length=50_000)
+    source_ids: list[str] = Field(default_factory=list, max_length=100)
+    label: str = Field(min_length=1, max_length=300)
+    destination_subject: str = Field(min_length=1, max_length=100)
+    destination_exam_number: int = Field(ge=1)
 
 
 def _choices(request: Request) -> tuple[dict[str, object], ...]:
@@ -69,6 +80,80 @@ def sources(
                 for item in records
             ]
         }
+    )
+
+
+@router.get("/runs")
+def runs(
+    request: Request,
+    subject_key: str | None = None,
+    exam_number: int | None = None,
+) -> JSONResponse:
+    records = request.app.state.studio_repository.list_runs(subject_key, exam_number)
+    return JSONResponse(
+        {
+            "runs": [
+                {
+                    "id": item.id,
+                    "label": item.label,
+                    "state": item.state.value,
+                    "stage": item.stage.value,
+                    "attempts": item.attempts,
+                    "next_attempt_at": item.next_attempt_at,
+                    "error": item.error,
+                    "raw_response": item.raw_response,
+                    "source_ids": [source.source_id for source in item.sources],
+                    "destination_subject": item.destination_subject,
+                    "destination_exam_number": item.destination_exam_number,
+                    "attempt_history": [
+                        {
+                            "attempt_number": attempt.attempt_number,
+                            "diagnostic_source": attempt.diagnostic_source,
+                            "raw_response": attempt.raw_response,
+                            "error": attempt.error,
+                            "created_at": attempt.created_at,
+                        }
+                        for attempt in request.app.state.studio_repository.list_run_attempts(
+                            item.id
+                        )
+                    ],
+                }
+                for item in records
+            ]
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/runs", status_code=202)
+def queue_run(request: Request, submission: StudioRunRequest) -> JSONResponse:
+    require_form_csrf(request, None)
+    subject = _validated_subject(
+        request,
+        submission.subject,
+        submission.exam_number,
+    )
+    destination_subject = _validated_subject(
+        request,
+        submission.destination_subject,
+        submission.destination_exam_number,
+    )
+    try:
+        run = _service(request).queue_run(
+            subject,
+            submission.exam_number,
+            submission.prompt,
+            submission.source_ids,
+            submission.label,
+            destination_subject,
+            submission.destination_exam_number,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return JSONResponse(
+        {"id": run.id, "state": run.state.value, "stage": run.stage.value},
+        status_code=202,
+        headers={"Cache-Control": "no-store"},
     )
 
 

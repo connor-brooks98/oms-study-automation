@@ -2,7 +2,12 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from oms_hub.files.atomic import verified_atomic_write
-from oms_hub.study_generation.studio_domain import StudioSource, StudioSourceType
+from oms_hub.study_generation.native_quiz import studio_quiz_prompt
+from oms_hub.study_generation.studio_domain import (
+    StudioRun,
+    StudioSource,
+    StudioSourceType,
+)
 from oms_hub.study_generation.studio_repository import StudioRepository
 
 
@@ -84,6 +89,38 @@ class StudioService:
         path = self.payload_root / source.id / f"original{suffix}"
         verified_atomic_write(payload, path)
         return self.repository.set_payload_path(source.id, path)
+
+    def queue_run(
+        self,
+        subject: str,
+        exam_number: int,
+        prompt: str,
+        source_ids: list[str],
+        label: str,
+        destination_subject: str,
+        destination_exam_number: int,
+    ) -> StudioRun:
+        subject, label = self._validate_scope_and_title(
+            subject,
+            exam_number,
+            label,
+        )
+        destination_subject, _ = self._validate_scope_and_title(
+            destination_subject,
+            destination_exam_number,
+            label,
+        )
+        if len(prompt) > 50_000:
+            raise ValueError("Studio prompt is too long")
+        return self.repository.queue_run(
+            subject,
+            exam_number,
+            studio_quiz_prompt(prompt),
+            source_ids,
+            label,
+            destination_subject,
+            destination_exam_number,
+        )
 
     @staticmethod
     def _validate_scope_and_title(
