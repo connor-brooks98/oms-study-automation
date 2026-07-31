@@ -194,6 +194,53 @@ button.secondary:hover { border-color: oklch(0.78 0.025 255); color: var(--brand
   pointer-events: none;
 }
 
+.studio-image-requirements {
+  display: grid;
+  gap: 1rem;
+}
+.studio-preview-link { margin-bottom: .25rem; }
+.studio-image-card { display: grid; gap: .75rem; }
+.studio-image-card h2 { margin: 0; }
+.studio-image-card p { margin: 0; }
+.studio-image-source,
+.studio-image-locator { color: var(--text-2); }
+.studio-image-upload-status {
+  color: var(--brand);
+  font: 600 .8rem/1.4 "IBM Plex Mono", monospace;
+}
+.studio-image-upload {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  flex-wrap: wrap;
+}
+.studio-image-question-list {
+  display: grid;
+  gap: .6rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.studio-image-question-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .75rem;
+  border: 1px solid var(--border);
+  border-radius: .5rem;
+}
+.studio-image-question-list li.is-overridden {
+  color: var(--text-3);
+  background: var(--surface);
+}
+.studio-image-question-copy { line-height: 1.45; }
+.studio-image-message { min-height: 1.5rem; color: var(--text-2); }
+
+@media (max-width: 42rem) {
+  .studio-image-question-list li { align-items: flex-start; flex-direction: column; }
+}
+
 .course-list { display: flex; flex-direction: column; gap: .65rem; }
 .course-toggle,
 .exam-toggle {

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Quiz images · Study Hub{% endblock %}
+{% block content %}
+<section
+  class="page-shell"
+  data-image-review-page
+  data-run-id="{{ run.id }}"
+  data-status-url="/studio/runs/{{ run.id }}/image-review"
+>
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">Private publication review</p>
+      <h1>Quiz images</h1>
+      <p class="page-summary">{{ run.label }} needs one or more source images before it can be previewed and published.</p>
+    </div>
+    <div class="heading-actions">
+      <a class="button secondary" href="/studio">Back to NotebookLM Studio</a>
+    </div>
+  </div>
+  <p class="studio-image-message" data-image-review-message aria-live="polite"></p>
+  <div class="studio-image-requirements" data-image-review-list>
+    <p>Loading image requirements…</p>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/studio_quiz_images.js" defer></script>{% endblock %}

@@ -81,3 +81,43 @@ test("source renderer writes untrusted content through textContent", () => {
   assert.match(created[0].textContent, /<script>/);
   assert.equal("innerHTML" in created[0], false);
 });
+
+test("awaiting image runs expose an Add images action", () => {
+  const created = [];
+  const documentRef = {
+    createElement: (tagName) => {
+      const node = {
+        tagName,
+        textContent: "",
+        dataset: {},
+        children: [],
+        append(child) { this.children.push(child); },
+      };
+      created.push(node);
+      return node;
+    },
+  };
+  const container = {
+    children: [],
+    replaceChildren() { this.children = []; },
+    append(child) { this.children.push(child); },
+  };
+
+  studio.renderRuns(documentRef, container, [{
+    id: "run-1",
+    label: "Professor questions",
+    state: "awaiting_images",
+    stage: "image_review",
+    attempts: 1,
+    error: null,
+    next_attempt_at: null,
+    published_url: null,
+    image_review_url: "/studio/runs/run-1/images",
+    attempt_history: [],
+  }]);
+
+  const link = created.find((node) => node.tagName === "a");
+  assert.equal(link.textContent, "Add images");
+  assert.equal(link.href, "/studio/runs/run-1/images");
+  assert.match(created.find((node) => node.tagName === "p").textContent, /Images needed/);
+});

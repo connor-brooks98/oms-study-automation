@@ -101,8 +101,16 @@
       card.append(heading);
       const status = documentRef.createElement("p");
       const error = run.error ? ` · ${run.error}` : "";
-      status.textContent = `${retryStatus(run)} · ${run.stage} · attempt ${run.attempts}${error}`;
+      const state = run.state === "awaiting_images" ? "Images needed" : retryStatus(run);
+      status.textContent = `${state} · ${run.stage} · attempt ${run.attempts}${error}`;
       card.append(status);
+      if (run.image_review_url) {
+        const images = documentRef.createElement("a");
+        images.className = "button primary compact";
+        images.href = run.image_review_url;
+        images.textContent = "Add images";
+        card.append(images);
+      }
       if (run.published_url) {
         const link = documentRef.createElement("a");
         link.className = "button secondary compact";

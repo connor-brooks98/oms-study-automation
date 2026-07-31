@@ -48,6 +48,7 @@ from oms_hub.study_generation.notebook_storage import EncryptedNotebookStorage
 from oms_hub.study_generation.outline import OutlineService
 from oms_hub.study_generation.path_picker import SystemPromptPathPicker
 from oms_hub.study_generation.prompts import PromptFileService
+from oms_hub.study_generation.quiz_images import StudioQuizImageService
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.service import GenerationService
 from oms_hub.study_generation.studio_repository import StudioRepository
@@ -393,6 +394,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.studio_repository,
         resolved.data_dir / "studio-sources",
         resolved.max_upload_file_bytes,
+    )
+    app.state.studio_quiz_image_service = StudioQuizImageService(
+        app.state.studio_repository,
+        resolved.data_dir / "studio-quiz-media",
     )
     app.state.studio_worker = StudioWorker(
         app.state.studio_repository,

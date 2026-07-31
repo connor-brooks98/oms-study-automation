@@ -11,7 +11,14 @@ from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
     NotebookGatewayError,
 )
+from oms_hub.study_generation.quiz_images import (
+    MAX_QUIZ_IMAGE_BYTES,
+    QuizImageError,
+    StudioQuizImageService,
+)
 from oms_hub.study_generation.repository import GenerationRepository
+from oms_hub.study_generation.studio_domain import StudioQuizReview
+from oms_hub.study_generation.studio_repository import StudioRepository
 from oms_hub.study_generation.studio_service import StudioService
 from oms_hub.web.csrf import require_form_csrf
 
@@ -114,6 +121,11 @@ def runs(
                     "published_url": (
                         f"/public/quizzes/{item.published_token}" if item.published_token else None
                     ),
+                    "image_review_url": (
+                        f"/studio/runs/{item.id}/images"
+                        if item.state.value == "awaiting_images"
+                        else None
+                    ),
                     "attempt_history": [
                         {
                             "attempt_number": attempt.attempt_number,
@@ -132,6 +144,161 @@ def runs(
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _image_service(request: Request) -> StudioQuizImageService:
+    return cast(
+        StudioQuizImageService,
+        request.app.state.studio_quiz_image_service,
+    )
+
+
+def _review_payload(review: StudioQuizReview) -> dict[str, object]:
+    question_by_id = {question.id: question for question in review.quiz.questions}
+    number_by_id = {
+        question.id: number
+        for number, question in enumerate(review.quiz.questions, start=1)
+    }
+    return {
+        "run_id": review.run.id,
+        "label": review.run.label,
+        "state": review.run.state.value,
+        "resolved": review.resolved,
+        "preview_url": (
+            f"/studio/runs/{review.run.id}/preview" if review.resolved else None
+        ),
+        "requirements": [
+            {
+                "image_key": requirement.image_key,
+                "source_title": requirement.source_title,
+                "locator": requirement.locator,
+                "description": requirement.description,
+                "uploaded": requirement.image is not None,
+                "width": requirement.image.width if requirement.image else None,
+                "height": requirement.image.height if requirement.image else None,
+                "original_filename": (
+                    requirement.image.original_filename if requirement.image else None
+                ),
+                "questions": [
+                    {
+                        "id": question_id,
+                        "number": number_by_id[question_id],
+                        "stem": question_by_id[question_id].stem,
+                        "overridden": question_id in review.overridden_question_ids,
+                    }
+                    for question_id in requirement.question_ids
+                ],
+            }
+            for requirement in review.requirements
+        ],
+    }
+
+
+def _require_review(request: Request, run_id: str) -> StudioQuizReview:
+    repository = cast(StudioRepository, request.app.state.studio_repository)
+    try:
+        return repository.quiz_review(run_id)
+    except KeyError as error:
+        raise HTTPException(404, "Studio run was not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+
+
+@router.get("/runs/{run_id}/images", response_class=HTMLResponse)
+def image_review_page(request: Request, run_id: str) -> HTMLResponse:
+    review = _require_review(request, run_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="studio_quiz_images.html",
+        context={"run": review.run},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/runs/{run_id}/image-review")
+def image_review_status(request: Request, run_id: str) -> JSONResponse:
+    return JSONResponse(
+        _review_payload(_require_review(request, run_id)),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/runs/{run_id}/images/{image_key}")
+def upload_quiz_image(
+    request: Request,
+    run_id: str,
+    image_key: str,
+    file: Annotated[UploadFile, File()],
+    csrf_token: Annotated[str | None, Form()] = None,
+) -> JSONResponse:
+    require_form_csrf(request, csrf_token)
+    payload = file.file.read(MAX_QUIZ_IMAGE_BYTES + 1)
+    try:
+        image = _image_service(request).upload(
+            run_id,
+            image_key,
+            file.filename or "image",
+            payload,
+        )
+        review = request.app.state.studio_repository.quiz_review(run_id)
+    except KeyError as error:
+        raise HTTPException(404, "Studio image requirement was not found") from error
+    except QuizImageError as error:
+        raise HTTPException(422, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return JSONResponse(
+        {
+            "image_key": image_key,
+            "media_type": image.media_type,
+            "width": image.width,
+            "height": image.height,
+            "original_filename": image.original_filename,
+            "resolved": review.resolved,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _set_override(
+    request: Request,
+    run_id: str,
+    question_id: str,
+    enabled: bool,
+) -> JSONResponse:
+    require_form_csrf(request, None)
+    try:
+        review = request.app.state.studio_repository.set_image_override(
+            run_id,
+            question_id,
+            enabled,
+        )
+    except KeyError as error:
+        raise HTTPException(404, "Studio run was not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return JSONResponse(
+        _review_payload(review),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.put("/runs/{run_id}/questions/{question_id}/image-override")
+def set_image_override(
+    request: Request,
+    run_id: str,
+    question_id: str,
+) -> JSONResponse:
+    return _set_override(request, run_id, question_id, True)
+
+
+@router.delete("/runs/{run_id}/questions/{question_id}/image-override")
+def clear_image_override(
+    request: Request,
+    run_id: str,
+    question_id: str,
+) -> JSONResponse:
+    return _set_override(request, run_id, question_id, False)
 
 
 @router.delete("/sources/{source_id}")
