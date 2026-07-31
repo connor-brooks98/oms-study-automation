@@ -3,7 +3,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from oms_hub.anki.dedupe import DeduplicationService
@@ -33,6 +33,7 @@ from oms_hub.anki.lcl import (
     LCLService,
     LectureConcept,
     LectureConceptLedger,
+    runtime_ledger_from_v2,
 )
 from oms_hub.anki.pipeline import (
     PinnedInputChanged,
@@ -68,6 +69,7 @@ from oms_hub.anki.sources import (
     OutlineRepository,
     SourcePassage,
 )
+from oms_hub.anki.v2_contracts import LectureConceptLedgerV2
 from oms_hub.ingestion.domain import StudyRevision
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.llm.domain import ProviderName
@@ -339,6 +341,15 @@ class CurationServicesRunner:
             context,
             context.job.lcl_prompt_version,
         )
+        schema_name = _resolved_prompt_schema(
+            context,
+            context.job.lcl_prompt_version,
+        )
+        if schema_name not in {"lcl_v1", "lcl_v2"}:
+            raise PinnedInputChanged(
+                "Pinned LCL prompt schema is unsupported"
+            )
+        lcl_schema = cast(Literal["lcl_v1", "lcl_v2"], schema_name)
         service = LCLService(
             self.structured,
             provider=_provider(context),
@@ -346,6 +357,7 @@ class CurationServicesRunner:
             prompt_version=context.job.lcl_prompt_version,
             prompt_text=prompt_text,
             prompt_hash=prompt_hash,
+            schema_name=lcl_schema,
         )
         generated = await asyncio.to_thread(service.generate, passages)
         return StageProduct(
@@ -355,6 +367,7 @@ class CurationServicesRunner:
                 "raw_response": generated.raw_response,
                 "prompt_version": generated.prompt_version,
                 "prompt_hash": generated.prompt_hash,
+                "schema_name": schema_name,
                 "provider": generated.provider.value,
                 "model": generated.model,
                 "request_id": generated.request_id,
@@ -806,6 +819,31 @@ def _resolved_prompt(
     )
 
 
+def _resolved_prompt_schema(
+    context: StageContext,
+    prompt_id: str,
+) -> str:
+    raw_snapshot = _payload(context, CurationStage.PREFLIGHT).get(
+        "prompt_snapshot",
+        [],
+    )
+    if not isinstance(raw_snapshot, list):
+        raise PinnedInputChanged("Pinned prompt snapshot is malformed")
+    for value in raw_snapshot:
+        if not isinstance(value, dict) or value.get("id") != prompt_id:
+            continue
+        metadata = value.get("metadata")
+        if not isinstance(metadata, dict):
+            raise PinnedInputChanged("Pinned prompt metadata is malformed")
+        schema_name = metadata.get("schema")
+        if not isinstance(schema_name, str) or not schema_name.strip():
+            raise PinnedInputChanged("Pinned prompt schema is missing")
+        return schema_name.strip()
+    raise PinnedInputChanged(
+        f"Pinned prompt {prompt_id} is unavailable; start a new curation job"
+    )
+
+
 def revision_fingerprint(revision: StudyRevision) -> str:
     payload = {
         "revision_id": revision.id,
@@ -845,9 +883,19 @@ def _source_passages(context: StageContext) -> list[SourcePassage]:
 
 
 def _ledger(context: StageContext) -> LectureConceptLedger:
-    return LectureConceptLedger.model_validate(
-        _payload(context, CurationStage.LCL).get("ledger")
-    )
+    payload = _payload(context, CurationStage.LCL)
+    schema_name = payload.get("schema_name", "lcl_v1")
+    if schema_name == "lcl_v2":
+        ledger = LectureConceptLedgerV2.model_validate(
+            payload.get("ledger")
+        )
+        return runtime_ledger_from_v2(
+            ledger,
+            _source_passages(context),
+        )
+    if schema_name != "lcl_v1":
+        raise PinnedInputChanged("Committed LCL schema is unsupported")
+    return LectureConceptLedger.model_validate(payload.get("ledger"))
 
 
 def _judgment_payload(

@@ -1,6 +1,6 @@
 ---
 id: lecture-concept-ledger
-version: 2.0.0
+version: 2.1.0
 model: claude-sonnet-4-6
 temperature: 0
 max_tokens: 16000
@@ -21,18 +21,26 @@ concept you omit here is a concept that never gets a card.
 ## Inputs
 
 - `lecture_title`
-- `passages[]` — slide, transcript, and summary passages with source-prefixed IDs
+- `passages[]` — slide, speaker-note, transcript, vision, and summary passages
+  with source-prefixed IDs. Use the supplied `passage_id` exactly.
 
 ## Coverage requirement
 
-**Every slide and transcript passage must be cited by at least one concept.**
-Before returning, verify this and add concepts for any uncited passage. Report
-any passage you deliberately left uncited in `intentionally_uncited[]` with a
-reason — acceptable reasons are title slides, reference/citation lists,
-objectives slides, and image-only slides with no accompanying claim.
+**Every non-summary passage must receive exactly one disposition:** cited by at
+least one concept, or listed once in `intentionally_uncited[]`. This includes
+slide text, speaker notes, transcript segments, and vision markers. Before
+returning, verify this and add concepts for any unhandled passage. The only
+allowed intentionally-uncited reasons are `title_slide`, `reference_list`,
+`objectives_slide`, and `image_only`.
 
 Summary passages need not be cited individually; they are an index into the
-other two.
+other sources. However, every `DEPTH MAP` and `PROFESSOR EMPHASIS FLAGS`
+passage must be cited by at least one concept.
+
+Every concept must cite at least one non-summary passage that supports its
+canonical statement. A summary passage may corroborate a concept but may never
+be its only evidence. Do not attach an unrelated primary passage merely to
+satisfy this rule.
 
 ## Granularity
 
@@ -69,7 +77,10 @@ not classify a concept, infer from slide count and transcript time.
 `medium` when `depth == medium`. Otherwise `low`.
 
 Every DEEP item and every EMPHASIS item in the summary must map to at least one
-concept. This is checked downstream.
+concept by including that summary `passage_id` in the concept. A concept citing
+a DEPTH item must use its stated `deep`, `medium`, or `surface` classification.
+A concept citing an EMPHASIS item must set `emphasis_flag: true`. These are
+checked downstream.
 
 ## Paraphrases
 
@@ -112,3 +123,15 @@ support, and do not fill in board knowledge the lecturer did not cover.
 
 Also emit `lecture_entity_count` — the number of distinct disease or organism
 entities the lecture teaches. Downstream context-trap logic depends on it.
+
+## Output shape
+
+Return one object with exactly these top-level fields:
+
+- `lecture_entity_count`
+- `concepts[]`
+- `intentionally_uncited[]`, each containing `passage_id` and `reason`
+
+Use sequential `C01`-style concept IDs. Do not return legacy `statement`,
+`source_refs`, `core`, or `supporting` fields; the v2 names and importance
+levels above are required.

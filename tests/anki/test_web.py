@@ -475,6 +475,9 @@ def test_anki_bootstrap_uses_saved_active_provider_and_models(
     payload = response.json()
     assert payload["defaults"]["provider"] == "anthropic"
     assert payload["defaults"]["model"] == "claude-sonnet-4-6"
+    assert payload["defaults"]["lcl_prompt_version"] == (
+        "lecture-concept-ledger"
+    )
     assert payload["provider_models"] == {
         "anthropic": "claude-sonnet-4-6",
         "gemini": "gemini-3.6-flash",

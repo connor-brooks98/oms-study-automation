@@ -186,6 +186,12 @@ depth map, and emphasis flags, but it cannot independently justify keeping or
 generating a card. A malformed outline missing `DEPTH MAP` or
 `PROFESSOR EMPHASIS FLAGS` is rejected before any model tokens are spent.
 
+New runs use the `lecture-concept-ledger` v2 prompt and schema. Its artifact
+records the canonical statement, primary entity, aliases, three to six
+paraphrases that retain the primary entity, depth, emphasis, importance, and
+readable source IDs for each concept. Existing jobs pinned to `lcl-v1` remain
+resumable.
+
 ## 8. Review cards and first-release tag edits
 
 The review page groups existing matches, recovered matches, grounded gaps, and

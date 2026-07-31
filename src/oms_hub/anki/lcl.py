@@ -2,7 +2,7 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import (
     BaseModel,
@@ -12,7 +12,12 @@ from pydantic import (
     model_validator,
 )
 
+from oms_hub.anki.domain import SourceKind
 from oms_hub.anki.sources import SourcePassage
+from oms_hub.anki.v2_contracts import (
+    IntentionallyUncitedV2,
+    LectureConceptLedgerV2,
+)
 from oms_hub.llm.domain import ProviderName
 from oms_hub.llm.structured import (
     StructuredJSONResult,
@@ -58,11 +63,19 @@ class LectureConcept(BaseModel):
     source_refs: tuple[LedgerSourceRef, ...] = Field(min_length=1)
     statement: str = Field(min_length=1, max_length=4_000)
     hypothetical_card: str = Field(min_length=1, max_length=4_000)
-    paraphrases: tuple[
-        str,
-        str,
+    paraphrases: tuple[str, ...] = Field(min_length=2, max_length=6)
+    importance: Literal[
+        "core",
+        "supporting",
+        "high",
+        "medium",
+        "low",
     ]
-    importance: Literal["core", "supporting"]
+    primary_entity: str = ""
+    aliases: tuple[str, ...] = ()
+    depth: Literal["deep", "medium", "surface"] = "surface"
+    emphasis_flag: bool = False
+    source_passage_ids: tuple[str, ...] = ()
 
     @field_validator(
         "concept_id",
@@ -78,15 +91,15 @@ class LectureConcept(BaseModel):
     @classmethod
     def validate_paraphrases(
         cls,
-        value: tuple[str, str],
-    ) -> tuple[str, str]:
+        value: tuple[str, ...],
+    ) -> tuple[str, ...]:
         normalized = tuple(item.strip() for item in value)
         if any(not item for item in normalized):
             raise ValueError("concept paraphrases cannot be blank")
-        return normalized  # type: ignore[return-value]
+        return normalized
 
     @property
-    def queries(self) -> tuple[str, str, str, str]:
+    def queries(self) -> tuple[str, ...]:
         return (
             self.statement,
             self.hypothetical_card,
@@ -98,6 +111,8 @@ class LectureConceptLedger(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     concepts: tuple[LectureConcept, ...] = Field(min_length=1)
+    lecture_entity_count: int = Field(default=1, ge=1)
+    intentionally_uncited: tuple[IntentionallyUncitedV2, ...] = ()
 
     @model_validator(mode="after")
     def rekey_duplicate_concept_ids(self) -> "LectureConceptLedger":
@@ -119,9 +134,49 @@ class LectureConceptLedger(BaseModel):
         return self
 
 
+def runtime_ledger_from_v2(
+    ledger: LectureConceptLedgerV2,
+    passages: Sequence[SourcePassage],
+) -> LectureConceptLedger:
+    source_by_id = {passage.source_id: passage for passage in passages}
+    if len(source_by_id) != len(passages):
+        raise ValueError("source bundle contains duplicate readable IDs")
+    concepts: list[LectureConcept] = []
+    for concept in ledger.concepts:
+        try:
+            cited = tuple(source_by_id[value] for value in concept.passage_ids)
+        except KeyError as exc:
+            raise LCLGenerationError(
+                "V2 ledger source reference does not resolve"
+            ) from exc
+        concepts.append(
+            LectureConcept(
+                concept_id=concept.concept_id,
+                source_refs=tuple(
+                    LedgerSourceRef(passage_id=passage.passage_id)
+                    for passage in cited
+                ),
+                statement=concept.canonical_statement,
+                hypothetical_card=concept.hypothetical_card,
+                paraphrases=concept.paraphrases,
+                importance=concept.importance,
+                primary_entity=concept.primary_entity,
+                aliases=concept.aliases,
+                depth=concept.depth,
+                emphasis_flag=concept.emphasis_flag,
+                source_passage_ids=concept.passage_ids,
+            )
+        )
+    return LectureConceptLedger(
+        concepts=tuple(concepts),
+        lecture_entity_count=ledger.lecture_entity_count,
+        intentionally_uncited=ledger.intentionally_uncited,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class LCLArtifact:
-    ledger: LectureConceptLedger
+    ledger: LectureConceptLedger | LectureConceptLedgerV2
     raw_response: str
     prompt_version: str
     provider: ProviderName
@@ -139,15 +194,15 @@ class LCLGenerationError(ValueError):
 
 
 class StructuredLedgerService(Protocol):
-    def generate_json(
+    def generate_json[StructuredModel: BaseModel](
         self,
         instruction: str,
         input_text: str,
         *,
-        output_model: type[LectureConceptLedger],
+        output_model: type[StructuredModel],
         provider: ProviderName,
         model: str,
-    ) -> StructuredJSONResult[LectureConceptLedger]: ...
+    ) -> StructuredJSONResult[StructuredModel]: ...
 
 
 class LCLService:
@@ -160,6 +215,7 @@ class LCLService:
         prompt_version: str,
         prompt_text: str | None = None,
         prompt_hash: str | None = None,
+        schema_name: Literal["lcl_v1", "lcl_v2"] = "lcl_v1",
     ) -> None:
         if not model.strip() or not prompt_version.strip():
             raise ValueError("ledger model and prompt version are required")
@@ -169,6 +225,7 @@ class LCLService:
         self.prompt_version = prompt_version
         self.prompt_text = prompt_text.strip() if prompt_text is not None else None
         self.prompt_hash = prompt_hash
+        self.schema_name = schema_name
         if prompt_text is not None and not self.prompt_text:
             raise ValueError("ledger prompt text cannot be blank")
 
@@ -177,19 +234,28 @@ class LCLService:
         passages: Sequence[SourcePassage],
     ) -> LCLArtifact:
         source_by_id = {
-            passage.passage_id: passage for passage in passages
+            (
+                passage.source_id
+                if self.schema_name == "lcl_v2"
+                else passage.passage_id
+            ): passage
+            for passage in passages
         }
         if len(source_by_id) != len(passages):
             raise ValueError("source bundle contains duplicate passages")
         if not source_by_id:
             raise ValueError("source bundle cannot be empty")
-        source_input = _source_input(passages)
+        source_input = (
+            _source_input_v2(passages)
+            if self.schema_name == "lcl_v2"
+            else _source_input(passages)
+        )
         try:
             first = self._request(
                 self.prompt_text or _generation_instruction(self.prompt_version),
                 source_input,
             )
-            _validate_ledger(first.value, source_by_id)
+            self._validate(first.value, source_by_id)
             return self._artifact(first, repair_attempted=False)
         except (StructuredOutputError, LCLGenerationError) as first_error:
             raw = (
@@ -219,7 +285,7 @@ class LCLService:
                     ),
                     repair_input,
                 )
-                _validate_ledger(repaired.value, source_by_id)
+                self._validate(repaired.value, source_by_id)
             except (
                 StructuredOutputError,
                 LCLGenerationError,
@@ -231,18 +297,33 @@ class LCLService:
         self,
         instruction: str,
         input_text: str,
-    ) -> StructuredJSONResult[LectureConceptLedger]:
+    ) -> StructuredJSONResult[Any]:
+        output_model = (
+            LectureConceptLedgerV2
+            if self.schema_name == "lcl_v2"
+            else LectureConceptLedger
+        )
         return self.structured.generate_json(
             instruction,
             input_text,
-            output_model=LectureConceptLedger,
+            output_model=output_model,
             provider=self.provider,
             model=self.model,
         )
 
+    def _validate(
+        self,
+        ledger: LectureConceptLedger | LectureConceptLedgerV2,
+        source_by_id: dict[str, SourcePassage],
+    ) -> None:
+        if isinstance(ledger, LectureConceptLedgerV2):
+            _validate_ledger_v2(ledger, source_by_id)
+        else:
+            _validate_ledger(ledger, source_by_id)
+
     def _artifact(
         self,
-        result: StructuredJSONResult[LectureConceptLedger],
+        result: StructuredJSONResult[Any],
         *,
         repair_attempted: bool,
     ) -> LCLArtifact:
@@ -299,6 +380,92 @@ def _validate_ledger(
                     )
 
 
+def _validate_ledger_v2(
+    ledger: LectureConceptLedgerV2,
+    source_by_id: dict[str, SourcePassage],
+) -> None:
+    cited_ids: set[str] = set()
+    for concept in ledger.concepts:
+        cited: list[SourcePassage] = []
+        for passage_id in concept.passage_ids:
+            passage = source_by_id.get(passage_id)
+            if passage is None:
+                raise LCLGenerationError(
+                    "ledger source reference does not resolve"
+                )
+            if not passage.text:
+                raise LCLGenerationError(
+                    "ledger source reference has no extracted evidence"
+                )
+            cited.append(passage)
+            cited_ids.add(passage_id)
+        if not any(
+            passage.source_kind is not SourceKind.SUMMARY
+            for passage in cited
+        ):
+            raise LCLGenerationError(
+                "every concept requires primary-source evidence"
+            )
+        for passage in cited:
+            if (
+                passage.summary_section == "emphasis"
+                and not concept.emphasis_flag
+            ):
+                raise LCLGenerationError(
+                    "concept emphasis flag conflicts with the summary"
+                )
+            if passage.summary_section != "depth":
+                continue
+            match = re.match(
+                r"^(deep|medium|surface)\s*:",
+                passage.text,
+                flags=re.IGNORECASE,
+            )
+            if match is not None and concept.depth != match.group(1).casefold():
+                raise LCLGenerationError(
+                    "concept depth classification conflicts with the depth map"
+                )
+        statement_tokens = _meaningful_tokens(concept.canonical_statement)
+        primary_evidence_tokens = set().union(
+            *(
+                _meaningful_tokens(passage.text)
+                for passage in cited
+                if passage.source_kind is not SourceKind.SUMMARY
+            )
+        )
+        if (
+            not statement_tokens
+            or not statement_tokens & primary_evidence_tokens
+        ):
+            raise LCLGenerationError(
+                "concept statement is unsupported by primary evidence"
+            )
+    uncited_ids = {item.passage_id for item in ledger.intentionally_uncited}
+    if any(passage_id not in source_by_id for passage_id in uncited_ids):
+        raise LCLGenerationError(
+            "intentionally uncited source reference does not resolve"
+        )
+    primary_ids = {
+        source_id
+        for source_id, passage in source_by_id.items()
+        if passage.source_kind is not SourceKind.SUMMARY
+    }
+    if primary_ids - cited_ids - uncited_ids:
+        raise LCLGenerationError(
+            "every primary passage requires a cited or intentionally uncited disposition"
+        )
+    required_summary_ids = {
+        source_id
+        for source_id, passage in source_by_id.items()
+        if passage.source_kind is SourceKind.SUMMARY
+        and passage.summary_section in {"depth", "emphasis"}
+    }
+    if required_summary_ids - cited_ids:
+        raise LCLGenerationError(
+            "every DEPTH or EMPHASIS summary item must map to a concept"
+        )
+
+
 def _source_input(passages: Sequence[SourcePassage]) -> str:
     return json.dumps(
         {
@@ -315,6 +482,32 @@ def _source_input(passages: Sequence[SourcePassage]) -> str:
                 for passage in sorted(
                     passages,
                     key=lambda item: item.passage_id,
+                )
+            ]
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def _source_input_v2(passages: Sequence[SourcePassage]) -> str:
+    return json.dumps(
+        {
+            "passages": [
+                {
+                    "passage_id": passage.source_id,
+                    "source_kind": passage.source_kind.value,
+                    "locator": passage.locator,
+                    "citation": passage.citation,
+                    "text": passage.text,
+                    "extraction_status": passage.extraction_status,
+                    "summary_backrefs": list(passage.summary_backrefs),
+                    "summary_section": passage.summary_section,
+                }
+                for passage in sorted(
+                    passages,
+                    key=lambda item: item.source_id,
                 )
             ]
         },

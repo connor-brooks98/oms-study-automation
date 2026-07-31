@@ -779,7 +779,7 @@ def _page_context(request: Request) -> dict[str, Any]:
         "defaults": {
             "provider": active_provider.provider.value,
             "model": active_provider.model,
-            "lcl_prompt_version": "lcl-v1",
+            "lcl_prompt_version": "lecture-concept-ledger",
             "judgment_rubric_version": "judgment-v1",
             "gap_prompt_version": "gap-v1",
             "index_snapshot_id": snapshot_id,
