@@ -22,6 +22,7 @@ def test_transient_llm_failures_are_retried(source):
     [
         DiagnosticSource.AUTHENTICATION,
         DiagnosticSource.MODEL,
+        DiagnosticSource.REQUEST,
         DiagnosticSource.STUDY_HUB,
     ],
 )

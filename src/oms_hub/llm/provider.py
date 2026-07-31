@@ -155,6 +155,9 @@ def _raise_for_status(
         DiagnosticSource.MODEL: (
             f"{provider.value.title()} rejected the selected model"
         ),
+        DiagnosticSource.REQUEST: (
+            f"{provider.value.title()} rejected the request"
+        ),
         DiagnosticSource.QUOTA: (
             f"{provider.value.title()} reported a quota or rate limit"
         ),
@@ -173,8 +176,10 @@ def _raise_for_status(
 def _diagnostic_source(response: httpx.Response) -> DiagnosticSource:
     if response.status_code in {401, 403} or _api_key_invalid(response):
         return DiagnosticSource.AUTHENTICATION
-    if response.status_code in {400, 404, 422}:
+    if response.status_code == 404:
         return DiagnosticSource.MODEL
+    if response.status_code in {400, 422}:
+        return DiagnosticSource.REQUEST
     if response.status_code == 429:
         return DiagnosticSource.QUOTA
     return DiagnosticSource.SERVICE

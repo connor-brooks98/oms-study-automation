@@ -13,6 +13,7 @@ class DiagnosticSource(StrEnum):
     NETWORK = "network"
     AUTHENTICATION = "provider_authentication"
     MODEL = "provider_model"
+    REQUEST = "provider_request"
     QUOTA = "provider_quota"
     SERVICE = "provider_service"
 

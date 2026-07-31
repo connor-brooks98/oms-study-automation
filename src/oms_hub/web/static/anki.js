@@ -79,6 +79,50 @@
       || null;
   };
 
+  const courseOptions = (lectures) => [
+    ...new Set(
+      lectures
+        .map((lecture) => String(lecture.subject || "").trim())
+        .filter(Boolean),
+    ),
+  ].sort((left, right) => left.localeCompare(right));
+
+  const examOptions = (lectures, course) => [
+    ...new Set(
+      lectures
+        .filter((lecture) => lecture.subject === course)
+        .map((lecture) => Number(lecture.exam_number))
+        .filter((exam) => Number.isInteger(exam) && exam > 0),
+    ),
+  ].sort((left, right) => left - right);
+
+  const lectureOptions = (lectures, course, examNumber) => {
+    const selectedExam = Number(examNumber);
+    if (!course || !Number.isInteger(selectedExam) || selectedExam < 1) {
+      return [];
+    }
+    return lectures
+      .filter(
+        (lecture) => (
+          lecture.subject === course
+          && Number(lecture.exam_number) === selectedExam
+        ),
+      )
+      .sort(
+        (left, right) => (
+          Number(left.lecture_number) - Number(right.lecture_number)
+          || String(left.topic).localeCompare(String(right.topic))
+          || Number(left.id) - Number(right.id)
+        ),
+      );
+  };
+
+  const resolveProviderModel = (providerModels, provider) => {
+    if (!providerModels || typeof providerModels !== "object") return "";
+    const model = providerModels[String(provider || "")];
+    return typeof model === "string" ? model : "";
+  };
+
   const renderSourceChoices = (documentRef, lecture) => {
     const container = documentRef.querySelector("#anki-source-revisions");
     if (!container) return;
@@ -182,22 +226,30 @@
     if (!form) return;
     const lectureId = form.elements.lecture_id;
     const targetTag = form.elements.target_tag;
+    const course = form.elements.course;
+    const exam = form.elements.exam_number;
+    const lectureSelect = form.elements.lecture_path_id;
+    const provider = form.elements.provider;
+    const model = form.elements.model;
     const selectedLabel = documentRef.querySelector(
       "[data-selected-lecture]",
     );
-    const lectureButtons = [
-      ...documentRef.querySelectorAll("[data-lecture-id]"),
-    ];
     let lectures;
+    let providerModels;
     try {
       lectures = parseLecturePayload(
         documentRef.querySelector("#anki-lecture-data")?.textContent,
       );
+      providerModels = JSON.parse(
+        documentRef.querySelector("#anki-provider-models")?.textContent
+          || "{}",
+      );
     } catch {
       lectures = [];
-      lectureButtons.forEach((button) => {
-        button.disabled = true;
-      });
+      providerModels = {};
+      course.disabled = true;
+      exam.disabled = true;
+      lectureSelect.disabled = true;
       documentRef.querySelector("#anki-source-revisions").replaceChildren(
         element(
           documentRef,
@@ -207,28 +259,88 @@
         ),
       );
     }
-    lectureButtons.forEach((button) => {
-      button.addEventListener("click", () => {
-        const lecture = resolveLecture(lectures, button.dataset.lectureId);
-        if (!lecture) return;
-        lectureId.value = String(lecture.id);
-        targetTag.value = String(lecture.target_tag || "");
-        lectureButtons.forEach((candidate) => {
-          candidate.setAttribute(
-            "aria-pressed",
-            String(candidate === button),
-          );
-        });
-        if (selectedLabel) {
-          selectedLabel.textContent = (
-            `${lecture.subject} · Exam ${lecture.exam_number} · `
-            + `Lecture ${lecture.lecture_number} — ${lecture.topic}`
-          );
-        }
-        renderSourceChoices(documentRef, lecture);
+
+    const replaceOptions = (select, placeholder, options) => {
+      select.replaceChildren();
+      const empty = documentRef.createElement("option");
+      empty.value = "";
+      empty.textContent = placeholder;
+      select.append(empty);
+      options.forEach(({ value, label }) => {
+        const option = documentRef.createElement("option");
+        option.value = String(value);
+        option.textContent = label;
+        select.append(option);
       });
+    };
+    const clearLecture = () => {
+      lectureId.value = "";
+      targetTag.value = "";
+      if (selectedLabel) {
+        selectedLabel.textContent = "Choose a course, exam, and lecture.";
+      }
+      renderSourceChoices(documentRef, null);
+    };
+    replaceOptions(
+      course,
+      "Choose a course…",
+      courseOptions(lectures).map((value) => ({ value, label: value })),
+    );
+    course.addEventListener("change", () => {
+      clearLecture();
+      replaceOptions(lectureSelect, "Choose an exam first", []);
+      lectureSelect.disabled = true;
+      const exams = examOptions(lectures, course.value);
+      replaceOptions(
+        exam,
+        course.value ? "Choose an exam…" : "Choose a course first",
+        exams.map((value) => ({ value, label: `Exam ${value}` })),
+      );
+      exam.disabled = !course.value || exams.length === 0;
     });
-    renderSourceChoices(documentRef, null);
+    exam.addEventListener("change", () => {
+      clearLecture();
+      const scopedLectures = lectureOptions(
+        lectures,
+        course.value,
+        exam.value,
+      );
+      replaceOptions(
+        lectureSelect,
+        exam.value ? "Choose a lecture…" : "Choose an exam first",
+        scopedLectures.map((lecture) => ({
+          value: lecture.id,
+          label: `Lecture ${lecture.lecture_number} — ${lecture.topic}`,
+        })),
+      );
+      lectureSelect.disabled = !exam.value || scopedLectures.length === 0;
+    });
+    lectureSelect.addEventListener("change", () => {
+      clearLecture();
+      const lecture = lectureOptions(
+        lectures,
+        course.value,
+        exam.value,
+      ).find((item) => Number(item.id) === Number(lectureSelect.value));
+      if (!lecture) return;
+      lectureId.value = String(lecture.id);
+      targetTag.value = String(lecture.target_tag || "");
+      if (selectedLabel) {
+        selectedLabel.textContent = (
+          `${lecture.subject} · Exam ${lecture.exam_number} · `
+          + `Lecture ${lecture.lecture_number} — ${lecture.topic}`
+        );
+      }
+      renderSourceChoices(documentRef, lecture);
+    });
+    provider.addEventListener("change", () => {
+      const savedModel = resolveProviderModel(
+        providerModels,
+        provider.value,
+      );
+      if (savedModel) model.value = savedModel;
+    });
+    clearLecture();
 
     const refresh = documentRef.querySelector("[data-refresh-jobs]");
     refresh?.addEventListener("click", async () => {
@@ -903,12 +1015,16 @@
     collectReview,
     commaValues,
     csrfToken,
+    courseOptions,
     editableTagPatch,
+    examOptions,
     initialize,
+    lectureOptions,
     parseLecturePayload,
     readableState,
     renderProcessing,
     resolveLecture,
+    resolveProviderModel,
     runWhenReady,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

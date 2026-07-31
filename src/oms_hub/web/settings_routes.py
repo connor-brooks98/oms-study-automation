@@ -385,6 +385,9 @@ def _diagnostic(
         DiagnosticSource.MODEL: (
             "Choose a model available to this provider account."
         ),
+        DiagnosticSource.REQUEST: (
+            "Review the provider request format and try again."
+        ),
         DiagnosticSource.QUOTA: (
             "Check provider billing, quota, and rate limits."
         ),

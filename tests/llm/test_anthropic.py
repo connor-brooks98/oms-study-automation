@@ -1,3 +1,6 @@
+import copy
+import json
+
 import httpx
 import respx
 
@@ -79,3 +82,59 @@ def test_anthropic_structured_generation_sends_output_config():
     assert '"output_config"' in payload
     assert '"json_schema"' in payload
     assert result.text == '{"answer":"iron"}'
+
+
+@respx.mock
+def test_anthropic_structured_generation_sends_provider_safe_schema_copy():
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(
+            200,
+            headers={"request-id": "anthropic-schema"},
+            json={
+                "id": "message-schema",
+                "model": "claude-sonnet-5",
+                "content": [{"type": "text", "text": '{"values":["a","b"]}'}],
+                "usage": {"input_tokens": 12, "output_tokens": 5},
+            },
+        )
+    )
+    schema = {
+        "type": "object",
+        "properties": {
+            "values": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "prefixItems": [
+                    {"type": "string", "minLength": 1, "maxLength": 20},
+                    {"type": "string", "minLength": 1, "maxLength": 20},
+                ],
+            }
+        },
+        "required": ["values"],
+        "additionalProperties": False,
+    }
+    original = copy.deepcopy(schema)
+
+    AnthropicProvider().generate_text(
+        "Return two values.",
+        "Question",
+        api_key="secret",
+        model="claude-sonnet-5",
+        output_schema=schema,
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    sent = payload["output_config"]["format"]["schema"]
+    assert sent == {
+        "type": "object",
+        "properties": {
+            "values": {
+                "type": "array",
+                "items": {"type": "string"},
+            }
+        },
+        "required": ["values"],
+        "additionalProperties": False,
+    }
+    assert schema == original

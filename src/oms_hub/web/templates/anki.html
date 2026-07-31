@@ -42,46 +42,30 @@
     <form id="anki-create-form" class="anki-create-form">
       <div class="anki-form-grid">
         <fieldset class="anki-lecture-field anki-field-wide">
-          <legend>Lecture</legend>
+          <legend>Lecture pathway</legend>
           <input name="lecture_id" type="hidden">
           <div class="anki-lecture-selector" data-lecture-selector>
-            {% for course in lecture_groups %}
-            <details class="anki-course-group">
-              <summary>
-                <span>{{ course.course }}</span>
-                <small>{{ course.exams|length }} exam{{ "" if course.exams|length == 1 else "s" }}</small>
-              </summary>
-              <div class="anki-course-exams">
-                {% for exam in course.exams %}
-                <details class="anki-exam-group">
-                  <summary>Exam {{ exam.exam_number }}</summary>
-                  <div class="anki-lecture-options" role="group" aria-label="{{ course.course }} Exam {{ exam.exam_number }} lectures">
-                    {% for lecture in exam.lectures %}
-                    <button
-                      class="anki-lecture-option"
-                      type="button"
-                      data-lecture-id="{{ lecture.id }}"
-                      aria-pressed="false"
-                      {% if not anki_enabled %}disabled{% endif %}
-                    >
-                      <span>Lecture {{ lecture.lecture_number }} — {{ lecture.topic }}</span>
-                      <small>
-                        {% if lecture.revisions %}
-                          {{ lecture.revisions|map(attribute="kind")|join(" + ") }}
-                        {% else %}
-                          No current sources
-                        {% endif %}
-                      </small>
-                    </button>
-                    {% endfor %}
-                  </div>
-                </details>
+            <label class="anki-path-field">
+              Course
+              <select name="course" required {% if not anki_enabled %}disabled{% endif %}>
+                <option value="">Choose a course…</option>
+                {% for course in lecture_groups %}
+                <option value="{{ course.course }}">{{ course.course }}</option>
                 {% endfor %}
-              </div>
-            </details>
-            {% else %}
-            <p class="quiet-state">No lectures are available in the Study Hub catalog.</p>
-            {% endfor %}
+              </select>
+            </label>
+            <label class="anki-path-field">
+              Exam
+              <select name="exam_number" required disabled>
+                <option value="">Choose a course first</option>
+              </select>
+            </label>
+            <label class="anki-path-field">
+              Lecture
+              <select name="lecture_path_id" required disabled>
+                <option value="">Choose an exam first</option>
+              </select>
+            </label>
           </div>
           <p class="field-help" data-selected-lecture>Choose a course, exam, and lecture.</p>
         </fieldset>
@@ -181,7 +165,8 @@
   </section>
 </section>
 <script id="anki-lecture-data" type="application/json">{{ lectures|tojson }}</script>
+<script id="anki-provider-models" type="application/json">{{ provider_models|tojson }}</script>
 {% endblock %}
 {% block scripts %}
-<script src="/static/anki.js?v=20260730.2" defer></script>
+<script src="/static/anki.js?v=20260730.3" defer></script>
 {% endblock %}

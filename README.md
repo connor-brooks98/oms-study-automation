@@ -116,9 +116,10 @@ Use `--deck` for ordinary deck refreshes, especially from Windows PowerShell.
 Study Hub constructs the required Anki search query internally; reserve
 `--query` for advanced Anki searches.
 
-Open `/anki` in Study Hub to start a run. Choose the course, exam, and lecture
-from the nested selector; Study Hub shows that lecture's current slides and
-transcript. The canonical lecture tag fills automatically as editable text.
+Open `/anki` in Study Hub to start a run. Choose the course, then exam, then
+lecture from the three dependent dropdowns; Study Hub shows that lecture's
+current slides and transcript. The canonical lecture tag fills automatically
+as editable text.
 Existing-card choices, generated cards, source citations, and first-release tag
 edits remain proposals until review is saved, the immutable apply plan is
 frozen, and the user types the explicit confirmation. Source-managed tags stay

@@ -31,6 +31,7 @@ from oms_hub.anki.tag_policy import TagPolicy, tag_hash
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.ingestion.repository import IngestionRepository
+from oms_hub.llm.domain import ProviderName
 from oms_hub.models import LectureModel, StudyRevisionModel
 
 SHA = "a" * 64
@@ -413,6 +414,29 @@ def test_anki_bootstrap_exposes_grouped_current_sources_and_editable_tag(
     ]
 
 
+def test_anki_bootstrap_uses_saved_active_provider_and_models(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, _, _, _ = prepared_app
+    app.state.llm_settings.set_model(
+        ProviderName.ANTHROPIC,
+        "claude-sonnet-4-6",
+    )
+    app.state.llm_settings.set_active(ProviderName.ANTHROPIC)
+
+    response = client.get("/api/anki/bootstrap")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["defaults"]["provider"] == "anthropic"
+    assert payload["defaults"]["model"] == "claude-sonnet-4-6"
+    assert payload["provider_models"] == {
+        "anthropic": "claude-sonnet-4-6",
+        "gemini": "gemini-3.6-flash",
+        "openai": "gpt-5.2",
+    }
+
+
 def test_anki_page_embeds_quote_safe_lecture_json(
     prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
 ) -> None:
@@ -429,6 +453,28 @@ def test_anki_page_embeds_quote_safe_lecture_json(
     assert lecture["topic"] == 'Anemia "I"'
     assert lecture["revisions"][0]["id"] == revision_id
     assert document.css_first("[data-revisions]") is None
+
+
+def test_anki_page_renders_dependent_course_exam_lecture_selects(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, _, _, _, _ = prepared_app
+
+    response = client.get("/anki")
+
+    assert response.status_code == 200
+    document = HTMLParser(response.text)
+    course = document.css_first('select[name="course"]')
+    exam = document.css_first('select[name="exam_number"]')
+    lecture = document.css_first('select[name="lecture_path_id"]')
+    assert course is not None
+    assert exam is not None
+    assert lecture is not None
+    assert "disabled" not in course.attributes
+    assert "disabled" in exam.attributes
+    assert "disabled" in lecture.attributes
+    assert document.css_first(".anki-course-group") is None
+    assert document.css_first(".anki-exam-group") is None
 
 
 def test_create_and_list_job_pins_server_generations_and_rejects_amboss(

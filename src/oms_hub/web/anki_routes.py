@@ -53,6 +53,7 @@ from oms_hub.anki.stages import revision_fingerprint
 from oms_hub.anki.tag_policy import TagPolicy, TagPolicyError, tag_hash
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.llm.domain import ProviderName
+from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.repositories import CatalogRepository
 
 router = APIRouter()
@@ -174,6 +175,7 @@ def anki_bootstrap(request: Request) -> dict[str, Any]:
         "lectures": context["lectures"],
         "lecture_groups": context["lecture_groups"],
         "defaults": context["defaults"],
+        "provider_models": context["provider_models"],
         "tag_policy": context["tag_policy"],
     }
 
@@ -649,6 +651,16 @@ def _page_context(request: Request) -> dict[str, Any]:
             lecture_payload
         )
     settings = request.app.state.settings
+    llm_settings = cast(
+        LLMSettingsRepository,
+        request.app.state.llm_settings,
+    )
+    provider_preferences = llm_settings.list()
+    active_provider = llm_settings.active()
+    provider_models = {
+        preference.provider.value: preference.model
+        for preference in provider_preferences
+    }
     companion = getattr(request.app.state, "anki_companion_index", None)
     snapshot_id = companion.snapshot_id() if companion is not None else None
     return {
@@ -656,14 +668,15 @@ def _page_context(request: Request) -> dict[str, Any]:
         "lectures": lectures,
         "lecture_groups": lecture_groups,
         "defaults": {
-            "provider": "anthropic",
-            "model": "claude-sonnet-5",
+            "provider": active_provider.provider.value,
+            "model": active_provider.model,
             "lcl_prompt_version": "lcl-v1",
             "judgment_rubric_version": "judgment-v1",
             "gap_prompt_version": "gap-v1",
             "index_snapshot_id": snapshot_id,
             "semantic_model": settings.anki_semantic_model,
         },
+        "provider_models": provider_models,
         "tag_policy": _tag_policy_payload(getattr(request.app.state, "anki_tag_policy", None)),
     }
 

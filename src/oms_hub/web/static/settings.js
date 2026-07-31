@@ -38,6 +38,7 @@
     network: "Network issue",
     provider_authentication: "Provider authentication issue",
     provider_model: "Provider model issue",
+    provider_request: "Provider request issue",
     provider_quota: "Provider quota issue",
     provider_service: "Provider service issue",
   };

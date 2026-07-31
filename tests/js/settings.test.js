@@ -77,6 +77,23 @@ test("diagnostics return safe text fields without HTML", () => {
   ]);
 });
 
+test("invalid provider requests have a distinct safe diagnostic", () => {
+  const lines = settings.diagnosticLines({
+    source: "provider_request",
+    message: "Anthropic rejected the request",
+    http_status: 400,
+    next_action: "Review the provider request format and try again.",
+  }, "correlation-2");
+
+  assert.deepEqual(lines, [
+    "Provider request issue",
+    "Anthropic rejected the request",
+    "HTTP 400",
+    "Review the provider request format and try again.",
+    "Study Hub reference: correlation-2",
+  ]);
+});
+
 test("settings initialize immediately when the page is already loaded", () => {
   let starts = 0;
   const documentRef = {

@@ -18,6 +18,59 @@ from oms_hub.llm.provider import (
 )
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
+_UNSUPPORTED_SCHEMA_KEYS = frozenset(
+    {
+        "exclusiveMaximum",
+        "exclusiveMinimum",
+        "maxItems",
+        "maxLength",
+        "maxProperties",
+        "maximum",
+        "minItems",
+        "minLength",
+        "minProperties",
+        "minimum",
+        "multipleOf",
+        "uniqueItems",
+    }
+)
+
+
+def anthropic_output_schema(
+    schema: dict[str, object],
+) -> dict[str, object]:
+    normalized = _normalize_schema_value(schema)
+    if not isinstance(normalized, dict):
+        raise TypeError("Anthropic output schema must be an object")
+    return normalized
+
+
+def _normalize_schema_value(value: object) -> object:
+    if isinstance(value, list):
+        return [_normalize_schema_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    prefix_items = value.get("prefixItems")
+    normalized = {
+        str(key): _normalize_schema_value(item)
+        for key, item in value.items()
+        if key not in _UNSUPPORTED_SCHEMA_KEYS and key != "prefixItems"
+    }
+    if (
+        "items" not in normalized
+        and isinstance(prefix_items, list)
+        and prefix_items
+    ):
+        candidates = [
+            _normalize_schema_value(item) for item in prefix_items
+        ]
+        normalized["items"] = (
+            candidates[0]
+            if all(item == candidates[0] for item in candidates[1:])
+            else {}
+        )
+    return normalized
+
 
 class AnthropicProvider:
     name = ProviderName.ANTHROPIC
@@ -112,7 +165,7 @@ class AnthropicProvider:
             payload["output_config"] = {
                 "format": {
                     "type": "json_schema",
-                    "schema": output_schema,
+                    "schema": anthropic_output_schema(output_schema),
                 }
             }
         return post_provider_json(
