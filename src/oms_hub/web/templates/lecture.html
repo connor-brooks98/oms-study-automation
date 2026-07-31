@@ -124,6 +124,7 @@
   <details class="metadata-panel">
     <summary>Edit lecture details</summary>
     <form method="post" action="/lectures/{{ lecture.id }}/metadata">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
       <label>Course <input name="subject" value="{{ lecture.subject }}" required></label>
       <label>Exam <input name="exam_number" type="number" min="1" value="{{ lecture.exam_number }}" required></label>
       <label>Lecture <input name="lecture_number" type="number" min="1" value="{{ lecture.lecture_number }}" required></label>

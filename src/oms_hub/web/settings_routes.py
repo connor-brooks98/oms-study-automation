@@ -22,6 +22,7 @@ from oms_hub.security.secret_store import SecretStore
 from oms_hub.study_generation.domain import PromptKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.tracker_preview import TrackerPreview, TrackerPreviewService
+from oms_hub.web.csrf import require_form_csrf
 from oms_hub.web.llm_schemas import (
     ActiveProviderUpdate,
     CredentialUpdate,
@@ -292,7 +293,9 @@ def test_ai_connection(
 async def preview_tracker(
     request: Request,
     workbook: Annotated[UploadFile, File()],
+    csrf_token: Annotated[str | None, Form()] = None,
 ) -> Response:
+    require_form_csrf(request, csrf_token)
     filename = Path(workbook.filename or "").name
     if Path(filename).suffix.casefold() != ".xlsx":
         raise HTTPException(415, "tracker must be an .xlsx workbook")
@@ -334,7 +337,9 @@ async def preview_tracker(
 def apply_tracker(
     request: Request,
     preview_id: Annotated[str, Form()],
+    csrf_token: Annotated[str | None, Form()] = None,
 ) -> RedirectResponse:
+    require_form_csrf(request, csrf_token)
     try:
         _service(request).apply(preview_id)
     except (ValueError, FileNotFoundError, json.JSONDecodeError) as error:

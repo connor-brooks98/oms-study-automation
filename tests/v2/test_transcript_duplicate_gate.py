@@ -1,8 +1,6 @@
 import hashlib
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.db import Database
@@ -13,6 +11,7 @@ from oms_hub.ingestion.service import IngestionService
 from oms_hub.ingestion.staging import StagingService, UploadRejected
 from oms_hub.models import StudyRevisionModel
 from oms_hub.repositories import CatalogRepository, LectureInput
+from tests.support import csrf_client
 
 
 def _prepared_repository(tmp_path):
@@ -265,7 +264,7 @@ def _prepared_route_client(tmp_path):
         lecture_id,
     )
     return (
-        TestClient(app),
+        csrf_client(app),
         repository,
         batch_id,
         staged_path,

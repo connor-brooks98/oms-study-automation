@@ -81,7 +81,7 @@ class GenerationJob:
     pdf_source_id: str | None = None
     transcript_source_id: str | None = None
     notebook_answer: str | None = None
-    gemini_quiz_id: str | None = None
+    supersedes_job_id: str | None = None
     quiz_url: str | None = None
 
 
@@ -152,6 +152,13 @@ class LectureSourceSet:
 @dataclass(frozen=True, slots=True)
 class NotebookAnswer:
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class NotebookGeneration:
+    notebook: NotebookRef
+    sources: LectureSourceSet
+    answer: NotebookAnswer
 
 
 @dataclass(frozen=True, slots=True)

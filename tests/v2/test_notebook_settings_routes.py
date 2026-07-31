@@ -5,6 +5,7 @@ from oms_hub.config import Settings
 from oms_hub.study_generation.notebook_connection import (
     NotebookConnectionStatus,
 )
+from tests.support import csrf_client
 
 
 class FakeNotebookConnection:
@@ -53,7 +54,7 @@ def test_settings_shows_only_notebook_connection_card(tmp_path):
 
 
 def test_connect_response_has_single_notebook_state(tmp_path):
-    response = TestClient(app(tmp_path)).post(
+    response = csrf_client(app(tmp_path)).post(
         "/settings/notebook/connect",
         json={},
     )
@@ -64,7 +65,7 @@ def test_connect_response_has_single_notebook_state(tmp_path):
 
 
 def test_retired_google_settings_routes_are_gone(tmp_path):
-    client = TestClient(app(tmp_path))
+    client = csrf_client(app(tmp_path))
 
     assert client.get("/settings/google/status").status_code == 404
     assert client.post("/settings/google/connect").status_code == 404

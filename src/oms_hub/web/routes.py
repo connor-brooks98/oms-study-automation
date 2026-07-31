@@ -17,6 +17,7 @@ from oms_hub.progress import overall_status
 from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.study_generation.domain import GenerationKind
 from oms_hub.study_generation.repository import GenerationRepository
+from oms_hub.web.csrf import require_form_csrf
 from oms_hub.web.schemas import LectureApi, StepApi
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -243,7 +244,9 @@ def update_lecture_metadata(
     topic: str = Form(),
     lecturer: str = Form(default=""),
     exam_date: str = Form(default=""),
+    csrf_token: str | None = Form(default=None),
 ) -> RedirectResponse:
+    require_form_csrf(request, csrf_token)
     _repo(request).update_lecture(
         lecture_id,
         LectureInput(
@@ -267,7 +270,9 @@ def resolve_import_issue(
     lecture_number: int = Form(),
     topic: str = Form(),
     lecturer: str = Form(default=""),
+    csrf_token: str | None = Form(default=None),
 ) -> RedirectResponse:
+    require_form_csrf(request, csrf_token)
     repository = _repo(request)
     repository.upsert_lecture(
         LectureInput(

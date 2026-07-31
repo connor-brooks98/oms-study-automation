@@ -8,6 +8,7 @@ from fastapi.templating import Jinja2Templates
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.ingestion.service import IngestionService
 from oms_hub.repositories import CatalogRepository
+from oms_hub.web.csrf import require_form_csrf
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 router = APIRouter(prefix="/quarantine")
@@ -43,7 +44,9 @@ def assign_item(
     item_id: str,
     request: Request,
     lecture_id: Annotated[int, Form()],
+    csrf_token: Annotated[str | None, Form()] = None,
 ) -> RedirectResponse:
+    require_form_csrf(request, csrf_token)
     try:
         _service(request).assign(item_id, lecture_id)
     except KeyError as error:

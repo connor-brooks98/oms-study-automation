@@ -25,9 +25,11 @@
         <a class="button secondary" href="/artifacts/{{ revision.id }}/cleaned">Preview transcript</a>
         {% endif %}
         <form method="post" action="/review/replacements/{{ revision.id }}/approve">
+          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
           <button class="button primary" type="submit">Approve replacement</button>
         </form>
         <form method="post" action="/review/replacements/{{ revision.id }}/keep">
+          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
           <button class="button secondary" type="submit">Keep current file</button>
         </form>
       </div>
@@ -56,6 +58,7 @@
         <strong>{{ issue.sheet }} row {{ issue.row_number }}</strong>
         <p>{{ issue.message }} — {{ issue.raw_values }}</p>
         <form method="post" action="/review/import-issues/{{ issue.id }}/resolve">
+          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
           <label>Course <input name="subject" required></label>
           <label>Exam <input name="exam_number" type="number" min="1" required></label>
           <label>Lecture <input name="lecture_number" type="number" min="1" required></label>

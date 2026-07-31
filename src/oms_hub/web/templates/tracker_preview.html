@@ -168,6 +168,7 @@
       <a class="button secondary" href="/settings">Choose another file</a>
       {% if preview.state != "identical" %}
       <form method="post" action="/settings/tracker/apply">
+        <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
         <input type="hidden" name="preview_id" value="{{ preview.id }}">
         <button class="button primary" type="submit">Apply tracker</button>
       </form>

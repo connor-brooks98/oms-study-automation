@@ -12,7 +12,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 6
+LATEST_SCHEMA_VERSION = 7
 
 
 def migrate_database(database: "Database") -> None:
@@ -43,6 +43,42 @@ def migrate_database(database: "Database") -> None:
                     "ADD COLUMN display_title VARCHAR(500) NOT NULL DEFAULT ''"
                 )
             )
+    generation_columns = {
+        column["name"]
+        for column in inspect(database.engine).get_columns("generation_jobs")
+    }
+    if "supersedes_job_id" not in generation_columns:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE generation_jobs ADD COLUMN "
+                    "supersedes_job_id VARCHAR(36) REFERENCES generation_jobs(id)"
+                )
+            )
+    if "gemini_quiz_id" in generation_columns:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE generation_jobs DROP COLUMN gemini_quiz_id")
+            )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_ingestion_jobs_poll "
+                "ON ingestion_jobs (state, next_attempt_at, created_at)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_generation_jobs_poll "
+                "ON generation_jobs (state, next_attempt_at, created_at)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_generation_jobs_supersedes "
+                "ON generation_jobs (supersedes_job_id)"
+            )
+        )
     with database.session() as session:
         version = session.get(SchemaVersionModel, 1)
         if version is not None and version.version >= LATEST_SCHEMA_VERSION:

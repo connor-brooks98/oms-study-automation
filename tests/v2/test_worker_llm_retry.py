@@ -1,4 +1,7 @@
+import sqlite3
+
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from oms_hub.ingestion.worker import IngestionWorker
 from oms_hub.llm.domain import DiagnosticSource, LLMRequestError
@@ -28,3 +31,12 @@ def test_transient_llm_failures_are_retried(source):
 def test_permanent_llm_failures_are_not_retried(source):
     error = LLMRequestError("safe", source=source)
     assert IngestionWorker._is_transient(error) is False
+
+
+def test_ingestion_retries_typed_sqlite_busy_error():
+    busy = sqlite3.OperationalError("localized message")
+    busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
+
+    assert IngestionWorker._is_transient(
+        OperationalError("statement", {}, busy)
+    ) is True

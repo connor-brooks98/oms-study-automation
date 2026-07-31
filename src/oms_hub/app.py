@@ -1,4 +1,8 @@
-from collections.abc import Awaitable, Callable
+import asyncio
+import logging
+import threading
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -39,6 +43,7 @@ from oms_hub.study_generation.notebook_connection import (
     NotebookConnectionService,
     retire_google_docs_credentials,
 )
+from oms_hub.study_generation.notebook_storage import EncryptedNotebookStorage
 from oms_hub.study_generation.outline import OutlineService
 from oms_hub.study_generation.path_picker import SystemPromptPathPicker
 from oms_hub.study_generation.prompts import PromptFileService
@@ -61,11 +66,61 @@ from oms_hub.web.routes import router
 from oms_hub.web.settings_routes import router as settings_router
 from oms_hub.web.upload_routes import router as upload_router
 
+logger = logging.getLogger(__name__)
+
+
+def _run_worker(stop: threading.Event, worker: object, name: str) -> None:
+    while not stop.is_set():
+        try:
+            worker.run_once()  # type: ignore[attr-defined]
+        except Exception:
+            logger.exception("%s worker failed", name)
+        stop.wait(5)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    ingestion_worker = app.state.ingestion_worker
+    generation_worker = app.state.generation_worker
+    ingestion_worker.recover_interrupted_jobs()
+    generation_worker.recover_interrupted_jobs()
+    stop = threading.Event()
+    worker_threads = [
+        threading.Thread(
+            target=_run_worker,
+            args=(stop, worker, name),
+            name=f"oms-{name}",
+            daemon=True,
+        )
+        for name, worker in (
+            ("ingestion", ingestion_worker),
+            ("study-generation", generation_worker),
+        )
+    ]
+    app.state.worker_threads = tuple(worker_threads)
+    for worker_thread in worker_threads:
+        worker_thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        await asyncio.gather(
+            *(
+                asyncio.to_thread(worker_thread.join, 10)
+                for worker_thread in worker_threads
+            )
+        )
+        app.state.database.close()
+
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or get_settings()
     resolved.data_dir.mkdir(parents=True, exist_ok=True)
-    app = FastAPI(title="OMS II Study Automation Hub", version=__version__)
+    app = FastAPI(
+        title="OMS II Study Automation Hub",
+        version=__version__,
+        lifespan=_lifespan,
+    )
     allowed_hosts = ["127.0.0.1", "localhost", "testserver"]
     if resolved.public_hostname:
         allowed_hosts.append(resolved.public_hostname)
@@ -214,7 +269,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request.cookies.get(csrf.cookie_name),
                 request.headers.get(csrf.header_name),
             )
-            if is_public and not (valid_token or trusted_native_form):
+            if not (valid_token or trusted_native_form):
                 return harden(
                     JSONResponse(
                         {"detail": "request verification failed"},
@@ -267,7 +322,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     notebook_storage_path = (
         resolved.data_dir / "google" / "notebooklm-storage.json"
     )
-    app.state.notebook_auth = NotebookCLIAuth(notebook_storage_path)
+    notebook_storage = EncryptedNotebookStorage(
+        notebook_storage_path.with_suffix(".enc"),
+        app.state.secrets,
+        legacy_plaintext_path=notebook_storage_path,
+    )
+    app.state.notebook_storage = notebook_storage
+    app.state.notebook_auth = NotebookCLIAuth(notebook_storage)
     app.state.notebook_connection = NotebookConnectionService(
         app.state.generation_repository,
         app.state.notebook_auth,
@@ -319,7 +380,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.ingestion_repository,
         prompt_files,
         StoredNotebookLMGateway(
-            notebook_storage_path,
+            notebook_storage,
             app.state.generation_repository,
         ),
         OutlineService(resolved, app.state.generation_repository),

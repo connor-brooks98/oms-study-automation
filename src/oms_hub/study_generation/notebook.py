@@ -2,12 +2,15 @@ import asyncio
 import logging
 import re
 from collections.abc import Callable
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Protocol, cast
 
 from oms_hub.study_generation.domain import (
     LectureSourceSet,
     NotebookAnswer,
+    NotebookGeneration,
     NotebookRef,
     PromptSnapshot,
     RemoteSource,
@@ -15,13 +18,15 @@ from oms_hub.study_generation.domain import (
     SourceIsolationError,
     SourceKind,
 )
+from oms_hub.study_generation.notebook_errors import translate_notebook_error
+from oms_hub.study_generation.notebook_storage import PlaintextNotebookStorage
 from oms_hub.study_generation.repository import GenerationRepository
 
 logger = logging.getLogger(__name__)
-
-
-class NotebookAuthenticationError(RuntimeError):
-    pass
+_active_client: ContextVar[Any | None] = ContextVar(
+    "notebooklm_active_client",
+    default=None,
+)
 
 
 class NotebookGateway(Protocol):
@@ -124,23 +129,27 @@ class NotebookLMGateway:
 
 
 class StoredNotebookLMGateway:
-    """Open a fresh authenticated NotebookLM session for each durable worker step."""
+    """Use one authenticated NotebookLM session per durable generation operation."""
 
     def __init__(
         self,
-        storage_path: Path,
+        storage_path: Path | Any,
         repository: GenerationRepository,
         *,
         client_factory: Callable[[], Any] | None = None,
     ):
-        self.storage_path = storage_path
+        self.storage = (
+            PlaintextNotebookStorage(storage_path)
+            if isinstance(storage_path, Path)
+            else storage_path
+        )
         self.repository = repository
         self.client_factory = client_factory
 
     def ensure_notebook(self, subject: str, exam_number: int) -> NotebookRef:
         return cast(
             NotebookRef,
-            _authenticated_run(
+            _run(
                 self._ensure_notebook(subject, exam_number),
             ),
         )
@@ -154,7 +163,7 @@ class StoredNotebookLMGateway:
     ) -> LectureSourceSet:
         return cast(
             LectureSourceSet,
-            _authenticated_run(
+            _run(
                 self._ensure_sources(
                     notebook,
                     lecture_id,
@@ -172,8 +181,55 @@ class StoredNotebookLMGateway:
     ) -> NotebookAnswer:
         return cast(
             NotebookAnswer,
-            _authenticated_run(self._ask(notebook, sources, prompt)),
+            _run(self._ask(notebook, sources, prompt)),
         )
+
+    def generate(
+        self,
+        subject: str,
+        exam_number: int,
+        lecture_id: int,
+        pdf: RevisionSource,
+        transcript: RevisionSource,
+        prompt: PromptSnapshot,
+    ) -> NotebookGeneration:
+        return cast(
+            NotebookGeneration,
+            _run(
+                self._generate(
+                    subject,
+                    exam_number,
+                    lecture_id,
+                    pdf,
+                    transcript,
+                    prompt,
+                )
+            ),
+        )
+
+    async def _generate(
+        self,
+        subject: str,
+        exam_number: int,
+        lecture_id: int,
+        pdf: RevisionSource,
+        transcript: RevisionSource,
+        prompt: PromptSnapshot,
+    ) -> NotebookGeneration:
+        async with self._with_client() as client:
+            token = _active_client.set(client)
+            try:
+                notebook = await self._ensure_notebook(subject, exam_number)
+                sources = await self._ensure_sources(
+                    notebook,
+                    lecture_id,
+                    pdf,
+                    transcript,
+                )
+                answer = await self._ask(notebook, sources, prompt)
+                return NotebookGeneration(notebook, sources, answer)
+            finally:
+                _active_client.reset(token)
 
     async def _ensure_notebook(
         self,
@@ -399,12 +455,26 @@ class StoredNotebookLMGateway:
             raise RuntimeError("NotebookLM returned an empty answer")
         return NotebookAnswer(text.strip())
 
-    def _with_client(self) -> Any:
-        if self.client_factory is not None:
-            return self.client_factory()
-        from notebooklm import NotebookLMClient
+    @asynccontextmanager
+    async def _with_client(self) -> Any:
+        active = _active_client.get()
+        if active is not None:
+            yield active
+            return
+        with self.storage.plaintext() as storage_path:
+            context = (
+                self.client_factory()
+                if self.client_factory is not None
+                else _stored_client_context(storage_path)
+            )
+            async with context as client:
+                yield client
 
-        return NotebookLMClient.from_storage(str(self.storage_path))
+
+def _stored_client_context(storage_path: Path) -> Any:
+    from notebooklm import NotebookLMClient
+
+    return NotebookLMClient.from_storage(str(storage_path))
 
 
 def _remote_ready(remote: Any) -> bool:
@@ -426,29 +496,10 @@ def _validate_revision_source(
 
 
 def _run(awaitable: Any) -> Any:
-    return asyncio.run(awaitable)
-
-
-def _authenticated_run(awaitable: Any) -> Any:
     try:
-        return _run(awaitable)
+        return asyncio.run(awaitable)
     except Exception as error:
-        if _is_notebook_auth_error(error):
-            raise NotebookAuthenticationError(
-                "NotebookLM login expired; reconnect Google in Settings."
-            ) from error
-        raise
-
-
-def _is_notebook_auth_error(error: Exception) -> bool:
-    message = str(error).casefold()
-    return any(
-        phrase in message
-        for phrase in (
-            "authentication expired",
-            "authentication invalid",
-            "accounts.google.com",
-            "notebooklm login",
-            "login to notebooklm",
-        )
-    )
+        translated = translate_notebook_error(error)
+        if translated is None or translated is error:
+            raise
+        raise translated from error

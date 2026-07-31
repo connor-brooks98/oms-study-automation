@@ -18,6 +18,7 @@
   </div>
 
   <form class="upload-form" action="/uploads/{{ kind.value }}" method="post" enctype="multipart/form-data" data-upload-form data-kind="{{ kind.value }}" data-lecture-id="{{ selected_lecture.id if selected_lecture else '' }}">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
     {% if selected_lecture %}<input type="hidden" name="lecture_id" value="{{ selected_lecture.id }}">{% endif %}
     <div class="upload-zone" data-drop-zone>
       <span class="upload-mark" aria-hidden="true">↑</span>

@@ -1,7 +1,5 @@
 import argparse
 import getpass
-import logging
-import threading
 from pathlib import Path
 
 import uvicorn
@@ -14,8 +12,6 @@ from oms_hub.routing import expanded_path
 from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.tracker_import import TrackerImporter
 from oms_hub.transcripts.prompt import PromptLoader
-
-logger = logging.getLogger(__name__)
 
 
 def _repository(settings: Settings) -> CatalogRepository:
@@ -33,46 +29,15 @@ def import_tracker(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_worker(stop: threading.Event, worker: object) -> None:
-    while not stop.is_set():
-        try:
-            worker.run_once()  # type: ignore[attr-defined]
-        except Exception:
-            logger.exception("V2 ingestion worker failed")
-        stop.wait(5)
-
-
 def serve(args: argparse.Namespace) -> int:
     del args
     settings = Settings()
     app = create_app(settings)
-    app.state.ingestion_worker.recover_interrupted_jobs()
-    app.state.generation_worker.recover_interrupted_jobs()
-    stop = threading.Event()
-    worker_threads = [
-        threading.Thread(
-            target=_run_worker,
-            args=(stop, worker),
-            name=name,
-            daemon=True,
-        )
-        for name, worker in (
-            ("oms-v2-ingestion", app.state.ingestion_worker),
-            ("oms-study-generation", app.state.generation_worker),
-        )
-    ]
-    for worker_thread in worker_threads:
-        worker_thread.start()
-    try:
-        uvicorn.run(
-            app,
-            host=settings.dashboard_host,
-            port=settings.dashboard_port,
-        )
-    finally:
-        stop.set()
-        for worker_thread in worker_threads:
-            worker_thread.join(timeout=10)
+    uvicorn.run(
+        app,
+        host=settings.dashboard_host,
+        port=settings.dashboard_port,
+    )
     return 0
 
 

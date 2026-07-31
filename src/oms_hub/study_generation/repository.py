@@ -5,13 +5,14 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 
 from oms_hub.db import Database
 from oms_hub.models import (
     CourseQuizDocumentModel,
     ExamQuizTabModel,
+    GenerationAttemptModel,
     GenerationJobModel,
     GoogleConnectionModel,
     NotebookMappingModel,
@@ -64,12 +65,22 @@ class GenerationRepository:
             )
             if existing is not None:
                 return self._job(existing)
+            predecessor = session.scalar(
+                select(GenerationJobModel)
+                .where(
+                    GenerationJobModel.lecture_id == lecture_id,
+                    GenerationJobModel.kind == kind.value,
+                    GenerationJobModel.state == GenerationState.FAILED.value,
+                )
+                .order_by(GenerationJobModel.created_at.desc())
+            )
             model = GenerationJobModel(
                 id=str(uuid4()),
                 lecture_id=lecture_id,
                 kind=kind.value,
                 state=GenerationState.QUEUED.value,
                 stage=GenerationStage.VALIDATE.value,
+                supersedes_job_id=(predecessor.id if predecessor else None),
             )
             session.add(model)
             session.flush()
@@ -338,7 +349,6 @@ class GenerationRepository:
             "pdf_source_id",
             "transcript_source_id",
             "notebook_answer",
-            "gemini_quiz_id",
             "quiz_url",
             "prompt_path",
             "prompt_sha256",
@@ -426,6 +436,37 @@ class GenerationRepository:
             model.next_attempt_at = (datetime.now(UTC) + delay).isoformat()
             session.flush()
             return self._job(model)
+
+    def record_attempt(
+        self,
+        job_id: str,
+        attempt_number: int,
+        diagnostic_source: str,
+        raw_response: str | None,
+        error: str,
+    ) -> None:
+        with self.database.session() as session:
+            session.add(
+                GenerationAttemptModel(
+                    job_id=job_id,
+                    attempt_number=attempt_number,
+                    diagnostic_source=diagnostic_source,
+                    raw_response=raw_response,
+                    error=error[:1000],
+                )
+            )
+
+    def contract_failure_count(self, job_id: str) -> int:
+        with self.database.session() as session:
+            return int(
+                session.scalar(
+                    select(func.count(GenerationAttemptModel.id)).where(
+                        GenerationAttemptModel.job_id == job_id,
+                        GenerationAttemptModel.diagnostic_source == "contract",
+                    )
+                )
+                or 0
+            )
 
     def fail(self, job_id: str, error: str, *, paused: bool = False) -> GenerationJob:
         return self._set_state(
@@ -699,7 +740,7 @@ class GenerationRepository:
             pdf_source_id=model.pdf_source_id,
             transcript_source_id=model.transcript_source_id,
             notebook_answer=model.notebook_answer,
-            gemini_quiz_id=model.gemini_quiz_id,
+            supersedes_job_id=model.supersedes_job_id,
             quiz_url=model.quiz_url,
         )
 

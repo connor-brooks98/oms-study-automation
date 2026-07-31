@@ -1,7 +1,9 @@
 from pathlib import Path
 from threading import RLock
-from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
+
+from defusedxml import ElementTree
+from defusedxml.common import DefusedXmlException
 
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.ingestion.domain import (
@@ -135,7 +137,7 @@ class IngestionService:
             return ""
         try:
             root = ElementTree.fromstring(archive.read(info))
-        except ElementTree.ParseError:
+        except (ElementTree.ParseError, DefusedXmlException):
             return ""
         return " ".join(
             text.strip()

@@ -19,6 +19,7 @@
     <ul>{% for evidence in item.evidence %}<li>{{ evidence }}</li>{% endfor %}</ul>
     {% endif %}
     <form method="post" action="/quarantine/{{ item.id }}/assign">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
       <label>Lecture
         <select name="lecture_id" required>
           <option value="">Select a lecture</option>

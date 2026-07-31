@@ -2,6 +2,7 @@ import json
 from datetime import UTC, datetime
 
 from oms_hub.db import Database
+from oms_hub.models import StudyRevisionModel, UploadBatchModel, UploadItemModel
 from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.study_generation.domain import (
     GenerationKind,
@@ -48,6 +49,17 @@ def test_claim_and_recovery_preserve_recorded_stage(tmp_path):
     recovered = repository.get(claimed.id)
     assert recovered.state is GenerationState.QUEUED
     assert recovered.stage is GenerationStage.GEMINI
+
+
+def test_new_job_links_to_latest_failed_predecessor(tmp_path):
+    repository, lecture_id = prepared_repository(tmp_path)
+    failed = repository.queue(lecture_id, GenerationKind.QUIZ)
+    repository.fail(failed.id, "contract failed")
+
+    successor = repository.queue(lecture_id, GenerationKind.QUIZ)
+
+    assert successor.id != failed.id
+    assert successor.supersedes_job_id == failed.id
 
 
 def test_recovery_requeues_paused_legacy_docs_job_with_published_url(tmp_path):
@@ -122,6 +134,34 @@ def test_unknown_public_quiz_token_returns_none(tmp_path):
 
 def test_binding_new_revision_supersedes_prior_ready_source(tmp_path):
     repository, lecture_id = prepared_repository(tmp_path)
+    with repository.database.session() as session:
+        session.add(UploadBatchModel(id="batch", kind="slides"))
+        session.flush()
+        for revision_id in (10, 11):
+            item_id = f"item-{revision_id}"
+            session.add(
+                UploadItemModel(
+                    id=item_id,
+                    batch_id="batch",
+                    kind="slides",
+                    original_filename=f"lecture-{revision_id}.pptx",
+                    staged_path=str(tmp_path / f"lecture-{revision_id}.pptx"),
+                    sha256=str(revision_id) * 64,
+                    size_bytes=1,
+                    lecture_id=lecture_id,
+                )
+            )
+            session.flush()
+            session.add(
+                StudyRevisionModel(
+                    id=revision_id,
+                    upload_item_id=item_id,
+                    lecture_id=lecture_id,
+                    kind="slides",
+                    source_sha256=str(revision_id) * 64,
+                    immutable_source_path=str(tmp_path / f"source-{revision_id}.pptx"),
+                )
+            )
     notebook = repository.save_notebook_mapping(
         "Neuro",
         "neuro",

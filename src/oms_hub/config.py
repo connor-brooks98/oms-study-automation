@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     )
     upload_session_hours: int = Field(default=24, ge=1, le=168)
     transcript_prompt_path: Path = Path(
-        r"C:\Users\conbr\Documents\Main Vault\Anki AI Prompts\Transcript Cleaning.md"
+        r"%USERPROFILE%\Documents\Main Vault\Anki AI Prompts\Transcript Cleaning.md"
     )
     transcript_prompt_sha256: str | None = Field(
         default=None,

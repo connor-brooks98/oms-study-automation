@@ -164,6 +164,7 @@
     <h2>Lecture exam tracker</h2>
     <p>Upload an Excel tracker to preview courses, exams, and lecture changes before applying them.</p>
     <form action="/settings/tracker/preview" method="post" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
       <label>Tracker workbook <input type="file" name="workbook" accept=".xlsx" required></label>
       <button class="button primary" type="submit">Preview tracker</button>
     </form>

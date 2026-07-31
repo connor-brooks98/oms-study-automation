@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from notebooklm import AuthError
 
 from oms_hub.study_generation.domain import (
     LectureSourceSet,
@@ -15,10 +16,8 @@ from oms_hub.study_generation.domain import (
     SourceIsolationError,
     SourceKind,
 )
-from oms_hub.study_generation.notebook import (
-    NotebookAuthenticationError,
-    StoredNotebookLMGateway,
-)
+from oms_hub.study_generation.notebook import StoredNotebookLMGateway
+from oms_hub.study_generation.notebook_errors import NotebookAuthenticationError
 
 
 @dataclass
@@ -109,11 +108,7 @@ class FakeClientContext:
 
 class ExpiredClientContext:
     async def __aenter__(self):
-        raise RuntimeError(
-            "Authentication expired or invalid. Redirected to: "
-            "https://accounts.google.com/ Run 'notebooklm login' "
-            "to re-authenticate."
-        )
+        raise AuthError("expired provider storage with secret-cookie-value")
 
     async def __aexit__(self, exc_type, exc, traceback):
         return False
@@ -238,6 +233,60 @@ def test_source_upload_uses_canonical_path_stem(tmp_path):
         "Lecture 02 - Demyelinating Disease - Transcript",
     ]
     assert sources.remote_ids == ["new-1", "new-2"]
+
+
+def test_generation_uses_one_client_context_for_notebook_sources_and_chat(
+    tmp_path,
+):
+    events = []
+    contexts = []
+    repository = FakeRepository(events)
+    client = FakeClient([], events)
+
+    def context_factory():
+        context = FakeClientContext(client)
+        contexts.append(context)
+        return context
+
+    gateway = StoredNotebookLMGateway(
+        tmp_path / "notebooklm-storage.json",
+        repository,
+        client_factory=context_factory,
+    )
+    pdf = _revision(
+        tmp_path / "Lecture 02.pdf",
+        2,
+        10,
+        SourceKind.LECTURE_PDF,
+        b"pdf",
+    )
+    transcript = _revision(
+        tmp_path / "Lecture 02 - Transcript.txt",
+        2,
+        11,
+        SourceKind.CLEANED_TRANSCRIPT,
+        b"transcript",
+    )
+
+    result = gateway.generate(
+        "Neuro",
+        1,
+        2,
+        pdf,
+        transcript,
+        PromptSnapshot(
+            tmp_path / "Quiz.md",
+            "Create the quiz",
+            "c" * 64,
+            "now",
+        ),
+    )
+
+    assert len(contexts) == 1
+    assert result.notebook.id == "nb-1"
+    assert result.sources.remote_ids == ["new-1", "new-2"]
+    assert result.answer.text == "Selected lecture only"
+    assert client.chat.calls[0]["source_ids"] == ["new-1", "new-2"]
 
 
 def test_gateway_translates_expired_storage_into_safe_auth_error(tmp_path):

@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import cast
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
@@ -21,6 +21,7 @@ from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import expanded_path
 from oms_hub.study_generation.domain import OutlineRecord
 from oms_hub.study_generation.repository import GenerationRepository
+from oms_hub.web.csrf import require_form_csrf
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -173,7 +174,9 @@ def download_cleaned_transcript(
 def approve_replacement(
     request: Request,
     revision_id: int,
+    csrf_token: str | None = Form(default=None),
 ) -> RedirectResponse:
+    require_form_csrf(request, csrf_token)
     try:
         _service(request).approve(revision_id)
     except KeyError as error:
@@ -187,7 +190,9 @@ def approve_replacement(
 def keep_replacement(
     request: Request,
     revision_id: int,
+    csrf_token: str | None = Form(default=None),
 ) -> RedirectResponse:
+    require_form_csrf(request, csrf_token)
     try:
         _service(request).keep_current(revision_id)
     except KeyError as error:

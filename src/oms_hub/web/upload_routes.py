@@ -12,6 +12,7 @@ from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.ingestion.service import IngestionService
 from oms_hub.ingestion.staging import StagingService, UploadRejected
 from oms_hub.repositories import CatalogRepository
+from oms_hub.web.csrf import require_form_csrf
 
 router = APIRouter()
 templates = Jinja2Templates(
@@ -76,8 +77,10 @@ def upload_files(
     kind: UploadKind,
     request: Request,
     files: Annotated[list[UploadFile], File()],
+    csrf_token: Annotated[str | None, Form()] = None,
     lecture_id: Annotated[int | None, Form()] = None,
 ) -> dict[str, str]:
+    require_form_csrf(request, csrf_token)
     if not files:
         raise HTTPException(422, "at least one file is required")
     _require_lecture(request, lecture_id)

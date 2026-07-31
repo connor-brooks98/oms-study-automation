@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.repositories import LectureInput
+from tests.support import csrf_client
 
 
 def test_lecture_page_shows_separate_outline_and_quiz_controls(tmp_path):
@@ -90,7 +91,7 @@ def test_targeted_upload_is_assigned_to_the_selected_lecture(tmp_path):
     lecture_id = app.state.catalog_repository.upsert_lecture(
         LectureInput("Neuro", 1, 1, "Seizures", "Faculty", None)
     )
-    client = TestClient(app)
+    client = csrf_client(app)
 
     upload = client.post(
         "/uploads/transcripts",

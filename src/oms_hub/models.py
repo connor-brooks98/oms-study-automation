@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -229,7 +229,15 @@ class LLMProviderSettingModel(Base):
 
 class IngestionJobModel(Base):
     __tablename__ = "ingestion_jobs"
-    __table_args__ = (UniqueConstraint("upload_item_id", "action"),)
+    __table_args__ = (
+        UniqueConstraint("upload_item_id", "action"),
+        Index(
+            "ix_ingestion_jobs_poll",
+            "state",
+            "next_attempt_at",
+            "created_at",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     upload_item_id: Mapped[str] = mapped_column(ForeignKey("upload_items.id"))
@@ -331,6 +339,15 @@ class ExamQuizTabModel(Base):
 
 class GenerationJobModel(Base):
     __tablename__ = "generation_jobs"
+    __table_args__ = (
+        Index(
+            "ix_generation_jobs_poll",
+            "state",
+            "next_attempt_at",
+            "created_at",
+        ),
+        Index("ix_generation_jobs_supersedes", "supersedes_job_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     lecture_id: Mapped[int] = mapped_column(ForeignKey("lectures.id"))
@@ -354,10 +371,29 @@ class GenerationJobModel(Base):
     pdf_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     transcript_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     notebook_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
-    gemini_quiz_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    supersedes_job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("generation_jobs.id"),
+        nullable=True,
+    )
     quiz_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
     updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class GenerationAttemptModel(Base):
+    __tablename__ = "generation_attempts"
+    __table_args__ = (
+        UniqueConstraint("job_id", "attempt_number"),
+        Index("ix_generation_attempts_job", "job_id", "attempt_number"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("generation_jobs.id"))
+    attempt_number: Mapped[int]
+    diagnostic_source: Mapped[str] = mapped_column(String(40))
+    raw_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
 
 
 class OutlineOutputModel(Base):

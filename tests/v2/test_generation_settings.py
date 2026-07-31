@@ -1,8 +1,7 @@
-from fastapi.testclient import TestClient
-
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.study_generation.domain import PromptKind
+from tests.support import csrf_client
 
 
 def prepared_client(tmp_path):
@@ -13,7 +12,7 @@ def prepared_client(tmp_path):
             database_url=f"sqlite:///{tmp_path / 'hub.db'}",
         )
     )
-    return TestClient(app), app
+    return csrf_client(app), app
 
 
 def test_prompt_path_can_be_saved_and_tested_without_returning_content(tmp_path):

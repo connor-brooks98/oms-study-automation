@@ -1,7 +1,5 @@
 from dataclasses import dataclass
 
-from fastapi.testclient import TestClient
-
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.llm.domain import (
@@ -10,6 +8,7 @@ from oms_hub.llm.domain import (
     ProviderConnection,
     ProviderName,
 )
+from tests.support import csrf_client
 
 
 class MemorySecrets:
@@ -53,7 +52,7 @@ def prepared_client(tmp_path):
     app.state.llm_service.secrets = secrets
     for provider in ProviderName:
         app.state.llm_service.providers[provider] = ConnectionProvider(provider)
-    return TestClient(app), app, secrets
+    return csrf_client(app), app, secrets
 
 
 def test_credentials_are_saved_independently_and_blank_retains_existing(tmp_path):
@@ -165,4 +164,3 @@ def test_unknown_provider_is_rejected(tmp_path):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "AI provider was not found"
-
