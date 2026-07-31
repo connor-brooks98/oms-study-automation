@@ -245,6 +245,13 @@ class StoredNotebookLMGateway:
             _run(self._ask_studio(subject, exam_number, prompt, source_ids)),
         )
 
+    def delete_studio_source(self, notebook_id: str, source_id: str) -> None:
+        _run(self._delete_studio_source(notebook_id, source_id))
+
+    async def _delete_studio_source(self, notebook_id: str, source_id: str) -> None:
+        async with self._with_client() as client:
+            await client.sources.delete(notebook_id, source_id)
+
     async def _ask_studio(
         self,
         subject: str,

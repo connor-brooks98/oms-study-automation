@@ -29,9 +29,7 @@ def _quiz():
                             "Stem-cell transformation",
                         ],
                         "correct_index": 0,
-                        "rationale": (
-                            "Parvovirus B19 infects erythroid precursor cells."
-                        ),
+                        "rationale": ("Parvovirus B19 infects erythroid precursor cells."),
                     }
                 ],
             }
@@ -138,9 +136,7 @@ def test_public_quiz_page_and_content_do_not_expose_answer_key(tmp_path):
 
     assert page.status_code == 200
     assert "Lecture 1 Practice Quiz" in page.text
-    assert page.headers["content-security-policy"].startswith(
-        "default-src 'self'"
-    )
+    assert page.headers["content-security-policy"].startswith("default-src 'self'")
     assert content.status_code == 200
     assert content.json()["version"] == 1
     assert content.json()["course"] == "Neuro"
@@ -148,6 +144,42 @@ def test_public_quiz_page_and_content_do_not_expose_answer_key(tmp_path):
         "id": "c1",
         "text": "Lysis of erythroid precursors",
     }
+    assert "correct_index" not in content.text
+    assert "correct_choice_id" not in content.text
+    assert "rationale" not in content.text
+
+
+def test_studio_quiz_is_grouped_by_destination_without_lecture_metadata(tmp_path):
+    app, _lecture_quiz = _published_app(tmp_path)
+    run = app.state.studio_repository.queue_run(
+        "Neuro",
+        1,
+        "Prompt with contract",
+        [],
+        "Course Review",
+        "Cardiology",
+        3,
+    )
+    quiz = _quiz()
+    from dataclasses import replace
+
+    published = app.state.generation_repository.publish_studio_quiz(
+        run.id,
+        replace(quiz, title=run.label),
+    )
+
+    client = TestClient(app)
+    library = client.get("/public/quizzes")
+    page = client.get(f"/public/quizzes/{published.token}")
+    content = client.get(f"/public/quizzes/{published.token}/content")
+
+    assert "Cardiology" in library.text
+    assert "Exam 3" in library.text
+    assert "Course Review" in library.text
+    assert "Cardiology · Exam 3" in page.text
+    assert "Lecture" not in page.text
+    assert content.json()["course"] == "Cardiology"
+    assert "lecture_number" not in content.json()
     assert "correct_index" not in content.text
     assert "correct_choice_id" not in content.text
     assert "rationale" not in content.text

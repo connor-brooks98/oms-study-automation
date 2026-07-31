@@ -374,6 +374,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         notebook_storage,
         app.state.generation_repository,
     )
+    app.state.notebook_gateway = notebook_gateway
     app.state.generation_worker = GenerationWorker(
         app.state.generation_repository,
         app.state.catalog_repository,
@@ -398,6 +399,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         notebook_gateway,
         app.state.office_converter,
         app.state.notebook_connection,
+        app.state.generation_repository,
     )
     web_root = Path(__file__).parent / "web"
     app.mount(

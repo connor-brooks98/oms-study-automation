@@ -134,10 +134,7 @@ class LectureSourceSet:
             or self.transcript.kind is not SourceKind.CLEANED_TRANSCRIPT
         ):
             raise SourceIsolationError("lecture source kinds are invalid")
-        if (
-            self.pdf.lecture_id != self.lecture_id
-            or self.transcript.lecture_id != self.lecture_id
-        ):
+        if self.pdf.lecture_id != self.lecture_id or self.transcript.lecture_id != self.lecture_id:
             raise SourceIsolationError("lecture sources belong to different lectures")
         if not self.pdf.ready or not self.transcript.ready:
             raise SourceIsolationError("lecture sources are not ready")
@@ -211,8 +208,14 @@ class QuizFeedback:
 @dataclass(frozen=True, slots=True)
 class PublishedQuizRecord:
     token: str
-    lecture_id: int
-    job_id: str
+    lecture_id: int | None
+    job_id: str | None
+    studio_run_id: str | None
+    destination_subject: str
+    destination_subject_key: str
+    destination_exam_number: int
+    label: str
     title: str
     quiz: NativeQuiz
     version: int
+    active: bool

@@ -1,14 +1,17 @@
+from dataclasses import replace
 from datetime import timedelta
 from typing import Protocol
 
 from oms_hub.files.office import OfficeConverter
 from oms_hub.files.pdf import validate_pdf
 from oms_hub.llm.domain import DiagnosticSource
+from oms_hub.study_generation.native_quiz import QuizContractError, parse_native_quiz
 from oms_hub.study_generation.notebook import StoredNotebookLMGateway
 from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
     NotebookGatewayError,
 )
+from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.studio_domain import (
     StudioRunStage,
     StudioSource,
@@ -28,11 +31,13 @@ class StudioWorker:
         gateway: StoredNotebookLMGateway,
         converter: OfficeConverter,
         connection: NotebookConnection,
+        publisher: GenerationRepository | None = None,
     ):
         self.repository = repository
         self.gateway = gateway
         self.converter = converter
         self.connection = connection
+        self.publisher = publisher
 
     def recover_interrupted_jobs(self) -> int:
         return self.repository.recover_interrupted_jobs()
@@ -53,14 +58,6 @@ class StudioWorker:
                 run.prompt,
                 [source.remote_source_id for source in run.sources],
             )
-            self.repository.record_run_attempt(
-                run.id,
-                run.attempts,
-                "notebook_chat",
-                answer,
-                None,
-            )
-            self.repository.complete_run(run.id, notebook_id, answer)
         except NotebookGatewayError as error:
             if isinstance(error, NotebookAuthenticationError):
                 self.connection.invalidate(str(error))
@@ -80,6 +77,7 @@ class StudioWorker:
                 )
             else:
                 self.repository.fail_run(run.id, error.source.value, str(error))
+            return True
         except Exception as error:  # noqa: BLE001 - durable worker boundary
             self.repository.record_run_attempt(
                 run.id,
@@ -91,6 +89,67 @@ class StudioWorker:
             self.repository.fail_run(
                 run.id,
                 DiagnosticSource.STUDY_HUB.value,
+                str(error),
+            )
+            return True
+
+        self.repository.save_run_response(run.id, answer)
+        self.repository.record_run_attempt(
+            run.id,
+            run.attempts,
+            "notebook_chat",
+            answer,
+            None,
+        )
+        if self.publisher is None:
+            self.repository.complete_run(run.id, notebook_id, answer)
+            return True
+        self.repository.set_run_stage(run.id, StudioRunStage.QUIZ_VALIDATE)
+        try:
+            quiz = parse_native_quiz(answer)
+        except QuizContractError as error:
+            self.repository.mark_run_attempt_error(
+                run.id,
+                run.attempts,
+                DiagnosticSource.CONTRACT.value,
+                str(error),
+            )
+            if self.repository.contract_failure_count(run.id) < 2:
+                self.repository.retry_run(
+                    run.id,
+                    DiagnosticSource.CONTRACT.value,
+                    str(error),
+                    timedelta(seconds=5),
+                )
+            else:
+                self.repository.fail_run(
+                    run.id,
+                    DiagnosticSource.CONTRACT.value,
+                    str(error),
+                )
+            return True
+        try:
+            self.repository.set_run_stage(run.id, StudioRunStage.PUBLISH)
+            published = self.publisher.publish_studio_quiz(
+                run.id,
+                replace(quiz, title=run.label),
+            )
+            self.repository.complete_published_run(
+                run.id,
+                notebook_id,
+                answer,
+                published.token,
+            )
+        except Exception as error:  # noqa: BLE001 - durable publication boundary
+            self.repository.mark_run_attempt_error(
+                run.id,
+                run.attempts,
+                DiagnosticSource.VALIDATION.value,
+                str(error),
+            )
+            self.repository.fail_run(
+                run.id,
+                DiagnosticSource.VALIDATION.value,
                 str(error),
             )
         return True

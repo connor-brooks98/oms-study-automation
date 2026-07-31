@@ -6,6 +6,12 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
+from oms_hub.study_generation.notebook import StoredNotebookLMGateway
+from oms_hub.study_generation.notebook_errors import (
+    NotebookAuthenticationError,
+    NotebookGatewayError,
+)
+from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.studio_service import StudioService
 from oms_hub.web.csrf import require_form_csrf
 
@@ -105,6 +111,9 @@ def runs(
                     "source_ids": [source.source_id for source in item.sources],
                     "destination_subject": item.destination_subject,
                     "destination_exam_number": item.destination_exam_number,
+                    "published_url": (
+                        f"/public/quizzes/{item.published_token}" if item.published_token else None
+                    ),
                     "attempt_history": [
                         {
                             "attempt_number": attempt.attempt_number,
@@ -123,6 +132,58 @@ def runs(
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.delete("/sources/{source_id}")
+def delete_source(request: Request, source_id: str) -> JSONResponse:
+    require_form_csrf(request, None)
+    repository = request.app.state.studio_repository
+    source = repository.get(source_id)
+    if source is None:
+        raise HTTPException(404, "Studio source was not found")
+    if source.remote_notebook_id and source.remote_source_id:
+        gateway = cast(StoredNotebookLMGateway, request.app.state.notebook_gateway)
+        try:
+            gateway.delete_studio_source(
+                source.remote_notebook_id,
+                source.remote_source_id,
+            )
+        except NotebookAuthenticationError as error:
+            request.app.state.notebook_connection.invalidate(str(error))
+            raise HTTPException(409, str(error)) from error
+        except NotebookGatewayError as error:
+            raise HTTPException(409, str(error)) from error
+    deleted = repository.mark_source_deleted(source_id)
+    return JSONResponse({"id": deleted.id, "state": deleted.state.value})
+
+
+@router.post("/runs/{run_id}/rerun", status_code=202)
+def rerun(request: Request, run_id: str) -> JSONResponse:
+    require_form_csrf(request, None)
+    try:
+        successor = request.app.state.studio_repository.rerun(run_id)
+    except KeyError as error:
+        raise HTTPException(404, "Studio run was not found") from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return JSONResponse(
+        {"id": successor.id, "state": successor.state.value},
+        status_code=202,
+    )
+
+
+@router.delete("/runs/{run_id}/publication")
+def unpublish(request: Request, run_id: str) -> JSONResponse:
+    require_form_csrf(request, None)
+    repository = cast(
+        GenerationRepository,
+        request.app.state.generation_repository,
+    )
+    try:
+        token = repository.unpublish_studio_quiz(run_id)
+    except KeyError as error:
+        raise HTTPException(404, "published Studio quiz was not found") from error
+    return JSONResponse({"token": token, "state": "unpublished"})
 
 
 @router.post("/runs", status_code=202)

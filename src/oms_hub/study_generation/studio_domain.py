@@ -14,6 +14,7 @@ class StudioSourceState(StrEnum):
     ATTACHING = "attaching"
     ATTACHED = "attached"
     FAILED = "failed"
+    DELETED = "deleted"
 
 
 class StudioRunState(StrEnum):
@@ -28,6 +29,8 @@ class StudioRunStage(StrEnum):
     VALIDATE = "validate"
     NOTEBOOK = "notebook"
     CHAT = "chat"
+    QUIZ_VALIDATE = "quiz_validate"
+    PUBLISH = "publish"
     COMPLETE = "complete"
 
 
@@ -78,6 +81,7 @@ class StudioRun:
     error: str | None
     notebook_id: str | None
     raw_response: str | None
+    published_token: str | None
     supersedes_run_id: str | None
     sources: tuple[StudioRunSource, ...]
 

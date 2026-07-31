@@ -32,8 +32,12 @@ class AnswerSubmission(BaseModel):
     choice_id: _PublicId
 
 
-def _lecture_number(row: dict[str, object]) -> int:
-    return cast(int, row["lecture_number"])
+def _quiz_sort(row: dict[str, object]) -> tuple[int, str]:
+    number = row["lecture_number"]
+    return (
+        number if isinstance(number, int) else 10_000,
+        str(row["title"]).casefold(),
+    )
 
 
 @router.get("/assets/player.js", include_in_schema=False)
@@ -106,8 +110,7 @@ def _enforce_rate_limit(
     public_hostname = request.app.state.settings.public_hostname
     forwarded_address = (
         request.headers.get("CF-Connecting-IP")
-        if public_hostname
-        and (request.url.hostname or "").casefold() == public_hostname.casefold()
+        if public_hostname and (request.url.hostname or "").casefold() == public_hostname.casefold()
         else None
     )
     decision = limiter.check(
@@ -131,27 +134,29 @@ def quiz_library(request: Request) -> HTMLResponse:
     courses: dict[str, dict[int, list[dict[str, object]]]] = {}
     repository = _repository(request)
     for published in repository.published_quizzes():
-        lecture = request.app.state.catalog_repository.get_lecture(
-            published.lecture_id
+        lecture = (
+            request.app.state.catalog_repository.get_lecture(published.lecture_id)
+            if published.lecture_id is not None
+            else None
         )
-        if lecture is None:
-            continue
-        outline = repository.current_outline(published.lecture_id)
-        courses.setdefault(lecture.subject, {}).setdefault(
-            lecture.exam_number,
+        outline = (
+            repository.current_outline(published.lecture_id)
+            if published.lecture_id is not None
+            else None
+        )
+        courses.setdefault(published.destination_subject, {}).setdefault(
+            published.destination_exam_number,
             [],
         ).append(
             {
                 "token": published.token,
                 "version": published.version,
                 "title": published.title,
-                "lecture_number": lecture.lecture_number,
-                "topic": lecture.topic,
+                "lecture_number": lecture.lecture_number if lecture else None,
+                "topic": lecture.topic if lecture else None,
                 "url": f"/public/quizzes/{published.token}",
                 "outline_url": (
-                    f"/public/quizzes/{published.token}/outline"
-                    if outline is not None
-                    else None
+                    f"/public/quizzes/{published.token}/outline" if outline is not None else None
                 ),
             }
         )
@@ -165,7 +170,7 @@ def quiz_library(request: Request) -> HTMLResponse:
                     "quizzes": tuple(
                         sorted(
                             exams[number],
-                            key=_lecture_number,
+                            key=_quiz_sort,
                         )
                     ),
                 }
@@ -189,17 +194,19 @@ def quiz_library(request: Request) -> HTMLResponse:
 def quiz_page(request: Request, token: str) -> HTMLResponse:
     _enforce_rate_limit(request)
     published = _published(request, token)
-    lecture = request.app.state.catalog_repository.get_lecture(
-        published.lecture_id
+    lecture = (
+        request.app.state.catalog_repository.get_lecture(published.lecture_id)
+        if published.lecture_id is not None
+        else None
     )
-    if lecture is None:
-        raise HTTPException(404, "quiz was not found")
     return templates.TemplateResponse(
         request=request,
         name="public_quiz.html",
         context={
             "quiz": published,
             "lecture": lecture,
+            "course": published.destination_subject,
+            "exam_number": published.destination_exam_number,
             "content_url": f"/public/quizzes/{token}/content",
             "answer_url": f"/public/quizzes/{token}/answer",
         },
@@ -211,21 +218,22 @@ def quiz_page(request: Request, token: str) -> HTMLResponse:
 def quiz_content(request: Request, token: str) -> JSONResponse:
     _enforce_rate_limit(request)
     published = _published(request, token)
-    lecture = request.app.state.catalog_repository.get_lecture(
-        published.lecture_id
+    lecture = (
+        request.app.state.catalog_repository.get_lecture(published.lecture_id)
+        if published.lecture_id is not None
+        else None
     )
-    if lecture is None:
-        raise HTTPException(404, "quiz was not found")
+    payload: dict[str, object] = {
+        "token": published.token,
+        "version": published.version,
+        "course": published.destination_subject,
+        "exam_number": published.destination_exam_number,
+        **public_quiz_content(published.quiz),
+    }
+    if lecture is not None:
+        payload.update({"lecture_number": lecture.lecture_number, "topic": lecture.topic})
     return JSONResponse(
-        {
-            "token": published.token,
-            "version": published.version,
-            "course": lecture.subject,
-            "exam_number": lecture.exam_number,
-            "lecture_number": lecture.lecture_number,
-            "topic": lecture.topic,
-            **public_quiz_content(published.quiz),
-        },
+        payload,
         headers={"Cache-Control": "no-store"},
     )
 
@@ -234,6 +242,8 @@ def quiz_content(request: Request, token: str) -> JSONResponse:
 def public_outline(request: Request, token: str) -> FileResponse:
     _enforce_rate_limit(request, "outline")
     published = _published(request, token)
+    if published.lecture_id is None:
+        raise HTTPException(404, "outline was not found")
     record = _repository(request).current_outline(published.lecture_id)
     if record is None:
         raise HTTPException(404, "outline was not found")

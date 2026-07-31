@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import text as sql_text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -353,6 +354,7 @@ class StudioRunModel(Base):
     destination_subject_key: Mapped[str] = mapped_column(String(100))
     destination_exam_number: Mapped[int]
     label: Mapped[str] = mapped_column(String(300))
+    label_key: Mapped[str] = mapped_column(String(300))
     prompt: Mapped[str] = mapped_column(Text)
     state: Mapped[str] = mapped_column(String(30), default="queued")
     stage: Mapped[str] = mapped_column(String(30), default="validate")
@@ -362,6 +364,7 @@ class StudioRunModel(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     notebook_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     raw_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
     supersedes_run_id: Mapped[str | None] = mapped_column(
         ForeignKey("studio_runs.id"),
         nullable=True,
@@ -507,19 +510,50 @@ class QuizOutputModel(Base):
 
 class PublishedQuizModel(Base):
     __tablename__ = "published_quizzes"
+    __table_args__ = (
+        CheckConstraint(
+            "(lecture_id IS NOT NULL AND job_id IS NOT NULL AND studio_run_id IS NULL) "
+            "OR (lecture_id IS NULL AND job_id IS NULL AND studio_run_id IS NOT NULL)",
+            name="ck_published_quiz_origin",
+        ),
+        Index(
+            "uq_published_lecture_origin",
+            "lecture_id",
+            unique=True,
+            sqlite_where=sql_text("lecture_id IS NOT NULL AND active = 1"),
+        ),
+        Index(
+            "uq_published_studio_label",
+            "destination_subject_key",
+            "destination_exam_number",
+            "label_key",
+            unique=True,
+            sqlite_where=sql_text("studio_run_id IS NOT NULL AND active = 1"),
+        ),
+    )
 
     token: Mapped[str] = mapped_column(String(64), primary_key=True)
-    lecture_id: Mapped[int] = mapped_column(
+    lecture_id: Mapped[int | None] = mapped_column(
         ForeignKey("lectures.id"),
-        unique=True,
+        nullable=True,
     )
-    job_id: Mapped[str] = mapped_column(
+    job_id: Mapped[str | None] = mapped_column(
         ForeignKey("generation_jobs.id"),
-        unique=True,
+        nullable=True,
     )
+    studio_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("studio_runs.id"),
+        nullable=True,
+    )
+    destination_subject: Mapped[str] = mapped_column(String(100))
+    destination_subject_key: Mapped[str] = mapped_column(String(100))
+    destination_exam_number: Mapped[int]
+    label: Mapped[str] = mapped_column(String(300))
+    label_key: Mapped[str] = mapped_column(String(300))
     title: Mapped[str] = mapped_column(String(300))
     payload_json: Mapped[str] = mapped_column(Text)
     version: Mapped[int] = mapped_column(default=1)
+    active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
     updated_at: Mapped[str] = mapped_column(
         String(40),

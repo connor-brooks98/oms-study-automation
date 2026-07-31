@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
 from oms_hub.models import (
+    PublishedQuizModel,
     StudioRunAttemptModel,
     StudioRunModel,
     StudioRunSourceModel,
@@ -203,6 +204,8 @@ class StudioRepository:
         if len(source_ids) != len(set(source_ids)):
             raise ValueError("selected Studio sources contain duplicates")
         subject_key = normalize_subject(subject)
+        destination_key = normalize_subject(destination_subject)
+        label_key = normalize_subject(label)
         with self.database.session() as session:
             sources = list(
                 session.scalars(
@@ -228,15 +231,42 @@ class StudioRepository:
                 and session.get(StudioRunModel, supersedes_run_id) is None
             ):
                 raise ValueError("the Studio run being replaced no longer exists")
+            if supersedes_run_id is None:
+                active_run = session.scalar(
+                    select(StudioRunModel).where(
+                        StudioRunModel.destination_subject_key == destination_key,
+                        StudioRunModel.destination_exam_number == destination_exam_number,
+                        StudioRunModel.label_key == label_key,
+                        StudioRunModel.state.in_(
+                            {
+                                StudioRunState.QUEUED.value,
+                                StudioRunState.RUNNING.value,
+                                StudioRunState.RETRYING.value,
+                            }
+                        ),
+                    )
+                )
+                published = session.scalar(
+                    select(PublishedQuizModel).where(
+                        PublishedQuizModel.studio_run_id.is_not(None),
+                        PublishedQuizModel.destination_subject_key == destination_key,
+                        PublishedQuizModel.destination_exam_number == destination_exam_number,
+                        PublishedQuizModel.label_key == label_key,
+                        PublishedQuizModel.active.is_(True),
+                    )
+                )
+                if active_run is not None or published is not None:
+                    raise ValueError("this quiz label is already in use for the destination exam")
             model = StudioRunModel(
                 id=str(uuid4()),
                 subject=subject,
                 subject_key=subject_key,
                 exam_number=exam_number,
                 destination_subject=destination_subject,
-                destination_subject_key=normalize_subject(destination_subject),
+                destination_subject_key=destination_key,
                 destination_exam_number=destination_exam_number,
                 label=label,
+                label_key=label_key,
                 prompt=prompt,
                 state=StudioRunState.QUEUED.value,
                 stage=StudioRunStage.VALIDATE.value,
@@ -368,6 +398,86 @@ class StudioRepository:
             session.flush()
             return self._run_domain(session, model)
 
+    def complete_published_run(
+        self,
+        run_id: str,
+        notebook_id: str,
+        raw_response: str,
+        published_token: str,
+    ) -> StudioRun:
+        with self.database.session() as session:
+            model = session.get(StudioRunModel, run_id)
+            if model is None:
+                raise KeyError(run_id)
+            model.state = StudioRunState.COMPLETE.value
+            model.stage = StudioRunStage.COMPLETE.value
+            model.notebook_id = notebook_id
+            model.raw_response = raw_response
+            model.published_token = published_token
+            model.error = None
+            model.next_attempt_at = None
+            session.flush()
+            return self._run_domain(session, model)
+
+    def save_run_response(self, run_id: str, raw_response: str) -> None:
+        with self.database.session() as session:
+            model = session.get(StudioRunModel, run_id)
+            if model is None:
+                raise KeyError(run_id)
+            model.raw_response = raw_response
+
+    def mark_run_attempt_error(
+        self,
+        run_id: str,
+        attempt_number: int,
+        diagnostic_source: str,
+        error: str,
+    ) -> None:
+        with self.database.session() as session:
+            model = session.scalar(
+                select(StudioRunAttemptModel).where(
+                    StudioRunAttemptModel.run_id == run_id,
+                    StudioRunAttemptModel.attempt_number == attempt_number,
+                )
+            )
+            if model is None:
+                raise KeyError((run_id, attempt_number))
+            model.diagnostic_source = diagnostic_source
+            model.error = error[:1000]
+
+    def contract_failure_count(self, run_id: str) -> int:
+        with self.database.session() as session:
+            return len(
+                session.scalars(
+                    select(StudioRunAttemptModel.id).where(
+                        StudioRunAttemptModel.run_id == run_id,
+                        StudioRunAttemptModel.diagnostic_source == "contract",
+                    )
+                ).all()
+            )
+
+    def rerun(self, run_id: str) -> StudioRun:
+        previous = self.get_run(run_id)
+        return self.queue_run(
+            previous.subject,
+            previous.exam_number,
+            previous.prompt,
+            [source.source_id for source in previous.sources],
+            previous.label,
+            previous.destination_subject,
+            previous.destination_exam_number,
+            supersedes_run_id=previous.id,
+        )
+
+    def mark_source_deleted(self, source_id: str) -> StudioSource:
+        with self.database.session() as session:
+            model = session.get(StudioSourceModel, source_id)
+            if model is None:
+                raise KeyError(source_id)
+            model.state = StudioSourceState.DELETED.value
+            session.flush()
+            return self._domain(model)
+
     def retry_run(
         self,
         run_id: str,
@@ -470,6 +580,7 @@ class StudioRepository:
             model.error,
             model.notebook_id,
             model.raw_response,
+            model.published_token,
             model.supersedes_run_id,
             tuple(
                 StudioRunSource(

@@ -25,7 +25,7 @@
     <section class="quiz-loading" aria-live="polite">
       <p class="quiz-brand">Study Hub</p>
       <h1>{{ quiz.title }}</h1>
-      <p>{{ lecture.subject }} · Exam {{ lecture.exam_number }} · Lecture {{ lecture.lecture_number }}</p>
+      <p>{{ course }} · Exam {{ exam_number }}{% if lecture %} · Lecture {{ lecture.lecture_number }}{% endif %}</p>
       <p>Loading quiz…</p>
     </section>
   </main>

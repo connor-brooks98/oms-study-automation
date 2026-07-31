@@ -3,6 +3,8 @@ from fastapi.testclient import TestClient
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.repositories import LectureInput
+from oms_hub.study_generation.native_quiz import parse_native_quiz
+from oms_hub.study_generation.studio_domain import StudioSourceState, StudioSourceType
 from tests.support import csrf_client
 
 
@@ -111,3 +113,59 @@ def test_prompt_only_run_is_queued_with_explicit_empty_source_snapshot(tmp_path)
     history = client.get("/studio/runs?subject_key=neuro%20science&exam_number=2")
     assert history.headers["cache-control"] == "no-store"
     assert history.json()["runs"][0]["source_ids"] == []
+
+
+def test_delete_source_removes_remote_binding_and_hides_it_from_future_picker(tmp_path):
+    app = _app(tmp_path)
+    source = app.state.studio_repository.create_source(
+        "Neuro Science",
+        2,
+        StudioSourceType.URL,
+        "Professor URL",
+        source_url="https://example.com",
+    )
+    app.state.studio_repository.complete(source.id, "notebook-1", "remote-1")
+
+    class Gateway:
+        def __init__(self):
+            self.deleted = []
+
+        def delete_studio_source(self, notebook_id, source_id):
+            self.deleted.append((notebook_id, source_id))
+
+    gateway = Gateway()
+    app.state.notebook_gateway = gateway
+
+    response = csrf_client(app).delete(f"/studio/sources/{source.id}")
+
+    assert response.status_code == 200
+    assert gateway.deleted == [("notebook-1", "remote-1")]
+    assert app.state.studio_repository.get(source.id).state is StudioSourceState.DELETED
+
+
+def test_rerun_and_unpublish_keep_private_audit_history(tmp_path):
+    app = _app(tmp_path)
+    run = app.state.studio_repository.queue_run(
+        "Neuro Science",
+        2,
+        "Prompt with contract",
+        [],
+        "Exam Review",
+        "Neuro Science",
+        2,
+    )
+    quiz = parse_native_quiz(
+        '{"title":"Exam Review","questions":[{"stem":"Q?",'
+        '"choices":["A","B"],"correct_index":0,"rationale":"Because."}]}'
+    )
+    published = app.state.generation_repository.publish_studio_quiz(run.id, quiz)
+    client = csrf_client(app)
+
+    rerun = client.post(f"/studio/runs/{run.id}/rerun")
+    removed = client.delete(f"/studio/runs/{run.id}/publication")
+
+    assert rerun.status_code == 202
+    assert app.state.studio_repository.get_run(rerun.json()["id"]).supersedes_run_id == run.id
+    assert removed.status_code == 200
+    assert app.state.generation_repository.published_quiz(published.token) is None
+    assert app.state.studio_repository.get_run(run.id).label == "Exam Review"

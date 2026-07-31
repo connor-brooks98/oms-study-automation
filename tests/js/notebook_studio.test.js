@@ -60,7 +60,7 @@ test("source renderer writes untrusted content through textContent", () => {
   const created = [];
   const documentRef = {
     createElement: () => {
-      const node = { textContent: "" };
+      const node = { textContent: "", dataset: {}, append: () => {} };
       created.push(node);
       return node;
     },

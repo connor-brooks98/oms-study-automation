@@ -32,6 +32,14 @@
       const converted = source.converted_from_pptx ? " · converted from PPTX" : "";
       const error = source.error ? ` · ${source.error}` : "";
       row.textContent = `${source.title} · ${source.type} · ${source.state}${converted}${error}`;
+      if (source.state !== "deleted") {
+        const remove = documentRef.createElement("button");
+        remove.type = "button";
+        remove.className = "button secondary compact";
+        remove.dataset.deleteSource = source.id;
+        remove.textContent = "Delete source";
+        row.append(remove);
+      }
       list.append(row);
     });
     return hasActiveSources(sources);
@@ -87,6 +95,7 @@
     runs.forEach((run) => {
       const card = documentRef.createElement("article");
       card.className = "studio-run";
+      card.dataset.runId = run.id;
       const heading = documentRef.createElement("h3");
       heading.textContent = run.label;
       card.append(heading);
@@ -94,6 +103,27 @@
       const error = run.error ? ` · ${run.error}` : "";
       status.textContent = `${retryStatus(run)} · ${run.stage} · attempt ${run.attempts}${error}`;
       card.append(status);
+      if (run.published_url) {
+        const link = documentRef.createElement("a");
+        link.className = "button secondary compact";
+        link.href = run.published_url;
+        link.textContent = "Open published quiz";
+        card.append(link);
+        const unpublish = documentRef.createElement("button");
+        unpublish.type = "button";
+        unpublish.className = "button secondary compact";
+        unpublish.dataset.unpublishRun = run.id;
+        unpublish.textContent = "Unpublish";
+        card.append(unpublish);
+      }
+      if (run.state === "complete" || run.state === "failed") {
+        const rerun = documentRef.createElement("button");
+        rerun.type = "button";
+        rerun.className = "button secondary compact";
+        rerun.dataset.rerun = run.id;
+        rerun.textContent = "Re-run";
+        card.append(rerun);
+      }
       const attempts = run.attempt_history || [];
       attempts.forEach((attempt) => {
         if (!attempt.raw_response && !attempt.error) return;
@@ -203,6 +233,42 @@
     });
     sourceFilter.addEventListener("input", () => {
       filterSourcePicker(picker, sourceFilter.value);
+    });
+    page.addEventListener("click", async (event) => {
+      const deleteButton = event.target.closest?.("[data-delete-source]");
+      const rerunButton = event.target.closest?.("[data-rerun]");
+      const unpublishButton = event.target.closest?.("[data-unpublish-run]");
+      const target = deleteButton || rerunButton || unpublishButton;
+      if (!target) return;
+      const token = csrf(documentRef);
+      let url;
+      let method;
+      if (deleteButton) {
+        if (!root.confirm("Delete this source from NotebookLM and future selections?")) return;
+        url = `/studio/sources/${encodeURIComponent(deleteButton.dataset.deleteSource)}`;
+        method = "DELETE";
+      } else if (rerunButton) {
+        url = `/studio/runs/${encodeURIComponent(rerunButton.dataset.rerun)}/rerun`;
+        method = "POST";
+      } else {
+        if (!root.confirm("Unpublish this quiz? Private run history will be retained.")) return;
+        url = `/studio/runs/${encodeURIComponent(unpublishButton.dataset.unpublishRun)}/publication`;
+        method = "DELETE";
+      }
+      target.disabled = true;
+      try {
+        const response = await fetchImpl(url, {
+          method,
+          headers: { "X-CSRF-Token": token },
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.detail || "Studio action could not be completed.");
+        await refresh();
+      } catch (error) {
+        runList.textContent = error instanceof Error ? error.message : "Studio action could not be completed.";
+      } finally {
+        target.disabled = false;
+      }
     });
 
     page.querySelectorAll("[data-source-form]").forEach((form) => {

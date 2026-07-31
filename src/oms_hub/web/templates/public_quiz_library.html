@@ -43,8 +43,13 @@
               <article class="lecture-row">
                 <a class="quiz-link" href="{{ row.url }}" data-quiz-row data-quiz-token="{{ row.token }}" data-quiz-version="{{ row.version }}">
                   <span>
+                    {% if row.lecture_number %}
                     <strong>Lecture {{ row.lecture_number }}</strong>
                     <small>{{ row.topic }}</small>
+                    {% else %}
+                    <strong>{{ row.title }}</strong>
+                    <small>Course/exam quiz</small>
+                    {% endif %}
                   </span>
                   <span class="progress-pill" data-quiz-progress>Not started</span>
                 </a>

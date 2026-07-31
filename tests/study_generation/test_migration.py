@@ -4,7 +4,63 @@ from oms_hub.db import Database
 from oms_hub.migrations import LATEST_SCHEMA_VERSION
 
 
-def test_schema_v9_adds_native_quiz_and_studio_job_registries(tmp_path):
+def test_v9_published_lecture_quiz_is_backfilled_with_destination(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'backfill.db'}")
+    database.create_schema()
+    with database.engine.begin() as connection:
+        connection.execute(text("DROP TABLE published_quizzes"))
+        connection.execute(
+            text(
+                """CREATE TABLE published_quizzes (
+                token VARCHAR(64) PRIMARY KEY, lecture_id INTEGER NOT NULL UNIQUE,
+                job_id VARCHAR(36) NOT NULL UNIQUE, title VARCHAR(300) NOT NULL,
+                payload_json TEXT NOT NULL, version INTEGER NOT NULL,
+                created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL)"""
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO lectures (id, subject, exam_number, lecture_number, topic, "
+                "lecturer, created_at, updated_at) VALUES "
+                "(1, 'Neuro', 2, 3, 'CNS', '', 'now', 'now')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO generation_jobs "
+                "(id, lecture_id, kind, state, stage, attempts, created_at, updated_at) "
+                "VALUES ('job-1', 1, 'quiz', 'complete', 'complete', 1, 'now', 'now')"
+            )
+        )
+        payload = (
+            '{"title":"Legacy","questions":[{"stem":"Q?","choices":["A","B"],'
+            '"correct_index":0,"rationale":"Because."}]}'
+        )
+        connection.execute(
+            text(
+                "INSERT INTO published_quizzes VALUES "
+                "(:token, 1, 'job-1', 'Legacy', :payload, 1, 'now', 'now')"
+            ),
+            {"token": "a" * 64, "payload": payload},
+        )
+        connection.execute(
+            text("INSERT INTO schema_version (id, version, updated_at) VALUES (1, 9, 'now')")
+        )
+
+    database.migrate()
+
+    with database.engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT destination_subject, destination_exam_number, studio_run_id, active "
+                "FROM published_quizzes"
+            )
+        ).one()
+    assert tuple(row) == ("Neuro", 2, None, 1)
+    database.close()
+
+
+def test_schema_v10_adds_native_quiz_and_studio_job_registries(tmp_path):
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()
 
@@ -71,7 +127,25 @@ def test_schema_v9_adds_native_quiz_and_studio_job_registries(tmp_path):
         "ix_studio_runs_scope",
         "ix_studio_runs_supersedes",
     } <= run_indexes
-    assert version == LATEST_SCHEMA_VERSION == 9
+    published_columns = {
+        column["name"] for column in inspect(database.engine).get_columns("published_quizzes")
+    }
+    assert {
+        "studio_run_id",
+        "destination_subject_key",
+        "destination_exam_number",
+        "label_key",
+        "active",
+    } <= published_columns
+    published_indexes = {
+        index["name"]
+        for index in inspect(database.engine).get_indexes("published_quizzes")
+    }
+    assert {
+        "uq_published_lecture_origin",
+        "uq_published_studio_label",
+    } <= published_indexes
+    assert version == LATEST_SCHEMA_VERSION == 10
 
 
 def test_v6_generation_jobs_are_upgraded_without_losing_rows(tmp_path):
