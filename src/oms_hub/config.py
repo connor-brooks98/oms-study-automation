@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     @field_validator("public_hostname")
     @classmethod
     def normalize_public_hostname(cls, value: str | None) -> str | None:
-        if value is None:
+        if value is None or not value.strip():
             return None
         normalized = value.strip().lower().rstrip(".")
         if not re.fullmatch(
