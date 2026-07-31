@@ -3,6 +3,19 @@ const assert = require("node:assert/strict");
 
 const quiz = require("../../src/oms_hub/web/static/public_quiz.js");
 
+const fakeDocument = () => ({
+  createElement(tagName) {
+    return {
+      tagName,
+      className: "",
+      children: [],
+      attributes: {},
+      append(...children) { this.children.push(...children); },
+      setAttribute(name, value) { this.attributes[name] = value; },
+    };
+  },
+});
+
 const content = {
   token: "a".repeat(64),
   version: 3,
@@ -233,4 +246,36 @@ test("graded choices have visible correctness labels", () => {
   assert.equal(quiz.choiceResultLabel(true, false), "✓ Correct");
   assert.equal(quiz.choiceResultLabel(false, true), "✗ Your answer");
   assert.equal(quiz.choiceResultLabel(false, false), "");
+});
+
+test("question image is rendered above the stem with safe enlargement", () => {
+  const media = quiz.renderQuestionImage(fakeDocument(), {
+    image_url: "/public/quizzes/token/media/image-1",
+    image_alt: "Reference image used for questions 4-7",
+  });
+
+  const link = media.children[0];
+  const image = link.children[0];
+  assert.equal(media.tagName, "figure");
+  assert.equal(link.tagName, "a");
+  assert.equal(link.href, "/public/quizzes/token/media/image-1");
+  assert.equal(image.src, "/public/quizzes/token/media/image-1");
+  assert.equal(image.alt, "Reference image used for questions 4-7");
+  assert.equal(image.loading, "eager");
+  assert.equal(image.decoding, "async");
+});
+
+test("quiz metadata omits missing lecture numbers", () => {
+  assert.equal(
+    quiz.quizMetadata({ course: "Cardiology", exam_number: 2 }),
+    "Cardiology · Exam 2",
+  );
+  assert.equal(
+    quiz.quizMetadata({
+      course: "Cardiology",
+      exam_number: 2,
+      lecture_number: 7,
+    }),
+    "Cardiology · Exam 2 · Lecture 7",
+  );
 });

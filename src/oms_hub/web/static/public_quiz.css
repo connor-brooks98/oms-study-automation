@@ -101,6 +101,33 @@ button:disabled { cursor: not-allowed; }
   line-height: 1.65;
 }
 
+.quiz-question-media {
+  margin: .8rem 0 1.15rem;
+  text-align: center;
+}
+
+.quiz-question-image-link {
+  display: inline-block;
+  max-width: 100%;
+  border-radius: .55rem;
+}
+
+.quiz-question-image-link:focus-visible {
+  outline: 3px solid oklch(0.67 0.16 255);
+  outline-offset: 4px;
+}
+
+.quiz-question-image {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: min(65vh, 48rem);
+  border: 1px solid var(--quiz-border);
+  border-radius: .55rem;
+  object-fit: contain;
+}
+
 .quiz-highlight {
   padding: .05em .12em;
   color: inherit;

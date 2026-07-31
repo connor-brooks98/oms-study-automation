@@ -91,6 +91,14 @@ def test_legacy_upload_url_preserves_selected_lecture(tmp_path):
     assert response.headers["location"] == f"/uploads?lecture_id={lecture_id}"
 
 
+def test_private_navigation_links_to_quiz_library_once(tmp_path):
+    response = TestClient(_app(tmp_path)).get("/")
+
+    assert response.status_code == 200
+    assert response.text.count('href="/public/quizzes"') == 1
+    assert '>Quiz Library</a>' in response.text
+
+
 def test_quarantine_batch_route_returns_per_item_results(tmp_path):
     app = _app(tmp_path)
     lecture_id = app.state.catalog_repository.upsert_lecture(

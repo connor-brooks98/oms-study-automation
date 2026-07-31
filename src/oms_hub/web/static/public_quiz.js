@@ -321,6 +321,43 @@
     return node;
   };
 
+  const quizMetadata = (content) => {
+    const parts = [`${content.course} · Exam ${content.exam_number}`];
+    if (Number.isInteger(content.lecture_number)) {
+      parts.push(`Lecture ${content.lecture_number}`);
+    }
+    return parts.join(" · ");
+  };
+
+  const renderQuestionImage = (documentRef, question) => {
+    const url = question?.image_url;
+    if (
+      typeof url !== "string"
+      || !url.startsWith("/")
+      || url.startsWith("//")
+    ) {
+      return null;
+    }
+    const figure = element(documentRef, "figure", "quiz-question-media");
+    const link = element(documentRef, "a", "quiz-question-image-link");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.setAttribute("aria-label", "Open the question image at full size");
+    const image = element(documentRef, "img", "quiz-question-image");
+    image.src = url;
+    image.alt = (
+      typeof question.image_alt === "string" && question.image_alt.trim()
+        ? question.image_alt
+        : "Image used for this question"
+    );
+    image.loading = "eager";
+    image.decoding = "async";
+    link.append(image);
+    figure.append(link);
+    return figure;
+  };
+
   const renderHighlightedText = (
     documentRef,
     container,
@@ -446,7 +483,7 @@
           documentRef,
           "span",
           "quiz-course",
-          `${content.course} · Exam ${content.exam_number} · Lecture ${content.lecture_number}`,
+          quizMetadata(content),
         ),
         element(
           documentRef,
@@ -471,6 +508,8 @@
       body.append(
         element(documentRef, "p", "quiz-label", content.topic),
       );
+      const questionImage = renderQuestionImage(documentRef, question);
+      if (questionImage) body.append(questionImage);
       const stem = element(documentRef, "p", "quiz-question");
       renderHighlightedText(
         documentRef,
@@ -736,10 +775,12 @@
     loadQuizContent,
     persistProgress,
     recordFeedback,
+    renderQuestionImage,
     restoreProgress,
     selectChoice,
     serializeProgress,
     toggleEliminated,
+    quizMetadata,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) {
