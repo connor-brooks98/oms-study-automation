@@ -84,6 +84,17 @@ def _upgrade_anki_v4_columns(database: "Database") -> None:
         _ensure_column(database, "anki_gap_cards", name, definition)
 
 
+def _upgrade_generation_job_columns(database: "Database") -> None:
+    columns = {
+        "pdf_revision_id": "INTEGER",
+        "transcript_revision_id": "INTEGER",
+        "gemini_quiz_id": "VARCHAR(500)",
+        "quiz_url": "TEXT",
+    }
+    for name, definition in columns.items():
+        _ensure_column(database, "generation_jobs", name, definition)
+
+
 def _upgrade_gap_card_identity(database: "Database") -> None:
     if database.engine.dialect.name != "sqlite":
         return
@@ -151,6 +162,7 @@ def _upgrade_gap_card_identity(database: "Database") -> None:
 
 def migrate_database(database: "Database") -> None:
     database.create_schema()
+    _upgrade_generation_job_columns(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_gap_card_identity(database)
     usage_columns = {

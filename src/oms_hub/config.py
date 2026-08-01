@@ -157,10 +157,17 @@ class Settings(BaseSettings):
     @classmethod
     def validate_anki_connect_url(cls, value: str) -> str:
         parsed = urlsplit(value.strip())
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError(
+                "AnkiConnect must use a loopback URL with a valid port"
+            ) from exc
         if (
             parsed.scheme != "http"
             or parsed.hostname not in {"127.0.0.1", "localhost"}
-            or parsed.port != 8765
+            or port is None
+            or not 1024 <= port <= 65535
             or parsed.username is not None
             or parsed.password is not None
             or parsed.path not in {"", "/"}
@@ -168,10 +175,10 @@ class Settings(BaseSettings):
             or parsed.fragment
         ):
             raise ValueError(
-                "AnkiConnect must use the loopback URL "
-                "http://127.0.0.1:8765 or http://localhost:8765"
+                "AnkiConnect must use an HTTP loopback URL with an explicit "
+                "port from 1024 through 65535"
             )
-        return f"http://{parsed.hostname}:8765"
+        return f"http://{parsed.hostname}:{port}"
 
     @model_validator(mode="after")
     def validate_local_service_ports(self) -> Self:

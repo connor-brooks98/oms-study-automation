@@ -241,10 +241,17 @@ class AnkiConnectClient:
 
 def _loopback_url(value: str) -> str:
     parsed = urlsplit(value.strip())
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise UnsafeAnkiConnectURL(
+            "AnkiConnect must use a loopback URL with a valid port"
+        ) from exc
     if (
         parsed.scheme != "http"
         or parsed.hostname not in {"127.0.0.1", "localhost"}
-        or parsed.port != 8765
+        or port is None
+        or not 1024 <= port <= 65535
         or parsed.username is not None
         or parsed.password is not None
         or parsed.path not in {"", "/"}
@@ -252,7 +259,7 @@ def _loopback_url(value: str) -> str:
         or parsed.fragment
     ):
         raise UnsafeAnkiConnectURL(
-            "AnkiConnect must use the loopback URL "
-            "http://127.0.0.1:8765 or http://localhost:8765"
+            "AnkiConnect must use an HTTP loopback URL with an explicit "
+            "port from 1024 through 65535"
         )
-    return f"http://{parsed.hostname}:8765"
+    return f"http://{parsed.hostname}:{port}"

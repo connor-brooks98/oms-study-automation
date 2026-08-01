@@ -77,6 +77,17 @@ def test_anki_connect_url_must_be_loopback(tmp_path: Path) -> None:
         )
 
 
+def test_anki_connect_url_accepts_custom_loopback_port(tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        anki_connect_url="http://127.0.0.1:8766/",
+    )
+
+    assert settings.anki_connect_url == "http://127.0.0.1:8766"
+
+
 def test_enabled_anki_requires_a_distinct_dashboard_port(
     tmp_path: Path,
 ) -> None:
@@ -86,8 +97,8 @@ def test_enabled_anki_requires_a_distinct_dashboard_port(
             data_dir=tmp_path,
             database_url=f"sqlite:///{tmp_path / 'hub.db'}",
             anki_enabled=True,
-            dashboard_port=8765,
-            anki_connect_url="http://127.0.0.1:8765",
+            dashboard_port=8766,
+            anki_connect_url="http://127.0.0.1:8766",
         )
 
     settings = Settings(
@@ -96,7 +107,7 @@ def test_enabled_anki_requires_a_distinct_dashboard_port(
         database_url=f"sqlite:///{tmp_path / 'hub.db'}",
         anki_enabled=True,
         dashboard_port=8787,
-        anki_connect_url="http://127.0.0.1:8765",
+        anki_connect_url="http://127.0.0.1:8766",
     )
 
     assert settings.dashboard_port == 8787

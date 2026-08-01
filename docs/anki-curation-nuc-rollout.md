@@ -17,12 +17,14 @@ Use these local ports on the NUC:
 | Service | Binding | Purpose |
 |---|---|---|
 | Study Hub | `127.0.0.1:8787` | UI and owned curation worker |
-| AnkiConnect | `127.0.0.1:8765` | Local Anki API only |
+| AnkiConnect | Configured loopback port (`8765` by default) | Local Anki API only |
 
 The two services cannot share a port. V4 configuration rejects that collision
 when Anki curation is enabled. Keep AnkiConnect on loopback; never point a
 Cloudflare Tunnel, Tailscale Serve rule, firewall opening, or LAN binding at
-port 8765. Cloudflare should target the Study Hub port, 8787.
+its configured port. Cloudflare should target the Study Hub port, 8787. During
+side-by-side acceptance, AnkiConnect may use another loopback port such as
+8766 as long as its add-on and `OMS_HUB_ANKI_CONNECT_URL` settings match.
 
 Anki is a desktop application. Keep the NUC signed in, start Anki in the
 interactive Windows session, and disconnect rather than signing out of RDP.
@@ -94,12 +96,14 @@ change.
 ## 4. Configure local AnkiConnect
 
 Install AnkiConnect in the NUC copy of Anki, then open its add-on configuration.
-Keep the web bind address at `127.0.0.1` and the port at `8765`. Do not allow
-remote hosts.
+Keep the web bind address at `127.0.0.1`. Use port `8765` by default, or a
+distinct loopback port such as `8766` for side-by-side acceptance, and set the
+same port in `OMS_HUB_ANKI_CONNECT_URL`. Do not allow remote hosts.
 
 With Anki open, verify the read-only version action:
 
 ```powershell
+$AnkiConnectUrl = "http://127.0.0.1:8765" # Match the configured add-on port.
 $Body = @{
     action = "version"
     version = 6
@@ -108,7 +112,7 @@ $Body = @{
 
 Invoke-RestMethod `
   -Method Post `
-  -Uri "http://127.0.0.1:8765" `
+  -Uri $AnkiConnectUrl `
   -ContentType "application/json" `
   -Body $Body
 ```

@@ -105,13 +105,32 @@ def test_ankiconnect_methods_emit_v6_contract(
     assert _run_client(handler, operation) == expected
 
 
+def test_client_sends_requests_to_custom_loopback_port() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.scheme == "http"
+        assert request.url.host == "127.0.0.1"
+        assert request.url.port == 8766
+        return httpx.Response(200, json={"result": 6, "error": None})
+
+    async def version(client: AnkiConnectClient) -> int:
+        return await client.version()
+
+    assert (
+        _run_client(
+            handler,
+            version,
+            url="http://127.0.0.1:8766",
+        )
+        == 6
+    )
+
+
 @pytest.mark.parametrize(
     "url",
     [
         "http://0.0.0.0:8765",
         "http://192.168.1.10:8765",
         "https://127.0.0.1:8765",
-        "http://127.0.0.1:9999",
         "http://user@127.0.0.1:8765",
     ],
 )
