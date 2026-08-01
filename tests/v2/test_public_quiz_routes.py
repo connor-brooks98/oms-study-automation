@@ -202,6 +202,14 @@ def test_public_quiz_page_and_content_do_not_expose_answer_key(tmp_path):
 
     assert page.status_code == 200
     assert "Lecture 1 Practice Quiz" in page.text
+    assert (
+        'src="/public/quizzes/assets/player.js?v=20260801-image-support"'
+        in page.text
+    )
+    assert (
+        'href="/public/quizzes/assets/player.css?v=20260801-image-support"'
+        in page.text
+    )
     assert page.headers["content-security-policy"].startswith("default-src 'self'")
     assert content.status_code == 200
     assert content.json()["version"] == 1
@@ -311,8 +319,10 @@ def test_public_quiz_assets_are_served_inside_the_bypass_path(tmp_path):
 
     assert script.status_code == 200
     assert script.headers["content-type"].startswith("text/javascript")
+    assert script.headers["cache-control"] == "no-cache"
     assert styles.status_code == 200
     assert styles.headers["content-type"].startswith("text/css")
+    assert styles.headers["cache-control"] == "no-cache"
     assert library_script.status_code == 200
     assert library_styles.status_code == 200
     assert tokens.status_code == 200

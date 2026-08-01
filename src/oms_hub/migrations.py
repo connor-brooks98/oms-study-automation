@@ -1,11 +1,12 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from sqlalchemy import inspect, select, text
+from sqlalchemy import Table, inspect, select, text
 
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.models import (
     LectureModel,
     LectureStepModel,
+    PublishedQuizMediaModel,
     PublishedQuizModel,
     SchemaVersionModel,
 )
@@ -19,6 +20,7 @@ LATEST_SCHEMA_VERSION = 11
 def migrate_database(database: "Database") -> None:
     database.create_schema()
     _migrate_published_quizzes(database)
+    _repair_published_quiz_media(database)
     run_columns = {column["name"] for column in inspect(database.engine).get_columns("studio_runs")}
     if "label_key" not in run_columns:
         with database.engine.begin() as connection:
@@ -146,3 +148,31 @@ def _migrate_published_quizzes(database: "Database") -> None:
             )
         )
         connection.execute(text("DROP TABLE published_quizzes_v9"))
+
+
+def _repair_published_quiz_media(database: "Database") -> None:
+    inspector = inspect(database.engine)
+    if "published_quiz_media" not in inspector.get_table_names():
+        return
+    foreign_key_targets = {
+        item["referred_table"]
+        for item in inspector.get_foreign_keys("published_quiz_media")
+    }
+    if foreign_key_targets == {"published_quizzes"}:
+        return
+
+    media_table = cast(Table, PublishedQuizMediaModel.__table__)
+    with database.engine.begin() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT id, quiz_token, image_key, path, sha256, media_type, width, "
+                "height, alt_text, created_at FROM published_quiz_media"
+            )
+        ).mappings().all()
+        connection.execute(text("DROP TABLE published_quiz_media"))
+        media_table.create(connection)
+        if rows:
+            connection.execute(
+                media_table.insert(),
+                [dict(row) for row in rows],
+            )

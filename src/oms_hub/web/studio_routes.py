@@ -1,3 +1,4 @@
+import logging
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, cast
@@ -6,6 +7,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
 
 from oms_hub.files.atomic import sha256_file
 from oms_hub.study_generation.domain import NativeQuiz
@@ -32,6 +34,7 @@ from oms_hub.web.csrf import require_form_csrf
 
 router = APIRouter(prefix="/studio")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+logger = logging.getLogger(__name__)
 
 
 class StudioRunRequest(BaseModel):
@@ -452,6 +455,13 @@ def publish_reviewed_quiz(request: Request, run_id: str) -> JSONResponse:
         raise HTTPException(404, "Studio run was not found") from error
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
+    except SQLAlchemyError as error:
+        logger.exception("Studio quiz publication failed for run %s", run_id)
+        raise HTTPException(
+            503,
+            "Quiz publication could not be completed. No changes were saved. "
+            "Please try again.",
+        ) from error
     return JSONResponse(
         {
             "token": published.token,

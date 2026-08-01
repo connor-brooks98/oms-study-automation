@@ -3,6 +3,7 @@ from io import BytesIO
 
 from fastapi.testclient import TestClient
 from PIL import Image
+from sqlalchemy.exc import OperationalError
 
 from oms_hub.app import create_app
 from oms_hub.config import Settings
@@ -308,7 +309,14 @@ def test_resolved_private_preview_reuses_player_and_grades_without_publication(t
 
     assert page.status_code == 200
     assert "Publish quiz" in page.text
-    assert "/public/quizzes/assets/player.js" in page.text
+    assert (
+        'src="/public/quizzes/assets/player.js?v=20260801-image-support"'
+        in page.text
+    )
+    assert (
+        'href="/public/quizzes/assets/player.css?v=20260801-image-support"'
+        in page.text
+    )
     assert content.status_code == 200
     payload = content.json()
     assert payload["token"] == f"preview-{run.id}"
@@ -338,6 +346,32 @@ def test_explicit_publish_returns_public_url_and_completes_run(tmp_path):
     completed = app.state.studio_repository.get_run(run.id)
     assert completed.state.value == "complete"
     assert completed.published_token == token
+
+
+def test_publication_database_failure_returns_safe_retry_message(
+    tmp_path,
+    monkeypatch,
+):
+    app = _app(tmp_path)
+    run = _resolved_image_run(app)
+
+    def fail_publication(_run_id):
+        raise OperationalError("DELETE", {}, Exception("private database detail"))
+
+    monkeypatch.setattr(
+        app.state.generation_repository,
+        "publish_reviewed_studio_quiz",
+        fail_publication,
+    )
+
+    response = csrf_client(app).post(f"/studio/runs/{run.id}/publication")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "Quiz publication could not be completed. No changes were saved. "
+        "Please try again."
+    }
+    assert "private database detail" not in response.text
 
 
 def test_delete_source_removes_remote_binding_and_hides_it_from_future_picker(tmp_path):

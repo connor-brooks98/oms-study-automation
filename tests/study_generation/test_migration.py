@@ -1,3 +1,5 @@
+import sqlite3
+
 from sqlalchemy import inspect, text
 
 from oms_hub.db import Database
@@ -153,6 +155,97 @@ def test_schema_v11_adds_native_quiz_studio_jobs_and_image_review(tmp_path):
         "uq_published_studio_label",
     } <= published_indexes
     assert version == LATEST_SCHEMA_VERSION == 11
+
+
+def test_schema_v11_repairs_dangling_published_media_foreign_key(tmp_path):
+    path = tmp_path / "broken-media.db"
+    database = Database(f"sqlite:///{path}")
+    database.create_schema()
+    payload = (
+        '{"title":"Legacy","questions":[{"stem":"Q?","choices":["A","B"],'
+        '"correct_index":0,"rationale":"Because."}]}'
+    )
+    token = "a" * 64
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO lectures (id, subject, exam_number, lecture_number, topic, "
+                "lecturer, created_at, updated_at) VALUES "
+                "(1, 'Neuro', 2, 3, 'CNS', '', 'now', 'now')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO generation_jobs "
+                "(id, lecture_id, kind, state, stage, attempts, created_at, updated_at) "
+                "VALUES ('job-1', 1, 'quiz', 'complete', 'complete', 1, 'now', 'now')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO published_quizzes "
+                "(token, lecture_id, job_id, studio_run_id, destination_subject, "
+                "destination_subject_key, destination_exam_number, label, label_key, "
+                "title, payload_json, version, active, created_at, updated_at) VALUES "
+                "(:token, 1, 'job-1', NULL, 'Neuro', 'neuro', 2, 'Legacy', 'legacy', "
+                "'Legacy', :payload, 1, 1, 'now', 'now')"
+            ),
+            {"token": token, "payload": payload},
+        )
+        connection.execute(
+            text("INSERT INTO schema_version (id, version, updated_at) VALUES (1, 11, 'now')")
+        )
+    database.close()
+
+    raw = sqlite3.connect(path)
+    try:
+        raw.executescript(
+            """
+            DROP TABLE published_quiz_media;
+            CREATE TABLE published_quiz_media (
+                id INTEGER PRIMARY KEY,
+                quiz_token VARCHAR(64) NOT NULL REFERENCES published_quizzes_v9(token),
+                image_key VARCHAR(64) NOT NULL,
+                path TEXT NOT NULL,
+                sha256 VARCHAR(64) NOT NULL,
+                media_type VARCHAR(50) NOT NULL,
+                width INTEGER NOT NULL,
+                height INTEGER NOT NULL,
+                alt_text VARCHAR(1000) NOT NULL,
+                created_at VARCHAR(40) NOT NULL,
+                UNIQUE (quiz_token, image_key)
+            );
+            """
+        )
+        raw.execute(
+            "INSERT INTO published_quiz_media "
+            "(quiz_token, image_key, path, sha256, media_type, width, height, alt_text, "
+            "created_at) VALUES (?, 'image-1', 'image.png', ?, 'image/png', 12, 8, "
+            "'Reference image', 'now')",
+            (token, "b" * 64),
+        )
+        raw.commit()
+    finally:
+        raw.close()
+
+    database = Database(f"sqlite:///{path}")
+    database.migrate()
+
+    foreign_keys = inspect(database.engine).get_foreign_keys("published_quiz_media")
+    with database.engine.begin() as connection:
+        media = connection.execute(
+            text(
+                "SELECT quiz_token, image_key, path, alt_text "
+                "FROM published_quiz_media"
+            )
+        ).one()
+        connection.execute(
+            text("DELETE FROM published_quiz_media WHERE quiz_token = :token"),
+            {"token": token},
+        )
+    assert {item["referred_table"] for item in foreign_keys} == {"published_quizzes"}
+    assert tuple(media) == (token, "image-1", "image.png", "Reference image")
+    database.close()
 
 
 def test_v6_generation_jobs_are_upgraded_without_losing_rows(tmp_path):

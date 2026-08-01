@@ -47,7 +47,7 @@ def player_javascript() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "public_quiz.js",
         media_type="text/javascript",
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers={"Cache-Control": "no-cache"},
     )
 
 
@@ -56,7 +56,7 @@ def player_styles() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "public_quiz.css",
         media_type="text/css",
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers={"Cache-Control": "no-cache"},
     )
 
 
