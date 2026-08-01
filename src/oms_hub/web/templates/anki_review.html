@@ -59,53 +59,43 @@
     <p class="pipeline-note" data-convergence-warning hidden></p>
     <p class="pipeline-note" data-reconciliation-warning hidden></p>
 
-    <section class="anki-review-group" aria-labelledby="pass-one-heading">
+    <section class="anki-review-toolbar" aria-label="Review filters">
+      <div class="anki-review-switcher" role="group" aria-label="Review view">
+        <button class="button secondary is-active" type="button" data-review-view="final">Final proposed changes <span data-count-final>0</span></button>
+        <button class="button secondary" type="button" data-review-view="candidates">Candidates <span data-count-candidates>0</span></button>
+      </div>
+      <label class="anki-review-search">Search cards
+        <input type="search" placeholder="Search card text, note ID, extra, or tags" data-review-search>
+      </label>
+    </section>
+
+    <section class="anki-review-group" aria-labelledby="existing-heading" data-review-existing>
       <div class="anki-section-heading">
         <div>
           <p class="mono-label">Existing collection</p>
-          <h2 id="pass-one-heading">Pass 1 matches</h2>
+          <h2 id="existing-heading" data-existing-heading>Existing notes to retag</h2>
         </div>
-        <span class="anki-explainer">Direct hybrid search</span>
+        <span class="anki-explainer" data-existing-explainer>Final selection</span>
       </div>
-      <p class="anki-group-help">These existing notes matched the lecture concept on the first search. Open “Why this matched” to inspect the score and judgment.</p>
-      <div class="anki-review-list" data-group-pass1></div>
+      <p class="anki-group-help" data-existing-help>Only cards currently proposed to receive the lecture tag are shown.</p>
+      <div class="anki-review-list" data-group-existing></div>
     </section>
 
-    <section class="anki-review-group" aria-labelledby="pass-two-heading">
-      <div class="anki-section-heading">
-        <div>
-          <p class="mono-label">Missed-topic recovery</p>
-          <h2 id="pass-two-heading">Recovered after Pass 1</h2>
-        </div>
-        <span class="anki-explainer">Slides + transcript search</span>
-      </div>
-      <p class="anki-group-help">These notes were found during missed-topic recovery or later convergence passes.</p>
-      <div class="anki-review-list" data-group-pass2></div>
-    </section>
-
-    <section class="anki-review-group" aria-labelledby="generated-heading">
+    <section class="anki-review-group" aria-labelledby="generated-heading" data-review-generated>
       <div class="anki-section-heading">
         <div>
           <p class="mono-label">Source-backed proposals</p>
-          <h2 id="generated-heading">Generated cards</h2>
+          <h2 id="generated-heading">New cards to create</h2>
         </div>
         <span class="anki-explainer">Editable before apply</span>
       </div>
-      <p class="anki-group-help">Every proposal must retain valid cloze syntax and resolvable slide or transcript citations. Editing does not change Anki until the final confirmation.</p>
       <div class="anki-review-list" data-group-generated></div>
     </section>
 
-    <section class="anki-review-group" aria-labelledby="unresolved-heading">
-      <div class="anki-section-heading">
-        <div>
-          <p class="mono-label">No automatic change</p>
-          <h2 id="unresolved-heading">Unresolved</h2>
-        </div>
-        <span class="anki-explainer">Held for your attention</span>
-      </div>
-      <p class="anki-group-help">Study Hub could not confidently match or generate a safe card for these concepts. They will not be applied.</p>
+    <details class="anki-review-group" data-review-unresolved>
+      <summary>Unresolved items (<span data-count-unresolved-details>0</span>)</summary>
       <div class="anki-review-list" data-group-unresolved></div>
-    </section>
+    </details>
 
     <section class="card anki-policy-card">
       <div>

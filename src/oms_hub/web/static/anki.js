@@ -715,7 +715,11 @@
   };
 
   const tagEditor = (documentRef, candidate, policy) => {
-    const wrapper = element(documentRef, "div", "anki-tag-editor");
+    const wrapper = documentRef.createElement("details");
+    wrapper.className = "anki-tag-editor";
+    const disclosure = documentRef.createElement("summary");
+    disclosure.textContent = "Tags";
+    wrapper.append(disclosure);
     const heading = element(documentRef, "div", "anki-tag-heading");
     heading.append(
       element(documentRef, "strong", "", "Card tags"),
@@ -781,6 +785,14 @@
   const candidateCard = (documentRef, candidate, policy) => {
     const card = element(documentRef, "article", "anki-match-card");
     card.dataset.noteId = candidate.note_id;
+    card.dataset.reviewKind = "existing";
+    const tags = (candidate.note?.tags || []).map((tag) => tag.value || tag);
+    card.dataset.searchText = [
+      candidate.note_id,
+      candidate.note?.text,
+      candidate.note?.extra,
+      ...tags,
+    ].filter(Boolean).join(" ").toLocaleLowerCase();
     const header = element(documentRef, "div", "anki-card-choice");
     const label = documentRef.createElement("label");
     label.className = "anki-select-control";
@@ -800,7 +812,15 @@
       "anki-confidence",
       audit.label,
     );
-    header.append(label, score);
+    const recovered = candidate.retrieval_pass === "pass_2_rescue"
+      || candidate.provenance?.retrieval_pass === "pass_2_rescue";
+    const origin = element(
+      documentRef,
+      "span",
+      "status-pill",
+      recovered ? "Recovered" : "Initial match",
+    );
+    header.append(label, origin, score);
 
     const front = element(
       documentRef,
@@ -866,6 +886,9 @@
     const article = element(documentRef, "article", "anki-generated-card");
     article.dataset.cardId = card.card_id;
     article.dataset.conceptId = card.concept_id;
+    article.dataset.reviewKind = "generated";
+    article.dataset.searchText = [card.card_id, card.text, card.extra]
+      .filter(Boolean).join(" ").toLocaleLowerCase();
     const header = element(documentRef, "div", "anki-card-choice");
     const label = documentRef.createElement("label");
     label.className = "anki-select-control";
@@ -939,6 +962,72 @@
     items.forEach((item) => container.append(factory(item)));
   };
 
+  const matchesReviewSearch = (candidate, query) => {
+    const needle = String(query || "").trim().toLocaleLowerCase();
+    if (!needle) return true;
+    const tags = (candidate.note?.tags || []).map((tag) => tag.value || tag);
+    return [
+      candidate.note_id,
+      candidate.note?.text,
+      candidate.note?.extra,
+      ...tags,
+    ].filter(Boolean).join(" ").toLocaleLowerCase().includes(needle);
+  };
+
+  const reviewViews = (review) => {
+    const existing = [
+      ...review.groups.pass_1_matches,
+      ...review.groups.recovered_in_pass_2,
+    ];
+    return {
+      active: "final",
+      final: {
+        existing: existing.filter((candidate) => candidate.selected),
+        generated: review.groups.generated_cards.filter((card) => card.selected),
+      },
+      candidates: existing,
+    };
+  };
+
+  const applyReviewFilters = (documentRef) => {
+    const rootElement = documentRef.querySelector("[data-anki-review]");
+    if (!rootElement) return;
+    const view = rootElement.dataset.reviewView || "final";
+    const query = String(documentRef.querySelector("[data-review-search]")?.value || "")
+      .trim().toLocaleLowerCase();
+    let selectedExisting = 0;
+    documentRef.querySelectorAll('[data-review-kind="existing"]').forEach((card) => {
+      const selected = Boolean(card.querySelector("[data-candidate-selection]")?.checked);
+      if (selected) selectedExisting += 1;
+      card.hidden = (view === "final" && !selected)
+        || (query && !card.dataset.searchText.includes(query));
+    });
+    let selectedGenerated = 0;
+    documentRef.querySelectorAll('[data-review-kind="generated"]').forEach((card) => {
+      const selected = Boolean(card.querySelector("[data-gap-selection]")?.checked);
+      if (selected) selectedGenerated += 1;
+      card.hidden = view !== "final"
+        || !selected
+        || (query && !card.dataset.searchText.includes(query));
+    });
+    const candidateCount = documentRef.querySelectorAll('[data-review-kind="existing"]').length;
+    documentRef.querySelector("[data-count-final]").textContent = selectedExisting + selectedGenerated;
+    documentRef.querySelector("[data-count-candidates]").textContent = candidateCount;
+    const generatedSection = documentRef.querySelector("[data-review-generated]");
+    if (generatedSection) generatedSection.hidden = view !== "final" || selectedGenerated === 0;
+    const unresolved = documentRef.querySelector("[data-review-unresolved]");
+    if (unresolved) unresolved.hidden = view !== "candidates";
+    documentRef.querySelector("[data-existing-heading]").textContent = view === "final"
+      ? "Existing notes to retag"
+      : "Candidates";
+    documentRef.querySelector("[data-existing-explainer]").textContent = view === "final"
+      ? "Final selection"
+      : "Initial + recovered";
+    documentRef.querySelector("[data-existing-help]").textContent = view === "final"
+      ? "Only cards currently proposed to receive the lecture tag are shown."
+      : "This combines initial matches and missed-topic recovery. Change a selection to update Final immediately.";
+  };
+
   const renderReview = (documentRef, review) => {
     const groups = review.groups;
     const convergence = convergenceDisplay(review.convergence);
@@ -971,19 +1060,14 @@
       groups.generated_cards.length;
     documentRef.querySelector("[data-count-unresolved]").textContent =
       groups.unresolved.length;
+    documentRef.querySelector("[data-count-unresolved-details]").textContent =
+      groups.unresolved.length;
     setGroup(
       documentRef,
-      "[data-group-pass1]",
-      groups.pass_1_matches,
+      "[data-group-existing]",
+      [...groups.pass_1_matches, ...groups.recovered_in_pass_2],
       (candidate) => candidateCard(documentRef, candidate, review.tag_policy),
-      "No first-pass matches were retained.",
-    );
-    setGroup(
-      documentRef,
-      "[data-group-pass2]",
-      groups.recovered_in_pass_2,
-      (candidate) => candidateCard(documentRef, candidate, review.tag_policy),
-      "No additional existing cards were recovered.",
+      "No existing-card candidates were retained.",
     );
     setGroup(
       documentRef,
@@ -1013,6 +1097,27 @@
       !review.can_build_envelope;
     documentRef.querySelector("#anki-processing").hidden = true;
     documentRef.querySelector("#anki-review-content").hidden = false;
+    const page = documentRef.querySelector("[data-anki-review]");
+    page.dataset.reviewView = "final";
+    documentRef.querySelectorAll("[data-review-view]").forEach((button) => {
+      button.addEventListener("click", () => {
+        page.dataset.reviewView = button.dataset.reviewView;
+        documentRef.querySelectorAll("[data-review-view]").forEach((item) => {
+          item.classList.toggle("is-active", item === button);
+        });
+        applyReviewFilters(documentRef);
+      });
+    });
+    documentRef.querySelector("[data-review-search]")?.addEventListener(
+      "input",
+      () => applyReviewFilters(documentRef),
+    );
+    documentRef.querySelectorAll(
+      "[data-candidate-selection], [data-gap-selection]",
+    ).forEach((input) => {
+      input.addEventListener("change", () => applyReviewFilters(documentRef));
+    });
+    applyReviewFilters(documentRef);
   };
 
   const stageOrder = [
@@ -1383,11 +1488,13 @@
     hasRequiredSources,
     initialize,
     lectureOptions,
+    matchesReviewSearch,
     moveDeckPriority,
     parseLecturePayload,
     processingPercent,
     readableState,
     reconciliationDisplay,
+    reviewViews,
     renderProcessing,
     resolveLecture,
     resolveProviderModel,

@@ -99,6 +99,36 @@ test("ordered deck helpers preserve selection priority", () => {
   );
 });
 
+test("review defaults to only selected final changes and combines candidates", () => {
+  const review = {
+    groups: {
+      pass_1_matches: [{ note_id: 1, selected: true }, { note_id: 2, selected: false }],
+      recovered_in_pass_2: [{ note_id: 3, selected: true }],
+      generated_cards: [{ card_id: "g1", selected: true }, { card_id: "g2", selected: false }],
+    },
+  };
+  const views = anki.reviewViews(review);
+  assert.equal(views.active, "final");
+  assert.deepEqual(views.final.existing.map((item) => item.note_id), [1, 3]);
+  assert.deepEqual(views.final.generated.map((item) => item.card_id), ["g1"]);
+  assert.deepEqual(views.candidates.map((item) => item.note_id), [1, 2, 3]);
+});
+
+test("candidate search includes note id text extra and hidden tags", () => {
+  const candidate = {
+    note_id: 42,
+    note: {
+      text: "Iron deficiency",
+      extra: "Low ferritin",
+      tags: [{ value: "Heme::Anemia" }],
+    },
+  };
+  assert.equal(anki.matchesReviewSearch(candidate, "ferritin"), true);
+  assert.equal(anki.matchesReviewSearch(candidate, "heme::anemia"), true);
+  assert.equal(anki.matchesReviewSearch(candidate, "42"), true);
+  assert.equal(anki.matchesReviewSearch(candidate, "brainstem"), false);
+});
+
 test("dependent selector options stay inside the selected pathway", () => {
   assert.deepEqual(anki.courseOptions(lectures), ["Heme Lymph", "Neuro"]);
   assert.deepEqual(anki.examOptions(lectures, "Heme Lymph"), [1, 3]);

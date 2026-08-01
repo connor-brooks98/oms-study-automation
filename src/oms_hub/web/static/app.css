@@ -817,6 +817,11 @@ textarea {
 .anki-deck-priority { display: grid; gap: .45rem; margin: .7rem 0 0; padding: 0; list-style: none; }
 .anki-deck-priority-item { display: flex; align-items: center; gap: .45rem; }
 .anki-deck-priority-item > span { flex: 1; min-width: 0; }
+.anki-review-toolbar { display: grid; grid-template-columns: auto minmax(16rem, 1fr); gap: 1rem; align-items: end; margin: 1.25rem 0; }
+.anki-review-switcher { display: flex; gap: .5rem; }
+.anki-review-switcher .is-active { background: var(--brand); color: #fff; border-color: var(--brand); }
+.anki-review-search { display: grid; gap: .35rem; }
+.anki-tag-editor > summary { cursor: pointer; font-weight: 650; }
 .anki-source-option span { display: grid; min-width: 0; gap: .15rem; }
 .anki-source-option strong { color: var(--text); font-size: .78rem; }
 .anki-source-option small {
