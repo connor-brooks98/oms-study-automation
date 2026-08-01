@@ -258,6 +258,7 @@ class GapCard:
     provenance: dict[str, Any] = field(default_factory=dict)
     initial_tags: tuple[str, ...] = ()
     content_hash: str = ""
+    card_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +267,7 @@ class GapCardEdit:
     text: str
     extra: str
     selected: bool
+    card_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)

@@ -236,3 +236,80 @@ def test_schema_v6_upgrade_adds_v4_columns_without_losing_legacy_job(
         "pending",
     )
     assert version == LATEST_SCHEMA_VERSION
+
+
+def test_schema_v10_upgrade_allows_multiple_gap_cards_per_concept(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "hub-v10.db"
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_version (
+                id INTEGER PRIMARY KEY,
+                version INTEGER NOT NULL,
+                updated_at VARCHAR(40) NOT NULL
+            );
+            INSERT INTO schema_version (id, version, updated_at)
+            VALUES (1, 10, '2026-07-30T00:00:00+00:00');
+
+            CREATE TABLE anki_gap_cards (
+                id VARCHAR(36) PRIMARY KEY,
+                job_id VARCHAR(36) NOT NULL,
+                concept_id VARCHAR(200) NOT NULL,
+                text TEXT NOT NULL,
+                extra TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                selected BOOLEAN NOT NULL,
+                image_state VARCHAR(30) NOT NULL,
+                media_filename TEXT,
+                source_note_id INTEGER,
+                generated_image_json TEXT NOT NULL,
+                validation_state VARCHAR(30) NOT NULL,
+                source_refs_json TEXT NOT NULL DEFAULT '[]',
+                evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+                provenance_json TEXT NOT NULL DEFAULT '{}',
+                initial_tags_json TEXT NOT NULL DEFAULT '[]',
+                content_hash VARCHAR(64) NOT NULL,
+                UNIQUE (job_id, concept_id)
+            );
+            INSERT INTO anki_gap_cards VALUES (
+                '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000001',
+                'C01', '{{c1::first}}', 'legacy card', 1, 1, 'none',
+                NULL, NULL, '{}', 'valid', '[]', '[]', '{}', '[]',
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+            );
+            """
+        )
+        connection.commit()
+
+    with Database(f"sqlite:///{database_path}") as database:
+        database.migrate()
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO anki_gap_cards ("
+                    "id, job_id, concept_id, text, extra, revision, selected, "
+                    "image_state, generated_image_json, validation_state, "
+                    "source_refs_json, evidence_ids_json, provenance_json, "
+                    "initial_tags_json, content_hash"
+                    ") VALUES ("
+                    "'00000000-0000-0000-0000-000000000102', "
+                    "'00000000-0000-0000-0000-000000000001', "
+                    "'C01', '{{c1::second}}', 'split card', 1, 1, 'none', "
+                    "'{}', 'valid', '[]', '[]', '{}', '[]', "
+                    "'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'"
+                    ")"
+                )
+            )
+            count = connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM anki_gap_cards "
+                    "WHERE job_id = "
+                    "'00000000-0000-0000-0000-000000000001' "
+                    "AND concept_id = 'C01'"
+                )
+            ).scalar_one()
+
+    assert count == 2

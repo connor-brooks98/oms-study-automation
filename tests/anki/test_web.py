@@ -484,6 +484,9 @@ def test_anki_bootstrap_uses_saved_active_provider_and_models(
     assert payload["defaults"]["judgment_rubric_version"] == (
         "coverage-rubric"
     )
+    assert payload["defaults"]["gap_prompt_version"] == (
+        "gap-card-generation"
+    )
     assert payload["provider_models"] == {
         "anthropic": "claude-sonnet-4-6",
         "gemini": "gemini-3.6-flash",
@@ -759,6 +762,7 @@ def test_review_groups_evidence_and_uses_optimistic_revision(
     assert review.status_code == 200
     assert len(review.json()["groups"]["pass_1_matches"]) == 1
     assert len(review.json()["groups"]["generated_cards"]) == 1
+    assert review.json()["groups"]["generated_cards"][0]["card_id"]
     assert saved.json()["revision"] == 1
     assert stale.status_code == 409
     assert evidence.json()["source_refs"][0]["locator"] == "slide 12"

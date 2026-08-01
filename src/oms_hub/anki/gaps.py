@@ -9,6 +9,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from oms_hub.anki.domain import SourceReference
 from oms_hub.anki.lcl import LectureConcept
 from oms_hub.anki.sources import SourcePassage
+from oms_hub.anki.v2_contracts import (
+    GapResolutionV2,
+    GeneratedGapCardV2,
+    MissingFactV2,
+    UnresolvedGapV2,
+)
 from oms_hub.llm.domain import ProviderName
 from oms_hub.llm.structured import (
     StructuredJSONResult,
@@ -100,6 +106,9 @@ class GapCardProposal:
     content_hash: str
     provenance: dict[str, Any]
     prompt_hash: str | None = None
+    fact_id: str | None = None
+    split: bool = False
+    image_needed: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +120,297 @@ class GapGenerationResult:
 
 class GapValidationError(ValueError):
     """A generated card failed deterministic source-safety checks."""
+
+
+class GapBatchV2(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    resolutions: tuple[GapResolutionV2, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ExistingGapSupport:
+    note_id: int
+    text: str
+    extra: str
+
+
+@dataclass(frozen=True, slots=True)
+class V2GapGenerationRequest:
+    concept: LectureConcept
+    missing_facts: tuple[MissingFactV2, ...]
+    evidence: tuple[SourcePassage, ...]
+    lecture_title: str
+    lecture_entity_count: int
+    forbidden_cloze_targets: tuple[str, ...]
+    existing_supports: tuple[ExistingGapSupport, ...]
+    initial_tags: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.missing_facts:
+            raise ValueError("V2 gap generation requires missing facts")
+        if not self.evidence or any(not passage.text for passage in self.evidence):
+            raise ValueError("V2 gap generation requires source evidence")
+        if not self.lecture_title.strip() or self.lecture_entity_count < 1:
+            raise ValueError("V2 gap generation lecture context is invalid")
+        fact_ids = [fact.fact_id for fact in self.missing_facts]
+        if len(fact_ids) != len(set(fact_ids)):
+            raise ValueError("V2 gap generation fact IDs must be unique")
+        if any(not fact.fact_id.startswith(f"{self.concept.concept_id}-M") for fact in self.missing_facts):
+            raise ValueError("V2 gap generation facts must belong to the concept")
+
+
+@dataclass(frozen=True, slots=True)
+class V2GapGenerationResult:
+    generated: tuple[GeneratedGapCardV2, ...]
+    unresolved: tuple[UnresolvedGapV2, ...]
+    proposals: tuple[GapCardProposal, ...]
+    attempts: tuple[StructuredJSONResult[GapBatchV2], ...]
+
+
+class V2GapGenerationService:
+    def __init__(
+        self,
+        structured: StructuredTextService,
+        *,
+        provider: ProviderName,
+        model: str,
+        prompt_version: str,
+        prompt_text: str,
+        prompt_hash: str,
+    ) -> None:
+        if (
+            not model.strip()
+            or not prompt_version.strip()
+            or not prompt_text.strip()
+            or len(prompt_hash) != 12
+        ):
+            raise ValueError("V2 gap-generation configuration is invalid")
+        self.structured = structured
+        self.provider = provider
+        self.model = model
+        self.prompt_version = prompt_version
+        self.prompt_text = prompt_text.strip()
+        self.prompt_hash = prompt_hash
+
+    def generate(
+        self,
+        request: V2GapGenerationRequest,
+    ) -> V2GapGenerationResult:
+        generation_input = _v2_generation_input(request)
+        attempts: list[StructuredJSONResult[GapBatchV2]] = []
+        try:
+            first = self._request(self.prompt_text, generation_input)
+            attempts.append(first)
+            self._validate(first.value, request)
+            batch = first.value
+        except (StructuredOutputError, GapValidationError) as first_error:
+            raw = (
+                first_error.raw_text
+                if isinstance(first_error, StructuredOutputError)
+                else sanitize_model_text(first.raw_text)
+            )
+            repair_input = json.dumps(
+                {
+                    "generation_input": json.loads(generation_input),
+                    "invalid_response": raw,
+                    "validation_error": str(first_error),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            repaired = self._request(
+                f"{self.prompt_text}\n\nRepair the invalid gap batch. "
+                "Correct only the reported defect and return the complete batch.",
+                repair_input,
+            )
+            attempts.append(repaired)
+            self._validate(repaired.value, request)
+            batch = repaired.value
+
+        evidence_by_id = {passage.source_id: passage for passage in request.evidence}
+        generated = tuple(
+            item
+            for item in batch.resolutions
+            if isinstance(item, GeneratedGapCardV2)
+        )
+        unresolved = tuple(
+            item
+            for item in batch.resolutions
+            if isinstance(item, UnresolvedGapV2)
+        )
+        proposals = tuple(
+            _v2_proposal(
+                card,
+                request=request,
+                evidence_by_id=evidence_by_id,
+                generated=attempts[-1],
+                prompt_version=self.prompt_version,
+                prompt_hash=self.prompt_hash,
+            )
+            for card in generated
+        )
+        return V2GapGenerationResult(
+            generated=generated,
+            unresolved=unresolved,
+            proposals=proposals,
+            attempts=tuple(attempts),
+        )
+
+    def _request(
+        self,
+        instruction: str,
+        input_text: str,
+    ) -> StructuredJSONResult[GapBatchV2]:
+        return self.structured.generate_json(
+            instruction,
+            input_text,
+            output_model=GapBatchV2,
+            provider=self.provider,
+            model=self.model,
+        )
+
+    @staticmethod
+    def _validate(
+        batch: GapBatchV2,
+        request: V2GapGenerationRequest,
+    ) -> None:
+        expected = {fact.fact_id for fact in request.missing_facts}
+        returned = [item.fact_id for item in batch.resolutions]
+        if set(returned) != expected:
+            raise GapValidationError(
+                "every missing fact must resolve as generated or unresolved"
+            )
+        evidence_by_id = {passage.source_id: passage for passage in request.evidence}
+        for fact_id in expected:
+            matching = [item for item in batch.resolutions if item.fact_id == fact_id]
+            unresolved = [item for item in matching if isinstance(item, UnresolvedGapV2)]
+            generated = [item for item in matching if isinstance(item, GeneratedGapCardV2)]
+            if unresolved and (generated or len(unresolved) != 1):
+                raise GapValidationError(
+                    "a missing fact cannot be both generated and unresolved"
+                )
+            if len(generated) > 1 and any(not item.split for item in generated):
+                raise GapValidationError(
+                    "multiple cards for one fact must be marked split"
+                )
+            for card in generated:
+                _validate_v2_card(
+                    card,
+                    evidence_by_id=evidence_by_id,
+                    forbidden_cloze_targets=request.forbidden_cloze_targets,
+                )
+
+
+def _v2_generation_input(request: V2GapGenerationRequest) -> str:
+    return json.dumps(
+        {
+            "concept": request.concept.model_dump(mode="json"),
+            "missing_facts": [
+                fact.model_dump(mode="json") for fact in request.missing_facts
+            ],
+            "evidence_passages": [
+                {
+                    "passage_id": passage.source_id,
+                    "source_kind": passage.source_kind.value,
+                    "locator": passage.locator,
+                    "text": passage.text,
+                }
+                for passage in request.evidence
+            ],
+            "lecture_title": request.lecture_title,
+            "lecture_entity_count": request.lecture_entity_count,
+            "forbidden_cloze_targets": list(request.forbidden_cloze_targets),
+            "existing_supports": [
+                {
+                    "nid": support.note_id,
+                    "text": support.text,
+                    "extra": support.extra,
+                }
+                for support in request.existing_supports
+            ],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def _validate_v2_card(
+    card: GeneratedGapCardV2,
+    *,
+    evidence_by_id: dict[str, SourcePassage],
+    forbidden_cloze_targets: tuple[str, ...],
+) -> None:
+    if any(source_id not in evidence_by_id for source_id in card.source_passage_ids):
+        raise GapValidationError("generated card cites unavailable evidence")
+    validate_gap_card_fields(card.text.strip(), card.extra.strip())
+    forbidden = {
+        _normalize_for_leakage(_strip_html(value))
+        for value in forbidden_cloze_targets
+        if _normalize_for_leakage(_strip_html(value))
+    }
+    for match in _CLOZE.finditer(card.text):
+        answer = _normalize_for_leakage(_strip_html(match.group("answer")))
+        if answer in forbidden:
+            raise GapValidationError("generated card blanks a forbidden cloze target")
+
+
+def _v2_proposal(
+    card: GeneratedGapCardV2,
+    *,
+    request: V2GapGenerationRequest,
+    evidence_by_id: dict[str, SourcePassage],
+    generated: StructuredJSONResult[GapBatchV2],
+    prompt_version: str,
+    prompt_hash: str,
+) -> GapCardProposal:
+    cited = tuple(evidence_by_id[value] for value in card.source_passage_ids)
+    fields = {"Text": card.text.strip(), "Extra": card.extra.strip()}
+    return GapCardProposal(
+        concept_id=request.concept.concept_id,
+        note_type=card.note_type,
+        fields=fields,
+        source_refs=tuple(
+            SourceReference(
+                source_kind=passage.source_kind,
+                revision_id=passage.revision_id,
+                locator=passage.locator,
+                content_hash=passage.content_hash,
+            )
+            for passage in cited
+        ),
+        evidence_ids=tuple(
+            source_evidence_id(request.concept.concept_id, passage.passage_id)
+            for passage in cited
+        ),
+        initial_tags=tuple(dict.fromkeys(request.initial_tags)),
+        provider=generated.provider,
+        model=generated.model,
+        prompt_version=prompt_version,
+        confidence=1.0,
+        content_hash=_content_hash(card.note_type, fields),
+        provenance={
+            "generation_request_id": generated.request_id,
+            "fact_id": card.fact_id,
+            "split": card.split,
+            "image_needed": card.image_needed,
+            "source_passage_ids": list(card.source_passage_ids),
+        },
+        prompt_hash=prompt_hash,
+        fact_id=card.fact_id,
+        split=card.split,
+        image_needed=card.image_needed,
+    )
+
+
+def _strip_html(value: str) -> str:
+    return re.sub(r"<[^>]+>", " ", value)
+
+
+def source_evidence_id(concept_id: str, passage_id: str) -> str:
+    return hashlib.sha256(f"{concept_id}\0{passage_id}".encode()).hexdigest()
 
 
 class GapCardService:

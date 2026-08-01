@@ -66,6 +66,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
 class GapCardEditRequest(ContractModel):
+    card_id: Annotated[str, Field(max_length=100)] = ""
     concept_id: Annotated[str, Field(min_length=1, max_length=200)]
     text: Annotated[str, Field(min_length=1, max_length=10_000)]
     extra: Annotated[str, Field(max_length=20_000)]
@@ -86,6 +87,7 @@ class ReviewChangeSetRequest(ContractModel):
             candidate_selections=dict(self.candidate_selections),
             gap_edits=tuple(
                 GapCardEdit(
+                    card_id=edit.card_id,
                     concept_id=edit.concept_id,
                     text=edit.text,
                     extra=edit.extra,
@@ -785,7 +787,7 @@ def _page_context(request: Request) -> dict[str, Any]:
             "model": active_provider.model,
             "lcl_prompt_version": "lecture-concept-ledger",
             "judgment_rubric_version": "coverage-rubric",
-            "gap_prompt_version": "gap-v1",
+            "gap_prompt_version": "gap-card-generation",
             "index_snapshot_id": snapshot_id,
             "semantic_model": settings.anki_semantic_model,
         },
@@ -889,6 +891,7 @@ def _gap_payload(
 ) -> dict[str, Any]:
     evidence_by_id = {item.evidence_id: item for item in evidence}
     return {
+        "card_id": card.card_id,
         "concept_id": card.concept_id,
         "text": card.text,
         "extra": card.extra,
@@ -1113,10 +1116,11 @@ def _gap_proposal(
     model = str(card.provenance.get("model", job.model)).strip()
     prompt_version = str(card.provenance.get("prompt_version", job.gap_prompt_version)).strip()
     confidence = float(card.provenance.get("confidence", 0.0))
+    note_type = str(card.provenance.get("note_type", "Cloze"))
     fields = {"Text": card.text.strip(), "Extra": card.extra.strip()}
     content_hash = hashlib.sha256(
         json.dumps(
-            {"note_type": "Cloze", "fields": fields},
+            {"note_type": note_type, "fields": fields},
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
@@ -1124,7 +1128,7 @@ def _gap_proposal(
     ).hexdigest()
     return GapCardProposal(
         concept_id=card.concept_id,
-        note_type="Cloze",
+        note_type=note_type,
         fields=fields,
         source_refs=card.source_refs,
         evidence_ids=card.evidence_ids,

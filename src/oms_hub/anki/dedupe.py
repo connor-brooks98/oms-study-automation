@@ -73,7 +73,7 @@ class DeduplicationService:
                 text=_proposal_text(other),
             )
             for other in batch
-            if other.concept_id != proposal.concept_id
+            if other is not proposal
         ]
         exact = [
             DedupeMatch(

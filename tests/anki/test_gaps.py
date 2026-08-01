@@ -1,3 +1,4 @@
+import json
 from collections.abc import Sequence
 from typing import Any
 
@@ -8,12 +9,20 @@ from oms_hub.anki.domain import SourceKind
 from oms_hub.anki.gaps import (
     CardDraft,
     EntailmentDecision,
+    GapBatchV2,
     GapCardService,
     GapValidationError,
     SupportedGap,
+    V2GapGenerationRequest,
+    V2GapGenerationService,
 )
 from oms_hub.anki.lcl import LectureConcept, LedgerSourceRef
 from oms_hub.anki.sources import SourcePassage
+from oms_hub.anki.v2_contracts import (
+    GeneratedGapCardV2,
+    MissingFactV2,
+    UnresolvedGapV2,
+)
 from oms_hub.llm.domain import GeneratedText, ProviderName
 from oms_hub.llm.structured import (
     StructuredJSONResult,
@@ -118,6 +127,192 @@ def _gap() -> SupportedGap:
         evidence=(evidence,),
         initial_tags=("OMS::Generated", "OMS::Lecture_5"),
     )
+
+
+def _v2_concept() -> LectureConcept:
+    evidence = _evidence()
+    return LectureConcept(
+        concept_id="C01",
+        source_refs=(LedgerSourceRef(passage_id=evidence.passage_id),),
+        statement="Reticulocytes rise after iron replacement",
+        hypothetical_card="After iron replacement, reticulocytes rise",
+        paraphrases=(
+            "iron replacement reticulocyte response",
+            "iron therapy marrow response",
+            "iron deficiency treatment reticulocytes",
+        ),
+        importance="high",
+        primary_entity="iron deficiency",
+        aliases=("IDA",),
+        depth="deep",
+        emphasis_flag=True,
+        source_passage_ids=(evidence.source_id,),
+    )
+
+
+def _v2_request() -> V2GapGenerationRequest:
+    evidence = _evidence()
+    return V2GapGenerationRequest(
+        concept=_v2_concept(),
+        missing_facts=(
+            MissingFactV2(
+                fact_id="C01-M1",
+                statement="Reticulocytes rise after iron replacement.",
+                passage_ids=(evidence.source_id,),
+            ),
+            MissingFactV2(
+                fact_id="C01-M2",
+                statement="The rise reflects marrow response.",
+                passage_ids=(evidence.source_id,),
+            ),
+        ),
+        evidence=(evidence,),
+        lecture_title="Iron Deficiency Anemia",
+        lecture_entity_count=1,
+        forbidden_cloze_targets=("Iron Deficiency Anemia", "iron deficiency"),
+        existing_supports=(),
+        initial_tags=("OMS::Generated",),
+    )
+
+
+def _generated_v2(fact_id: str, source_id: str) -> GeneratedGapCardV2:
+    return GeneratedGapCardV2(
+        fact_id=fact_id,
+        status="generated",
+        text="After iron replacement, {{c1::<b>reticulocytes rise</b>}}.",
+        extra="This change reflects marrow response.",
+        note_type="AnKingOverhaul (AnKing Step Deck / AnKingMed)",
+        source_passage_ids=(source_id,),
+        split=False,
+        image_needed=None,
+    )
+
+
+def test_v2_generation_sends_all_missing_facts_in_one_concept_call() -> None:
+    request = _v2_request()
+    structured = QueueStructured(
+        (
+            GapBatchV2(
+                resolutions=(
+                    _generated_v2("C01-M1", request.evidence[0].source_id),
+                    UnresolvedGapV2(
+                        fact_id="C01-M2",
+                        status="unresolved",
+                        reason="The source does not support an atomic card.",
+                    ),
+                )
+            ),
+        )
+    )
+    service = V2GapGenerationService(
+        structured,  # type: ignore[arg-type]
+        provider=ProviderName.OPENAI,
+        model="gpt-5.6-terra",
+        prompt_version="gap-card-generation",
+        prompt_text="# Generate all audited gaps",
+        prompt_hash="abcdef123456",
+    )
+
+    result = service.generate(request)
+
+    assert len(structured.requests) == 1
+    sent = json.loads(structured.requests[0][1])
+    assert [item["fact_id"] for item in sent["missing_facts"]] == [
+        "C01-M1",
+        "C01-M2",
+    ]
+    assert sent["lecture_entity_count"] == 1
+    assert sent["forbidden_cloze_targets"] == [
+        "Iron Deficiency Anemia",
+        "iron deficiency",
+    ]
+    assert [item.fact_id for item in result.generated] == ["C01-M1"]
+    assert [item.fact_id for item in result.unresolved] == ["C01-M2"]
+
+
+def test_v2_generation_repairs_a_silently_omitted_fact() -> None:
+    request = _v2_request()
+    structured = QueueStructured(
+        (
+            GapBatchV2(
+                resolutions=(
+                    _generated_v2("C01-M1", request.evidence[0].source_id),
+                )
+            ),
+            GapBatchV2(
+                resolutions=(
+                    _generated_v2("C01-M1", request.evidence[0].source_id),
+                    UnresolvedGapV2(
+                        fact_id="C01-M2",
+                        reason="Evidence is insufficient.",
+                    ),
+                )
+            ),
+        )
+    )
+    service = V2GapGenerationService(
+        structured,  # type: ignore[arg-type]
+        provider=ProviderName.OPENAI,
+        model="gpt-5.6-terra",
+        prompt_version="gap-card-generation",
+        prompt_text="# Generate all audited gaps",
+        prompt_hash="abcdef123456",
+    )
+
+    result = service.generate(request)
+
+    assert len(structured.requests) == 2
+    repair = json.loads(structured.requests[1][1])
+    assert "every missing fact" in repair["validation_error"]
+    assert {item.fact_id for item in (*result.generated, *result.unresolved)} == {
+        "C01-M1",
+        "C01-M2",
+    }
+
+
+def test_v2_generation_rejects_forbidden_cloze_target_after_repair() -> None:
+    request = _v2_request()
+    trapped = GeneratedGapCardV2(
+        fact_id="C01-M1",
+        text="{{c1::<b>iron deficiency</b>}} causes microcytic anemia.",
+        extra="Iron replacement corrects the deficiency.",
+        note_type="AnKingOverhaul (AnKing Step Deck / AnKingMed)",
+        source_passage_ids=(request.evidence[0].source_id,),
+        split=False,
+        image_needed=None,
+    )
+    service = V2GapGenerationService(
+        QueueStructured(  # type: ignore[arg-type]
+            (
+                GapBatchV2(
+                    resolutions=(
+                        trapped,
+                        UnresolvedGapV2(
+                            fact_id="C01-M2",
+                            reason="Evidence is insufficient.",
+                        ),
+                    )
+                ),
+                GapBatchV2(
+                    resolutions=(
+                        trapped,
+                        UnresolvedGapV2(
+                            fact_id="C01-M2",
+                            reason="Evidence is insufficient.",
+                        ),
+                    )
+                ),
+            )
+        ),
+        provider=ProviderName.OPENAI,
+        model="gpt-5.6-terra",
+        prompt_version="gap-card-generation",
+        prompt_text="# Generate all audited gaps",
+        prompt_hash="abcdef123456",
+    )
+
+    with pytest.raises(GapValidationError, match="forbidden cloze target"):
+        service.generate(request)
 
 
 def test_valid_card_has_complete_grounded_provenance() -> None:

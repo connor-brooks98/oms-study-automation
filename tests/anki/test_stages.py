@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import oms_hub.anki.stages as stages_module
 from oms_hub.anki.audit import AuditBatchV2, AuditCacheRecord
 from oms_hub.anki.domain import Candidate, CurationStage, RetrievalPass, SourceKind
+from oms_hub.anki.gaps import GapBatchV2
 from oms_hub.anki.judgment import JudgmentCacheRecord
 from oms_hub.anki.normalize import NormalizedNote
 from oms_hub.anki.prompts import AnkiPromptLibrary, StaticPromptSynchronizer
@@ -14,6 +15,7 @@ from oms_hub.anki.stages import CurationServicesRunner
 from oms_hub.anki.v2_contracts import (
     AuditVerdictV2,
     CoverageJudgmentV2,
+    GeneratedGapCardV2,
     LectureConceptLedgerV2,
     LectureConceptV2,
     MissingFactV2,
@@ -910,3 +912,136 @@ def test_audit_created_gap_localization_excludes_summary_only_evidence() -> None
     )
 
     assert localization.evidence == (slide,)
+
+
+class GapStageRepository:
+    def list_candidates(self, job_id: object) -> list[Candidate]:
+        del job_id
+        return []
+
+    def lecture_title(self, lecture_id: int) -> str:
+        assert lecture_id == 12
+        return "Iron Deficiency Anemia"
+
+    def list_source_evidence(self, job_id: object) -> list[object]:
+        del job_id
+        return []
+
+
+class V2GapStageStructuredService:
+    def __init__(self, batch: GapBatchV2) -> None:
+        self.batch = batch
+        self.inputs: list[str] = []
+
+    def generate_json(
+        self,
+        instruction: str,
+        input_text: str,
+        *,
+        output_model: type[GapBatchV2],
+        provider: ProviderName,
+        model: str,
+    ) -> StructuredJSONResult[GapBatchV2]:
+        del instruction
+        assert output_model is GapBatchV2
+        self.inputs.append(input_text)
+        return StructuredJSONResult(
+            value=self.batch,
+            raw_text=self.batch.model_dump_json(),
+            provider=provider,
+            model=model,
+            request_id="gap-v2-request",
+            input_tokens=30,
+            output_tokens=15,
+            cost_microusd=8,
+        )
+
+
+def test_gap_stage_routes_on_audited_missing_facts_not_display_outcome() -> None:
+    passage, ledger, _, _ = _audit_stage_fixture()
+    ledger = ledger.model_copy(update={"lecture_entity_count": 1})
+    judgment = CoverageJudgmentV2(
+        concept_id="C01",
+        supporting_note_ids=(),
+        missing_facts=(
+            MissingFactV2(
+                fact_id="C01-M1",
+                statement="Iron deficiency causes low ferritin.",
+                passage_ids=(passage.source_id,),
+            ),
+        ),
+        rationale="No audited card covers ferritin.",
+    )
+    generated = GeneratedGapCardV2(
+        fact_id="C01-M1",
+        text="<b>Iron deficiency</b> causes {{c1::<b>low ferritin</b>}}.",
+        extra="Ferritin reflects depleted iron stores.",
+        note_type="AnKingOverhaul (AnKing Step Deck / AnKingMed)",
+        source_passage_ids=(passage.source_id,),
+        split=True,
+        image_needed=None,
+    )
+    structured = V2GapStageStructuredService(
+        GapBatchV2(
+            resolutions=(
+                generated,
+                generated.model_copy(),
+            )
+        )
+    )
+    runner = CurationServicesRunner.__new__(CurationServicesRunner)
+    runner.structured = structured
+    runner.repository = GapStageRepository()
+    runner.companion = MultipleCompanionNotes(())
+    runner.embedder = SimpleNamespace()
+    context = SimpleNamespace(
+        job=SimpleNamespace(
+            id="job-1",
+            lecture_id=12,
+            gap_prompt_version="gap-card-generation",
+            provider="openai",
+            model="gpt-5.6-terra",
+        ),
+        prior_payloads={
+            CurationStage.PREFLIGHT: {
+                "prompt_snapshot": [
+                    {
+                        "id": "gap-card-generation",
+                        "content": "# Gap generation V2",
+                        "prompt_hash": "123456789abc",
+                        "metadata": {"schema": "gap_cards_v2"},
+                    }
+                ]
+            },
+            CurationStage.SOURCE_INDEX: {
+                "passages": [stages_module._passage_payload(passage)]
+            },
+            CurationStage.LCL: {
+                "ledger": ledger.model_dump(mode="json"),
+                "schema_name": "lcl_v2",
+            },
+            CurationStage.COVERAGE_RECOMPUTE: {
+                "schema_name": "coverage_v2",
+                "judgments": {
+                    "C01": {"judgment": judgment.model_dump(mode="json")}
+                },
+            },
+            CurationStage.DEDUPE: {
+                "outcomes": {"C01": "covered_audited"}
+            },
+            CurationStage.RESCUE: {"localizations": {}},
+        },
+    )
+
+    product = asyncio.run(runner._generate_gaps(context))
+
+    assert len(structured.inputs) == 1
+    sent = json.loads(structured.inputs[0])
+    assert [fact["fact_id"] for fact in sent["missing_facts"]] == ["C01-M1"]
+    assert sent["forbidden_cloze_targets"] == [
+        "Iron Deficiency Anemia",
+        "iron deficiency",
+    ]
+    assert product.gap_cards is not None
+    assert len(product.gap_cards) == 1
+    assert product.gap_cards[0].provenance["fact_id"] == "C01-M1"

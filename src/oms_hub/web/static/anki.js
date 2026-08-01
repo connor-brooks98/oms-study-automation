@@ -752,6 +752,7 @@
 
   const generatedCard = (documentRef, card) => {
     const article = element(documentRef, "article", "anki-generated-card");
+    article.dataset.cardId = card.card_id;
     article.dataset.conceptId = card.concept_id;
     const header = element(documentRef, "div", "anki-card-choice");
     const label = documentRef.createElement("label");
@@ -986,6 +987,7 @@
       ...documentRef.querySelectorAll(".anki-generated-card"),
     ].map((card) => ({
       contract_version: 1,
+      card_id: card.dataset.cardId,
       concept_id: card.dataset.conceptId,
       text: card.querySelector("[data-gap-text]").value,
       extra: card.querySelector("[data-gap-extra]").value,

@@ -4,7 +4,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Literal, cast
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from oms_hub.anki.audit import AuditRunResult, CardAuditService
 from oms_hub.anki.convergence import (
@@ -26,9 +26,15 @@ from oms_hub.anki.domain import (
     StageUsage,
 )
 from oms_hub.anki.gaps import (
+    ExistingGapSupport,
     GapCardProposal,
     GapCardService,
+    GapValidationError,
     SupportedGap,
+    V2GapGenerationRequest,
+    V2GapGenerationResult,
+    V2GapGenerationService,
+    source_evidence_id,
 )
 from oms_hub.anki.index import AnkiIndex, CompanionFilters
 from oms_hub.anki.judgment import (
@@ -81,6 +87,7 @@ from oms_hub.anki.v2_contracts import (
     AuditVerdictV2,
     CoverageJudgmentV2,
     LectureConceptLedgerV2,
+    MissingFactV2,
 )
 from oms_hub.ingestion.domain import StudyRevision
 from oms_hub.ingestion.repository import IngestionRepository
@@ -1026,6 +1033,22 @@ class CurationServicesRunner:
         self,
         context: StageContext,
     ) -> StageProduct:
+        schema_name = _resolved_prompt_schema(
+            context,
+            context.job.gap_prompt_version,
+        )
+        if schema_name == "gap_cards_v2":
+            return await self._generate_gaps_v2(context)
+        if schema_name != "gap_cards_v1":
+            raise PinnedInputChanged(
+                "Pinned gap-generation prompt schema is unsupported"
+            )
+        return await self._generate_gaps_v1(context)
+
+    async def _generate_gaps_v1(
+        self,
+        context: StageContext,
+    ) -> StageProduct:
         ledger_by_id = {
             concept.concept_id: concept
             for concept in _ledger(context).concepts
@@ -1167,6 +1190,216 @@ class CurationServicesRunner:
             },
             gap_cards=tuple(cards),
             usage=_proposal_usage(proposed),
+        )
+
+    async def _generate_gaps_v2(
+        self,
+        context: StageContext,
+    ) -> StageProduct:
+        ledger = _ledger(context)
+        passages = _source_passages(context)
+        prompt_text, prompt_hash = _resolved_prompt(
+            context,
+            context.job.gap_prompt_version,
+        )
+        service = V2GapGenerationService(
+            self.structured,
+            provider=_provider(context),
+            model=context.job.model,
+            prompt_version=context.job.gap_prompt_version,
+            prompt_text=prompt_text,
+            prompt_hash=prompt_hash,
+        )
+        all_candidates = tuple(
+            self.repository.list_candidates(context.job.id)
+        )
+        candidate_by_id = {
+            candidate.note_id: candidate for candidate in all_candidates
+        }
+        proposals: list[GapCardProposal] = []
+        unresolved: list[dict[str, Any]] = []
+        results: list[V2GapGenerationResult] = []
+        expected_fact_ids: set[str] = set()
+        evidence_records = {
+            record.evidence_id: record
+            for record in self.repository.list_source_evidence(
+                context.job.id
+            )
+        }
+        for concept in ledger.concepts:
+            judgment = _coverage_judgment(
+                context,
+                CurationStage.COVERAGE_RECOMPUTE,
+                concept.concept_id,
+            )
+            missing_facts = judgment.missing_fact_records
+            if judgment.missing_facts and not missing_facts:
+                raise PinnedInputChanged(
+                    "V2 gap generation requires V2 audited missing-fact records"
+                )
+            if not missing_facts:
+                continue
+            expected_fact_ids.update(fact.fact_id for fact in missing_facts)
+            evidence = _v2_gap_evidence(
+                concept,
+                missing_facts,
+                passages,
+            )
+            for record in _evidence_records(
+                RescueLocalization(
+                    concept=concept,
+                    support="supported",
+                    evidence=evidence,
+                    rationale=(
+                        "Audited missing facts are grounded in primary sources."
+                    ),
+                )
+            ):
+                evidence_records[record.evidence_id] = record
+            supporting_notes: list[ExistingGapSupport] = []
+            for note_id in judgment.supporting_note_ids:
+                candidate = candidate_by_id.get(note_id)
+                if candidate is None or not candidate.selected:
+                    continue
+                note = self.companion.get_note(note_id)
+                if note is None:
+                    raise PinnedInputChanged(
+                        "Gap-generation support is absent from the companion index"
+                    )
+                supporting_notes.append(
+                    ExistingGapSupport(
+                        note_id=note.note_id,
+                        text=note.text,
+                        extra=note.extra,
+                    )
+                )
+            result = await asyncio.to_thread(
+                service.generate,
+                V2GapGenerationRequest(
+                    concept=concept,
+                    missing_facts=missing_facts,
+                    evidence=evidence,
+                    lecture_title=self.repository.lecture_title(
+                        context.job.lecture_id
+                    ),
+                    lecture_entity_count=ledger.lecture_entity_count,
+                    forbidden_cloze_targets=_forbidden_cloze_targets(
+                        lecture_title=self.repository.lecture_title(
+                            context.job.lecture_id
+                        ),
+                        concept=concept,
+                        lecture_entity_count=ledger.lecture_entity_count,
+                    ),
+                    existing_supports=tuple(supporting_notes),
+                    initial_tags=("OMS::Generated",),
+                ),
+            )
+            results.append(result)
+            proposals.extend(result.proposals)
+            unresolved.extend(
+                {
+                    "concept_id": concept.concept_id,
+                    **item.model_dump(mode="json"),
+                }
+                for item in result.unresolved
+            )
+
+        existing_notes = [
+            note
+            for candidate in all_candidates
+            if (note := self.companion.get_note(candidate.note_id)) is not None
+        ]
+        dedupe = DeduplicationService(self.embedder)
+        cards: list[GapCard] = []
+        accepted_proposals: list[GapCardProposal] = []
+        proposal_payloads: list[dict[str, Any]] = []
+        for proposal in proposals:
+            classification = await dedupe.classify(
+                proposal,
+                existing_notes,
+                accepted_proposals,
+            )
+            proposal_payloads.append(
+                {
+                    **_proposal_payload(proposal),
+                    "dedupe": {
+                        "disposition": classification.disposition,
+                        "nearest_matches": [
+                            {
+                                "identifier": match.identifier,
+                                "score": match.score,
+                                "exact": match.exact,
+                            }
+                            for match in classification.nearest_matches
+                        ],
+                    },
+                }
+            )
+            if classification.disposition == "duplicate":
+                same_fact_duplicate = any(
+                    accepted.fact_id == proposal.fact_id
+                    and accepted.content_hash == proposal.content_hash
+                    for accepted in accepted_proposals
+                )
+                if same_fact_duplicate:
+                    continue
+                unresolved.append(
+                    {
+                        "concept_id": proposal.concept_id,
+                        "fact_id": proposal.fact_id,
+                        "status": "unresolved",
+                        "reason": "duplicate_of_existing_or_generated",
+                    }
+                )
+                continue
+            accepted_proposals.append(proposal)
+            cards.append(
+                _gap_card_from_proposal(
+                    proposal,
+                    classification,
+                    job_id=str(context.job.id),
+                )
+            )
+        generated_fact_ids = {
+            str(card.provenance.get("fact_id", ""))
+            for card in cards
+            if card.provenance.get("fact_id")
+        }
+        unresolved_fact_ids = {
+            str(item.get("fact_id", ""))
+            for item in unresolved
+            if item.get("fact_id")
+        }
+        if (
+            generated_fact_ids & unresolved_fact_ids
+            or generated_fact_ids | unresolved_fact_ids != expected_fact_ids
+        ):
+            raise GapValidationError(
+                "post-dedupe gap resolutions do not exactly cover missing facts"
+            )
+        return StageProduct(
+            kind="grounded_gap_cards_v2",
+            payload={
+                "schema_name": "gap_cards_v2",
+                "proposals": proposal_payloads,
+                "unresolved": unresolved,
+                "forbidden_cloze_targets": sorted(
+                    {
+                        target
+                        for concept in ledger.concepts
+                        for target in _forbidden_cloze_targets(
+                            lecture_title=self.repository.lecture_title(
+                                context.job.lecture_id
+                            ),
+                            concept=concept,
+                            lecture_entity_count=ledger.lecture_entity_count,
+                        )
+                    }
+                ),
+            },
+            source_evidence=tuple(evidence_records.values()),
+            gap_cards=tuple(cards),
+            usage=_v2_gap_usage(results),
         )
 
     async def _judge_groups(
@@ -1856,12 +2089,10 @@ def _evidence_records(
     }[localization.support]
     records = []
     for passage in localization.evidence:
-        identity = hashlib.sha256(
-            (
-                f"{localization.concept.concept_id}\0"
-                f"{passage.passage_id}"
-            ).encode()
-        ).hexdigest()
+        identity = source_evidence_id(
+            localization.concept.concept_id,
+            passage.passage_id,
+        )
         source_ref = SourceReference(
             source_kind=passage.source_kind,
             revision_id=passage.revision_id,
@@ -1881,9 +2112,99 @@ def _evidence_records(
     return records
 
 
+def _v2_gap_evidence(
+    concept: LectureConcept,
+    missing_facts: Sequence[MissingFactV2],
+    passages: Sequence[SourcePassage],
+) -> tuple[SourcePassage, ...]:
+    passage_by_source_id = {passage.source_id: passage for passage in passages}
+    requested_ids = set(concept.source_passage_ids)
+    requested_ids.update(
+        passage_id
+        for fact in missing_facts
+        for passage_id in fact.passage_ids
+    )
+    missing_ids = requested_ids - set(passage_by_source_id)
+    if missing_ids:
+        raise PinnedInputChanged(
+            "Gap-generation evidence is absent from the source artifact"
+        )
+    evidence = tuple(
+        passage_by_source_id[source_id]
+        for source_id in sorted(requested_ids)
+        if passage_by_source_id[source_id].source_kind is not SourceKind.SUMMARY
+    )
+    if not evidence:
+        raise PinnedInputChanged(
+            "Audited missing facts have no primary-source evidence"
+        )
+    return evidence
+
+
+def _forbidden_cloze_targets(
+    *,
+    lecture_title: str,
+    concept: LectureConcept,
+    lecture_entity_count: int,
+) -> tuple[str, ...]:
+    values = [lecture_title.strip()]
+    if lecture_entity_count == 1 and concept.primary_entity.strip():
+        values.append(concept.primary_entity.strip())
+    return tuple(dict.fromkeys(value for value in values if value))
+
+
+def _gap_card_from_proposal(
+    proposal: GapCardProposal,
+    classification: Any,
+    *,
+    job_id: str,
+) -> GapCard:
+    return GapCard(
+        concept_id=proposal.concept_id,
+        text=proposal.fields["Text"],
+        extra=proposal.fields.get("Extra", ""),
+        selected=classification.disposition == "unique",
+        validation_state=(
+            "valid" if classification.disposition == "unique" else "overlap"
+        ),
+        source_refs=proposal.source_refs,
+        evidence_ids=proposal.evidence_ids,
+        provenance={
+            **proposal.provenance,
+            "provider": proposal.provider.value,
+            "model": proposal.model,
+            "prompt_version": proposal.prompt_version,
+            "note_type": proposal.note_type,
+            "dedupe_disposition": classification.disposition,
+            "nearest_matches": [
+                {
+                    "identifier": match.identifier,
+                    "score": match.score,
+                    "exact": match.exact,
+                }
+                for match in classification.nearest_matches
+            ],
+        },
+        initial_tags=proposal.initial_tags,
+        content_hash=proposal.content_hash,
+        card_id=str(
+            uuid5(
+                NAMESPACE_URL,
+                (
+                    f"oms-gap:{job_id}:{proposal.concept_id}:"
+                    f"{proposal.fact_id or ''}:{proposal.content_hash}"
+                ),
+            )
+        ),
+    )
+
+
 def _proposal_payload(proposal: GapCardProposal) -> dict[str, Any]:
     return {
         "concept_id": proposal.concept_id,
+        "fact_id": proposal.fact_id,
+        "split": proposal.split,
+        "image_needed": proposal.image_needed,
         "note_type": proposal.note_type,
         "fields": proposal.fields,
         "source_refs": [
@@ -2020,4 +2341,26 @@ def _proposal_usage(
             + int(proposal.provenance.get("entailment_cost_microusd", 0))
             for proposal in proposals
         ),
+    )
+
+
+def _v2_gap_usage(
+    results: Sequence[V2GapGenerationResult],
+) -> StageUsage | None:
+    attempts = [attempt for result in results for attempt in result.attempts]
+    if not attempts:
+        return None
+    identity = json.dumps(
+        [attempt.request_id for attempt in attempts],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return StageUsage(
+        request_id=(
+            "gaps_v2:"
+            f"{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
+        ),
+        input_tokens=sum(attempt.input_tokens for attempt in attempts),
+        output_tokens=sum(attempt.output_tokens for attempt in attempts),
+        cost_microusd=sum(attempt.cost_microusd for attempt in attempts),
     )

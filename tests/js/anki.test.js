@@ -154,6 +154,38 @@ test("convergence summary surfaces pass count and manual review state", () => {
   });
 });
 
+test("generated-card review edits use stable card identity", () => {
+  const generated = {
+    dataset: {
+      cardId: "00000000-0000-0000-0000-000000000102",
+      conceptId: "C01",
+    },
+    querySelector(selector) {
+      return {
+        "[data-gap-text]": { value: "{{c1::second}}" },
+        "[data-gap-extra]": { value: "Split card" },
+        "[data-gap-selection]": { checked: true },
+      }[selector];
+    },
+  };
+  const documentRef = {
+    querySelectorAll(selector) {
+      return selector === ".anki-generated-card" ? [generated] : [];
+    },
+  };
+
+  const review = anki.collectReview(documentRef, 3);
+
+  assert.deepEqual(review.gap_edits, [{
+    contract_version: 1,
+    card_id: "00000000-0000-0000-0000-000000000102",
+    concept_id: "C01",
+    text: "{{c1::second}}",
+    extra: "Split card",
+    selected: true,
+  }]);
+});
+
 test("failed-run actions use CSRF-protected retry and remove endpoints", async () => {
   const requests = [];
   const documentRef = { cookie: "study_hub_csrf=test-token" };

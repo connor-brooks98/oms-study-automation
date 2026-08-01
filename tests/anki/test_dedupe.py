@@ -109,6 +109,21 @@ def test_within_batch_duplicate_is_detected() -> None:
     asyncio.run(scenario())
 
 
+def test_split_cards_for_the_same_concept_are_deduped_against_each_other() -> None:
+    async def scenario() -> None:
+        first = _proposal("C01", "Mechanism is {{c1::membrane loss}}.")
+        second = _proposal("C01", "Mechanism is membrane loss.")
+
+        result = await DeduplicationService(
+            SimilarityEmbedder()
+        ).classify(second, [], [first, second])
+
+        assert result.disposition == "duplicate"
+        assert result.nearest_matches[0].identifier == "proposal:C01"
+
+    asyncio.run(scenario())
+
+
 def test_semantic_overlap_and_unique_proposals_are_distinguished() -> None:
     async def scenario() -> None:
         service = DeduplicationService(

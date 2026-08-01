@@ -938,14 +938,20 @@ class AnkiCurationRepository:
                     raise KeyError(note_id)
                 candidate.selected = selected
             for edit in change_set.gap_edits:
-                gap = session.scalar(
-                    select(AnkiGapCardModel).where(
-                        AnkiGapCardModel.job_id == str(job_id),
-                        AnkiGapCardModel.concept_id == edit.concept_id,
+                conditions = [AnkiGapCardModel.job_id == str(job_id)]
+                if edit.card_id:
+                    conditions.append(AnkiGapCardModel.id == edit.card_id)
+                else:
+                    conditions.append(
+                        AnkiGapCardModel.concept_id == edit.concept_id
                     )
+                gap = session.scalar(
+                    select(AnkiGapCardModel).where(*conditions)
                 )
                 if gap is None:
-                    raise KeyError(edit.concept_id)
+                    raise KeyError(edit.card_id or edit.concept_id)
+                if gap.concept_id != edit.concept_id:
+                    raise ValueError("generated card identity conflicts with concept")
                 gap.text = edit.text
                 gap.extra = edit.extra
                 gap.selected = edit.selected
@@ -962,6 +968,7 @@ class AnkiCurationRepository:
                             "candidate_selections": (change_set.candidate_selections),
                             "gap_edits": [
                                 {
+                                    "card_id": edit.card_id,
                                     "concept_id": edit.concept_id,
                                     "text": edit.text,
                                     "extra": edit.extra,
@@ -1620,15 +1627,16 @@ class AnkiCurationRepository:
         job_id: UUID,
         cards: Sequence[GapCard],
     ) -> None:
-        if len({card.concept_id for card in cards}) != len(cards):
-            raise ValueError("projected gap cards must have unique concept IDs")
+        supplied_ids = [card.card_id for card in cards if card.card_id]
+        if len(supplied_ids) != len(set(supplied_ids)):
+            raise ValueError("projected gap cards must have unique card IDs")
         session.execute(
             delete(AnkiGapCardModel).where(AnkiGapCardModel.job_id == str(job_id))
         )
         for card in cards:
             session.add(
                 AnkiGapCardModel(
-                    id=str(uuid4()),
+                    id=card.card_id or str(uuid4()),
                     job_id=str(job_id),
                     concept_id=card.concept_id,
                     text=card.text,
@@ -1848,6 +1856,7 @@ class AnkiCurationRepository:
             ),
             initial_tags=tuple(json.loads(stored.initial_tags_json)),
             content_hash=stored.content_hash,
+            card_id=stored.id,
         )
 
     @staticmethod

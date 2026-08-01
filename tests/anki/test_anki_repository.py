@@ -408,6 +408,56 @@ def test_candidates_gaps_and_review_revision_are_persisted(tmp_path) -> None:
         )
 
 
+def test_split_gap_cards_share_a_concept_and_are_edited_by_card_id(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    first_id = "00000000-0000-0000-0000-000000000101"
+    second_id = "00000000-0000-0000-0000-000000000102"
+    repository.save_gap_cards(
+        job.id,
+        (
+            GapCard(
+                concept_id="C01",
+                text="Mechanism starts with {{c1::step one}}.",
+                extra="First atomic card.",
+                card_id=first_id,
+                provenance={"fact_id": "C01-M1", "split": True},
+            ),
+            GapCard(
+                concept_id="C01",
+                text="Mechanism ends with {{c1::step two}}.",
+                extra="Second atomic card.",
+                card_id=second_id,
+                provenance={"fact_id": "C01-M1", "split": True},
+            ),
+        ),
+    )
+
+    repository.save_review(
+        job.id,
+        ReviewChangeSet(
+            expected_revision=0,
+            gap_edits=(
+                GapCardEdit(
+                    concept_id="C01",
+                    card_id=second_id,
+                    text="Mechanism ends with {{c1::the second step}}.",
+                    extra="Edited second atomic card.",
+                    selected=True,
+                ),
+            ),
+        ),
+    )
+
+    stored = {card.card_id: card for card in repository.list_gap_cards(job.id)}
+    assert set(stored) == {first_id, second_id}
+    assert stored[first_id].revision == 1
+    assert stored[second_id].revision == 2
+    assert "the second step" in stored[second_id].text
+
+
 def test_coverage_judgment_cache_round_trips_immutable_record(
     tmp_path,
 ) -> None:

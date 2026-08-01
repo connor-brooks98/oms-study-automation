@@ -48,19 +48,24 @@ reason `duplicate_of_existing` and the note ID.
 
 ## Output
 
-Strict JSON array. Every `fact_id` in `missing_facts[]` must appear in the
-output at least once, as a card or as unresolved.
+Return one strict JSON object with a `resolutions` array. Every `fact_id` in
+`missing_facts[]` must appear in `resolutions` at least once, as a generated
+card or as unresolved. A `fact_id` may repeat only when it is split into
+multiple generated cards with `split: true`; it may never appear in both a
+generated and unresolved record.
 
 ```json
 {
-  "fact_id": "C07-M1",
-  "status": "generated",
-  "text": "<b>Hereditary spherocytosis</b> shows a(n) {{c1::<b>increased</b>}} MCHC on <u>CBC</u>",
-  "extra": "Membrane loss reduces surface area while hemoglobin content is unchanged.",
-  "note_type": "AnKingOverhaul (AnKing Step Deck / AnKingMed)",
-  "source_passage_ids": ["SLD:07:0031", "TRX:07:0198"],
-  "split": false,
-  "image_needed": null
+  "resolutions": [{
+    "fact_id": "C07-M1",
+    "status": "generated",
+    "text": "<b>Hereditary spherocytosis</b> shows a(n) {{c1::<b>increased</b>}} MCHC on <u>CBC</u>",
+    "extra": "Membrane loss reduces surface area while hemoglobin content is unchanged.",
+    "note_type": "AnKingOverhaul (AnKing Step Deck / AnKingMed)",
+    "source_passage_ids": ["SLD:07:0031", "TRX:07:0198"],
+    "split": false,
+    "image_needed": null
+  }]
 }
 ```
 

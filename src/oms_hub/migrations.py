@@ -13,7 +13,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 10
+LATEST_SCHEMA_VERSION = 11
 
 
 def _ensure_column(
@@ -84,9 +84,75 @@ def _upgrade_anki_v4_columns(database: "Database") -> None:
         _ensure_column(database, "anki_gap_cards", name, definition)
 
 
+def _upgrade_gap_card_identity(database: "Database") -> None:
+    if database.engine.dialect.name != "sqlite":
+        return
+    inspector = inspect(database.engine)
+    if not inspector.has_table("anki_gap_cards"):
+        return
+    has_legacy_unique = any(
+        set(constraint.get("column_names") or ()) == {"job_id", "concept_id"}
+        for constraint in inspector.get_unique_constraints("anki_gap_cards")
+    )
+    if not has_legacy_unique:
+        return
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE anki_gap_cards_v11 (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    job_id VARCHAR(36) NOT NULL,
+                    concept_id VARCHAR(200) NOT NULL,
+                    text TEXT NOT NULL,
+                    extra TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    selected BOOLEAN NOT NULL,
+                    image_state VARCHAR(30) NOT NULL,
+                    media_filename TEXT,
+                    source_note_id INTEGER,
+                    generated_image_json TEXT NOT NULL,
+                    validation_state VARCHAR(30) NOT NULL,
+                    source_refs_json TEXT NOT NULL DEFAULT '[]',
+                    evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+                    provenance_json TEXT NOT NULL DEFAULT '{}',
+                    initial_tags_json TEXT NOT NULL DEFAULT '[]',
+                    content_hash VARCHAR(64) NOT NULL,
+                    FOREIGN KEY(job_id) REFERENCES anki_curation_jobs (id)
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO anki_gap_cards_v11 (
+                    id, job_id, concept_id, text, extra, revision, selected,
+                    image_state, media_filename, source_note_id,
+                    generated_image_json, validation_state,
+                    source_refs_json, evidence_ids_json, provenance_json,
+                    initial_tags_json, content_hash
+                )
+                SELECT
+                    id, job_id, concept_id, text, extra, revision, selected,
+                    image_state, media_filename, source_note_id,
+                    generated_image_json, validation_state,
+                    source_refs_json, evidence_ids_json, provenance_json,
+                    initial_tags_json, content_hash
+                FROM anki_gap_cards
+                """
+            )
+        )
+        connection.execute(text("DROP TABLE anki_gap_cards"))
+        connection.execute(
+            text("ALTER TABLE anki_gap_cards_v11 RENAME TO anki_gap_cards")
+        )
+
+
 def migrate_database(database: "Database") -> None:
     database.create_schema()
     _upgrade_anki_v4_columns(database)
+    _upgrade_gap_card_identity(database)
     usage_columns = {
         column["name"]
         for column in inspect(database.engine).get_columns("study_usage")
