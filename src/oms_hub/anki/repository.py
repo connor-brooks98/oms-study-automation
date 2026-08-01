@@ -132,6 +132,10 @@ ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
         CurationState.FAILED,
     },
     CurationState.GENERATING_GAPS: {
+        CurationState.RECONCILING,
+        CurationState.FAILED,
+    },
+    CurationState.RECONCILING: {
         CurationState.READY_FOR_REVIEW,
         CurationState.FAILED,
     },
@@ -168,6 +172,7 @@ ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
         CurationState.RECOMPUTING_COVERAGE,
         CurationState.DEDUPING,
         CurationState.GENERATING_GAPS,
+        CurationState.RECONCILING,
         CurationState.REMOVED,
     },
 }
@@ -190,6 +195,7 @@ _INTERRUPTED_PRE_REVIEW_STATES = {
     CurationState.RECOMPUTING_COVERAGE,
     CurationState.DEDUPING,
     CurationState.GENERATING_GAPS,
+    CurationState.RECONCILING,
 }
 
 _CLAIMABLE_STATES = {
@@ -209,6 +215,7 @@ _CLAIMABLE_STATES = {
     CurationState.RECOMPUTING_COVERAGE,
     CurationState.DEDUPING,
     CurationState.GENERATING_GAPS,
+    CurationState.RECONCILING,
 }
 
 _RETRY_STATE_BY_STAGE = {
@@ -227,6 +234,7 @@ _RETRY_STATE_BY_STAGE = {
     CurationStage.COVERAGE_RECOMPUTE: CurationState.RECOMPUTING_COVERAGE,
     CurationStage.DEDUPE: CurationState.DEDUPING,
     CurationStage.GAPS: CurationState.GENERATING_GAPS,
+    CurationStage.RECONCILIATION: CurationState.RECONCILING,
 }
 
 
@@ -709,6 +717,7 @@ class AnkiCurationRepository:
         source_evidence: Sequence[SourceEvidence] | None = None,
         gap_cards: Sequence[GapCard] | None = None,
         job_pins: dict[str, str] | None = None,
+        failure_detail: str | None = None,
     ) -> CurationJob:
         if target_state not in ALLOWED_TRANSITIONS.get(
             expected_state,
@@ -719,6 +728,8 @@ class AnkiCurationRepository:
             )
         if artifact.stage is not stage:
             raise ValueError("stage artifact does not match committed stage")
+        if (target_state is CurationState.FAILED) != (failure_detail is not None):
+            raise ValueError("failed stage commits require failure detail")
         with self.database.session() as session:
             job = self._require_job_model(session, job_id)
             if job.state != expected_state.value:
@@ -762,10 +773,12 @@ class AnkiCurationRepository:
                 != artifact.metadata
             ):
                 raise ValueError("artifact identity was reused with different content")
-            stored_stage.state = "complete"
+            stored_stage.state = (
+                "failed" if target_state is CurationState.FAILED else "complete"
+            )
             stored_stage.finished_at = utc_now()
             stored_stage.cache_hits = cache_hits
-            stored_stage.error = None
+            stored_stage.error = failure_detail
             if usage is not None:
                 stored_stage.request_id = usage.request_id
                 stored_stage.input_tokens = usage.input_tokens
@@ -803,7 +816,7 @@ class AnkiCurationRepository:
                     raise ValueError(f"job pin {name} cannot be changed")
                 setattr(job, name, value)
             job.state = target_state.value
-            job.error = None
+            job.error = failure_detail
             if target_state is CurationState.READY_FOR_REVIEW:
                 job.ready_at = utc_now()
             session.flush()

@@ -186,7 +186,8 @@ def test_recovery_releases_interrupted_pre_review_jobs_in_place(tmp_path) -> Non
         (CurationState.RETRIEVING_PASS_2, CurationState.JUDGING_PASS_2),
         (CurationState.JUDGING_PASS_2, CurationState.DEDUPING),
         (CurationState.DEDUPING, CurationState.GENERATING_GAPS),
-        (CurationState.GENERATING_GAPS, CurationState.READY_FOR_REVIEW),
+        (CurationState.GENERATING_GAPS, CurationState.RECONCILING),
+        (CurationState.RECONCILING, CurationState.READY_FOR_REVIEW),
         (CurationState.READY_FOR_REVIEW, CurationState.ENVELOPE_PENDING),
     ]:
         repository.transition(envelope_pending.id, current, target)

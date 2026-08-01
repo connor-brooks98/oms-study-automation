@@ -27,6 +27,7 @@ def test_v4_pipeline_states_are_explicit() -> None:
         "recomputing_coverage",
         "deduping",
         "generating_gaps",
+        "reconciling",
         "ready_for_review",
         "envelope_pending",
         "applying_local",

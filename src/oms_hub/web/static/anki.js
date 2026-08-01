@@ -102,6 +102,34 @@
     };
   };
 
+  const reconciliationDisplay = (summary) => {
+    if (!summary || typeof summary !== "object") {
+      return {
+        checks: "—",
+        dropRate: "—",
+        warning: "",
+        uncitedCount: 0,
+      };
+    }
+    const passed = Array.isArray(summary.passed) ? summary.passed : [];
+    const failed = Array.isArray(summary.failed) ? summary.failed : [];
+    const warned = Array.isArray(summary.warned) ? summary.warned : [];
+    const total = passed.length + failed.length + warned.length;
+    const metrics = summary.metrics || {};
+    const dropRate = Number(metrics.audit_drop_rate || 0);
+    const uncited = Array.isArray(metrics.uncited_passage_ids)
+      ? metrics.uncited_passage_ids
+      : [];
+    return {
+      checks: `${passed.length} / ${total}`,
+      dropRate: `${Math.round(dropRate * 100)}%`,
+      warning: [...failed, ...warned]
+        .map((item) => `${item.assertion_id}: ${item.message}`)
+        .join(" · "),
+      uncitedCount: uncited.length,
+    };
+  };
+
   const sourceLabel = (kind) => ({
     slides: "Lecture slides",
     transcripts: "Lecture transcript",
@@ -830,6 +858,7 @@
   const renderReview = (documentRef, review) => {
     const groups = review.groups;
     const convergence = convergenceDisplay(review.convergence);
+    const reconciliation = reconciliationDisplay(review.reconciliation);
     documentRef.querySelector("[data-count-convergence]").textContent =
       convergence.count;
     documentRef.querySelector("[data-label-convergence]").textContent =
@@ -839,6 +868,17 @@
     );
     convergenceWarning.textContent = convergence.warning;
     convergenceWarning.hidden = !convergence.warning;
+    documentRef.querySelector("[data-count-assertions]").textContent =
+      reconciliation.checks;
+    documentRef.querySelector("[data-count-audit-drop]").textContent =
+      reconciliation.dropRate;
+    documentRef.querySelector("[data-count-uncited]").textContent =
+      reconciliation.uncitedCount;
+    const reconciliationWarning = documentRef.querySelector(
+      "[data-reconciliation-warning]",
+    );
+    reconciliationWarning.textContent = reconciliation.warning;
+    reconciliationWarning.hidden = !reconciliation.warning;
     documentRef.querySelector("[data-count-pass1]").textContent =
       groups.pass_1_matches.length;
     documentRef.querySelector("[data-count-pass2]").textContent =
@@ -908,6 +948,7 @@
     "recomputing_coverage",
     "deduping",
     "generating_gaps",
+    "reconciling",
     "ready_for_review",
   ];
 
@@ -1260,6 +1301,7 @@
     parseLecturePayload,
     processingPercent,
     readableState,
+    reconciliationDisplay,
     renderProcessing,
     resolveLecture,
     resolveProviderModel,

@@ -143,6 +143,77 @@ def test_convergence_passes_are_restart_safe_and_precede_audit() -> None:
     assert recompute.next_state is CurationState.DEDUPING
 
 
+def test_reconciliation_is_restart_safe_between_gaps_and_review() -> None:
+    gaps = stage_definition(CurationState.GENERATING_GAPS)
+    reconciliation = stage_definition(CurationState.RECONCILING)
+
+    assert gaps is not None
+    assert gaps.stage is CurationStage.GAPS
+    assert gaps.next_state is CurationState.RECONCILING
+    assert reconciliation is not None
+    assert reconciliation.stage is CurationStage.RECONCILIATION
+    assert reconciliation.next_state is CurationState.READY_FOR_REVIEW
+
+
+def test_blocking_stage_commits_report_and_fails_job(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+) -> None:
+    class BlockingRunner(RecordingRunner):
+        async def run(self, context: StageContext) -> StageProduct:
+            self.calls.append(context.stage)
+            if context.stage is CurationStage.RECONCILIATION:
+                return StageProduct(
+                    kind="reconciliation_report_v2",
+                    payload={
+                        "can_render_envelope": False,
+                        "failed": [
+                            {
+                                "assertion_id": "A2",
+                                "message": "Missing facts do not reconcile",
+                            }
+                        ],
+                    },
+                    blocking_error="Reconciliation failed: A2",
+                )
+            return StageProduct(
+                kind=f"{context.stage.value}_result",
+                payload={"stage": context.stage.value},
+            )
+
+    async def scenario() -> None:
+        job = _claimed_job(repository)
+        artifacts = StageArtifactStore(tmp_path / "artifacts")
+        pipeline = CurationPipeline(
+            repository,
+            artifacts,
+            BlockingRunner(),
+            input_validator=MutableInputValidator(),
+        )
+
+        while repository.require_job(job.id).state is not CurationState.FAILED:
+            result = await pipeline.run_stage(job.id)
+            assert result is not None
+
+        failed = repository.require_job(job.id)
+        reconciliation_artifact = repository.list_stage_artifacts(job.id)[-1]
+        report = artifacts.read(reconciliation_artifact)
+        stage = repository.get_stage(job.id, CurationStage.RECONCILIATION)
+
+        assert failed.error == "Reconciliation failed: A2"
+        assert reconciliation_artifact.stage is CurationStage.RECONCILIATION
+        assert report["failed"][0]["assertion_id"] == "A2"
+        assert stage is not None
+        assert stage.state == "failed"
+
+        retried = repository.retry_job(job.id)
+
+        assert retried.state is CurationState.RECONCILING
+        assert retried.error is None
+
+    asyncio.run(scenario())
+
+
 def test_complete_pipeline_commits_one_immutable_artifact_per_stage(
     repository: AnkiCurationRepository,
     tmp_path: Path,

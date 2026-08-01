@@ -106,6 +106,11 @@ PIPELINE_STAGES = (
     PipelineStageDefinition(
         CurationState.GENERATING_GAPS,
         CurationStage.GAPS,
+        CurationState.RECONCILING,
+    ),
+    PipelineStageDefinition(
+        CurationState.RECONCILING,
+        CurationStage.RECONCILIATION,
         CurationState.READY_FOR_REVIEW,
     ),
 )
@@ -132,6 +137,7 @@ class StageProduct:
     source_evidence: tuple[SourceEvidence, ...] | None = None
     gap_cards: tuple[GapCard, ...] | None = None
     job_pins: dict[str, str] = field(default_factory=dict)
+    blocking_error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,10 +321,15 @@ class CurationPipeline:
                 product,
                 input_sha256=input_sha256,
             )
+            target_state = (
+                CurationState.FAILED
+                if product.blocking_error is not None
+                else definition.next_state
+            )
             advanced = self.repository.commit_stage(
                 job_id,
                 expected_state=definition.state,
-                target_state=definition.next_state,
+                target_state=target_state,
                 stage=definition.stage,
                 artifact=artifact,
                 usage=product.usage,
@@ -328,6 +339,7 @@ class CurationPipeline:
                 source_evidence=product.source_evidence,
                 gap_cards=product.gap_cards,
                 job_pins=product.job_pins,
+                failure_detail=product.blocking_error,
             )
         except Exception as exc:
             self.repository.fail_stage(

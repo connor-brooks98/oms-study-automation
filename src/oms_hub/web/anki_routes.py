@@ -47,6 +47,11 @@ from oms_hub.anki.gaps import (
     validate_gap_card_fields,
 )
 from oms_hub.anki.paths import LectureIdentity, target_tag
+from oms_hub.anki.reconciliation import (
+    GeneratedResolution,
+    ReconciliationInput,
+    reconcile,
+)
 from oms_hub.anki.repository import (
     AnkiCurationRepository,
     InvalidCurationTransition,
@@ -337,6 +342,7 @@ def read_anki_job(request: Request, job_id: UUID) -> dict[str, Any]:
     return {
         **_job_payload(job),
         "counts": _review_counts(repository, job_id),
+        "reconciliation": _reconciliation_summary(request, job_id),
         "envelope": (
             None
             if envelope is None
@@ -442,9 +448,20 @@ async def read_anki_review(
         in {RetrievalPass.PASS_2_RESCUE, RetrievalPass.CONVERGENCE}
     ]
     unresolved = _unresolved_payload(request, job_id, candidates, gaps, evidence)
+    reconciliation = _reconciliation_summary(request, job_id)
+    if reconciliation is not None:
+        reconciliation = _review_reconciliation_summary(
+            reconciliation,
+            gaps,
+        )
+    reconciliation_allows_review = (
+        reconciliation is None
+        or bool(reconciliation.get("can_render_envelope", False))
+    )
     return {
         "job": _job_payload(job),
         "convergence": _convergence_summary(request, job_id),
+        "reconciliation": reconciliation,
         "groups": {
             "pass_1_matches": pass_1,
             "recovered_in_pass_2": pass_2,
@@ -454,7 +471,10 @@ async def read_anki_review(
         "evidence": [_evidence_payload(item) for item in evidence],
         "tag_policy": _tag_policy_payload(_tag_policy(request)),
         "can_edit": job.state is CurationState.READY_FOR_REVIEW,
-        "can_build_envelope": (job.state is CurationState.READY_FOR_REVIEW),
+        "can_build_envelope": (
+            job.state is CurationState.READY_FOR_REVIEW
+            and reconciliation_allows_review
+        ),
     }
 
 
@@ -578,6 +598,26 @@ async def build_anki_envelope(
             status_code=status.HTTP_409_CONFLICT,
             detail="This job already has a frozen apply plan",
         )
+    gap_cards = repository.list_gap_cards(job_id)
+    reconciliation = _reconciliation_summary(request, job_id)
+    if reconciliation is not None:
+        reconciliation = _review_reconciliation_summary(
+            reconciliation,
+            gap_cards,
+        )
+    if reconciliation is not None and not reconciliation.get(
+        "can_render_envelope",
+        False,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Reconciliation failed; the apply plan is withheld",
+        )
+    if reconciliation is None and job.gap_prompt_version != "gap-v1":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A committed reconciliation report is required",
+        )
     candidates = repository.list_candidates(job_id)
     patches = _latest_tag_patches(repository.list_tag_patches(job_id))
     affected = {candidate.note_id for candidate in candidates if candidate.selected} | set(patches)
@@ -586,7 +626,7 @@ async def build_anki_envelope(
     try:
         proposals = tuple(
             _gap_proposal(card, job, evidence_ids)
-            for card in repository.list_gap_cards(job_id)
+            for card in gap_cards
             if card.selected
         )
         envelope = EnvelopeBuilder(_tag_policy(request)).build(
@@ -624,6 +664,7 @@ async def build_anki_envelope(
         "envelope_id": str(stored.id),
         "payload_sha256": stored.payload_sha256,
         "summary": _envelope_summary(envelope),
+        "reconciliation": reconciliation,
     }
 
 
@@ -1016,6 +1057,75 @@ def _convergence_summary(
         "concepts_total": len(states),
         "needs_manual_review": bool(manual_review),
         "manual_review_concept_ids": manual_review,
+    }
+
+
+def _reconciliation_summary(
+    request: Request,
+    job_id: UUID,
+) -> dict[str, Any] | None:
+    pipeline = getattr(request.app.state, "anki_curation_pipeline", None)
+    artifacts = getattr(pipeline, "artifacts", None)
+    if artifacts is None:
+        return None
+    artifact = next(
+        (
+            item
+            for item in reversed(
+                _repository(request).list_stage_artifacts(job_id)
+            )
+            if item.stage is CurationStage.RECONCILIATION
+        ),
+        None,
+    )
+    if artifact is None:
+        return None
+    try:
+        payload = artifacts.read(artifact)
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _review_reconciliation_summary(
+    committed: dict[str, Any],
+    cards: list[GapCard],
+) -> dict[str, Any]:
+    snapshot_payload = committed.get("snapshot")
+    if not isinstance(snapshot_payload, dict):
+        return committed
+    try:
+        snapshot = ReconciliationInput.model_validate(snapshot_payload)
+        selected_cards = tuple(
+            GeneratedResolution(
+                card_id=card.card_id,
+                fact_id=str(card.provenance.get("fact_id", "")).strip(),
+                text=card.text,
+            )
+            for card in cards
+            if card.selected
+            and card.card_id
+            and str(card.provenance.get("fact_id", "")).strip()
+        )
+        reviewed_snapshot = snapshot.model_copy(
+            update={"generated_cards": selected_cards}
+        )
+        report = reconcile(reviewed_snapshot)
+    except (TypeError, ValueError):
+        return {
+            **committed,
+            "failed": [
+                {
+                    "assertion_id": "A0",
+                    "message": "The committed reconciliation snapshot is invalid",
+                }
+            ],
+            "can_render_envelope": False,
+        }
+    return {
+        **committed,
+        **report.model_dump(mode="json"),
+        "snapshot": reviewed_snapshot.model_dump(mode="json"),
     }
 
 

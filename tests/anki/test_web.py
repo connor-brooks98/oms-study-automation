@@ -41,7 +41,11 @@ from oms_hub.models import LectureModel, StudyRevisionModel
 from oms_hub.study_generation.domain import GenerationKind
 from oms_hub.study_generation.outline import OutlinePdfRenderer
 from oms_hub.study_generation.repository import GenerationRepository
-from oms_hub.web.anki_routes import _convergence_summary
+from oms_hub.web.anki_routes import (
+    _convergence_summary,
+    _reconciliation_summary,
+    _review_reconciliation_summary,
+)
 
 SHA = "a" * 64
 TARGET_TAG = "AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_4"
@@ -860,6 +864,118 @@ def test_review_convergence_summary_exposes_manual_review_warning() -> None:
         "concepts_total": 2,
         "needs_manual_review": True,
         "manual_review_concept_ids": ["C02"],
+    }
+
+
+def test_review_reads_committed_reconciliation_findings() -> None:
+    job_id = UUID("00000000-0000-0000-0000-000000000001")
+    artifact = StageArtifact(
+        artifact_id="reconciliation:" + "a" * 64,
+        stage=CurationStage.RECONCILIATION,
+        kind="reconciliation_report_v2",
+        relative_path="job/reconciliation.json",
+        input_sha256="b" * 64,
+        content_sha256="c" * 64,
+    )
+    payload = {
+        "schema_name": "reconciliation_v2",
+        "passed": ["A1", "A2"],
+        "failed": [],
+        "warned": [
+            {"assertion_id": "A9", "message": "Some passages are uncited"}
+        ],
+        "can_render_envelope": True,
+        "snapshot": {"source_passage_ids": ["SLD:07:0001"]},
+    }
+    repository = SimpleNamespace(
+        list_stage_artifacts=lambda requested: (
+            [artifact] if requested == job_id else []
+        )
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                anki_repository=repository,
+                anki_curation_pipeline=SimpleNamespace(
+                    artifacts=SimpleNamespace(read=lambda item: payload)
+                ),
+            )
+        )
+    )
+
+    summary = _reconciliation_summary(request, job_id)
+
+    assert summary == payload
+
+
+def test_v2_envelope_requires_committed_reconciliation_report(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, lecture_id, revision_id, _ = prepared_app
+    job_id = _ready_job(app, lecture_id, revision_id)
+    with app.state.database.session() as session:
+        stored = session.get(AnkiCurationJobModel, str(job_id))
+        assert stored is not None
+        stored.gap_prompt_version = "gap-card-generation"
+
+    response = client.post(
+        f"/api/anki/jobs/{job_id}/envelope",
+        json={"contract_version": 1, "review_revision": 0},
+    )
+
+    assert response.status_code == 409
+    assert "reconciliation" in response.json()["detail"].casefold()
+
+
+def test_review_reconciliation_rejects_deselected_generated_fact() -> None:
+    reconciliation = {
+        "schema_name": "reconciliation_v2",
+        "passed": [f"A{number}" for number in range(1, 12)],
+        "failed": [],
+        "warned": [],
+        "can_render_envelope": True,
+        "snapshot": {
+            "concepts": [
+                {
+                    "concept_id": "C01",
+                    "missing_fact_ids": ["C01-M1"],
+                    "status": "covered",
+                    "converged": True,
+                    "cited_passage_ids": ["SLD:01:0001"],
+                }
+            ],
+            "generated_cards": [
+                {
+                    "card_id": "card-1",
+                    "fact_id": "C01-M1",
+                    "text": "The answer is {{c1::one}}.",
+                }
+            ],
+            "unresolved_fact_ids": [],
+            "expected_audit_nids": [],
+            "audit_verdicts": [],
+            "source_passage_ids": ["SLD:01:0001"],
+            "forbidden_cloze_targets": [],
+            "prompt_sync_stale": False,
+        },
+    }
+    cards = [
+        GapCard(
+            card_id="card-1",
+            concept_id="C01",
+            text="The answer is {{c1::one}}.",
+            extra="",
+            selected=False,
+            provenance={"fact_id": "C01-M1"},
+        )
+    ]
+
+    refreshed = _review_reconciliation_summary(reconciliation, cards)
+
+    assert refreshed["can_render_envelope"] is False
+    assert {item["assertion_id"] for item in refreshed["failed"]} >= {
+        "A1",
+        "A2",
     }
 
 

@@ -5,7 +5,13 @@ from types import SimpleNamespace
 
 import oms_hub.anki.stages as stages_module
 from oms_hub.anki.audit import AuditBatchV2, AuditCacheRecord
-from oms_hub.anki.domain import Candidate, CurationStage, RetrievalPass, SourceKind
+from oms_hub.anki.domain import (
+    Candidate,
+    CurationStage,
+    GapCard,
+    RetrievalPass,
+    SourceKind,
+)
 from oms_hub.anki.gaps import GapBatchV2
 from oms_hub.anki.judgment import JudgmentCacheRecord
 from oms_hub.anki.normalize import NormalizedNote
@@ -1045,3 +1051,131 @@ def test_gap_stage_routes_on_audited_missing_facts_not_display_outcome() -> None
     assert product.gap_cards is not None
     assert len(product.gap_cards) == 1
     assert product.gap_cards[0].provenance["fact_id"] == "C01-M1"
+
+
+class ReconciliationStageRepository:
+    def __init__(self, cards: tuple[GapCard, ...]) -> None:
+        self.cards = cards
+
+    def list_candidates(self, job_id: object) -> list[Candidate]:
+        del job_id
+        return []
+
+    def list_gap_cards(self, job_id: object) -> list[GapCard]:
+        del job_id
+        return list(self.cards)
+
+
+def _reconciliation_context(
+    *,
+    prompt_sync_stale: bool,
+) -> tuple[SimpleNamespace, SourcePassage]:
+    passage, ledger, _, _ = _audit_stage_fixture()
+    judgment = CoverageJudgmentV2(
+        concept_id="C01",
+        supporting_note_ids=(),
+        missing_facts=(
+            MissingFactV2(
+                fact_id="C01-M1",
+                statement="Iron deficiency causes low ferritin.",
+                passage_ids=(passage.source_id,),
+            ),
+        ),
+        rationale="No existing card covers ferritin.",
+    )
+    return (
+        SimpleNamespace(
+            job=SimpleNamespace(id="job-1"),
+            prior_payloads={
+                CurationStage.PREFLIGHT: {
+                    "prompt_sync_stale": prompt_sync_stale,
+                    "prompt_snapshot": [],
+                },
+                CurationStage.SOURCE_INDEX: {
+                    "passages": [stages_module._passage_payload(passage)]
+                },
+                CurationStage.LCL: {
+                    "ledger": ledger.model_dump(mode="json"),
+                    "schema_name": "lcl_v2",
+                },
+                CurationStage.CONVERGENCE_PASS_5: {
+                    "concepts": [
+                        {
+                            "concept_id": "C01",
+                            "passes_run": 3,
+                            "seen_note_ids": [],
+                            "growth": [1.0, 0.1, 0.0],
+                            "converged": True,
+                        }
+                    ]
+                },
+                CurationStage.CARD_AUDIT: {"verdicts": []},
+                CurationStage.COVERAGE_RECOMPUTE: {
+                    "schema_name": "coverage_v2",
+                    "judgments": {
+                        "C01": {
+                            "judgment": judgment.model_dump(mode="json")
+                        }
+                    },
+                },
+                CurationStage.GAPS: {
+                    "schema_name": "gap_cards_v2",
+                    "unresolved": [],
+                    "forbidden_cloze_targets": ["Iron Deficiency Anemia"],
+                },
+            },
+        ),
+        passage,
+    )
+
+
+def test_reconciliation_stage_allows_warning_only_report() -> None:
+    context, _ = _reconciliation_context(prompt_sync_stale=True)
+    runner = CurationServicesRunner.__new__(CurationServicesRunner)
+    runner.repository = ReconciliationStageRepository(
+        (
+            GapCard(
+                card_id="gap-1",
+                concept_id="C01",
+                text="<b>Iron deficiency</b> causes {{c1::<b>low ferritin</b>}}.",
+                extra="Ferritin reflects depleted stores.",
+                provenance={"fact_id": "C01-M1"},
+            ),
+        )
+    )
+
+    product = asyncio.run(runner._reconciliation(context))
+
+    assert product.blocking_error is None
+    assert product.payload["can_render_envelope"] is True
+    assert [item["assertion_id"] for item in product.payload["warned"]] == [
+        "A11"
+    ]
+    assert product.payload["metrics"] == {
+        "audit_keep": 0,
+        "audit_drop": 0,
+        "audit_uncertain": 0,
+        "audit_drop_rate": 0.0,
+        "unresolved_concepts": 0,
+        "uncited_passage_ids": [],
+        "prompt_sync_stale": True,
+    }
+    assert product.payload["snapshot"]["generated_cards"][0]["fact_id"] == (
+        "C01-M1"
+    )
+
+
+def test_reconciliation_stage_blocks_missing_fact_partition() -> None:
+    context, _ = _reconciliation_context(prompt_sync_stale=False)
+    runner = CurationServicesRunner.__new__(CurationServicesRunner)
+    runner.repository = ReconciliationStageRepository(())
+
+    product = asyncio.run(runner._reconciliation(context))
+
+    assert product.payload["can_render_envelope"] is False
+    assert {item["assertion_id"] for item in product.payload["failed"]} >= {
+        "A1",
+        "A2",
+        "A4",
+    }
+    assert product.blocking_error == "Reconciliation failed: A1, A2, A4"

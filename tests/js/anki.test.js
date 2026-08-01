@@ -107,6 +107,9 @@ test("audit and coverage recompute advance processing progress", () => {
   const audited = anki.processingPercent("auditing_candidates");
   const recomputed = anki.processingPercent("recomputing_coverage");
   const deduped = anki.processingPercent("deduping");
+  const generated = anki.processingPercent("generating_gaps");
+  const reconciled = anki.processingPercent("reconciling");
+  const review = anki.processingPercent("ready_for_review");
 
   assert.ok(judged < passThree);
   assert.ok(passThree < passFour);
@@ -114,6 +117,31 @@ test("audit and coverage recompute advance processing progress", () => {
   assert.ok(passFive < audited);
   assert.ok(audited < recomputed);
   assert.ok(recomputed < deduped);
+  assert.ok(deduped < generated);
+  assert.ok(generated < reconciled);
+  assert.ok(reconciled < review);
+});
+
+test("reconciliation display summarizes checks and warnings", () => {
+  const display = anki.reconciliationDisplay({
+    passed: ["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A10"],
+    failed: [],
+    warned: [
+      { assertion_id: "A9", message: "One or more source passages are uncited" },
+      { assertion_id: "A11", message: "The run used a stale prompt checkout" },
+    ],
+    metrics: {
+      audit_drop_rate: 0.27,
+      uncited_passage_ids: ["SLD:07:0004", "TRX:07:0012"],
+    },
+  });
+
+  assert.deepEqual(display, {
+    checks: "9 / 11",
+    dropRate: "27%",
+    warning: "A9: One or more source passages are uncited · A11: The run used a stale prompt checkout",
+    uncitedCount: 2,
+  });
 });
 
 test("candidate review uses the blind audit instead of fake confidence", () => {

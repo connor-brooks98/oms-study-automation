@@ -59,6 +59,13 @@ from oms_hub.anki.prompts import (
     PromptSynchronizer,
     StaticPromptSynchronizer,
 )
+from oms_hub.anki.reconciliation import (
+    AuditResolution,
+    ConceptResolution,
+    GeneratedResolution,
+    ReconciliationInput,
+    reconcile,
+)
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.anki.rescue import (
     RescueLocalization,
@@ -270,6 +277,7 @@ class CurationServicesRunner:
             CurationStage.COVERAGE_RECOMPUTE: self._coverage_recompute,
             CurationStage.DEDUPE: self._finalize_outcomes,
             CurationStage.GAPS: self._generate_gaps,
+            CurationStage.RECONCILIATION: self._reconciliation,
         }
         return await handlers[context.stage](context)
 
@@ -1402,6 +1410,48 @@ class CurationServicesRunner:
             usage=_v2_gap_usage(results),
         )
 
+    async def _reconciliation(
+        self,
+        context: StageContext,
+    ) -> StageProduct:
+        gaps_payload = _payload(context, CurationStage.GAPS)
+        if gaps_payload.get("schema_name") != "gap_cards_v2":
+            return StageProduct(
+                kind="reconciliation_compatibility_v1",
+                payload={
+                    "schema_name": "reconciliation_v1_compatibility",
+                    "can_render_envelope": True,
+                    "passed": [],
+                    "failed": [],
+                    "warned": [
+                        {
+                            "assertion_id": "legacy_v1",
+                            "message": (
+                                "Legacy V1 run cannot provide V2 reconciliation"
+                            ),
+                        }
+                    ],
+                    "snapshot": None,
+                },
+            )
+        snapshot = _reconciliation_snapshot(context, self.repository)
+        report = reconcile(snapshot)
+        failed_ids = [finding.assertion_id for finding in report.failed]
+        return StageProduct(
+            kind="reconciliation_report_v2",
+            payload={
+                "schema_name": "reconciliation_v2",
+                **report.model_dump(mode="json"),
+                "snapshot": snapshot.model_dump(mode="json"),
+                "metrics": _reconciliation_metrics(snapshot),
+            },
+            blocking_error=(
+                "Reconciliation failed: " + ", ".join(failed_ids)
+                if failed_ids
+                else None
+            ),
+        )
+
     async def _judge_groups(
         self,
         context: StageContext,
@@ -2197,6 +2247,152 @@ def _gap_card_from_proposal(
             )
         ),
     )
+
+
+def _reconciliation_snapshot(
+    context: StageContext,
+    repository: AnkiCurationRepository,
+) -> ReconciliationInput:
+    ledger = _ledger(context)
+    gaps_payload = _payload(context, CurationStage.GAPS)
+    raw_unresolved = gaps_payload.get("unresolved", [])
+    if not isinstance(raw_unresolved, list):
+        raise PinnedInputChanged("Gap unresolved records are malformed")
+    unresolved_fact_ids = tuple(
+        str(item["fact_id"])
+        for item in raw_unresolved
+        if isinstance(item, dict) and item.get("fact_id")
+    )
+    cards = tuple(repository.list_gap_cards(context.job.id))
+    generated_cards = tuple(
+        GeneratedResolution(
+            card_id=card.card_id,
+            fact_id=str(card.provenance.get("fact_id", "")),
+            text=card.text,
+        )
+        for card in cards
+        if card.card_id and card.provenance.get("fact_id")
+    )
+    generated_fact_ids = {card.fact_id for card in generated_cards}
+    unresolved_ids = set(unresolved_fact_ids)
+
+    convergence_payload = _payload(
+        context,
+        CurationStage.CONVERGENCE_PASS_5,
+    )
+    raw_convergence = convergence_payload.get("concepts", [])
+    if not isinstance(raw_convergence, list):
+        raise PinnedInputChanged("Convergence artifact is malformed")
+    convergence_by_id = {
+        str(item["concept_id"]): bool(item.get("converged", False))
+        for item in raw_convergence
+        if isinstance(item, dict) and item.get("concept_id")
+    }
+
+    concepts: list[ConceptResolution] = []
+    for concept in ledger.concepts:
+        judgment = _coverage_judgment(
+            context,
+            CurationStage.COVERAGE_RECOMPUTE,
+            concept.concept_id,
+        )
+        missing_fact_ids = tuple(
+            fact.fact_id for fact in judgment.missing_fact_records
+        )
+        missing = set(missing_fact_ids)
+        resolved = generated_fact_ids | unresolved_ids
+        status = (
+            "covered"
+            if not missing or missing <= generated_fact_ids
+            else "intentional_gap"
+            if missing <= resolved
+            else "incomplete"
+        )
+        concepts.append(
+            ConceptResolution(
+                concept_id=concept.concept_id,
+                missing_fact_ids=missing_fact_ids,
+                status=status,
+                converged=convergence_by_id.get(
+                    concept.concept_id,
+                    False,
+                ),
+                cited_passage_ids=concept.source_passage_ids,
+            )
+        )
+
+    audit_payload = _payload(context, CurationStage.CARD_AUDIT)
+    raw_verdicts = audit_payload.get("verdicts", [])
+    if not isinstance(raw_verdicts, list):
+        raise PinnedInputChanged("Card-audit artifact is malformed")
+    audit_verdicts = tuple(
+        AuditResolution(
+            nid=int(item["nid"]),
+            verdict=cast(
+                Literal["keep", "drop", "uncertain"],
+                str(item["verdict"]),
+            ),
+        )
+        for item in raw_verdicts
+        if isinstance(item, dict)
+    )
+    candidates = tuple(repository.list_candidates(context.job.id))
+    intentionally_uncited = {
+        item.passage_id for item in ledger.intentionally_uncited
+    }
+    source_passage_ids = tuple(
+        passage.source_id
+        for passage in _source_passages(context)
+        if passage.source_kind is not SourceKind.SUMMARY
+        and passage.source_id not in intentionally_uncited
+    )
+    raw_forbidden = gaps_payload.get("forbidden_cloze_targets", [])
+    if not isinstance(raw_forbidden, list):
+        raise PinnedInputChanged("Gap forbidden-cloze targets are malformed")
+    preflight = _payload(context, CurationStage.PREFLIGHT)
+    return ReconciliationInput(
+        concepts=tuple(concepts),
+        generated_cards=generated_cards,
+        unresolved_fact_ids=unresolved_fact_ids,
+        expected_audit_nids=tuple(
+            candidate.note_id for candidate in candidates
+        ),
+        audit_verdicts=audit_verdicts,
+        source_passage_ids=source_passage_ids,
+        forbidden_cloze_targets=tuple(str(value) for value in raw_forbidden),
+        prompt_sync_stale=bool(preflight.get("prompt_sync_stale", False)),
+    )
+
+
+def _reconciliation_metrics(
+    snapshot: ReconciliationInput,
+) -> dict[str, Any]:
+    audit_keep = sum(item.verdict == "keep" for item in snapshot.audit_verdicts)
+    audit_drop = sum(item.verdict == "drop" for item in snapshot.audit_verdicts)
+    audit_uncertain = sum(
+        item.verdict == "uncertain" for item in snapshot.audit_verdicts
+    )
+    audit_total = len(snapshot.audit_verdicts)
+    unresolved = set(snapshot.unresolved_fact_ids)
+    cited = {
+        passage_id
+        for concept in snapshot.concepts
+        for passage_id in concept.cited_passage_ids
+    }
+    return {
+        "audit_keep": audit_keep,
+        "audit_drop": audit_drop,
+        "audit_uncertain": audit_uncertain,
+        "audit_drop_rate": audit_drop / audit_total if audit_total else 0.0,
+        "unresolved_concepts": sum(
+            bool(set(concept.missing_fact_ids) & unresolved)
+            for concept in snapshot.concepts
+        ),
+        "uncited_passage_ids": sorted(
+            set(snapshot.source_passage_ids) - cited
+        ),
+        "prompt_sync_stale": snapshot.prompt_sync_stale,
+    }
 
 
 def _proposal_payload(proposal: GapCardProposal) -> dict[str, Any]:
