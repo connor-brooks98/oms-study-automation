@@ -15,8 +15,8 @@ from oms_hub.anki.ankiconnect import AnkiConnectClient
 from oms_hub.anki.apply import ApplyCoordinator, ApplyGateway
 from oms_hub.anki.index import AnkiIndex
 from oms_hub.anki.pipeline import CurationPipeline, StageArtifactStore
+from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
 from oms_hub.anki.prompts import (
-    AnkiPromptLibrary,
     GitPromptSynchronizer,
     PromptSynchronizer,
     StaticPromptSynchronizer,
@@ -546,6 +546,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         else:
             prompt_sync = StaticPromptSynchronizer()
+        prompt_catalog = AnkiPromptCatalogService(
+            lambda: resolved.anki_prompt_directory,
+        )
         runner = CurationServicesRunner(
             runtime=runtime,
             repository=app.state.anki_repository,
@@ -560,7 +563,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             embedder=embedder,
             focused_retrieval_limit=(resolved.anki_focused_retrieval_limit),
             global_retrieval_limit=resolved.anki_global_retrieval_limit,
-            prompts=AnkiPromptLibrary(resolved.anki_prompt_directory),
+            prompts=prompt_catalog,
             prompt_sync=prompt_sync,
         )
         validator = PinnedCurationInputValidator(
@@ -583,6 +586,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.anki_companion_index = companion
         app.state.anki_semantic_store = semantic_store
         app.state.anki_source_index = source_index
+        app.state.anki_prompt_catalog = prompt_catalog
         app.state.anki_curation_pipeline = pipeline
         app.state.anki_apply_coordinator = ApplyCoordinator(
             app.state.anki_repository,

@@ -15,7 +15,8 @@ from oms_hub.anki.domain import (
 from oms_hub.anki.gaps import GapBatchV2
 from oms_hub.anki.judgment import JudgmentCacheRecord
 from oms_hub.anki.normalize import NormalizedNote
-from oms_hub.anki.prompts import AnkiPromptLibrary, StaticPromptSynchronizer
+from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
+from oms_hub.anki.prompts import StaticPromptSynchronizer
 from oms_hub.anki.sources import SourcePassage
 from oms_hub.anki.stages import CurationServicesRunner
 from oms_hub.anki.v2_contracts import (
@@ -45,7 +46,7 @@ class ReadyRuntime:
 def test_preflight_snapshots_all_prompts_for_the_job() -> None:
     runner = CurationServicesRunner.__new__(CurationServicesRunner)
     runner.runtime = ReadyRuntime()
-    runner.prompts = AnkiPromptLibrary()
+    runner.prompts = AnkiPromptCatalogService()
     runner.prompt_sync = StaticPromptSynchronizer()
     context = SimpleNamespace(
         job=SimpleNamespace(

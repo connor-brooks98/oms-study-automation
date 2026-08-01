@@ -54,11 +54,8 @@ from oms_hub.anki.pipeline import (
     StageContext,
     StageProduct,
 )
-from oms_hub.anki.prompts import (
-    AnkiPromptLibrary,
-    PromptSynchronizer,
-    StaticPromptSynchronizer,
-)
+from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
+from oms_hub.anki.prompts import PromptSynchronizer, StaticPromptSynchronizer
 from oms_hub.anki.reconciliation import (
     AuditResolution,
     ConceptResolution,
@@ -241,7 +238,7 @@ class CurationServicesRunner:
         embedder: EmbeddingClient,
         focused_retrieval_limit: int,
         global_retrieval_limit: int,
-        prompts: AnkiPromptLibrary | None = None,
+        prompts: AnkiPromptCatalogService | None = None,
         prompt_sync: PromptSynchronizer | None = None,
     ) -> None:
         self.runtime = runtime
@@ -257,7 +254,7 @@ class CurationServicesRunner:
             global_limit=global_retrieval_limit,
         )
         self.embedder = embedder
-        self.prompts = prompts or AnkiPromptLibrary()
+        self.prompts = prompts or AnkiPromptCatalogService()
         self.prompt_sync = prompt_sync or StaticPromptSynchronizer()
 
     async def run(self, context: StageContext) -> StageProduct:
@@ -292,16 +289,11 @@ class CurationServicesRunner:
                 result.blocking_reason or "Local Anki preflight failed"
             )
         sync_result = await asyncio.to_thread(self.prompt_sync.sync)
-        prompt_ids = (
-            context.job.lcl_prompt_version,
-            context.job.judgment_rubric_version,
-            "card-relevance-audit",
-            context.job.gap_prompt_version,
-            "paraphrase-expansion",
-        )
         prompt_snapshot = await asyncio.to_thread(
-            self.prompts.load_many,
-            prompt_ids,
+            self.prompts.load_job_snapshot,
+            lcl_id=context.job.lcl_prompt_version,
+            coverage_id=context.job.judgment_rubric_version,
+            gap_id=context.job.gap_prompt_version,
         )
         return StageProduct(
             kind="anki_preflight",
