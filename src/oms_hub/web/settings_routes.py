@@ -118,6 +118,12 @@ def settings_page(request: Request) -> HTMLResponse:
                 }
                 for kind in PromptKind
             ),
+            "anki_prompt_directory": (
+                GenerationRepository(
+                    request.app.state.database
+                ).anki_prompt_directory()
+                or str(request.app.state.settings.anki_prompt_directory or "")
+            ),
         },
     )
 

@@ -107,6 +107,15 @@
     String(value || "").trim() ? "save" : "select"
   );
 
+  const catalogMessage = (result) => {
+    const count = Number(result?.choice_count || 0);
+    const issues = Array.isArray(result?.issues) ? result.issues : [];
+    const choiceText = `${count} prompt ${count === 1 ? "choice is" : "choices are"} ready.`;
+    if (!issues.length) return choiceText;
+    const warning = issues.map((item) => item.message).join(" · ");
+    return `${choiceText} ${issues.length} ${issues.length === 1 ? "warning" : "warnings"}: ${warning}`;
+  };
+
   const setTestState = (button, state) => {
     const presentation = testPresentation(state);
     button.classList.remove("is-testing", "is-connected", "is-failed");
@@ -289,6 +298,62 @@
       });
     });
 
+    const ankiPromptCard = documentRef.querySelector("[data-anki-prompt-directory]");
+    if (ankiPromptCard) {
+      const input = ankiPromptCard.querySelector("[data-anki-prompt-directory-path]");
+      const action = ankiPromptCard.querySelector("[data-save-anki-prompt-directory]");
+      const testButton = ankiPromptCard.querySelector("[data-test-anki-prompt-directory]");
+      const message = ankiPromptCard.querySelector("[data-anki-prompt-directory-message]");
+      const updateAction = () => {
+        action.textContent = promptPathAction(input.value) === "select"
+          ? "Select Folder"
+          : "Save Path";
+      };
+      input.addEventListener("input", updateAction);
+      action.addEventListener("click", async () => {
+        try {
+          if (promptPathAction(input.value) === "select") {
+            const result = await postJson(
+              fetchImpl,
+              "/settings/anki/prompts/directory/select",
+              {},
+              token(),
+            );
+            if (!result.selected) {
+              message.textContent = "No prompt folder was selected.";
+              return;
+            }
+            input.value = result.path;
+            updateAction();
+            message.textContent = "Folder selected. Click Save Path to keep it.";
+            return;
+          }
+          await postJson(
+            fetchImpl,
+            "/settings/anki/prompts/directory",
+            { path: input.value },
+            token(),
+          );
+          message.textContent = "Anki prompt directory saved.";
+        } catch (error) {
+          message.textContent = error.message;
+        }
+      });
+      testButton.addEventListener("click", async () => {
+        try {
+          const result = await postJson(
+            fetchImpl,
+            "/settings/anki/prompts/directory/test",
+            {},
+            token(),
+          );
+          message.textContent = catalogMessage(result);
+        } catch (error) {
+          message.textContent = error.message;
+        }
+      });
+    }
+
     const notebookCard = documentRef.querySelector("[data-notebook-card]");
     if (notebookCard) {
       const connectButton = notebookCard.querySelector("[data-notebook-connect]");
@@ -371,6 +436,7 @@
   };
 
   const api = {
+    catalogMessage,
     csrfToken,
     diagnosticLines,
     getJson,

@@ -85,3 +85,47 @@ def test_saved_prompt_path_changes_action_to_save_path(tmp_path):
 
     assert page.text.count("Select Path") == 1
     assert page.text.count("Save Path") == 1
+
+
+class FakePromptDirectoryPicker:
+    def __init__(self, selected):
+        self.selected = selected
+
+    def select_directory(self):
+        return self.selected
+
+
+def test_anki_prompt_directory_can_be_selected_saved_and_tested(tmp_path):
+    client, app = prepared_client(tmp_path)
+    directory = tmp_path / "Main Vault" / "Anki AI Prompts"
+    directory.mkdir(parents=True)
+    for filename, prompt_id, schema in (
+        ("lcl.md", "lcl", "lcl_v2"),
+        ("coverage.md", "coverage", "coverage_v2"),
+        ("gap.md", "gap", "gap_cards_v2"),
+    ):
+        (directory / filename).write_text(
+            f'---\nid: {prompt_id}\nversion: "2.0"\nschema: {schema}\n---\n\nPrompt.',
+            encoding="utf-8",
+        )
+    app.state.prompt_directory_picker = FakePromptDirectoryPicker(directory)
+
+    selected = client.post("/settings/anki/prompts/directory/select", json={})
+    saved = client.post(
+        "/settings/anki/prompts/directory",
+        json={"path": str(directory)},
+    )
+    tested = client.post("/settings/anki/prompts/directory/test")
+
+    assert selected.json()["path"] == str(directory)
+    assert saved.status_code == 200
+    assert tested.json()["state"] == "valid"
+    assert tested.json()["choice_count"] == 3
+    assert app.state.generation_repository.anki_prompt_directory() == str(directory)
+
+
+def test_settings_renders_one_anki_prompt_directory_control(tmp_path):
+    client, _ = prepared_client(tmp_path)
+    page = client.get("/settings")
+    assert page.text.count("data-anki-prompt-directory>") == 1
+    assert "Select Folder" in page.text

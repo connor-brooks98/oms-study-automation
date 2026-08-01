@@ -74,7 +74,10 @@ from oms_hub.study_generation.notebook_connection import (
     retire_google_docs_credentials,
 )
 from oms_hub.study_generation.outline import OutlineService
-from oms_hub.study_generation.path_picker import SystemPromptPathPicker
+from oms_hub.study_generation.path_picker import (
+    SystemPromptDirectoryPicker,
+    SystemPromptPathPicker,
+)
 from oms_hub.study_generation.prompts import PromptFileService
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.service import GenerationService
@@ -87,6 +90,7 @@ from oms_hub.web.anki_agent_routes import router as anki_agent_router
 from oms_hub.web.anki_routes import router as anki_router
 from oms_hub.web.artifact_routes import router as artifact_router
 from oms_hub.web.generation_routes import (
+    anki_prompt_router,
     lecture_router,
     notebook_router,
 )
@@ -429,6 +433,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.catalog_repository = CatalogRepository(database)
     app.state.ingestion_repository = IngestionRepository(database)
     app.state.generation_repository = GenerationRepository(database)
+    prompt_fallback = resolved.anki_prompt_directory
+
+    def active_anki_prompt_directory() -> Path | None:
+        saved = app.state.generation_repository.anki_prompt_directory()
+        return Path(saved) if saved else prompt_fallback
+
+    app.state.anki_prompt_catalog = AnkiPromptCatalogService(
+        active_anki_prompt_directory,
+    )
     notebook_storage_path = resolved.data_dir / "google" / "notebooklm-storage.json"
     app.state.notebook_auth = NotebookCLIAuth(notebook_storage_path)
     app.state.notebook_connection = NotebookConnectionService(
@@ -436,6 +449,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.notebook_auth,
     )
     app.state.prompt_path_picker = SystemPromptPathPicker()
+    app.state.prompt_directory_picker = SystemPromptDirectoryPicker()
     app.state.upload_staging = StagingService(
         resolved.data_dir / "staging",
         resolved.max_upload_file_bytes,
@@ -546,9 +560,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         else:
             prompt_sync = StaticPromptSynchronizer()
-        prompt_catalog = AnkiPromptCatalogService(
-            lambda: resolved.anki_prompt_directory,
-        )
+        prompt_catalog = app.state.anki_prompt_catalog
         runner = CurationServicesRunner(
             runtime=runtime,
             repository=app.state.anki_repository,
@@ -615,6 +627,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(upload_router)
     app.include_router(quarantine_router)
     app.include_router(generation_router)
+    app.include_router(anki_prompt_router)
     app.include_router(notebook_router)
     app.include_router(lecture_router)
     app.include_router(public_quiz_router)

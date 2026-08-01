@@ -164,3 +164,11 @@ test("prompt action changes from select to save after a path is chosen", () => {
     "save",
   );
 });
+
+test("catalog status reports valid choices and warnings", () => {
+  assert.equal(settings.catalogMessage({
+    state: "valid",
+    choice_count: 3,
+    issues: [{ message: "bad.md: unsupported schema" }],
+  }), "3 prompt choices are ready. 1 warning: bad.md: unsupported schema");
+});

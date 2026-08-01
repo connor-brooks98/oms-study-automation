@@ -45,6 +45,7 @@ _ACTIVE_STATES = {
     GenerationState.RUNNING.value,
     GenerationState.PAUSED.value,
 }
+_ANKI_PROMPT_DIRECTORY_KEY = "anki_curation_prompt_directory"
 
 
 class GenerationRepository:
@@ -93,6 +94,32 @@ class GenerationRepository:
     def prompt_path(self, kind: PromptKind) -> str | None:
         with self.database.session() as session:
             model = session.get(StudyPromptSettingModel, kind.value)
+            return model.path if model is not None and model.path else None
+
+    def set_anki_prompt_directory(self, path: str) -> None:
+        normalized = path.strip()
+        if not normalized:
+            raise ValueError("Anki prompt directory cannot be empty")
+        selected = Path(normalized)
+        if not selected.is_dir():
+            raise ValueError("Anki prompt directory is unavailable")
+        with self.database.session() as session:
+            model = session.get(StudyPromptSettingModel, _ANKI_PROMPT_DIRECTORY_KEY)
+            if model is None:
+                session.add(
+                    StudyPromptSettingModel(
+                        kind=_ANKI_PROMPT_DIRECTORY_KEY,
+                        path=str(selected),
+                    )
+                )
+            else:
+                model.path = str(selected)
+                model.last_sha256 = None
+                model.last_modified_at = None
+
+    def anki_prompt_directory(self) -> str | None:
+        with self.database.session() as session:
+            model = session.get(StudyPromptSettingModel, _ANKI_PROMPT_DIRECTORY_KEY)
             return model.path if model is not None and model.path else None
 
     def record_prompt_validation(

@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
 from oms_hub.study_generation.domain import (
     GenerationJob,
     GenerationKind,
@@ -14,7 +15,7 @@ from oms_hub.study_generation.notebook_connection import (
     NotebookConnectionService,
     NotebookConnectionStatus,
 )
-from oms_hub.study_generation.path_picker import PromptPathPicker
+from oms_hub.study_generation.path_picker import PromptDirectoryPicker, PromptPathPicker
 from oms_hub.study_generation.prompts import PromptConfigurationError, PromptFileService
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.service import (
@@ -23,10 +24,53 @@ from oms_hub.study_generation.service import (
 )
 
 router = APIRouter(prefix="/settings/generation")
+anki_prompt_router = APIRouter(prefix="/settings/anki/prompts")
 
 
 class PromptPathUpdate(BaseModel):
     path: Annotated[str, Field(min_length=1, max_length=2048)]
+
+
+@anki_prompt_router.post("/directory")
+def save_anki_prompt_directory(
+    request: Request,
+    update: PromptPathUpdate,
+) -> JSONResponse:
+    try:
+        _repository(request).set_anki_prompt_directory(update.path)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return JSONResponse(
+        {"path": update.path.strip()},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@anki_prompt_router.post("/directory/select")
+def select_anki_prompt_directory(request: Request) -> JSONResponse:
+    picker = cast(PromptDirectoryPicker, request.app.state.prompt_directory_picker)
+    try:
+        selected = picker.select_directory()
+    except RuntimeError as error:
+        raise HTTPException(409, str(error)) from error
+    return JSONResponse(
+        {
+            "path": str(selected) if selected is not None else None,
+            "selected": selected is not None,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@anki_prompt_router.post("/directory/test")
+def test_anki_prompt_directory(request: Request) -> JSONResponse:
+    catalog = cast(
+        AnkiPromptCatalogService,
+        request.app.state.anki_prompt_catalog,
+    ).catalog()
+    payload = catalog.payload()
+    payload["state"] = "valid" if catalog.ready else "invalid"
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 
 def _repository(request: Request) -> GenerationRepository:
