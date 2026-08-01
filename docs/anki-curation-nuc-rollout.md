@@ -329,7 +329,31 @@ Stop here and obtain approval of both copied-profile report files. The legacy
 agent package, endpoints, configuration, tests, and packaging entries must not
 be removed before that approval.
 
-## 12. Roll back
+## 12. Prompt directory and review acceptance
+
+- [ ] Open Settings, choose the Obsidian `Anki AI Prompts` directory on the
+  NUC, save it, and run **Test / Refresh**.
+- [ ] Confirm the catalog reports at least one valid LCL, coverage, and
+  card-generation prompt and that invalid Markdown files are warnings rather
+  than selectable options.
+- [ ] Open Anki curation and confirm the three prompt selectors show the
+  expected ID, version, and resolved hash.
+- [ ] Add at least two indexed decks, reorder them, and confirm the displayed
+  order is retained when the run is created.
+- [ ] Select a lecture and confirm slides, transcript, and NotebookLM outline
+  each show an independent green check; verify a missing source shows a red X
+  and keeps Start curation disabled.
+- [ ] Confirm the generated-card deck and lecture tag are populated as normal,
+  editable text.
+- [ ] Complete a copied-profile run and verify **Final proposed changes** opens
+  before **Candidates**.
+- [ ] Search Candidates by card text, note ID, extra text, and a hidden tag.
+- [ ] Change one candidate selection and confirm the Final count/list updates
+  before saving the review.
+- [ ] Open a card's collapsed **Tags** disclosure and confirm source-managed
+  tags remain locked while permitted lecture tags remain editable.
+
+## 13. Roll back
 
 Stop Study Hub, switch to the recorded earlier commit, reinstall, and restart.
 If an acceptance write must be discarded, delete only the disposable Anki
