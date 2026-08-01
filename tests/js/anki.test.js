@@ -69,6 +69,36 @@ test("curation requires slides, transcript, and NotebookLM outline", () => {
   }), false);
 });
 
+test("lecture source state always includes slides transcript and outline", () => {
+  assert.deepEqual(anki.sourceStatuses(null), {
+    slides: "neutral",
+    transcripts: "neutral",
+    summary: "neutral",
+  });
+  assert.deepEqual(anki.sourceStatuses({
+    source_status: { slides: true, transcripts: false, summary: true },
+  }), {
+    slides: "ready",
+    transcripts: "missing",
+    summary: "ready",
+  });
+});
+
+test("ordered deck helpers preserve selection priority", () => {
+  assert.deepEqual(
+    anki.addDeckPriority(["AnKing"], "Sketchy"),
+    ["AnKing", "Sketchy"],
+  );
+  assert.deepEqual(
+    anki.addDeckPriority(["AnKing"], "anking"),
+    ["AnKing"],
+  );
+  assert.deepEqual(
+    anki.moveDeckPriority(["AnKing", "Sketchy"], 1, -1),
+    ["Sketchy", "AnKing"],
+  );
+});
+
 test("dependent selector options stay inside the selected pathway", () => {
   assert.deepEqual(anki.courseOptions(lectures), ["Heme Lymph", "Neuro"]);
   assert.deepEqual(anki.examOptions(lectures, "Heme Lymph"), [1, 3]);

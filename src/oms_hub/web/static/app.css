@@ -808,6 +808,15 @@ textarea {
   background: var(--accent);
   font: 700 .7rem/1 sans-serif;
 }
+.anki-source-option.is-ready { border-color: color-mix(in srgb, var(--complete) 45%, var(--border)); }
+.anki-source-option.is-ready .anki-source-lock { color: var(--complete); }
+.anki-source-option.is-missing { border-color: color-mix(in srgb, var(--failed) 45%, var(--border)); }
+.anki-source-option.is-missing .anki-source-lock { color: var(--failed); }
+.anki-source-option.is-neutral { opacity: .72; }
+.anki-deck-adder { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .65rem; }
+.anki-deck-priority { display: grid; gap: .45rem; margin: .7rem 0 0; padding: 0; list-style: none; }
+.anki-deck-priority-item { display: flex; align-items: center; gap: .45rem; }
+.anki-deck-priority-item > span { flex: 1; min-width: 0; }
 .anki-source-option span { display: grid; min-width: 0; gap: .15rem; }
 .anki-source-option strong { color: var(--text); font-size: .78rem; }
 .anki-source-option small {

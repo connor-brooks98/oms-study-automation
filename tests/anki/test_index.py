@@ -36,6 +36,7 @@ def _note(
     *,
     tags: tuple[str, ...],
     media: tuple[MediaReference, ...] = (),
+    deck_names: tuple[str, ...] = (),
 ) -> NormalizedNote:
     return NormalizedNote(
         note_id=note_id,
@@ -48,6 +49,7 @@ def _note(
         media=media,
         token_signature=" ".join(sorted(text.split())),
         content_sha256=f"{note_id:064x}",
+        deck_names=deck_names,
     )
 
 
@@ -93,6 +95,20 @@ def test_rebuild_populates_hybrid_index_and_queries(tmp_path: Path) -> None:
         hit.note_id for hit in index.search_semantic("hemostasis", domain="Heme")
     ] == [101, 102]
     assert [hit.note_id for hit in index.search_semantic("infection")] == [103, 101, 102]
+
+
+def test_list_deck_names_returns_distinct_case_insensitive_order(tmp_path: Path) -> None:
+    index = AnkiIndex(tmp_path / "index", embedder=FixedEmbedder())
+    notes = [
+        _note(201, "iron anemia", tags=(), deck_names=("Sketchy Pepper", "AnKing Step Deck")),
+        _note(202, "staph bacteria", tags=(), deck_names=("Zanki::Micro", "AnKing Step Deck")),
+    ]
+    index.rebuild(notes, snapshot_id="snapshot-decks", fingerprint="d" * 64)
+    assert index.list_deck_names() == (
+        "AnKing Step Deck",
+        "Sketchy Pepper",
+        "Zanki::Micro",
+    )
 
 
 def test_delta_updates_adds_and_deletes_with_compact_vectors(tmp_path: Path) -> None:

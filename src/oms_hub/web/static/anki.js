@@ -147,6 +147,53 @@
       && lecture?.source_ready !== false;
   };
 
+  const sourceStatuses = (lecture) => {
+    if (!lecture) {
+      return { slides: "neutral", transcripts: "neutral", summary: "neutral" };
+    }
+    const revisions = Array.isArray(lecture.revisions) ? lecture.revisions : [];
+    const kinds = new Set(revisions.map((revision) => revision.kind));
+    const status = lecture.source_status || {
+      slides: kinds.has("slides"),
+      transcripts: kinds.has("transcripts"),
+      summary: Boolean(lecture.outline),
+    };
+    return {
+      slides: status.slides ? "ready" : "missing",
+      transcripts: status.transcripts ? "ready" : "missing",
+      summary: status.summary ? "ready" : "missing",
+    };
+  };
+
+  const addDeckPriority = (decks, deck) => {
+    const value = String(deck || "").trim();
+    if (!value || decks.some((item) => item.toLocaleLowerCase() === value.toLocaleLowerCase())) {
+      return [...decks];
+    }
+    return [...decks, value];
+  };
+
+  const moveDeckPriority = (decks, index, offset) => {
+    const destination = index + offset;
+    if (index < 0 || index >= decks.length || destination < 0 || destination >= decks.length) {
+      return [...decks];
+    }
+    const moved = [...decks];
+    [moved[index], moved[destination]] = [moved[destination], moved[index]];
+    return moved;
+  };
+
+  const updateStartAvailability = (form) => {
+    const submit = form?.querySelector("[type=submit]");
+    if (!submit) return;
+    const sourceReady = form.querySelector("#anki-source-revisions")?.dataset.ready === "true";
+    const hasDeck = form.querySelectorAll("input[name=deck_allowlist]").length > 0;
+    submit.disabled = submit.dataset.ankiEnabled !== "true"
+      || submit.dataset.promptsReady !== "true"
+      || !sourceReady
+      || !hasDeck;
+  };
+
   const parseLecturePayload = (value) => {
     const payload = JSON.parse(String(value || "[]"));
     if (!Array.isArray(payload)) {
@@ -210,65 +257,50 @@
     const container = documentRef.querySelector("#anki-source-revisions");
     if (!container) return;
     container.replaceChildren();
-    const submit = container.closest("form")?.querySelector("[type=submit]");
     const ready = hasRequiredSources(lecture);
     container.dataset.ready = ready ? "true" : "false";
-    if (submit) {
-      submit.disabled = submit.dataset.ankiEnabled !== "true" || !ready;
-    }
     const revisions = Array.isArray(lecture?.revisions)
       ? lecture.revisions
       : [];
-    if (!revisions.length && !lecture?.outline) {
-      container.append(
-        element(
-          documentRef,
-          "p",
-          "quiet-state",
-          lecture
-            ? "This lecture is missing its current slides, transcript, and NotebookLM outline."
-            : "Choose a lecture to see its required source bundle.",
-        ),
-      );
-      return;
-    }
-    revisions.forEach((revision) => {
+    const statuses = sourceStatuses(lecture);
+    ["slides", "transcripts", "summary"].forEach((kind) => {
+      const revision = revisions.find((item) => item.kind === kind);
+      const outline = kind === "summary" ? lecture?.outline : null;
+      const state = statuses[kind];
       const label = element(documentRef, "label", "anki-source-option");
-      const input = documentRef.createElement("input");
-      input.type = "checkbox";
-      input.name = "source_revision_ids";
-      input.value = revision.id;
-      input.checked = true;
-      input.disabled = true;
-      const copy = element(documentRef, "span");
-      copy.append(
-        element(documentRef, "strong", "", sourceLabel(revision.kind)),
-        element(
+      label.classList.add(`is-${state}`);
+      if (revision && state === "ready") {
+        const input = documentRef.createElement("input");
+        input.type = "checkbox";
+        input.name = "source_revision_ids";
+        input.value = revision.id;
+        input.checked = true;
+        input.disabled = true;
+        label.append(input);
+      } else {
+        label.append(element(
           documentRef,
-          "small",
-          "",
-          `Current revision · ${String(revision.source_sha256).slice(0, 10)}`,
-        ),
+          "span",
+          "anki-source-lock",
+          state === "ready" ? "✓" : state === "missing" ? "×" : "–",
+        ));
+      }
+      const copy = element(documentRef, "span");
+      let detail = "Choose a lecture";
+      if (state === "missing") detail = "Not found or not ready";
+      if (revision && state === "ready") {
+        detail = `Current revision · ${String(revision.source_sha256).slice(0, 10)}`;
+      }
+      if (outline && state === "ready") {
+        detail = `Current output · ${String(outline.sha256).slice(0, 10)}`;
+      }
+      copy.append(
+        element(documentRef, "strong", "", sourceLabel(kind)),
+        element(documentRef, "small", "", detail),
       );
-      label.append(input, copy);
+      label.append(copy);
       container.append(label);
     });
-    if (lecture?.outline) {
-      const label = element(documentRef, "div", "anki-source-option");
-      const marker = element(documentRef, "span", "anki-source-lock", "✓");
-      const copy = element(documentRef, "span");
-      copy.append(
-        element(documentRef, "strong", "", sourceLabel("summary")),
-        element(
-          documentRef,
-          "small",
-          "",
-          `Current output · ${String(lecture.outline.sha256).slice(0, 10)}`,
-        ),
-      );
-      label.append(marker, copy);
-      container.append(label);
-    }
     if (lecture && !ready) {
       container.append(element(
         documentRef,
@@ -277,6 +309,7 @@
         "Curation unlocks when current slides, transcript, and NotebookLM outline are all available.",
       ));
     }
+    updateStartAvailability(container.closest("form"));
   };
 
   const jobRow = (documentRef, job) => {
@@ -391,11 +424,15 @@
     if (!form) return;
     const lectureId = form.elements.lecture_id;
     const targetTag = form.elements.target_tag;
+    const targetDeck = form.elements.target_deck;
     const course = form.elements.course;
     const exam = form.elements.exam_number;
     const lectureSelect = form.elements.lecture_path_id;
     const provider = form.elements.provider;
     const model = form.elements.model;
+    const deckChoice = form.querySelector("[data-deck-choice]");
+    const deckList = form.querySelector("[data-deck-priority]");
+    const deckInputs = form.querySelector("[data-deck-inputs]");
     const selectedLabel = documentRef.querySelector(
       "[data-selected-lecture]",
     );
@@ -441,6 +478,7 @@
     const clearLecture = () => {
       lectureId.value = "";
       targetTag.value = "";
+      targetDeck.value = "";
       if (selectedLabel) {
         selectedLabel.textContent = "Choose a course, exam, and lecture.";
       }
@@ -489,6 +527,7 @@
       ).find((item) => Number(item.id) === Number(lectureSelect.value));
       if (!lecture) return;
       lectureId.value = String(lecture.id);
+      targetDeck.value = String(lecture.target_deck || "");
       targetTag.value = String(lecture.target_tag || "");
       if (selectedLabel) {
         selectedLabel.textContent = (
@@ -498,6 +537,51 @@
       }
       renderSourceChoices(documentRef, lecture);
     });
+
+    let deckPriorities = [];
+    const renderDeckPriorities = () => {
+      if (!deckList || !deckInputs) return;
+      deckList.replaceChildren();
+      deckInputs.replaceChildren();
+      deckPriorities.forEach((deck, index) => {
+        const row = element(documentRef, "li", "anki-deck-priority-item");
+        row.append(element(documentRef, "span", "", `${index + 1}. ${deck}`));
+        [["↑", -1], ["↓", 1]].forEach(([label, offset]) => {
+          const button = element(documentRef, "button", "button secondary anki-compact-button", label);
+          button.type = "button";
+          button.disabled = index + offset < 0 || index + offset >= deckPriorities.length;
+          button.addEventListener("click", () => {
+            deckPriorities = moveDeckPriority(deckPriorities, index, offset);
+            renderDeckPriorities();
+          });
+          row.append(button);
+        });
+        const remove = element(documentRef, "button", "button secondary anki-compact-button", "Remove");
+        remove.type = "button";
+        remove.addEventListener("click", () => {
+          deckPriorities = deckPriorities.filter((_, itemIndex) => itemIndex !== index);
+          renderDeckPriorities();
+        });
+        row.append(remove);
+        deckList.append(row);
+        const input = documentRef.createElement("input");
+        input.type = "hidden";
+        input.name = "deck_allowlist";
+        input.value = deck;
+        deckInputs.append(input);
+      });
+      updateStartAvailability(form);
+    };
+    form.querySelector("[data-add-deck]")?.addEventListener("click", () => {
+      deckPriorities = addDeckPriority(deckPriorities, deckChoice?.value);
+      if (deckChoice) deckChoice.value = "";
+      renderDeckPriorities();
+    });
+    if (deckChoice) {
+      const anking = [...deckChoice.options].find((option) => option.value === "AnKing Step Deck");
+      if (anking) deckPriorities = addDeckPriority(deckPriorities, anking.value);
+    }
+    renderDeckPriorities();
     provider.addEventListener("change", () => {
       const savedModel = resolveProviderModel(
         providerModels,
@@ -583,9 +667,9 @@
       const body = {
         contract_version: 1,
         lecture_id: Number(values.get("lecture_id")),
-        block_id: String(values.get("block_id") || "").trim() || null,
+        block_id: null,
         source_revision_ids: selectedSources,
-        deck_allowlist: commaValues(values.get("deck_allowlist")),
+        deck_allowlist: values.getAll("deck_allowlist").map((value) => String(value).trim()).filter(Boolean),
         tag_allowlist: commaValues(values.get("tag_allowlist")),
         target_deck: String(values.get("target_deck") || "").trim(),
         target_tag: String(values.get("target_tag") || "").trim(),
@@ -1286,6 +1370,7 @@
   };
 
   const api = {
+    addDeckPriority,
     canRetryCuration,
     candidateAudit,
     convergenceDisplay,
@@ -1298,6 +1383,7 @@
     hasRequiredSources,
     initialize,
     lectureOptions,
+    moveDeckPriority,
     parseLecturePayload,
     processingPercent,
     readableState,
@@ -1307,6 +1393,7 @@
     resolveProviderModel,
     runFailedJobAction,
     runWhenReady,
+    sourceStatuses,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) {

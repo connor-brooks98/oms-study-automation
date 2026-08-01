@@ -155,6 +155,9 @@ class FakeCompanionIndex:
     def snapshot_id(self) -> str:
         return "snapshot-test"
 
+    def list_deck_names(self) -> tuple[str, ...]:
+        return ("AnKing Step Deck", "Sketchy Pepper")
+
     def semantic_alignment(
         self,
         *,
@@ -449,6 +452,17 @@ def test_anki_bootstrap_exposes_grouped_current_sources_and_editable_tag(
         },
     ]
     assert lecture["source_ready"] is True
+    assert lecture["source_status"] == {
+        "slides": True,
+        "transcripts": True,
+        "summary": True,
+    }
+    assert lecture["target_deck"].startswith("OMS-II_Custom_Cards::")
+    assert response.json()["indexed_decks"] == [
+        "AnKing Step Deck",
+        "Sketchy Pepper",
+    ]
+    assert response.json()["prompt_catalog"]["ready"] is True
     assert lecture["outline"]["kind"] == "summary"
     assert lecture["target_tag"] == (
         "AnkiHub_Optional::LMU_OMS_II::HemeLymph::Block1::Lec4_Anemia_I"

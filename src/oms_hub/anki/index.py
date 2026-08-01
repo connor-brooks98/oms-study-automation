@@ -101,6 +101,16 @@ class AnkiIndex:
     def vector_store(self) -> AtomicVectorStore:
         return AtomicVectorStore(self.root)
 
+    def list_deck_names(self) -> tuple[str, ...]:
+        if not self.database_path.is_file():
+            return ()
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT deck_name FROM note_decks "
+                "ORDER BY deck_name COLLATE NOCASE"
+            ).fetchall()
+        return tuple(str(row[0]) for row in rows)
+
     def rebuild(
         self,
         notes: Sequence[NormalizedNote],

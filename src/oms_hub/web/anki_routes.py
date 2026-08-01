@@ -46,7 +46,7 @@ from oms_hub.anki.gaps import (
     GapValidationError,
     validate_gap_card_fields,
 )
-from oms_hub.anki.paths import LectureIdentity, target_tag
+from oms_hub.anki.paths import LectureIdentity, target_deck, target_tag
 from oms_hub.anki.reconciliation import (
     GeneratedResolution,
     ReconciliationInput,
@@ -188,6 +188,8 @@ def anki_bootstrap(request: Request) -> dict[str, Any]:
         "lecture_groups": context["lecture_groups"],
         "defaults": context["defaults"],
         "provider_models": context["provider_models"],
+        "prompt_catalog": context["prompt_catalog"],
+        "indexed_decks": context["indexed_decks"],
         "tag_policy": context["tag_policy"],
     }
 
@@ -755,6 +757,7 @@ def _page_context(request: Request) -> dict[str, Any]:
                 "exam_number": lecture.exam_number,
                 "lecture_number": lecture.lecture_number,
                 "topic": lecture.topic,
+                "target_deck": target_deck(identity),
                 "target_tag": target_tag(identity),
                 "revisions": [
                     {
@@ -779,6 +782,11 @@ def _page_context(request: Request) -> dict[str, Any]:
                     )
                     and outline_available
                 ),
+                "source_status": {
+                    "slides": UploadKind.SLIDES in current_kinds,
+                    "transcripts": UploadKind.TRANSCRIPTS in current_kinds,
+                    "summary": outline_available,
+                },
             }
         )
     lecture_groups: list[dict[str, Any]] = []
@@ -819,6 +827,15 @@ def _page_context(request: Request) -> dict[str, Any]:
     }
     companion = getattr(request.app.state, "anki_companion_index", None)
     snapshot_id = companion.snapshot_id() if companion is not None else None
+    catalog = request.app.state.anki_prompt_catalog.catalog()
+    catalog_payload = catalog.payload()
+    indexed_decks = list(companion.list_deck_names()) if companion is not None else []
+
+    def preferred_prompt(role: str, preferred: str) -> str:
+        choices = cast(dict[str, list[dict[str, str]]], catalog_payload["choices"])[role]
+        ids = [choice["id"] for choice in choices]
+        return preferred if preferred in ids else (ids[0] if ids else "")
+
     return {
         "anki_enabled": (getattr(request.app.state, "anki_runtime", None) is not None),
         "lectures": lectures,
@@ -826,13 +843,15 @@ def _page_context(request: Request) -> dict[str, Any]:
         "defaults": {
             "provider": active_provider.provider.value,
             "model": active_provider.model,
-            "lcl_prompt_version": "lecture-concept-ledger",
-            "judgment_rubric_version": "coverage-rubric",
-            "gap_prompt_version": "gap-card-generation",
+            "lcl_prompt_version": preferred_prompt("lcl", "lecture-concept-ledger"),
+            "judgment_rubric_version": preferred_prompt("coverage", "coverage-rubric"),
+            "gap_prompt_version": preferred_prompt("gap_cards", "gap-card-generation"),
             "index_snapshot_id": snapshot_id,
             "semantic_model": settings.anki_semantic_model,
         },
         "provider_models": provider_models,
+        "prompt_catalog": catalog_payload,
+        "indexed_decks": indexed_decks,
         "tag_policy": _tag_policy_payload(getattr(request.app.state, "anki_tag_policy", None)),
     }
 

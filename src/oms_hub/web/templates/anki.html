@@ -78,15 +78,19 @@
           <p class="field-help">Current slides, transcript, and NotebookLM outline are required. The outline guides concept coverage but cannot support a keep or generated card by itself.</p>
         </fieldset>
 
-        <label>
-          Block label
-          <input name="block_id" placeholder="Heme block 1">
-        </label>
-        <label>
-          Existing-card decks
-          <input name="deck_allowlist" value="AnKing Step Deck" required>
-          <span class="field-help">Separate multiple decks with commas.</span>
-        </label>
+        <fieldset class="anki-field-wide anki-deck-field">
+          <legend>Existing-card deck priority</legend>
+          <div class="anki-deck-adder">
+            <select data-deck-choice {% if not indexed_decks %}disabled{% endif %}>
+              <option value="">Choose an indexed deck…</option>
+              {% for deck in indexed_decks %}<option value="{{ deck }}">{{ deck }}</option>{% endfor %}
+            </select>
+            <button class="button secondary" type="button" data-add-deck>Add deck</button>
+          </div>
+          <ol class="anki-deck-priority" data-deck-priority></ol>
+          <div data-deck-inputs></div>
+          <span class="field-help">Cards are searched in this order. Move higher-priority decks to the top.</span>
+        </fieldset>
         <label>
           Existing-card tag scope
           <input name="tag_allowlist" placeholder="#AK_Step2_v12::Hematology">
@@ -94,7 +98,7 @@
         </label>
         <label>
           New-card deck
-          <input name="target_deck" placeholder="OMS::Heme::Lecture 4" required>
+          <input name="target_deck" required>
         </label>
         <label class="anki-field-wide">
           Lecture tag
@@ -122,16 +126,36 @@
       <details class="anki-advanced">
         <summary>Run details</summary>
         <div class="anki-form-grid">
-          <label>LCL prompt version <input name="lcl_prompt_version" value="{{ defaults.lcl_prompt_version }}" required></label>
-          <label>Coverage rubric version <input name="judgment_rubric_version" value="{{ defaults.judgment_rubric_version }}" required></label>
-          <label>Card prompt version <input name="gap_prompt_version" value="{{ defaults.gap_prompt_version }}" required></label>
+          <label>LCL prompt version
+            <select name="lcl_prompt_version" required>
+              {% for prompt in prompt_catalog.choices.lcl %}<option value="{{ prompt.id }}" {% if prompt.id == defaults.lcl_prompt_version %}selected{% endif %}>{{ prompt.label }}</option>{% endfor %}
+            </select>
+          </label>
+          <label>Coverage rubric version
+            <select name="judgment_rubric_version" required>
+              {% for prompt in prompt_catalog.choices.coverage %}<option value="{{ prompt.id }}" {% if prompt.id == defaults.judgment_rubric_version %}selected{% endif %}>{{ prompt.label }}</option>{% endfor %}
+            </select>
+          </label>
+          <label>Card prompt version
+            <select name="gap_prompt_version" required>
+              {% for prompt in prompt_catalog.choices.gap_cards %}<option value="{{ prompt.id }}" {% if prompt.id == defaults.gap_prompt_version %}selected{% endif %}>{{ prompt.label }}</option>{% endfor %}
+            </select>
+          </label>
           <label>Current Anki snapshot <input name="index_snapshot_id" value="{{ defaults.index_snapshot_id or '' }}" readonly required></label>
         </div>
+        {% if prompt_catalog.issues %}
+        <div class="anki-notice anki-notice-warning" role="status">
+          <div>
+            <strong>Prompt catalog warnings</strong>
+            {% for issue in prompt_catalog.issues %}<p>{{ issue.message }}</p>{% endfor %}
+          </div>
+        </div>
+        {% endif %}
       </details>
 
       <div class="anki-form-actions">
         <p id="anki-create-message" class="anki-action-message" role="status" aria-live="polite"></p>
-        <button class="button primary" type="submit" data-anki-enabled="{{ 'true' if anki_enabled else 'false' }}" disabled>Start curation</button>
+        <button class="button primary" type="submit" data-anki-enabled="{{ 'true' if anki_enabled else 'false' }}" data-prompts-ready="{{ 'true' if prompt_catalog.ready else 'false' }}" disabled>Start curation</button>
       </div>
     </form>
   </section>
