@@ -1493,35 +1493,38 @@ class CurationServicesRunner:
             candidates = [
                 _candidate_from_payload(value) for value in values
             ]
-            result = await asyncio.to_thread(
-                service.judge,
-                ledger_by_id[concept_id],
-                candidates,
-                passages=_source_passages(context),
-            )
-            usages.append(result)
-            results[concept_id] = {
-                "judgment": result.judgment.model_dump(mode="json"),
-                "cache_key": result.cache_key,
-                "cache_hit": result.cache_hit,
-                "provider": result.provider.value,
-                "model": result.model,
-                "request_id": result.request_id,
-            }
-            runtime = (
-                runtime_judgment_from_v2(result.judgment)
-                if isinstance(result.judgment, CoverageJudgmentV2)
-                else result.judgment
-            )
-            supporting = set(runtime.supporting_note_ids)
-            projected.extend(
-                _judged_candidate(
-                    candidate,
-                    runtime,
-                    selected=candidate.note_id in supporting,
+            for deck_candidates in _priority_candidate_groups(candidates):
+                result = await asyncio.to_thread(
+                    service.judge,
+                    ledger_by_id[concept_id],
+                    deck_candidates,
+                    passages=_source_passages(context),
                 )
-                for candidate in candidates
-            )
+                usages.append(result)
+                results[concept_id] = {
+                    "judgment": result.judgment.model_dump(mode="json"),
+                    "cache_key": result.cache_key,
+                    "cache_hit": result.cache_hit,
+                    "provider": result.provider.value,
+                    "model": result.model,
+                    "request_id": result.request_id,
+                }
+                runtime = (
+                    runtime_judgment_from_v2(result.judgment)
+                    if isinstance(result.judgment, CoverageJudgmentV2)
+                    else result.judgment
+                )
+                supporting = set(runtime.supporting_note_ids)
+                projected.extend(
+                    _judged_candidate(
+                        candidate,
+                        runtime,
+                        selected=candidate.note_id in supporting,
+                    )
+                    for candidate in deck_candidates
+                )
+                if supporting:
+                    break
         merged = _merge_candidates(projected)
         return StageProduct(
             kind=kind,
@@ -1537,6 +1540,21 @@ class CurationServicesRunner:
             usage=_judgment_usage(kind, usages),
             cache_hits=sum(result.cache_hit for result in usages),
         )
+
+
+def _priority_candidate_groups(
+    candidates: Sequence[Candidate],
+) -> tuple[tuple[Candidate, ...], ...]:
+    if not candidates:
+        return ((),)
+    if not any("deck_priority" in candidate.provenance for candidate in candidates):
+        return (tuple(candidates),)
+    grouped: dict[int, list[Candidate]] = {}
+    for candidate in candidates:
+        raw_priority = candidate.provenance.get("deck_priority", 0)
+        priority = raw_priority if isinstance(raw_priority, int) else 0
+        grouped.setdefault(priority, []).append(candidate)
+    return tuple(tuple(grouped[key]) for key in sorted(grouped))
 
 
 def _provider(context: StageContext) -> ProviderName:

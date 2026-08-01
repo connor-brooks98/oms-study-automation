@@ -80,9 +80,24 @@ class CreateCurationJobRequest(ContractModel):
         | None
     ) = None
 
-    @field_validator("deck_allowlist", "tag_allowlist", mode="before")
+    @field_validator("deck_allowlist", mode="before")
     @classmethod
-    def normalize_scope_values(cls, values: Any) -> tuple[str, ...]:
+    def normalize_deck_values(cls, values: Any) -> tuple[str, ...]:
+        if not isinstance(values, (list, tuple)):
+            raise TypeError("scope must be a list")
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for raw in values:
+            value = str(raw).strip()
+            key = value.casefold()
+            if value and key not in seen:
+                seen.add(key)
+                ordered.append(value)
+        return tuple(ordered)
+
+    @field_validator("tag_allowlist", mode="before")
+    @classmethod
+    def normalize_tag_scope_values(cls, values: Any) -> tuple[str, ...]:
         if not isinstance(values, (list, tuple)):
             raise TypeError("scope must be a list")
         normalized = {str(value).strip() for value in values if str(value).strip()}

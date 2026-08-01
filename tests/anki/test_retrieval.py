@@ -101,13 +101,19 @@ class FakeCompanionIndex:
         *,
         eligible: set[int],
         lexical: Sequence[int] = (),
+        eligible_by_deck: dict[str, set[int]] | None = None,
     ) -> None:
         self.notes = {note.note_id: note for note in notes}
         self.eligible = eligible
         self.lexical = list(lexical)
         self.fts_filters: list[CompanionFilters] = []
+        self.eligible_by_deck = eligible_by_deck or {}
 
     def eligible_note_ids(self, filters: CompanionFilters) -> set[int]:
+        if filters.deck_allowlist:
+            selected = self.eligible_by_deck.get(filters.deck_allowlist[0])
+            if selected is not None:
+                return set(selected)
         return set(self.eligible)
 
     def search_fts(
@@ -273,6 +279,39 @@ def test_filters_are_applied_before_semantic_and_lexical_ranking() -> None:
         assert semantic.eligible_calls == [{1, 2}]
         assert companion.fts_filters == [filters]
         assert {candidate.note_id for candidate in candidates} <= {1, 2}
+
+    asyncio.run(scenario())
+
+
+def test_multiple_decks_are_retrieved_in_priority_groups() -> None:
+    async def scenario() -> None:
+        concept = _concept()
+        semantic = FakeSemanticSearch({query: [1, 2] for query in concept.queries})
+        companion = FakeCompanionIndex(
+            [_note(1), _note(2)],
+            eligible={1, 2},
+            eligible_by_deck={"AnKing": {1}, "Sketchy": {2}},
+        )
+        service = RetrievalService(
+            companion,
+            semantic,
+            per_concept_limit=5,
+            global_limit=10,
+        )
+
+        candidates = await service.retrieve_pass_1(
+            concept,
+            RetrievalScope(
+                filters=CompanionFilters(deck_allowlist=("AnKing", "Sketchy"))
+            ),
+        )
+
+        assert [candidate.note_id for candidate in candidates] == [1, 2]
+        assert [candidate.provenance["deck_priority"] for candidate in candidates] == [0, 1]
+        assert [filters.deck_allowlist for filters in companion.fts_filters] == [
+            ("AnKing",),
+            ("Sketchy",),
+        ]
 
     asyncio.run(scenario())
 

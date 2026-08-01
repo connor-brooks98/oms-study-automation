@@ -35,12 +35,16 @@ def test_create_job_rejects_amboss_input() -> None:
 
 def test_create_job_normalizes_scope_lists() -> None:
     payload = _job_payload()
-    payload["deck_allowlist"] = [" AnKing Step Deck ", "AnKing Step Deck"]
+    payload["deck_allowlist"] = [
+        " AnKing Step Deck ",
+        "Sketchy Pepper",
+        "anking step deck",
+    ]
     payload["tag_allowlist"] = ["#AK_Step2_v12::Hematology", "  "]
 
     request = CreateCurationJobRequest.model_validate(payload)
 
-    assert request.deck_allowlist == ("AnKing Step Deck",)
+    assert request.deck_allowlist == ("AnKing Step Deck", "Sketchy Pepper")
     assert request.tag_allowlist == ("#AK_Step2_v12::Hematology",)
     assert request.source_revision_ids == (101, 102)
     assert request.summary_outline_id == 91

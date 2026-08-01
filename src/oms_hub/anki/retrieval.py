@@ -1,6 +1,6 @@
 from collections import defaultdict
 from collections.abc import Collection, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 from oms_hub.anki.domain import Candidate, RetrievalPass
@@ -131,6 +131,53 @@ class RetrievalService:
         )
 
     async def _retrieve(
+        self,
+        concept: LectureConcept,
+        queries: Sequence[str],
+        scope: RetrievalScope,
+        *,
+        retrieval_pass: RetrievalPass,
+        evidence_ids: tuple[str, ...],
+        convergence_pass: int | None = None,
+    ) -> list[Candidate]:
+        decks = scope.filters.deck_allowlist
+        if len(decks) <= 1:
+            return await self._retrieve_once(
+                concept,
+                queries,
+                scope,
+                retrieval_pass=retrieval_pass,
+                evidence_ids=evidence_ids,
+                convergence_pass=convergence_pass,
+            )
+        prioritized: list[Candidate] = []
+        for priority, deck in enumerate(decks):
+            deck_scope = replace(
+                scope,
+                filters=replace(scope.filters, deck_allowlist=(deck,)),
+            )
+            candidates = await self._retrieve_once(
+                concept,
+                queries,
+                deck_scope,
+                retrieval_pass=retrieval_pass,
+                evidence_ids=evidence_ids,
+                convergence_pass=convergence_pass,
+            )
+            prioritized.extend(
+                replace(
+                    candidate,
+                    provenance={
+                        **candidate.provenance,
+                        "deck_name": deck,
+                        "deck_priority": priority,
+                    },
+                )
+                for candidate in candidates
+            )
+        return prioritized
+
+    async def _retrieve_once(
         self,
         concept: LectureConcept,
         queries: Sequence[str],

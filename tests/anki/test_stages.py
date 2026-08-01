@@ -18,7 +18,7 @@ from oms_hub.anki.normalize import NormalizedNote
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
 from oms_hub.anki.prompts import StaticPromptSynchronizer
 from oms_hub.anki.sources import SourcePassage
-from oms_hub.anki.stages import CurationServicesRunner
+from oms_hub.anki.stages import CurationServicesRunner, _priority_candidate_groups
 from oms_hub.anki.v2_contracts import (
     AuditVerdictV2,
     CoverageJudgmentV2,
@@ -41,6 +41,47 @@ class ReadyRuntime:
             sync_available=True,
             blocking_reason=None,
         )
+
+
+def test_priority_candidate_groups_preserve_deck_order() -> None:
+    candidates = (
+        Candidate(
+            note_id=2,
+            content_hash="2" * 64,
+            best_concept_id="c1",
+            provenance={"deck_priority": 1},
+            scores={},
+            predicted_band="unjudged",
+            verdict="pending",
+            confidence=0,
+            reason="retrieved",
+            context_trap=False,
+            recall_direction="unknown",
+            mnemonic_classification="unknown",
+            dedupe_disposition="pending",
+            selected=False,
+        ),
+        Candidate(
+            note_id=1,
+            content_hash="1" * 64,
+            best_concept_id="c1",
+            provenance={"deck_priority": 0},
+            scores={},
+            predicted_band="unjudged",
+            verdict="pending",
+            confidence=0,
+            reason="retrieved",
+            context_trap=False,
+            recall_direction="unknown",
+            mnemonic_classification="unknown",
+            dedupe_disposition="pending",
+            selected=False,
+        ),
+    )
+    assert [group[0].note_id for group in _priority_candidate_groups(candidates)] == [
+        1,
+        2,
+    ]
 
 
 def test_preflight_snapshots_all_prompts_for_the_job() -> None:
