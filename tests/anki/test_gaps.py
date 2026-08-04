@@ -215,6 +215,15 @@ def test_v2_gap_schema_requires_every_openai_strict_object_property() -> None:
     assert missing == []
 
 
+def test_v2_gap_schema_uses_openai_supported_union_shape() -> None:
+    schema = openai_output_schema(GapBatchV2.model_json_schema())
+    items = schema["properties"]["resolutions"]["items"]
+
+    assert "oneOf" not in items
+    assert "discriminator" not in items
+    assert len(items["anyOf"]) == 2
+
+
 def test_v2_generation_sends_all_missing_facts_in_one_concept_call() -> None:
     request = _v2_request()
     structured = QueueStructured(

@@ -181,10 +181,7 @@ class UnresolvedGapV2(V2Contract):
     duplicate_of_note_id: int | None = Field(gt=0)
 
 
-GapResolutionV2 = Annotated[
-    GeneratedGapCardV2 | UnresolvedGapV2,
-    Field(discriminator="status"),
-]
+GapResolutionV2 = GeneratedGapCardV2 | UnresolvedGapV2
 
 
 class PromptManifestEntryV2(V2Contract):
