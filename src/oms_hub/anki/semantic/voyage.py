@@ -54,7 +54,7 @@ class VoyageEmbeddingClient:
         self.api_key = api_key.strip() if api_key is not None else None
         self._sleep = sleep
         self._owns_http = http is None
-        self._http = http or httpx.AsyncClient(timeout=120.0)
+        self._http = http or httpx.AsyncClient(timeout=120.0, trust_env=False)
 
     async def embed(
         self,
