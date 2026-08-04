@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import timedelta
 from typing import Protocol
 
+from oms_hub.db import is_sqlite_busy
 from oms_hub.files.office import OfficeConverter
 from oms_hub.files.pdf import inspect_pdf
 from oms_hub.llm.domain import DiagnosticSource
@@ -93,11 +94,19 @@ class StudioWorker:
                 None,
                 str(error),
             )
-            self.repository.fail_run(
-                run.id,
-                DiagnosticSource.STUDY_HUB.value,
-                str(error),
-            )
+            if is_sqlite_busy(error) and run.attempts < 4:
+                self.repository.retry_run(
+                    run.id,
+                    DiagnosticSource.STUDY_HUB.value,
+                    str(error),
+                    timedelta(seconds=min(30 * (2 ** (run.attempts - 1)), 300)),
+                )
+            else:
+                self.repository.fail_run(
+                    run.id,
+                    DiagnosticSource.STUDY_HUB.value,
+                    str(error),
+                )
             return True
 
         self.repository.save_run_response(run.id, answer)
@@ -174,11 +183,19 @@ class StudioWorker:
                 DiagnosticSource.VALIDATION.value,
                 str(error),
             )
-            self.repository.fail_run(
-                run.id,
-                DiagnosticSource.VALIDATION.value,
-                str(error),
-            )
+            if is_sqlite_busy(error) and run.attempts < 4:
+                self.repository.retry_run(
+                    run.id,
+                    DiagnosticSource.VALIDATION.value,
+                    str(error),
+                    timedelta(seconds=min(30 * (2 ** (run.attempts - 1)), 300)),
+                )
+            else:
+                self.repository.fail_run(
+                    run.id,
+                    DiagnosticSource.VALIDATION.value,
+                    str(error),
+                )
         return True
 
     def _run_source(self, source: StudioSource) -> None:
@@ -234,5 +251,5 @@ class StudioWorker:
                 source.id,
                 "study_hub",
                 str(error),
-                retry=False,
+                retry=is_sqlite_busy(error),
             )

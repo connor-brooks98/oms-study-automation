@@ -459,6 +459,90 @@ def test_split_gap_cards_share_a_concept_and_are_edited_by_card_id(
     assert "the second step" in stored[second_id].text
 
 
+def test_blank_card_id_edit_is_rejected_when_concept_has_multiple_cards(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    repository.save_gap_cards(
+        job.id,
+        (
+            GapCard(
+                concept_id="C01",
+                text="Mechanism starts with {{c1::step one}}.",
+                extra="First atomic card.",
+                card_id="00000000-0000-0000-0000-000000000201",
+                provenance={"fact_id": "C01-M1", "split": True},
+            ),
+            GapCard(
+                concept_id="C01",
+                text="Mechanism ends with {{c1::step two}}.",
+                extra="Second atomic card.",
+                card_id="00000000-0000-0000-0000-000000000202",
+                provenance={"fact_id": "C01-M1", "split": True},
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="gap card edit requires card_id when a concept has multiple cards",
+    ):
+        repository.save_review(
+            job.id,
+            ReviewChangeSet(
+                expected_revision=0,
+                gap_edits=(
+                    GapCardEdit(
+                        concept_id="C01",
+                        card_id="",
+                        text="Ambiguous edit without a card id.",
+                        extra="Should be rejected.",
+                        selected=True,
+                    ),
+                ),
+            ),
+        )
+
+
+def test_blank_card_id_edit_still_works_for_a_single_gap_card(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    repository.save_gap_cards(
+        job.id,
+        [
+            GapCard(
+                concept_id="concept-solo",
+                text="{{c1::Solo fact}} stands alone.",
+                extra="Only one card for this concept.",
+            )
+        ],
+    )
+
+    saved = repository.save_review(
+        job.id,
+        ReviewChangeSet(
+            expected_revision=0,
+            gap_edits=(
+                GapCardEdit(
+                    concept_id="concept-solo",
+                    card_id="",
+                    text="{{c1::Solo fact}} stands alone, edited.",
+                    extra="Only one card for this concept, edited.",
+                    selected=True,
+                ),
+            ),
+        ),
+    )
+
+    assert saved.revision == 1
+    stored_gap = repository.list_gap_cards(job.id)[0]
+    assert stored_gap.revision == 2
+    assert stored_gap.text.endswith("edited.")
+
+
 def test_coverage_judgment_cache_round_trips_immutable_record(
     tmp_path,
 ) -> None:

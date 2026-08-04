@@ -150,6 +150,30 @@ def _upgrade_studio_columns(database: "Database") -> None:
         )
 
 
+def _upgrade_studio_run_active_label_index(database: "Database") -> None:
+    """Backfill the partial unique index guarding concurrent Studio runs.
+
+    ``create_schema`` only creates missing tables; it does not retrofit
+    indexes onto ``studio_runs`` tables that already existed before this
+    index was introduced. Recreate it explicitly so both fresh and upgraded
+    installs reject two active runs for the same destination/label.
+    """
+    if database.engine.dialect.name != "sqlite":
+        return
+    inspector = inspect(database.engine)
+    if not inspector.has_table("studio_runs"):
+        return
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_studio_runs_active_label "
+                "ON studio_runs "
+                "(destination_subject_key, destination_exam_number, label_key) "
+                "WHERE state IN ('queued', 'running', 'retrying')"
+            )
+        )
+
+
 def _upgrade_gap_card_identity(database: "Database") -> None:
     if database.engine.dialect.name != "sqlite":
         return
@@ -160,8 +184,18 @@ def _upgrade_gap_card_identity(database: "Database") -> None:
         set(constraint.get("column_names") or ()) == {"job_id", "concept_id"}
         for constraint in inspector.get_unique_constraints("anki_gap_cards")
     )
-    if not has_legacy_unique:
-        return
+    if has_legacy_unique:
+        _rebuild_gap_card_table(database)
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_anki_gap_cards_job_concept "
+                "ON anki_gap_cards (job_id, concept_id)"
+            )
+        )
+
+
+def _rebuild_gap_card_table(database: "Database") -> None:
     with database.engine.begin() as connection:
         connection.execute(
             text(
@@ -273,6 +307,7 @@ def migrate_database(database: "Database") -> None:
     database.create_schema()
     _upgrade_generation_job_columns(database)
     _upgrade_studio_columns(database)
+    _upgrade_studio_run_active_label_index(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_gap_card_identity(database)
     _seed_llm_task_assignments(database)

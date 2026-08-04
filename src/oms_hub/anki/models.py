@@ -194,6 +194,9 @@ class AnkiCandidateModel(Base):
 
 class AnkiGapCardModel(Base):
     __tablename__ = "anki_gap_cards"
+    __table_args__ = (
+        Index("ix_anki_gap_cards_job_concept", "job_id", "concept_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     job_id: Mapped[str] = mapped_column(ForeignKey("anki_curation_jobs.id"))

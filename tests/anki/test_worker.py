@@ -19,7 +19,8 @@ from oms_hub.anki.pipeline import (
     StageProduct,
 )
 from oms_hub.anki.repository import AnkiCurationRepository
-from oms_hub.anki.worker import AnkiCurationWorker
+from oms_hub.anki.semantic.store import SemanticSnapshotError
+from oms_hub.anki.worker import AnkiCurationWorker, _is_retryable
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.db import Database
@@ -330,6 +331,22 @@ def test_cancellation_before_review_is_terminal_and_not_claimed(
         assert repository.require_job(job.id).state is CurationState.CANCELED
 
     asyncio.run(scenario())
+
+
+def test_sqlite_busy_errors_are_retryable() -> None:
+    import sqlite3
+
+    from sqlalchemy.exc import OperationalError
+
+    orig = sqlite3.OperationalError("database is locked")
+    orig.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    error = OperationalError("stmt", {}, orig)
+
+    assert _is_retryable(error) is True
+
+
+def test_semantic_snapshot_errors_are_retryable() -> None:
+    assert _is_retryable(SemanticSnapshotError("snapshot checksum mismatch")) is True
 
 
 def test_application_lifespan_starts_and_stops_curation_worker(

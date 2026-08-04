@@ -2,6 +2,7 @@ import json
 from datetime import UTC, datetime
 
 from oms_hub.db import Database
+from oms_hub.models import StudyRevisionModel, UploadBatchModel, UploadItemModel
 from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.study_generation.domain import (
     GenerationKind,
@@ -20,6 +21,44 @@ def prepared_repository(tmp_path):
         LectureInput("Neuro", 1, 1, "Seizures", "Dr Test", None)
     )
     return GenerationRepository(database), lecture_id
+
+
+def _create_study_revision(
+    repository: GenerationRepository,
+    lecture_id: int,
+    *,
+    upload_item_id: str,
+    source_sha256: str,
+) -> int:
+    with repository.database.session() as session:
+        batch = UploadBatchModel(id=f"batch-{upload_item_id}", kind="slides")
+        session.add(batch)
+        session.flush()
+        session.add(
+            UploadItemModel(
+                id=upload_item_id,
+                batch_id=batch.id,
+                kind="slides",
+                original_filename=f"{upload_item_id}.pdf",
+                staged_path=f"/tmp/{upload_item_id}.pdf",
+                sha256=source_sha256,
+                size_bytes=1,
+                lecture_id=lecture_id,
+            )
+        )
+        session.flush()
+        revision = StudyRevisionModel(
+            upload_item_id=upload_item_id,
+            lecture_id=lecture_id,
+            kind="slides",
+            source_sha256=source_sha256,
+            immutable_source_path=f"/tmp/{upload_item_id}-immutable.pdf",
+            state="accepted",
+            current=True,
+        )
+        session.add(revision)
+        session.flush()
+        return revision.id
 
 
 def test_queue_reuses_active_job_but_separates_generation_kinds(tmp_path):
@@ -130,10 +169,23 @@ def test_binding_new_revision_supersedes_prior_ready_source(tmp_path):
         "Neuro · Exam 1",
     )
 
+    old_revision_id = _create_study_revision(
+        repository,
+        lecture_id,
+        upload_item_id="revision-old",
+        source_sha256="a" * 64,
+    )
+    new_revision_id = _create_study_revision(
+        repository,
+        lecture_id,
+        upload_item_id="revision-new",
+        source_sha256="b" * 64,
+    )
+
     first = repository.bind_source(
         notebook.id,
         lecture_id,
-        revision_id=10,
+        revision_id=old_revision_id,
         source_kind=SourceKind.LECTURE_PDF,
         source_sha256="a" * 64,
         remote_source_id="remote-old",
@@ -142,7 +194,7 @@ def test_binding_new_revision_supersedes_prior_ready_source(tmp_path):
     second = repository.bind_source(
         notebook.id,
         lecture_id,
-        revision_id=11,
+        revision_id=new_revision_id,
         source_kind=SourceKind.LECTURE_PDF,
         source_sha256="b" * 64,
         remote_source_id="remote-new",

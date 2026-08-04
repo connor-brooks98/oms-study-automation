@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -364,6 +364,14 @@ class StudioRunModel(Base):
         Index("ix_studio_runs_poll", "state", "next_attempt_at", "created_at"),
         Index("ix_studio_runs_scope", "subject_key", "exam_number", "created_at"),
         Index("ix_studio_runs_supersedes", "supersedes_run_id"),
+        Index(
+            "ix_studio_runs_active_label",
+            "destination_subject_key",
+            "destination_exam_number",
+            "label_key",
+            unique=True,
+            sqlite_where=text("state IN ('queued', 'running', 'retrying')"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

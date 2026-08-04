@@ -15,7 +15,9 @@ from oms_hub.anki.repository import (
     AnkiCurationRepository,
     InvalidCurationTransition,
 )
+from oms_hub.anki.semantic.store import SemanticSnapshotError
 from oms_hub.anki.semantic.voyage import VoyageEmbeddingError
+from oms_hub.db import is_sqlite_busy
 from oms_hub.llm.domain import DiagnosticSource, LLMRequestError
 from oms_hub.llm.structured import StructuredOutputError
 
@@ -192,6 +194,8 @@ class AnkiCurationWorker:
 def _is_retryable(error: Exception) -> bool:
     if isinstance(error, PinnedInputChanged):
         return False
+    if is_sqlite_busy(error):
+        return True
     if isinstance(error, LLMRequestError):
         return error.source in {
             DiagnosticSource.NETWORK,
@@ -205,6 +209,7 @@ def _is_retryable(error: Exception) -> bool:
         (
             AnkiConnectUnavailable,
             VoyageEmbeddingError,
+            SemanticSnapshotError,
             ConnectionError,
             TimeoutError,
         ),

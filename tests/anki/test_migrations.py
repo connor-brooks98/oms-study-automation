@@ -253,6 +253,13 @@ def test_schema_v10_upgrade_allows_multiple_gap_cards_per_concept(
             INSERT INTO schema_version (id, version, updated_at)
             VALUES (1, 10, '2026-07-30T00:00:00+00:00');
 
+            CREATE TABLE anki_curation_jobs (
+                id VARCHAR(36) PRIMARY KEY
+            );
+            INSERT INTO anki_curation_jobs (id) VALUES (
+                '00000000-0000-0000-0000-000000000001'
+            );
+
             CREATE TABLE anki_gap_cards (
                 id VARCHAR(36) PRIMARY KEY,
                 job_id VARCHAR(36) NOT NULL,
@@ -313,3 +320,69 @@ def test_schema_v10_upgrade_allows_multiple_gap_cards_per_concept(
             ).scalar_one()
 
     assert count == 2
+
+
+def test_gap_card_job_concept_index_is_created_and_migration_is_idempotent(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "hub-v10-index.db"
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_version (
+                id INTEGER PRIMARY KEY,
+                version INTEGER NOT NULL,
+                updated_at VARCHAR(40) NOT NULL
+            );
+            INSERT INTO schema_version (id, version, updated_at)
+            VALUES (1, 10, '2026-07-30T00:00:00+00:00');
+
+            CREATE TABLE anki_curation_jobs (
+                id VARCHAR(36) PRIMARY KEY
+            );
+            INSERT INTO anki_curation_jobs (id) VALUES (
+                '00000000-0000-0000-0000-000000000001'
+            );
+
+            CREATE TABLE anki_gap_cards (
+                id VARCHAR(36) PRIMARY KEY,
+                job_id VARCHAR(36) NOT NULL,
+                concept_id VARCHAR(200) NOT NULL,
+                text TEXT NOT NULL,
+                extra TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                selected BOOLEAN NOT NULL,
+                image_state VARCHAR(30) NOT NULL,
+                media_filename TEXT,
+                source_note_id INTEGER,
+                generated_image_json TEXT NOT NULL,
+                validation_state VARCHAR(30) NOT NULL,
+                source_refs_json TEXT NOT NULL DEFAULT '[]',
+                evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+                provenance_json TEXT NOT NULL DEFAULT '{}',
+                initial_tags_json TEXT NOT NULL DEFAULT '[]',
+                content_hash VARCHAR(64) NOT NULL,
+                UNIQUE (job_id, concept_id)
+            );
+            """
+        )
+        connection.commit()
+
+    with Database(f"sqlite:///{database_path}") as database:
+        database.migrate()
+        database.migrate()
+
+        index_names = {
+            row["name"]
+            for row in inspect(database.engine).get_indexes("anki_gap_cards")
+        }
+
+    assert "ix_anki_gap_cards_job_concept" in index_names
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        rows = connection.execute(
+            "PRAGMA index_list('anki_gap_cards')"
+        ).fetchall()
+        pragma_names = {row[1] for row in rows}
+
+    assert "ix_anki_gap_cards_job_concept" in pragma_names

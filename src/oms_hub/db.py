@@ -76,6 +76,7 @@ def _configure_sqlite_connection(
     try:
         cursor.execute("PRAGMA busy_timeout=5000")
         cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA foreign_keys=ON")
     finally:
         cursor.close()
 

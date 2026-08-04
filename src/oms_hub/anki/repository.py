@@ -954,13 +954,22 @@ class AnkiCurationRepository:
                 conditions = [AnkiGapCardModel.job_id == str(job_id)]
                 if edit.card_id:
                     conditions.append(AnkiGapCardModel.id == edit.card_id)
+                    gap = session.scalar(
+                        select(AnkiGapCardModel).where(*conditions)
+                    )
                 else:
                     conditions.append(
                         AnkiGapCardModel.concept_id == edit.concept_id
                     )
-                gap = session.scalar(
-                    select(AnkiGapCardModel).where(*conditions)
-                )
+                    matches = session.scalars(
+                        select(AnkiGapCardModel).where(*conditions)
+                    ).all()
+                    if len(matches) > 1:
+                        raise ValueError(
+                            "gap card edit requires card_id when a concept "
+                            "has multiple cards"
+                        )
+                    gap = matches[0] if matches else None
                 if gap is None:
                     raise KeyError(edit.card_id or edit.concept_id)
                 if gap.concept_id != edit.concept_id:

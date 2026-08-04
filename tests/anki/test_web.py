@@ -37,7 +37,12 @@ from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.llm.domain import LLMTask, ProviderName
-from oms_hub.models import LectureModel, StudyRevisionModel
+from oms_hub.models import (
+    LectureModel,
+    StudyRevisionModel,
+    UploadBatchModel,
+    UploadItemModel,
+)
 from oms_hub.study_generation.domain import GenerationKind
 from oms_hub.study_generation.outline import OutlinePdfRenderer
 from oms_hub.study_generation.repository import GenerationRepository
@@ -225,6 +230,34 @@ def prepared_app(tmp_path: Path) -> tuple[TestClient, Any, int, int, FakeGateway
             lecturer="Professor",
         )
         session.add(lecture)
+        session.flush()
+        batch = UploadBatchModel(id="test-batch", kind="slides")
+        session.add(batch)
+        session.flush()
+        session.add(
+            UploadItemModel(
+                id="test-slides",
+                batch_id=batch.id,
+                kind="slides",
+                original_filename="slides.pptx",
+                staged_path=str(slides_path),
+                sha256=SHA,
+                size_bytes=slides_path.stat().st_size,
+                lecture_id=lecture.id,
+            )
+        )
+        session.add(
+            UploadItemModel(
+                id="test-transcript",
+                batch_id=batch.id,
+                kind="transcripts",
+                original_filename="transcript.txt",
+                staged_path=str(transcript_path),
+                sha256="c" * 64,
+                size_bytes=transcript_path.stat().st_size,
+                lecture_id=lecture.id,
+            )
+        )
         session.flush()
         revision = StudyRevisionModel(
             upload_item_id="test-slides",

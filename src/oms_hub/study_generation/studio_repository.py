@@ -6,10 +6,12 @@ from uuid import uuid4
 
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
 from oms_hub.models import (
+    PublishedQuizMediaModel,
     PublishedQuizModel,
     StudioQuizImageOverrideModel,
     StudioQuizImageRequirementModel,
@@ -289,7 +291,12 @@ class StudioRepository:
                 supersedes_run_id=supersedes_run_id,
             )
             session.add(model)
-            session.flush()
+            try:
+                session.flush()
+            except IntegrityError as error:
+                raise ValueError(
+                    "this quiz label is already in use for the destination exam"
+                ) from error
             for position, source in enumerate(ordered):
                 assert source.remote_source_id is not None
                 session.add(
@@ -461,6 +468,16 @@ class StudioRepository:
                     StudioQuizImageOverrideModel.run_id == run_id
                 )
             )
+            stale_asset_paths = {
+                path
+                for path in session.scalars(
+                    select(StudioQuizImageRequirementModel.asset_path).where(
+                        StudioQuizImageRequirementModel.run_id == run_id,
+                        StudioQuizImageRequirementModel.asset_path.is_not(None),
+                    )
+                ).all()
+                if path is not None
+            }
             session.execute(
                 delete(StudioQuizImageRequirementModel).where(
                     StudioQuizImageRequirementModel.run_id == run_id
@@ -484,7 +501,23 @@ class StudioRepository:
             model.error = None
             model.next_attempt_at = None
             session.flush()
-            return self._run_domain(session, model)
+            result = self._run_domain(session, model)
+        self._unlink_orphaned_assets(stale_asset_paths)
+        return result
+
+    def _unlink_orphaned_assets(self, asset_paths: set[str]) -> None:
+        if not asset_paths:
+            return
+        with self.database.session() as session:
+            referenced = set(
+                session.scalars(
+                    select(PublishedQuizMediaModel.path).where(
+                        PublishedQuizMediaModel.path.in_(asset_paths)
+                    )
+                ).all()
+            )
+        for asset_path in asset_paths - referenced:
+            Path(asset_path).unlink(missing_ok=True)
 
     def quiz_review(self, run_id: str) -> StudioQuizReview:
         with self.database.session() as session:

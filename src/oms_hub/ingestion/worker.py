@@ -3,6 +3,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
+from oms_hub.db import is_sqlite_busy
 from oms_hub.files.office import (
     OfficeConversionError,
     OfficeTimeoutError,
@@ -83,6 +84,8 @@ class IngestionWorker:
 
     @staticmethod
     def _is_transient(error: Exception) -> bool:
+        if is_sqlite_busy(error):
+            return True
         if isinstance(error, LLMRequestError):
             return error.source in {
                 DiagnosticSource.NETWORK,
