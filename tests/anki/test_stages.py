@@ -3,6 +3,8 @@ import json
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
 import oms_hub.anki.stages as stages_module
 from oms_hub.anki.audit import AuditBatchV2, AuditCacheRecord
 from oms_hub.anki.domain import (
@@ -960,6 +962,105 @@ def test_audit_created_gap_localization_excludes_summary_only_evidence() -> None
     )
 
     assert localization.evidence == (slide,)
+
+
+def test_v2_gap_request_retains_summary_cited_by_missing_fact() -> None:
+    slide = SourcePassage.create(
+        revision_id=7,
+        lecture_id=12,
+        artifact_id="slides-7",
+        source_kind=SourceKind.SLIDE,
+        locator="slide:3",
+        text="Iron deficiency causes low ferritin.",
+        slide_number=3,
+    )
+    summary = SourcePassage.create(
+        revision_id=9,
+        lecture_id=12,
+        artifact_id="summary-9",
+        source_kind=SourceKind.SUMMARY,
+        locator="summary:depth:1",
+        text="DEEP: iron deficiency causes low ferritin.",
+        source_id="SUM:12:DEPTH:D1",
+    )
+    ledger = LectureConceptLedgerV2(
+        lecture_entity_count=1,
+        concepts=(
+            LectureConceptV2(
+                concept_id="C01",
+                canonical_statement="Iron deficiency causes low ferritin.",
+                hypothetical_card="Iron deficiency causes {{c1::low ferritin}}.",
+                primary_entity="iron deficiency",
+                aliases=("low ferritin",),
+                paraphrases=(
+                    "iron deficiency low ferritin",
+                    "iron deficiency depleted stores",
+                    "iron deficiency laboratory findings",
+                ),
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+                passage_ids=(slide.source_id, summary.source_id),
+            ),
+        ),
+        intentionally_uncited=(),
+    )
+    context = SimpleNamespace(
+        prior_payloads={
+            CurationStage.SOURCE_INDEX: {
+                "passages": [
+                    stages_module._passage_payload(slide),
+                    stages_module._passage_payload(summary),
+                ]
+            },
+            CurationStage.LCL: {
+                "ledger": ledger.model_dump(mode="json"),
+                "schema_name": "lcl_v2",
+            },
+        }
+    )
+    concept = stages_module._ledger(context).concepts[0]
+    missing_fact = MissingFactV2(
+        fact_id="C01-M1",
+        statement="Iron deficiency causes low ferritin.",
+        passage_ids=(summary.source_id,),
+    )
+
+    evidence = stages_module._v2_gap_evidence(
+        concept,
+        (missing_fact,),
+        (slide, summary),
+    )
+
+    assert evidence == (slide, summary)
+
+
+def test_v2_gap_request_still_requires_primary_evidence() -> None:
+    summary = SourcePassage.create(
+        revision_id=9,
+        lecture_id=12,
+        artifact_id="summary-9",
+        source_kind=SourceKind.SUMMARY,
+        locator="summary:depth:1",
+        text="DEEP: iron deficiency causes low ferritin.",
+        source_id="SUM:12:DEPTH:D1",
+    )
+    concept = SimpleNamespace(source_passage_ids=(summary.source_id,))
+    missing_fact = MissingFactV2(
+        fact_id="C01-M1",
+        statement="Iron deficiency causes low ferritin.",
+        passage_ids=(summary.source_id,),
+    )
+
+    with pytest.raises(
+        stages_module.PinnedInputChanged,
+        match="no primary-source evidence",
+    ):
+        stages_module._v2_gap_evidence(
+            concept,
+            (missing_fact,),
+            (summary,),
+        )
 
 
 class GapStageRepository:

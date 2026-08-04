@@ -2192,9 +2192,10 @@ def _v2_gap_evidence(
     evidence = tuple(
         passage_by_source_id[source_id]
         for source_id in sorted(requested_ids)
-        if passage_by_source_id[source_id].source_kind is not SourceKind.SUMMARY
     )
-    if not evidence:
+    if not any(
+        passage.source_kind is not SourceKind.SUMMARY for passage in evidence
+    ):
         raise PinnedInputChanged(
             "Audited missing facts have no primary-source evidence"
         )
