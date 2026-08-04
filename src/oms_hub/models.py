@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -227,6 +227,18 @@ class LLMProviderSettingModel(Base):
     )
 
 
+class StudyAISettingModel(Base):
+    __tablename__ = "study_ai_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    openrouter_model: Mapped[str] = mapped_column(
+        String(200),
+        default="openai/gpt-4o-mini",
+    )
+    accuracy_gate_enabled: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
 class IngestionJobModel(Base):
     __tablename__ = "ingestion_jobs"
     __table_args__ = (UniqueConstraint("upload_item_id", "action"),)
@@ -306,6 +318,137 @@ class NotebookSourceMappingModel(Base):
     verified_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
+class StudioSourceModel(Base):
+    __tablename__ = "studio_sources"
+    __table_args__ = (
+        Index("ix_studio_sources_scope_state", "subject_key", "exam_number", "state"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(100))
+    subject_key: Mapped[str] = mapped_column(String(100))
+    exam_number: Mapped[int]
+    source_type: Mapped[str] = mapped_column(String(20))
+    title: Mapped[str] = mapped_column(String(500))
+    original_filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    payload_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    state: Mapped[str] = mapped_column(String(30), default="pending")
+    attempts: Mapped[int] = mapped_column(default=0)
+    next_attempt_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    diagnostic_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    remote_notebook_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    remote_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    converted_from_pptx: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class StudioRunModel(Base):
+    __tablename__ = "studio_runs"
+    __table_args__ = (
+        Index("ix_studio_runs_poll", "state", "next_attempt_at", "created_at"),
+        Index("ix_studio_runs_scope", "subject_key", "exam_number", "created_at"),
+        Index("ix_studio_runs_supersedes", "supersedes_run_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(100))
+    subject_key: Mapped[str] = mapped_column(String(100))
+    exam_number: Mapped[int]
+    destination_subject: Mapped[str] = mapped_column(String(100))
+    destination_subject_key: Mapped[str] = mapped_column(String(100))
+    destination_exam_number: Mapped[int]
+    label: Mapped[str] = mapped_column(String(300))
+    label_key: Mapped[str] = mapped_column(String(300), default="")
+    prompt: Mapped[str] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(String(30), default="queued")
+    stage: Mapped[str] = mapped_column(String(30), default="validate")
+    attempts: Mapped[int] = mapped_column(default=0)
+    next_attempt_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    diagnostic_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notebook_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    raw_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    draft_payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    supersedes_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("studio_runs.id"),
+        nullable=True,
+    )
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class StudioRunSourceModel(Base):
+    __tablename__ = "studio_run_sources"
+    __table_args__ = (
+        UniqueConstraint("run_id", "source_id"),
+        Index("ix_studio_run_sources_run", "run_id", "position"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("studio_runs.id"))
+    source_id: Mapped[str] = mapped_column(ForeignKey("studio_sources.id"))
+    remote_source_id: Mapped[str] = mapped_column(String(200))
+    source_title: Mapped[str] = mapped_column(String(500))
+    position: Mapped[int]
+
+
+class StudioRunAttemptModel(Base):
+    __tablename__ = "studio_run_attempts"
+    __table_args__ = (
+        UniqueConstraint("run_id", "attempt_number"),
+        Index("ix_studio_run_attempts_run", "run_id", "attempt_number"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("studio_runs.id"))
+    attempt_number: Mapped[int]
+    diagnostic_source: Mapped[str] = mapped_column(String(40))
+    raw_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class StudioQuizImageRequirementModel(Base):
+    __tablename__ = "studio_quiz_image_requirements"
+    __table_args__ = (
+        UniqueConstraint("run_id", "image_key"),
+        Index("ix_studio_quiz_image_requirements_run", "run_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("studio_runs.id"))
+    image_key: Mapped[str] = mapped_column(String(64))
+    source_title: Mapped[str] = mapped_column(String(500))
+    locator: Mapped[str] = mapped_column(String(1000))
+    description: Mapped[str] = mapped_column(String(1000))
+    asset_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    asset_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    media_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    width: Mapped[int | None] = mapped_column(nullable=True)
+    height: Mapped[int | None] = mapped_column(nullable=True)
+    original_filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class StudioQuizImageOverrideModel(Base):
+    __tablename__ = "studio_quiz_image_overrides"
+    __table_args__ = (
+        UniqueConstraint("run_id", "question_id"),
+        Index("ix_studio_quiz_image_overrides_run", "run_id", "question_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("studio_runs.id"))
+    question_id: Mapped[str] = mapped_column(String(4))
+    image_key: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
 class CourseQuizDocumentModel(Base):
     __tablename__ = "course_quiz_documents"
 
@@ -331,6 +474,10 @@ class ExamQuizTabModel(Base):
 
 class GenerationJobModel(Base):
     __tablename__ = "generation_jobs"
+    __table_args__ = (
+        Index("ix_generation_jobs_poll", "state", "next_attempt_at", "created_at"),
+        Index("ix_generation_jobs_supersedes", "supersedes_job_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     lecture_id: Mapped[int] = mapped_column(ForeignKey("lectures.id"))
@@ -355,9 +502,29 @@ class GenerationJobModel(Base):
     transcript_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     notebook_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
     gemini_quiz_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    supersedes_job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("generation_jobs.id"),
+        nullable=True,
+    )
     quiz_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
     updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class GenerationAttemptModel(Base):
+    __tablename__ = "generation_attempts"
+    __table_args__ = (
+        UniqueConstraint("job_id", "attempt_number"),
+        Index("ix_generation_attempts_job", "job_id", "attempt_number"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("generation_jobs.id"))
+    attempt_number: Mapped[int]
+    diagnostic_source: Mapped[str] = mapped_column(String(40))
+    raw_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
 
 
 class OutlineOutputModel(Base):
@@ -388,20 +555,49 @@ class PublishedQuizModel(Base):
     __tablename__ = "published_quizzes"
 
     token: Mapped[str] = mapped_column(String(64), primary_key=True)
-    lecture_id: Mapped[int] = mapped_column(
+    lecture_id: Mapped[int | None] = mapped_column(
         ForeignKey("lectures.id"),
-        unique=True,
+        nullable=True,
     )
-    job_id: Mapped[str] = mapped_column(
+    job_id: Mapped[str | None] = mapped_column(
         ForeignKey("generation_jobs.id"),
-        unique=True,
+        nullable=True,
     )
+    studio_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("studio_runs.id"),
+        nullable=True,
+    )
+    destination_subject: Mapped[str] = mapped_column(String(100), default="")
+    destination_subject_key: Mapped[str] = mapped_column(String(100), default="")
+    destination_exam_number: Mapped[int] = mapped_column(default=0)
+    label: Mapped[str] = mapped_column(String(300), default="")
+    label_key: Mapped[str] = mapped_column(String(300), default="")
     title: Mapped[str] = mapped_column(String(300))
     payload_json: Mapped[str] = mapped_column(Text)
     version: Mapped[int] = mapped_column(default=1)
+    active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
     updated_at: Mapped[str] = mapped_column(
         String(40),
         default=utc_now,
         onupdate=utc_now,
     )
+
+
+class PublishedQuizMediaModel(Base):
+    __tablename__ = "published_quiz_media"
+    __table_args__ = (
+        UniqueConstraint("quiz_token", "image_key"),
+        Index("ix_published_quiz_media_token", "quiz_token", "image_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    quiz_token: Mapped[str] = mapped_column(ForeignKey("published_quizzes.token"))
+    image_key: Mapped[str] = mapped_column(String(64))
+    path: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(String(64))
+    media_type: Mapped[str] = mapped_column(String(50))
+    width: Mapped[int]
+    height: Mapped[int]
+    alt_text: Mapped[str] = mapped_column(String(1000))
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)

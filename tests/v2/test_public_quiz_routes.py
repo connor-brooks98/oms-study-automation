@@ -235,3 +235,37 @@ def test_public_answer_submission_still_requires_csrf(tmp_path):
     assert rejected.status_code == 403
     assert accepted.status_code == 200
     assert accepted.json()["correct"] is True
+
+
+def test_public_library_and_content_include_studio_quizzes(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+    )
+    app = create_app(settings)
+    run = app.state.studio_repository.queue_run(
+        "Professor Review",
+        2,
+        "Create a quiz.",
+        [],
+        "Professor Review Quiz",
+        "Professor Review",
+        2,
+    )
+    published = app.state.generation_repository.publish_studio_quiz(run.id, _quiz())
+
+    client = TestClient(app)
+    library = client.get("/public/quizzes")
+    content = client.get(f"/public/quizzes/{published.token}/content")
+    page = client.get(f"/public/quizzes/{published.token}")
+
+    assert library.status_code == 200
+    assert "Studio quiz" in library.text
+    assert "Professor Review Quiz" in library.text
+    assert content.status_code == 200
+    assert content.json()["course"] == "Professor Review"
+    assert content.json()["exam_number"] == 2
+    assert "lecture_number" not in content.json()
+    assert page.status_code == 200
+    assert "Exam 2" in page.text

@@ -1,9 +1,11 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+from oms_hub.db import is_sqlite_busy
 from oms_hub.domain import LectureKey, StepStatus, V2StepName
 from oms_hub.files.atomic import sha256_file
 from oms_hub.ingestion.domain import UploadKind
+from oms_hub.llm.domain import DiagnosticSource
 from oms_hub.study_generation.domain import (
     GenerationKind,
     GenerationStage,
@@ -17,10 +19,14 @@ from oms_hub.study_generation.domain import (
     SourceKind,
 )
 from oms_hub.study_generation.native_quiz import (
+    QuizContractError,
     parse_native_quiz,
     quiz_prompt,
 )
-from oms_hub.study_generation.notebook import NotebookAuthenticationError
+from oms_hub.study_generation.notebook_errors import (
+    NotebookAuthenticationError,
+    NotebookGatewayError,
+)
 
 
 class GenerationWorker:
@@ -67,7 +73,10 @@ class GenerationWorker:
             ):
                 self.notebook_connection.invalidate(str(error))
             safe = _safe_error(error)
-            if _is_transient(error) and job.attempts < 4:
+            retryable = _is_transient(error)
+            if isinstance(error, QuizContractError):
+                retryable = self.repository.contract_failure_count(job.id) < 2
+            if retryable and job.attempts < 4:
                 self.repository.retry(
                     job.id,
                     safe,
@@ -139,66 +148,64 @@ class GenerationWorker:
             SourceKind.CLEANED_TRANSCRIPT,
         )
 
-        notebook_ref = (
-            NotebookRef(job.notebook_id, _notebook_title(lecture))
-            if job.notebook_id
-            else self.notebook.ensure_notebook(
-                lecture.subject,
-                lecture.exam_number,
-            )
-        )
-        if not job.notebook_id:
-            job = self.repository.advance(
-                job.id,
-                GenerationStage.SOURCES,
-                notebook_id=notebook_ref.id,
-            )
-        if job.pdf_source_id and job.transcript_source_id:
-            sources = LectureSourceSet(
-                job.lecture_id,
-                RemoteSource(
-                    job.pdf_source_id,
-                    job.lecture_id,
-                    pdf.revision_id,
-                    pdf.sha256,
-                    SourceKind.LECTURE_PDF,
-                    True,
-                ),
-                RemoteSource(
-                    job.transcript_source_id,
-                    job.lecture_id,
-                    transcript.revision_id,
-                    transcript.sha256,
-                    SourceKind.CLEANED_TRANSCRIPT,
-                    True,
-                ),
-            )
-        else:
-            sources = self.notebook.ensure_sources(
-                notebook_ref,
-                job.lecture_id,
-                pdf,
-                transcript,
-            )
-            job = self.repository.advance(
-                job.id,
-                GenerationStage.NOTEBOOK_PROMPT,
-                pdf_source_id=sources.pdf.remote_id,
-                transcript_source_id=sources.transcript.remote_id,
-            )
         if job.notebook_answer:
+            if not (
+                job.notebook_id
+                and job.pdf_source_id
+                and job.transcript_source_id
+            ):
+                raise SourceIsolationError(
+                    "saved NotebookLM answer is missing its source bindings"
+                )
+            notebook_ref = NotebookRef(
+                job.notebook_id,
+                _notebook_title(lecture),
+            )
+            sources = _stored_sources(job, pdf, transcript)
             answer = NotebookAnswer(job.notebook_answer)
         else:
             notebook_prompt = (
                 prompt
                 if job.kind is GenerationKind.OUTLINE
-                else quiz_prompt(prompt)
+                else quiz_prompt(prompt, lecture.subject)
             )
-            answer = self.notebook.ask(
-                notebook_ref,
-                sources,
-                notebook_prompt,
-            )
+            generate = getattr(self.notebook, "generate", None)
+            if callable(generate):
+                generated = generate(
+                    lecture.subject,
+                    lecture.exam_number,
+                    job.lecture_id,
+                    pdf,
+                    transcript,
+                    notebook_prompt,
+                )
+                notebook_ref = generated.notebook
+                sources = generated.sources
+                answer = generated.answer
+            else:
+                notebook_ref = (
+                    NotebookRef(job.notebook_id, _notebook_title(lecture))
+                    if job.notebook_id
+                    else self.notebook.ensure_notebook(
+                        lecture.subject,
+                        lecture.exam_number,
+                    )
+                )
+                sources = (
+                    _stored_sources(job, pdf, transcript)
+                    if job.pdf_source_id and job.transcript_source_id
+                    else self.notebook.ensure_sources(
+                        notebook_ref,
+                        job.lecture_id,
+                        pdf,
+                        transcript,
+                    )
+                )
+                answer = self.notebook.ask(
+                    notebook_ref,
+                    sources,
+                    notebook_prompt,
+                )
             next_stage = (
                 GenerationStage.PDF
                 if job.kind is GenerationKind.OUTLINE
@@ -207,6 +214,9 @@ class GenerationWorker:
             job = self.repository.advance(
                 job.id,
                 next_stage,
+                notebook_id=notebook_ref.id,
+                pdf_source_id=sources.pdf.remote_id,
+                transcript_source_id=sources.transcript.remote_id,
                 notebook_answer=answer.text,
             )
         lecture_key = LectureKey(
@@ -228,7 +238,23 @@ class GenerationWorker:
         if job.quiz_url:
             quiz_url = job.quiz_url
         else:
-            quiz = parse_native_quiz(answer.text)
+            try:
+                quiz = parse_native_quiz(answer.text)
+            except QuizContractError as error:
+                self.repository.record_attempt(
+                    job.id,
+                    job.attempts,
+                    DiagnosticSource.CONTRACT.value,
+                    answer.text,
+                    str(error),
+                )
+                if self.repository.contract_failure_count(job.id) < 2:
+                    self.repository.advance(
+                        job.id,
+                        GenerationStage.NOTEBOOK_PROMPT,
+                        notebook_answer=None,
+                    )
+                raise
             job = self.repository.advance(
                 job.id,
                 GenerationStage.PUBLISH,
@@ -286,12 +312,41 @@ def _revision_source(
     )
 
 
+def _stored_sources(
+    job: Any,
+    pdf: RevisionSource,
+    transcript: RevisionSource,
+) -> LectureSourceSet:
+    if not job.pdf_source_id or not job.transcript_source_id:
+        raise SourceIsolationError("saved NotebookLM source bindings are incomplete")
+    return LectureSourceSet(
+        job.lecture_id,
+        RemoteSource(
+            job.pdf_source_id,
+            job.lecture_id,
+            pdf.revision_id,
+            pdf.sha256,
+            SourceKind.LECTURE_PDF,
+            True,
+        ),
+        RemoteSource(
+            job.transcript_source_id,
+            job.lecture_id,
+            transcript.revision_id,
+            transcript.sha256,
+            SourceKind.CLEANED_TRANSCRIPT,
+            True,
+        ),
+    )
+
+
 def _notebook_title(lecture: Any) -> str:
     return f"{lecture.subject} · Exam {lecture.exam_number}"
 
 
 def _safe_error(error: Exception) -> str:
     allowed = (
+        NotebookGatewayError,
         SourceIsolationError,
         FileNotFoundError,
         RuntimeError,
@@ -303,36 +358,20 @@ def _safe_error(error: Exception) -> str:
 
 
 def _is_auth_error(error: Exception) -> bool:
-    if isinstance(error, NotebookAuthenticationError):
-        return True
-    message = str(error).casefold()
-    return any(
-        phrase in message
-        for phrase in (
-            "authentication",
-            "connect google",
-            "not connected",
-            "oauth",
-            "sign-in",
-            "sign in",
-        )
+    return bool(
+        isinstance(error, NotebookGatewayError)
+        and error.source is DiagnosticSource.AUTHENTICATION
     )
 
 
 def _is_transient(error: Exception) -> bool:
-    if isinstance(error, (TimeoutError, ConnectionError)):
+    if is_sqlite_busy(error):
         return True
-    message = str(error).casefold()
-    return any(
-        phrase in message
-        for phrase in (
-            "timed out",
-            "timeout",
-            "temporarily unavailable",
-            "rate limit",
-            "connection reset",
-        )
-    )
+    if isinstance(error, NotebookGatewayError):
+        return error.retryable
+    if isinstance(error, QuizContractError):
+        return True
+    return isinstance(error, (TimeoutError, ConnectionError))
 
 
 def _progress_step(kind: GenerationKind) -> V2StepName:

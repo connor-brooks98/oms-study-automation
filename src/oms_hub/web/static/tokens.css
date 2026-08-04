@@ -1,0 +1,42 @@
+:root {
+  color-scheme: light;
+  --page: oklch(0.985 0.004 255);
+  --card: #fff;
+  --border: oklch(0.91 0.006 255);
+  --surface: oklch(0.965 0.005 255);
+  --text: oklch(0.24 0.014 255);
+  --text-2: oklch(0.48 0.012 255);
+  --text-3: oklch(0.64 0.01 255);
+  --muted: var(--text-2);
+  --brand: oklch(0.32 0.07 255);
+  --brand-mid: oklch(0.48 0.09 255);
+  --brand-tint: oklch(0.94 0.02 255);
+  --not-started: oklch(0.6 0.008 255);
+  --processing: oklch(0.55 0.11 255);
+  --review: oklch(0.68 0.14 70);
+  --complete: oklch(0.58 0.11 150);
+  --quarantined: oklch(0.58 0.15 25);
+  --failed: oklch(0.52 0.18 25);
+  --focus: oklch(0.67 0.16 255);
+  --correct: var(--complete);
+  --correct-tint: oklch(0.96 0.025 150);
+  --incorrect: var(--failed);
+  --incorrect-tint: oklch(0.96 0.025 25);
+  --highlight: #fff0a8;
+
+  --quiz-page: var(--page);
+  --quiz-card: var(--card);
+  --quiz-border: var(--border);
+  --quiz-surface: var(--surface);
+  --quiz-text: var(--text);
+  --quiz-muted: var(--text-2);
+  --quiz-faint: var(--text-3);
+  --quiz-brand: var(--brand);
+  --quiz-brand-mid: var(--brand-mid);
+  --quiz-brand-tint: var(--brand-tint);
+  --quiz-correct: var(--correct);
+  --quiz-correct-tint: var(--correct-tint);
+  --quiz-incorrect: var(--incorrect);
+  --quiz-incorrect-tint: var(--incorrect-tint);
+  --quiz-highlight: var(--highlight);
+}

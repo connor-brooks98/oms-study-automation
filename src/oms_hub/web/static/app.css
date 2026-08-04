@@ -1511,6 +1511,64 @@ code { overflow-wrap: anywhere; }
 }
 .tracker-settings { margin-top: 1.5rem; }
 
+.studio-source-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.studio-source-grid .card,
+.studio-status,
+.studio-runner,
+.studio-runs,
+.studio-image-drop { padding: 1.2rem 1.35rem; }
+.studio-scope,
+.studio-runner,
+.studio-runs,
+.studio-image-drop { margin-bottom: 1rem; }
+.studio-scope-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .8rem;
+}
+.studio-source-grid label,
+.studio-runner label { display: grid; gap: .35rem; margin-bottom: .8rem; }
+.studio-source-grid input,
+.studio-source-grid select,
+.studio-runner input,
+.studio-runner select { width: 100%; }
+.studio-source-picker {
+  display: grid;
+  gap: .45rem;
+  max-height: 18rem;
+  overflow: auto;
+  margin-top: .65rem;
+  padding: .7rem;
+  border: 1px solid var(--border);
+  border-radius: .5rem;
+  background: var(--surface);
+}
+.studio-source-picker label {
+  display: flex;
+  grid-template-columns: none;
+  gap: .55rem;
+  align-items: center;
+  margin: 0;
+}
+.studio-status ul { display: grid; gap: .45rem; padding-left: 1.2rem; }
+.studio-status li { display: flex; align-items: center; justify-content: space-between; gap: .7rem; }
+.studio-run { padding: .8rem; border: 1px solid var(--border); border-radius: .55rem; }
+.studio-run + .studio-run { margin-top: .65rem; }
+.studio-run pre { max-height: 12rem; overflow: auto; white-space: pre-wrap; }
+.studio-image-drop {
+  border-style: dashed;
+  text-align: center;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.studio-image-drop.is-dragging,
+.studio-image-drop:focus-visible { border-color: var(--brand-mid); background: var(--brand-tint); }
+.muted { color: var(--text-3); font-size: .75rem; }
+
 @media (max-width: 720px) {
   .utility-nav { padding-inline: 1rem; }
   .brand-bar { padding: .85rem 1rem; }
@@ -1540,7 +1598,9 @@ code { overflow-wrap: anywhere; }
   .anki-workflow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .anki-form-grid,
   .anki-lecture-selector,
-  .anki-source-options { grid-template-columns: 1fr; }
+  .anki-source-options,
+  .studio-source-grid,
+  .studio-scope-fields { grid-template-columns: 1fr; }
   .anki-field-wide { grid-column: auto; }
   .anki-job-link { grid-template-columns: .5rem minmax(0, 1fr) auto; }
   .anki-job-row time { display: none; }

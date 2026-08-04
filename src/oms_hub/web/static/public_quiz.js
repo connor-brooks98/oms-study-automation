@@ -1,6 +1,20 @@
 ((root) => {
   "use strict";
 
+  const FLAG_REASONS = Object.freeze([
+    "inaccurate_question",
+    "ambiguous_question",
+    "want_to_review",
+    "other",
+  ]);
+
+  const FLAG_REASON_LABELS = Object.freeze({
+    inaccurate_question: "Inaccurate question",
+    ambiguous_question: "Ambiguous or unclear",
+    want_to_review: "Want to review later",
+    other: "Other",
+  });
+
   const questionState = (question) => ({
     choiceIds: question.choices.map((choice) => choice.id),
     selectedChoiceId: null,
@@ -8,6 +22,7 @@
     highlights: [],
     submitted: false,
     feedback: null,
+    flagReason: null,
   });
 
   const createQuizState = (content) => ({
@@ -107,6 +122,100 @@
     }))
   );
 
+  const setFlagReason = (state, questionId, reason) => {
+    const normalized = reason || null;
+    if (normalized !== null && !FLAG_REASONS.includes(normalized)) {
+      throw new Error(`Unknown flag reason: ${reason}`);
+    }
+    return updateQuestion(state, questionId, (question) => ({
+      ...question,
+      flagReason: normalized,
+    }));
+  };
+
+  const navigateQuestion = (state, index, totalQuestions) => {
+    if (
+      !Number.isInteger(index)
+      || !Number.isInteger(totalQuestions)
+      || totalQuestions < 1
+      || index < 0
+      || index > totalQuestions
+    ) {
+      throw new Error("Question index is out of range.");
+    }
+    return { ...state, currentIndex: index };
+  };
+
+  const performanceSummary = (content, state) => {
+    const dimensions = {
+      areas: "area",
+      objectives: "learning_objective",
+      topics: "topic",
+    };
+    const groups = Object.fromEntries(
+      Object.keys(dimensions).map((name) => [name, new Map()]),
+    );
+    let correct = 0;
+    let answered = 0;
+    let flagged = 0;
+    for (const question of content.questions) {
+      const progress = state.questions[question.id];
+      const submitted = Boolean(
+        progress?.submitted && progress.feedback,
+      );
+      const isCorrect = submitted && progress.feedback.correct === true;
+      const isFlagged = Boolean(progress?.flagReason);
+      if (submitted) answered += 1;
+      if (isCorrect) correct += 1;
+      if (isFlagged) flagged += 1;
+      for (const [name, field] of Object.entries(dimensions)) {
+        const value = question[field] || (
+          field === "learning_objective" ? question.objective : null
+        );
+        const label = value || (
+          field === "topic" && content.topic ? content.topic : "General"
+        );
+        const current = groups[name].get(label) || {
+          label,
+          total: 0,
+          answered: 0,
+          correct: 0,
+          incorrect: 0,
+          unanswered: 0,
+          needReview: 0,
+          flagged: 0,
+        };
+        current.total += 1;
+        if (isFlagged) current.flagged += 1;
+        if (submitted) {
+          current.answered += 1;
+          if (isCorrect) current.correct += 1;
+          else {
+            current.incorrect += 1;
+            current.needReview += 1;
+          }
+        } else {
+          current.unanswered += 1;
+          current.needReview += 1;
+        }
+        groups[name].set(label, current);
+      }
+    }
+    const total = content.questions.length;
+    return {
+      total,
+      answered,
+      correct,
+      incorrect: answered - correct,
+      unanswered: total - answered,
+      flagged,
+      percentage: total ? Math.round((correct / total) * 100) : 0,
+      areas: [...groups.areas.values()],
+      objectives: [...groups.objectives.values()],
+      topics: [...groups.topics.values()],
+    };
+  };
+
   const recordFeedback = (state, questionId, feedback) => {
     const current = state.questions[questionId];
     if (!current) throw new Error(`Unknown question: ${questionId}`);
@@ -180,6 +289,9 @@
           submitted,
           feedback: submitted
             ? candidate.feedback
+            : null,
+          flagReason: FLAG_REASONS.includes(candidate.flagReason)
+            ? candidate.flagReason
             : null,
         };
       }
@@ -310,6 +422,7 @@
     const render = () => {
       app.replaceChildren();
       if (state.currentIndex >= content.questions.length) {
+        const summary = performanceSummary(content, state);
         const result = element(documentRef, "section", "quiz-result");
         result.append(
           element(documentRef, "p", "quiz-brand", "Study Hub"),
@@ -318,15 +431,65 @@
             documentRef,
             "p",
             "quiz-score",
-            `${state.score} / ${content.questions.length}`,
+            `${summary.correct} / ${summary.total}`,
           ),
           element(
             documentRef,
             "p",
             "quiz-result-copy",
-            "Your answers were stored only in this browser.",
+            `${summary.percentage}% correct · Your answers were stored only in this browser.`,
           ),
         );
+        const summaryHeading = element(
+          documentRef,
+          "h2",
+          "quiz-summary-heading",
+          "Performance summary",
+        );
+        result.append(summaryHeading);
+        const summaryGrid = element(documentRef, "div", "quiz-summary-grid");
+        for (const [title, key] of [
+          ["Areas", "areas"],
+          ["Learning objectives", "objectives"],
+          ["Topics", "topics"],
+        ]) {
+          const group = element(documentRef, "section", "quiz-summary-group");
+          group.append(element(documentRef, "h3", "", title));
+          const table = element(documentRef, "table", "quiz-summary-table");
+          const head = element(documentRef, "thead");
+          const headRow = element(documentRef, "tr");
+          for (const heading of ["Item", "Right", "Need review", "Flagged"]) {
+            headRow.append(element(documentRef, "th", "", heading));
+          }
+          head.append(headRow);
+          const body = element(documentRef, "tbody");
+          for (const row of summary[key]) {
+            const tableRow = element(documentRef, "tr");
+            tableRow.append(
+              element(documentRef, "th", "", row.label),
+              element(documentRef, "td", "", `${row.correct} / ${row.total}`),
+              element(documentRef, "td", "", String(row.needReview)),
+              element(documentRef, "td", "", String(row.flagged)),
+            );
+            body.append(tableRow);
+          }
+          table.append(head, body);
+          group.append(table);
+          summaryGrid.append(group);
+        }
+        result.append(summaryGrid);
+        const review = element(
+          documentRef,
+          "button",
+          "quiz-secondary quiz-review",
+          "Review answers",
+        );
+        review.type = "button";
+        review.addEventListener("click", () => {
+          state = navigateQuestion(state, 0, content.questions.length);
+          persist();
+          render();
+        });
         const restart = element(
           documentRef,
           "button",
@@ -339,7 +502,7 @@
           state = createQuizState(content);
           render();
         });
-        result.append(restart);
+        result.append(review, restart);
         app.append(result);
         return;
       }
@@ -349,12 +512,19 @@
       const shell = element(documentRef, "article", "quiz-shell");
       const header = element(documentRef, "header", "quiz-header");
       const meta = element(documentRef, "div", "quiz-meta");
+      const context = [
+        content.course,
+        content.exam_number != null ? `Exam ${content.exam_number}` : null,
+        content.lecture_number != null
+          ? `Lecture ${content.lecture_number}`
+          : null,
+      ].filter(Boolean).join(" · ");
       meta.append(
         element(
           documentRef,
           "span",
           "quiz-course",
-          `${content.course} · Exam ${content.exam_number} · Lecture ${content.lecture_number}`,
+          context || "Study Hub quiz",
         ),
         element(
           documentRef,
@@ -387,6 +557,29 @@
         questionProgress.highlights,
       );
       body.append(stem);
+
+      if (question.image_url) {
+        const figure = element(documentRef, "figure", "quiz-question-image");
+        const image = element(documentRef, "img");
+        image.src = question.image_url;
+        image.alt = question.image_alt || "Question source image";
+        image.loading = "lazy";
+        figure.append(image);
+        body.append(figure);
+      }
+
+      const dimensions = [
+        ["Area", question.area],
+        ["Objective", question.learning_objective || question.objective],
+        ["Topic", question.topic],
+      ].filter(([, value]) => value);
+      if (dimensions.length > 0) {
+        const tags = element(documentRef, "div", "quiz-dimensions");
+        for (const [label, value] of dimensions) {
+          tags.append(element(documentRef, "span", "quiz-dimension", `${label}: ${value}`));
+        }
+        body.append(tags);
+      }
 
       const tools = element(documentRef, "div", "quiz-tools");
       const highlight = element(
@@ -424,8 +617,45 @@
         persist();
         render();
       });
-      tools.append(highlight, clear);
+      const reset = element(documentRef, "button", "quiz-tool", "Reset quiz");
+      reset.type = "button";
+      reset.addEventListener("click", () => {
+        if (typeof root.confirm === "function" && !root.confirm("Reset this quiz on this browser?")) {
+          return;
+        }
+        storage?.removeItem(key);
+        state = createQuizState(content);
+        render();
+      });
+      tools.append(highlight, clear, reset);
       body.append(tools);
+
+      const flag = element(documentRef, "div", "quiz-flag");
+      const flagLabel = element(documentRef, "label", "quiz-flag-label", "Flag this question");
+      const flagSelect = documentRef.createElement("select");
+      flagSelect.className = "quiz-flag-select";
+      flagSelect.setAttribute("aria-label", "Reason for flagging this question");
+      const noFlag = element(documentRef, "option", "", "No flag");
+      noFlag.value = "";
+      flagSelect.append(noFlag);
+      for (const reason of FLAG_REASONS) {
+        const option = element(
+          documentRef,
+          "option",
+          "",
+          FLAG_REASON_LABELS[reason],
+        );
+        option.value = reason;
+        flagSelect.append(option);
+      }
+      flagSelect.value = questionProgress.flagReason || "";
+      flagSelect.addEventListener("change", () => {
+        state = setFlagReason(state, question.id, flagSelect.value);
+        persist();
+      });
+      flagLabel.append(flagSelect);
+      flag.append(flagLabel);
+      body.append(flag);
 
       const answers = element(documentRef, "div", "quiz-answers");
       for (const [index, choice] of question.choices.entries()) {
@@ -523,22 +753,6 @@
           ),
         );
         body.append(feedback);
-        const continueButton = element(
-          documentRef,
-          "button",
-          "quiz-primary quiz-submit",
-          state.currentIndex === content.questions.length - 1
-            ? "See Results"
-            : "Continue",
-        );
-        continueButton.type = "button";
-        continueButton.addEventListener("click", () => {
-          state = { ...state, currentIndex: state.currentIndex + 1 };
-          persist();
-          render();
-          app.focus();
-        });
-        body.append(continueButton);
       } else {
         body.append(
           element(
@@ -585,6 +799,35 @@
         });
         body.append(submit);
       }
+      const navigation = element(documentRef, "nav", "quiz-navigation");
+      const back = element(documentRef, "button", "quiz-secondary", "← Back");
+      back.type = "button";
+      back.disabled = state.currentIndex === 0;
+      back.addEventListener("click", () => {
+        state = navigateQuestion(state, state.currentIndex - 1, content.questions.length);
+        persist();
+        render();
+        app.focus();
+      });
+      const forward = element(
+        documentRef,
+        "button",
+        "quiz-secondary",
+        state.currentIndex === content.questions.length - 1
+          ? "See results →"
+          : "Next →",
+      );
+      forward.type = "button";
+      forward.disabled = !questionProgress.submitted;
+      forward.addEventListener("click", () => {
+        if (!questionProgress.submitted) return;
+        state = navigateQuestion(state, state.currentIndex + 1, content.questions.length);
+        persist();
+        render();
+        app.focus();
+      });
+      navigation.append(back, forward);
+      body.append(navigation);
       shell.append(header, body);
       app.append(shell);
     };
@@ -593,14 +836,18 @@
   };
 
   const api = {
+    FLAG_REASONS,
     addHighlight,
     answerRequest,
     clearHighlights,
     createQuizState,
     initialize,
+    navigateQuestion,
+    performanceSummary,
     recordFeedback,
     restoreProgress,
     selectChoice,
+    setFlagReason,
     serializeProgress,
     toggleEliminated,
   };

@@ -82,6 +82,7 @@ class GenerationJob:
     transcript_source_id: str | None = None
     notebook_answer: str | None = None
     gemini_quiz_id: str | None = None
+    supersedes_job_id: str | None = None
     quiz_url: str | None = None
 
 
@@ -155,6 +156,13 @@ class NotebookAnswer:
 
 
 @dataclass(frozen=True, slots=True)
+class NotebookGeneration:
+    notebook: NotebookRef
+    sources: LectureSourceSet
+    answer: NotebookAnswer
+
+
+@dataclass(frozen=True, slots=True)
 class OutlineRecord:
     id: int
     lecture_id: int
@@ -180,12 +188,24 @@ class QuizChoice:
 
 
 @dataclass(frozen=True, slots=True)
+class QuizImageRef:
+    key: str
+    source_title: str
+    locator: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
 class QuizQuestion:
     id: str
     stem: str
     choices: tuple[QuizChoice, ...]
     correct_choice_id: str
     rationale: str
+    image_ref: QuizImageRef | None = None
+    area: str | None = None
+    learning_objective: str | None = None
+    topic: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,8 +224,26 @@ class QuizFeedback:
 @dataclass(frozen=True, slots=True)
 class PublishedQuizRecord:
     token: str
-    lecture_id: int
-    job_id: str
+    lecture_id: int | None
+    job_id: str | None
+    studio_run_id: str | None
+    destination_subject: str
+    destination_subject_key: str
+    destination_exam_number: int
+    label: str
     title: str
     quiz: NativeQuiz
     version: int
+    active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedQuizMediaRecord:
+    quiz_token: str
+    image_key: str
+    path: Path
+    sha256: str
+    media_type: str
+    width: int
+    height: int
+    alt_text: str

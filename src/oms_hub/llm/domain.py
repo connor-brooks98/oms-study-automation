@@ -16,6 +16,9 @@ class DiagnosticSource(StrEnum):
     REQUEST = "provider_request"
     QUOTA = "provider_quota"
     SERVICE = "provider_service"
+    SOURCE_PROCESSING = "source_processing"
+    VALIDATION = "validation"
+    CONTRACT = "contract"
 
 
 class LLMRequestError(RuntimeError):

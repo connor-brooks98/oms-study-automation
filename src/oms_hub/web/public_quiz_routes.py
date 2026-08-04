@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, StringConstraints
 
+from oms_hub.files.atomic import sha256_file
 from oms_hub.study_generation.domain import PublishedQuizRecord
 from oms_hub.study_generation.native_quiz import (
     grade_answer,
@@ -21,6 +22,13 @@ _PublicId = Annotated[
     str,
     StringConstraints(pattern=r"^[a-z][0-9]{1,3}$", max_length=4),
 ]
+_ImageId = Annotated[
+    str,
+    StringConstraints(
+        pattern=r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+        max_length=64,
+    ),
+]
 
 
 class AnswerSubmission(BaseModel):
@@ -29,7 +37,7 @@ class AnswerSubmission(BaseModel):
 
 
 def _lecture_number(row: dict[str, object]) -> int:
-    return cast(int, row["lecture_number"])
+    return cast(int, row["lecture_number"] or 0)
 
 
 @router.get("/assets/player.js", include_in_schema=False)
@@ -87,22 +95,39 @@ def quiz_library(request: Request) -> HTMLResponse:
     courses: dict[str, dict[int, list[dict[str, object]]]] = {}
     repository = _repository(request)
     for published in repository.published_quizzes():
-        lecture = request.app.state.catalog_repository.get_lecture(
-            published.lecture_id
+        lecture = (
+            request.app.state.catalog_repository.get_lecture(published.lecture_id)
+            if published.lecture_id is not None
+            else None
         )
-        if lecture is None:
-            continue
-        outline = repository.current_outline(published.lecture_id)
-        courses.setdefault(lecture.subject, {}).setdefault(
-            lecture.exam_number,
+        subject = lecture.subject if lecture is not None else published.destination_subject
+        exam_number = (
+            lecture.exam_number
+            if lecture is not None
+            else published.destination_exam_number
+        )
+        outline = (
+            repository.current_outline(published.lecture_id)
+            if published.lecture_id is not None
+            else None
+        )
+        courses.setdefault(subject, {}).setdefault(
+            exam_number,
             [],
         ).append(
             {
                 "token": published.token,
                 "version": published.version,
                 "title": published.title,
-                "lecture_number": lecture.lecture_number,
-                "topic": lecture.topic,
+                "lecture_number": (
+                    lecture.lecture_number if lecture is not None else None
+                ),
+                "is_studio": lecture is None,
+                "topic": (
+                    lecture.topic
+                    if lecture is not None
+                    else (published.label or published.title)
+                ),
                 "url": f"/public/quizzes/{published.token}",
                 "outline_url": (
                     f"/public/quizzes/{published.token}/outline"
@@ -144,17 +169,31 @@ def quiz_library(request: Request) -> HTMLResponse:
 @router.get("/{token}", response_class=HTMLResponse)
 def quiz_page(request: Request, token: str) -> HTMLResponse:
     published = _published(request, token)
-    lecture = request.app.state.catalog_repository.get_lecture(
-        published.lecture_id
+    lecture = (
+        request.app.state.catalog_repository.get_lecture(published.lecture_id)
+        if published.lecture_id is not None
+        else None
     )
-    if lecture is None:
-        raise HTTPException(404, "quiz was not found")
     return templates.TemplateResponse(
         request=request,
         name="public_quiz.html",
         context={
             "quiz": published,
-            "lecture": lecture,
+            "quiz_context": {
+                "subject": (
+                    lecture.subject
+                    if lecture is not None
+                    else published.destination_subject
+                ),
+                "exam_number": (
+                    lecture.exam_number
+                    if lecture is not None
+                    else published.destination_exam_number
+                ),
+                "lecture_number": (
+                    lecture.lecture_number if lecture is not None else None
+                ),
+            },
             "content_url": f"/public/quizzes/{token}/content",
             "answer_url": f"/public/quizzes/{token}/answer",
         },
@@ -165,21 +204,65 @@ def quiz_page(request: Request, token: str) -> HTMLResponse:
 @router.get("/{token}/content")
 def quiz_content(request: Request, token: str) -> JSONResponse:
     published = _published(request, token)
-    lecture = request.app.state.catalog_repository.get_lecture(
-        published.lecture_id
+    lecture = (
+        request.app.state.catalog_repository.get_lecture(published.lecture_id)
+        if published.lecture_id is not None
+        else None
     )
-    if lecture is None:
-        raise HTTPException(404, "quiz was not found")
+    image_urls = {
+        media.image_key: (
+            f"/public/quizzes/{published.token}/media/{media.image_key}",
+            media.alt_text,
+        )
+        for media in _repository(request).published_quiz_media(published.token)
+    }
+    content = {
+        "token": published.token,
+        "version": published.version,
+        "course": (
+            lecture.subject
+            if lecture is not None
+            else published.destination_subject
+        ),
+        "exam_number": (
+            lecture.exam_number
+            if lecture is not None
+            else published.destination_exam_number
+        ),
+        "topic": (
+            lecture.topic
+            if lecture is not None
+            else (published.label or published.title)
+        ),
+        **public_quiz_content(published.quiz, image_urls),
+    }
+    if lecture is not None:
+        content["lecture_number"] = lecture.lecture_number
     return JSONResponse(
-        {
-            "token": published.token,
-            "version": published.version,
-            "course": lecture.subject,
-            "exam_number": lecture.exam_number,
-            "lecture_number": lecture.lecture_number,
-            "topic": lecture.topic,
-            **public_quiz_content(published.quiz),
-        },
+        content,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/{token}/media/{image_key}")
+def public_quiz_media(
+    request: Request,
+    token: str,
+    image_key: _ImageId,
+) -> FileResponse:
+    _published(request, token)
+    media = _repository(request).published_quiz_media_item(token, image_key)
+    if media is None or not media.path.is_file():
+        raise HTTPException(404, "quiz image was not found")
+    try:
+        valid = sha256_file(media.path) == media.sha256
+    except OSError:
+        valid = False
+    if not valid:
+        raise HTTPException(404, "quiz image was not found")
+    return FileResponse(
+        media.path,
+        media_type=media.media_type,
         headers={"Cache-Control": "no-store"},
     )
 
@@ -187,6 +270,8 @@ def quiz_content(request: Request, token: str) -> JSONResponse:
 @router.get("/{token}/outline")
 def public_outline(request: Request, token: str) -> FileResponse:
     published = _published(request, token)
+    if published.lecture_id is None:
+        raise HTTPException(404, "outline was not found")
     record = _repository(request).current_outline(published.lecture_id)
     if record is None:
         raise HTTPException(404, "outline was not found")

@@ -240,6 +240,103 @@
       });
     });
 
+    const openrouterCard = documentRef.querySelector("[data-openrouter-card]");
+    if (openrouterCard) {
+      const message = openrouterCard.querySelector("[data-openrouter-message]");
+      const model = openrouterCard.querySelector("[data-openrouter-model]");
+      const customModel = openrouterCard.querySelector("[data-openrouter-custom-model]");
+      const key = openrouterCard.querySelector("[data-openrouter-key]");
+      const configured = openrouterCard.querySelector("[data-openrouter-configured]");
+      const gate = openrouterCard.querySelector("[data-openrouter-gate]");
+      const syncModelControl = () => {
+        customModel.hidden = model.value !== "__custom__";
+      };
+      const selectedModel = () => (
+        model.value === "__custom__" ? customModel.value : model.value
+      );
+      model.addEventListener("change", syncModelControl);
+      syncModelControl();
+      openrouterCard.querySelector("[data-save-openrouter-model]").addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          const result = await postJson(
+            fetchImpl,
+            "/settings/ai/openrouter/model",
+            { model: selectedModel() },
+            token(),
+          );
+          if ([...model.options].some((option) => option.value === result.model)) {
+            model.value = result.model;
+          } else {
+            model.value = "__custom__";
+            customModel.value = result.model;
+          }
+          syncModelControl();
+          message.textContent = "OpenRouter review model saved.";
+        } catch (error) {
+          message.textContent = error.message;
+        } finally {
+          button.disabled = false;
+        }
+      });
+      openrouterCard.querySelector("[data-save-openrouter-key]").addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          const result = await postJson(
+            fetchImpl,
+            "/settings/ai/openrouter/credential",
+            { credential: key.value },
+            token(),
+          );
+          key.value = "";
+          configured.textContent = result.configured ? "Configured" : "Not configured";
+          configured.classList.toggle("is-configured", result.configured);
+          message.textContent = "OpenRouter key saved securely.";
+        } catch (error) {
+          message.textContent = error.message;
+        } finally {
+          button.disabled = false;
+        }
+      });
+      gate.addEventListener("change", async () => {
+        try {
+          const result = await postJson(
+            fetchImpl,
+            "/settings/ai/openrouter/gate",
+            { enabled: gate.checked },
+            token(),
+          );
+          gate.checked = result.enabled;
+          message.textContent = result.enabled
+            ? "Publication will wait for medical review."
+            : "Medical review gate disabled.";
+        } catch (error) {
+          gate.checked = !gate.checked;
+          message.textContent = error.message;
+        }
+      });
+      openrouterCard.querySelector("[data-test-openrouter]").addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        message.textContent = "Testing OpenRouter…";
+        try {
+          const result = await postJson(
+            fetchImpl,
+            "/settings/ai/openrouter/test",
+            {},
+            token(),
+          );
+          message.textContent = result.message;
+        } catch (error) {
+          message.textContent = error.message;
+        } finally {
+          button.disabled = false;
+        }
+      });
+    }
+
     documentRef.querySelectorAll("[data-prompt-card]").forEach((card) => {
       const kind = card.dataset.prompt;
       const input = card.querySelector("[data-prompt-path]");

@@ -13,7 +13,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 11
+LATEST_SCHEMA_VERSION = 12
 
 
 def _ensure_column(
@@ -89,10 +89,59 @@ def _upgrade_generation_job_columns(database: "Database") -> None:
         "pdf_revision_id": "INTEGER",
         "transcript_revision_id": "INTEGER",
         "gemini_quiz_id": "VARCHAR(500)",
+        "supersedes_job_id": "VARCHAR(36)",
         "quiz_url": "TEXT",
     }
     for name, definition in columns.items():
         _ensure_column(database, "generation_jobs", name, definition)
+
+
+def _upgrade_studio_columns(database: "Database") -> None:
+    """Backfill columns introduced with NotebookLM Studio.
+
+    ``create_schema`` creates all new tables, but it intentionally does not
+    alter tables from an older installation. Keep these additions additive so
+    existing Anki and lecture-generation data remains intact.
+    """
+    published_columns = {
+        "studio_run_id": "VARCHAR(36)",
+        "destination_subject": "VARCHAR(100) NOT NULL DEFAULT ''",
+        "destination_subject_key": "VARCHAR(100) NOT NULL DEFAULT ''",
+        "destination_exam_number": "INTEGER NOT NULL DEFAULT 0",
+        "label": "VARCHAR(300) NOT NULL DEFAULT ''",
+        "label_key": "VARCHAR(300) NOT NULL DEFAULT ''",
+        "active": "BOOLEAN NOT NULL DEFAULT 1",
+    }
+    for name, definition in published_columns.items():
+        _ensure_column(database, "published_quizzes", name, definition)
+
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE published_quizzes SET "
+                "destination_subject = COALESCE(NULLIF(destination_subject, ''), "
+                "(SELECT subject FROM lectures WHERE lectures.id = published_quizzes.lecture_id)), "
+                "destination_subject_key = COALESCE(NULLIF(destination_subject_key, ''), "
+                "lower(trim((SELECT subject FROM lectures WHERE lectures.id = published_quizzes.lecture_id)))), "
+                "destination_exam_number = CASE WHEN destination_exam_number = 0 THEN "
+                "COALESCE((SELECT exam_number FROM lectures WHERE lectures.id = published_quizzes.lecture_id), 0) "
+                "ELSE destination_exam_number END, "
+                "label = COALESCE(NULLIF(label, ''), title), "
+                "label_key = COALESCE(NULLIF(label_key, ''), lower(trim(title)) )"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_generation_jobs_poll "
+                "ON generation_jobs (state, next_attempt_at, created_at)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_generation_jobs_supersedes "
+                "ON generation_jobs (supersedes_job_id)"
+            )
+        )
 
 
 def _upgrade_gap_card_identity(database: "Database") -> None:
@@ -163,6 +212,7 @@ def _upgrade_gap_card_identity(database: "Database") -> None:
 def migrate_database(database: "Database") -> None:
     database.create_schema()
     _upgrade_generation_job_columns(database)
+    _upgrade_studio_columns(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_gap_card_identity(database)
     usage_columns = {

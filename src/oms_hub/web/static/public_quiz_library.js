@@ -41,6 +41,10 @@
     }
   };
 
+  const resetProgress = (storage, token, version) => {
+    storage.removeItem(progressKey(token, version));
+  };
+
   const setExpanded = (button, expanded) => {
     button.setAttribute("aria-expanded", String(expanded));
     const panel = button.ownerDocument.getElementById(
@@ -64,6 +68,23 @@
         );
       });
     };
+    documentRef.querySelectorAll("[data-reset-quiz]").forEach((button) => {
+      button.addEventListener("click", () => {
+        try {
+          resetProgress(
+            storage,
+            button.dataset.quizToken,
+            button.dataset.quizVersion,
+          );
+          refresh();
+          documentRef.querySelector("[data-reset-message]").textContent =
+            "That quiz's progress was reset on this browser.";
+        } catch (_error) {
+          documentRef.querySelector("[data-reset-message]").textContent =
+            "Quiz progress could not be reset.";
+        }
+      });
+    });
     refresh();
     const reset = documentRef.querySelector("[data-reset-progress]");
     if (reset) {
@@ -86,7 +107,14 @@
     }
   };
 
-  const api = { initialize, progressKey, progressLabel, readProgress, setExpanded };
+  const api = {
+    initialize,
+    progressKey,
+    progressLabel,
+    readProgress,
+    resetProgress,
+    setExpanded,
+  };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) {
     root.document.addEventListener("DOMContentLoaded", () => {

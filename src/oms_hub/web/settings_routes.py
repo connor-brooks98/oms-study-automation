@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
 from starlette.responses import Response
 
 from oms_hub.llm.domain import (
@@ -15,10 +16,16 @@ from oms_hub.llm.domain import (
     LLMRequestError,
     ProviderName,
 )
+from oms_hub.llm.openrouter import (
+    OPENROUTER_API_KEY_SECRET,
+    AccuracyGateError,
+    MedicalAccuracyGate,
+)
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.llm.service import SECRET_KEYS, LLMService
 from oms_hub.repositories import CatalogRepository
 from oms_hub.security.secret_store import SecretStore
+from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
 from oms_hub.study_generation.domain import PromptKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.tracker_preview import TrackerPreview, TrackerPreviewService
@@ -33,6 +40,20 @@ router = APIRouter(prefix="/settings")
 logger = logging.getLogger(__name__)
 
 _MAX_TRACKER_BYTES = 25 * 1024 * 1024
+_OPENROUTER_MODELS = (
+    "openai/gpt-4o-mini",
+    "google/gemini-2.0-flash-001",
+    "anthropic/claude-3.5-sonnet",
+    "openrouter/free",
+)
+
+
+class AccuracyGateUpdate(BaseModel):
+    enabled: bool
+
+
+class OpenRouterModelUpdate(BaseModel):
+    model: str = Field(min_length=1, max_length=200)
 
 
 def _service(request: Request) -> TrackerPreviewService:
@@ -100,6 +121,7 @@ def settings_page(request: Request) -> HTMLResponse:
             "active_provider": _llm_settings(
                 request
             ).active().provider.value,
+            "openrouter": _openrouter_context(request),
             "notebook_status": (
                 request.app.state.notebook_connection.status()
             ),
@@ -126,6 +148,70 @@ def settings_page(request: Request) -> HTMLResponse:
             ),
         },
     )
+
+
+def _openrouter_context(request: Request) -> dict[str, object]:
+    settings = cast(StudyAISettingsRepository, request.app.state.study_ai_settings).get()
+    secrets = cast(SecretStore, request.app.state.secrets)
+    return {
+        "model": settings.openrouter_model,
+        "models": _OPENROUTER_MODELS,
+        "accuracy_gate_enabled": settings.accuracy_gate_enabled,
+        "configured": bool((secrets.get(OPENROUTER_API_KEY_SECRET) or "").strip()),
+    }
+
+
+@router.post("/ai/openrouter/credential")
+def save_openrouter_credential(
+    request: Request,
+    update: CredentialUpdate,
+) -> JSONResponse:
+    secrets = cast(SecretStore, request.app.state.secrets)
+    request.app.state.medical_accuracy_gate.secrets = secrets
+    if update.credential.strip():
+        secrets.set(OPENROUTER_API_KEY_SECRET, update.credential.strip())
+    return _no_store(
+        {
+            "configured": bool(
+                (secrets.get(OPENROUTER_API_KEY_SECRET) or "").strip()
+            )
+        }
+    )
+
+
+@router.post("/ai/openrouter/model")
+def save_openrouter_model(
+    request: Request,
+    update: OpenRouterModelUpdate,
+) -> JSONResponse:
+    try:
+        saved = cast(StudyAISettingsRepository, request.app.state.study_ai_settings).save(
+            openrouter_model=update.model,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return _no_store({"model": saved.openrouter_model})
+
+
+@router.post("/ai/openrouter/gate")
+def save_accuracy_gate(
+    request: Request,
+    update: AccuracyGateUpdate,
+) -> JSONResponse:
+    settings = cast(StudyAISettingsRepository, request.app.state.study_ai_settings)
+    saved = settings.save(accuracy_gate_enabled=update.enabled)
+    return _no_store({"enabled": saved.accuracy_gate_enabled})
+
+
+@router.post("/ai/openrouter/test")
+def test_openrouter_connection(request: Request) -> JSONResponse:
+    gate = cast(MedicalAccuracyGate, request.app.state.medical_accuracy_gate)
+    gate.secrets = cast(SecretStore, request.app.state.secrets)
+    try:
+        gate.test_connection()
+    except AccuracyGateError as error:
+        return _no_store({"state": "failed", "message": str(error)})
+    return _no_store({"state": "connected", "message": "OpenRouter is ready."})
 
 
 @router.post("/ai/{provider}/credential")

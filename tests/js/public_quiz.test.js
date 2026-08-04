@@ -142,3 +142,55 @@ test("answer request sends CSRF protection and keeps answers out of URL", async 
   });
   assert.equal(feedback.correct, false);
 });
+
+test("question navigation and flags persist in quiz state", () => {
+  let state = quiz.createQuizState({ ...content, questions: content.questions });
+
+  state = quiz.setFlagReason(state, "q1", "inaccurate_question");
+  state = quiz.navigateQuestion(state, 1, content.questions.length);
+
+  assert.equal(state.currentIndex, 1);
+  assert.equal(state.questions.q1.flagReason, "inaccurate_question");
+  assert.throws(
+    () => quiz.setFlagReason(state, "q1", "not-a-reason"),
+    /Unknown flag reason/,
+  );
+});
+
+test("performance summary groups right and need-review counts", () => {
+  const tagged = {
+    ...content,
+    topic: "Course topic",
+    questions: [
+      { ...content.questions[0], area: "Neuro", learning_objective: "Recognize", topic: "Stroke" },
+      { ...content.questions[1], area: "Neuro", learning_objective: "Recognize", topic: "Seizure" },
+    ],
+  };
+  let state = quiz.createQuizState(tagged);
+  state = quiz.selectChoice(state, "q1", "c1");
+  state = quiz.recordFeedback(state, "q1", {
+    correct: true,
+    correct_choice_id: "c1",
+    rationale: "Correct.",
+  });
+  state = quiz.selectChoice(state, "q2", "c1");
+  state = quiz.recordFeedback(state, "q2", {
+    correct: false,
+    correct_choice_id: "c2",
+    rationale: "Review.",
+  });
+
+  const summary = quiz.performanceSummary(tagged, state);
+  assert.equal(summary.correct, 1);
+  assert.equal(summary.percentage, 50);
+  assert.deepEqual(summary.areas[0], {
+    label: "Neuro",
+    total: 2,
+    answered: 2,
+    correct: 1,
+    incorrect: 1,
+    unanswered: 0,
+    needReview: 1,
+    flagged: 0,
+  });
+});

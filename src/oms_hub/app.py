@@ -1,3 +1,6 @@
+import asyncio
+import logging
+import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -48,6 +51,7 @@ from oms_hub.llm.anthropic import AnthropicProvider
 from oms_hub.llm.domain import ProviderName
 from oms_hub.llm.gemini import GeminiProvider
 from oms_hub.llm.openai import OpenAIProvider
+from oms_hub.llm.openrouter import MedicalAccuracyGate
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.llm.service import LLMService
 from oms_hub.llm.structured import StructuredTextService
@@ -64,8 +68,10 @@ from oms_hub.security.csrf import (
     browser_csrf_required,
     origin_is_allowed,
 )
+from oms_hub.security.rate_limit import PublicQuizRateLimiter
 from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.slides.pipeline import SlidePipeline
+from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
 from oms_hub.study_generation.native_quiz import NativeQuizPublisher
 from oms_hub.study_generation.notebook import StoredNotebookLMGateway
 from oms_hub.study_generation.notebook_auth import NotebookCLIAuth
@@ -79,8 +85,12 @@ from oms_hub.study_generation.path_picker import (
     SystemPromptPathPicker,
 )
 from oms_hub.study_generation.prompts import PromptFileService
+from oms_hub.study_generation.quiz_images import StudioQuizImageService
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.service import GenerationService
+from oms_hub.study_generation.studio_repository import StudioRepository
+from oms_hub.study_generation.studio_service import StudioService
+from oms_hub.study_generation.studio_worker import StudioWorker
 from oms_hub.study_generation.worker import GenerationWorker
 from oms_hub.transcripts.pipeline import (
     TranscriptPipeline as V2TranscriptPipeline,
@@ -101,19 +111,68 @@ from oms_hub.web.public_quiz_routes import router as public_quiz_router
 from oms_hub.web.quarantine_routes import router as quarantine_router
 from oms_hub.web.routes import router
 from oms_hub.web.settings_routes import router as settings_router
+from oms_hub.web.studio_routes import router as studio_router
 from oms_hub.web.upload_routes import router as upload_router
+
+logger = logging.getLogger(__name__)
+
+
+def _run_sync_worker(
+    stop: threading.Event,
+    worker: object,
+    name: str,
+) -> None:
+    while not stop.is_set():
+        try:
+            worked = bool(worker.run_once())  # type: ignore[attr-defined]
+        except Exception:
+            logger.exception("%s worker failed", name)
+            worked = False
+        stop.wait(0.5 if worked else 5.0)
 
 
 @asynccontextmanager
 async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
-    worker = getattr(app.state, "anki_curation_worker", None)
-    if worker is not None:
-        await worker.start()
+    anki_worker = getattr(app.state, "anki_curation_worker", None)
+    if anki_worker is not None:
+        await anki_worker.start()
+    sync_workers = tuple(
+        (name, getattr(app.state, name, None))
+        for name in (
+            "ingestion_worker",
+            "generation_worker",
+            "studio_worker",
+        )
+    )
+    active_sync_workers = tuple(
+        (name, worker) for name, worker in sync_workers if worker is not None
+    )
+    for _name, sync_worker in active_sync_workers:
+        recover = getattr(sync_worker, "recover_interrupted_jobs", None)
+        if callable(recover):
+            recover()
+    stop = threading.Event()
+    threads = tuple(
+        threading.Thread(
+            target=_run_sync_worker,
+            args=(stop, sync_worker, name),
+            name=f"oms-{name}",
+            daemon=True,
+        )
+        for name, sync_worker in active_sync_workers
+    )
+    for thread in threads:
+        thread.start()
+    app.state.worker_threads = threads
     try:
         yield
     finally:
-        if worker is not None:
-            await worker.stop()
+        stop.set()
+        await asyncio.gather(
+            *(asyncio.to_thread(thread.join, 10) for thread in threads)
+        )
+        if anki_worker is not None:
+            await anki_worker.stop()
         embedder = getattr(app.state, "anki_embedder", None)
         if embedder is not None:
             await embedder.aclose()
@@ -144,6 +203,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     csrf = CsrfProtector.from_data_dir(resolved.data_dir)
     app.state.csrf = csrf
+    app.state.public_quiz_rate_limiter = PublicQuizRateLimiter()
     access_values = (
         resolved.cloudflare_access_issuer,
         resolved.cloudflare_access_audience,
@@ -397,6 +457,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.secrets = KeyringSecretStore()
     retire_google_docs_credentials(resolved.data_dir, app.state.secrets)
+    app.state.study_ai_settings = StudyAISettingsRepository(database)
+    app.state.medical_accuracy_gate = MedicalAccuracyGate(
+        app.state.study_ai_settings,
+        app.state.secrets,
+    )
     app.state.anki_repository = AnkiCurationRepository(database)
     app.state.anki_tag_policy = TagPolicy(
         pipeline_owned_roots=("OMS",),
@@ -432,7 +497,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.catalog_repository = CatalogRepository(database)
     app.state.ingestion_repository = IngestionRepository(database)
-    app.state.generation_repository = GenerationRepository(database)
+    app.state.generation_repository = GenerationRepository(
+        database,
+        app.state.medical_accuracy_gate,
+    )
     prompt_fallback = resolved.anki_prompt_directory
 
     def active_anki_prompt_directory() -> Path | None:
@@ -490,21 +558,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         prompt_files,
         app.state.notebook_connection,
     )
+    notebook_gateway = StoredNotebookLMGateway(
+        notebook_storage_path,
+        app.state.generation_repository,
+    )
+    app.state.notebook_gateway = notebook_gateway
     app.state.generation_worker = GenerationWorker(
         app.state.generation_repository,
         app.state.catalog_repository,
         app.state.ingestion_repository,
         prompt_files,
-        StoredNotebookLMGateway(
-            notebook_storage_path,
-            app.state.generation_repository,
-        ),
+        notebook_gateway,
         OutlineService(resolved, app.state.generation_repository),
         NativeQuizPublisher(
             app.state.generation_repository,
             resolved,
         ),
         app.state.notebook_connection,
+    )
+    app.state.studio_repository = StudioRepository(database)
+    app.state.studio_service = StudioService(
+        app.state.studio_repository,
+        resolved.data_dir / "studio-sources",
+        resolved.max_upload_file_bytes,
+    )
+    app.state.studio_quiz_image_service = StudioQuizImageService(
+        app.state.studio_repository,
+        resolved.data_dir / "studio-quiz-media",
+    )
+    app.state.studio_worker = StudioWorker(
+        app.state.studio_repository,
+        notebook_gateway,
+        SerialOfficeConverter(resolved.office_timeout_seconds),
+        app.state.notebook_connection,
+        app.state.generation_repository,
+        app.state.studio_quiz_image_service,
     )
     app.state.anki_curation_worker = None
     app.state.anki_embedder = None
@@ -630,6 +718,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(anki_prompt_router)
     app.include_router(notebook_router)
     app.include_router(lecture_router)
+    app.include_router(studio_router)
     app.include_router(public_quiz_router)
 
     @app.get("/health")

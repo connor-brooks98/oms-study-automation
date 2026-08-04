@@ -1,24 +1,32 @@
 import re
 import secrets
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 
 from oms_hub.db import Database
+from oms_hub.files.atomic import sha256_file
 from oms_hub.models import (
     CourseQuizDocumentModel,
     ExamQuizTabModel,
+    GenerationAttemptModel,
     GenerationJobModel,
     GoogleConnectionModel,
+    LectureModel,
     NotebookMappingModel,
     NotebookSourceMappingModel,
     OutlineOutputModel,
+    PublishedQuizMediaModel,
     PublishedQuizModel,
     QuizOutputModel,
+    StudioQuizImageOverrideModel,
+    StudioQuizImageRequirementModel,
+    StudioRunModel,
     StudyPromptSettingModel,
 )
 from oms_hub.study_generation.domain import (
@@ -31,14 +39,17 @@ from oms_hub.study_generation.domain import (
     NotebookSourceBinding,
     OutlineRecord,
     PromptKind,
+    PublishedQuizMediaRecord,
     PublishedQuizRecord,
     QuizRecord,
     SourceKind,
 )
 from oms_hub.study_generation.native_quiz import (
+    image_requirements,
     parse_native_quiz,
     serialize_native_quiz,
 )
+from oms_hub.study_generation.studio_domain import StudioRunStage, StudioRunState
 
 _ACTIVE_STATES = {
     GenerationState.QUEUED.value,
@@ -48,9 +59,14 @@ _ACTIVE_STATES = {
 _ANKI_PROMPT_DIRECTORY_KEY = "anki_curation_prompt_directory"
 
 
+def _normalize(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
 class GenerationRepository:
-    def __init__(self, database: Database):
+    def __init__(self, database: Database, accuracy_gate: object | None = None):
         self.database = database
+        self.accuracy_gate = accuracy_gate
 
     def queue(self, lecture_id: int, kind: GenerationKind) -> GenerationJob:
         with self.database.session() as session:
@@ -65,12 +81,22 @@ class GenerationRepository:
             )
             if existing is not None:
                 return self._job(existing)
+            predecessor = session.scalar(
+                select(GenerationJobModel)
+                .where(
+                    GenerationJobModel.lecture_id == lecture_id,
+                    GenerationJobModel.kind == kind.value,
+                    GenerationJobModel.state == GenerationState.FAILED.value,
+                )
+                .order_by(GenerationJobModel.created_at.desc())
+            )
             model = GenerationJobModel(
                 id=str(uuid4()),
                 lecture_id=lecture_id,
                 kind=kind.value,
                 state=GenerationState.QUEUED.value,
                 stage=GenerationStage.VALIDATE.value,
+                supersedes_job_id=(predecessor.id if predecessor else None),
             )
             session.add(model)
             session.flush()
@@ -83,9 +109,7 @@ class GenerationRepository:
         with self.database.session() as session:
             model = session.get(StudyPromptSettingModel, kind.value)
             if model is None:
-                session.add(
-                    StudyPromptSettingModel(kind=kind.value, path=normalized)
-                )
+                session.add(StudyPromptSettingModel(kind=kind.value, path=normalized))
             else:
                 model.path = normalized
                 model.last_sha256 = None
@@ -188,8 +212,7 @@ class GenerationRepository:
         with self.database.session() as session:
             model = session.scalar(
                 select(NotebookMappingModel).where(
-                    NotebookMappingModel.remote_notebook_id
-                    == remote_notebook_id
+                    NotebookMappingModel.remote_notebook_id == remote_notebook_id
                 )
             )
             return self._notebook_mapping(model) if model is not None else None
@@ -246,8 +269,7 @@ class GenerationRepository:
             model = session.scalar(
                 select(NotebookSourceMappingModel)
                 .where(
-                    NotebookSourceMappingModel.notebook_mapping_id
-                    == notebook_mapping_id,
+                    NotebookSourceMappingModel.notebook_mapping_id == notebook_mapping_id,
                     NotebookSourceMappingModel.lecture_id == lecture_id,
                     NotebookSourceMappingModel.source_kind == source_kind.value,
                     NotebookSourceMappingModel.state == "ready",
@@ -279,8 +301,7 @@ class GenerationRepository:
             session.execute(
                 update(NotebookSourceMappingModel)
                 .where(
-                    NotebookSourceMappingModel.notebook_mapping_id
-                    == notebook_mapping_id,
+                    NotebookSourceMappingModel.notebook_mapping_id == notebook_mapping_id,
                     NotebookSourceMappingModel.lecture_id == lecture_id,
                     NotebookSourceMappingModel.source_kind == source_kind.value,
                     NotebookSourceMappingModel.state == "ready",
@@ -289,8 +310,7 @@ class GenerationRepository:
             )
             model = session.scalar(
                 select(NotebookSourceMappingModel).where(
-                    NotebookSourceMappingModel.notebook_mapping_id
-                    == notebook_mapping_id,
+                    NotebookSourceMappingModel.notebook_mapping_id == notebook_mapping_id,
                     NotebookSourceMappingModel.study_revision_id == revision_id,
                     NotebookSourceMappingModel.source_kind == source_kind.value,
                 )
@@ -396,21 +416,11 @@ class GenerationRepository:
             models = session.scalars(
                 select(GenerationJobModel).where(
                     or_(
-                        GenerationJobModel.state
-                        == GenerationState.RUNNING.value,
+                        GenerationJobModel.state == GenerationState.RUNNING.value,
                         (
-                            (
-                                GenerationJobModel.state
-                                == GenerationState.PAUSED.value
-                            )
-                            & (
-                                GenerationJobModel.kind
-                                == GenerationKind.QUIZ.value
-                            )
-                            & (
-                                GenerationJobModel.stage
-                                == GenerationStage.DOCS.value
-                            )
+                            (GenerationJobModel.state == GenerationState.PAUSED.value)
+                            & (GenerationJobModel.kind == GenerationKind.QUIZ.value)
+                            & (GenerationJobModel.stage == GenerationStage.DOCS.value)
                             & GenerationJobModel.quiz_url.is_not(None)
                         ),
                     )
@@ -453,6 +463,37 @@ class GenerationRepository:
             model.next_attempt_at = (datetime.now(UTC) + delay).isoformat()
             session.flush()
             return self._job(model)
+
+    def record_attempt(
+        self,
+        job_id: str,
+        attempt_number: int,
+        diagnostic_source: str,
+        raw_response: str | None,
+        error: str,
+    ) -> None:
+        with self.database.session() as session:
+            session.add(
+                GenerationAttemptModel(
+                    job_id=job_id,
+                    attempt_number=attempt_number,
+                    diagnostic_source=diagnostic_source,
+                    raw_response=raw_response,
+                    error=error[:1000],
+                )
+            )
+
+    def contract_failure_count(self, job_id: str) -> int:
+        with self.database.session() as session:
+            return int(
+                session.scalar(
+                    select(func.count(GenerationAttemptModel.id)).where(
+                        GenerationAttemptModel.job_id == job_id,
+                        GenerationAttemptModel.diagnostic_source == "contract",
+                    )
+                )
+                or 0
+            )
 
     def fail(self, job_id: str, error: str, *, paused: bool = False) -> GenerationJob:
         return self._set_state(
@@ -537,9 +578,7 @@ class GenerationRepository:
                 .where(QuizOutputModel.lecture_id == lecture_id)
                 .values(current=False)
             )
-            model = session.scalar(
-                select(QuizOutputModel).where(QuizOutputModel.job_id == job_id)
-            )
+            model = session.scalar(select(QuizOutputModel).where(QuizOutputModel.job_id == job_id))
             if model is None:
                 model = QuizOutputModel(
                     lecture_id=lecture_id,
@@ -572,10 +611,15 @@ class GenerationRepository:
         job_id: str,
         quiz: NativeQuiz,
     ) -> PublishedQuizRecord:
+        self._validate_accuracy(quiz)
         with self.database.session() as session:
+            lecture = session.get(LectureModel, lecture_id)
+            if lecture is None:
+                raise ValueError("lecture was removed")
             model = session.scalar(
                 select(PublishedQuizModel).where(
-                    PublishedQuizModel.lecture_id == lecture_id
+                    PublishedQuizModel.lecture_id == lecture_id,
+                    PublishedQuizModel.active.is_(True),
                 )
             )
             if model is None:
@@ -583,13 +627,25 @@ class GenerationRepository:
                     token=secrets.token_hex(32),
                     lecture_id=lecture_id,
                     job_id=job_id,
+                    studio_run_id=None,
+                    destination_subject=lecture.subject,
+                    destination_subject_key=_normalize(lecture.subject),
+                    destination_exam_number=lecture.exam_number,
+                    label=quiz.title,
+                    label_key=_normalize(quiz.title),
                     title=quiz.title,
                     payload_json=serialize_native_quiz(quiz),
                     version=1,
+                    active=True,
                 )
                 session.add(model)
             elif model.job_id != job_id:
                 model.job_id = job_id
+                model.destination_subject = lecture.subject
+                model.destination_subject_key = _normalize(lecture.subject)
+                model.destination_exam_number = lecture.exam_number
+                model.label = quiz.title
+                model.label_key = _normalize(quiz.title)
                 model.title = quiz.title
                 model.payload_json = serialize_native_quiz(quiz)
                 model.version += 1
@@ -599,20 +655,287 @@ class GenerationRepository:
     def published_quiz(self, token: str) -> PublishedQuizRecord | None:
         with self.database.session() as session:
             model = session.get(PublishedQuizModel, token)
-            return (
-                self._published_quiz(model)
-                if model is not None
-                else None
-            )
+            return self._published_quiz(model) if model is not None and model.active else None
 
     def published_quizzes(self) -> tuple[PublishedQuizRecord, ...]:
         with self.database.session() as session:
             models = session.scalars(
-                select(PublishedQuizModel).order_by(
-                    PublishedQuizModel.lecture_id,
+                select(PublishedQuizModel)
+                .order_by(
+                    PublishedQuizModel.destination_subject_key,
+                    PublishedQuizModel.destination_exam_number,
+                    PublishedQuizModel.title,
                 )
+                .where(PublishedQuizModel.active.is_(True))
             ).all()
             return tuple(self._published_quiz(model) for model in models)
+
+    def publish_studio_quiz(
+        self,
+        run_id: str,
+        quiz: NativeQuiz,
+    ) -> PublishedQuizRecord:
+        self._validate_accuracy(quiz)
+        with self.database.session() as session:
+            run = session.get(StudioRunModel, run_id)
+            if run is None:
+                raise ValueError("Studio run was removed")
+            model = None
+            if run.supersedes_run_id:
+                model = session.scalar(
+                    select(PublishedQuizModel).where(
+                        PublishedQuizModel.studio_run_id == run.supersedes_run_id
+                    )
+                )
+            if model is None:
+                duplicate = session.scalar(
+                    select(PublishedQuizModel).where(
+                        PublishedQuizModel.studio_run_id.is_not(None),
+                        PublishedQuizModel.destination_subject_key == run.destination_subject_key,
+                        PublishedQuizModel.destination_exam_number == run.destination_exam_number,
+                        PublishedQuizModel.label_key == run.label_key,
+                        PublishedQuizModel.active.is_(True),
+                    )
+                )
+                if duplicate is not None:
+                    raise ValueError(
+                        "a published Studio quiz already uses this label for that exam"
+                    )
+                model = PublishedQuizModel(
+                    token=secrets.token_hex(32),
+                    lecture_id=None,
+                    job_id=None,
+                    studio_run_id=run.id,
+                    destination_subject=run.destination_subject,
+                    destination_subject_key=run.destination_subject_key,
+                    destination_exam_number=run.destination_exam_number,
+                    label=run.label,
+                    label_key=run.label_key,
+                    title=quiz.title,
+                    payload_json=serialize_native_quiz(quiz),
+                    version=1,
+                    active=True,
+                )
+                session.add(model)
+            else:
+                previous = session.get(StudioRunModel, run.supersedes_run_id)
+                if previous is not None:
+                    previous.published_token = None
+                model.studio_run_id = run.id
+                model.destination_subject = run.destination_subject
+                model.destination_subject_key = run.destination_subject_key
+                model.destination_exam_number = run.destination_exam_number
+                model.label = run.label
+                model.label_key = run.label_key
+                model.title = quiz.title
+                model.payload_json = serialize_native_quiz(quiz)
+                model.version += 1
+                model.active = True
+            session.flush()
+            return self._published_quiz(model)
+
+    def publish_reviewed_studio_quiz(
+        self,
+        run_id: str,
+    ) -> PublishedQuizRecord:
+        with self.database.session() as session:
+            run = session.get(StudioRunModel, run_id)
+            if run is None:
+                raise KeyError(run_id)
+            if run.published_token:
+                existing = session.get(PublishedQuizModel, run.published_token)
+                if (
+                    existing is not None
+                    and existing.active
+                    and existing.studio_run_id == run_id
+                ):
+                    return self._published_quiz(existing)
+            if run.state != StudioRunState.AWAITING_IMAGES.value:
+                raise ValueError("Studio run is not awaiting image publication")
+            if not run.draft_payload_json:
+                raise ValueError("Studio quiz draft is missing")
+
+            draft = parse_native_quiz(run.draft_payload_json)
+            requirement_models = session.scalars(
+                select(StudioQuizImageRequirementModel)
+                .where(StudioQuizImageRequirementModel.run_id == run_id)
+                .order_by(StudioQuizImageRequirementModel.id)
+            ).all()
+            requirements_by_key = {
+                requirement.image_key: requirement
+                for requirement in requirement_models
+            }
+            overridden = frozenset(
+                session.scalars(
+                    select(StudioQuizImageOverrideModel.question_id).where(
+                        StudioQuizImageOverrideModel.run_id == run_id
+                    )
+                ).all()
+            )
+            active_question_ids_by_key: dict[str, list[str]] = {}
+            for question in draft.questions:
+                if question.image_ref is not None and question.id not in overridden:
+                    active_question_ids_by_key.setdefault(
+                        question.image_ref.key,
+                        [],
+                    ).append(question.id)
+            unresolved = [
+                requirement.key
+                for requirement in image_requirements(draft)
+                if active_question_ids_by_key.get(requirement.key)
+                and not self._stored_image_is_complete(
+                    requirements_by_key.get(requirement.key)
+                )
+            ]
+            if unresolved:
+                raise ValueError(
+                    "quiz images are still required: " + ", ".join(unresolved)
+                )
+            quiz = replace(
+                draft,
+                questions=tuple(
+                    replace(question, image_ref=None)
+                    if question.id in overridden
+                    else question
+                    for question in draft.questions
+                ),
+            )
+            self._validate_accuracy(quiz)
+
+            model = None
+            if run.supersedes_run_id:
+                model = session.scalar(
+                    select(PublishedQuizModel).where(
+                        PublishedQuizModel.studio_run_id == run.supersedes_run_id
+                    )
+                )
+            if model is None:
+                duplicate = session.scalar(
+                    select(PublishedQuizModel).where(
+                        PublishedQuizModel.studio_run_id.is_not(None),
+                        PublishedQuizModel.destination_subject_key
+                        == run.destination_subject_key,
+                        PublishedQuizModel.destination_exam_number
+                        == run.destination_exam_number,
+                        PublishedQuizModel.label_key == run.label_key,
+                        PublishedQuizModel.active.is_(True),
+                    )
+                )
+                if duplicate is not None:
+                    raise ValueError(
+                        "a published Studio quiz already uses this label for that exam"
+                    )
+                model = PublishedQuizModel(
+                    token=secrets.token_hex(32),
+                    lecture_id=None,
+                    job_id=None,
+                    studio_run_id=run.id,
+                    destination_subject=run.destination_subject,
+                    destination_subject_key=run.destination_subject_key,
+                    destination_exam_number=run.destination_exam_number,
+                    label=run.label,
+                    label_key=run.label_key,
+                    title=quiz.title,
+                    payload_json=serialize_native_quiz(quiz),
+                    version=1,
+                    active=True,
+                )
+                session.add(model)
+                session.flush()
+            else:
+                previous = session.get(StudioRunModel, run.supersedes_run_id)
+                if previous is not None:
+                    previous.published_token = None
+                model.studio_run_id = run.id
+                model.destination_subject = run.destination_subject
+                model.destination_subject_key = run.destination_subject_key
+                model.destination_exam_number = run.destination_exam_number
+                model.label = run.label
+                model.label_key = run.label_key
+                model.title = quiz.title
+                model.payload_json = serialize_native_quiz(quiz)
+                model.version += 1
+                model.active = True
+
+            session.execute(
+                delete(PublishedQuizMediaModel).where(
+                    PublishedQuizMediaModel.quiz_token == model.token
+                )
+            )
+            for image_key in active_question_ids_by_key:
+                requirement = requirements_by_key[image_key]
+                assert requirement.asset_path is not None
+                assert requirement.asset_sha256 is not None
+                assert requirement.media_type is not None
+                assert requirement.width is not None
+                assert requirement.height is not None
+                session.add(
+                    PublishedQuizMediaModel(
+                        quiz_token=model.token,
+                        image_key=image_key,
+                        path=requirement.asset_path,
+                        sha256=requirement.asset_sha256,
+                        media_type=requirement.media_type,
+                        width=requirement.width,
+                        height=requirement.height,
+                        alt_text=requirement.description,
+                    )
+                )
+            run.state = StudioRunState.COMPLETE.value
+            run.stage = StudioRunStage.COMPLETE.value
+            run.published_token = model.token
+            run.error = None
+            run.next_attempt_at = None
+            session.flush()
+            return self._published_quiz(model)
+
+    def published_quiz_media(
+        self,
+        token: str,
+    ) -> tuple[PublishedQuizMediaRecord, ...]:
+        with self.database.session() as session:
+            published = session.get(PublishedQuizModel, token)
+            if published is None or not published.active:
+                return ()
+            models = session.scalars(
+                select(PublishedQuizMediaModel)
+                .where(PublishedQuizMediaModel.quiz_token == token)
+                .order_by(PublishedQuizMediaModel.id)
+            ).all()
+            return tuple(self._published_quiz_media(model) for model in models)
+
+    def published_quiz_media_item(
+        self,
+        token: str,
+        image_key: str,
+    ) -> PublishedQuizMediaRecord | None:
+        with self.database.session() as session:
+            published = session.get(PublishedQuizModel, token)
+            if published is None or not published.active:
+                return None
+            model = session.scalar(
+                select(PublishedQuizMediaModel).where(
+                    PublishedQuizMediaModel.quiz_token == token,
+                    PublishedQuizMediaModel.image_key == image_key,
+                )
+            )
+            return None if model is None else self._published_quiz_media(model)
+
+    def unpublish_studio_quiz(self, run_id: str) -> str:
+        with self.database.session() as session:
+            model = session.scalar(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id == run_id,
+                    PublishedQuizModel.active.is_(True),
+                )
+            )
+            if model is None:
+                raise KeyError(run_id)
+            model.active = False
+            run = session.get(StudioRunModel, run_id)
+            if run is not None:
+                run.published_token = None
+            return model.token
 
     def course_document(self, subject_key: str) -> CourseQuizDocumentModel | None:
         with self.database.session() as session:
@@ -642,9 +965,7 @@ class GenerationRepository:
             else:
                 if model.document_id != document_id:
                     session.execute(
-                        delete(ExamQuizTabModel).where(
-                            ExamQuizTabModel.subject_key == subject_key
-                        )
+                        delete(ExamQuizTabModel).where(ExamQuizTabModel.subject_key == subject_key)
                     )
                 model.subject = subject
                 model.document_id = document_id
@@ -708,6 +1029,13 @@ class GenerationRepository:
             session.flush()
             return self._job(model)
 
+    def _validate_accuracy(self, quiz: NativeQuiz) -> None:
+        gate = self.accuracy_gate
+        if gate is not None:
+            validate = getattr(gate, "validate", None)
+            if callable(validate):
+                validate(quiz)
+
     @staticmethod
     def _job(model: GenerationJobModel) -> GenerationJob:
         return GenerationJob(
@@ -727,6 +1055,7 @@ class GenerationRepository:
             transcript_source_id=model.transcript_source_id,
             notebook_answer=model.notebook_answer,
             gemini_quiz_id=model.gemini_quiz_id,
+            supersedes_job_id=model.supersedes_job_id,
             quiz_url=model.quiz_url,
         )
 
@@ -758,9 +1087,49 @@ class GenerationRepository:
             model.token,
             model.lecture_id,
             model.job_id,
+            model.studio_run_id,
+            model.destination_subject,
+            model.destination_subject_key,
+            model.destination_exam_number,
+            model.label,
             model.title,
             quiz,
             model.version,
+            model.active,
+        )
+
+    @staticmethod
+    def _stored_image_is_complete(
+        model: StudioQuizImageRequirementModel | None,
+    ) -> bool:
+        if not (
+            model is not None
+            and model.asset_path
+            and model.asset_sha256
+            and model.media_type
+            and model.width is not None
+            and model.height is not None
+        ):
+            return False
+        path = Path(model.asset_path)
+        try:
+            return path.is_file() and sha256_file(path) == model.asset_sha256
+        except OSError:
+            return False
+
+    @staticmethod
+    def _published_quiz_media(
+        model: PublishedQuizMediaModel,
+    ) -> PublishedQuizMediaRecord:
+        return PublishedQuizMediaRecord(
+            model.quiz_token,
+            model.image_key,
+            Path(model.path),
+            model.sha256,
+            model.media_type,
+            model.width,
+            model.height,
+            model.alt_text,
         )
 
     @staticmethod

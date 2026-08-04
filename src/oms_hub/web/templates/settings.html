@@ -100,6 +100,60 @@
     </div>
   </section>
 
+  <section class="settings-section" aria-labelledby="openrouter-heading">
+    <div class="settings-section-heading">
+      <div>
+        <p class="mono-label">Quiz safety</p>
+        <h2 id="openrouter-heading">OpenRouter medical review</h2>
+        <p>Optionally send generated quiz questions to a separate model for a medical-accuracy check before publication.</p>
+      </div>
+    </div>
+    <article class="card provider-card" data-openrouter-card>
+      <div class="provider-card-heading">
+        <div>
+          <p class="provider-kicker">OpenRouter</p>
+          <h3>Accuracy reviewer</h3>
+        </div>
+        <span class="credential-state {{ 'is-configured' if openrouter.configured else '' }}" data-openrouter-configured>
+          {{ "Configured" if openrouter.configured else "Not configured" }}
+        </span>
+      </div>
+      <div class="provider-field">
+        <label for="openrouter-model">Review model</label>
+        <div class="provider-action-row">
+          {% set openrouter_custom = openrouter.model not in openrouter.models %}
+          <select id="openrouter-model" data-openrouter-model>
+            {% for model in openrouter.models %}
+            <option value="{{ model }}" {% if model == openrouter.model %}selected{% endif %}>{{ model }}</option>
+            {% endfor %}
+            <option value="__custom__" {% if openrouter_custom %}selected{% endif %}>Custom model ID…</option>
+          </select>
+          <button class="button secondary compact-button" type="button" data-save-openrouter-model>Save model</button>
+        </div>
+        <input
+          type="text"
+          maxlength="200"
+          autocomplete="off"
+          placeholder="provider/model-id"
+          value="{{ openrouter.model if openrouter_custom else '' }}"
+          data-openrouter-custom-model
+          {% if not openrouter_custom %}hidden{% endif %}
+        >
+      </div>
+      <div class="provider-field">
+        <label for="openrouter-key">OpenRouter API key</label>
+        <input id="openrouter-key" type="password" maxlength="8192" autocomplete="new-password" placeholder="{{ 'Replace stored key' if openrouter.configured else 'Paste key' }}" data-openrouter-key>
+        <p class="field-help">Stored in Windows Credential Manager. The key is never written to the database.</p>
+      </div>
+      <div class="provider-buttons">
+        <button class="button primary" type="button" data-save-openrouter-key>Save key</button>
+        <button class="button secondary" type="button" data-test-openrouter>Test connection</button>
+        <label class="checkbox-inline"><input type="checkbox" data-openrouter-gate {% if openrouter.accuracy_gate_enabled %}checked{% endif %}> Block publication unless every question passes review</label>
+      </div>
+      <p class="field-message" data-openrouter-message aria-live="polite"></p>
+    </article>
+  </section>
+
   <section class="settings-section" aria-labelledby="google-heading">
     <div class="settings-section-heading">
       <div>

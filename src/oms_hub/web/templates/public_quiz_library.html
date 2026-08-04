@@ -42,7 +42,7 @@
               <article class="lecture-row">
                 <a class="quiz-link" href="{{ row.url }}" data-quiz-row data-quiz-token="{{ row.token }}" data-quiz-version="{{ row.version }}">
                   <span>
-                    <strong>Lecture {{ row.lecture_number }}</strong>
+                    <strong>{% if row.is_studio %}Studio quiz{% else %}Lecture {{ row.lecture_number }}{% endif %}</strong>
                     <small>{{ row.topic }}</small>
                   </span>
                   <span class="progress-pill" data-quiz-progress>Not started</span>
@@ -50,6 +50,13 @@
                 {% if row.outline_url %}
                 <a class="button outline-button" href="{{ row.outline_url }}" target="_blank" rel="noopener">Lecture Outline</a>
                 {% endif %}
+                <button
+                  class="button reset-quiz-button"
+                  type="button"
+                  data-reset-quiz
+                  data-quiz-token="{{ row.token }}"
+                  data-quiz-version="{{ row.version }}"
+                >Reset</button>
               </article>
               {% endfor %}
             </div>
