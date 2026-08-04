@@ -792,27 +792,17 @@ textarea {
   border-radius: .5rem;
   background: var(--surface);
 }
-.anki-source-option input {
-  width: 1.05rem;
-  min-height: 1.05rem;
-  flex: none;
+.anki-source-option.is-ready {
+  background: color-mix(in srgb, var(--complete) 14%, white);
+  border-color: var(--complete);
 }
-.anki-source-option .anki-source-lock {
-  display: grid;
-  width: 1.05rem;
-  height: 1.05rem;
-  flex: none;
-  place-items: center;
-  border-radius: .25rem;
-  color: var(--surface);
-  background: var(--accent);
-  font: 700 .7rem/1 sans-serif;
+.anki-source-option.is-missing {
+  background: color-mix(in srgb, var(--failed) 14%, white);
+  border-color: var(--failed);
 }
-.anki-source-option.is-ready { border-color: color-mix(in srgb, var(--complete) 45%, var(--border)); }
-.anki-source-option.is-ready .anki-source-lock { color: var(--complete); }
-.anki-source-option.is-missing { border-color: color-mix(in srgb, var(--failed) 45%, var(--border)); }
-.anki-source-option.is-missing .anki-source-lock { color: var(--failed); }
 .anki-source-option.is-neutral { opacity: .72; }
+.anki-source-option.is-ready small,
+.anki-source-option.is-missing small { color: var(--text-2); }
 .anki-deck-adder { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .65rem; }
 .anki-deck-priority { display: grid; gap: .45rem; margin: .7rem 0 0; padding: 0; list-style: none; }
 .anki-deck-priority-item { display: flex; align-items: center; gap: .45rem; }

@@ -301,6 +301,10 @@
     populateModelOptions(documentRef, select, models, currentModel);
   };
 
+  const collectSourceRevisionIds = (form) => [
+    ...form.querySelectorAll("input[name=source_revision_ids]"),
+  ].map((input) => Number(input.value));
+
   const renderSourceChoices = (documentRef, lecture) => {
     const container = documentRef.querySelector("#anki-source-revisions");
     if (!container) return;
@@ -319,19 +323,10 @@
       label.classList.add(`is-${state}`);
       if (revision && state === "ready") {
         const input = documentRef.createElement("input");
-        input.type = "checkbox";
+        input.type = "hidden";
         input.name = "source_revision_ids";
         input.value = revision.id;
-        input.checked = true;
-        input.disabled = true;
         label.append(input);
-      } else {
-        label.append(element(
-          documentRef,
-          "span",
-          "anki-source-lock",
-          state === "ready" ? "✓" : state === "missing" ? "×" : "–",
-        ));
       }
       const copy = element(documentRef, "span");
       let detail = "Choose a lecture";
@@ -711,11 +706,7 @@
         message.textContent = "Choose a lecture.";
         return;
       }
-      const selectedSources = [
-        ...form.querySelectorAll(
-          "input[name=source_revision_ids]:checked",
-        ),
-      ].map((input) => Number(input.value));
+      const selectedSources = collectSourceRevisionIds(form);
       if (
         documentRef.querySelector("#anki-source-revisions")?.dataset.ready
         !== "true"
@@ -1541,6 +1532,7 @@
     candidateAudit,
     convergenceDisplay,
     collectReview,
+    collectSourceRevisionIds,
     commaValues,
     csrfToken,
     courseOptions,
@@ -1560,6 +1552,7 @@
     reconciliationDisplay,
     reviewViews,
     renderProcessing,
+    renderSourceChoices,
     resolveLecture,
     resolveProviderModel,
     runFailedJobAction,

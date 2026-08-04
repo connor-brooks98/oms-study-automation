@@ -257,6 +257,148 @@ test("model dropdown repopulates from the settings models endpoint when the prov
   assert.equal(select.value, "gemini-3.6-flash");
 });
 
+// -- Minimal fake DOM sufficient to drive renderSourceChoices --
+
+class FakeClassList {
+  constructor() {
+    this.tokens = new Set();
+  }
+
+  add(name) {
+    this.tokens.add(name);
+  }
+
+  contains(name) {
+    return this.tokens.has(name);
+  }
+}
+
+class FakeSourceNode {
+  constructor(tagName) {
+    this.tagName = tagName;
+    this.children = [];
+    this.dataset = {};
+    this.classList = new FakeClassList();
+    this.textContent = "";
+    this.value = "";
+    this.name = "";
+    this.type = "";
+  }
+
+  append(...nodes) {
+    nodes.forEach((node) => this.children.push(node));
+  }
+
+  replaceChildren(...nodes) {
+    this.children = [];
+    this.append(...nodes);
+  }
+
+  closest() {
+    return null;
+  }
+
+  querySelectorAll(selector) {
+    const match = /^input\[name=([\w-]+)\]$/.exec(selector);
+    if (!match) return [];
+    const [, name] = match;
+    const found = [];
+    const walk = (node) => {
+      node.children.forEach((child) => {
+        if (child.tagName === "input" && child.name === name) found.push(child);
+        walk(child);
+      });
+    };
+    walk(this);
+    return found;
+  }
+}
+
+class FakeSourceDocument {
+  constructor() {
+    this.registry = {};
+  }
+
+  register(id, node) {
+    this.registry[id] = node;
+  }
+
+  createElement(tagName) {
+    return new FakeSourceNode(tagName);
+  }
+
+  querySelector(selector) {
+    if (selector.startsWith("#")) return this.registry[selector.slice(1)] || null;
+    return null;
+  }
+}
+
+const buildSourceContainer = () => {
+  const documentRef = new FakeSourceDocument();
+  const container = documentRef.createElement("div");
+  documentRef.register("anki-source-revisions", container);
+  return { documentRef, container };
+};
+
+test("renderSourceChoices emits hidden inputs for ready slides and transcript sources", () => {
+  const { documentRef, container } = buildSourceContainer();
+
+  anki.renderSourceChoices(documentRef, lectures[0]);
+
+  const cards = container.children.filter((node) => node.tagName === "label");
+  assert.equal(cards.length, 3);
+  cards.forEach((card) => {
+    assert.equal(card.className, "anki-source-option");
+    assert.equal(card.classList.contains("is-ready"), true);
+  });
+
+  const hiddenInputs = container.querySelectorAll("input[name=source_revision_ids]");
+  assert.deepEqual(hiddenInputs.map((input) => input.type), ["hidden", "hidden"]);
+  assert.deepEqual(
+    hiddenInputs.map((input) => Number(input.value)).sort((left, right) => left - right),
+    [7, 8],
+  );
+});
+
+test("renderSourceChoices marks missing sources red and emits no hidden inputs", () => {
+  const { documentRef, container } = buildSourceContainer();
+
+  anki.renderSourceChoices(documentRef, lectures[1]);
+
+  const cards = container.children.filter((node) => node.tagName === "label");
+  assert.equal(cards.length, 3);
+  cards.forEach((card) => {
+    assert.equal(card.classList.contains("is-missing"), true);
+  });
+  assert.equal(container.querySelectorAll("input[name=source_revision_ids]").length, 0);
+});
+
+test("renderSourceChoices shows neutral cards when no lecture is selected", () => {
+  const { documentRef, container } = buildSourceContainer();
+
+  anki.renderSourceChoices(documentRef, null);
+
+  const cards = container.children.filter((node) => node.tagName === "label");
+  assert.equal(cards.length, 3);
+  cards.forEach((card) => {
+    assert.equal(card.classList.contains("is-neutral"), true);
+  });
+  assert.equal(container.querySelectorAll("input[name=source_revision_ids]").length, 0);
+});
+
+test("collectSourceRevisionIds reads the hidden inputs rendered for ready sources", () => {
+  const { documentRef, container } = buildSourceContainer();
+  anki.renderSourceChoices(documentRef, lectures[0]);
+
+  const form = documentRef.createElement("form");
+  form.append(container);
+
+  assert.deepEqual(
+    anki.collectSourceRevisionIds(form).sort((left, right) => left - right),
+    [7, 8],
+  );
+});
+
 test("only failed curation jobs expose pipeline retry", () => {
   assert.equal(anki.canRetryCuration("failed"), true);
   assert.equal(anki.canRetryCuration("judging_pass_1"), false);
