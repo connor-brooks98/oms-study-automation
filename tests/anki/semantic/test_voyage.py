@@ -241,22 +241,112 @@ def test_embed_rejects_malformed_vectors(payload: dict[str, Any]) -> None:
         _embed(handler, ["alpha"])
 
 
-def test_embed_errors_do_not_expose_api_key_or_input() -> None:
+def test_embed_errors_surface_detail_without_exposing_api_key_or_input() -> None:
     with pytest.raises(VoyageEmbeddingError) as raised:
         _embed(
             lambda request: httpx.Response(
                 401,
                 headers={"request-id": "auth-1"},
-                json={"detail": "voyage-secret private lecture text"},
+                json={"detail": "Provided API key is invalid."},
             ),
             ["private lecture text"],
             max_attempts=1,
         )
 
     message = str(raised.value)
+    # "voyage-secret" is the literal credential configured in `_embed`; it
+    # must never leak into an exception message.
     assert "voyage-secret" not in message
     assert "private lecture text" not in message
     assert "auth-1" in message
+    assert "Provided API key is invalid." in message
+
+
+def test_embed_splits_oversized_batch_after_token_limit_400() -> None:
+    request_bodies: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        inputs = list(json.loads(request.content)["input"])
+        request_bodies.append(inputs)
+        if len(inputs) > 1:
+            return httpx.Response(
+                400,
+                headers={"request-id": "limit-1"},
+                json={
+                    "detail": (
+                        "Requested tokens exceed the max allowed tokens "
+                        "per request."
+                    )
+                },
+            )
+        vector = [1.0, 0.0, 0.0] if inputs == ["alpha"] else [0.0, 1.0, 0.0]
+        return httpx.Response(200, json=_response([vector]))
+
+    result = _embed(handler, ["alpha", "beta"])
+
+    assert request_bodies == [["alpha", "beta"], ["alpha"], ["beta"]]
+    np.testing.assert_array_equal(
+        result,
+        np.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+    )
+
+
+def test_embed_raises_immediately_for_non_limit_400_detail() -> None:
+    request_bodies: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        inputs = list(json.loads(request.content)["input"])
+        request_bodies.append(inputs)
+        return httpx.Response(
+            400,
+            headers={"request-id": "bad-request-1"},
+            json={"detail": "input_type must be one of query or document"},
+        )
+
+    with pytest.raises(
+        VoyageEmbeddingError,
+        match="input_type must be one of query or document",
+    ):
+        _embed(handler, ["alpha", "beta"])
+
+    assert request_bodies == [["alpha", "beta"]]
+
+
+def test_embed_raises_when_single_text_still_exceeds_limit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            headers={"request-id": "limit-single"},
+            json={
+                "detail": (
+                    "Payload exceeds max allowed tokens even for a "
+                    "single input."
+                )
+            },
+        )
+
+    with pytest.raises(VoyageEmbeddingError, match="max allowed tokens"):
+        _embed(handler, ["alpha"])
+
+
+def test_embed_adaptive_split_terminates_when_every_request_400s() -> None:
+    request_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(
+            400,
+            headers={"request-id": f"limit-{request_count}"},
+            json={"detail": "token limit exceeded"},
+        )
+
+    with pytest.raises(VoyageEmbeddingError, match="token limit exceeded"):
+        _embed(handler, ["a", "b", "c", "d"])
+
+    # 4 -> (2, 2) -> first half (1, 1) -> single-text 400 raises immediately
+    # without ever attempting the second half of any split: 3 requests total.
+    assert request_count == 3
 
 
 def test_embed_uses_explicit_api_key_before_credential_manager() -> None:

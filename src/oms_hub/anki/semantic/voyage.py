@@ -1,4 +1,5 @@
 import asyncio
+import re
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, cast
 
@@ -16,7 +17,11 @@ class VoyageEmbeddingError(RuntimeError):
     """Voyage failed without exposing credentials or source text."""
 
 
-_MAX_BATCH_CHARACTERS = 400_000
+_MAX_BATCH_CHARACTERS = 280_000
+_LIMIT_DETAIL_PATTERN = re.compile(
+    r"token|too long|max allowed|payload|limit",
+    re.IGNORECASE,
+)
 
 
 class VoyageEmbeddingClient:
@@ -146,13 +151,53 @@ class VoyageEmbeddingClient:
             ) and attempt + 1 < self.max_attempts:
                 await self._backoff(attempt)
                 continue
+            detail = _extract_error_detail(response)
+            if (
+                response.status_code == 400
+                and len(texts) > 1
+                and _LIMIT_DETAIL_PATTERN.search(detail)
+            ):
+                return await self._embed_split(
+                    texts,
+                    input_type=input_type,
+                    api_key=api_key,
+                    batch_index=batch_index,
+                )
             request_id = _request_id(response)
             suffix = f" (request {request_id})" if request_id else ""
             raise VoyageEmbeddingError(
                 f"Voyage embedding batch {batch_index} failed with "
-                f"HTTP {response.status_code}{suffix}"
+                f"HTTP {response.status_code}{suffix}: {detail}"
             )
         raise AssertionError("embedding retry loop did not return or raise")
+
+    async def _embed_split(
+        self,
+        texts: Sequence[str],
+        *,
+        input_type: InputType,
+        api_key: str,
+        batch_index: int,
+    ) -> FloatMatrix:
+        midpoint = len(texts) // 2
+        first_half = texts[:midpoint]
+        second_half = texts[midpoint:]
+        first_matrix = await self._embed_batch(
+            first_half,
+            input_type=input_type,
+            api_key=api_key,
+            batch_index=batch_index,
+        )
+        second_matrix = await self._embed_batch(
+            second_half,
+            input_type=input_type,
+            api_key=api_key,
+            batch_index=batch_index,
+        )
+        return np.concatenate([first_matrix, second_matrix], axis=0).astype(
+            np.float32,
+            copy=False,
+        )
 
     async def _backoff(self, attempt: int) -> None:
         await self._sleep(self.retry_base_seconds * (2**attempt))
@@ -237,6 +282,22 @@ def _request_id(response: httpx.Response) -> str | None:
         if value:
             return str(value)[:200]
     return None
+
+
+def _extract_error_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        detail = payload.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return _clean_detail(detail)
+    return _clean_detail(response.text)
+
+
+def _clean_detail(text: str) -> str:
+    return " ".join(text.split())[:200]
 
 
 def _embedding_batches(
