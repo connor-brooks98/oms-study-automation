@@ -1,6 +1,8 @@
 import asyncio
 import json
+import sys
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -10,6 +12,7 @@ import pytest
 from oms_hub.anki.semantic.voyage import (
     VoyageEmbeddingClient,
     VoyageEmbeddingError,
+    _curl_post_sync,
 )
 from oms_hub.security.secret_store import (
     VOYAGE_API_KEY_SECRET,
@@ -206,6 +209,37 @@ def test_embed_retries_html_bad_request_with_curl_transport() -> None:
         result,
         np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32),
     )
+
+
+def test_curl_transport_forces_http11(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.status_code = 200
+            self.headers = {"content-type": "application/json"}
+            self.content = b'{"model":"voyage-4-large","data":[]}'
+
+    def post(*args: object, **kwargs: object) -> FakeResponse:
+        del args
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "curl_cffi",
+        SimpleNamespace(requests=SimpleNamespace(post=post)),
+    )
+
+    _curl_post_sync(
+        "https://api.voyageai.com/v1/embeddings",
+        {"Authorization": "Bearer voyage-secret"},
+        {"input": ["alpha"]},
+    )
+
+    assert captured["http_version"] == "v1"
 
 
 def test_embed_query_contract_and_empty_input() -> None:

@@ -272,6 +272,7 @@ def _curl_post_sync(
         headers=headers,
         json=payload,
         impersonate="chrome",
+        http_version="v1",
         timeout=120,
     )
     return httpx.Response(
