@@ -1,5 +1,5 @@
 from oms_hub.db import Database
-from oms_hub.llm.domain import ProviderName
+from oms_hub.llm.domain import LLMTask, ProviderName
 from oms_hub.llm.repository import LLMSettingsRepository
 
 
@@ -52,3 +52,32 @@ def test_repository_can_clear_stale_connection_status(tmp_path):
     assert cleared.last_test_state is None
     assert cleared.last_tested_at is None
     assert cleared.provider_request_id is None
+
+
+def test_assignment_returns_seeded_default_when_table_empty(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.create_schema()
+    repository = LLMSettingsRepository(database, default_openai_model="gpt-5.2")
+
+    assignment = repository.assignment(LLMTask.ANKI_CURATION)
+
+    assert assignment.task is LLMTask.ANKI_CURATION
+    assert assignment.provider is ProviderName.OPENAI
+    assert assignment.model == "gpt-5.2"
+
+
+def test_set_assignment_round_trips(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    repository = LLMSettingsRepository(database, default_openai_model="gpt-5.2")
+
+    saved = repository.set_assignment(
+        LLMTask.ACCURACY_REVIEW,
+        ProviderName.OPENROUTER,
+        " openai/gpt-4o-mini ",
+    )
+    fetched = repository.assignment(LLMTask.ACCURACY_REVIEW)
+
+    assert saved.provider is ProviderName.OPENROUTER
+    assert saved.model == "openai/gpt-4o-mini"
+    assert fetched == saved

@@ -5,9 +5,11 @@ from oms_hub.llm.domain import (
     DiagnosticSource,
     GeneratedText,
     LLMRequestError,
+    LLMTask,
     ProviderConnection,
     ProviderName,
 )
+from oms_hub.llm.openrouter import OPENROUTER_API_KEY_SECRET
 from oms_hub.llm.provider import LLMProvider
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.security.secret_store import SecretStore
@@ -17,6 +19,7 @@ SECRET_KEYS = {
     ProviderName.OPENAI: "openai-api-key",
     ProviderName.GEMINI: "gemini-api-key",
     ProviderName.ANTHROPIC: "anthropic-api-key",
+    ProviderName.OPENROUTER: OPENROUTER_API_KEY_SECRET,
 }
 
 
@@ -40,15 +43,19 @@ class LLMService:
         raw_text: str,
         prompt: ApprovedPrompt,
     ) -> CleanResult:
-        preference = self.settings.active()
-        api_key = self._credential(preference.provider)
-        provider = self.providers[preference.provider]
+        provider, model, api_key = self.for_task(LLMTask.TRANSCRIPTS)
         return provider.clean(
             raw_text,
             prompt,
             api_key=api_key,
-            model=preference.model,
+            model=model,
         )
+
+    def for_task(self, task: LLMTask) -> tuple[LLMProvider, str, str]:
+        assignment = self.settings.assignment(task)
+        api_key = self._credential(assignment.provider)
+        provider = self.providers[assignment.provider]
+        return provider, assignment.model, api_key
 
     def test_connection(
         self,

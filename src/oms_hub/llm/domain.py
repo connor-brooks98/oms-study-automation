@@ -9,6 +9,12 @@ class ProviderName(StrEnum):
     OPENROUTER = "openrouter"
 
 
+class LLMTask(StrEnum):
+    TRANSCRIPTS = "transcripts"
+    ANKI_CURATION = "anki_curation"
+    ACCURACY_REVIEW = "accuracy_review"
+
+
 class DiagnosticSource(StrEnum):
     STUDY_HUB = "study_hub"
     NETWORK = "network"
@@ -77,3 +83,10 @@ class ProviderPreference:
     diagnostic_message: str | None
     http_status: int | None
     provider_request_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TaskAssignment:
+    task: LLMTask
+    provider: ProviderName
+    model: str

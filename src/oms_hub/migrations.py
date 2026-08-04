@@ -4,10 +4,16 @@ from sqlalchemy import inspect, select, text
 
 import oms_hub.anki.models  # noqa: F401
 from oms_hub.domain import StepStatus, V2StepName
+from oms_hub.llm.catalog import FALLBACK_MODELS
+from oms_hub.llm.domain import LLMTask, ProviderName
+from oms_hub.llm.repository import DEFAULT_MODELS
 from oms_hub.models import (
     LectureModel,
     LectureStepModel,
+    LLMProviderSettingModel,
+    LLMTaskAssignmentModel,
     SchemaVersionModel,
+    StudyAISettingModel,
 )
 
 if TYPE_CHECKING:
@@ -209,12 +215,67 @@ def _upgrade_gap_card_identity(database: "Database") -> None:
         )
 
 
+def _seed_llm_task_assignments(database: "Database") -> None:
+    """Seed per-task LLM assignments the first time they are missing.
+
+    Existing rows are left untouched so operator overrides survive re-runs.
+    """
+    inspector = inspect(database.engine)
+    if not inspector.has_table("llm_task_assignments"):
+        return
+    with database.session() as session:
+        existing = {
+            row.task
+            for row in session.scalars(select(LLMTaskAssignmentModel)).all()
+        }
+        missing = {task.value for task in LLMTask} - existing
+        if not missing:
+            return
+
+        active_row = session.scalar(
+            select(LLMProviderSettingModel).where(
+                LLMProviderSettingModel.active.is_(True)
+            )
+        )
+        if active_row is not None:
+            default_provider = active_row.provider
+            default_model = active_row.model
+        else:
+            default_provider = ProviderName.ANTHROPIC.value
+            default_model = DEFAULT_MODELS[ProviderName.ANTHROPIC]
+
+        ai_settings = session.get(StudyAISettingModel, 1)
+        if ai_settings is not None and ai_settings.openrouter_model.strip():
+            accuracy_model = ai_settings.openrouter_model
+        else:
+            accuracy_model = FALLBACK_MODELS[ProviderName.OPENROUTER][0]
+
+        seeds = {
+            LLMTask.TRANSCRIPTS.value: (default_provider, default_model),
+            LLMTask.ANKI_CURATION.value: (default_provider, default_model),
+            LLMTask.ACCURACY_REVIEW.value: (
+                ProviderName.OPENROUTER.value,
+                accuracy_model,
+            ),
+        }
+        for task_value in missing:
+            provider_value, model_value = seeds[task_value]
+            session.add(
+                LLMTaskAssignmentModel(
+                    task=task_value,
+                    provider=provider_value,
+                    model=model_value,
+                )
+            )
+
+
 def migrate_database(database: "Database") -> None:
     database.create_schema()
     _upgrade_generation_job_columns(database)
     _upgrade_studio_columns(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_gap_card_identity(database)
+    _seed_llm_task_assignments(database)
     usage_columns = {
         column["name"]
         for column in inspect(database.engine).get_columns("study_usage")

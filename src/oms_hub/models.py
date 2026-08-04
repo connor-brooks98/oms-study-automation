@@ -227,6 +227,19 @@ class LLMProviderSettingModel(Base):
     )
 
 
+class LLMTaskAssignmentModel(Base):
+    __tablename__ = "llm_task_assignments"
+
+    task: Mapped[str] = mapped_column(String(30), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(30))
+    model: Mapped[str] = mapped_column(String(200))
+    updated_at: Mapped[str] = mapped_column(
+        String(40),
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+
 class StudyAISettingModel(Base):
     __tablename__ = "study_ai_settings"
 
