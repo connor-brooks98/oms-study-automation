@@ -13,6 +13,8 @@ def _normalize_hostname(value: str | None, field_name: str) -> str | None:
     if value is None:
         return None
     normalized = value.strip().lower().rstrip(".")
+    if not normalized:
+        return None
     if not re.fullmatch(
         r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
         r"[a-z]{2,63}",
@@ -136,6 +138,13 @@ class Settings(BaseSettings):
     @classmethod
     def valid_timezone(cls, value: str) -> str:
         ZoneInfo(value)
+        return value
+
+    @field_validator("transcript_prompt_sha256", mode="before")
+    @classmethod
+    def blank_transcript_prompt_sha256_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
         return value
 
     @field_validator("public_hostname")
