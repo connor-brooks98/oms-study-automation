@@ -1375,29 +1375,20 @@ code { overflow-wrap: anywhere; }
   margin: 0;
   color: var(--text-2);
 }
-.active-provider-control {
-  min-width: min(100%, 25rem);
-  padding: .85rem;
-  border: 1px solid var(--border);
-  border-radius: .7rem;
-  background: white;
-}
-.active-provider-control > label,
 .provider-field > label {
   display: block;
   margin-bottom: .4rem;
   font-size: .76rem;
   font-weight: 600;
 }
-.active-provider-row,
 .provider-action-row,
 .provider-buttons {
   display: flex;
   align-items: center;
   gap: .55rem;
 }
-.active-provider-row select,
-.provider-action-row input { min-width: 0; flex: 1; }
+.provider-action-row input,
+.provider-action-row select { min-width: 0; flex: 1; }
 .provider-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1594,7 +1585,6 @@ code { overflow-wrap: anywhere; }
   .preview-actions { justify-content: flex-start; flex-wrap: wrap; }
   .settings-section-heading { align-items: stretch; flex-direction: column; }
   .provider-grid { grid-template-columns: 1fr; }
-  .active-provider-control { width: 100%; }
   .anki-workflow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .anki-form-grid,
   .anki-lecture-selector,

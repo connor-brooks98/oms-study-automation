@@ -55,9 +55,9 @@
     return lines;
   };
 
-  const postJson = async (fetchImpl, url, body, token) => {
+  const postJson = async (fetchImpl, url, body, token, method = "POST") => {
     const response = await fetchImpl(url, {
-      method: "POST",
+      method,
       headers: {
         "Content-Type": "application/json",
         "X-CSRF-Token": token,
@@ -65,7 +65,12 @@
       body: JSON.stringify(body),
       cache: "no-store",
     });
-    const payload = await response.json();
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = {};
+    }
     if (!response.ok) {
       throw new Error(payload.detail || "Study Hub rejected the request.");
     }
@@ -77,12 +82,63 @@
       headers: { Accept: "application/json" },
       cache: "no-store",
     });
-    const payload = await response.json();
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = {};
+    }
     if (!response.ok) {
       throw new Error(payload.detail || "Study Hub rejected the request.");
     }
     return payload;
   };
+
+  const CUSTOM_MODEL_VALUE = "__custom__";
+
+  const modelOptionValues = (models, currentModel) => {
+    const list = Array.isArray(models) ? models.map((model) => String(model)) : [];
+    const unique = [...new Set(list)];
+    const current = String(currentModel || "").trim();
+    if (current && !unique.includes(current)) {
+      return [current, ...unique];
+    }
+    return unique;
+  };
+
+  const syncCustomModelVisibility = (select, customInput) => {
+    customInput.hidden = select.value !== CUSTOM_MODEL_VALUE;
+  };
+
+  const populateModelSelect = (documentRef, select, customInput, models, currentModel) => {
+    const values = modelOptionValues(models, currentModel);
+    select.replaceChildren();
+    values.forEach((value) => {
+      const option = documentRef.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      select.append(option);
+    });
+    const customOption = documentRef.createElement("option");
+    customOption.value = CUSTOM_MODEL_VALUE;
+    customOption.textContent = "Custom model ID…";
+    select.append(customOption);
+
+    const current = String(currentModel || "").trim();
+    if (current && values.includes(current)) {
+      select.value = current;
+    } else if (values.length) {
+      select.value = values[0];
+    } else {
+      select.value = CUSTOM_MODEL_VALUE;
+      customInput.value = current;
+    }
+    syncCustomModelVisibility(select, customInput);
+  };
+
+  const resolvedModelValue = (select, customInput) => (
+    select.value === CUSTOM_MODEL_VALUE ? customInput.value.trim() : select.value
+  );
 
   const renderNotebookStatus = (card, status) => {
     const badge = card.querySelector("[data-notebook-badge]");
@@ -154,7 +210,25 @@
       const message = card.querySelector("[data-provider-message]");
       const diagnostic = card.querySelector("[data-diagnostic]");
       const testButton = card.querySelector("[data-test-connection]");
-      const model = card.querySelector("[data-model-input]");
+      const model = card.querySelector("[data-model-select]");
+      const customModel = card.querySelector("[data-model-custom]");
+      const initialModel = model.value;
+      let fetchedModels = [];
+
+      const refreshModelOptions = (currentModel) => {
+        populateModelSelect(documentRef, model, customModel, fetchedModels, currentModel);
+      };
+
+      model.addEventListener("change", () => syncCustomModelVisibility(model, customModel));
+
+      void getJson(fetchImpl, `/api/settings/providers/${provider}/models`)
+        .then((result) => {
+          fetchedModels = Array.isArray(result.models) ? result.models : [];
+          refreshModelOptions(initialModel);
+        })
+        .catch(() => {
+          refreshModelOptions(initialModel);
+        });
 
       toggle.addEventListener("click", () => {
         togglePassword(credential, toggle, providerLabel);
@@ -196,10 +270,10 @@
           const result = await postJson(
             fetchImpl,
             `/settings/ai/${provider}/model`,
-            { model: model.value },
+            { model: resolvedModelValue(model, customModel) },
             token(),
           );
-          model.value = result.model;
+          refreshModelOptions(result.model);
           message.textContent = "Model saved.";
           setTestState(testButton, "neutral");
           renderDiagnostic(diagnostic, null, null);
@@ -240,102 +314,98 @@
       });
     });
 
-    const openrouterCard = documentRef.querySelector("[data-openrouter-card]");
-    if (openrouterCard) {
-      const message = openrouterCard.querySelector("[data-openrouter-message]");
-      const model = openrouterCard.querySelector("[data-openrouter-model]");
-      const customModel = openrouterCard.querySelector("[data-openrouter-custom-model]");
-      const key = openrouterCard.querySelector("[data-openrouter-key]");
-      const configured = openrouterCard.querySelector("[data-openrouter-configured]");
-      const gate = openrouterCard.querySelector("[data-openrouter-gate]");
-      const syncModelControl = () => {
-        customModel.hidden = model.value !== "__custom__";
+    documentRef.querySelectorAll("[data-assignment-row]").forEach((row) => {
+      const task = row.dataset.task;
+      const providerSelect = row.querySelector("[data-assignment-provider]");
+      const modelSelect = row.querySelector("[data-assignment-model]");
+      const customModel = row.querySelector("[data-assignment-custom]");
+      const saveButton = row.querySelector("[data-save-assignment]");
+      const keyState = row.querySelector("[data-assignment-key]");
+      const message = row.querySelector("[data-assignment-message]");
+      const gate = row.querySelector("[data-openrouter-gate]");
+      const initialModel = modelSelect.value;
+      let fetchedModels = [];
+
+      const controls = [providerSelect, modelSelect, customModel, saveButton, gate]
+        .filter(Boolean);
+      const setBusy = (busy) => {
+        controls.forEach((control) => {
+          control.disabled = busy;
+        });
       };
-      const selectedModel = () => (
-        model.value === "__custom__" ? customModel.value : model.value
-      );
-      model.addEventListener("change", syncModelControl);
-      syncModelControl();
-      openrouterCard.querySelector("[data-save-openrouter-model]").addEventListener("click", async (event) => {
-        const button = event.currentTarget;
-        button.disabled = true;
+
+      const refreshModelOptions = (currentModel) => {
+        populateModelSelect(documentRef, modelSelect, customModel, fetchedModels, currentModel);
+      };
+
+      const loadModelsForProvider = async (provider, currentModel) => {
+        try {
+          const result = await getJson(fetchImpl, `/api/settings/providers/${provider}/models`);
+          fetchedModels = Array.isArray(result.models) ? result.models : [];
+        } catch (error) {
+          fetchedModels = [];
+          message.textContent = error.message;
+        }
+        refreshModelOptions(currentModel);
+      };
+
+      modelSelect.addEventListener("change", () => {
+        syncCustomModelVisibility(modelSelect, customModel);
+      });
+
+      providerSelect.addEventListener("change", () => {
+        void loadModelsForProvider(providerSelect.value, "");
+      });
+
+      saveButton.addEventListener("click", async () => {
+        setBusy(true);
+        message.textContent = "Saving assignment…";
         try {
           const result = await postJson(
             fetchImpl,
-            "/settings/ai/openrouter/model",
-            { model: selectedModel() },
+            `/api/settings/task-assignments/${task}`,
+            {
+              provider: providerSelect.value,
+              model: resolvedModelValue(modelSelect, customModel),
+            },
             token(),
+            "PUT",
           );
-          if ([...model.options].some((option) => option.value === result.model)) {
-            model.value = result.model;
-          } else {
-            model.value = "__custom__";
-            customModel.value = result.model;
+          keyState.textContent = result.key_configured
+            ? "Key configured"
+            : "Key not configured";
+          keyState.classList.toggle("is-configured", result.key_configured);
+          refreshModelOptions(result.model);
+          message.textContent = "Assignment saved.";
+        } catch (error) {
+          message.textContent = error.message;
+        } finally {
+          setBusy(false);
+        }
+      });
+
+      if (gate) {
+        gate.addEventListener("change", async () => {
+          try {
+            const result = await postJson(
+              fetchImpl,
+              "/settings/ai/openrouter/gate",
+              { enabled: gate.checked },
+              token(),
+            );
+            gate.checked = result.enabled;
+            message.textContent = result.enabled
+              ? "Publication will wait for medical review."
+              : "Medical review gate disabled.";
+          } catch (error) {
+            gate.checked = !gate.checked;
+            message.textContent = error.message;
           }
-          syncModelControl();
-          message.textContent = "OpenRouter review model saved.";
-        } catch (error) {
-          message.textContent = error.message;
-        } finally {
-          button.disabled = false;
-        }
-      });
-      openrouterCard.querySelector("[data-save-openrouter-key]").addEventListener("click", async (event) => {
-        const button = event.currentTarget;
-        button.disabled = true;
-        try {
-          const result = await postJson(
-            fetchImpl,
-            "/settings/ai/openrouter/credential",
-            { credential: key.value },
-            token(),
-          );
-          key.value = "";
-          configured.textContent = result.configured ? "Configured" : "Not configured";
-          configured.classList.toggle("is-configured", result.configured);
-          message.textContent = "OpenRouter key saved securely.";
-        } catch (error) {
-          message.textContent = error.message;
-        } finally {
-          button.disabled = false;
-        }
-      });
-      gate.addEventListener("change", async () => {
-        try {
-          const result = await postJson(
-            fetchImpl,
-            "/settings/ai/openrouter/gate",
-            { enabled: gate.checked },
-            token(),
-          );
-          gate.checked = result.enabled;
-          message.textContent = result.enabled
-            ? "Publication will wait for medical review."
-            : "Medical review gate disabled.";
-        } catch (error) {
-          gate.checked = !gate.checked;
-          message.textContent = error.message;
-        }
-      });
-      openrouterCard.querySelector("[data-test-openrouter]").addEventListener("click", async (event) => {
-        const button = event.currentTarget;
-        button.disabled = true;
-        message.textContent = "Testing OpenRouter…";
-        try {
-          const result = await postJson(
-            fetchImpl,
-            "/settings/ai/openrouter/test",
-            {},
-            token(),
-          );
-          message.textContent = result.message;
-        } catch (error) {
-          message.textContent = error.message;
-        } finally {
-          button.disabled = false;
-        }
-      });
-    }
+        });
+      }
+
+      void loadModelsForProvider(providerSelect.value, initialModel);
+    });
 
     documentRef.querySelectorAll("[data-prompt-card]").forEach((card) => {
       const kind = card.dataset.prompt;
@@ -349,6 +419,7 @@
       };
       input.addEventListener("input", updatePromptAction);
       pathButton.addEventListener("click", async () => {
+        pathButton.disabled = true;
         try {
           if (promptPathAction(input.value) === "select") {
             message.textContent = "Choose the Obsidian prompt on the NUC…";
@@ -376,9 +447,13 @@
           message.textContent = "Prompt path saved.";
         } catch (error) {
           message.textContent = error.message;
+        } finally {
+          pathButton.disabled = false;
         }
       });
-      card.querySelector("[data-test-prompt]").addEventListener("click", async () => {
+      const testPromptButton = card.querySelector("[data-test-prompt]");
+      testPromptButton.addEventListener("click", async () => {
+        testPromptButton.disabled = true;
         try {
           const result = await postJson(
             fetchImpl,
@@ -391,6 +466,8 @@
             : result.message;
         } catch (error) {
           message.textContent = error.message;
+        } finally {
+          testPromptButton.disabled = false;
         }
       });
     });
@@ -408,6 +485,7 @@
       };
       input.addEventListener("input", updateAction);
       action.addEventListener("click", async () => {
+        action.disabled = true;
         try {
           if (promptPathAction(input.value) === "select") {
             const result = await postJson(
@@ -434,9 +512,12 @@
           message.textContent = "Anki prompt directory saved.";
         } catch (error) {
           message.textContent = error.message;
+        } finally {
+          action.disabled = false;
         }
       });
       testButton.addEventListener("click", async () => {
+        testButton.disabled = true;
         try {
           const result = await postJson(
             fetchImpl,
@@ -447,6 +528,8 @@
           message.textContent = catalogMessage(result);
         } catch (error) {
           message.textContent = error.message;
+        } finally {
+          testButton.disabled = false;
         }
       });
     }
@@ -515,10 +598,14 @@
     diagnosticLines,
     getJson,
     initialize,
+    modelOptionValues,
+    populateModelSelect,
     postJson,
     promptPathAction,
     renderNotebookStatus,
+    resolvedModelValue,
     runWhenReady,
+    syncCustomModelVisibility,
     testPresentation,
     togglePassword,
   };

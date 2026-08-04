@@ -36,9 +36,20 @@
         <div class="provider-field">
           <label for="model-{{ provider.name }}">Model</label>
           <div class="provider-action-row">
-            <input id="model-{{ provider.name }}" type="text" maxlength="200" autocomplete="off" value="{{ provider.model }}" data-model-input>
+            <select id="model-{{ provider.name }}" data-model-select>
+              <option value="{{ provider.model }}">{{ provider.model }}</option>
+            </select>
             <button class="button secondary compact-button" type="button" data-save-model>Save model</button>
           </div>
+          <input
+            type="text"
+            maxlength="200"
+            autocomplete="off"
+            placeholder="provider/model-id"
+            value=""
+            data-model-custom
+            hidden
+          >
         </div>
 
         <div class="provider-field">
@@ -88,58 +99,64 @@
     </div>
   </section>
 
-  <section class="settings-section" aria-labelledby="openrouter-heading">
+  <section class="settings-section" aria-labelledby="assignments-heading">
     <div class="settings-section-heading">
       <div>
-        <p class="mono-label">Quiz safety</p>
-        <h2 id="openrouter-heading">OpenRouter medical review</h2>
-        <p>Optionally send generated quiz questions to a separate model for a medical-accuracy check before publication.</p>
+        <p class="mono-label">Per-task routing</p>
+        <h2 id="assignments-heading">Task assignments</h2>
+        <p>Choose which configured provider and model handles each part of the pipeline.</p>
       </div>
     </div>
-    <article class="card provider-card" data-openrouter-card>
-      <div class="provider-card-heading">
-        <div>
-          <p class="provider-kicker">OpenRouter</p>
-          <h3>Accuracy reviewer</h3>
+    <div class="provider-grid">
+      {% set task_labels = {
+        "transcripts": "Transcript cleaning",
+        "anki_curation": "Anki curation",
+        "accuracy_review": "Accuracy review"
+      } %}
+      {% for row in assignments %}
+      <article class="card provider-card" data-assignment-row data-task="{{ row.task }}">
+        <div class="provider-card-heading">
+          <div>
+            <p class="provider-kicker">Task</p>
+            <h3>{{ task_labels.get(row.task, row.task) }}</h3>
+          </div>
+          <span class="credential-state {{ 'is-configured' if row.key_configured else '' }}" data-assignment-key>
+            {{ "Key configured" if row.key_configured else "Key not configured" }}
+          </span>
         </div>
-        <span class="credential-state {{ 'is-configured' if openrouter.configured else '' }}" data-openrouter-configured>
-          {{ "Configured" if openrouter.configured else "Not configured" }}
-        </span>
-      </div>
-      <div class="provider-field">
-        <label for="openrouter-model">Review model</label>
-        <div class="provider-action-row">
-          {% set openrouter_custom = openrouter.model not in openrouter.models %}
-          <select id="openrouter-model" data-openrouter-model>
-            {% for model in openrouter.models %}
-            <option value="{{ model }}" {% if model == openrouter.model %}selected{% endif %}>{{ model }}</option>
+        <div class="provider-field">
+          <label for="assignment-provider-{{ row.task }}">Provider</label>
+          <select id="assignment-provider-{{ row.task }}" data-assignment-provider>
+            {% for provider in providers %}
+            <option value="{{ provider.name }}" {% if provider.name == row.provider %}selected{% endif %}>{{ provider.label }}</option>
             {% endfor %}
-            <option value="__custom__" {% if openrouter_custom %}selected{% endif %}>Custom model ID…</option>
           </select>
-          <button class="button secondary compact-button" type="button" data-save-openrouter-model>Save model</button>
         </div>
-        <input
-          type="text"
-          maxlength="200"
-          autocomplete="off"
-          placeholder="provider/model-id"
-          value="{{ openrouter.model if openrouter_custom else '' }}"
-          data-openrouter-custom-model
-          {% if not openrouter_custom %}hidden{% endif %}
-        >
-      </div>
-      <div class="provider-field">
-        <label for="openrouter-key">OpenRouter API key</label>
-        <input id="openrouter-key" type="password" maxlength="8192" autocomplete="new-password" placeholder="{{ 'Replace stored key' if openrouter.configured else 'Paste key' }}" data-openrouter-key>
-        <p class="field-help">Stored in Windows Credential Manager. The key is never written to the database.</p>
-      </div>
-      <div class="provider-buttons">
-        <button class="button primary" type="button" data-save-openrouter-key>Save key</button>
-        <button class="button secondary" type="button" data-test-openrouter>Test connection</button>
+        <div class="provider-field">
+          <label for="assignment-model-{{ row.task }}">Model</label>
+          <div class="provider-action-row">
+            <select id="assignment-model-{{ row.task }}" data-assignment-model>
+              <option value="{{ row.model }}">{{ row.model }}</option>
+            </select>
+            <button class="button secondary compact-button" type="button" data-save-assignment>Save assignment</button>
+          </div>
+          <input
+            type="text"
+            maxlength="200"
+            autocomplete="off"
+            placeholder="provider/model-id"
+            value=""
+            data-assignment-custom
+            hidden
+          >
+        </div>
+        {% if row.task == "accuracy_review" %}
         <label class="checkbox-inline"><input type="checkbox" data-openrouter-gate {% if openrouter.accuracy_gate_enabled %}checked{% endif %}> Block publication unless every question passes review</label>
-      </div>
-      <p class="field-message" data-openrouter-message aria-live="polite"></p>
-    </article>
+        {% endif %}
+        <p class="field-message" data-assignment-message aria-live="polite"></p>
+      </article>
+      {% endfor %}
+    </div>
   </section>
 
   <section class="settings-section" aria-labelledby="google-heading">
@@ -234,5 +251,5 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/settings.js?v=20260728.2" defer></script>
+<script src="/static/settings.js?v=20260804.1" defer></script>
 {% endblock %}
