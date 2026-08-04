@@ -146,6 +146,26 @@ def test_embed_batches_and_restores_response_index_order() -> None:
     )
 
 
+def test_embed_splits_large_payloads_before_calling_voyage() -> None:
+    batches: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        inputs = list(json.loads(request.content)["input"])
+        batches.append(len(inputs))
+        return httpx.Response(
+            200,
+            json=_response([[1.0, 0.0, 0.0] for _ in inputs]),
+        )
+
+    result = _embed(
+        handler,
+        ["a" * 250_000, "b" * 250_000],
+    )
+
+    assert batches == [1, 1]
+    assert result.shape == (2, 3)
+
+
 def test_embed_query_contract_and_empty_input() -> None:
     calls = 0
 

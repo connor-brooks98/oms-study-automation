@@ -16,6 +16,9 @@ class VoyageEmbeddingError(RuntimeError):
     """Voyage failed without exposing credentials or source text."""
 
 
+_MAX_BATCH_CHARACTERS = 400_000
+
+
 class VoyageEmbeddingClient:
     url = "https://api.voyageai.com/v1/embeddings"
 
@@ -68,13 +71,15 @@ class VoyageEmbeddingClient:
             return np.empty((0, self.dimensions), dtype=np.float32)
         api_key = self._credential()
         batches: list[FloatMatrix] = []
-        for start in range(0, len(normalized), self.batch_size):
+        for batch_index, batch in enumerate(
+            _embedding_batches(normalized, self.batch_size)
+        ):
             batches.append(
                 await self._embed_batch(
-                    normalized[start : start + self.batch_size],
+                    batch,
                     input_type=input_type,
                     api_key=api_key,
-                    batch_index=start // self.batch_size,
+                    batch_index=batch_index,
                 )
             )
         return np.concatenate(batches, axis=0).astype(
@@ -232,3 +237,26 @@ def _request_id(response: httpx.Response) -> str | None:
         if value:
             return str(value)[:200]
     return None
+
+
+def _embedding_batches(
+    texts: Sequence[str],
+    batch_size: int,
+) -> Sequence[Sequence[str]]:
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_characters = 0
+    for text in texts:
+        text_characters = len(text)
+        if current and (
+            len(current) >= batch_size
+            or current_characters + text_characters > _MAX_BATCH_CHARACTERS
+        ):
+            batches.append(current)
+            current = []
+            current_characters = 0
+        current.append(text)
+        current_characters += text_characters
+    if current:
+        batches.append(current)
+    return batches
