@@ -10,6 +10,7 @@ name = "oms-study-automation"
 version = "0.1.0"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+  "curl-cffi>=0.13,<1",
   "fastapi>=0.115,<1",
   "fastembed>=0.7,<1",
   "httpx>=0.28,<1",

@@ -166,6 +166,48 @@ def test_embed_splits_large_payloads_before_calling_voyage() -> None:
     assert result.shape == (2, 3)
 
 
+def test_embed_retries_html_bad_request_with_curl_transport() -> None:
+    async def scenario() -> np.ndarray:
+        def primary_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                headers={"content-type": "text/html"},
+                content=b"<html>Bad Request</html>",
+            )
+
+        async def curl_post(
+            url: str,
+            headers: dict[str, str],
+            payload: dict[str, Any],
+        ) -> httpx.Response:
+            assert url == "https://api.voyageai.com/v1/embeddings"
+            assert headers["Authorization"] == "Bearer voyage-secret"
+            assert payload["input"] == ["alpha"]
+            return httpx.Response(
+                200,
+                json=_response([[1.0, 0.0, 0.0]]),
+            )
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(primary_handler)
+        ) as http:
+            client = VoyageEmbeddingClient(
+                MemorySecrets({VOYAGE_API_KEY_SECRET: "voyage-secret"}),
+                model="voyage-4-large",
+                dimensions=3,
+                http=http,
+                curl_post=curl_post,
+            )
+            return await client.embed(["alpha"], input_type="document")
+
+    result = asyncio.run(scenario())
+
+    np.testing.assert_array_equal(
+        result,
+        np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32),
+    )
+
+
 def test_embed_query_contract_and_empty_input() -> None:
     calls = 0
 
