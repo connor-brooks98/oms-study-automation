@@ -2,6 +2,9 @@
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [project]
 name = "oms-study-automation"
 version = "0.1.0"
