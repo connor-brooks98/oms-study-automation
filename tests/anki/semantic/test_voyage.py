@@ -7,6 +7,7 @@ import httpx
 import numpy as np
 import pytest
 
+from oms_hub.anki.semantic import voyage
 from oms_hub.anki.semantic.voyage import (
     VoyageEmbeddingClient,
     VoyageEmbeddingError,
@@ -262,6 +263,57 @@ def test_embed_uses_explicit_api_key_before_credential_manager() -> None:
 
     result = asyncio.run(scenario())
 
+    np.testing.assert_array_equal(
+        result,
+        np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32),
+    )
+
+
+def test_embed_uses_native_curl_transport_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def curl_post(
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+    ) -> httpx.Response:
+        calls.append({"url": url, "headers": headers, "payload": payload})
+        return httpx.Response(
+            200,
+            json=_response([[1.0, 0.0, 0.0]]),
+        )
+
+    async def scenario() -> np.ndarray:
+        client = VoyageEmbeddingClient(
+            MemorySecrets({VOYAGE_API_KEY_SECRET: "voyage-secret"}),
+            model="voyage-4-large",
+            dimensions=3,
+            curl_post=curl_post,
+        )
+        try:
+            return await client.embed(["alpha"], input_type="document")
+        finally:
+            await client.aclose()
+
+    monkeypatch.setattr(voyage, "_runs_on_windows", lambda: True, raising=False)
+    result = asyncio.run(scenario())
+
+    assert calls == [
+        {
+            "url": "https://api.voyageai.com/v1/embeddings",
+            "headers": {"Authorization": "Bearer voyage-secret"},
+            "payload": {
+                "input": ["alpha"],
+                "model": "voyage-4-large",
+                "input_type": "document",
+                "truncation": True,
+                "output_dimension": 3,
+                "output_dtype": "float",
+            },
+        }
+    ]
     np.testing.assert_array_equal(
         result,
         np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32),

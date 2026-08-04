@@ -1,5 +1,9 @@
 import asyncio
+import json
+import sys
+import tempfile
 from collections.abc import Awaitable, Callable, Sequence
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
@@ -16,6 +20,10 @@ class VoyageEmbeddingError(RuntimeError):
     """Voyage failed without exposing credentials or source text."""
 
 
+_CurlPost = Callable[[str, dict[str, str], dict[str, Any]], Awaitable[httpx.Response]]
+_CURL_STATUS_MARKER = b"\n__OMS_HUB_STATUS__:"
+
+
 class VoyageEmbeddingClient:
     url = "https://api.voyageai.com/v1/embeddings"
 
@@ -30,6 +38,7 @@ class VoyageEmbeddingClient:
         retry_base_seconds: float = 0.5,
         api_key: str | None = None,
         http: httpx.AsyncClient | None = None,
+        curl_post: _CurlPost | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         if not model.strip():
@@ -50,8 +59,15 @@ class VoyageEmbeddingClient:
         self.retry_base_seconds = retry_base_seconds
         self.api_key = api_key.strip() if api_key is not None else None
         self._sleep = sleep
-        self._owns_http = http is None
-        self._http = http or httpx.AsyncClient(timeout=120.0)
+        self._owns_http = http is None and not _runs_on_windows()
+        self._http = http or (
+            None if _runs_on_windows() else httpx.AsyncClient(timeout=120.0)
+        )
+        self._curl_post = (
+            (curl_post or _windows_curl_post)
+            if http is None and _runs_on_windows()
+            else None
+        )
 
     async def embed(
         self,
@@ -83,7 +99,7 @@ class VoyageEmbeddingClient:
         )
 
     async def aclose(self) -> None:
-        if self._owns_http:
+        if self._owns_http and self._http is not None:
             await self._http.aclose()
 
     def _credential(self) -> str:
@@ -117,11 +133,17 @@ class VoyageEmbeddingClient:
         }
         for attempt in range(self.max_attempts):
             try:
-                response = await self._http.post(
-                    self.url,
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json=payload,
-                )
+                headers = {"Authorization": f"Bearer {api_key}"}
+                if self._curl_post is not None:
+                    response = await self._curl_post(self.url, headers, payload)
+                else:
+                    if self._http is None:
+                        raise AssertionError("Voyage transport was not configured")
+                    response = await self._http.post(
+                        self.url,
+                        headers=headers,
+                        json=payload,
+                    )
             except httpx.RequestError as exc:
                 if attempt + 1 < self.max_attempts:
                     await self._backoff(attempt)
@@ -232,3 +254,88 @@ def _request_id(response: httpx.Response) -> str | None:
         if value:
             return str(value)[:200]
     return None
+
+
+def _runs_on_windows() -> bool:
+    return sys.platform == "win32"
+
+
+async def _windows_curl_post(
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+) -> httpx.Response:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        suffix=".json",
+        prefix="oms-voyage-",
+        delete=False,
+    ) as body_file:
+        json.dump(payload, body_file, ensure_ascii=False, separators=(",", ":"))
+        body_path = Path(body_file.name)
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "curl.exe",
+            "--config",
+            "-",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _stderr = await process.communicate(
+            _curl_config(url, headers, body_path).encode("utf-8")
+        )
+    except FileNotFoundError as exc:
+        raise httpx.RequestError("native curl is unavailable") from exc
+    finally:
+        body_path.unlink(missing_ok=True)
+    if process.returncode != 0:
+        raise httpx.RequestError("native curl request failed")
+    return _curl_response(stdout)
+
+
+def _curl_config(
+    url: str,
+    headers: dict[str, str],
+    body_path: Path,
+) -> str:
+    curl_path = body_path.as_posix()
+    header_lines = [
+        'header = "Content-Type: application/json"',
+        *[
+            f'header = "{_curl_config_value(f"{name}: {value}")}"'
+            for name, value in headers.items()
+        ],
+    ]
+    return "\n".join(
+        [
+            f'url = "{_curl_config_value(url)}"',
+            'request = "POST"',
+            *header_lines,
+            f'data-binary = "@{_curl_config_value(curl_path)}"',
+            "http1.1",
+            "silent",
+            "show-error",
+            "connect-timeout = 30",
+            "max-time = 120",
+            'write-out = "\\n__OMS_HUB_STATUS__:%{http_code}"',
+        ]
+    )
+
+
+def _curl_config_value(value: str) -> str:
+    if "\r" in value or "\n" in value:
+        raise ValueError("curl configuration values cannot contain newlines")
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _curl_response(stdout: bytes) -> httpx.Response:
+    try:
+        content, status_text = stdout.rsplit(_CURL_STATUS_MARKER, 1)
+        status_code = int(status_text)
+    except (TypeError, ValueError) as exc:
+        raise httpx.RequestError("native curl returned an invalid response") from exc
+    if not 100 <= status_code <= 599:
+        raise httpx.RequestError("native curl returned an invalid status")
+    return httpx.Response(status_code, content=content)
