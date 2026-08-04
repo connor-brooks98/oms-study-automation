@@ -1,8 +1,6 @@
 import asyncio
 import json
-import sys
 from collections.abc import Awaitable, Callable
-from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -12,7 +10,6 @@ import pytest
 from oms_hub.anki.semantic.voyage import (
     VoyageEmbeddingClient,
     VoyageEmbeddingError,
-    _curl_post_sync,
 )
 from oms_hub.security.secret_store import (
     VOYAGE_API_KEY_SECRET,
@@ -147,99 +144,6 @@ def test_embed_batches_and_restores_response_index_order() -> None:
             dtype=np.float32,
         ),
     )
-
-
-def test_embed_splits_large_payloads_before_calling_voyage() -> None:
-    batches: list[int] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        inputs = list(json.loads(request.content)["input"])
-        batches.append(len(inputs))
-        return httpx.Response(
-            200,
-            json=_response([[1.0, 0.0, 0.0] for _ in inputs]),
-        )
-
-    result = _embed(
-        handler,
-        ["a" * 250_000, "b" * 250_000],
-    )
-
-    assert batches == [1, 1]
-    assert result.shape == (2, 3)
-
-
-def test_embed_retries_html_bad_request_with_curl_transport() -> None:
-    async def scenario() -> np.ndarray:
-        def primary_handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                400,
-                headers={"content-type": "text/html"},
-                content=b"<html>Bad Request</html>",
-            )
-
-        async def curl_post(
-            url: str,
-            headers: dict[str, str],
-            payload: dict[str, Any],
-        ) -> httpx.Response:
-            assert url == "https://api.voyageai.com/v1/embeddings"
-            assert headers["Authorization"] == "Bearer voyage-secret"
-            assert payload["input"] == ["alpha"]
-            return httpx.Response(
-                200,
-                json=_response([[1.0, 0.0, 0.0]]),
-            )
-
-        async with httpx.AsyncClient(
-            transport=httpx.MockTransport(primary_handler)
-        ) as http:
-            client = VoyageEmbeddingClient(
-                MemorySecrets({VOYAGE_API_KEY_SECRET: "voyage-secret"}),
-                model="voyage-4-large",
-                dimensions=3,
-                http=http,
-                curl_post=curl_post,
-            )
-            return await client.embed(["alpha"], input_type="document")
-
-    result = asyncio.run(scenario())
-
-    np.testing.assert_array_equal(
-        result,
-        np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32),
-    )
-
-
-def test_curl_transport_forces_http11(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-
-    class FakeResponse:
-        def __init__(self) -> None:
-            self.status_code = 200
-            self.headers = {"content-type": "application/json"}
-            self.content = b'{"model":"voyage-4-large","data":[]}'
-
-    def post(*args: object, **kwargs: object) -> FakeResponse:
-        del args
-        captured.update(kwargs)
-        return FakeResponse()
-
-    monkeypatch.setitem(
-        sys.modules,
-        "curl_cffi",
-        SimpleNamespace(requests=SimpleNamespace(post=post)),
-    )
-
-    _curl_post_sync(
-        "https://api.voyageai.com/v1/embeddings",
-        {"Authorization": "Bearer voyage-secret"},
-        {"input": ["alpha"]},
-    )
-
-    assert captured["http_version"] == "v1"
 
 
 def test_embed_query_contract_and_empty_input() -> None:

@@ -16,10 +16,6 @@ class VoyageEmbeddingError(RuntimeError):
     """Voyage failed without exposing credentials or source text."""
 
 
-_MAX_BATCH_CHARACTERS = 400_000
-_CurlPost = Callable[[str, dict[str, str], dict[str, Any]], Awaitable[httpx.Response]]
-
-
 class VoyageEmbeddingClient:
     url = "https://api.voyageai.com/v1/embeddings"
 
@@ -34,7 +30,6 @@ class VoyageEmbeddingClient:
         retry_base_seconds: float = 0.5,
         api_key: str | None = None,
         http: httpx.AsyncClient | None = None,
-        curl_post: _CurlPost | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         if not model.strip():
@@ -56,8 +51,7 @@ class VoyageEmbeddingClient:
         self.api_key = api_key.strip() if api_key is not None else None
         self._sleep = sleep
         self._owns_http = http is None
-        self._http = http or httpx.AsyncClient(timeout=120.0, trust_env=False)
-        self._curl_post = curl_post or _curl_post
+        self._http = http or httpx.AsyncClient(timeout=120.0)
 
     async def embed(
         self,
@@ -74,15 +68,13 @@ class VoyageEmbeddingClient:
             return np.empty((0, self.dimensions), dtype=np.float32)
         api_key = self._credential()
         batches: list[FloatMatrix] = []
-        for batch_index, batch in enumerate(
-            _embedding_batches(normalized, self.batch_size)
-        ):
+        for start in range(0, len(normalized), self.batch_size):
             batches.append(
                 await self._embed_batch(
-                    batch,
+                    normalized[start : start + self.batch_size],
                     input_type=input_type,
                     api_key=api_key,
-                    batch_index=batch_index,
+                    batch_index=start // self.batch_size,
                 )
             )
         return np.concatenate(batches, axis=0).astype(
@@ -123,12 +115,11 @@ class VoyageEmbeddingClient:
             "output_dimension": self.dimensions,
             "output_dtype": "float",
         }
-        headers = {"Authorization": f"Bearer {api_key}"}
         for attempt in range(self.max_attempts):
             try:
                 response = await self._http.post(
                     self.url,
-                    headers=headers,
+                    headers={"Authorization": f"Bearer {api_key}"},
                     json=payload,
                 )
             except httpx.RequestError as exc:
@@ -138,8 +129,6 @@ class VoyageEmbeddingClient:
                 raise VoyageEmbeddingError(
                     f"Voyage embedding batch {batch_index} is unavailable"
                 ) from exc
-            if _is_html_bad_request(response):
-                response = await self._curl_post(self.url, headers, payload)
             if response.status_code == 200:
                 return self._validated_vectors(
                     response,
@@ -243,67 +232,3 @@ def _request_id(response: httpx.Response) -> str | None:
         if value:
             return str(value)[:200]
     return None
-
-
-def _is_html_bad_request(response: httpx.Response) -> bool:
-    return (
-        response.status_code == 400
-        and "text/html" in response.headers.get("content-type", "").casefold()
-    )
-
-
-async def _curl_post(
-    url: str,
-    headers: dict[str, str],
-    payload: dict[str, Any],
-) -> httpx.Response:
-    return await asyncio.to_thread(_curl_post_sync, url, headers, payload)
-
-
-def _curl_post_sync(
-    url: str,
-    headers: dict[str, str],
-    payload: dict[str, Any],
-) -> httpx.Response:
-    from curl_cffi import requests
-
-    response = requests.post(
-        url,
-        headers=headers,
-        json=payload,
-        impersonate="chrome",
-        http_version="v1",
-        timeout=120,
-    )
-    return httpx.Response(
-        response.status_code,
-        headers={
-            str(name): str(value)
-            for name, value in response.headers.items()
-            if value is not None
-        },
-        content=response.content,
-    )
-
-
-def _embedding_batches(
-    texts: Sequence[str],
-    batch_size: int,
-) -> Sequence[Sequence[str]]:
-    batches: list[list[str]] = []
-    current: list[str] = []
-    current_characters = 0
-    for text in texts:
-        text_characters = len(text)
-        if current and (
-            len(current) >= batch_size
-            or current_characters + text_characters > _MAX_BATCH_CHARACTERS
-        ):
-            batches.append(current)
-            current = []
-            current_characters = 0
-        current.append(text)
-        current_characters += text_characters
-    if current:
-        batches.append(current)
-    return batches
