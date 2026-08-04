@@ -771,9 +771,9 @@ class CurationServicesRunner:
                     _judged_candidate(
                         candidates_by_id[nid],
                         runtime,
-                        selected=nid in supporting,
+                        selected=True,
                     )
-                    for nid in sorted(judge_ids)
+                    for nid in sorted(supporting)
                 )
                 coverage_complete = not runtime.missing_facts
             next_states[concept_id] = ConvergenceState(
@@ -1519,9 +1519,10 @@ class CurationServicesRunner:
                     _judged_candidate(
                         candidate,
                         runtime,
-                        selected=candidate.note_id in supporting,
+                        selected=True,
                     )
                     for candidate in deck_candidates
+                    if candidate.note_id in supporting
                 )
                 if supporting:
                     break

@@ -288,11 +288,11 @@ class CoverageCache:
 
 
 class CompanionNotes:
-    def __init__(self, note: NormalizedNote) -> None:
-        self.note = note
+    def __init__(self, *notes: NormalizedNote) -> None:
+        self.notes = {note.note_id: note for note in notes}
 
     def get_note(self, note_id: int) -> NormalizedNote | None:
-        return self.note if note_id == self.note.note_id else None
+        return self.notes.get(note_id)
 
 
 class V2CoverageStructuredService:
@@ -322,7 +322,7 @@ class V2CoverageStructuredService:
         )
 
 
-def test_judgment_stage_activates_v2_coverage_from_prompt_metadata() -> None:
+def test_judgment_stage_projects_only_supporting_candidates_for_audit() -> None:
     passage = SourcePassage.create(
         revision_id=7,
         lecture_id=12,
@@ -395,10 +395,20 @@ def test_judgment_stage_activates_v2_coverage_from_prompt_metadata() -> None:
         selected=False,
         retrieval_pass=RetrievalPass.PASS_1,
     )
+    non_supporting_candidate = replace(
+        candidate,
+        note_id=2,
+        content_hash="2" * 64,
+    )
+    non_supporting_note = replace(
+        note,
+        note_id=2,
+        content_sha256="2" * 64,
+    )
     runner = CurationServicesRunner.__new__(CurationServicesRunner)
     runner.structured = V2CoverageStructuredService(judgment)
     runner.repository = CoverageCache()
-    runner.companion = CompanionNotes(note)
+    runner.companion = CompanionNotes(note, non_supporting_note)
     context = SimpleNamespace(
         job=SimpleNamespace(
             judgment_rubric_version="coverage-rubric",
@@ -424,7 +434,12 @@ def test_judgment_stage_activates_v2_coverage_from_prompt_metadata() -> None:
                 "schema_name": "lcl_v2",
             },
             CurationStage.RETRIEVAL_PASS_1: {
-                "groups": {"C01": [stages_module._candidate_payload(candidate)]}
+                "groups": {
+                    "C01": [
+                        stages_module._candidate_payload(candidate),
+                        stages_module._candidate_payload(non_supporting_candidate),
+                    ]
+                }
             },
         },
     )
@@ -436,6 +451,7 @@ def test_judgment_stage_activates_v2_coverage_from_prompt_metadata() -> None:
         judgment.model_dump(mode="json")
     )
     assert product.candidates is not None
+    assert [candidate.note_id for candidate in product.candidates] == [1]
     assert product.candidates[0].predicted_band == "partial"
 
 
