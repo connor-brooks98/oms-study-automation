@@ -1,5 +1,6 @@
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 
 import pytest
 
@@ -381,11 +382,19 @@ def test_v2_ledger_enforces_depth_map_classification() -> None:
         service.generate(passages)
 
 
-def test_v2_ledger_enforces_professor_emphasis_flag() -> None:
+def test_v2_ledger_canonicalizes_professor_emphasis_flag() -> None:
     passages = _v2_passages()
+    passages[2] = replace(
+        passages[2],
+        text="MEDIUM: iron deficiency laboratory sequence [3]",
+    )
     valid = _v2_ledger(passages)
     no_emphasis = valid.concepts[0].model_copy(
-        update={"emphasis_flag": False}
+        update={
+            "depth": "medium",
+            "emphasis_flag": False,
+            "importance": "medium",
+        }
     )
     invalid = valid.model_copy(update={"concepts": (no_emphasis,)})
     structured = V2StructuredService(invalid)
@@ -398,8 +407,13 @@ def test_v2_ledger_enforces_professor_emphasis_flag() -> None:
         schema_name="lcl_v2",
     )
 
-    with pytest.raises(LCLGenerationError, match="emphasis flag"):
-        service.generate(passages)
+    artifact = service.generate(passages)
+
+    assert isinstance(artifact.ledger, LectureConceptLedgerV2)
+    assert artifact.ledger.concepts[0].emphasis_flag is True
+    assert artifact.ledger.concepts[0].importance == "high"
+    assert artifact.repair_attempted is False
+    assert len(structured.calls) == 1
 
 
 def test_v2_statement_must_overlap_primary_evidence_not_only_summary() -> None:

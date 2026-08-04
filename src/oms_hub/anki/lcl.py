@@ -1,7 +1,7 @@
 import json
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
 from pydantic import (
@@ -275,6 +275,7 @@ class LCLService:
                 self.prompt_text or _generation_instruction(self.prompt_version),
                 source_input,
             )
+            first = _canonicalize_summary_emphasis(first, source_by_id)
             self._validate(first.value, source_by_id)
             return self._artifact(first, repair_attempted=False)
         except (StructuredOutputError, LCLGenerationError) as first_error:
@@ -304,6 +305,10 @@ class LCLService:
                         prompt_text=self.prompt_text,
                     ),
                     repair_input,
+                )
+                repaired = _canonicalize_summary_emphasis(
+                    repaired,
+                    source_by_id,
                 )
                 self._validate(repaired.value, source_by_id)
             except (
@@ -510,6 +515,33 @@ def _validate_ledger_v2(
             "every DEPTH or EMPHASIS summary item must map to a concept: "
             f"missing_summary_passage_ids={_format_ids(missing_summary_ids)}"
         )
+
+
+def _canonicalize_summary_emphasis(
+    result: StructuredJSONResult[Any],
+    source_by_id: dict[str, SourcePassage],
+) -> StructuredJSONResult[Any]:
+    if not isinstance(result.value, LectureConceptLedgerV2):
+        return result
+    concepts = tuple(
+        concept.model_copy(
+            update={"emphasis_flag": True, "importance": "high"}
+        )
+        if not concept.emphasis_flag
+        and any(
+            (passage := source_by_id.get(passage_id)) is not None
+            and passage.summary_section == "emphasis"
+            for passage_id in concept.passage_ids
+        )
+        else concept
+        for concept in result.value.concepts
+    )
+    if concepts == result.value.concepts:
+        return result
+    return replace(
+        result,
+        value=result.value.model_copy(update={"concepts": concepts}),
+    )
 
 
 def _format_ids(values: Sequence[str]) -> str:
