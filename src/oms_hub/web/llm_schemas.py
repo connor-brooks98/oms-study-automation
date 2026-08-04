@@ -8,3 +8,8 @@ class CredentialUpdate(BaseModel):
 class ModelUpdate(BaseModel):
     model: str = Field(min_length=1, max_length=200)
 
+
+class TaskAssignmentUpdate(BaseModel):
+    provider: str = Field(min_length=1, max_length=50)
+    model: str = Field(min_length=1, max_length=200)
+

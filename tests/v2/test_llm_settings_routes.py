@@ -1,5 +1,8 @@
 from dataclasses import dataclass
 
+import httpx
+import pytest
+import respx
 from fastapi.testclient import TestClient
 
 from oms_hub.app import create_app
@@ -7,9 +10,12 @@ from oms_hub.config import Settings
 from oms_hub.llm.domain import (
     DiagnosticSource,
     LLMRequestError,
+    LLMTask,
     ProviderConnection,
     ProviderName,
 )
+from oms_hub.llm.openai import OpenAIProvider
+from oms_hub.web import settings_routes
 
 
 class MemorySecrets:
@@ -38,6 +44,13 @@ class ConnectionProvider:
         if self.error is not None:
             raise self.error
         return ProviderConnection(self.name, model, "provider-request")
+
+
+@pytest.fixture(autouse=True)
+def _clear_model_cache():
+    settings_routes._model_cache.clear()
+    yield
+    settings_routes._model_cache.clear()
 
 
 def prepared_client(tmp_path):
@@ -147,4 +160,138 @@ def test_unknown_provider_is_rejected(tmp_path):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "AI provider was not found"
+
+
+def test_models_endpoint_returns_fallback_when_key_missing(tmp_path):
+    client, _, _ = prepared_client(tmp_path)
+
+    response = client.get("/api/settings/providers/openai/models")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["source"] == "fallback"
+    assert payload["models"]
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_models_endpoint_unknown_provider_returns_404(tmp_path):
+    client, _, _ = prepared_client(tmp_path)
+
+    response = client.get("/api/settings/providers/not-a-provider/models")
+
+    assert response.status_code == 404
+
+
+@respx.mock
+def test_models_endpoint_returns_live_models_and_caches_second_call(tmp_path):
+    client, app, secrets = prepared_client(tmp_path)
+    app.state.llm_service.providers[ProviderName.OPENAI] = OpenAIProvider()
+    secrets.set("openai-api-key", "sentinel-secret")
+    route = respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"id": "gpt-4.1"}, {"id": "gpt-5.2"}]},
+        )
+    )
+
+    first = client.get("/api/settings/providers/openai/models")
+    second = client.get("/api/settings/providers/openai/models")
+
+    assert first.status_code == 200
+    assert first.json() == {
+        "models": ["gpt-4.1", "gpt-5.2"],
+        "source": "live",
+    }
+    assert second.json() == first.json()
+    assert route.calls.call_count == 1
+    assert "sentinel-secret" not in first.text
+    assert "sentinel-secret" not in second.text
+
+
+@respx.mock
+def test_models_endpoint_falls_back_when_provider_request_fails(tmp_path):
+    client, app, secrets = prepared_client(tmp_path)
+    app.state.llm_service.providers[ProviderName.OPENAI] = OpenAIProvider()
+    secrets.set("openai-api-key", "sentinel-secret")
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(
+            401,
+            json={"error": {"message": "invalid api key: sentinel-secret"}},
+        )
+    )
+
+    response = client.get("/api/settings/providers/openai/models")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["source"] == "fallback"
+    assert "sentinel-secret" not in response.text
+
+
+def test_task_assignment_put_updates_provider_and_model(tmp_path):
+    client, app, secrets = prepared_client(tmp_path)
+    secrets.set("gemini-api-key", "secret")
+
+    response = client.put(
+        "/api/settings/task-assignments/transcripts",
+        json={"provider": "gemini", "model": "gemini-3.6-flash"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload == {
+        "task": "transcripts",
+        "provider": "gemini",
+        "model": "gemini-3.6-flash",
+        "key_configured": True,
+    }
+    assert app.state.llm_settings.assignment(LLMTask.TRANSCRIPTS).model == (
+        "gemini-3.6-flash"
+    )
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_task_assignment_put_reports_unconfigured_credential(tmp_path):
+    client, _, _ = prepared_client(tmp_path)
+
+    response = client.put(
+        "/api/settings/task-assignments/anki_curation",
+        json={"provider": "anthropic", "model": "claude-sonnet-5"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["key_configured"] is False
+
+
+def test_task_assignment_put_unknown_task_returns_404(tmp_path):
+    client, _, _ = prepared_client(tmp_path)
+
+    response = client.put(
+        "/api/settings/task-assignments/not-a-task",
+        json={"provider": "openai", "model": "gpt-5.2"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_task_assignment_put_unknown_provider_returns_422(tmp_path):
+    client, _, _ = prepared_client(tmp_path)
+
+    response = client.put(
+        "/api/settings/task-assignments/transcripts",
+        json={"provider": "not-a-provider", "model": "gpt-5.2"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_task_assignment_put_blank_model_returns_422(tmp_path):
+    client, _, _ = prepared_client(tmp_path)
+
+    response = client.put(
+        "/api/settings/task-assignments/transcripts",
+        json={"provider": "openai", "model": "   "},
+    )
+
+    assert response.status_code == 422
 

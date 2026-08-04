@@ -1,5 +1,7 @@
 import json
 import logging
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, cast
@@ -31,16 +33,37 @@ from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
 from oms_hub.study_generation.domain import PromptKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.tracker_preview import TrackerPreview, TrackerPreviewService
-from oms_hub.web.llm_schemas import CredentialUpdate, ModelUpdate
+from oms_hub.web.llm_schemas import CredentialUpdate, ModelUpdate, TaskAssignmentUpdate
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 router = APIRouter(prefix="/settings")
+api_router = APIRouter(prefix="/api/settings")
 logger = logging.getLogger(__name__)
 
 _MAX_TRACKER_BYTES = 25 * 1024 * 1024
 # Moved to oms_hub.llm.catalog.FALLBACK_MODELS; kept as a re-import shim
 # because this module name is referenced elsewhere.
 _OPENROUTER_MODELS = FALLBACK_MODELS[ProviderName.OPENROUTER]
+
+_MODEL_CACHE_TTL_SECONDS = 3600.0
+_model_cache: dict[ProviderName, tuple[float, tuple[str, ...]]] = {}
+_model_cache_lock = threading.Lock()
+
+
+def _cached_models(provider: ProviderName) -> tuple[str, ...] | None:
+    with _model_cache_lock:
+        entry = _model_cache.get(provider)
+    if entry is None:
+        return None
+    cached_at, models = entry
+    if time.monotonic() - cached_at > _MODEL_CACHE_TTL_SECONDS:
+        return None
+    return models
+
+
+def _cache_models(provider: ProviderName, models: tuple[str, ...]) -> None:
+    with _model_cache_lock:
+        _model_cache[provider] = (time.monotonic(), models)
 
 
 class AccuracyGateUpdate(BaseModel):
@@ -114,6 +137,7 @@ def settings_page(request: Request) -> HTMLResponse:
                 }
                 for preference in preferences
             ),
+            "assignments": _assignment_rows(request),
             "openrouter": _openrouter_context(request),
             "notebook_status": (
                 request.app.state.notebook_connection.status()
@@ -141,6 +165,25 @@ def settings_page(request: Request) -> HTMLResponse:
             ),
         },
     )
+
+
+def _assignment_rows(request: Request) -> tuple[dict[str, object], ...]:
+    llm_settings = _llm_settings(request)
+    llm_service = _llm_service(request)
+    rows: list[dict[str, object]] = []
+    for task in LLMTask:
+        assignment = llm_settings.assignment(task)
+        rows.append(
+            {
+                "task": task.value,
+                "provider": assignment.provider.value,
+                "model": assignment.model,
+                "key_configured": llm_service.credential_configured(
+                    assignment.provider
+                ),
+            }
+        )
+    return tuple(rows)
 
 
 def _openrouter_context(request: Request) -> dict[str, object]:
@@ -411,11 +454,81 @@ def apply_tracker(
     return RedirectResponse("/", status_code=303)
 
 
+@api_router.get("/providers/{provider}/models")
+def list_provider_models(request: Request, provider: str) -> JSONResponse:
+    selected = _provider(provider)
+    secrets = cast(SecretStore, request.app.state.secrets)
+    api_key = secrets.get(SECRET_KEYS[selected])
+    if not api_key or not api_key.strip():
+        return _no_store(
+            {
+                "models": list(FALLBACK_MODELS[selected]),
+                "source": "fallback",
+            }
+        )
+    cached = _cached_models(selected)
+    if cached is not None:
+        return _no_store({"models": list(cached), "source": "live"})
+    try:
+        models = _llm_service(request).providers[selected].list_models(api_key)
+    except LLMRequestError:
+        return _no_store(
+            {
+                "models": list(FALLBACK_MODELS[selected]),
+                "source": "fallback",
+            }
+        )
+    _cache_models(selected, models)
+    return _no_store({"models": list(models), "source": "live"})
+
+
+@api_router.put("/task-assignments/{task}")
+def update_task_assignment(
+    request: Request,
+    task: str,
+    update: TaskAssignmentUpdate,
+) -> JSONResponse:
+    selected_task = _task(task)
+    selected_provider = _body_provider(update.provider)
+    try:
+        saved = _llm_settings(request).set_assignment(
+            selected_task,
+            selected_provider,
+            update.model,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return _no_store(
+        {
+            "task": saved.task.value,
+            "provider": saved.provider.value,
+            "model": saved.model,
+            "key_configured": _llm_service(request).credential_configured(
+                saved.provider
+            ),
+        }
+    )
+
+
 def _provider(value: str) -> ProviderName:
     try:
         return ProviderName(value)
     except ValueError as error:
         raise HTTPException(404, "AI provider was not found") from error
+
+
+def _task(value: str) -> LLMTask:
+    try:
+        return LLMTask(value)
+    except ValueError as error:
+        raise HTTPException(404, "task was not found") from error
+
+
+def _body_provider(value: str) -> ProviderName:
+    try:
+        return ProviderName(value)
+    except ValueError as error:
+        raise HTTPException(422, "AI provider was not found") from error
 
 
 def _llm_service(request: Request) -> LLMService:

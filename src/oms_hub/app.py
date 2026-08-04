@@ -110,6 +110,7 @@ from oms_hub.web.generation_routes import (
 from oms_hub.web.public_quiz_routes import router as public_quiz_router
 from oms_hub.web.quarantine_routes import router as quarantine_router
 from oms_hub.web.routes import router
+from oms_hub.web.settings_routes import api_router as settings_api_router
 from oms_hub.web.settings_routes import router as settings_router
 from oms_hub.web.studio_routes import router as studio_router
 from oms_hub.web.upload_routes import router as upload_router
@@ -713,6 +714,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(anki_agent_router)
     app.include_router(artifact_router)
     app.include_router(settings_router)
+    app.include_router(settings_api_router)
     app.include_router(upload_router)
     app.include_router(quarantine_router)
     app.include_router(generation_router)
