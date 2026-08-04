@@ -157,6 +157,232 @@ test("question navigation and flags persist in quiz state", () => {
   );
 });
 
+// -- Minimal fake DOM sufficient to drive initialize()/render() --
+
+class FakeQuizNode {
+  constructor(tag, documentRef) {
+    this.tagName = tag;
+    this.documentRef = documentRef;
+    this.children = [];
+    this.parent = null;
+    this.dataset = {};
+    this.style = {};
+    this.className = "";
+    this._classSet = new Set();
+    this.classList = {
+      add: (name) => this._classSet.add(name),
+      contains: (name) => this._classSet.has(name),
+    };
+    this._text = "";
+    this._listeners = {};
+    this.disabled = false;
+    this.type = "";
+    this.value = "";
+  }
+
+  set textContent(value) {
+    this._text = value;
+    this.children = [];
+  }
+
+  get textContent() {
+    if (this.children.length === 0) return this._text;
+    return this.children.map((child) => child.textContent || "").join("");
+  }
+
+  append(...nodes) {
+    nodes.forEach((node) => {
+      if (node && typeof node === "object") node.parent = this;
+      this.children.push(node);
+    });
+  }
+
+  replaceChildren() {
+    this.children = [];
+  }
+
+  addEventListener(type, handler) {
+    (this._listeners[type] ||= []).push(handler);
+  }
+
+  setAttribute(name, value) {
+    this[name] = value;
+  }
+
+  focus() {
+    this.documentRef.activeElement = this;
+  }
+
+  contains(node) {
+    let current = node;
+    while (current) {
+      if (current === this) return true;
+      current = current.parent;
+    }
+    return false;
+  }
+
+  querySelector(selector) {
+    const match = /^\[data-focus-key="([^"]+)"\]$/.exec(selector);
+    if (!match) return null;
+    const [, key] = match;
+    const stack = [...this.children];
+    while (stack.length) {
+      const node = stack.shift();
+      if (node?.dataset?.focusKey === key) return node;
+      if (node?.children) stack.push(...node.children);
+    }
+    return null;
+  }
+}
+
+class FakeQuizDocument {
+  constructor() {
+    this.activeElement = null;
+    this.defaultView = undefined;
+    this.cookie = "";
+  }
+
+  createElement(tag) {
+    return new FakeQuizNode(tag, this);
+  }
+
+  createTextNode(text) {
+    return { tagName: "#text", textContent: text };
+  }
+
+  querySelector(selector) {
+    if (selector === "[data-quiz-token]") return this.app;
+    return null;
+  }
+}
+
+const buildQuizApp = () => {
+  const documentRef = new FakeQuizDocument();
+  const app = documentRef.createElement("main");
+  app.dataset.contentUrl = "/mock/content";
+  app.dataset.answerUrl = "/mock/answer";
+  documentRef.app = app;
+  return { documentRef, app };
+};
+
+const makeQuizStorage = () => {
+  const map = new Map();
+  const removed = [];
+  return {
+    getItem: (key) => (map.has(key) ? map.get(key) : null),
+    setItem: (key, value) => map.set(key, value),
+    removeItem: (key) => {
+      map.delete(key);
+      removed.push(key);
+    },
+    removed,
+  };
+};
+
+test("initialize renders the could-not-load state when the fetch rejects", async () => {
+  const { documentRef, app } = buildQuizApp();
+  const fetchImpl = async () => {
+    throw new Error("network down");
+  };
+
+  await quiz.initialize(documentRef, fetchImpl);
+
+  assert.equal(app.textContent, "This quiz could not be loaded.");
+});
+
+test("initialize renders the could-not-load state when the response body is not valid JSON", async () => {
+  const { documentRef, app } = buildQuizApp();
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      throw new SyntaxError("Unexpected token");
+    },
+  });
+
+  await quiz.initialize(documentRef, fetchImpl);
+
+  assert.equal(app.textContent, "This quiz could not be loaded.");
+});
+
+test("results-screen Start Over is a no-op when the confirmation is cancelled", async () => {
+  const { documentRef, app } = buildQuizApp();
+  documentRef.defaultView = { localStorage: makeQuizStorage() };
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      return { token: "tok", version: 1, questions: [] };
+    },
+  });
+
+  const originalConfirm = global.confirm;
+  global.confirm = () => false;
+  try {
+    await quiz.initialize(documentRef, fetchImpl);
+    const restart = app.querySelector('[data-focus-key="result-restart"]');
+    assert.ok(restart, "expected a Start Over button on the results screen");
+    const [handler] = restart._listeners.click;
+    handler();
+  } finally {
+    global.confirm = originalConfirm;
+  }
+
+  assert.deepEqual(documentRef.defaultView.localStorage.removed, []);
+});
+
+test("results-screen Start Over clears progress once confirmed", async () => {
+  const { documentRef, app } = buildQuizApp();
+  documentRef.defaultView = { localStorage: makeQuizStorage() };
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      return { token: "tok", version: 1, questions: [] };
+    },
+  });
+
+  const originalConfirm = global.confirm;
+  global.confirm = () => true;
+  try {
+    await quiz.initialize(documentRef, fetchImpl);
+    const restart = app.querySelector('[data-focus-key="result-restart"]');
+    const [handler] = restart._listeners.click;
+    handler();
+  } finally {
+    global.confirm = originalConfirm;
+  }
+
+  assert.deepEqual(documentRef.defaultView.localStorage.removed, [
+    "oms-study-hub-quiz:tok:v1",
+  ]);
+});
+
+test("captureFocusKey only restores focus when a tracked control already had it", () => {
+  const documentRef = new FakeQuizDocument();
+  const container = documentRef.createElement("main");
+  const button = documentRef.createElement("button");
+  button.dataset.focusKey = "submit";
+  container.append(button);
+
+  assert.equal(quiz.captureFocusKey(documentRef, container), undefined);
+
+  documentRef.activeElement = button;
+  assert.equal(quiz.captureFocusKey(documentRef, container), "submit");
+});
+
+test("restoreFocus prefers the matching control and falls back to the container", () => {
+  const documentRef = new FakeQuizDocument();
+  const container = documentRef.createElement("main");
+  const back = documentRef.createElement("button");
+  back.dataset.focusKey = "back";
+  container.append(back);
+
+  quiz.restoreFocus(container, "back");
+  assert.equal(documentRef.activeElement, back);
+
+  quiz.restoreFocus(container, "does-not-exist");
+  assert.equal(documentRef.activeElement, container);
+});
+
 test("performance summary groups right and need-review counts", () => {
   const tagged = {
     ...content,

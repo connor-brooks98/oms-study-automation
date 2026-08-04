@@ -7,6 +7,10 @@
   --text: oklch(0.24 0.014 255);
   --text-2: oklch(0.48 0.012 255);
   --text-3: oklch(0.64 0.01 255);
+  /* Darkened variant of --text-3 for foreground text usage (>=4.5:1 on
+     white/--surface); --text-3 itself stays lighter for borders and other
+     decorative uses. See REVIEW.md #17. */
+  --text-3-strong: oklch(0.51 0.01 255);
   --muted: var(--text-2);
   --brand: oklch(0.32 0.07 255);
   --brand-mid: oklch(0.48 0.09 255);
@@ -14,10 +18,18 @@
   --not-started: oklch(0.6 0.008 255);
   --processing: oklch(0.55 0.11 255);
   --review: oklch(0.68 0.14 70);
+  /* Darkened orange used specifically where --review colors text (>=4.5:1
+     on white/--surface). Chroma kept at 0.10 (vs --review's 0.14) to stay
+     within the sRGB gamut at this lightness. See REVIEW.md #17. */
+  --review-text: oklch(0.5 0.10 70);
   --complete: oklch(0.58 0.11 150);
   --quarantined: oklch(0.58 0.15 25);
   --failed: oklch(0.52 0.18 25);
   --focus: oklch(0.67 0.16 255);
+  /* Alias for the focus-visible/brand accent color; was previously
+     undefined, leaving several focus/credential styles unstyled.
+     See REVIEW.md #7. */
+  --accent: var(--focus);
   --correct: var(--complete);
   --correct-tint: oklch(0.96 0.025 150);
   --incorrect: var(--failed);

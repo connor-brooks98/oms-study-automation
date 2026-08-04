@@ -1318,6 +1318,36 @@
     const dialog = documentRef.querySelector("#anki-apply-dialog");
     let revision = 0;
     let pollTimer;
+    let dialogConfirmed = false;
+
+    if (dialog) {
+      dialog.addEventListener("close", () => {
+        if (!dialogConfirmed) {
+          const saveButton = documentRef.querySelector("[data-save-review]");
+          const buildButton = documentRef.querySelector(
+            "[data-build-envelope]",
+          );
+          if (saveButton) saveButton.disabled = false;
+          if (buildButton) buildButton.disabled = false;
+        }
+        dialogConfirmed = false;
+      });
+    }
+
+    const basePollDelayMs = 2500;
+    const maxPollDelayMs = 30000;
+    let pollDelayMs = basePollDelayMs;
+
+    const handlePollError = (error) => {
+      const note = documentRef.querySelector("#anki-processing-note");
+      if (note) {
+        note.textContent = `${error.message} Retrying…`;
+      }
+      pollDelayMs = Math.min(pollDelayMs * 2, maxPollDelayMs);
+      pollTimer = root.setTimeout(() => {
+        refreshJob().catch(handlePollError);
+      }, pollDelayMs);
+    };
 
     const refreshJob = async () => {
       const job = await requestJson(
@@ -1360,7 +1390,10 @@
         return;
       }
       if (!["failed", "canceled"].includes(job.state)) {
-        pollTimer = root.setTimeout(refreshJob, 2500);
+        pollDelayMs = basePollDelayMs;
+        pollTimer = root.setTimeout(() => {
+          refreshJob().catch(handlePollError);
+        }, pollDelayMs);
       }
     };
 
@@ -1443,6 +1476,7 @@
               }),
             },
           );
+          dialogConfirmed = true;
           dialog.close();
           showRecovery(documentRef, result.recovery, result.apply_state);
           message.textContent = result.recovery.message;
@@ -1540,6 +1574,7 @@
     examOptions,
     hasRequiredSources,
     initialize,
+    initializeReview,
     lectureOptions,
     loadModelOptions,
     matchesReviewSearch,

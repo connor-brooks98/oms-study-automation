@@ -56,6 +56,24 @@
     if (!match) return;
     const lectureId = match[1];
     let pollTimer;
+    const basePollDelayMs = 2500;
+    const maxPollDelayMs = 30000;
+    let pollDelayMs = basePollDelayMs;
+
+    const scheduleRefresh = (delay) => {
+      pollTimer = root.setTimeout(() => {
+        refresh().catch(handlePollError);
+      }, delay);
+    };
+
+    const handlePollError = (error) => {
+      documentRef.querySelectorAll("[data-generation-card]").forEach((card) => {
+        const message = card.querySelector("[data-generation-message]");
+        if (message) message.textContent = `${error.message} Retrying…`;
+      });
+      pollDelayMs = Math.min(pollDelayMs * 2, maxPollDelayMs);
+      scheduleRefresh(pollDelayMs);
+    };
 
     const refresh = async () => {
       const response = await fetchImpl(`/lectures/${lectureId}/generation-status`, {
@@ -66,7 +84,10 @@
       documentRef.querySelectorAll("[data-generation-card]").forEach((card) => {
         active = render(card, payload[card.dataset.kind]) || active;
       });
-      if (active) pollTimer = root.setTimeout(refresh, 2500);
+      if (active) {
+        pollDelayMs = basePollDelayMs;
+        scheduleRefresh(pollDelayMs);
+      }
     };
 
     documentRef.querySelectorAll("[data-generation-card]").forEach((card) => {
@@ -94,14 +115,15 @@
           }
           render(card, payload);
           root.clearTimeout(pollTimer);
-          pollTimer = root.setTimeout(refresh, 1000);
+          pollDelayMs = basePollDelayMs;
+          scheduleRefresh(1000);
         } catch (error) {
           message.textContent = error.message;
           button.disabled = false;
         }
       });
     });
-    void refresh();
+    void refresh().catch(handlePollError);
   };
 
   const api = { csrfToken, initialize, render, runWhenReady };

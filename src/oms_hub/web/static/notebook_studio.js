@@ -215,11 +215,15 @@
     const runForm = page.querySelector("[data-run-form]");
     const destinationCourse = page.querySelector("[data-destination-course]");
     const destinationExam = page.querySelector("[data-destination-exam]");
+    const pollStatus = page.querySelector("[data-poll-status]");
     let pollHandle = null;
+    const basePollDelayMs = 2000;
+    const maxPollDelayMs = 30000;
+    let pollDelayMs = basePollDelayMs;
 
-    const scheduleRefresh = () => {
+    const scheduleRefresh = (delay = basePollDelayMs) => {
       if (pollHandle !== null) root.clearTimeout(pollHandle);
-      pollHandle = root.setTimeout(refresh, 2000);
+      pollHandle = root.setTimeout(refresh, delay);
     };
 
     const loadJson = async (url) => {
@@ -238,15 +242,20 @@
           loadJson(`/studio/sources?${query}`),
           loadJson(`/studio/runs?${query}`),
         ]);
+        if (pollStatus) pollStatus.textContent = "";
+        pollDelayMs = basePollDelayMs;
         const activeSources = renderSources(documentRef, list, sourcePayload.sources || []);
         renderSourcePicker(documentRef, picker, sourcePayload.sources || []);
         filterSourcePicker(picker, sourceFilter.value);
         const activeRuns = renderRuns(documentRef, runList, runPayload.runs || []);
-        if (activeSources || activeRuns) scheduleRefresh();
+        if (activeSources || activeRuns) scheduleRefresh(pollDelayMs);
       } catch (error) {
+        // Keep the previously rendered lists in place; surface the failure
+        // in the dedicated status region and keep polling with backoff.
         const message = error instanceof Error ? error.message : "Studio status could not be loaded.";
-        list.textContent = message;
-        runList.textContent = message;
+        if (pollStatus) pollStatus.textContent = `${message} Retrying…`;
+        pollDelayMs = Math.min(pollDelayMs * 2, maxPollDelayMs);
+        scheduleRefresh(pollDelayMs);
       }
     };
 
@@ -415,6 +424,8 @@
         body.append("subject", course.value);
         body.append("exam_number", exam.value);
         body.append("csrf_token", token);
+        const submitButton = form.querySelector('button[type="submit"]');
+        if (submitButton) submitButton.disabled = true;
         try {
           const response = await fetchImpl(`/studio/sources/${form.dataset.sourceType}`, {
             method: "POST",
@@ -428,6 +439,8 @@
           await refresh();
         } catch (error) {
           message.textContent = error instanceof Error ? error.message : "Source could not be queued.";
+        } finally {
+          if (submitButton) submitButton.disabled = false;
         }
       });
     });
@@ -440,6 +453,8 @@
         return;
       }
       const token = csrf(documentRef);
+      const submitButton = runForm.querySelector('button[type="submit"]');
+      if (submitButton) submitButton.disabled = true;
       try {
         const response = await fetchImpl("/studio/runs", {
           method: "POST",
@@ -455,6 +470,8 @@
         await refresh();
       } catch (error) {
         message.textContent = error instanceof Error ? error.message : "Prompt run could not be queued.";
+      } finally {
+        if (submitButton) submitButton.disabled = false;
       }
     });
   };

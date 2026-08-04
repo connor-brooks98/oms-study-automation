@@ -53,3 +53,159 @@ test("corrupt browser progress is treated as not started", () => {
 
   assert.equal(library.readProgress(storage, "token", 1), "Not started");
 });
+
+// -- Minimal fake DOM sufficient to drive initialize()'s reset controls --
+
+class FakeLibraryElement {
+  constructor() {
+    this.dataset = {};
+    this.textContent = "";
+    this._listeners = {};
+  }
+
+  addEventListener(type, handler) {
+    (this._listeners[type] ||= []).push(handler);
+  }
+
+  getAttribute() {
+    return null;
+  }
+
+  setAttribute() {}
+}
+
+class FakeQuizRow {
+  constructor(token, version) {
+    this.dataset = { quizToken: token, quizVersion: String(version) };
+    this.progress = new FakeLibraryElement();
+  }
+
+  querySelector(selector) {
+    return selector === "[data-quiz-progress]" ? this.progress : null;
+  }
+}
+
+class FakeLibraryDocument {
+  constructor({ rows = [], resetButtons = [], resetMessage, resetProgressButton }) {
+    this.rows = rows;
+    this.resetButtons = resetButtons;
+    this.resetMessage = resetMessage || new FakeLibraryElement();
+    this.resetProgressButton = resetProgressButton || null;
+  }
+
+  querySelectorAll(selector) {
+    if (selector === ".disclosure") return [];
+    if (selector === "[data-quiz-row]") return this.rows;
+    if (selector === "[data-reset-quiz]") return this.resetButtons;
+    return [];
+  }
+
+  querySelector(selector) {
+    if (selector === "[data-reset-message]") return this.resetMessage;
+    if (selector === "[data-reset-progress]") return this.resetProgressButton;
+    return null;
+  }
+}
+
+const makeMemoryStorage = () => {
+  const map = new Map();
+  return {
+    getItem: (key) => (map.has(key) ? map.get(key) : null),
+    setItem: (key, value) => map.set(key, value),
+    removeItem: (key) => map.delete(key),
+    key: (index) => [...map.keys()][index] ?? null,
+    get length() {
+      return map.size;
+    },
+  };
+};
+
+test("per-quiz reset asks for confirmation and leaves progress untouched when cancelled", () => {
+  const storage = makeMemoryStorage();
+  const storageKey = library.progressKey("tok1", 1);
+  storage.setItem(storageKey, JSON.stringify({ version: 1, currentIndex: 1, questions: {} }));
+  const row = new FakeQuizRow("tok1", 1);
+  const resetButton = new FakeLibraryElement();
+  resetButton.dataset.quizToken = "tok1";
+  resetButton.dataset.quizVersion = "1";
+  const documentRef = new FakeLibraryDocument({ rows: [row], resetButtons: [resetButton] });
+
+  const originalConfirm = global.confirm;
+  global.confirm = () => false;
+  try {
+    library.initialize(documentRef, storage);
+    const [handler] = resetButton._listeners.click;
+    handler();
+  } finally {
+    global.confirm = originalConfirm;
+  }
+
+  assert.equal(storage.getItem(storageKey) !== null, true);
+  assert.equal(documentRef.resetMessage.textContent, "");
+});
+
+test("per-quiz reset clears progress once confirmed", () => {
+  const storage = makeMemoryStorage();
+  const storageKey = library.progressKey("tok1", 1);
+  storage.setItem(storageKey, JSON.stringify({ version: 1, currentIndex: 1, questions: {} }));
+  const row = new FakeQuizRow("tok1", 1);
+  const resetButton = new FakeLibraryElement();
+  resetButton.dataset.quizToken = "tok1";
+  resetButton.dataset.quizVersion = "1";
+  const documentRef = new FakeLibraryDocument({ rows: [row], resetButtons: [resetButton] });
+
+  const originalConfirm = global.confirm;
+  global.confirm = () => true;
+  try {
+    library.initialize(documentRef, storage);
+    const [handler] = resetButton._listeners.click;
+    handler();
+  } finally {
+    global.confirm = originalConfirm;
+  }
+
+  assert.equal(storage.getItem(storageKey), null);
+  assert.match(documentRef.resetMessage.textContent, /reset/i);
+});
+
+test("global reset-all asks for confirmation and leaves progress untouched when cancelled", () => {
+  const storage = makeMemoryStorage();
+  storage.setItem("oms-study-hub-quiz:tok1:v1", "{}");
+  const resetProgressButton = new FakeLibraryElement();
+  const documentRef = new FakeLibraryDocument({ resetProgressButton });
+
+  const originalConfirm = global.confirm;
+  global.confirm = () => false;
+  try {
+    library.initialize(documentRef, storage);
+    const [handler] = resetProgressButton._listeners.click;
+    handler();
+  } finally {
+    global.confirm = originalConfirm;
+  }
+
+  assert.equal(storage.getItem("oms-study-hub-quiz:tok1:v1"), "{}");
+});
+
+test("global reset-all clears every quiz's progress once confirmed", () => {
+  const storage = makeMemoryStorage();
+  storage.setItem("oms-study-hub-quiz:tok1:v1", "{}");
+  storage.setItem("oms-study-hub-quiz:tok2:v1", "{}");
+  storage.setItem("unrelated-key", "keep me");
+  const resetProgressButton = new FakeLibraryElement();
+  const documentRef = new FakeLibraryDocument({ resetProgressButton });
+
+  const originalConfirm = global.confirm;
+  global.confirm = () => true;
+  try {
+    library.initialize(documentRef, storage);
+    const [handler] = resetProgressButton._listeners.click;
+    handler();
+  } finally {
+    global.confirm = originalConfirm;
+  }
+
+  assert.equal(storage.getItem("oms-study-hub-quiz:tok1:v1"), null);
+  assert.equal(storage.getItem("oms-study-hub-quiz:tok2:v1"), null);
+  assert.equal(storage.getItem("unrelated-key"), "keep me");
+});

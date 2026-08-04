@@ -70,6 +70,12 @@
     };
     documentRef.querySelectorAll("[data-reset-quiz]").forEach((button) => {
       button.addEventListener("click", () => {
+        if (
+          typeof root.confirm === "function"
+          && !root.confirm("Reset this quiz on this browser?")
+        ) {
+          return;
+        }
         try {
           resetProgress(
             storage,
@@ -89,6 +95,12 @@
     const reset = documentRef.querySelector("[data-reset-progress]");
     if (reset) {
       reset.addEventListener("click", () => {
+        if (
+          typeof root.confirm === "function"
+          && !root.confirm("Reset all quiz progress on this browser?")
+        ) {
+          return;
+        }
         try {
           const keys = [];
           for (let index = 0; index < storage.length; index += 1) {

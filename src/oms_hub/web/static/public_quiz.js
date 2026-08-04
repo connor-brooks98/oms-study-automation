@@ -343,11 +343,38 @@
     return payload;
   };
 
-  const element = (documentRef, tag, className, text) => {
+  const element = (documentRef, tag, className, text, focusKey) => {
     const node = documentRef.createElement(tag);
     if (className) node.className = className;
     if (text !== undefined) node.textContent = text;
+    if (focusKey) node.dataset.focusKey = focusKey;
     return node;
+  };
+
+  // Reads the data-focus-key of the currently focused control (if any)
+  // inside `container`, so a subsequent re-render can restore focus to
+  // the equivalent control instead of silently dropping it to <body>.
+  const captureFocusKey = (documentRef, container) => {
+    const active = documentRef.activeElement;
+    if (
+      !active
+      || typeof container.contains !== "function"
+      || !container.contains(active)
+    ) {
+      return undefined;
+    }
+    return active.dataset?.focusKey || null;
+  };
+
+  // Restores focus after a re-render: prefers the control that carries the
+  // same data-focus-key as whatever was focused before, and falls back to
+  // the player container (which must be focusable, e.g. tabindex="-1").
+  const restoreFocus = (container, focusKey) => {
+    if (focusKey === undefined) return;
+    const match = focusKey
+      ? container.querySelector(`[data-focus-key="${focusKey}"]`)
+      : null;
+    (match || container).focus();
   };
 
   const renderHighlightedText = (
@@ -403,448 +430,487 @@
   ) => {
     const app = documentRef.querySelector("[data-quiz-token]");
     if (!app) return;
-    const response = await fetchImpl(app.dataset.contentUrl, {
-      cache: "no-store",
-    });
-    if (!response.ok) {
-      app.textContent = "This quiz could not be loaded.";
-      return;
-    }
-    const content = await response.json();
-    const storage = documentRef.defaultView?.localStorage;
-    const key = storageKey(content);
-    let state = restoreProgress(content, storage?.getItem(key));
+    try {
+      const response = await fetchImpl(app.dataset.contentUrl, {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        app.textContent = "This quiz could not be loaded.";
+        return;
+      }
+      const content = await response.json();
+      const storage = documentRef.defaultView?.localStorage;
+      const key = storageKey(content);
+      let state = restoreProgress(content, storage?.getItem(key));
 
-    const persist = () => {
-      storage?.setItem(key, serializeProgress(state));
-    };
+      const persist = () => {
+        storage?.setItem(key, serializeProgress(state));
+      };
 
-    const render = () => {
-      app.replaceChildren();
-      if (state.currentIndex >= content.questions.length) {
-        const summary = performanceSummary(content, state);
-        const result = element(documentRef, "section", "quiz-result");
-        result.append(
-          element(documentRef, "p", "quiz-brand", "Study Hub"),
-          element(documentRef, "h1", "", "Quiz complete"),
-          element(
+      const render = () => {
+        const focusKey = captureFocusKey(documentRef, app);
+        app.replaceChildren();
+        if (state.currentIndex >= content.questions.length) {
+          const summary = performanceSummary(content, state);
+          const result = element(documentRef, "section", "quiz-result");
+          result.append(
+            element(documentRef, "p", "quiz-brand", "Study Hub"),
+            element(documentRef, "h1", "", "Quiz complete"),
+            element(
+              documentRef,
+              "p",
+              "quiz-score",
+              `${summary.correct} / ${summary.total}`,
+            ),
+            element(
+              documentRef,
+              "p",
+              "quiz-result-copy",
+              `${summary.percentage}% correct · Your answers were stored only in this browser.`,
+            ),
+          );
+          const summaryHeading = element(
             documentRef,
-            "p",
-            "quiz-score",
-            `${summary.correct} / ${summary.total}`,
-          ),
-          element(
+            "h2",
+            "quiz-summary-heading",
+            "Performance summary",
+          );
+          result.append(summaryHeading);
+          const summaryGrid = element(documentRef, "div", "quiz-summary-grid");
+          for (const [title, key] of [
+            ["Areas", "areas"],
+            ["Learning objectives", "objectives"],
+            ["Topics", "topics"],
+          ]) {
+            const group = element(documentRef, "section", "quiz-summary-group");
+            group.append(element(documentRef, "h3", "", title));
+            const table = element(documentRef, "table", "quiz-summary-table");
+            const head = element(documentRef, "thead");
+            const headRow = element(documentRef, "tr");
+            for (const heading of ["Item", "Right", "Need review", "Flagged"]) {
+              headRow.append(element(documentRef, "th", "", heading));
+            }
+            head.append(headRow);
+            const body = element(documentRef, "tbody");
+            for (const row of summary[key]) {
+              const tableRow = element(documentRef, "tr");
+              tableRow.append(
+                element(documentRef, "th", "", row.label),
+                element(documentRef, "td", "", `${row.correct} / ${row.total}`),
+                element(documentRef, "td", "", String(row.needReview)),
+                element(documentRef, "td", "", String(row.flagged)),
+              );
+              body.append(tableRow);
+            }
+            table.append(head, body);
+            group.append(table);
+            summaryGrid.append(group);
+          }
+          result.append(summaryGrid);
+          const review = element(
             documentRef,
-            "p",
-            "quiz-result-copy",
-            `${summary.percentage}% correct · Your answers were stored only in this browser.`,
-          ),
-        );
-        const summaryHeading = element(
-          documentRef,
-          "h2",
-          "quiz-summary-heading",
-          "Performance summary",
-        );
-        result.append(summaryHeading);
-        const summaryGrid = element(documentRef, "div", "quiz-summary-grid");
-        for (const [title, key] of [
-          ["Areas", "areas"],
-          ["Learning objectives", "objectives"],
-          ["Topics", "topics"],
-        ]) {
-          const group = element(documentRef, "section", "quiz-summary-group");
-          group.append(element(documentRef, "h3", "", title));
-          const table = element(documentRef, "table", "quiz-summary-table");
-          const head = element(documentRef, "thead");
-          const headRow = element(documentRef, "tr");
-          for (const heading of ["Item", "Right", "Need review", "Flagged"]) {
-            headRow.append(element(documentRef, "th", "", heading));
-          }
-          head.append(headRow);
-          const body = element(documentRef, "tbody");
-          for (const row of summary[key]) {
-            const tableRow = element(documentRef, "tr");
-            tableRow.append(
-              element(documentRef, "th", "", row.label),
-              element(documentRef, "td", "", `${row.correct} / ${row.total}`),
-              element(documentRef, "td", "", String(row.needReview)),
-              element(documentRef, "td", "", String(row.flagged)),
-            );
-            body.append(tableRow);
-          }
-          table.append(head, body);
-          group.append(table);
-          summaryGrid.append(group);
+            "button",
+            "quiz-secondary quiz-review",
+            "Review answers",
+            "result-review",
+          );
+          review.type = "button";
+          review.addEventListener("click", () => {
+            state = navigateQuestion(state, 0, content.questions.length);
+            persist();
+            render();
+          });
+          const restart = element(
+            documentRef,
+            "button",
+            "quiz-primary",
+            "Start Over",
+            "result-restart",
+          );
+          restart.type = "button";
+          restart.addEventListener("click", () => {
+            if (
+              typeof root.confirm === "function"
+              && !root.confirm("Start over this quiz on this browser?")
+            ) {
+              return;
+            }
+            storage?.removeItem(key);
+            state = createQuizState(content);
+            render();
+          });
+          result.append(review, restart);
+          app.append(result);
+          restoreFocus(app, focusKey);
+          return;
         }
-        result.append(summaryGrid);
-        const review = element(
+
+        const question = content.questions[state.currentIndex];
+        const questionProgress = state.questions[question.id];
+        const shell = element(documentRef, "article", "quiz-shell");
+        const header = element(documentRef, "header", "quiz-header");
+        const meta = element(documentRef, "div", "quiz-meta");
+        const context = [
+          content.course,
+          content.exam_number != null ? `Exam ${content.exam_number}` : null,
+          content.lecture_number != null
+            ? `Lecture ${content.lecture_number}`
+            : null,
+        ].filter(Boolean).join(" · ");
+        meta.append(
+          element(
+            documentRef,
+            "span",
+            "quiz-course",
+            context || "Study Hub quiz",
+          ),
+          element(
+            documentRef,
+            "span",
+            "quiz-counter",
+            `Question ${state.currentIndex + 1} of ${content.questions.length}`,
+          ),
+        );
+        const track = element(documentRef, "div", "quiz-progress");
+        track.setAttribute("role", "progressbar");
+        track.setAttribute("aria-valuemin", "0");
+        track.setAttribute("aria-valuemax", String(content.questions.length));
+        track.setAttribute("aria-valuenow", String(state.currentIndex + 1));
+        const fill = element(documentRef, "span", "quiz-progress-fill");
+        fill.style.width = (
+          `${((state.currentIndex + 1) / content.questions.length) * 100}%`
+        );
+        track.append(fill);
+        header.append(meta, track);
+
+        const body = element(documentRef, "div", "quiz-body");
+        body.append(
+          element(documentRef, "p", "quiz-label", content.topic),
+        );
+        const stem = element(documentRef, "p", "quiz-question");
+        renderHighlightedText(
+          documentRef,
+          stem,
+          question.stem,
+          questionProgress.highlights,
+        );
+        body.append(stem);
+
+        if (question.image_url) {
+          const figure = element(documentRef, "figure", "quiz-question-image");
+          const image = element(documentRef, "img");
+          image.src = question.image_url;
+          image.alt = question.image_alt || "Question source image";
+          image.loading = "lazy";
+          figure.append(image);
+          body.append(figure);
+        }
+
+        const dimensions = [
+          ["Area", question.area],
+          ["Objective", question.learning_objective || question.objective],
+          ["Topic", question.topic],
+        ].filter(([, value]) => value);
+        if (dimensions.length > 0) {
+          const tags = element(documentRef, "div", "quiz-dimensions");
+          for (const [label, value] of dimensions) {
+            tags.append(element(documentRef, "span", "quiz-dimension", `${label}: ${value}`));
+          }
+          body.append(tags);
+        }
+
+        const tools = element(documentRef, "div", "quiz-tools");
+        const highlight = element(
           documentRef,
           "button",
-          "quiz-secondary quiz-review",
-          "Review answers",
+          "quiz-tool",
+          "Highlight selection",
+          "tool-highlight",
         );
-        review.type = "button";
-        review.addEventListener("click", () => {
-          state = navigateQuestion(state, 0, content.questions.length);
+        highlight.type = "button";
+        highlight.addEventListener("click", () => {
+          const offsets = selectionOffsets(
+            stem,
+            documentRef.getSelection(),
+          );
+          if (!offsets) return;
+          state = addHighlight(
+            state,
+            question.id,
+            offsets.start,
+            offsets.end,
+          );
           persist();
           render();
         });
-        const restart = element(
+        const clear = element(
           documentRef,
           "button",
-          "quiz-primary",
-          "Start Over",
+          "quiz-tool",
+          "Clear highlights",
+          "tool-clear",
         );
-        restart.type = "button";
-        restart.addEventListener("click", () => {
+        clear.type = "button";
+        clear.disabled = questionProgress.highlights.length === 0;
+        clear.addEventListener("click", () => {
+          state = clearHighlights(state, question.id);
+          persist();
+          render();
+        });
+        const reset = element(
+          documentRef,
+          "button",
+          "quiz-tool",
+          "Reset quiz",
+          "tool-reset",
+        );
+        reset.type = "button";
+        reset.addEventListener("click", () => {
+          if (typeof root.confirm === "function" && !root.confirm("Reset this quiz on this browser?")) {
+            return;
+          }
           storage?.removeItem(key);
           state = createQuizState(content);
           render();
         });
-        result.append(review, restart);
-        app.append(result);
-        return;
-      }
+        tools.append(highlight, clear, reset);
+        body.append(tools);
 
-      const question = content.questions[state.currentIndex];
-      const questionProgress = state.questions[question.id];
-      const shell = element(documentRef, "article", "quiz-shell");
-      const header = element(documentRef, "header", "quiz-header");
-      const meta = element(documentRef, "div", "quiz-meta");
-      const context = [
-        content.course,
-        content.exam_number != null ? `Exam ${content.exam_number}` : null,
-        content.lecture_number != null
-          ? `Lecture ${content.lecture_number}`
-          : null,
-      ].filter(Boolean).join(" · ");
-      meta.append(
-        element(
-          documentRef,
-          "span",
-          "quiz-course",
-          context || "Study Hub quiz",
-        ),
-        element(
-          documentRef,
-          "span",
-          "quiz-counter",
-          `Question ${state.currentIndex + 1} of ${content.questions.length}`,
-        ),
-      );
-      const track = element(documentRef, "div", "quiz-progress");
-      track.setAttribute("role", "progressbar");
-      track.setAttribute("aria-valuemin", "0");
-      track.setAttribute("aria-valuemax", String(content.questions.length));
-      track.setAttribute("aria-valuenow", String(state.currentIndex + 1));
-      const fill = element(documentRef, "span", "quiz-progress-fill");
-      fill.style.width = (
-        `${((state.currentIndex + 1) / content.questions.length) * 100}%`
-      );
-      track.append(fill);
-      header.append(meta, track);
-
-      const body = element(documentRef, "div", "quiz-body");
-      body.append(
-        element(documentRef, "p", "quiz-label", content.topic),
-      );
-      const stem = element(documentRef, "p", "quiz-question");
-      renderHighlightedText(
-        documentRef,
-        stem,
-        question.stem,
-        questionProgress.highlights,
-      );
-      body.append(stem);
-
-      if (question.image_url) {
-        const figure = element(documentRef, "figure", "quiz-question-image");
-        const image = element(documentRef, "img");
-        image.src = question.image_url;
-        image.alt = question.image_alt || "Question source image";
-        image.loading = "lazy";
-        figure.append(image);
-        body.append(figure);
-      }
-
-      const dimensions = [
-        ["Area", question.area],
-        ["Objective", question.learning_objective || question.objective],
-        ["Topic", question.topic],
-      ].filter(([, value]) => value);
-      if (dimensions.length > 0) {
-        const tags = element(documentRef, "div", "quiz-dimensions");
-        for (const [label, value] of dimensions) {
-          tags.append(element(documentRef, "span", "quiz-dimension", `${label}: ${value}`));
-        }
-        body.append(tags);
-      }
-
-      const tools = element(documentRef, "div", "quiz-tools");
-      const highlight = element(
-        documentRef,
-        "button",
-        "quiz-tool",
-        "Highlight selection",
-      );
-      highlight.type = "button";
-      highlight.addEventListener("click", () => {
-        const offsets = selectionOffsets(
-          stem,
-          documentRef.getSelection(),
-        );
-        if (!offsets) return;
-        state = addHighlight(
-          state,
-          question.id,
-          offsets.start,
-          offsets.end,
-        );
-        persist();
-        render();
-      });
-      const clear = element(
-        documentRef,
-        "button",
-        "quiz-tool",
-        "Clear highlights",
-      );
-      clear.type = "button";
-      clear.disabled = questionProgress.highlights.length === 0;
-      clear.addEventListener("click", () => {
-        state = clearHighlights(state, question.id);
-        persist();
-        render();
-      });
-      const reset = element(documentRef, "button", "quiz-tool", "Reset quiz");
-      reset.type = "button";
-      reset.addEventListener("click", () => {
-        if (typeof root.confirm === "function" && !root.confirm("Reset this quiz on this browser?")) {
-          return;
-        }
-        storage?.removeItem(key);
-        state = createQuizState(content);
-        render();
-      });
-      tools.append(highlight, clear, reset);
-      body.append(tools);
-
-      const flag = element(documentRef, "div", "quiz-flag");
-      const flagLabel = element(documentRef, "label", "quiz-flag-label", "Flag this question");
-      const flagSelect = documentRef.createElement("select");
-      flagSelect.className = "quiz-flag-select";
-      flagSelect.setAttribute("aria-label", "Reason for flagging this question");
-      const noFlag = element(documentRef, "option", "", "No flag");
-      noFlag.value = "";
-      flagSelect.append(noFlag);
-      for (const reason of FLAG_REASONS) {
-        const option = element(
-          documentRef,
-          "option",
-          "",
-          FLAG_REASON_LABELS[reason],
-        );
-        option.value = reason;
-        flagSelect.append(option);
-      }
-      flagSelect.value = questionProgress.flagReason || "";
-      flagSelect.addEventListener("change", () => {
-        state = setFlagReason(state, question.id, flagSelect.value);
-        persist();
-      });
-      flagLabel.append(flagSelect);
-      flag.append(flagLabel);
-      body.append(flag);
-
-      const answers = element(documentRef, "div", "quiz-answers");
-      for (const [index, choice] of question.choices.entries()) {
-        const selected = questionProgress.selectedChoiceId === choice.id;
-        const eliminated = questionProgress.eliminatedChoiceIds.includes(
-          choice.id,
-        );
-        const correct = (
-          questionProgress.submitted
-          && questionProgress.feedback.correct_choice_id === choice.id
-        );
-        const incorrect = (
-          questionProgress.submitted
-          && selected
-          && !questionProgress.feedback.correct
-        );
-        const row = element(documentRef, "div", "quiz-answer-row");
-        if (selected) row.classList.add("is-selected");
-        if (eliminated) row.classList.add("is-eliminated");
-        if (correct) row.classList.add("is-correct");
-        if (incorrect) row.classList.add("is-incorrect");
-
-        const answer = element(documentRef, "button", "quiz-answer");
-        answer.type = "button";
-        answer.disabled = questionProgress.submitted;
-        answer.setAttribute("aria-pressed", String(selected));
-        answer.append(
-          element(
+        const flag = element(documentRef, "div", "quiz-flag");
+        const flagLabel = element(documentRef, "label", "quiz-flag-label", "Flag this question");
+        const flagSelect = documentRef.createElement("select");
+        flagSelect.className = "quiz-flag-select";
+        flagSelect.dataset.focusKey = "flag-select";
+        flagSelect.setAttribute("aria-label", "Reason for flagging this question");
+        const noFlag = element(documentRef, "option", "", "No flag");
+        noFlag.value = "";
+        flagSelect.append(noFlag);
+        for (const reason of FLAG_REASONS) {
+          const option = element(
             documentRef,
-            "span",
-            "quiz-choice-letter",
-            String.fromCharCode(65 + index),
-          ),
-          element(documentRef, "span", "quiz-choice-text", choice.text),
-        );
-        answer.addEventListener("click", () => {
-          state = selectChoice(state, question.id, choice.id);
-          persist();
-          render();
-        });
-
-        const strike = element(
-          documentRef,
-          "button",
-          "quiz-strike",
-          "S",
-        );
-        strike.type = "button";
-        strike.disabled = questionProgress.submitted;
-        strike.setAttribute("aria-pressed", String(eliminated));
-        strike.setAttribute(
-          "aria-label",
-          `${eliminated ? "Restore" : "Cross out"} answer ${String.fromCharCode(65 + index)}`,
-        );
-        strike.title = eliminated ? "Restore answer" : "Cross out answer";
-        strike.addEventListener("click", () => {
-          state = toggleEliminated(state, question.id, choice.id);
-          persist();
-          render();
-        });
-        row.append(answer, strike);
-        answers.append(row);
-      }
-      body.append(answers);
-
-      if (questionProgress.submitted) {
-        const feedback = element(
-          documentRef,
-          "section",
-          questionProgress.feedback.correct
-            ? "quiz-feedback is-correct"
-            : "quiz-feedback is-incorrect",
-        );
-        feedback.setAttribute("aria-live", "polite");
-        feedback.append(
-          element(
-            documentRef,
-            "h2",
+            "option",
             "",
-            questionProgress.feedback.correct
-              ? "Correct"
-              : "Review this answer",
-          ),
-          element(
+            FLAG_REASON_LABELS[reason],
+          );
+          option.value = reason;
+          flagSelect.append(option);
+        }
+        flagSelect.value = questionProgress.flagReason || "";
+        flagSelect.addEventListener("change", () => {
+          state = setFlagReason(state, question.id, flagSelect.value);
+          persist();
+        });
+        flagLabel.append(flagSelect);
+        flag.append(flagLabel);
+        body.append(flag);
+
+        const answers = element(documentRef, "div", "quiz-answers");
+        for (const [index, choice] of question.choices.entries()) {
+          const selected = questionProgress.selectedChoiceId === choice.id;
+          const eliminated = questionProgress.eliminatedChoiceIds.includes(
+            choice.id,
+          );
+          const correct = (
+            questionProgress.submitted
+            && questionProgress.feedback.correct_choice_id === choice.id
+          );
+          const incorrect = (
+            questionProgress.submitted
+            && selected
+            && !questionProgress.feedback.correct
+          );
+          const row = element(documentRef, "div", "quiz-answer-row");
+          if (selected) row.classList.add("is-selected");
+          if (eliminated) row.classList.add("is-eliminated");
+          if (correct) row.classList.add("is-correct");
+          if (incorrect) row.classList.add("is-incorrect");
+
+          const answer = element(
             documentRef,
-            "p",
-            "quiz-feedback-label",
-            "Expert rationale",
-          ),
-          element(
-            documentRef,
-            "p",
-            "",
-            questionProgress.feedback.rationale,
-          ),
-        );
-        body.append(feedback);
-      } else {
-        body.append(
-          element(
-            documentRef,
-            "p",
-            "quiz-submit-note",
-            "You can change your selection until you submit.",
-          ),
-        );
-        const submit = element(
-          documentRef,
-          "button",
-          "quiz-primary quiz-submit",
-          "Submit Answer",
-        );
-        submit.type = "button";
-        submit.disabled = !questionProgress.selectedChoiceId;
-        submit.addEventListener("click", async () => {
-          submit.disabled = true;
-          submit.textContent = "Checking…";
-          try {
-            const feedback = await answerRequest(
-              fetchImpl,
-              app.dataset.answerUrl,
-              question.id,
-              questionProgress.selectedChoiceId,
-              csrfToken(documentRef),
-            );
-            state = recordFeedback(state, question.id, feedback);
+            "button",
+            "quiz-answer",
+            undefined,
+            `answer-${choice.id}`,
+          );
+          answer.type = "button";
+          answer.disabled = questionProgress.submitted;
+          answer.setAttribute("aria-pressed", String(selected));
+          answer.append(
+            element(
+              documentRef,
+              "span",
+              "quiz-choice-letter",
+              String.fromCharCode(65 + index),
+            ),
+            element(documentRef, "span", "quiz-choice-text", choice.text),
+          );
+          answer.addEventListener("click", () => {
+            state = selectChoice(state, question.id, choice.id);
             persist();
             render();
-          } catch (error) {
-            submit.disabled = false;
-            submit.textContent = "Submit Answer";
-            const message = element(
+          });
+
+          const strike = element(
+            documentRef,
+            "button",
+            "quiz-strike",
+            "S",
+            `strike-${choice.id}`,
+          );
+          strike.type = "button";
+          strike.disabled = questionProgress.submitted;
+          strike.setAttribute("aria-pressed", String(eliminated));
+          strike.setAttribute(
+            "aria-label",
+            `${eliminated ? "Restore" : "Cross out"} answer ${String.fromCharCode(65 + index)}`,
+          );
+          strike.title = eliminated ? "Restore answer" : "Cross out answer";
+          strike.addEventListener("click", () => {
+            state = toggleEliminated(state, question.id, choice.id);
+            persist();
+            render();
+          });
+          row.append(answer, strike);
+          answers.append(row);
+        }
+        body.append(answers);
+
+        if (questionProgress.submitted) {
+          const feedback = element(
+            documentRef,
+            "section",
+            questionProgress.feedback.correct
+              ? "quiz-feedback is-correct"
+              : "quiz-feedback is-incorrect",
+          );
+          feedback.setAttribute("aria-live", "polite");
+          feedback.append(
+            element(
+              documentRef,
+              "h2",
+              "",
+              questionProgress.feedback.correct
+                ? "Correct"
+                : "Review this answer",
+            ),
+            element(
               documentRef,
               "p",
-              "quiz-error",
-              error.message,
-            );
-            message.setAttribute("role", "alert");
-            submit.before(message);
-          }
+              "quiz-feedback-label",
+              "Expert rationale",
+            ),
+            element(
+              documentRef,
+              "p",
+              "",
+              questionProgress.feedback.rationale,
+            ),
+          );
+          body.append(feedback);
+        } else {
+          body.append(
+            element(
+              documentRef,
+              "p",
+              "quiz-submit-note",
+              "You can change your selection until you submit.",
+            ),
+          );
+          const submit = element(
+            documentRef,
+            "button",
+            "quiz-primary quiz-submit",
+            "Submit Answer",
+            "submit",
+          );
+          submit.type = "button";
+          submit.disabled = !questionProgress.selectedChoiceId;
+          submit.addEventListener("click", async () => {
+            submit.disabled = true;
+            submit.textContent = "Checking…";
+            try {
+              const feedback = await answerRequest(
+                fetchImpl,
+                app.dataset.answerUrl,
+                question.id,
+                questionProgress.selectedChoiceId,
+                csrfToken(documentRef),
+              );
+              state = recordFeedback(state, question.id, feedback);
+              persist();
+              render();
+            } catch (error) {
+              submit.disabled = false;
+              submit.textContent = "Submit Answer";
+              const message = element(
+                documentRef,
+                "p",
+                "quiz-error",
+                error.message,
+              );
+              message.setAttribute("role", "alert");
+              submit.before(message);
+            }
+          });
+          body.append(submit);
+        }
+        const navigation = element(documentRef, "nav", "quiz-navigation");
+        const back = element(
+          documentRef,
+          "button",
+          "quiz-secondary",
+          "← Back",
+          "back",
+        );
+        back.type = "button";
+        back.disabled = state.currentIndex === 0;
+        back.addEventListener("click", () => {
+          state = navigateQuestion(state, state.currentIndex - 1, content.questions.length);
+          persist();
+          render();
         });
-        body.append(submit);
-      }
-      const navigation = element(documentRef, "nav", "quiz-navigation");
-      const back = element(documentRef, "button", "quiz-secondary", "← Back");
-      back.type = "button";
-      back.disabled = state.currentIndex === 0;
-      back.addEventListener("click", () => {
-        state = navigateQuestion(state, state.currentIndex - 1, content.questions.length);
-        persist();
-        render();
-        app.focus();
-      });
-      const forward = element(
-        documentRef,
-        "button",
-        "quiz-secondary",
-        state.currentIndex === content.questions.length - 1
-          ? "See results →"
-          : "Next →",
-      );
-      forward.type = "button";
-      forward.disabled = !questionProgress.submitted;
-      forward.addEventListener("click", () => {
-        if (!questionProgress.submitted) return;
-        state = navigateQuestion(state, state.currentIndex + 1, content.questions.length);
-        persist();
-        render();
-        app.focus();
-      });
-      navigation.append(back, forward);
-      body.append(navigation);
-      shell.append(header, body);
-      app.append(shell);
-    };
+        const forward = element(
+          documentRef,
+          "button",
+          "quiz-secondary",
+          state.currentIndex === content.questions.length - 1
+            ? "See results →"
+            : "Next →",
+          "forward",
+        );
+        forward.type = "button";
+        forward.disabled = !questionProgress.submitted;
+        forward.addEventListener("click", () => {
+          if (!questionProgress.submitted) return;
+          state = navigateQuestion(state, state.currentIndex + 1, content.questions.length);
+          persist();
+          render();
+        });
+        navigation.append(back, forward);
+        body.append(navigation);
+        shell.append(header, body);
+        app.append(shell);
+        restoreFocus(app, focusKey);
+      };
 
-    render();
+      render();
+    } catch {
+      app.textContent = "This quiz could not be loaded.";
+    }
   };
 
   const api = {
     FLAG_REASONS,
     addHighlight,
     answerRequest,
+    captureFocusKey,
     clearHighlights,
     createQuizState,
     initialize,
     navigateQuestion,
     performanceSummary,
     recordFeedback,
+    restoreFocus,
     restoreProgress,
     selectChoice,
     setFlagReason,

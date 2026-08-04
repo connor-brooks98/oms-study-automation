@@ -566,3 +566,222 @@ test("failed-run actions use CSRF-protected retry and remove endpoints", async (
     ],
   );
 });
+
+// -- Minimal fake DOM sufficient to drive initializeReview --
+
+class FakeReviewElement {
+  constructor(tag = "div") {
+    this.tagName = tag;
+    this.dataset = {};
+    this.style = {};
+    this.textContent = "";
+    this.className = "";
+    this.hidden = false;
+    this.disabled = false;
+    this._children = {};
+    this._listeners = {};
+  }
+
+  addEventListener(type, handler) {
+    (this._listeners[type] ||= []).push(handler);
+  }
+
+  dispatchClose() {
+    (this._listeners.close || []).forEach((handler) => handler());
+  }
+
+  close() {
+    this.dispatchClose();
+  }
+
+  showModal() {}
+
+  querySelector(selector) {
+    return this._children[selector] || null;
+  }
+}
+
+class FakeReviewDocument {
+  constructor(registry) {
+    this.registry = registry;
+    this.cookie = "study_hub_csrf=test-token";
+  }
+
+  querySelector(selector) {
+    return this.registry[selector] || null;
+  }
+}
+
+const buildReviewDom = () => {
+  const page = new FakeReviewElement("article");
+  page.dataset.jobId = "job-1";
+  const message = new FakeReviewElement("p");
+  const dialog = new FakeReviewElement("dialog");
+  const dialogError = new FakeReviewElement("p");
+  dialog._children["[data-dialog-error]"] = dialogError;
+  const saveButton = new FakeReviewElement("button");
+  const buildButton = new FakeReviewElement("button");
+  const confirmButton = new FakeReviewElement("button");
+  const processingLabel = new FakeReviewElement("strong");
+  const processingCount = new FakeReviewElement("span");
+  const processingProgress = new FakeReviewElement("span");
+  const processingNote = new FakeReviewElement("p");
+  const jobState = new FakeReviewElement("span");
+
+  const registry = {
+    "[data-anki-review]": page,
+    "#anki-review-message": message,
+    "#anki-apply-dialog": dialog,
+    "[data-save-review]": saveButton,
+    "[data-build-envelope]": buildButton,
+    "[data-confirm-apply]": confirmButton,
+    "#anki-job-state": jobState,
+    "#anki-processing-label": processingLabel,
+    "#anki-processing-count": processingCount,
+    "#anki-processing-progress": processingProgress,
+    "#anki-processing-note": processingNote,
+  };
+
+  return {
+    documentRef: new FakeReviewDocument(registry),
+    dialog,
+    dialogError,
+    saveButton,
+    buildButton,
+    confirmButton,
+    processingNote,
+  };
+};
+
+// The real setTimeout/clearTimeout, saved before any monkeypatching below,
+// used only to yield to pending microtasks between async steps.
+const realSetTimeout = global.setTimeout;
+const flushMicrotasks = async (times = 6) => {
+  for (let i = 0; i < times; i += 1) {
+    await new Promise((resolve) => realSetTimeout(resolve, 0));
+  }
+};
+
+test("closing the apply dialog without confirming re-enables save/build-envelope buttons", async () => {
+  const { documentRef, dialog, saveButton, buildButton } = buildReviewDom();
+  const fetchImpl = async () => {
+    throw new Error("network unavailable");
+  };
+
+  anki.initializeReview(documentRef, fetchImpl);
+  await flushMicrotasks();
+
+  // Simulate the state right after "Review apply plan" opened the dialog.
+  saveButton.disabled = true;
+  buildButton.disabled = true;
+
+  // User pressed Escape / "Go back" — the dialog closes without the
+  // confirm-apply handler ever running.
+  dialog.close();
+
+  assert.equal(saveButton.disabled, false);
+  assert.equal(buildButton.disabled, false);
+});
+
+test("closing the apply dialog after a successful confirm leaves the buttons disabled", async () => {
+  const { documentRef, dialog, saveButton, buildButton, confirmButton } =
+    buildReviewDom();
+  const fetchImpl = async (url) => {
+    if (String(url).endsWith("/apply")) {
+      return {
+        ok: true,
+        async json() {
+          return {
+            recovery: { kind: "complete", message: "Applied." },
+            apply_state: "complete",
+          };
+        },
+      };
+    }
+    throw new Error("not needed for this test");
+  };
+
+  anki.initializeReview(documentRef, fetchImpl);
+  await flushMicrotasks();
+
+  saveButton.disabled = true;
+  buildButton.disabled = true;
+
+  const [confirmHandler] = confirmButton._listeners.click;
+  await confirmHandler({ currentTarget: confirmButton });
+  // The handler itself calls dialog.close() on success, which fires the
+  // "close" listener registered by initializeReview.
+
+  assert.equal(saveButton.disabled, true);
+  assert.equal(buildButton.disabled, true);
+});
+
+test("a failed job poll surfaces the error and retries with doubling backoff", async () => {
+  const { documentRef, processingNote } = buildReviewDom();
+  const scheduled = [];
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  global.setTimeout = (fn, delay) => {
+    const entry = { fn, delay };
+    scheduled.push(entry);
+    return entry;
+  };
+  global.clearTimeout = (entry) => {
+    const index = scheduled.indexOf(entry);
+    if (index !== -1) scheduled.splice(index, 1);
+  };
+
+  let callCount = 0;
+  const okJob = () => ({
+    ok: true,
+    async json() {
+      return {
+        state: "judging_pass_1",
+        recovery: { kind: "pending" },
+        error: null,
+      };
+    },
+  });
+  const failedJob = () => ({
+    ok: false,
+    async json() {
+      return { detail: "Network hiccup" };
+    },
+  });
+  const fetchImpl = async () => {
+    callCount += 1;
+    if (callCount === 1) return okJob();
+    if (callCount === 2) return failedJob();
+    if (callCount === 3) return failedJob();
+    return okJob();
+  };
+
+  try {
+    anki.initializeReview(documentRef, fetchImpl);
+    await flushMicrotasks();
+
+    assert.equal(scheduled.length, 1, "expected the healthy poll to be scheduled");
+    assert.equal(scheduled[0].delay, 2500);
+
+    // Fire the scheduled poll; it fails.
+    const first = scheduled.shift();
+    first.fn();
+    await flushMicrotasks();
+
+    assert.match(processingNote.textContent, /Network hiccup/);
+    assert.match(processingNote.textContent, /Retrying/);
+    assert.equal(scheduled.length, 1, "expected a retry to be scheduled after failure");
+    assert.equal(scheduled[0].delay, 5000, "delay should double after one failure");
+
+    // Fire again; it fails a second time and should double again.
+    const second = scheduled.shift();
+    second.fn();
+    await flushMicrotasks();
+
+    assert.equal(scheduled.length, 1);
+    assert.equal(scheduled[0].delay, 10000, "delay should double again after a second failure");
+  } finally {
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
