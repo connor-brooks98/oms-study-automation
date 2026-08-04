@@ -386,3 +386,47 @@ def test_gap_card_job_concept_index_is_created_and_migration_is_idempotent(
         pragma_names = {row[1] for row in rows}
 
     assert "ix_anki_gap_cards_job_concept" in pragma_names
+
+
+def test_studio_run_active_label_index_is_created_and_migration_is_idempotent(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "hub-v11-studio-index.db"
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_version (
+                id INTEGER PRIMARY KEY,
+                version INTEGER NOT NULL,
+                updated_at VARCHAR(40) NOT NULL
+            );
+            INSERT INTO schema_version (id, version, updated_at)
+            VALUES (1, 11, '2026-08-01T00:00:00+00:00');
+
+            CREATE TABLE studio_runs (
+                id VARCHAR(36) PRIMARY KEY,
+                destination_subject_key VARCHAR(100) NOT NULL DEFAULT '',
+                destination_exam_number INTEGER NOT NULL DEFAULT 0,
+                label_key VARCHAR(300) NOT NULL DEFAULT '',
+                state VARCHAR(30) NOT NULL DEFAULT 'queued'
+            );
+            """
+        )
+        connection.commit()
+
+    with Database(f"sqlite:///{database_path}") as database:
+        database.migrate()
+        database.migrate()
+
+        index_names = {
+            row["name"]
+            for row in inspect(database.engine).get_indexes("studio_runs")
+        }
+
+    assert "ix_studio_runs_active_label" in index_names
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        rows = connection.execute("PRAGMA index_list('studio_runs')").fetchall()
+        pragma_names = {row[1] for row in rows}
+
+    assert "ix_studio_runs_active_label" in pragma_names
