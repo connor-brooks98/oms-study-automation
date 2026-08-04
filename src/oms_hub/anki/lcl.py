@@ -26,6 +26,7 @@ from oms_hub.llm.structured import (
 )
 
 _TOKEN = re.compile(r"[a-z0-9]+")
+_MAX_DIAGNOSTIC_IDS = 12
 _STOPWORDS = {
     "a",
     "an",
@@ -242,9 +243,28 @@ class LCLService:
             for passage in passages
         }
         if len(source_by_id) != len(passages):
-            raise ValueError("source bundle contains duplicate passages")
+            keys = [
+                passage.source_id
+                if self.schema_name == "lcl_v2"
+                else passage.passage_id
+                for passage in passages
+            ]
+            duplicates = sorted(
+                {key for key in keys if keys.count(key) > 1}
+            )
+            raise ValueError(
+                "source bundle contains duplicate passages: "
+                f"ids={_format_ids(duplicates)}"
+            )
         if not source_by_id:
             raise ValueError("source bundle cannot be empty")
+        if self.schema_name == "lcl_v2" and not any(
+            passage.source_kind is not SourceKind.SUMMARY
+            for passage in passages
+        ):
+            raise ValueError(
+                "V2 LCL requires at least one primary-source passage"
+            )
         source_input = (
             _source_input_v2(passages)
             if self.schema_name == "lcl_v2"
@@ -290,7 +310,9 @@ class LCLService:
                 StructuredOutputError,
                 LCLGenerationError,
             ) as repair_error:
-                raise LCLGenerationError(str(repair_error)) from repair_error
+                raise LCLGenerationError(
+                    f"{repair_error}; initial validation: {first_error}"
+                ) from repair_error
             return self._artifact(repaired, repair_attempted=True)
 
     def _request(
@@ -352,11 +374,13 @@ def _validate_ledger(
             passage = source_by_id.get(source_ref.passage_id)
             if passage is None:
                 raise LCLGenerationError(
-                    "ledger source reference does not resolve"
+                    "ledger source reference does not resolve: "
+                    f"passage_ids={_format_ids((source_ref.passage_id,))}"
                 )
             if not passage.text:
                 raise LCLGenerationError(
-                    "ledger source reference has no extracted evidence"
+                    "ledger source reference has no extracted evidence: "
+                    f"passage_ids={_format_ids((source_ref.passage_id,))}"
                 )
             cited.append(passage)
         statement_tokens = _meaningful_tokens(concept.statement)
@@ -365,7 +389,8 @@ def _validate_ledger(
         )
         if not statement_tokens or not statement_tokens & evidence_tokens:
             raise LCLGenerationError(
-                "concept statement is unsupported by its cited source"
+                "concept statement is unsupported by its cited source: "
+                f"concept_id={concept.concept_id}"
             )
         normalized_queries = [
             _normalize_query(query) for query in concept.queries
@@ -391,11 +416,15 @@ def _validate_ledger_v2(
             passage = source_by_id.get(passage_id)
             if passage is None:
                 raise LCLGenerationError(
-                    "ledger source reference does not resolve"
+                    "ledger source reference does not resolve: "
+                    f"passage_ids={_format_ids((passage_id,))}; "
+                    f"concept_id={concept.concept_id}"
                 )
             if not passage.text:
                 raise LCLGenerationError(
-                    "ledger source reference has no extracted evidence"
+                    "ledger source reference has no extracted evidence: "
+                    f"passage_ids={_format_ids((passage_id,))}; "
+                    f"concept_id={concept.concept_id}"
                 )
             cited.append(passage)
             cited_ids.add(passage_id)
@@ -404,7 +433,8 @@ def _validate_ledger_v2(
             for passage in cited
         ):
             raise LCLGenerationError(
-                "every concept requires primary-source evidence"
+                "every concept requires primary-source evidence: "
+                f"concept_id={concept.concept_id}"
             )
         for passage in cited:
             if (
@@ -412,7 +442,9 @@ def _validate_ledger_v2(
                 and not concept.emphasis_flag
             ):
                 raise LCLGenerationError(
-                    "concept emphasis flag conflicts with the summary"
+                    "concept emphasis flag conflicts with the summary: "
+                    f"concept_id={concept.concept_id}; "
+                    f"passage_id={passage.source_id}"
                 )
             if passage.summary_section != "depth":
                 continue
@@ -423,7 +455,9 @@ def _validate_ledger_v2(
             )
             if match is not None and concept.depth != match.group(1).casefold():
                 raise LCLGenerationError(
-                    "concept depth classification conflicts with the depth map"
+                    "concept depth classification conflicts with the depth map: "
+                    f"concept_id={concept.concept_id}; "
+                    f"passage_id={passage.source_id}"
                 )
         statement_tokens = _meaningful_tokens(concept.canonical_statement)
         primary_evidence_tokens = set().union(
@@ -438,21 +472,31 @@ def _validate_ledger_v2(
             or not statement_tokens & primary_evidence_tokens
         ):
             raise LCLGenerationError(
-                "concept statement is unsupported by primary evidence"
+                "concept statement is unsupported by primary evidence: "
+                f"concept_id={concept.concept_id}"
             )
     uncited_ids = {item.passage_id for item in ledger.intentionally_uncited}
     if any(passage_id not in source_by_id for passage_id in uncited_ids):
+        unresolved = sorted(
+            passage_id
+            for passage_id in uncited_ids
+            if passage_id not in source_by_id
+        )
         raise LCLGenerationError(
-            "intentionally uncited source reference does not resolve"
+            "intentionally uncited source reference does not resolve: "
+            f"passage_ids={_format_ids(unresolved)}"
         )
     primary_ids = {
         source_id
         for source_id, passage in source_by_id.items()
         if passage.source_kind is not SourceKind.SUMMARY
     }
-    if primary_ids - cited_ids - uncited_ids:
+    missing_primary_ids = sorted(primary_ids - cited_ids - uncited_ids)
+    if missing_primary_ids:
         raise LCLGenerationError(
-            "every primary passage requires a cited or intentionally uncited disposition"
+            "every primary passage requires a cited or intentionally uncited "
+            "disposition: "
+            f"missing_primary_passage_ids={_format_ids(missing_primary_ids)}"
         )
     required_summary_ids = {
         source_id
@@ -460,10 +504,19 @@ def _validate_ledger_v2(
         if passage.source_kind is SourceKind.SUMMARY
         and passage.summary_section in {"depth", "emphasis"}
     }
-    if required_summary_ids - cited_ids:
+    missing_summary_ids = sorted(required_summary_ids - cited_ids)
+    if missing_summary_ids:
         raise LCLGenerationError(
-            "every DEPTH or EMPHASIS summary item must map to a concept"
+            "every DEPTH or EMPHASIS summary item must map to a concept: "
+            f"missing_summary_passage_ids={_format_ids(missing_summary_ids)}"
         )
+
+
+def _format_ids(values: Sequence[str]) -> str:
+    unique = sorted(set(values))
+    preview = unique[:_MAX_DIAGNOSTIC_IDS]
+    suffix = "..." if len(unique) > _MAX_DIAGNOSTIC_IDS else ""
+    return "[" + ", ".join(preview) + suffix + "]"
 
 
 def _source_input(passages: Sequence[SourcePassage]) -> str:
@@ -535,7 +588,10 @@ def _repair_instruction(
     repair = (
         f"Repair the invalid lecture concept ledger for {prompt_version}. "
         "Correct only the reported validation defects, use only the supplied "
-        "source bundle, and return the complete corrected ledger."
+        "source bundle, and return the complete corrected ledger. If the "
+        "validation error lists missing passage IDs, give every one exactly "
+        "one disposition: cite it under a concept or use an allowed "
+        "intentionally_uncited reason."
     )
     return repair if prompt_text is None else f"{prompt_text}\n\n{repair}"
 

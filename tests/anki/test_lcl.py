@@ -1,3 +1,4 @@
+import json
 from collections.abc import Sequence
 
 import pytest
@@ -254,6 +255,32 @@ def test_v2_ledger_requires_disposition_for_every_primary_passage() -> None:
         service.generate(passages)
 
     assert len(structured.calls) == 2
+    repair_payload = json.loads(structured.calls[1][1])
+    validation_error = repair_payload["validation_error"]
+    assert "missing_primary_passage_ids" in validation_error
+    assert passages[1].source_id in validation_error
+
+
+def test_v2_lcl_rejects_source_bundle_without_primary_material() -> None:
+    passages = [
+        passage
+        for passage in _v2_passages()
+        if passage.source_kind is SourceKind.SUMMARY
+    ]
+    structured = V2StructuredService(_v2_ledger(_v2_passages()))
+    service = LCLService(
+        structured,  # type: ignore[arg-type]
+        provider=ProviderName.OPENAI,
+        model="gpt-5.2",
+        prompt_version="lecture-concept-ledger",
+        prompt_text="# V2 ledger prompt",
+        schema_name="lcl_v2",
+    )
+
+    with pytest.raises(ValueError, match="primary-source passage"):
+        service.generate(passages)
+
+    assert structured.calls == []
 
 
 def test_v2_concept_cannot_be_grounded_only_by_summary() -> None:

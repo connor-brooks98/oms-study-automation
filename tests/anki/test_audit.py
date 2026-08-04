@@ -219,7 +219,7 @@ def test_audit_rejects_missing_or_duplicate_candidate_verdicts() -> None:
         [_note(1), _note(2)],
     )
 
-    with pytest.raises(AuditValidationError, match="exactly once"):
+    with pytest.raises(AuditValidationError, match="exactly once") as error:
         service.audit(
             lecture_id=12,
             lecture_title="Anemia IV",
@@ -227,6 +227,9 @@ def test_audit_rejects_missing_or_duplicate_candidate_verdicts() -> None:
             candidates=(_candidate(1), _candidate(2)),
             passages=_passages(),
         )
+
+    assert "missing_nids=[2]" in str(error.value)
+    assert "duplicate_nids=[1]" in str(error.value)
 
 
 def test_audit_cache_invalidates_when_sources_change() -> None:

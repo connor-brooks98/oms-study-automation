@@ -292,9 +292,17 @@ class CardAuditService:
 
 def _validate_batch(batch: AuditBatchV2, expected_ids: set[int]) -> None:
     returned = [verdict.nid for verdict in batch.verdicts]
-    if set(returned) != expected_ids or len(returned) != len(set(returned)):
+    missing = sorted(expected_ids - set(returned))
+    unexpected = sorted(set(returned) - expected_ids)
+    duplicates = sorted(
+        {nid for nid in returned if returned.count(nid) > 1}
+    )
+    if missing or unexpected or duplicates:
         raise AuditValidationError(
-            "every audit candidate must appear exactly once"
+            "every audit candidate must appear exactly once: "
+            f"missing_nids={missing}; "
+            f"unexpected_nids={unexpected}; "
+            f"duplicate_nids={duplicates}"
         )
 
 

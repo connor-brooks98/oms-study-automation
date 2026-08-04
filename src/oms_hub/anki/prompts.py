@@ -119,7 +119,10 @@ class AnkiPromptLibrary:
     def load(self, prompt_id: str) -> AnkiPrompt:
         normalized = prompt_id.strip().casefold()
         if not _PROMPT_ID.fullmatch(normalized):
-            raise AnkiPromptConfigurationError("Anki prompt ID is invalid")
+            raise AnkiPromptConfigurationError(
+                "Anki prompt ID is invalid; use a filename stem containing "
+                "only lowercase letters, numbers, and hyphens"
+            )
         relative = PurePosixPath(f"{normalized}.md")
         parts, metadata, paths = self._resolve(
             relative,
@@ -199,7 +202,7 @@ def _read_markdown(
 ) -> tuple[PromptMetadata, str, Path]:
     path = root.joinpath(*relative.parts)
     try:
-        content = path.read_text(encoding="utf-8")
+        content = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError) as error:
         raise AnkiPromptConfigurationError(
             f"Anki prompt {relative} was not found or is not readable UTF-8"
@@ -225,7 +228,8 @@ def _split_frontmatter(
     lines = content.splitlines()
     if not lines or lines[0].strip() != "---":
         raise AnkiPromptConfigurationError(
-            f"Anki prompt {relative} is missing YAML frontmatter"
+            f"Anki prompt {relative} is missing YAML frontmatter; "
+            "the file must begin with ---"
         )
     try:
         closing = next(

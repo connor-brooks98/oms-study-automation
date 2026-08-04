@@ -156,6 +156,33 @@ class V2GapGenerationRequest:
         fact_ids = [fact.fact_id for fact in self.missing_facts]
         if len(fact_ids) != len(set(fact_ids)):
             raise ValueError("V2 gap generation fact IDs must be unique")
+        evidence_ids = [passage.source_id for passage in self.evidence]
+        evidence_id_set = set(evidence_ids)
+        if len(evidence_ids) != len(evidence_id_set):
+            raise ValueError("V2 gap generation evidence IDs must be unique")
+        missing_evidence_ids = sorted(
+            {
+                passage_id
+                for fact in self.missing_facts
+                for passage_id in fact.passage_ids
+                if passage_id not in evidence_id_set
+            }
+        )
+        if missing_evidence_ids:
+            raise ValueError(
+                "V2 gap generation missing-fact evidence is absent from "
+                "the request: "
+                f"passage_ids={_format_ids(missing_evidence_ids)}"
+            )
+        support_ids = [support.note_id for support in self.existing_supports]
+        if any(note_id <= 0 for note_id in support_ids):
+            raise ValueError(
+                "V2 gap generation existing support note IDs must be positive"
+            )
+        if len(support_ids) != len(set(support_ids)):
+            raise ValueError(
+                "V2 gap generation existing support note IDs must be unique"
+            )
         if any(not fact.fact_id.startswith(f"{self.concept.concept_id}-M") for fact in self.missing_facts):
             raise ValueError("V2 gap generation facts must belong to the concept")
 
@@ -278,9 +305,13 @@ class V2GapGenerationService:
     ) -> None:
         expected = {fact.fact_id for fact in request.missing_facts}
         returned = [item.fact_id for item in batch.resolutions]
-        if set(returned) != expected:
+        missing = sorted(expected - set(returned))
+        unexpected = sorted(set(returned) - expected)
+        if missing or unexpected:
             raise GapValidationError(
-                "every missing fact must resolve as generated or unresolved"
+                "every missing fact must resolve as generated or unresolved: "
+                f"missing_fact_ids={_format_ids(missing)}; "
+                f"unexpected_fact_ids={_format_ids(unexpected)}"
             )
         evidence_by_id = {passage.source_id: passage for passage in request.evidence}
         for fact_id in expected:
@@ -289,11 +320,13 @@ class V2GapGenerationService:
             generated = [item for item in matching if isinstance(item, GeneratedGapCardV2)]
             if unresolved and (generated or len(unresolved) != 1):
                 raise GapValidationError(
-                    "a missing fact cannot be both generated and unresolved"
+                    "a missing fact cannot be both generated and unresolved: "
+                    f"fact_id={fact_id}"
                 )
             if len(generated) > 1 and any(not item.split for item in generated):
                 raise GapValidationError(
-                    "multiple cards for one fact must be marked split"
+                    "multiple cards for one fact must be marked split: "
+                    f"fact_id={fact_id}"
                 )
             for card in generated:
                 _validate_v2_card(
@@ -335,6 +368,10 @@ def _v2_generation_input(request: V2GapGenerationRequest) -> str:
         separators=(",", ":"),
         ensure_ascii=False,
     )
+
+
+def _format_ids(values: list[str]) -> str:
+    return "[" + ", ".join(sorted(set(values))) + "]"
 
 
 def _validate_v2_card(

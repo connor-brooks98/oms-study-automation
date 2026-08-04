@@ -264,10 +264,30 @@ def test_v2_generation_repairs_a_silently_omitted_fact() -> None:
     assert len(structured.requests) == 2
     repair = json.loads(structured.requests[1][1])
     assert "every missing fact" in repair["validation_error"]
+    assert "missing_fact_ids=[C01-M2]" in repair["validation_error"]
     assert {item.fact_id for item in (*result.generated, *result.unresolved)} == {
         "C01-M1",
         "C01-M2",
     }
+
+
+def test_v2_request_rejects_missing_fact_evidence_not_in_bundle() -> None:
+    request = _v2_request()
+    invalid_fact = request.missing_facts[0].model_copy(
+        update={"passage_ids": ("SLD:12:0099",)}
+    )
+
+    with pytest.raises(ValueError, match="missing-fact evidence"):
+        V2GapGenerationRequest(
+            concept=request.concept,
+            missing_facts=(invalid_fact, request.missing_facts[1]),
+            evidence=request.evidence,
+            lecture_title=request.lecture_title,
+            lecture_entity_count=request.lecture_entity_count,
+            forbidden_cloze_targets=request.forbidden_cloze_targets,
+            existing_supports=request.existing_supports,
+            initial_tags=request.initial_tags,
+        )
 
 
 def test_v2_generation_rejects_forbidden_cloze_target_after_repair() -> None:

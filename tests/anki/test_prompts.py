@@ -119,6 +119,21 @@ def test_prompt_id_must_match_requested_filename(tmp_path: Path) -> None:
         AnkiPromptLibrary(vault).load("coverage-rubric")
 
 
+def test_utf8_bom_does_not_hide_yaml_frontmatter(tmp_path: Path) -> None:
+    vault = tmp_path / "prompts"
+    vault.mkdir()
+    (vault / "coverage-rubric.md").write_bytes(
+        b"\xef\xbb\xbf---\n"
+        b"id: coverage-rubric\n"
+        b"version: 2.0.0\n"
+        b"---\n\nRubric."
+    )
+
+    prompt = AnkiPromptLibrary(vault).load("coverage-rubric")
+
+    assert prompt.metadata.id == "coverage-rubric"
+
+
 def test_git_sync_fast_forwards_nuc_prompt_checkout(tmp_path: Path) -> None:
     seed, remote, nuc = _prompt_repositories(tmp_path)
     prompt = seed / "coverage-rubric.md"
