@@ -155,8 +155,7 @@ def test_configured_status_fails_closed_when_credential_store_is_unavailable(
 
 
 def test_generate_text_uses_explicit_provider_and_model(tmp_path):
-    settings, service = prepared_service(tmp_path)
-    settings.set_active(ProviderName.ANTHROPIC)
+    _, service = prepared_service(tmp_path)
 
     result = service.generate_text(
         "Return JSON.",

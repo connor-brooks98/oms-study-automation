@@ -2,21 +2,23 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from oms_hub.llm.domain import (
     CleanResult,
     GeneratedText,
+    LLMRequestError,
+    LLMTask,
     ProviderConnection,
     ProviderName,
 )
 from oms_hub.llm.openai import openai_output_schema, openai_style_model_ids
 from oms_hub.llm.provider import (
     FIXED_TRANSCRIPT_CONSTRAINTS,
+    LLMProvider,
     estimated_cost,
     get_provider_json,
     invalid_response,
@@ -26,10 +28,12 @@ from oms_hub.llm.provider import (
     token_count,
     transcript_input,
 )
-from oms_hub.security.secret_store import SecretStore
 from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
 from oms_hub.study_generation.domain import NativeQuiz, QuizQuestion
 from oms_hub.transcripts.prompt import ApprovedPrompt
+
+if TYPE_CHECKING:
+    from oms_hub.llm.service import LLMService
 
 OPENROUTER_API_KEY_SECRET = "openrouter-api-key"
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
@@ -233,36 +237,49 @@ class AccuracyAssessment:
     issues: tuple[str, ...]
 
 
+_ACCURACY_REVIEW_INSTRUCTION = (
+    "You are a cautious medical education fact checker. "
+    "Assess only factual medical accuracy and whether the "
+    "answer and rationale support one unambiguous best choice. "
+    "Return JSON only: {\"approved\": true|false, "
+    "\"issues\": [\"short issue\"]}. Do not rewrite the question."
+)
+
+_ACCURACY_REVIEW_OUTPUT_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "approved": {"type": "boolean"},
+        "issues": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["approved", "issues"],
+    "additionalProperties": False,
+}
+
+
 class MedicalAccuracyGate:
-    """Fail-closed medical review that is opt-in and isolated from Anki."""
+    """Fail-closed medical review that is opt-in and isolated from Anki.
+
+    Resolves its provider, model, and credential from the ``accuracy_review``
+    task assignment on every call, so the reviewing provider can be changed
+    from settings without redeploying.
+    """
 
     def __init__(
         self,
         settings: StudyAISettingsRepository,
-        secrets: SecretStore,
-        *,
-        endpoint: str = OPENROUTER_ENDPOINT,
-        client_factory: Callable[[], httpx.Client] | None = None,
+        service: LLMService,
     ) -> None:
         self.settings = settings
-        self.secrets = secrets
-        self.endpoint = endpoint
-        self.client_factory = client_factory or (
-            lambda: httpx.Client(timeout=httpx.Timeout(45.0, connect=10.0))
-        )
+        self.service = service
 
     def validate(self, quiz: NativeQuiz) -> None:
         configuration = self.settings.get()
         if not configuration.accuracy_gate_enabled:
             return
-        api_key = (self.secrets.get(OPENROUTER_API_KEY_SECRET) or "").strip()
-        if not api_key:
-            raise AccuracyGateError(
-                "Medical accuracy review is enabled but an OpenRouter API key is not configured"
-            )
+        provider, model, api_key = self._resolve()
         failures: list[str] = []
         for question in quiz.questions:
-            assessment = self.assess(question, configuration.openrouter_model, api_key)
+            assessment = self._assess(question, provider, model, api_key)
             if not assessment.approved:
                 details = "; ".join(assessment.issues) or "reviewer did not approve the question"
                 failures.append(f"{question.id}: {details}")
@@ -271,52 +288,47 @@ class MedicalAccuracyGate:
                 "Medical accuracy review blocked publication: " + " | ".join(failures[:8])
             )
 
-    def assess(
+    def assess(self, question: QuizQuestion) -> AccuracyAssessment:
+        provider, model, api_key = self._resolve()
+        return self._assess(question, provider, model, api_key)
+
+    def test_connection(self) -> None:
+        provider, model, api_key = self._resolve()
+        try:
+            provider.test_connection(api_key, model)
+        except LLMRequestError as error:
+            raise AccuracyGateError(
+                "Medical accuracy review connection test failed"
+            ) from error
+
+    def _resolve(self) -> tuple[LLMProvider, str, str]:
+        try:
+            return self.service.for_task(LLMTask.ACCURACY_REVIEW)
+        except LLMRequestError as error:
+            raise AccuracyGateError(
+                "Medical accuracy review is enabled but its provider "
+                "credential is not configured"
+            ) from error
+
+    def _assess(
         self,
         question: QuizQuestion,
+        provider: LLMProvider,
         model: str,
-        api_key: str | None = None,
+        api_key: str,
     ) -> AccuracyAssessment:
-        key = (api_key or self.secrets.get(OPENROUTER_API_KEY_SECRET) or "").strip()
-        if not key:
-            raise AccuracyGateError("OpenRouter API key is not configured")
-        payload = {
-            "model": model,
-            "temperature": 0,
-            "max_tokens": 500,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a cautious medical education fact checker. "
-                        "Assess only factual medical accuracy and whether the "
-                        "answer and rationale support one unambiguous best choice. "
-                        "Return JSON only: {\"approved\": true|false, "
-                        "\"issues\": [\"short issue\"]}. Do not rewrite the question."
-                    ),
-                },
-                {"role": "user", "content": _question_text(question)},
-            ],
-        }
         try:
-            with self.client_factory() as client:
-                response = client.post(
-                    self.endpoint,
-                    headers={
-                        "Authorization": f"Bearer {key}",
-                        "Content-Type": "application/json",
-                        "HTTP-Referer": "https://study-hub.local",
-                        "X-Title": "OMS Study Hub medical accuracy review",
-                    },
-                    json=payload,
-                )
-                response.raise_for_status()
-                decoded = response.json()
-        except (httpx.HTTPError, ValueError) as error:
-            raise AccuracyGateError("OpenRouter medical accuracy review failed") from error
+            generated = provider.generate_text(
+                _ACCURACY_REVIEW_INSTRUCTION,
+                _question_text(question),
+                api_key=api_key,
+                model=model,
+                output_schema=_ACCURACY_REVIEW_OUTPUT_SCHEMA,
+            )
+        except LLMRequestError as error:
+            raise AccuracyGateError("Medical accuracy review failed") from error
         try:
-            content = decoded["choices"][0]["message"]["content"]
-            result = _parse_json_object(content)
+            result = _parse_json_object(generated.text)
             approved = result.get("approved")
             issues = result.get("issues", [])
             if not isinstance(approved, bool) or not isinstance(issues, list):
@@ -327,30 +339,10 @@ class MedicalAccuracyGate:
                 if str(issue).strip()
             )
         except (KeyError, IndexError, TypeError, ValueError) as error:
-            raise AccuracyGateError("OpenRouter returned an invalid accuracy assessment") from error
+            raise AccuracyGateError(
+                "Medical accuracy review returned an invalid assessment"
+            ) from error
         return AccuracyAssessment(approved, normalized_issues)
-
-    def test_connection(self) -> None:
-        settings = self.settings.get()
-        key = (self.secrets.get(OPENROUTER_API_KEY_SECRET) or "").strip()
-        if not key:
-            raise AccuracyGateError("OpenRouter API key is not configured")
-        payload = {
-            "model": settings.openrouter_model,
-            "temperature": 0,
-            "max_tokens": 5,
-            "messages": [{"role": "user", "content": "Return the word READY."}],
-        }
-        try:
-            with self.client_factory() as client:
-                response = client.post(
-                    self.endpoint,
-                    headers={"Authorization": f"Bearer {key}"},
-                    json=payload,
-                )
-                response.raise_for_status()
-        except httpx.HTTPError as error:
-            raise AccuracyGateError("OpenRouter connection test failed") from error
 
 
 def _question_text(question: QuizQuestion) -> str:

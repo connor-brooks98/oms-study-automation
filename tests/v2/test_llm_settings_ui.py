@@ -27,16 +27,11 @@ def test_settings_renders_three_secret_safe_provider_cards(tmp_path):
     assert response.text.count('data-diagnostic aria-live="polite"') == 3
 
 
-def test_settings_renders_active_provider_control_and_external_script(tmp_path):
+def test_settings_renders_external_script(tmp_path):
     client, _, _ = prepared_client(tmp_path)
 
     response = client.get("/settings")
 
-    assert "data-active-provider" in response.text
-    assert re.search(
-        r'<option value="openai" selected(?:="selected")?>',
-        response.text,
-    )
     assert re.search(
         r'<script src="/static/settings\.js(?:\?v=[^"]+)?" defer></script>',
         response.text,

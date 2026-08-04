@@ -61,7 +61,7 @@ from oms_hub.anki.stages import revision_fingerprint
 from oms_hub.anki.tag_policy import TagPolicy, TagPolicyError, tag_hash
 from oms_hub.ingestion.domain import UploadKind
 from oms_hub.ingestion.repository import IngestionRepository
-from oms_hub.llm.domain import ProviderName
+from oms_hub.llm.domain import LLMTask, ProviderName
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.repositories import CatalogRepository
 from oms_hub.study_generation.repository import GenerationRepository
@@ -820,7 +820,7 @@ def _page_context(request: Request) -> dict[str, Any]:
         request.app.state.llm_settings,
     )
     provider_preferences = llm_settings.list()
-    active_provider = llm_settings.active()
+    active_provider = llm_settings.assignment(LLMTask.ANKI_CURATION)
     provider_models = {
         preference.provider.value: preference.model
         for preference in provider_preferences

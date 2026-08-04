@@ -507,29 +507,6 @@
       });
     }
 
-    const active = documentRef.querySelector("[data-active-provider]");
-    const saveActive = documentRef.querySelector("[data-save-active]");
-    const activeMessage = documentRef.querySelector("[data-active-message]");
-    if (active && saveActive) {
-      saveActive.addEventListener("click", async () => {
-        saveActive.disabled = true;
-        activeMessage.textContent = "Updating active provider…";
-        try {
-          const result = await postJson(
-            fetchImpl,
-            "/settings/ai/active",
-            { provider: active.value },
-            token(),
-          );
-          active.value = result.provider;
-          activeMessage.textContent = "New transcripts will use this provider.";
-        } catch (error) {
-          activeMessage.textContent = error.message;
-        } finally {
-          saveActive.disabled = false;
-        }
-      });
-    }
   };
 
   const api = {

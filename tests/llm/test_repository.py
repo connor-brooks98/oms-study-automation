@@ -19,21 +19,27 @@ def test_repository_seeds_four_providers_and_activates_openai(tmp_path):
         ProviderName.ANTHROPIC,
         ProviderName.OPENROUTER,
     ]
-    assert repository.active().provider is ProviderName.OPENAI
-    assert repository.active().model == "gpt-5.2"
+    openai_preference = next(
+        item for item in preferences if item.provider is ProviderName.OPENAI
+    )
+    assert openai_preference.active is True
+    assert openai_preference.model == "gpt-5.2"
+    assert sum(item.active for item in preferences) == 1
 
 
-def test_repository_updates_models_and_keeps_exactly_one_active_provider(tmp_path):
+def test_repository_updates_models_without_changing_active_provider(tmp_path):
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()
     repository = LLMSettingsRepository(database, default_openai_model="gpt-5.2")
 
     updated = repository.set_model(ProviderName.GEMINI, " gemini-3.6-flash ")
-    active = repository.set_active(ProviderName.GEMINI)
 
     assert updated.model == "gemini-3.6-flash"
-    assert active.provider is ProviderName.GEMINI
-    assert sum(item.active for item in repository.list()) == 1
+    preferences = repository.list()
+    assert sum(item.active for item in preferences) == 1
+    assert next(
+        item for item in preferences if item.provider is ProviderName.OPENAI
+    ).active is True
 
 
 def test_repository_can_clear_stale_connection_status(tmp_path):

@@ -36,7 +36,7 @@ from oms_hub.anki.tag_policy import TagPolicy, tag_hash
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.ingestion.repository import IngestionRepository
-from oms_hub.llm.domain import ProviderName
+from oms_hub.llm.domain import LLMTask, ProviderName
 from oms_hub.models import LectureModel, StudyRevisionModel
 from oms_hub.study_generation.domain import GenerationKind
 from oms_hub.study_generation.outline import OutlinePdfRenderer
@@ -480,7 +480,7 @@ def test_anki_bootstrap_exposes_grouped_current_sources_and_editable_tag(
     ]
 
 
-def test_anki_bootstrap_uses_saved_active_provider_and_models(
+def test_anki_bootstrap_uses_saved_anki_curation_assignment_and_models(
     prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
 ) -> None:
     client, app, _, _, _ = prepared_app
@@ -488,7 +488,11 @@ def test_anki_bootstrap_uses_saved_active_provider_and_models(
         ProviderName.ANTHROPIC,
         "claude-sonnet-4-6",
     )
-    app.state.llm_settings.set_active(ProviderName.ANTHROPIC)
+    app.state.llm_settings.set_assignment(
+        LLMTask.ANKI_CURATION,
+        ProviderName.ANTHROPIC,
+        "claude-sonnet-4-6",
+    )
 
     response = client.get("/api/anki/bootstrap")
 

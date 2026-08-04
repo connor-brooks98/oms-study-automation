@@ -15,6 +15,7 @@ from oms_hub.llm.catalog import FALLBACK_MODELS
 from oms_hub.llm.domain import (
     DiagnosticSource,
     LLMRequestError,
+    LLMTask,
     ProviderName,
 )
 from oms_hub.llm.openrouter import (
@@ -30,11 +31,7 @@ from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
 from oms_hub.study_generation.domain import PromptKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.tracker_preview import TrackerPreview, TrackerPreviewService
-from oms_hub.web.llm_schemas import (
-    ActiveProviderUpdate,
-    CredentialUpdate,
-    ModelUpdate,
-)
+from oms_hub.web.llm_schemas import CredentialUpdate, ModelUpdate
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 router = APIRouter(prefix="/settings")
@@ -117,9 +114,6 @@ def settings_page(request: Request) -> HTMLResponse:
                 }
                 for preference in preferences
             ),
-            "active_provider": _llm_settings(
-                request
-            ).active().provider.value,
             "openrouter": _openrouter_context(request),
             "notebook_status": (
                 request.app.state.notebook_connection.status()
@@ -152,8 +146,9 @@ def settings_page(request: Request) -> HTMLResponse:
 def _openrouter_context(request: Request) -> dict[str, object]:
     settings = cast(StudyAISettingsRepository, request.app.state.study_ai_settings).get()
     secrets = cast(SecretStore, request.app.state.secrets)
+    assignment = _llm_settings(request).assignment(LLMTask.ACCURACY_REVIEW)
     return {
-        "model": settings.openrouter_model,
+        "model": assignment.model,
         "models": _OPENROUTER_MODELS,
         "accuracy_gate_enabled": settings.accuracy_gate_enabled,
         "configured": bool((secrets.get(OPENROUTER_API_KEY_SECRET) or "").strip()),
@@ -166,7 +161,6 @@ def save_openrouter_credential(
     update: CredentialUpdate,
 ) -> JSONResponse:
     secrets = cast(SecretStore, request.app.state.secrets)
-    request.app.state.medical_accuracy_gate.secrets = secrets
     if update.credential.strip():
         secrets.set(OPENROUTER_API_KEY_SECRET, update.credential.strip())
     return _no_store(
@@ -183,13 +177,17 @@ def save_openrouter_model(
     request: Request,
     update: OpenRouterModelUpdate,
 ) -> JSONResponse:
+    llm_settings = _llm_settings(request)
+    current = llm_settings.assignment(LLMTask.ACCURACY_REVIEW)
     try:
-        saved = cast(StudyAISettingsRepository, request.app.state.study_ai_settings).save(
-            openrouter_model=update.model,
+        saved = llm_settings.set_assignment(
+            LLMTask.ACCURACY_REVIEW,
+            current.provider,
+            update.model,
         )
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
-    return _no_store({"model": saved.openrouter_model})
+    return _no_store({"model": saved.model})
 
 
 @router.post("/ai/openrouter/gate")
@@ -205,7 +203,6 @@ def save_accuracy_gate(
 @router.post("/ai/openrouter/test")
 def test_openrouter_connection(request: Request) -> JSONResponse:
     gate = cast(MedicalAccuracyGate, request.app.state.medical_accuracy_gate)
-    gate.secrets = cast(SecretStore, request.app.state.secrets)
     try:
         gate.test_connection()
     except AccuracyGateError as error:
@@ -252,25 +249,6 @@ def save_ai_model(
     return _no_store(
         {
             "provider": selected.value,
-            "model": preference.model,
-        }
-    )
-
-
-@router.post("/ai/active")
-def save_active_ai_provider(
-    request: Request,
-    update: ActiveProviderUpdate,
-) -> JSONResponse:
-    if not _llm_service(request).credential_configured(update.provider):
-        raise HTTPException(
-            409,
-            f"Configure the {update.provider.value.title()} credential first",
-        )
-    preference = _llm_settings(request).set_active(update.provider)
-    return _no_store(
-        {
-            "provider": preference.provider.value,
             "model": preference.model,
         }
     )

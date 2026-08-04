@@ -82,7 +82,7 @@ def test_credentials_are_saved_independently_and_blank_retains_existing(tmp_path
     assert openai.headers["cache-control"] == "no-store"
 
 
-def test_model_and_active_provider_can_change_without_restart(tmp_path):
+def test_model_can_change_without_restart(tmp_path):
     client, app, secrets = prepared_client(tmp_path)
     secrets.set("gemini-api-key", "secret")
 
@@ -90,29 +90,11 @@ def test_model_and_active_provider_can_change_without_restart(tmp_path):
         "/settings/ai/gemini/model",
         json={"model": "gemini-3.6-flash"},
     )
-    active = client.post(
-        "/settings/ai/active",
-        json={"provider": "gemini"},
-    )
 
     assert model.json()["model"] == "gemini-3.6-flash"
-    assert active.json() == {
-        "provider": "gemini",
-        "model": "gemini-3.6-flash",
-    }
-    assert app.state.llm_settings.active().provider is ProviderName.GEMINI
-
-
-def test_unconfigured_provider_cannot_be_activated(tmp_path):
-    client, _, _ = prepared_client(tmp_path)
-
-    response = client.post(
-        "/settings/ai/active",
-        json={"provider": "anthropic"},
+    assert app.state.llm_settings.get(ProviderName.GEMINI).model == (
+        "gemini-3.6-flash"
     )
-
-    assert response.status_code == 409
-    assert response.json()["detail"] == "Configure the Anthropic credential first"
 
 
 def test_connection_test_returns_connected_state_and_safe_metadata(tmp_path):

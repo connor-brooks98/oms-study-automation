@@ -458,10 +458,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.secrets = KeyringSecretStore()
     retire_google_docs_credentials(resolved.data_dir, app.state.secrets)
     app.state.study_ai_settings = StudyAISettingsRepository(database)
-    app.state.medical_accuracy_gate = MedicalAccuracyGate(
-        app.state.study_ai_settings,
-        app.state.secrets,
-    )
     app.state.anki_repository = AnkiCurationRepository(database)
     app.state.anki_tag_policy = TagPolicy(
         pipeline_owned_roots=("OMS",),
@@ -495,6 +491,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ProviderName.ANTHROPIC: AnthropicProvider(),
             ProviderName.OPENROUTER: OpenRouterProvider(),
         },
+    )
+    app.state.medical_accuracy_gate = MedicalAccuracyGate(
+        app.state.study_ai_settings,
+        app.state.llm_service,
     )
     app.state.catalog_repository = CatalogRepository(database)
     app.state.ingestion_repository = IngestionRepository(database)

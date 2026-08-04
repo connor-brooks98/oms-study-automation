@@ -8,7 +8,6 @@ from oms_hub.models import StudyAISettingModel
 
 @dataclass(frozen=True, slots=True)
 class StudyAISettings:
-    openrouter_model: str
     accuracy_gate_enabled: bool
 
 
@@ -27,7 +26,6 @@ class StudyAISettingsRepository:
     def save(
         self,
         *,
-        openrouter_model: str | None = None,
         accuracy_gate_enabled: bool | None = None,
     ) -> StudyAISettings:
         with self.database.session() as session:
@@ -35,13 +33,6 @@ class StudyAISettingsRepository:
             if model is None:
                 model = StudyAISettingModel(id=1)
                 session.add(model)
-            if openrouter_model is not None:
-                normalized = " ".join(openrouter_model.split())
-                if not normalized:
-                    raise ValueError("OpenRouter model cannot be empty")
-                if len(normalized) > 200:
-                    raise ValueError("OpenRouter model is too long")
-                model.openrouter_model = normalized
             if accuracy_gate_enabled is not None:
                 model.accuracy_gate_enabled = bool(accuracy_gate_enabled)
             session.flush()
@@ -54,4 +45,4 @@ class StudyAISettingsRepository:
 
     @staticmethod
     def _domain(model: StudyAISettingModel) -> StudyAISettings:
-        return StudyAISettings(model.openrouter_model, model.accuracy_gate_enabled)
+        return StudyAISettings(model.accuracy_gate_enabled)

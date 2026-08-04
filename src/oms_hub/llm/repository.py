@@ -47,17 +47,6 @@ class LLMSettingsRepository:
                 raise KeyError(provider.value)
             return self._preference(stored)
 
-    def active(self) -> ProviderPreference:
-        with self.database.session() as session:
-            stored = session.scalar(
-                select(LLMProviderSettingModel).where(
-                    LLMProviderSettingModel.active.is_(True)
-                )
-            )
-            if stored is None:
-                raise RuntimeError("no active language model provider")
-            return self._preference(stored)
-
     def set_model(
         self,
         provider: ProviderName,
@@ -71,21 +60,6 @@ class LLMSettingsRepository:
             stored.model = normalized
             session.flush()
             return self._preference(stored)
-
-    def set_active(self, provider: ProviderName) -> ProviderPreference:
-        with self.database.session() as session:
-            settings = session.scalars(
-                select(LLMProviderSettingModel)
-            ).all()
-            selected: LLMProviderSettingModel | None = None
-            for stored in settings:
-                stored.active = stored.provider == provider.value
-                if stored.active:
-                    selected = stored
-            if selected is None:
-                raise KeyError(provider.value)
-            session.flush()
-            return self._preference(selected)
 
     def assignment(self, task: LLMTask) -> TaskAssignment:
         with self.database.session() as session:

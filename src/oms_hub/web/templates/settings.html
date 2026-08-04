@@ -17,18 +17,6 @@
         <h2 id="ai-provider-heading">AI providers</h2>
         <p>Store multiple credentials securely and choose which service cleans new transcripts.</p>
       </div>
-      <div class="active-provider-control">
-        <label for="active-provider">Active provider</label>
-        <div class="active-provider-row">
-          <select id="active-provider" data-active-provider>
-            {% for provider in providers %}
-            <option value="{{ provider.name }}" {% if provider.name == active_provider %}selected{% endif %}>{{ provider.label }}</option>
-            {% endfor %}
-          </select>
-          <button class="button secondary" type="button" data-save-active>Use provider</button>
-        </div>
-        <p class="field-message" data-active-message aria-live="polite"></p>
-      </div>
     </div>
 
     <div class="provider-grid">
