@@ -157,7 +157,7 @@ class AuditVerdictV2(V2Contract):
 
 class GeneratedGapCardV2(V2Contract):
     fact_id: FactId
-    status: Literal["generated"] = "generated"
+    status: Literal["generated"]
     text: str = Field(min_length=1, max_length=10_000)
     extra: str = Field(max_length=20_000)
     note_type: Literal["AnKingOverhaul (AnKing Step Deck / AnKingMed)"]
@@ -176,9 +176,9 @@ class GeneratedGapCardV2(V2Contract):
 
 class UnresolvedGapV2(V2Contract):
     fact_id: FactId
-    status: Literal["unresolved"] = "unresolved"
+    status: Literal["unresolved"]
     reason: str = Field(min_length=1, max_length=2_000)
-    duplicate_of_note_id: int | None = Field(default=None, gt=0)
+    duplicate_of_note_id: int | None = Field(gt=0)
 
 
 GapResolutionV2 = Annotated[

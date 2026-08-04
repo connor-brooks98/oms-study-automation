@@ -24,6 +24,7 @@ from oms_hub.anki.v2_contracts import (
     UnresolvedGapV2,
 )
 from oms_hub.llm.domain import GeneratedText, ProviderName
+from oms_hub.llm.openai import openai_output_schema
 from oms_hub.llm.structured import (
     StructuredJSONResult,
     StructuredOutputError,
@@ -188,6 +189,32 @@ def _generated_v2(fact_id: str, source_id: str) -> GeneratedGapCardV2:
     )
 
 
+def test_v2_gap_schema_requires_every_openai_strict_object_property() -> None:
+    schema = openai_output_schema(GapBatchV2.model_json_schema())
+    missing: list[str] = []
+
+    def inspect(value: object, path: str = "$") -> None:
+        if isinstance(value, dict):
+            properties = value.get("properties")
+            if isinstance(properties, dict):
+                required = value.get("required")
+                required_names = set(required) if isinstance(required, list) else set()
+                missing.extend(
+                    f"{path}.{name}"
+                    for name in properties
+                    if name not in required_names
+                )
+            for name, child in value.items():
+                inspect(child, f"{path}.{name}")
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                inspect(child, f"{path}[{index}]")
+
+    inspect(schema)
+
+    assert missing == []
+
+
 def test_v2_generation_sends_all_missing_facts_in_one_concept_call() -> None:
     request = _v2_request()
     structured = QueueStructured(
@@ -199,6 +226,7 @@ def test_v2_generation_sends_all_missing_facts_in_one_concept_call() -> None:
                         fact_id="C01-M2",
                         status="unresolved",
                         reason="The source does not support an atomic card.",
+                        duplicate_of_note_id=None,
                     ),
                 )
             ),
@@ -244,7 +272,9 @@ def test_v2_generation_repairs_a_silently_omitted_fact() -> None:
                     _generated_v2("C01-M1", request.evidence[0].source_id),
                     UnresolvedGapV2(
                         fact_id="C01-M2",
+                        status="unresolved",
                         reason="Evidence is insufficient.",
+                        duplicate_of_note_id=None,
                     ),
                 )
             ),
@@ -294,6 +324,7 @@ def test_v2_generation_rejects_forbidden_cloze_target_after_repair() -> None:
     request = _v2_request()
     trapped = GeneratedGapCardV2(
         fact_id="C01-M1",
+        status="generated",
         text="{{c1::<b>iron deficiency</b>}} causes microcytic anemia.",
         extra="Iron replacement corrects the deficiency.",
         note_type="AnKingOverhaul (AnKing Step Deck / AnKingMed)",
@@ -309,7 +340,9 @@ def test_v2_generation_rejects_forbidden_cloze_target_after_repair() -> None:
                         trapped,
                         UnresolvedGapV2(
                             fact_id="C01-M2",
+                            status="unresolved",
                             reason="Evidence is insufficient.",
+                            duplicate_of_note_id=None,
                         ),
                     )
                 ),
@@ -318,7 +351,9 @@ def test_v2_generation_rejects_forbidden_cloze_target_after_repair() -> None:
                         trapped,
                         UnresolvedGapV2(
                             fact_id="C01-M2",
+                            status="unresolved",
                             reason="Evidence is insufficient.",
+                            duplicate_of_note_id=None,
                         ),
                     )
                 ),

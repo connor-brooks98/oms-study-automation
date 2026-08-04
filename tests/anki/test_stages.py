@@ -1022,6 +1022,7 @@ def test_gap_stage_routes_on_audited_missing_facts_not_display_outcome() -> None
     )
     generated = GeneratedGapCardV2(
         fact_id="C01-M1",
+        status="generated",
         text="<b>Iron deficiency</b> causes {{c1::<b>low ferritin</b>}}.",
         extra="Ferritin reflects depleted iron stores.",
         note_type="AnKingOverhaul (AnKing Step Deck / AnKingMed)",
