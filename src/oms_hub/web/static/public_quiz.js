@@ -374,7 +374,11 @@
     const match = focusKey
       ? container.querySelector(`[data-focus-key="${focusKey}"]`)
       : null;
-    (match || container).focus();
+    // A disabled control can't receive focus — calling .focus() on one is a
+    // silent no-op in real browsers, which would leave focus wherever it
+    // landed when the old node was removed (typically <body>). Fall back to
+    // the (focusable, tabindex="-1") container in that case.
+    (match && !match.disabled ? match : container).focus();
   };
 
   const renderHighlightedText = (

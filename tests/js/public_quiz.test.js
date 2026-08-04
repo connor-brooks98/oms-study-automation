@@ -210,6 +210,9 @@ class FakeQuizNode {
   }
 
   focus() {
+    // Mirrors real <button>/<select> behavior: focusing a disabled control
+    // is a silent no-op, it does not become the active element.
+    if (this.disabled) return;
     this.documentRef.activeElement = this;
   }
 
@@ -303,6 +306,76 @@ test("initialize renders the could-not-load state when the response body is not 
   await quiz.initialize(documentRef, fetchImpl);
 
   assert.equal(app.textContent, "This quiz could not be loaded.");
+});
+
+test("restoreFocus falls back to the container when the equivalent control renders disabled", async () => {
+  const { documentRef, app } = buildQuizApp();
+  const content = {
+    token: "tok",
+    version: 1,
+    questions: [
+      {
+        id: "q1",
+        stem: "Q1?",
+        choices: [{ id: "c1", text: "A" }, { id: "c2", text: "B" }],
+      },
+      {
+        id: "q2",
+        stem: "Q2?",
+        choices: [{ id: "c1", text: "A" }, { id: "c2", text: "B" }],
+      },
+    ],
+  };
+  const fetchImpl = async (url) => {
+    if (url === "/mock/content") {
+      return { ok: true, async json() { return content; } };
+    }
+    if (url === "/mock/answer") {
+      return {
+        ok: true,
+        async json() {
+          return { correct: true, correct_choice_id: "c1", rationale: "Because." };
+        },
+      };
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+
+  await quiz.initialize(documentRef, fetchImpl);
+
+  // Select and submit an answer on q1 so "Next →" becomes enabled.
+  const answerButton = app.querySelector('[data-focus-key="answer-c1"]');
+  assert.ok(answerButton, "expected an answer choice button");
+  answerButton._listeners.click[0]();
+
+  const submitButton = app.querySelector('[data-focus-key="submit"]');
+  assert.ok(submitButton, "expected a submit button once an answer is selected");
+  await submitButton._listeners.click[0]();
+
+  const forwardButton = app.querySelector('[data-focus-key="forward"]');
+  assert.ok(forwardButton, "expected a forward/next button");
+  assert.equal(forwardButton.disabled, false, "forward should be enabled once submitted");
+  forwardButton.focus();
+  assert.equal(documentRef.activeElement, forwardButton);
+
+  // Advance to q2 - the freshly rendered "forward" button starts out
+  // disabled again (q2 has not been submitted yet). restoreFocus must not
+  // silently no-op by calling .focus() on that disabled control; it should
+  // fall back to the tabindex="-1" player container instead.
+  forwardButton._listeners.click[0]();
+
+  const nextForwardButton = app.querySelector('[data-focus-key="forward"]');
+  assert.ok(nextForwardButton);
+  assert.equal(
+    nextForwardButton.disabled,
+    true,
+    "the new question's forward button should start disabled",
+  );
+  assert.equal(
+    documentRef.activeElement,
+    app,
+    "focus should fall back to the tabindex=-1 container, not silently stay put",
+  );
 });
 
 test("results-screen Start Over is a no-op when the confirmation is cancelled", async () => {
