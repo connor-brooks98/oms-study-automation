@@ -318,8 +318,17 @@ def create_anki_job(
             detail=f"NotebookLM outline could not be validated: {exc}",
         ) from exc
 
+    llm_settings = cast(
+        LLMSettingsRepository,
+        request.app.state.llm_settings,
+    )
+    resolved_model = (
+        payload.model
+        if payload.model
+        else llm_settings.assignment(LLMTask.ANKI_CURATION).model
+    )
     domain = replace(
-        payload.to_domain(),
+        payload.to_domain(model=resolved_model),
         source_revision_hashes=hashes,
         semantic_generation=str(semantic.manifest.generation),
         companion_generation=snapshot_id,

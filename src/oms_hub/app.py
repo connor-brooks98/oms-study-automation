@@ -665,6 +665,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             embedder=embedder,
             focused_retrieval_limit=(resolved.anki_focused_retrieval_limit),
             global_retrieval_limit=resolved.anki_global_retrieval_limit,
+            llm_settings=app.state.llm_settings,
             prompts=prompt_catalog,
             prompt_sync=prompt_sync,
         )

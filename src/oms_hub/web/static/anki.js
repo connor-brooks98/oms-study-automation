@@ -253,6 +253,54 @@
     return typeof model === "string" ? model : "";
   };
 
+  const modelOptionValues = (models, currentModel) => {
+    const list = Array.isArray(models) ? models.map((model) => String(model)) : [];
+    const unique = [...new Set(list)];
+    const current = String(currentModel || "").trim();
+    if (current && !unique.includes(current)) {
+      return [current, ...unique];
+    }
+    return unique;
+  };
+
+  const populateModelOptions = (documentRef, select, models, currentModel) => {
+    const values = modelOptionValues(models, currentModel);
+    select.replaceChildren();
+    values.forEach((value) => {
+      const option = documentRef.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      select.append(option);
+    });
+    const current = String(currentModel || "").trim();
+    if (current && values.includes(current)) {
+      select.value = current;
+    } else if (values.length) {
+      select.value = values[0];
+    }
+  };
+
+  const loadModelOptions = async (
+    documentRef,
+    fetchImpl,
+    select,
+    provider,
+    currentModel,
+  ) => {
+    let models = [];
+    try {
+      const result = await requestJson(
+        documentRef,
+        fetchImpl,
+        `/api/settings/providers/${provider}/models`,
+      );
+      models = Array.isArray(result.models) ? result.models : [];
+    } catch {
+      models = [];
+    }
+    populateModelOptions(documentRef, select, models, currentModel);
+  };
+
   const renderSourceChoices = (documentRef, lecture) => {
     const container = documentRef.querySelector("#anki-source-revisions");
     if (!container) return;
@@ -587,8 +635,21 @@
         providerModels,
         provider.value,
       );
-      if (savedModel) model.value = savedModel;
+      void loadModelOptions(
+        documentRef,
+        fetchImpl,
+        model,
+        provider.value,
+        savedModel,
+      );
     });
+    void loadModelOptions(
+      documentRef,
+      fetchImpl,
+      model,
+      provider.value,
+      model.value,
+    );
     clearLecture();
 
     const refresh = documentRef.querySelector("[data-refresh-jobs]");
@@ -1488,9 +1549,12 @@
     hasRequiredSources,
     initialize,
     lectureOptions,
+    loadModelOptions,
     matchesReviewSearch,
+    modelOptionValues,
     moveDeckPriority,
     parseLecturePayload,
+    populateModelOptions,
     processingPercent,
     readableState,
     reconciliationDisplay,

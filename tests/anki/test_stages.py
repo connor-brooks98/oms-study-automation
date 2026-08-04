@@ -84,6 +84,42 @@ def test_priority_candidate_groups_preserve_deck_order() -> None:
     ]
 
 
+class FakeLLMSettings:
+    def __init__(self, model: str) -> None:
+        self.model = model
+        self.requested_providers: list[ProviderName] = []
+
+    def get(self, provider: ProviderName) -> SimpleNamespace:
+        self.requested_providers.append(provider)
+        return SimpleNamespace(model=self.model)
+
+
+def test_legacy_job_without_pinned_model_falls_back_to_provider_card_model() -> None:
+    runner = CurationServicesRunner.__new__(CurationServicesRunner)
+    runner.llm_settings = FakeLLMSettings("gpt-5.2")
+    context = SimpleNamespace(
+        job=SimpleNamespace(provider="openai", model=""),
+    )
+
+    resolved = runner._model(context)
+
+    assert resolved == "gpt-5.2"
+    assert runner.llm_settings.requested_providers == [ProviderName.OPENAI]
+
+
+def test_pinned_job_model_is_used_without_consulting_provider_settings() -> None:
+    runner = CurationServicesRunner.__new__(CurationServicesRunner)
+    runner.llm_settings = FakeLLMSettings("gpt-5.2")
+    context = SimpleNamespace(
+        job=SimpleNamespace(provider="openai", model="gpt-4o-mini"),
+    )
+
+    resolved = runner._model(context)
+
+    assert resolved == "gpt-4o-mini"
+    assert runner.llm_settings.requested_providers == []
+
+
 def test_preflight_snapshots_all_prompts_for_the_job() -> None:
     runner = CurationServicesRunner.__new__(CurationServicesRunner)
     runner.runtime = ReadyRuntime()

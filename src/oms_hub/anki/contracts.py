@@ -58,7 +58,7 @@ class CreateCurationJobRequest(ContractModel):
     judgment_rubric_version: Annotated[str, Field(min_length=1, max_length=100)]
     gap_prompt_version: Annotated[str, Field(min_length=1, max_length=100)]
     provider: Literal["openai", "gemini", "anthropic"]
-    model: Annotated[str, Field(min_length=1, max_length=200)]
+    model: Annotated[str, Field(max_length=200)] | None = None
     source_revision_hashes: dict[
         Annotated[int, Field(gt=0)],
         Sha256,
@@ -105,7 +105,6 @@ class CreateCurationJobRequest(ContractModel):
 
     @field_validator(
         "target_deck",
-        "model",
         "lcl_prompt_version",
         "judgment_rubric_version",
         "gap_prompt_version",
@@ -114,6 +113,16 @@ class CreateCurationJobRequest(ContractModel):
     @classmethod
     def strip_required_text(cls, value: Any) -> str:
         return str(value).strip()
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def strip_optional_model(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            raise ValueError("model cannot be blank")
+        return text
 
     @field_validator("target_tag", mode="before")
     @classmethod
@@ -139,7 +148,7 @@ class CreateCurationJobRequest(ContractModel):
             raise ValueError("summary outline ID and hash must be supplied together")
         return self
 
-    def to_domain(self) -> CreateCurationJob:
+    def to_domain(self, *, model: str) -> CreateCurationJob:
         return CreateCurationJob(
             lecture_id=self.lecture_id,
             block_id=self.block_id,
@@ -154,7 +163,7 @@ class CreateCurationJobRequest(ContractModel):
             judgment_rubric_version=self.judgment_rubric_version,
             gap_prompt_version=self.gap_prompt_version,
             provider=self.provider,
-            model=self.model,
+            model=model,
             source_revision_hashes=dict(self.source_revision_hashes),
             semantic_generation=self.semantic_generation,
             companion_generation=self.companion_generation,

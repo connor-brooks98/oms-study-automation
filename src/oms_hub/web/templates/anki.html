@@ -115,7 +115,9 @@
         </label>
         <label>
           Model
-          <input name="model" value="{{ defaults.model }}" required>
+          <select name="model" data-anki-model-select required>
+            <option value="{{ defaults.model }}">{{ defaults.model }}</option>
+          </select>
         </label>
         <label class="anki-field-wide">
           Focus for this lecture
@@ -201,5 +203,5 @@
 <script id="anki-provider-models" type="application/json">{{ provider_models|tojson }}</script>
 {% endblock %}
 {% block scripts %}
-<script src="/static/anki.js?v=20260731.1" defer></script>
+<script src="/static/anki.js?v=20260804.1" defer></script>
 {% endblock %}

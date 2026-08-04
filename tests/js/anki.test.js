@@ -153,6 +153,110 @@ test("provider changes resolve that provider's saved model", () => {
   assert.equal(anki.resolveProviderModel(models, "gemini"), "");
 });
 
+test("modelOptionValues inserts the current model when missing from the fetched list", () => {
+  assert.deepEqual(
+    anki.modelOptionValues(["gpt-4o", "gpt-4o-mini"], "custom/my-model"),
+    ["custom/my-model", "gpt-4o", "gpt-4o-mini"],
+  );
+  assert.deepEqual(
+    anki.modelOptionValues(["gpt-4o", "gpt-4o-mini", "gpt-4o"], "gpt-4o-mini"),
+    ["gpt-4o", "gpt-4o-mini"],
+  );
+});
+
+class FakeOption {
+  constructor() {
+    this.value = "";
+    this.textContent = "";
+  }
+}
+
+class FakeSelect {
+  constructor() {
+    this.children = [];
+    this.value = "";
+  }
+
+  replaceChildren() {
+    this.children = [];
+  }
+
+  append(node) {
+    this.children.push(node);
+  }
+}
+
+const fakeSelectDocument = { createElement: () => new FakeOption() };
+
+test("populateModelOptions keeps the saved model selected after populating fetched options", () => {
+  const select = new FakeSelect();
+
+  anki.populateModelOptions(
+    fakeSelectDocument,
+    select,
+    ["gpt-4o", "gpt-4o-mini"],
+    "custom/my-model",
+  );
+
+  assert.deepEqual(
+    select.children.map((option) => option.value),
+    ["custom/my-model", "gpt-4o", "gpt-4o-mini"],
+  );
+  assert.equal(select.value, "custom/my-model");
+});
+
+test("model dropdown repopulates from the settings models endpoint when the provider changes", async () => {
+  const select = new FakeSelect();
+  const requestedUrls = [];
+  const modelsByProvider = {
+    "/api/settings/providers/anthropic/models": ["claude-sonnet-5", "claude-opus-5"],
+    "/api/settings/providers/gemini/models": ["gemini-3.6-flash", "gemini-3.6-pro"],
+  };
+  const fetchImpl = async (url) => {
+    requestedUrls.push(url);
+    return {
+      ok: true,
+      async json() {
+        return { models: modelsByProvider[url] || [], source: "live" };
+      },
+    };
+  };
+  const documentRef = {
+    cookie: "study_hub_csrf=test-token",
+    createElement: () => new FakeOption(),
+  };
+
+  await anki.loadModelOptions(
+    documentRef,
+    fetchImpl,
+    select,
+    "anthropic",
+    "claude-sonnet-5",
+  );
+
+  assert.equal(requestedUrls[0], "/api/settings/providers/anthropic/models");
+  assert.deepEqual(
+    select.children.map((option) => option.value),
+    ["claude-sonnet-5", "claude-opus-5"],
+  );
+  assert.equal(select.value, "claude-sonnet-5");
+
+  await anki.loadModelOptions(
+    documentRef,
+    fetchImpl,
+    select,
+    "gemini",
+    "",
+  );
+
+  assert.equal(requestedUrls[1], "/api/settings/providers/gemini/models");
+  assert.deepEqual(
+    select.children.map((option) => option.value),
+    ["gemini-3.6-flash", "gemini-3.6-pro"],
+  );
+  assert.equal(select.value, "gemini-3.6-flash");
+});
+
 test("only failed curation jobs expose pipeline retry", () => {
   assert.equal(anki.canRetryCuration("failed"), true);
   assert.equal(anki.canRetryCuration("judging_pass_1"), false);

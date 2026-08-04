@@ -586,6 +586,65 @@ def test_create_and_list_job_pins_server_generations_and_rejects_amboss(
     assert listed.json()["jobs"][0]["id"] == created.json()["id"]
 
 
+def test_create_job_pins_explicit_model(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, _, lecture_id, revision_id, _ = prepared_app
+    payload = _create_payload(lecture_id, revision_id)
+    payload["model"] = "claude-sonnet-4-6"
+
+    created = client.post("/api/anki/jobs", json=payload)
+
+    assert created.status_code == 201
+    assert created.json()["model"] == "claude-sonnet-4-6"
+
+
+def test_create_job_without_model_uses_anki_curation_assignment_default(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, lecture_id, revision_id, _ = prepared_app
+    app.state.llm_settings.set_model(
+        ProviderName.ANTHROPIC,
+        "claude-sonnet-4-6",
+    )
+    app.state.llm_settings.set_assignment(
+        LLMTask.ANKI_CURATION,
+        ProviderName.ANTHROPIC,
+        "claude-sonnet-4-6",
+    )
+    payload = _create_payload(lecture_id, revision_id)
+    del payload["model"]
+
+    created = client.post("/api/anki/jobs", json=payload)
+
+    assert created.status_code == 201
+    assert created.json()["model"] == "claude-sonnet-4-6"
+
+
+def test_create_job_rejects_blank_model(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, _, lecture_id, revision_id, _ = prepared_app
+    payload = _create_payload(lecture_id, revision_id)
+    payload["model"] = "   "
+
+    response = client.post("/api/anki/jobs", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_create_job_rejects_oversized_model(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, _, lecture_id, revision_id, _ = prepared_app
+    payload = _create_payload(lecture_id, revision_id)
+    payload["model"] = "x" * 201
+
+    response = client.post("/api/anki/jobs", json=payload)
+
+    assert response.status_code == 422
+
+
 def test_create_job_requires_complete_three_source_bundle(
     prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
 ) -> None:

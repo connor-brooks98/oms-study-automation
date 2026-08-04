@@ -96,6 +96,7 @@ from oms_hub.anki.v2_contracts import (
 from oms_hub.ingestion.domain import StudyRevision
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.llm.domain import ProviderName
+from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.llm.structured import StructuredTextService
 
 SourceIndexFactory = Callable[[UUID], LectureSourceIndex]
@@ -238,6 +239,7 @@ class CurationServicesRunner:
         embedder: EmbeddingClient,
         focused_retrieval_limit: int,
         global_retrieval_limit: int,
+        llm_settings: LLMSettingsRepository,
         prompts: AnkiPromptCatalogService | None = None,
         prompt_sync: PromptSynchronizer | None = None,
     ) -> None:
@@ -247,6 +249,7 @@ class CurationServicesRunner:
         self.source_indexes = source_indexes
         self.companion = companion
         self.structured = structured
+        self.llm_settings = llm_settings
         self.retrieval = RetrievalService(
             companion,
             semantic,
@@ -256,6 +259,12 @@ class CurationServicesRunner:
         self.embedder = embedder
         self.prompts = prompts or AnkiPromptCatalogService()
         self.prompt_sync = prompt_sync or StaticPromptSynchronizer()
+
+    def _model(self, context: StageContext) -> str:
+        pinned = context.job.model.strip()
+        if pinned:
+            return pinned
+        return self.llm_settings.get(_provider(context)).model
 
     async def run(self, context: StageContext) -> StageProduct:
         handlers = {
@@ -377,7 +386,7 @@ class CurationServicesRunner:
         service = LCLService(
             self.structured,
             provider=_provider(context),
-            model=context.job.model,
+            model=self._model(context),
             prompt_version=context.job.lcl_prompt_version,
             prompt_text=prompt_text,
             prompt_hash=prompt_hash,
@@ -440,7 +449,7 @@ class CurationServicesRunner:
             self.source_indexes(context.job.id),
             self.structured,
             provider=_provider(context),
-            model=context.job.model,
+            model=self._model(context),
             prompt_version=context.job.judgment_rubric_version,
         )
         localizations: dict[str, dict[str, Any]] = {}
@@ -649,7 +658,7 @@ class CurationServicesRunner:
         expansion_service = ParaphraseExpansionService(
             self.structured,
             provider=_provider(context),
-            model=context.job.model,
+            model=self._model(context),
             prompt_text=prompt_text,
             prompt_hash=prompt_hash,
         )
@@ -670,7 +679,7 @@ class CurationServicesRunner:
             self.repository,
             self.companion,
             provider=_provider(context),
-            model=context.job.model,
+            model=self._model(context),
             prompt_version=context.job.judgment_rubric_version,
             prompt_text=coverage_text,
             prompt_hash=coverage_hash,
@@ -842,7 +851,7 @@ class CurationServicesRunner:
             self.repository,
             self.companion,
             provider=_provider(context),
-            model=context.job.model,
+            model=self._model(context),
             prompt_text=prompt_text,
             prompt_hash=prompt_hash,
             batch_size=batch_size,
@@ -908,7 +917,7 @@ class CurationServicesRunner:
             self.repository,
             self.companion,
             provider=_provider(context),
-            model=context.job.model,
+            model=self._model(context),
             prompt_version=context.job.judgment_rubric_version,
             prompt_text=prompt_text,
             prompt_hash=prompt_hash,
@@ -1072,7 +1081,7 @@ class CurationServicesRunner:
         service = GapCardService(
             self.structured,
             provider=_provider(context),
-            model=context.job.model,
+            model=self._model(context),
             prompt_version=context.job.gap_prompt_version,
             prompt_text=prompt_text,
             prompt_hash=prompt_hash,
@@ -1205,7 +1214,7 @@ class CurationServicesRunner:
         service = V2GapGenerationService(
             self.structured,
             provider=_provider(context),
-            model=context.job.model,
+            model=self._model(context),
             prompt_version=context.job.gap_prompt_version,
             prompt_text=prompt_text,
             prompt_hash=prompt_hash,
@@ -1480,7 +1489,7 @@ class CurationServicesRunner:
             self.repository,
             self.companion,
             provider=_provider(context),
-            model=context.job.model,
+            model=self._model(context),
             prompt_version=context.job.judgment_rubric_version,
             prompt_text=prompt_text,
             prompt_hash=prompt_hash,

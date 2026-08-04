@@ -79,6 +79,41 @@ def test_create_job_rejects_invalid_run_scope(
         CreateCurationJobRequest.model_validate(payload)
 
 
+def test_create_job_allows_omitted_model() -> None:
+    payload = _job_payload()
+    del payload["model"]
+
+    request = CreateCurationJobRequest.model_validate(payload)
+
+    assert request.model is None
+
+
+def test_create_job_rejects_blank_model() -> None:
+    payload = _job_payload()
+    payload["model"] = "   "
+
+    with pytest.raises(ValidationError):
+        CreateCurationJobRequest.model_validate(payload)
+
+
+def test_create_job_rejects_oversized_model() -> None:
+    payload = _job_payload()
+    payload["model"] = "x" * 201
+
+    with pytest.raises(ValidationError):
+        CreateCurationJobRequest.model_validate(payload)
+
+
+def test_to_domain_uses_the_resolved_model_override() -> None:
+    payload = _job_payload()
+    payload["model"] = "claude-sonnet-5"
+
+    request = CreateCurationJobRequest.model_validate(payload)
+    domain = request.to_domain(model="resolved-default-model")
+
+    assert domain.model == "resolved-default-model"
+
+
 def test_tag_patch_round_trips_exact_diff() -> None:
     patch = TagPatchContract(
         note_id=42,
