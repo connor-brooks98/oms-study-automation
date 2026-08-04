@@ -8,6 +8,7 @@ DEFAULT_MODELS = {
     ProviderName.OPENAI: "gpt-5.2",
     ProviderName.GEMINI: "gemini-3.6-flash",
     ProviderName.ANTHROPIC: "claude-sonnet-5",
+    ProviderName.OPENROUTER: "openai/gpt-4o-mini",
 }
 
 

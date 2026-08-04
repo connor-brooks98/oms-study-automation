@@ -6,6 +6,7 @@ class ProviderName(StrEnum):
     OPENAI = "openai"
     GEMINI = "gemini"
     ANTHROPIC = "anthropic"
+    OPENROUTER = "openrouter"
 
 
 class DiagnosticSource(StrEnum):

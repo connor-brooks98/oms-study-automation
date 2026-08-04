@@ -11,6 +11,7 @@ from oms_hub.llm.domain import (
 from oms_hub.llm.provider import (
     FIXED_TRANSCRIPT_CONSTRAINTS,
     estimated_cost,
+    get_provider_json,
     invalid_response,
     post_provider_json,
     response_object,
@@ -56,9 +57,34 @@ def _normalize_schema_value(value: object) -> object:
     return normalized
 
 
+def openai_style_model_ids(
+    payload: dict[str, Any],
+    provider: ProviderName,
+    response: httpx.Response,
+) -> tuple[str, ...]:
+    """Extract sorted model ids from an OpenAI-format ``{"data": [...]}`` list.
+
+    Shared by any provider whose model-listing endpoint follows the OpenAI
+    convention of a top-level ``data`` array of ``{"id": ...}`` objects
+    (OpenAI itself, Anthropic, and OpenRouter).
+    """
+    data = payload.get("data")
+    if not isinstance(data, list):
+        raise invalid_response(provider, response)
+    ids = [
+        item["id"]
+        for item in data
+        if isinstance(item, dict)
+        and isinstance(item.get("id"), str)
+        and item["id"]
+    ]
+    return tuple(sorted(ids))
+
+
 class OpenAIProvider:
     name = ProviderName.OPENAI
     url = "https://api.openai.com/v1/responses"
+    models_url = "https://api.openai.com/v1/models"
 
     def __init__(
         self,
@@ -134,6 +160,16 @@ class OpenAIProvider:
         )
         result = self._clean_result(response, model)
         return ProviderConnection(self.name, result.model, result.request_id)
+
+    def list_models(self, api_key: str) -> tuple[str, ...]:
+        response = get_provider_json(
+            self.http,
+            self.models_url,
+            provider=self.name,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        payload = response_object(response, self.name)
+        return openai_style_model_ids(payload, self.name, response)
 
     def _request(
         self,

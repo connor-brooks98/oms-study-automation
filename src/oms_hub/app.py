@@ -51,7 +51,7 @@ from oms_hub.llm.anthropic import AnthropicProvider
 from oms_hub.llm.domain import ProviderName
 from oms_hub.llm.gemini import GeminiProvider
 from oms_hub.llm.openai import OpenAIProvider
-from oms_hub.llm.openrouter import MedicalAccuracyGate
+from oms_hub.llm.openrouter import MedicalAccuracyGate, OpenRouterProvider
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.llm.service import LLMService
 from oms_hub.llm.structured import StructuredTextService
@@ -493,6 +493,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
             ProviderName.GEMINI: GeminiProvider(),
             ProviderName.ANTHROPIC: AnthropicProvider(),
+            ProviderName.OPENROUTER: OpenRouterProvider(),
         },
     )
     app.state.catalog_repository = CatalogRepository(database)

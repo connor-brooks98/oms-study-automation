@@ -509,6 +509,7 @@ def test_anki_bootstrap_uses_saved_active_provider_and_models(
         "anthropic": "claude-sonnet-4-6",
         "gemini": "gemini-3.6-flash",
         "openai": "gpt-5.2",
+        "openrouter": "openai/gpt-4o-mini",
     }
 
 

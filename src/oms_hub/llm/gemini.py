@@ -11,6 +11,7 @@ from oms_hub.llm.domain import (
 from oms_hub.llm.provider import (
     FIXED_TRANSCRIPT_CONSTRAINTS,
     estimated_cost,
+    get_provider_json,
     invalid_response,
     post_provider_json,
     response_object,
@@ -88,6 +89,30 @@ class GeminiProvider:
             output_schema=output_schema,
         )
         return self._generated_text(response, model)
+
+    def list_models(self, api_key: str) -> tuple[str, ...]:
+        response = get_provider_json(
+            self.http,
+            self.base_url,
+            provider=self.name,
+            headers={},
+            params={"key": api_key},
+        )
+        payload = response_object(response, self.name)
+        models = payload.get("models")
+        if not isinstance(models, list):
+            raise invalid_response(self.name, response)
+        ids: list[str] = []
+        for item in models:
+            if not isinstance(item, dict):
+                continue
+            methods = item.get("supportedGenerationMethods")
+            if not isinstance(methods, list) or "generateContent" not in methods:
+                continue
+            model_name = item.get("name")
+            if isinstance(model_name, str) and model_name:
+                ids.append(model_name.removeprefix("models/"))
+        return tuple(sorted(ids))
 
     def _request(
         self,

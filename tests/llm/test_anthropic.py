@@ -2,10 +2,11 @@ import copy
 import json
 
 import httpx
+import pytest
 import respx
 
 from oms_hub.llm.anthropic import AnthropicProvider
-from oms_hub.llm.domain import ProviderName
+from oms_hub.llm.domain import DiagnosticSource, LLMRequestError, ProviderName
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
 
@@ -138,3 +139,54 @@ def test_anthropic_structured_generation_sends_provider_safe_schema_copy():
         "additionalProperties": False,
     }
     assert schema == original
+
+
+@respx.mock
+def test_anthropic_list_models_returns_sorted_ids():
+    route = respx.get("https://api.anthropic.com/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "claude-sonnet-5"},
+                    {"id": "claude-fable-5"},
+                ]
+            },
+        )
+    )
+
+    models = AnthropicProvider().list_models("sentinel-secret")
+
+    assert models == ("claude-fable-5", "claude-sonnet-5")
+    request = route.calls.last.request
+    assert request.headers["x-api-key"] == "sentinel-secret"
+    assert request.headers["anthropic-version"] == "2023-06-01"
+
+
+@respx.mock
+def test_anthropic_list_models_raises_on_unauthorized_without_leaking_key():
+    respx.get("https://api.anthropic.com/v1/models").mock(
+        return_value=httpx.Response(
+            401,
+            json={"error": {"message": "invalid x-api-key sentinel-secret"}},
+        )
+    )
+
+    with pytest.raises(LLMRequestError) as raised:
+        AnthropicProvider().list_models("sentinel-secret")
+
+    assert raised.value.source is DiagnosticSource.AUTHENTICATION
+    assert "sentinel-secret" not in str(raised.value)
+
+
+@respx.mock
+def test_anthropic_list_models_raises_on_network_error_without_leaking_key():
+    respx.get("https://api.anthropic.com/v1/models").mock(
+        side_effect=httpx.ReadTimeout("timed out")
+    )
+
+    with pytest.raises(LLMRequestError) as raised:
+        AnthropicProvider().list_models("sentinel-secret")
+
+    assert raised.value.source is DiagnosticSource.NETWORK
+    assert "sentinel-secret" not in str(raised.value)

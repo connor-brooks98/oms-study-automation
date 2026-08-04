@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.responses import Response
 
+from oms_hub.llm.catalog import FALLBACK_MODELS
 from oms_hub.llm.domain import (
     DiagnosticSource,
     LLMRequestError,
@@ -40,12 +41,9 @@ router = APIRouter(prefix="/settings")
 logger = logging.getLogger(__name__)
 
 _MAX_TRACKER_BYTES = 25 * 1024 * 1024
-_OPENROUTER_MODELS = (
-    "openai/gpt-4o-mini",
-    "google/gemini-2.0-flash-001",
-    "anthropic/claude-3.5-sonnet",
-    "openrouter/free",
-)
+# Moved to oms_hub.llm.catalog.FALLBACK_MODELS; kept as a re-import shim
+# because this module name is referenced elsewhere.
+_OPENROUTER_MODELS = FALLBACK_MODELS[ProviderName.OPENROUTER]
 
 
 class AccuracyGateUpdate(BaseModel):
@@ -92,6 +90,7 @@ def settings_page(request: Request) -> HTMLResponse:
         ProviderName.OPENAI: "OpenAI",
         ProviderName.GEMINI: "Google Gemini",
         ProviderName.ANTHROPIC: "Anthropic Claude",
+        ProviderName.OPENROUTER: "OpenRouter",
     }
     preferences = _llm_settings(request).list()
     return templates.TemplateResponse(

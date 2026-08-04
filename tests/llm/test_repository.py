@@ -3,7 +3,7 @@ from oms_hub.llm.domain import ProviderName
 from oms_hub.llm.repository import LLMSettingsRepository
 
 
-def test_repository_seeds_three_providers_and_activates_openai(tmp_path):
+def test_repository_seeds_four_providers_and_activates_openai(tmp_path):
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()
 
@@ -17,6 +17,7 @@ def test_repository_seeds_three_providers_and_activates_openai(tmp_path):
         ProviderName.OPENAI,
         ProviderName.GEMINI,
         ProviderName.ANTHROPIC,
+        ProviderName.OPENROUTER,
     ]
     assert repository.active().provider is ProviderName.OPENAI
     assert repository.active().model == "gpt-5.2"

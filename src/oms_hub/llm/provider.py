@@ -47,6 +47,8 @@ class LLMProvider(Protocol):
         output_schema: dict[str, object],
     ) -> GeneratedText: ...
 
+    def list_models(self, api_key: str) -> tuple[str, ...]: ...
+
 
 def transcript_input(raw_text: str, prompt: ApprovedPrompt) -> str:
     return (
@@ -69,6 +71,25 @@ def post_provider_json(
 ) -> httpx.Response:
     try:
         response = http.post(url, headers=headers, json=payload)
+    except httpx.RequestError as error:
+        raise LLMRequestError(
+            f"{provider.value.title()} could not be reached",
+            source=DiagnosticSource.NETWORK,
+        ) from error
+    _raise_for_status(response, provider)
+    return response
+
+
+def get_provider_json(
+    http: httpx.Client,
+    url: str,
+    *,
+    provider: ProviderName,
+    headers: dict[str, str],
+    params: dict[str, str] | None = None,
+) -> httpx.Response:
+    try:
+        response = http.get(url, headers=headers, params=params)
     except httpx.RequestError as error:
         raise LLMRequestError(
             f"{provider.value.title()} could not be reached",

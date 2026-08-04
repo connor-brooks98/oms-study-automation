@@ -2,9 +2,10 @@ import copy
 import json
 
 import httpx
+import pytest
 import respx
 
-from oms_hub.llm.domain import ProviderName
+from oms_hub.llm.domain import DiagnosticSource, LLMRequestError, ProviderName
 from oms_hub.llm.openai import OpenAIProvider
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
@@ -190,3 +191,68 @@ def test_openai_structured_generation_sends_provider_safe_schema_copy():
         "additionalProperties": False,
     }
     assert schema == original
+
+
+@respx.mock
+def test_openai_list_models_returns_sorted_ids():
+    route = respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "gpt-4.1"},
+                    {"id": "gpt-5.2"},
+                    {"id": "gpt-5.2-mini"},
+                ]
+            },
+        )
+    )
+
+    models = OpenAIProvider().list_models("sentinel-secret")
+
+    assert models == ("gpt-4.1", "gpt-5.2", "gpt-5.2-mini")
+    assert route.calls.last.request.headers["authorization"] == (
+        "Bearer sentinel-secret"
+    )
+
+
+@respx.mock
+def test_openai_list_models_raises_on_unauthorized_without_leaking_key():
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(
+            401,
+            json={"error": {"message": "invalid api key: sentinel-secret"}},
+        )
+    )
+
+    with pytest.raises(LLMRequestError) as raised:
+        OpenAIProvider().list_models("sentinel-secret")
+
+    assert raised.value.source is DiagnosticSource.AUTHENTICATION
+    assert "sentinel-secret" not in str(raised.value)
+
+
+@respx.mock
+def test_openai_list_models_raises_on_network_error_without_leaking_key():
+    respx.get("https://api.openai.com/v1/models").mock(
+        side_effect=httpx.ReadTimeout("timed out")
+    )
+
+    with pytest.raises(LLMRequestError) as raised:
+        OpenAIProvider().list_models("sentinel-secret")
+
+    assert raised.value.source is DiagnosticSource.NETWORK
+    assert "sentinel-secret" not in str(raised.value)
+
+
+@respx.mock
+def test_openai_list_models_raises_on_malformed_payload():
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": "not-a-list"})
+    )
+
+    with pytest.raises(LLMRequestError) as raised:
+        OpenAIProvider().list_models("sentinel-secret")
+
+    assert raised.value.source is DiagnosticSource.SERVICE
+    assert "sentinel-secret" not in str(raised.value)
