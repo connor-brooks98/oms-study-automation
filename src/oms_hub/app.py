@@ -39,6 +39,12 @@ from oms_hub.anki.tag_policy import TagPolicy
 from oms_hub.anki.worker import AnkiCurationWorker
 from oms_hub.config import Settings, get_settings
 from oms_hub.db import Database
+from oms_hub.document_processing.anydoc_adapter import AnydocProcessor
+from oms_hub.document_processing.pdf_adapter import PdfProcessor
+from oms_hub.document_processing.pptx_locator import PptxLocatorEnricher
+from oms_hub.document_processing.router import DocumentProcessorRouter, ParserMode
+from oms_hub.document_processing.text_adapter import TextProcessor
+from oms_hub.document_processing.web_adapter import WebProcessor
 from oms_hub.files.office import SerialOfficeConverter
 from oms_hub.ingestion.matcher import UploadMatcher
 from oms_hub.ingestion.repository import IngestionRepository
@@ -85,8 +91,11 @@ from oms_hub.study_generation.path_picker import (
     SystemPromptDirectoryPicker,
     SystemPromptPathPicker,
 )
+from oms_hub.study_generation.practice_answers import PracticeAnswerResolver
+from oms_hub.study_generation.practice_extraction import PracticeQuestionExtractor
 from oms_hub.study_generation.prompts import PromptFileService
 from oms_hub.study_generation.quiz_images import StudioQuizImageService
+from oms_hub.study_generation.quiz_import_worker import QuizImportWorker
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.service import GenerationService
 from oms_hub.study_generation.studio_repository import StudioRepository
@@ -576,6 +585,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.studio_repository,
         resolved.data_dir / "studio-quiz-media",
     )
+    # Direct import deliberately parses immutable local snapshots.  The URL
+    # snapshotter is shared with StudioService only for safe web-image assets;
+    # acquisition itself has already completed before a run is queued.
+    app.state.document_processor_router = DocumentProcessorRouter(
+        primary=AnydocProcessor(PptxLocatorEnricher()),
+        fallbacks=(
+            PdfProcessor(),
+            WebProcessor(app.state.studio_service.url_snapshot_service),
+            TextProcessor(),
+        ),
+        mode=ParserMode.ANYDOC,
+    )
+    app.state.quiz_import_worker = QuizImportWorker(
+        app.state.studio_repository,
+        app.state.document_processor_router,
+        PracticeQuestionExtractor(app.state.llm_service),
+        PracticeAnswerResolver(notebook_gateway, app.state.llm_service),
+        notebook_gateway,
+        resolved.data_dir / "studio-import-assets",
+    )
     app.state.studio_worker = StudioWorker(
         app.state.studio_repository,
         notebook_gateway,
@@ -583,6 +612,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.notebook_connection,
         app.state.generation_repository,
         app.state.studio_quiz_image_service,
+        app.state.quiz_import_worker,
     )
     app.state.anki_curation_worker = None
     app.state.anki_embedder = None

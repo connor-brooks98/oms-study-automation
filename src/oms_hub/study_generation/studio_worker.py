@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 from dataclasses import replace
 from datetime import timedelta
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from oms_hub.db import is_sqlite_busy
 from oms_hub.files.office import OfficeConverter
@@ -25,6 +27,9 @@ from oms_hub.study_generation.studio_domain import (
 )
 from oms_hub.study_generation.studio_repository import StudioRepository
 
+if TYPE_CHECKING:
+    from oms_hub.study_generation.quiz_import_worker import QuizImportWorker
+
 
 class NotebookConnection(Protocol):
     def invalidate(self, diagnostic: str) -> object: ...
@@ -39,6 +44,7 @@ class StudioWorker:
         connection: NotebookConnection,
         publisher: GenerationRepository | None = None,
         image_service: StudioQuizImageService | None = None,
+        import_worker: QuizImportWorker | None = None,
     ):
         self.repository = repository
         self.gateway = gateway
@@ -46,6 +52,7 @@ class StudioWorker:
         self.connection = connection
         self.publisher = publisher
         self.image_service = image_service
+        self.import_worker = import_worker
 
     def recover_interrupted_jobs(self) -> int:
         return self.repository.recover_interrupted_jobs()
@@ -58,6 +65,18 @@ class StudioWorker:
         run = self.repository.claim_next_run()
         if run is None:
             return False
+        from oms_hub.study_generation.practice_domain import QuizWorkflowKind
+
+        if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
+            if self.import_worker is None:
+                self.repository.fail_run(
+                    run.id,
+                    DiagnosticSource.STUDY_HUB.value,
+                    "direct-import worker is not configured",
+                )
+            else:
+                self.import_worker.run(run)
+            return True
         try:
             self.repository.set_run_stage(run.id, StudioRunStage.CHAT)
             notebook_id, answer = self.gateway.ask_studio(

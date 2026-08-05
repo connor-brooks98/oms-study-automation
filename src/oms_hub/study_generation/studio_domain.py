@@ -44,6 +44,15 @@ class StudioRunStage(StrEnum):
     IMAGE_REVIEW = "image_review"
     PUBLISH = "publish"
     COMPLETE = "complete"
+    ACQUIRE = "acquire"
+    PARSE = "parse"
+    EXTRACT = "extract"
+    PAIR = "pair"
+    ANSWER_NOTEBOOK = "answer_notebook"
+    ANSWER_FALLBACK = "answer_fallback"
+    NORMALIZE = "normalize"
+    REVIEW = "review"
+    ACCURACY = "accuracy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +131,16 @@ class StudioRunAttempt:
     raw_response: str | None
     error: str | None
     created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class StudioRunArtifact:
+    artifact_key: str
+    signature_sha256: str
+    payload_json: str
+    provider: str | None
+    model: str | None
+    request_id: str | None
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,7 +5,18 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 from oms_hub.db import Database
-from oms_hub.study_generation.studio_domain import StudioRunState, StudioSourceType
+from oms_hub.models import StudioSourceModel
+from oms_hub.study_generation.practice_domain import (
+    ImportSourceRole,
+    ImportSourceSelection,
+    QuizContentKind,
+    StudioSourcePurpose,
+)
+from oms_hub.study_generation.studio_domain import (
+    StudioRunState,
+    StudioSourceState,
+    StudioSourceType,
+)
 from oms_hub.study_generation.studio_repository import StudioRepository
 from oms_hub.study_generation.studio_worker import StudioWorker
 
@@ -43,6 +54,14 @@ class _RaisingGateway:
 
     def attach_studio_source(self, subject, exam_number, source_type, title, **kwargs):
         raise self.error
+
+
+class _ImportWorker:
+    def __init__(self) -> None:
+        self.runs = []
+
+    def run(self, run) -> None:
+        self.runs.append(run)
 
 
 def _sqlite_busy_error() -> OperationalError:
@@ -158,3 +177,41 @@ def test_non_busy_source_attach_failure_is_not_retried(tmp_path: Path) -> None:
 
     source = repository.list_sources()[0]
     assert source.state.value == "failed"
+
+
+def test_direct_import_run_is_delegated_without_changing_notebook_worker_behavior(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    repository = StudioRepository(database)
+    source = repository.create_source(
+        "Neuro",
+        1,
+        StudioSourceType.TEXT,
+        "Questions",
+        purpose=StudioSourcePurpose.LOCAL_IMPORT,
+    )
+    with repository.database.session() as session:
+        stored = session.get(StudioSourceModel, source.id)
+        assert stored is not None
+        stored.state = StudioSourceState.READY.value
+    run = repository.queue_import_run(
+        "Neuro",
+        1,
+        "Import",
+        "Neuro",
+        1,
+        QuizContentKind.PRACTICE_QUESTIONS,
+        (ImportSourceSelection(source.id, ImportSourceRole.QUESTIONS),),
+    )
+    imports = _ImportWorker()
+    worker = StudioWorker(
+        repository,
+        _RaisingGateway(AssertionError("NotebookLM must not be called")),
+        object(),
+        _FakeConnection(),
+        import_worker=imports,
+    )
+
+    assert worker.run_once() is True
+    assert [item.id for item in imports.runs] == [run.id]

@@ -45,6 +45,7 @@ from oms_hub.study_generation.studio_domain import (
     StudioQuizImageRequirement,
     StudioQuizReview,
     StudioRun,
+    StudioRunArtifact,
     StudioRunAttempt,
     StudioRunSource,
     StudioRunStage,
@@ -429,8 +430,7 @@ class StudioRepository:
         if len({source.source_id for source in sources}) != len(sources):
             raise ValueError("selected import sources contain duplicates")
         if not any(
-            source.role
-            in {ImportSourceRole.QUESTIONS, ImportSourceRole.COMBINED}
+            source.role in {ImportSourceRole.QUESTIONS, ImportSourceRole.COMBINED}
             for source in sources
         ):
             raise ValueError("select a Questions or Combined source")
@@ -576,14 +576,107 @@ class StudioRepository:
             stored.model = model
             stored.request_id = request_id
 
+    def run_artifact(self, run_id: str, artifact_key: str) -> StudioRunArtifact | None:
+        """Return one durable direct-import stage artifact, if it exists."""
+        with self.database.session() as session:
+            stored = session.scalar(
+                select(StudioRunArtifactModel).where(
+                    StudioRunArtifactModel.run_id == run_id,
+                    StudioRunArtifactModel.artifact_key == artifact_key,
+                )
+            )
+            if stored is None:
+                return None
+            return StudioRunArtifact(
+                stored.artifact_key,
+                stored.signature_sha256,
+                stored.payload_json,
+                stored.provider,
+                stored.model,
+                stored.request_id,
+            )
+
+    def invalidate_import_artifacts_after(
+        self, run_id: str, artifact_prefixes: Sequence[str]
+    ) -> None:
+        """Discard derived import outputs while retaining immutable source snapshots.
+
+        The caller supplies only downstream stage prefixes.  This deliberately never
+        touches source rows or published quizzes, which are outside an import retry's
+        ownership boundary.
+        """
+        if not artifact_prefixes:
+            return
+        with self.database.session() as session:
+            predicates = [
+                StudioRunArtifactModel.artifact_key.startswith(prefix)
+                for prefix in artifact_prefixes
+            ]
+            session.execute(
+                delete(StudioRunArtifactModel).where(
+                    StudioRunArtifactModel.run_id == run_id,
+                    or_(*predicates),
+                )
+            )
+            session.execute(
+                delete(StudioQuestionReviewModel).where(StudioQuestionReviewModel.run_id == run_id)
+            )
+
+    def save_import_source_binding(
+        self,
+        run_id: str,
+        source_id: str,
+        notebook_id: str,
+        remote_source_id: str,
+    ) -> None:
+        """Persist an attached supporting-source binding after validating its scope."""
+        if not notebook_id.strip() or not remote_source_id.strip():
+            raise ValueError("NotebookLM binding identifiers must not be blank")
+        with self.database.session() as session:
+            binding = session.scalar(
+                select(StudioImportRunSourceModel).where(
+                    StudioImportRunSourceModel.run_id == run_id,
+                    StudioImportRunSourceModel.source_id == source_id,
+                )
+            )
+            run = session.get(StudioRunModel, run_id)
+            source = session.get(StudioSourceModel, source_id)
+            if binding is None or run is None or source is None:
+                raise KeyError((run_id, source_id))
+            if (
+                not binding.attach_to_notebook
+                or binding.source_role
+                not in {
+                    ImportSourceRole.SUPPORTING_REFERENCE.value,
+                    ImportSourceRole.COMBINED.value,
+                }
+                or source.subject_key != run.subject_key
+                or source.exam_number != run.exam_number
+            ):
+                raise ValueError("import source is not eligible for this NotebookLM scope")
+            binding.remote_notebook_id = notebook_id
+            binding.remote_source_id = remote_source_id
+
+    def await_import_review(self, run_id: str, drafts: Sequence[QuestionDraft]) -> StudioRun:
+        """Persist direct-import provenance and stop before any publication path."""
+        self.save_question_reviews(run_id, drafts)
+        with self.database.session() as session:
+            model = session.get(StudioRunModel, run_id)
+            if model is None:
+                raise KeyError(run_id)
+            model.state = StudioRunState.AWAITING_REVIEW.value
+            model.stage = StudioRunStage.REVIEW.value
+            model.error = None
+            model.next_attempt_at = None
+            session.flush()
+            return self._run_domain(session, model)
+
     def save_question_reviews(self, run_id: str, drafts: Sequence[QuestionDraft]) -> None:
         if len({draft.question_id for draft in drafts}) != len(drafts):
             raise ValueError("question drafts contain duplicate question identifiers")
         with self.database.session() as session:
             session.execute(
-                delete(StudioQuestionReviewModel).where(
-                    StudioQuestionReviewModel.run_id == run_id
-                )
+                delete(StudioQuestionReviewModel).where(StudioQuestionReviewModel.run_id == run_id)
             )
             session.add_all(
                 StudioQuestionReviewModel(
@@ -683,7 +776,11 @@ class StudioRepository:
                 )
                 .values(
                     state=StudioRunState.RUNNING.value,
-                    stage=StudioRunStage.NOTEBOOK.value,
+                    stage=(
+                        StudioRunStage.PARSE.value
+                        if model.workflow_kind == QuizWorkflowKind.DIRECT_IMPORT.value
+                        else StudioRunStage.NOTEBOOK.value
+                    ),
                     attempts=StudioRunModel.attempts + 1,
                     error=None,
                     next_attempt_at=None,
@@ -911,9 +1008,7 @@ class StudioRepository:
     def resolved_quiz(self, run_id: str) -> NativeQuiz:
         review = self.quiz_review(run_id)
         if review.unresolved_keys:
-            raise ValueError(
-                "quiz images are still required: " + ", ".join(review.unresolved_keys)
-            )
+            raise ValueError("quiz images are still required: " + ", ".join(review.unresolved_keys))
         return replace(
             review.quiz,
             questions=tuple(
@@ -988,7 +1083,8 @@ class StudioRepository:
             if model is None:
                 raise KeyError(run_id)
             model.state = StudioRunState.RETRYING.value
-            model.stage = StudioRunStage.CHAT.value
+            # The caller sets a concrete stage before doing work; retaining it makes
+            # direct-import retries explainable without changing NotebookLM behavior.
             model.diagnostic_source = diagnostic_source
             model.error = error[:1000]
             model.next_attempt_at = (datetime.now(UTC) + delay).isoformat()
