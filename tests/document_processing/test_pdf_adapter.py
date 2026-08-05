@@ -65,6 +65,44 @@ def test_pdf_processor_retains_page_locators_and_sanitized_raster_images(
     assert parsed.assets[0].path is not None and parsed.assets[0].path.is_file()
 
 
+def test_pdf_processor_keeps_successful_pages_and_marks_failed_page_incomplete(
+    tmp_path: Path, monkeypatch
+) -> None:
+    snapshot = _blank_pdf(tmp_path / "questions.pdf")
+    monkeypatch.setattr(
+        "oms_hub.document_processing.pdf_adapter.inspect_pdf",
+        lambda _: PdfInspection("mixed", 1.0, 3, (), True),
+    )
+    monkeypatch.setattr(
+        "oms_hub.document_processing.pdf_adapter._page_texts",
+        lambda _: ("Question one", RuntimeError("bad content stream"), "Question three"),
+    )
+
+    parsed = PdfProcessor().parse(snapshot, tmp_path / "assets")
+
+    assert tuple(segment.key for segment in parsed.segments) == ("page-1", "page-3")
+    assert parsed.warnings[0].startswith("BLOCKER: PDF parsing incomplete on page 2")
+
+
+def test_pdf_processor_marks_all_non_ocr_text_failures_as_incomplete(
+    tmp_path: Path, monkeypatch
+) -> None:
+    snapshot = _blank_pdf(tmp_path / "questions.pdf")
+    monkeypatch.setattr(
+        "oms_hub.document_processing.pdf_adapter.inspect_pdf",
+        lambda _: PdfInspection("text_based", 1.0, 1, (), True),
+    )
+    monkeypatch.setattr(
+        "oms_hub.document_processing.pdf_adapter._page_texts",
+        lambda _: (RuntimeError("bad content stream"),),
+    )
+
+    parsed = PdfProcessor().parse(snapshot, tmp_path / "assets")
+
+    assert parsed.segments == ()
+    assert parsed.warnings[0].startswith("BLOCKER: PDF parsing incomplete on page 1")
+
+
 class _FitzFixture:
     def open(self, _: Path) -> "_Document":
         return _Document()

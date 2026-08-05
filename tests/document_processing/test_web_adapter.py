@@ -69,6 +69,24 @@ def test_web_processor_keeps_text_when_image_snapshot_fails(tmp_path: Path) -> N
     assert parsed.warnings == ("image '/missing.png' could not be snapshotted: unavailable",)
 
 
+def test_web_processor_downloads_each_resolved_image_url_once(tmp_path: Path) -> None:
+    source = tmp_path / "snapshot.html"
+    source.write_text("<img src='/figure.png'><img src='https://professor.example/figure.png'>")
+    image_path = tmp_path / "assets" / "image.png"
+    image_path.parent.mkdir()
+    image_path.write_bytes(b"image")
+    asset = ParsedAsset(
+        "web-image-1", image_path, "image/png", "a" * 64, DocumentLocator("web image 1")
+    )
+    service = _AssetService(asset)
+
+    parsed = WebProcessor(service).parse(_snapshot(source), tmp_path / "assets")
+
+    assert len(service.calls) == 1
+    assert len(parsed.assets) == 1
+    assert len(parsed.segments) == 2
+
+
 class _AssetService:
     max_bytes = 1024 * 1024
 

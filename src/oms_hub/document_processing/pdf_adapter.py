@@ -37,21 +37,26 @@ class PdfProcessor:
             raise ValueError(f"PDF processor does not support source {snapshot.path.name!r}")
         inspection = inspect_pdf(snapshot.path)
         warnings = [f"OCR required for page {page}" for page in inspection.pages_needing_ocr]
+        segments: list[ParsedSegment] = []
         try:
             page_texts = _page_texts(snapshot.path)
-        except Exception as error:  # pypdf failures must not resemble successful emptiness
+        except Exception as error:  # reader construction cannot look like an empty PDF
             page_texts = ()
-            warnings.append(f"PDF text extraction unavailable: {error}")
-        segments = tuple(
-            ParsedSegment(
-                key=f"page-{page_number}",
-                kind=SegmentKind.PARAGRAPH,
-                text=text,
-                locator=DocumentLocator(f"page {page_number}", page_number=page_number),
-            )
-            for page_number, text in enumerate(page_texts, start=1)
-            if text
-        )
+            warnings.append(f"BLOCKER: PDF parsing incomplete; text reader failed: {error}")
+        for page_number, text in enumerate(page_texts, start=1):
+            if isinstance(text, Exception):
+                warnings.append(
+                    f"BLOCKER: PDF parsing incomplete on page {page_number}: {text}"
+                )
+            elif text:
+                segments.append(
+                    ParsedSegment(
+                        key=f"page-{page_number}",
+                        kind=SegmentKind.PARAGRAPH,
+                        text=text,
+                        locator=DocumentLocator(f"page {page_number}", page_number=page_number),
+                    )
+                )
         if not segments:
             warnings.append("PDF contained no extractable text")
         assets, image_warnings = _extract_images(snapshot.path, asset_root)
@@ -62,16 +67,22 @@ class PdfProcessor:
             source_format="pdf",
             parser_name=self.name,
             parser_version=self.version,
-            segments=segments,
+            segments=tuple(segments),
             assets=assets,
             warnings=tuple(warnings),
         )
 
 
-def _page_texts(path: Path) -> tuple[str, ...]:
+def _page_texts(path: Path) -> tuple[str | Exception, ...]:
     with path.open("rb") as stream:
         reader = PdfReader(stream, strict=True)
-        return tuple((page.extract_text() or "").strip() for page in reader.pages)
+        text: list[str | Exception] = []
+        for page in reader.pages:
+            try:
+                text.append((page.extract_text() or "").strip())
+            except Exception as error:  # retain text from other pages for review
+                text.append(error)
+        return tuple(text)
 
 
 def _extract_images(

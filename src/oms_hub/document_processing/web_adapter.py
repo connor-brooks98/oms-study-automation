@@ -57,6 +57,7 @@ class WebProcessor:
         segments: list[ParsedSegment] = []
         assets: list[ParsedAsset] = []
         asset_keys: set[str] = set()
+        assets_by_resolved_url: dict[str, ParsedAsset] = {}
         warnings: list[str] = []
         remaining_bytes = max(self.snapshot_service.max_bytes - snapshot.path.stat().st_size, 0)
         for node in body.traverse():
@@ -82,12 +83,15 @@ class WebProcessor:
                 if urlparse(resolved_url).scheme not in {"http", "https"}:
                     continue
                 try:
-                    asset = self.snapshot_service.fetch_asset(
-                        snapshot.original_url,
-                        source_url,
-                        asset_root,
-                        max_bytes=remaining_bytes,
-                    )
+                    asset = assets_by_resolved_url.get(resolved_url)
+                    if asset is None:
+                        asset = self.snapshot_service.fetch_asset(
+                            snapshot.original_url,
+                            source_url,
+                            asset_root,
+                            max_bytes=remaining_bytes,
+                        )
+                        assets_by_resolved_url[resolved_url] = asset
                 except (OSError, ValueError) as error:
                     warnings.append(f"image {source_url!r} could not be snapshotted: {error}")
                     continue
