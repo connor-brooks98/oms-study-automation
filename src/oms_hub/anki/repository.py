@@ -383,6 +383,8 @@ class AnkiCurationRepository:
             stored = session.scalar(
                 select(AnkiCurationJobModel)
                 .where(
+                    AnkiCurationJobModel.pipeline_contract_version
+                    == PipelineContractVersion.RETRIEVAL_V4.value,
                     AnkiCurationJobModel.state.in_([state.value for state in _CLAIMABLE_STATES]),
                     or_(
                         AnkiCurationJobModel.available_at.is_(None),
@@ -872,9 +874,7 @@ class AnkiCurationRepository:
                     content_sha256=artifact.content_sha256,
                     metadata_json=_canonical_json(artifact.metadata),
                     pipeline_contract_version=artifact.pipeline_contract_version.value,
-                    model_config_sha256=(
-                        artifact.model_config_sha256 or job.model_config_sha256
-                    ),
+                    model_config_sha256=(artifact.model_config_sha256 or job.model_config_sha256),
                 )
             )
 

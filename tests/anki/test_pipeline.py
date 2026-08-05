@@ -12,6 +12,7 @@ from oms_hub.anki.domain import (
     CreateCurationJob,
     CurationStage,
     CurationState,
+    PipelineContractVersion,
 )
 from oms_hub.anki.pipeline import (
     PIPELINE_STAGES,
@@ -20,6 +21,8 @@ from oms_hub.anki.pipeline import (
     StageArtifactStore,
     StageContext,
     StageProduct,
+    UnsupportedPipelineContract,
+    _stage_input_hash,
     stage_definition,
 )
 from oms_hub.anki.repository import AnkiCurationRepository
@@ -239,12 +242,9 @@ def test_complete_pipeline_commits_one_immutable_artifact_per_stage(
         assert completed.state is CurationState.READY_FOR_REVIEW
         assert runner.calls == [item.stage for item in PIPELINE_STAGES]
         assert len(artifacts) == len(PIPELINE_STAGES)
-        assert len({artifact.artifact_id for artifact in artifacts}) == len(
-            artifacts
-        )
+        assert len({artifact.artifact_id for artifact in artifacts}) == len(artifacts)
         assert all(
-            (tmp_path / "artifacts" / artifact.relative_path).is_file()
-            for artifact in artifacts
+            (tmp_path / "artifacts" / artifact.relative_path).is_file() for artifact in artifacts
         )
         assert all(
             artifact.input_sha256
@@ -371,9 +371,7 @@ def test_production_input_validator_detects_revision_and_semantic_drift(
         generation = UUID("4438eabc-3da1-4d6d-a6af-2302de092f8e")
 
         def load(self, **_: object):
-            return SimpleNamespace(
-                manifest=SimpleNamespace(generation=self.generation)
-            )
+            return SimpleNamespace(manifest=SimpleNamespace(generation=self.generation))
 
     lecture_id = repository._test_lecture_id  # type: ignore[attr-defined]
     job = repository.create_job(
@@ -392,9 +390,7 @@ def test_production_input_validator_detects_revision_and_semantic_drift(
             gap_prompt_version="gap-v1",
             provider="anthropic",
             model="claude-sonnet",
-            source_revision_hashes={
-                11: revision_fingerprint(revision)
-            },
+            source_revision_hashes={11: revision_fingerprint(revision)},
             semantic_generation=str(Semantic.generation),
             companion_generation="companion-1",
             summary_outline_id=9,
@@ -428,3 +424,19 @@ def test_production_input_validator_detects_revision_and_semantic_drift(
     semantic.generation = UUID("a68ee9b9-503a-4688-8514-139f83e82d28")
     with pytest.raises(PinnedInputChanged, match="semantic generation"):
         validator.validate(job.id)
+
+
+def test_contract_version_controls_graph_and_stage_hash(
+    repository: AnkiCurationRepository,
+) -> None:
+    job = _job(repository)
+    assert stage_definition(CurationState.PREFLIGHT) == PIPELINE_STAGES[0]
+    assert PIPELINE_STAGES[0].next_state is CurationState.BUILDING_SOURCE_INDEX
+    card_job = replace(job, pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1)
+    with pytest.raises(UnsupportedPipelineContract, match="upgrade required"):
+        stage_definition(CurationState.PREFLIGHT, card_job.pipeline_contract_version)
+    original = _stage_input_hash(job, CurationStage.PREFLIGHT, ())
+    assert original != _stage_input_hash(
+        replace(job, model_config_sha256="f" * 64), CurationStage.PREFLIGHT, ()
+    )
+    assert original != _stage_input_hash(card_job, CurationStage.PREFLIGHT, ())
