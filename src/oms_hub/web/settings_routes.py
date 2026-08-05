@@ -48,6 +48,11 @@ _OPENROUTER_MODELS = FALLBACK_MODELS[ProviderName.OPENROUTER]
 _MODEL_CACHE_TTL_SECONDS = 3600.0
 _model_cache: dict[ProviderName, tuple[float, tuple[str, ...]]] = {}
 _model_cache_lock = threading.Lock()
+_PROMPT_LABELS = {
+    PromptKind.TRANSCRIPT: "Transcript cleaning prompt",
+    PromptKind.OUTLINE: "Lecture outline prompt",
+    PromptKind.QUIZ: "Lecture quiz prompt",
+}
 
 
 def _cached_models(provider: ProviderName) -> tuple[str, ...] | None:
@@ -147,11 +152,7 @@ def settings_page(request: Request) -> HTMLResponse:
             "prompt_settings": tuple(
                 {
                     "kind": kind.value,
-                    "label": (
-                        "Lecture outline prompt"
-                        if kind is PromptKind.OUTLINE
-                        else "Lecture quiz prompt"
-                    ),
+                    "label": _PROMPT_LABELS[kind],
                     "path": GenerationRepository(
                         request.app.state.database
                     ).prompt_path(kind)

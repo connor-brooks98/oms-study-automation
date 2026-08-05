@@ -77,14 +77,55 @@ def test_prompt_path_can_be_saved_and_tested_without_returning_content(tmp_path)
     ) == str(prompt)
 
 
+def test_transcript_prompt_path_can_be_saved_and_tested_without_content(tmp_path):
+    client, app = prepared_client(tmp_path)
+    prompt = tmp_path / "Transcript Cleaning.md"
+    prompt.write_text("private transcript instructions", encoding="utf-8")
+
+    saved = client.post(
+        "/settings/generation/prompts/transcript",
+        json={"path": str(prompt)},
+    )
+    tested = client.post("/settings/generation/prompts/transcript/test")
+
+    assert saved.status_code == 200
+    assert tested.status_code == 200
+    assert tested.json()["state"] == "valid"
+    assert tested.json()["sha256"]
+    assert "private transcript instructions" not in tested.text
+    assert app.state.generation_repository.prompt_path(
+        PromptKind.TRANSCRIPT
+    ) == str(prompt)
+
+
+def test_transcript_prompt_test_rejects_files_over_64_kib(tmp_path):
+    client, _ = prepared_client(tmp_path)
+    prompt = tmp_path / "Oversized Transcript Cleaning.md"
+    prompt.write_bytes(b"x" * (64 * 1024 + 1))
+    client.post(
+        "/settings/generation/prompts/transcript",
+        json={"path": str(prompt)},
+    )
+
+    tested = client.post("/settings/generation/prompts/transcript/test")
+
+    assert tested.status_code == 200
+    assert tested.json()["state"] == "invalid"
+    assert "size is invalid" in tested.json()["message"]
+
+
 def test_settings_uses_existing_design_for_prompt_paths(tmp_path):
     client, _ = prepared_client(tmp_path)
 
     page = client.get("/settings")
 
-    assert "Notebook prompts" in page.text
-    assert page.text.count("data-prompt-path") == 2
-    assert page.text.count("Select Path") == 2
+    assert "Prompt files" in page.text
+    assert page.text.count("data-prompt-path") == 3
+    assert page.text.count("Select Path") == 3
+    transcript = page.text.index("Transcript cleaning prompt")
+    outline = page.text.index("Lecture outline prompt")
+    quiz = page.text.index("Lecture quiz prompt")
+    assert transcript < outline < quiz
 
 
 class FakePromptPathPicker:
@@ -123,7 +164,7 @@ def test_saved_prompt_path_changes_action_to_save_path(tmp_path):
 
     page = client.get("/settings")
 
-    assert page.text.count("Select Path") == 1
+    assert page.text.count("Select Path") == 2
     assert page.text.count("Save Path") == 1
 
 

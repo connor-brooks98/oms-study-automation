@@ -1,4 +1,5 @@
 import threading
+from pathlib import Path
 from typing import Annotated, cast
 
 from fastapi import APIRouter, HTTPException, Request
@@ -6,6 +7,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
+from oms_hub.routing import expanded_path
 from oms_hub.study_generation.domain import (
     GenerationJob,
     GenerationKind,
@@ -22,6 +24,8 @@ from oms_hub.study_generation.service import (
     GenerationPrerequisiteError,
     GenerationService,
 )
+from oms_hub.transcripts.prompt import PromptError as TranscriptPromptError
+from oms_hub.transcripts.prompt import PromptLoader as TranscriptPromptLoader
 
 router = APIRouter(prefix="/settings/generation")
 anki_prompt_router = APIRouter(prefix="/settings/anki/prompts")
@@ -123,6 +127,32 @@ def save_prompt_path(
 @router.post("/prompts/{kind}/test")
 def test_prompt_path(request: Request, kind: str) -> JSONResponse:
     selected = _kind(kind)
+    if selected is PromptKind.TRANSCRIPT:
+        configured = _repository(request).prompt_path(selected)
+        try:
+            prompt = TranscriptPromptLoader(
+                expanded_path(Path(configured)) if configured else None,
+                None,
+            ).inspect()
+        except TranscriptPromptError as error:
+            return JSONResponse(
+                {
+                    "kind": selected.value,
+                    "state": "invalid",
+                    "message": str(error),
+                },
+                headers={"Cache-Control": "no-store"},
+            )
+        return JSONResponse(
+            {
+                "kind": selected.value,
+                "state": "valid",
+                "path": configured,
+                "sha256": prompt.sha256,
+                "modified_at": None,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
     try:
         prompt = PromptFileService(_repository(request)).inspect(selected)
     except PromptConfigurationError as error:

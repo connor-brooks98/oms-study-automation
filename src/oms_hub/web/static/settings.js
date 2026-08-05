@@ -163,6 +163,12 @@
     String(value || "").trim() ? "save" : "select"
   );
 
+  const promptRoutes = (kind) => ({
+    select: `/settings/generation/prompts/${kind}/select`,
+    save: `/settings/generation/prompts/${kind}`,
+    test: `/settings/generation/prompts/${kind}/test`,
+  });
+
   const catalogMessage = (result) => {
     const count = Number(result?.choice_count || 0);
     const issues = Array.isArray(result?.issues) ? result.issues : [];
@@ -409,6 +415,7 @@
 
     documentRef.querySelectorAll("[data-prompt-card]").forEach((card) => {
       const kind = card.dataset.prompt;
+      const routes = promptRoutes(kind);
       const input = card.querySelector("[data-prompt-path]");
       const message = card.querySelector("[data-prompt-message]");
       const pathButton = card.querySelector("[data-save-prompt]");
@@ -425,7 +432,7 @@
             message.textContent = "Choose the Obsidian prompt on the NUC…";
             const result = await postJson(
               fetchImpl,
-              `/settings/generation/prompts/${kind}/select`,
+              routes.select,
               {},
               token(),
             );
@@ -440,7 +447,7 @@
           }
           await postJson(
             fetchImpl,
-            `/settings/generation/prompts/${kind}`,
+            routes.save,
             { path: input.value },
             token(),
           );
@@ -457,7 +464,7 @@
         try {
           const result = await postJson(
             fetchImpl,
-            `/settings/generation/prompts/${kind}/test`,
+            routes.test,
             {},
             token(),
           );
@@ -602,6 +609,7 @@
     populateModelSelect,
     postJson,
     promptPathAction,
+    promptRoutes,
     renderNotebookStatus,
     resolvedModelValue,
     runWhenReady,

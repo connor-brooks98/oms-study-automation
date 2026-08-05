@@ -165,6 +165,14 @@ test("prompt action changes from select to save after a path is chosen", () => {
   );
 });
 
+test("transcript prompt routes use the shared prompt settings endpoints", () => {
+  assert.deepEqual(settings.promptRoutes("transcript"), {
+    select: "/settings/generation/prompts/transcript/select",
+    save: "/settings/generation/prompts/transcript",
+    test: "/settings/generation/prompts/transcript/test",
+  });
+});
+
 test("catalog status reports valid choices and warnings", () => {
   assert.equal(settings.catalogMessage({
     state: "valid",
