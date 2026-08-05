@@ -5,7 +5,12 @@ from typing import Protocol
 
 from pydantic import BaseModel, ValidationError
 
-from oms_hub.llm.domain import GeneratedText, ProviderName
+from oms_hub.llm.domain import (
+    DEFAULT_GENERATION_OPTIONS,
+    GeneratedText,
+    GenerationOptions,
+    ProviderName,
+)
 
 _JSON_FENCE = re.compile(
     r"^\s*```(?:json)?\s*(?P<body>.*?)\s*```\s*$",
@@ -24,6 +29,8 @@ class StructuredJSONResult[StructuredModel: BaseModel]:
     input_tokens: int
     output_tokens: int
     cost_microusd: int
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 class StructuredOutputError(ValueError):
@@ -48,6 +55,7 @@ class StructuredTextGenerator(Protocol):
         output_schema: dict[str, object],
         provider: ProviderName,
         model: str,
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
     ) -> GeneratedText: ...
 
 
@@ -63,13 +71,19 @@ class StructuredTextService:
         output_model: type[StructuredModel],
         provider: ProviderName,
         model: str,
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
     ) -> StructuredJSONResult[StructuredModel]:
+        arguments: dict[str, object] = {
+            "output_schema": output_model.model_json_schema(),
+            "provider": provider,
+            "model": model,
+        }
+        if options is not DEFAULT_GENERATION_OPTIONS:
+            arguments["options"] = options
         generated = self.generator.generate_text(
             instruction,
             input_text,
-            output_schema=output_model.model_json_schema(),
-            provider=provider,
-            model=model,
+            **arguments,  # type: ignore[arg-type]
         )
         raw_text = sanitize_model_text(generated.text)
         match = _JSON_FENCE.fullmatch(raw_text)
@@ -108,6 +122,8 @@ class StructuredTextService:
             input_tokens=generated.input_tokens,
             output_tokens=generated.output_tokens,
             cost_microusd=generated.cost_microusd,
+            cache_creation_input_tokens=generated.cache_creation_input_tokens,
+            cache_read_input_tokens=generated.cache_read_input_tokens,
         )
 
 

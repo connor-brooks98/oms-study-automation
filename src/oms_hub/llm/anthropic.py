@@ -1,8 +1,11 @@
 import httpx
 
 from oms_hub.llm.domain import (
+    DEFAULT_GENERATION_OPTIONS,
     CleanResult,
     GeneratedText,
+    GenerationOptions,
+    ProviderCapabilities,
     ProviderConnection,
     ProviderName,
 )
@@ -12,7 +15,9 @@ from oms_hub.llm.provider import (
     estimated_cost,
     get_provider_json,
     invalid_response,
+    optional_token_count,
     post_provider_json,
+    require_supported_generation_options,
     response_object,
     safe_request_id,
     token_count,
@@ -76,6 +81,7 @@ def _normalize_schema_value(value: object) -> object:
 
 class AnthropicProvider:
     name = ProviderName.ANTHROPIC
+    capabilities = ProviderCapabilities(prompt_prefix_caching=True, thinking=True)
     url = "https://api.anthropic.com/v1/messages"
     models_url = "https://api.anthropic.com/v1/models"
 
@@ -132,6 +138,7 @@ class AnthropicProvider:
         api_key: str,
         model: str,
         output_schema: dict[str, object],
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
     ) -> GeneratedText:
         response = self._request(
             api_key,
@@ -140,6 +147,7 @@ class AnthropicProvider:
             input_text,
             max_tokens=32768,
             output_schema=output_schema,
+            options=options,
         )
         return self._generated_text(response, model)
 
@@ -165,7 +173,19 @@ class AnthropicProvider:
         *,
         max_tokens: int,
         output_schema: dict[str, object] | None,
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
     ) -> httpx.Response:
+        require_supported_generation_options(self.name, self.capabilities, options)
+        message_content: str | list[dict[str, object]] = content
+        if options.cacheable_source_prefix is not None:
+            message_content = [
+                {
+                    "type": "text",
+                    "text": options.cacheable_source_prefix,
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {"type": "text", "text": content},
+            ]
         payload: dict[str, object] = {
             "model": model,
             "max_tokens": max_tokens,
@@ -173,10 +193,15 @@ class AnthropicProvider:
             "messages": [
                 {
                     "role": "user",
-                    "content": content,
+                    "content": message_content,
                 }
             ],
         }
+        if options.thinking.value == "enabled":
+            payload["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": options.thinking_budget_tokens,
+            }
         if output_schema is not None:
             payload["output_config"] = {
                 "format": {
@@ -241,6 +266,12 @@ class AnthropicProvider:
             self.name,
             response,
         )
+        cache_creation_input_tokens = optional_token_count(
+            usage.get("cache_creation_input_tokens"), self.name, response
+        )
+        cache_read_input_tokens = optional_token_count(
+            usage.get("cache_read_input_tokens"), self.name, response
+        )
         returned_model = payload.get("model", requested_model)
         if not isinstance(returned_model, str) or not returned_model:
             raise invalid_response(self.name, response)
@@ -261,4 +292,6 @@ class AnthropicProvider:
                 self.input_usd_per_million,
                 self.output_usd_per_million,
             ),
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
         )

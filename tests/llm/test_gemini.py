@@ -1,8 +1,16 @@
+import json
+
 import httpx
 import pytest
 import respx
 
-from oms_hub.llm.domain import DiagnosticSource, LLMRequestError, ProviderName
+from oms_hub.llm.domain import (
+    DiagnosticSource,
+    GenerationOptions,
+    LLMRequestError,
+    ProviderName,
+    ThinkingMode,
+)
 from oms_hub.llm.gemini import GeminiProvider
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
@@ -97,6 +105,60 @@ def test_gemini_structured_generation_sends_response_format():
     assert '"responseFormat"' in payload
     assert '"application/json"' in payload
     assert result.text == '{"answer":"iron"}'
+
+
+@respx.mock
+def test_gemini_generation_preserves_prefix_order_without_cache_telemetry() -> None:
+    route = respx.post(
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-3.6-flash:generateContent"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "modelVersion": "gemini-3.6-flash",
+                "candidates": [{"content": {"parts": [{"text": '{"ok":true}'}]}}],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 4,
+                    "cachedContentTokenCount": 9,
+                },
+            },
+        )
+    )
+
+    result = GeminiProvider().generate_text(
+        "Return JSON.",
+        "Question",
+        api_key="secret",
+        model="gemini-3.6-flash",
+        output_schema={"type": "object"},
+        options=GenerationOptions(cacheable_source_prefix="SUM: source"),
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    assert GeminiProvider.capabilities.prompt_prefix_caching is False
+    assert GeminiProvider.capabilities.thinking is False
+    assert payload["contents"][0]["parts"] == [
+        {"text": "SUM: source"},
+        {"text": "Question"},
+    ]
+    assert result.cache_creation_input_tokens == 0
+    assert result.cache_read_input_tokens == 0
+
+
+def test_gemini_rejects_unsupported_thinking() -> None:
+    with pytest.raises(LLMRequestError) as raised:
+        GeminiProvider().generate_text(
+            "Return JSON.",
+            "Question",
+            api_key="secret",
+            model="gemini-3.6-flash",
+            output_schema={"type": "object"},
+            options=GenerationOptions(thinking=ThinkingMode.ENABLED),
+        )
+
+    assert raised.value.source is DiagnosticSource.CONTRACT
 
 
 @respx.mock

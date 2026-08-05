@@ -1,11 +1,14 @@
 from collections.abc import Mapping
 
 from oms_hub.llm.domain import (
+    DEFAULT_GENERATION_OPTIONS,
     CleanResult,
     DiagnosticSource,
     GeneratedText,
+    GenerationOptions,
     LLMRequestError,
     LLMTask,
+    ProviderCapabilities,
     ProviderConnection,
     ProviderName,
 )
@@ -76,15 +79,25 @@ class LLMService:
         output_schema: dict[str, object],
         provider: ProviderName,
         model: str,
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
     ) -> GeneratedText:
         api_key = self._credential(provider)
+        arguments: dict[str, object] = {
+            "api_key": api_key,
+            "model": model,
+            "output_schema": output_schema,
+        }
+        if options is not DEFAULT_GENERATION_OPTIONS:
+            arguments["options"] = options
         return self.providers[provider].generate_text(
             instruction,
             input_text,
-            api_key=api_key,
-            model=model,
-            output_schema=output_schema,
+            **arguments,  # type: ignore[arg-type]
         )
+
+    def capabilities_for(self, provider: ProviderName) -> ProviderCapabilities:
+        """Expose adapter guarantees without making a live provider request."""
+        return self.providers[provider].capabilities
 
     def credential_configured(self, provider: ProviderName) -> bool:
         try:

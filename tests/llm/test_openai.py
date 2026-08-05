@@ -5,7 +5,13 @@ import httpx
 import pytest
 import respx
 
-from oms_hub.llm.domain import DiagnosticSource, LLMRequestError, ProviderName
+from oms_hub.llm.domain import (
+    DiagnosticSource,
+    GenerationOptions,
+    LLMRequestError,
+    ProviderName,
+    ThinkingMode,
+)
 from oms_hub.llm.openai import OpenAIProvider
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
@@ -123,6 +129,61 @@ def test_openai_structured_generation_sends_json_schema():
     assert '"json_schema"' in payload
     assert '"structured_output"' in payload
     assert result.text == '{"answer":"iron"}'
+
+
+@respx.mock
+def test_openai_generation_preserves_prefix_order_without_claiming_cache_hits() -> None:
+    route = respx.post("https://api.openai.com/v1/responses").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "resp-cache",
+                "status": "completed",
+                "model": "gpt-5.2",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": '{"ok":true}'}],
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 4,
+                    "input_tokens_details": {"cached_tokens": 9},
+                },
+            },
+        )
+    )
+
+    result = OpenAIProvider().generate_text(
+        "Return JSON.",
+        "Question",
+        api_key="secret",
+        model="gpt-5.2",
+        output_schema={"type": "object"},
+        options=GenerationOptions(cacheable_source_prefix="SUM: source"),
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    assert OpenAIProvider.capabilities.prompt_prefix_caching is False
+    assert OpenAIProvider.capabilities.thinking is False
+    assert payload["input"] == "SUM: source\n\nQuestion"
+    assert result.cache_creation_input_tokens == 0
+    assert result.cache_read_input_tokens == 0
+
+
+def test_openai_rejects_unsupported_thinking() -> None:
+    with pytest.raises(LLMRequestError) as raised:
+        OpenAIProvider().generate_text(
+            "Return JSON.",
+            "Question",
+            api_key="secret",
+            model="gpt-5.2",
+            output_schema={"type": "object"},
+            options=GenerationOptions(thinking=ThinkingMode.ENABLED),
+        )
+
+    assert raised.value.source is DiagnosticSource.CONTRACT
 
 
 @respx.mock

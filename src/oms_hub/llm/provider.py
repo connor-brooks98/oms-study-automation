@@ -3,12 +3,16 @@ from typing import Any, Protocol
 import httpx
 
 from oms_hub.llm.domain import (
+    DEFAULT_GENERATION_OPTIONS,
     CleanResult,
     DiagnosticSource,
     GeneratedText,
+    GenerationOptions,
     LLMRequestError,
+    ProviderCapabilities,
     ProviderConnection,
     ProviderName,
+    ThinkingMode,
 )
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
@@ -21,6 +25,7 @@ Do not invent content. Return only the cleaned transcript as plain text."""
 
 class LLMProvider(Protocol):
     name: ProviderName
+    capabilities: ProviderCapabilities
 
     def clean(
         self,
@@ -45,6 +50,7 @@ class LLMProvider(Protocol):
         api_key: str,
         model: str,
         output_schema: dict[str, object],
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
     ) -> GeneratedText: ...
 
     def list_models(self, api_key: str) -> tuple[str, ...]: ...
@@ -59,6 +65,38 @@ def transcript_input(raw_text: str, prompt: ApprovedPrompt) -> str:
         + raw_text
         + "\n</raw_transcript>"
     )
+
+
+def prompt_with_cacheable_prefix(
+    input_text: str,
+    options: GenerationOptions,
+) -> str:
+    """Preserve source-before-prompt ordering for non-caching transports."""
+    prefix = options.cacheable_source_prefix
+    if prefix is None:
+        return input_text
+    return f"{prefix}\n\n{input_text}"
+
+
+def require_supported_generation_options(
+    provider: ProviderName,
+    capabilities: ProviderCapabilities,
+    options: GenerationOptions,
+) -> None:
+    if options.thinking is ThinkingMode.ENABLED and not capabilities.thinking:
+        raise LLMRequestError(
+            f"{provider.value.title()} does not support thinking mode",
+            source=DiagnosticSource.CONTRACT,
+        )
+
+
+def optional_token_count(
+    value: object,
+    provider: ProviderName,
+    response: httpx.Response,
+) -> int:
+    """Normalize absent provider cache telemetry to zero without inventing hits."""
+    return 0 if value is None else token_count(value, provider, response)
 
 
 def post_provider_json(

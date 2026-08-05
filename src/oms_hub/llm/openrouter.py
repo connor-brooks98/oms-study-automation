@@ -8,10 +8,13 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from oms_hub.llm.domain import (
+    DEFAULT_GENERATION_OPTIONS,
     CleanResult,
     GeneratedText,
+    GenerationOptions,
     LLMRequestError,
     LLMTask,
+    ProviderCapabilities,
     ProviderConnection,
     ProviderName,
 )
@@ -23,6 +26,8 @@ from oms_hub.llm.provider import (
     get_provider_json,
     invalid_response,
     post_provider_json,
+    prompt_with_cacheable_prefix,
+    require_supported_generation_options,
     response_object,
     safe_request_id,
     token_count,
@@ -44,6 +49,7 @@ class OpenRouterProvider:
     """OpenRouter adapter mirroring the OpenAI-format request/response shape."""
 
     name = ProviderName.OPENROUTER
+    capabilities = ProviderCapabilities()
     base_url = OPENROUTER_BASE_URL
     chat_url = f"{OPENROUTER_BASE_URL}/chat/completions"
     models_url = f"{OPENROUTER_BASE_URL}/models"
@@ -100,6 +106,7 @@ class OpenRouterProvider:
         api_key: str,
         model: str,
         output_schema: dict[str, object],
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
     ) -> GeneratedText:
         response = self._request(
             api_key,
@@ -107,6 +114,7 @@ class OpenRouterProvider:
             instruction,
             input_text,
             output_schema=output_schema,
+            options=options,
         )
         return self._generated_text(response, model)
 
@@ -129,12 +137,17 @@ class OpenRouterProvider:
         *,
         output_schema: dict[str, object] | None,
         max_tokens: int | None = None,
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
     ) -> httpx.Response:
+        require_supported_generation_options(self.name, self.capabilities, options)
         payload: dict[str, Any] = {
             "model": model,
             "messages": [
                 {"role": "system", "content": instruction},
-                {"role": "user", "content": content},
+                {
+                    "role": "user",
+                    "content": prompt_with_cacheable_prefix(content, options),
+                },
             ],
         }
         if max_tokens is not None:

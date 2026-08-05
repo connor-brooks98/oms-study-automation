@@ -5,7 +5,13 @@ import httpx
 import pytest
 import respx
 
-from oms_hub.llm.domain import DiagnosticSource, LLMRequestError, ProviderName
+from oms_hub.llm.domain import (
+    DiagnosticSource,
+    GenerationOptions,
+    LLMRequestError,
+    ProviderName,
+    ThinkingMode,
+)
 from oms_hub.llm.openrouter import OpenRouterProvider
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
@@ -106,6 +112,54 @@ def test_openrouter_structured_generation_sends_json_schema():
     assert '"json_schema"' in payload
     assert '"structured_output"' in payload
     assert result.text == '{"answer":"iron"}'
+
+
+@respx.mock
+def test_openrouter_generation_preserves_prefix_order_without_cache_telemetry() -> None:
+    route = respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "gen-cache",
+                "model": "openai/gpt-4o-mini",
+                "choices": [{"message": {"content": '{"ok":true}'}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+            },
+        )
+    )
+
+    result = OpenRouterProvider().generate_text(
+        "Return JSON.",
+        "Question",
+        api_key="secret",
+        model="openai/gpt-4o-mini",
+        output_schema={"type": "object"},
+        options=GenerationOptions(cacheable_source_prefix="SUM: source"),
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    assert OpenRouterProvider.capabilities.prompt_prefix_caching is False
+    assert OpenRouterProvider.capabilities.thinking is False
+    assert payload["messages"] == [
+        {"role": "system", "content": "Return JSON."},
+        {"role": "user", "content": "SUM: source\n\nQuestion"},
+    ]
+    assert result.cache_creation_input_tokens == 0
+    assert result.cache_read_input_tokens == 0
+
+
+def test_openrouter_rejects_unsupported_thinking() -> None:
+    with pytest.raises(LLMRequestError) as raised:
+        OpenRouterProvider().generate_text(
+            "Return JSON.",
+            "Question",
+            api_key="secret",
+            model="openai/gpt-4o-mini",
+            output_schema={"type": "object"},
+            options=GenerationOptions(thinking=ThinkingMode.ENABLED),
+        )
+
+    assert raised.value.source is DiagnosticSource.CONTRACT
 
 
 @respx.mock

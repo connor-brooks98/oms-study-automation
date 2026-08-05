@@ -6,7 +6,13 @@ import pytest
 import respx
 
 from oms_hub.llm.anthropic import AnthropicProvider
-from oms_hub.llm.domain import DiagnosticSource, LLMRequestError, ProviderName
+from oms_hub.llm.domain import (
+    DiagnosticSource,
+    GenerationOptions,
+    LLMRequestError,
+    ProviderName,
+    ThinkingMode,
+)
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
 
@@ -83,6 +89,59 @@ def test_anthropic_structured_generation_sends_output_config():
     assert '"output_config"' in payload
     assert '"json_schema"' in payload
     assert result.text == '{"answer":"iron"}'
+
+
+@respx.mock
+def test_anthropic_generation_caches_prefix_and_enables_thinking() -> None:
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "message-cache",
+                "model": "claude-sonnet-5",
+                "content": [{"type": "text", "text": '{"answer":"iron"}'}],
+                "usage": {
+                    "input_tokens": 16,
+                    "output_tokens": 4,
+                    "cache_creation_input_tokens": 12,
+                    "cache_read_input_tokens": 8,
+                },
+            },
+        )
+    )
+
+    result = AnthropicProvider().generate_text(
+        "Return JSON.",
+        "Question",
+        api_key="secret",
+        model="claude-sonnet-5",
+        output_schema={"type": "object"},
+        options=GenerationOptions(
+            cacheable_source_prefix="SUM: iron is essential.",
+            thinking=ThinkingMode.ENABLED,
+            thinking_budget_tokens=2048,
+        ),
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    assert AnthropicProvider.capabilities.prompt_prefix_caching is True
+    assert AnthropicProvider.capabilities.thinking is True
+    assert payload["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "SUM: iron is essential.",
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {"type": "text", "text": "Question"},
+            ],
+        }
+    ]
+    assert payload["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+    assert result.cache_creation_input_tokens == 12
+    assert result.cache_read_input_tokens == 8
 
 
 @respx.mock

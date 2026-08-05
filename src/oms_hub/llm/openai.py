@@ -3,8 +3,11 @@ from typing import Any
 import httpx
 
 from oms_hub.llm.domain import (
+    DEFAULT_GENERATION_OPTIONS,
     CleanResult,
     GeneratedText,
+    GenerationOptions,
+    ProviderCapabilities,
     ProviderConnection,
     ProviderName,
 )
@@ -14,6 +17,8 @@ from oms_hub.llm.provider import (
     get_provider_json,
     invalid_response,
     post_provider_json,
+    prompt_with_cacheable_prefix,
+    require_supported_generation_options,
     response_object,
     token_count,
     transcript_input,
@@ -83,6 +88,7 @@ def openai_style_model_ids(
 
 class OpenAIProvider:
     name = ProviderName.OPENAI
+    capabilities = ProviderCapabilities()
     url = "https://api.openai.com/v1/responses"
     models_url = "https://api.openai.com/v1/models"
 
@@ -124,14 +130,16 @@ class OpenAIProvider:
         api_key: str,
         model: str,
         output_schema: dict[str, object],
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
     ) -> GeneratedText:
+        require_supported_generation_options(self.name, self.capabilities, options)
         response = self._request(
             api_key,
             {
                 "model": model,
                 "store": False,
                 "instructions": instruction,
-                "input": input_text,
+                "input": prompt_with_cacheable_prefix(input_text, options),
                 "text": {
                     "format": {
                         "type": "json_schema",

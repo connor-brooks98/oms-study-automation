@@ -1,11 +1,15 @@
 from collections.abc import Sequence
+from dataclasses import FrozenInstanceError
 
 import pytest
 from pydantic import BaseModel
 
 from oms_hub.llm.domain import (
+    DEFAULT_GENERATION_OPTIONS,
     GeneratedText,
+    GenerationOptions,
     ProviderName,
+    ThinkingMode,
 )
 from oms_hub.llm.structured import (
     StructuredOutputError,
@@ -31,6 +35,7 @@ class FakeTextGenerator:
         output_schema: dict[str, object],
         provider: ProviderName,
         model: str,
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
     ) -> GeneratedText:
         self.calls.append(
             {
@@ -39,6 +44,7 @@ class FakeTextGenerator:
                 "output_schema": output_schema,
                 "provider": provider,
                 "model": model,
+                "options": options,
             }
         )
         return self.responses.pop(0)
@@ -54,6 +60,23 @@ def _generated(text: str) -> GeneratedText:
         output_tokens=7,
         cost_microusd=3,
     )
+
+
+def test_generation_options_default_to_plain_non_thinking_calls_and_are_frozen() -> None:
+    options = GenerationOptions()
+
+    assert options.cacheable_source_prefix is None
+    assert options.thinking is ThinkingMode.DISABLED
+    assert options.thinking_budget_tokens == 1024
+    with pytest.raises(FrozenInstanceError):
+        options.cacheable_source_prefix = "cannot mutate"  # type: ignore[misc]
+
+
+def test_generation_options_reject_invalid_thinking_controls() -> None:
+    with pytest.raises(TypeError, match="thinking"):
+        GenerationOptions(thinking="enabled")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="at least 1024"):
+        GenerationOptions(thinking_budget_tokens=1023)
 
 
 def test_generate_json_returns_validated_value_and_metadata() -> None:
@@ -74,6 +97,40 @@ def test_generate_json_returns_validated_value_and_metadata() -> None:
     assert result.raw_text.startswith("{")
     assert result.provider is ProviderName.OPENAI
     assert generator.calls[0]["output_schema"]["type"] == "object"  # type: ignore[index]
+
+
+def test_generate_json_preserves_immutable_options_on_each_call() -> None:
+    options = GenerationOptions(
+        cacheable_source_prefix="SUM: source",
+        thinking=ThinkingMode.ENABLED,
+    )
+    generator = FakeTextGenerator(
+        [
+            _generated('{"value": 7, "labels": ["first"]}'),
+            _generated('{"value": 8, "labels": ["retry"]}'),
+        ]
+    )
+    service = StructuredTextService(generator)
+
+    service.generate_json(
+        "Return the answer.",
+        "Question",
+        output_model=Answer,
+        provider=ProviderName.OPENAI,
+        model="gpt-5.2",
+        options=options,
+    )
+    service.generate_json(
+        "Return the answer.",
+        "Question",
+        output_model=Answer,
+        provider=ProviderName.OPENAI,
+        model="gpt-5.2",
+        options=options,
+    )
+
+    assert generator.calls[0]["options"] is options
+    assert generator.calls[1]["options"] is options
 
 
 @pytest.mark.parametrize(

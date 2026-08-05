@@ -3,8 +3,11 @@ from urllib.parse import quote
 import httpx
 
 from oms_hub.llm.domain import (
+    DEFAULT_GENERATION_OPTIONS,
     CleanResult,
     GeneratedText,
+    GenerationOptions,
+    ProviderCapabilities,
     ProviderConnection,
     ProviderName,
 )
@@ -14,6 +17,7 @@ from oms_hub.llm.provider import (
     get_provider_json,
     invalid_response,
     post_provider_json,
+    require_supported_generation_options,
     response_object,
     safe_request_id,
     token_count,
@@ -24,6 +28,7 @@ from oms_hub.transcripts.prompt import ApprovedPrompt
 
 class GeminiProvider:
     name = ProviderName.GEMINI
+    capabilities = ProviderCapabilities()
     base_url = "https://generativelanguage.googleapis.com/v1beta/models"
 
     def __init__(
@@ -79,6 +84,7 @@ class GeminiProvider:
         api_key: str,
         model: str,
         output_schema: dict[str, object],
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
     ) -> GeneratedText:
         response = self._request(
             api_key,
@@ -87,6 +93,7 @@ class GeminiProvider:
             input_text,
             max_output_tokens=32768,
             output_schema=output_schema,
+            options=options,
         )
         return self._generated_text(response, model)
 
@@ -123,7 +130,12 @@ class GeminiProvider:
         *,
         max_output_tokens: int | None,
         output_schema: dict[str, object] | None,
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
     ) -> httpx.Response:
+        require_supported_generation_options(self.name, self.capabilities, options)
+        parts = [{"text": content}]
+        if options.cacheable_source_prefix is not None:
+            parts.insert(0, {"text": options.cacheable_source_prefix})
         payload: dict[str, object] = {
             "systemInstruction": {
                 "parts": [{"text": instruction}],
@@ -131,7 +143,7 @@ class GeminiProvider:
             "contents": [
                 {
                     "role": "user",
-                    "parts": [{"text": content}],
+                    "parts": parts,
                 }
             ],
         }

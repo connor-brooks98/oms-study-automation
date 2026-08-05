@@ -4,11 +4,14 @@ import pytest
 
 from oms_hub.db import Database
 from oms_hub.llm.domain import (
+    DEFAULT_GENERATION_OPTIONS,
     CleanResult,
     DiagnosticSource,
     GeneratedText,
+    GenerationOptions,
     LLMRequestError,
     LLMTask,
+    ProviderCapabilities,
     ProviderConnection,
     ProviderName,
 )
@@ -36,6 +39,8 @@ class StubProvider:
     name: ProviderName
     settings: LLMSettingsRepository | None = None
     switch_to: ProviderName | None = None
+    capabilities: ProviderCapabilities = ProviderCapabilities()
+    received_options: GenerationOptions | None = None
 
     def clean(self, raw_text, prompt, *, api_key, model):
         if self.settings is not None and self.switch_to is not None:
@@ -65,7 +70,9 @@ class StubProvider:
         api_key,
         model,
         output_schema,
+        options=DEFAULT_GENERATION_OPTIONS,
     ):
+        self.received_options = options
         return GeneratedText(
             text='{"ok":true}',
             provider=self.name,
@@ -168,6 +175,28 @@ def test_generate_text_uses_explicit_provider_and_model(tmp_path):
     assert result.provider is ProviderName.GEMINI
     assert result.model == "gemini-explicit"
     assert result.text == '{"ok":true}'
+
+
+def test_generate_text_propagates_explicit_immutable_options(tmp_path):
+    _, service = prepared_service(tmp_path)
+    options = GenerationOptions(cacheable_source_prefix="SUM: source")
+
+    service.generate_text(
+        "Return JSON.",
+        "Input",
+        output_schema={"type": "object"},
+        provider=ProviderName.GEMINI,
+        model="gemini-explicit",
+        options=options,
+    )
+
+    assert service.providers[ProviderName.GEMINI].received_options is options  # type: ignore[attr-defined]
+
+
+def test_capabilities_are_available_without_a_provider_request(tmp_path):
+    _, service = prepared_service(tmp_path)
+
+    assert service.capabilities_for(ProviderName.OPENAI) == ProviderCapabilities()
 
 
 def test_for_task_returns_adapter_model_and_api_key(tmp_path):
