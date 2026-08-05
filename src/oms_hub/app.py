@@ -72,6 +72,7 @@ from oms_hub.security.rate_limit import PublicQuizRateLimiter
 from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.slides.pipeline import SlidePipeline
 from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
+from oms_hub.study_generation.domain import PromptKind
 from oms_hub.study_generation.native_quiz import NativeQuizPublisher
 from oms_hub.study_generation.notebook import StoredNotebookLMGateway
 from oms_hub.study_generation.notebook_auth import NotebookCLIAuth
@@ -538,10 +539,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved,
         SerialOfficeConverter(resolved.office_timeout_seconds),
     )
+    saved_transcript_prompt = app.state.generation_repository.prompt_path(
+        PromptKind.TRANSCRIPT
+    )
+    transcript_prompt_path = (
+        Path(saved_transcript_prompt)
+        if saved_transcript_prompt
+        else resolved.transcript_prompt_path
+    )
     app.state.transcript_prompt = V2PromptLoader(
         (
-            expanded_path(resolved.transcript_prompt_path)
-            if resolved.transcript_prompt_path is not None
+            expanded_path(transcript_prompt_path)
+            if transcript_prompt_path is not None
             else None
         ),
         resolved.transcript_prompt_sha256,

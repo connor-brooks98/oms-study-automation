@@ -60,6 +60,7 @@ class NotebookSourceBinding:
 
 
 class PromptKind(StrEnum):
+    TRANSCRIPT = "transcript"
     OUTLINE = "outline"
     QUIZ = "quiz"
 
