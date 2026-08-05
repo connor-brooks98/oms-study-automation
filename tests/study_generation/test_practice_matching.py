@@ -99,6 +99,23 @@ def test_different_numbered_sets_do_not_fall_back_to_source_order() -> None:
     )
 
 
+def test_different_nonnumeric_identifiers_do_not_fall_back_to_source_order() -> None:
+    drafts = pair_supplied_answers((question("A", "First"),), (answer("B", 1),))
+
+    assert drafts[0].correct_index is None
+    assert any("unmatched supplied answer" in item for item in drafts[0].blocking_diagnostics)
+
+
+def test_duplicate_nonnumeric_identifiers_disable_source_order_pairing() -> None:
+    drafts = pair_supplied_answers(
+        (question("A", "First"), question("a.", "Second")),
+        (answer(None, 0), answer(None, 1)),
+    )
+
+    assert all(draft.correct_index is None for draft in drafts)
+    assert any("duplicate question identifier" in draft.blocking_diagnostics for draft in drafts)
+
+
 def test_out_of_bounds_answer_is_a_blocker_instead_of_a_guessed_answer() -> None:
     draft = pair_supplied_answers((question("1", "First"),), (answer("1", 2),))[0]
 

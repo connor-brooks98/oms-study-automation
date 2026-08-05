@@ -16,14 +16,15 @@ _NUMBERED_IDENTIFIER = re.compile(r"^(?:question|q)?\s*0*(\d+)\s*[.:)]?$", re.IG
 
 
 def normalize_identifier(value: str | None) -> str | None:
-    """Return a stable numeric label for ordinary question-number variants."""
+    """Return a stable label for numeric and nonnumeric source identifiers."""
 
     if value is None:
         return None
-    match = _NUMBERED_IDENTIFIER.fullmatch(value.strip())
-    if match is None:
+    normalized = " ".join(value.casefold().split()).rstrip(".:)")
+    if not normalized:
         return None
-    return str(int(match.group(1)))
+    match = _NUMBERED_IDENTIFIER.fullmatch(normalized)
+    return str(int(match.group(1))) if match is not None else normalized
 
 
 def pair_supplied_answers(
