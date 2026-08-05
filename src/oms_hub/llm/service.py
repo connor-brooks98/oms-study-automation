@@ -95,6 +95,23 @@ class LLMService:
             **arguments,  # type: ignore[arg-type]
         )
 
+    def generate_text_for_task(
+        self,
+        task: LLMTask,
+        instruction: str,
+        input_text: str,
+        *,
+        output_schema: dict[str, object],
+    ) -> GeneratedText:
+        assignment = self.settings.assignment(task)
+        return self.generate_text(
+            instruction,
+            input_text,
+            output_schema=output_schema,
+            provider=assignment.provider,
+            model=assignment.model,
+        )
+
     def capabilities_for(
         self,
         provider: ProviderName,

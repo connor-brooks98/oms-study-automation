@@ -113,7 +113,9 @@
       {% set task_labels = {
         "transcripts": "Transcript cleaning",
         "anki_curation": "Anki curation",
-        "accuracy_review": "Accuracy review"
+        "accuracy_review": "Accuracy review",
+        "quiz_extraction": "Quiz question extraction",
+        "quiz_answer_generation": "Missing-answer generation"
       } %}
       {% for row in assignments %}
       <article class="card provider-card" data-assignment-row data-task="{{ row.task }}">

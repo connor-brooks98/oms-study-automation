@@ -373,6 +373,14 @@ def _seed_llm_task_assignments(database: "Database") -> None:
                 ProviderName.OPENROUTER.value,
                 accuracy_model,
             ),
+            LLMTask.QUIZ_EXTRACTION.value: (
+                ProviderName.OPENAI.value,
+                DEFAULT_MODELS[ProviderName.OPENAI],
+            ),
+            LLMTask.QUIZ_ANSWER_GENERATION.value: (
+                ProviderName.OPENAI.value,
+                DEFAULT_MODELS[ProviderName.OPENAI],
+            ),
         }
         for task_value in missing:
             provider_value, model_value = seeds[task_value]

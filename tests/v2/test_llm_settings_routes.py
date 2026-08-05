@@ -263,6 +263,31 @@ def test_task_assignment_put_reports_unconfigured_credential(tmp_path):
     assert response.json()["key_configured"] is False
 
 
+def test_quiz_task_assignments_are_updated_independently_without_credentials(tmp_path):
+    client, app, secrets = prepared_client(tmp_path)
+
+    extraction = client.put(
+        "/api/settings/task-assignments/quiz_extraction",
+        json={"provider": "openrouter", "model": "deepseek/model"},
+    )
+    answer = client.put(
+        "/api/settings/task-assignments/quiz_answer_generation",
+        json={"provider": "openai", "model": "gpt-answer"},
+    )
+
+    assert extraction.status_code == 200
+    assert extraction.json()["key_configured"] is False
+    assert answer.status_code == 200
+    assert answer.json()["key_configured"] is False
+    assert app.state.llm_settings.assignment(LLMTask.QUIZ_EXTRACTION).model == (
+        "deepseek/model"
+    )
+    assert app.state.llm_settings.assignment(LLMTask.QUIZ_ANSWER_GENERATION).model == (
+        "gpt-answer"
+    )
+    assert secrets.values == {}
+
+
 def test_task_assignment_put_unknown_task_returns_404(tmp_path):
     client, _, _ = prepared_client(tmp_path)
 
@@ -294,4 +319,3 @@ def test_task_assignment_put_blank_model_returns_422(tmp_path):
     )
 
     assert response.status_code == 422
-

@@ -87,3 +87,34 @@ def test_set_assignment_round_trips(tmp_path):
     assert saved.provider is ProviderName.OPENROUTER
     assert saved.model == "openai/gpt-4o-mini"
     assert fetched == saved
+
+
+def test_quiz_tasks_have_independent_provider_assignments(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    repository = LLMSettingsRepository(database, default_openai_model="gpt-5.2")
+
+    repository.set_assignment(
+        LLMTask.QUIZ_EXTRACTION,
+        ProviderName.OPENROUTER,
+        "deepseek/model",
+    )
+    repository.set_assignment(
+        LLMTask.QUIZ_ANSWER_GENERATION,
+        ProviderName.OPENAI,
+        "gpt-answer",
+    )
+
+    assert repository.assignment(LLMTask.QUIZ_EXTRACTION).model == "deepseek/model"
+    assert repository.assignment(LLMTask.QUIZ_ANSWER_GENERATION).model == "gpt-answer"
+
+
+def test_missing_quiz_assignment_uses_the_openai_default(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.create_schema()
+    repository = LLMSettingsRepository(database, default_openai_model="gpt-quiz-default")
+
+    assignment = repository.assignment(LLMTask.QUIZ_EXTRACTION)
+
+    assert assignment.provider is ProviderName.OPENAI
+    assert assignment.model == "gpt-quiz-default"

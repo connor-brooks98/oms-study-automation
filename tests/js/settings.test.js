@@ -421,6 +421,32 @@ test("assignment row populates its model dropdown from a mocked models fetch", a
   assert.equal(modelSelect.value, "gpt-4o-mini");
 });
 
+test("quiz extraction assignment rows use the shared model dropdown behavior", async () => {
+  const documentRef = new FakeDocument();
+  const row = buildAssignmentRow(documentRef, {
+    task: "quiz_extraction",
+    provider: "openai",
+    model: "gpt-5.2",
+  });
+  documentRef.append(row);
+
+  const fetchImpl = async (url) => {
+    assert.equal(url, "/api/settings/providers/openai/models");
+    return {
+      ok: true,
+      json: async () => ({ models: ["gpt-5.2"], source: "live" }),
+    };
+  };
+
+  settings.initialize(documentRef, fetchImpl);
+  await flush();
+
+  assert.deepEqual(
+    row.querySelector("[data-assignment-model]").children.map((option) => option.value),
+    ["gpt-5.2", "__custom__"],
+  );
+});
+
 test("assignment row model dropdown repopulates when the provider changes", async () => {
   const documentRef = new FakeDocument();
   const row = buildAssignmentRow(documentRef, {

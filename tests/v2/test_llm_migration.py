@@ -83,6 +83,14 @@ def test_fresh_database_seeds_task_assignments_with_anthropic_defaults(tmp_path)
         ProviderName.OPENROUTER.value,
         FALLBACK_MODELS[ProviderName.OPENROUTER][0],
     )
+    assert rows[LLMTask.QUIZ_EXTRACTION.value] == (
+        ProviderName.OPENAI.value,
+        DEFAULT_MODELS[ProviderName.OPENAI],
+    )
+    assert rows[LLMTask.QUIZ_ANSWER_GENERATION.value] == (
+        ProviderName.OPENAI.value,
+        DEFAULT_MODELS[ProviderName.OPENAI],
+    )
 
 
 def test_task_assignments_seed_from_active_provider_and_openrouter_model(tmp_path):
@@ -141,4 +149,12 @@ def test_task_assignments_seed_from_active_provider_and_openrouter_model(tmp_pat
         "openrouter",
         "anthropic/claude-3.5-sonnet",
     )
-    assert len(rows) == 3
+    assert rows[LLMTask.QUIZ_EXTRACTION.value] == (
+        "openai",
+        DEFAULT_MODELS[ProviderName.OPENAI],
+    )
+    assert rows[LLMTask.QUIZ_ANSWER_GENERATION.value] == (
+        "openai",
+        DEFAULT_MODELS[ProviderName.OPENAI],
+    )
+    assert len(rows) == 5

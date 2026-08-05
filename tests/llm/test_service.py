@@ -177,6 +177,25 @@ def test_generate_text_uses_explicit_provider_and_model(tmp_path):
     assert result.text == '{"ok":true}'
 
 
+def test_generate_text_for_task_uses_current_assignment(tmp_path):
+    settings, service = prepared_service(tmp_path)
+    settings.set_assignment(
+        LLMTask.QUIZ_EXTRACTION,
+        ProviderName.GEMINI,
+        "extractor-model",
+    )
+
+    result = service.generate_text_for_task(
+        LLMTask.QUIZ_EXTRACTION,
+        "Extract questions",
+        "source",
+        output_schema={"type": "object"},
+    )
+
+    assert result.provider is ProviderName.GEMINI
+    assert result.model == "extractor-model"
+
+
 def test_generate_text_propagates_explicit_immutable_options(tmp_path):
     _, service = prepared_service(tmp_path)
     options = GenerationOptions(cacheable_source_prefix="SUM: source")

@@ -13,6 +13,8 @@ class LLMTask(StrEnum):
     TRANSCRIPTS = "transcripts"
     ANKI_CURATION = "anki_curation"
     ACCURACY_REVIEW = "accuracy_review"
+    QUIZ_EXTRACTION = "quiz_extraction"
+    QUIZ_ANSWER_GENERATION = "quiz_answer_generation"
 
 
 class ThinkingMode(StrEnum):

@@ -65,7 +65,7 @@ class LLMSettingsRepository:
         with self.database.session() as session:
             stored = session.get(LLMTaskAssignmentModel, task.value)
             if stored is None:
-                provider = self._default_task_provider(session)
+                provider = self._default_task_provider(task, session)
                 stored = LLMTaskAssignmentModel(
                     task=task.value,
                     provider=provider.value,
@@ -154,7 +154,12 @@ class LLMSettingsRepository:
                 )
 
     @staticmethod
-    def _default_task_provider(session: Session) -> ProviderName:
+    def _default_task_provider(task: LLMTask, session: Session) -> ProviderName:
+        if task in {
+            LLMTask.QUIZ_EXTRACTION,
+            LLMTask.QUIZ_ANSWER_GENERATION,
+        }:
+            return ProviderName.OPENAI
         stored = session.scalar(
             select(LLMProviderSettingModel).where(
                 LLMProviderSettingModel.active.is_(True)
