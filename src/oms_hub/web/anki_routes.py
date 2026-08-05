@@ -14,6 +14,11 @@ from pydantic import Field
 
 from oms_hub.anki.apply import ApplyCoordinator, ApplyGateway, ApplyResult
 from oms_hub.anki.card_centric_contracts import CardConceptLedger
+from oms_hub.anki.card_centric_fixture_service import (
+    FIXTURE_SHA256,
+    FIXTURE_VERSION,
+    validate_fixture,
+)
 from oms_hub.anki.contracts import (
     AddNotesOperation,
     AddTagsOperation,
@@ -120,6 +125,11 @@ class OverflowAcknowledgementRequest(ContractModel):
     selected_generated_card_ids: tuple[Annotated[str, Field(min_length=1, max_length=100)], ...]
 
 
+class FixtureValidationRequest(ContractModel):
+    provider: Literal["openai", "gemini", "anthropic", "openrouter"]
+    model: Annotated[str, Field(min_length=1, max_length=200)]
+
+
 class ApplyConfirmationRequest(EnvelopeRequest):
     confirmation: Literal["APPLY TO ANKI"]
 
@@ -212,6 +222,32 @@ def list_anki_jobs(
     limit: Annotated[int, Field(ge=1, le=500)] = 100,
 ) -> dict[str, Any]:
     return {"jobs": [_job_payload(job) for job in _repository(request).list_jobs(limit=limit)]}
+
+
+@router.post("/api/anki/fixture-validation")
+def run_card_centric_fixture(request: Request, payload: FixtureValidationRequest) -> dict[str, Any]:
+    classifier = getattr(request.app.state, "card_centric_fixture_classifier", None)
+    if classifier is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Fixture classifier is not configured",
+        )
+    try:
+        result = validate_fixture(classifier, provider=payload.provider, model=payload.model)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    record = {
+        "fixture_version": FIXTURE_VERSION,
+        "fixture_sha256": FIXTURE_SHA256,
+        "provider": payload.provider,
+        "model": payload.model,
+        "passed": result.passed,
+        "metrics": result.metrics,
+    }
+    _repository(request).save_fixture_validation(payload.provider, payload.model, record)
+    return record
 
 
 @router.post(
@@ -342,6 +378,28 @@ def create_anki_job(
         summary_outline_id=outline.id,
         summary_outline_sha256=outline.sha256,
     )
+    assert domain.resolved_model_config is not None
+    if domain.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1 and (
+        domain.resolved_model_config.classify_s4.provider,
+        domain.resolved_model_config.classify_s4.model,
+    ) != (
+        domain.resolved_model_config.ledger_s2.provider,
+        domain.resolved_model_config.ledger_s2.model,
+    ):
+        record = _repository(request).fixture_validation(
+            domain.resolved_model_config.classify_s4.provider,
+            domain.resolved_model_config.classify_s4.model,
+        )
+        if (
+            not record
+            or not record.get("passed")
+            or record.get("fixture_version") != FIXTURE_VERSION
+            or record.get("fixture_sha256") != FIXTURE_SHA256
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="S4/S6 cheaper model is unvalidated for the current Lecture07 fixture",
+            )
     try:
         job = _repository(request).create_job(domain)
         if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1:

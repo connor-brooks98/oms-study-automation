@@ -439,6 +439,34 @@ class AnkiCurationRepository:
                 stored.enabled = True
                 stored.options_json = document
 
+    def save_fixture_validation(self, provider: str, model: str, record: dict[str, Any]) -> None:
+        key = f"card_centric_fixture:{provider}:{model}"
+        with self.database.session() as session:
+            stored = session.get(AnkiStageSettingModel, key)
+            if stored is None:
+                session.add(
+                    AnkiStageSettingModel(
+                        stage=key,
+                        provider=provider,
+                        model=model,
+                        enabled=True,
+                        options_json=_canonical_json(record),
+                    )
+                )
+            else:
+                stored.enabled = True
+                stored.options_json = _canonical_json(record)
+
+    def fixture_validation(self, provider: str, model: str) -> dict[str, Any] | None:
+        with self.database.session() as session:
+            stored = session.get(AnkiStageSettingModel, f"card_centric_fixture:{provider}:{model}")
+            if stored is None or not stored.enabled:
+                return None
+            try:
+                return cast(dict[str, Any], json.loads(stored.options_json))
+            except (TypeError, ValueError):
+                return None
+
     def issue_card_centric_overflow_acknowledgement(
         self,
         job_id: UUID,

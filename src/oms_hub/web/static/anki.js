@@ -696,6 +696,23 @@
     }
     profile?.addEventListener("change", updateProfile);
     model.addEventListener("change", updateProfile);
+    form.querySelector("[data-run-fixture]")?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      const result = form.querySelector("[data-fixture-result]");
+      button.disabled = true;
+      if (result) result.textContent = "Running immutable Lecture07 fixture…";
+      try {
+        const value = await requestJson(documentRef, fetchImpl, "/api/anki/fixture-validation", {
+          method: "POST",
+          body: JSON.stringify({ provider: String(provider.value), model: String(stageInputs.s4?.value || model.value) }),
+        });
+        if (result) result.textContent = value.passed ? "Fixture validated ✓" : "Fixture failed — S4/S6 remain unavailable.";
+      } catch (error) {
+        if (result) result.textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
     updateProfile();
     clearLecture();
 
