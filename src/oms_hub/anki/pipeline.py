@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ from oms_hub.anki.domain import (
     CurationStage,
     CurationState,
     GapCard,
+    PipelineContractVersion,
     SourceEvidence,
     StageArtifact,
     StageUsage,
@@ -117,6 +119,18 @@ PIPELINE_STAGES = (
 _STAGE_BY_STATE = {definition.state: definition for definition in PIPELINE_STAGES}
 
 
+class UnsupportedPipelineContract(RuntimeError):
+    """A stored job requests a graph this Hub cannot execute yet."""
+
+
+def pipeline_stages(version: PipelineContractVersion) -> tuple[PipelineStageDefinition, ...]:
+    if version is PipelineContractVersion.RETRIEVAL_V4:
+        return PIPELINE_STAGES
+    raise UnsupportedPipelineContract(
+        f"pipeline contract {version.value} is unsupported; upgrade required; no mutation performed"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class StageContext:
     job: CurationJob
@@ -172,16 +186,20 @@ class StageArtifactStore:
         product: StageProduct,
         *,
         input_sha256: str,
+        pipeline_contract_version: PipelineContractVersion = PipelineContractVersion.RETRIEVAL_V4,
+        model_config_sha256: str = "",
     ) -> StageArtifact:
         if len(input_sha256) != 64:
             raise ValueError("stage input hash is invalid")
         if not product.kind.strip():
             raise ValueError("stage artifact kind cannot be blank")
         document = {
-            "artifact_version": 1,
+            "artifact_version": 2,
             "job_id": str(job_id),
             "stage": stage.value,
             "kind": product.kind,
+            "pipeline_contract_version": pipeline_contract_version.value,
+            "model_config_sha256": model_config_sha256,
             "payload": product.payload,
             "metadata": product.metadata,
         }
@@ -222,6 +240,8 @@ class StageArtifactStore:
             relative_path=relative.as_posix(),
             input_sha256=input_sha256,
             content_sha256=content_sha256,
+            pipeline_contract_version=pipeline_contract_version,
+            model_config_sha256=model_config_sha256,
             metadata=dict(product.metadata),
         )
 
@@ -283,7 +303,11 @@ class CurationPipeline:
         lease_owner: str | None = None,
     ) -> StageRunResult | None:
         job = self.repository.require_job(job_id)
-        definition = stage_definition(job.state)
+        if job.pipeline_contract_version is not PipelineContractVersion.RETRIEVAL_V4:
+            raise UnsupportedPipelineContract(
+                f"pipeline contract {job.pipeline_contract_version.value} is unsupported; upgrade required; no mutation performed"
+            )
+        definition = stage_definition(job.state, job.pipeline_contract_version)
         if definition is None:
             return None
         started = self.repository.start_stage(
@@ -320,6 +344,8 @@ class CurationPipeline:
                 definition.stage,
                 product,
                 input_sha256=input_sha256,
+                pipeline_contract_version=job.pipeline_contract_version,
+                model_config_sha256=job.model_config_sha256,
             )
             target_state = (
                 CurationState.FAILED
@@ -360,8 +386,9 @@ class CurationPipeline:
 
 def stage_definition(
     state: CurationState,
+    version: PipelineContractVersion = PipelineContractVersion.RETRIEVAL_V4,
 ) -> PipelineStageDefinition | None:
-    return _STAGE_BY_STATE.get(state)
+    return {definition.state: definition for definition in pipeline_stages(version)}.get(state)
 
 
 def _stage_input_hash(
@@ -375,6 +402,8 @@ def _stage_input_hash(
                 "job_id": str(job.id),
                 "stage": stage.value,
                 "configuration_sha256": job.configuration_sha256,
+                "pipeline_contract_version": job.pipeline_contract_version.value,
+                "model_config_sha256": job.model_config_sha256,
                 "source_revision_ids": job.source_revision_ids,
                 "index_snapshot_id": job.index_snapshot_id,
                 "semantic_generation": job.semantic_generation,

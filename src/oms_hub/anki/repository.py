@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 import hashlib
 import json
 from collections.abc import Sequence
@@ -11,7 +12,11 @@ from sqlalchemy.orm import Session
 
 from oms_hub.anki.apply import ApplyOperationRecord
 from oms_hub.anki.audit import AuditCacheRecord
-from oms_hub.anki.contracts import ActionEnvelope, canonical_payload_sha256
+from oms_hub.anki.contracts import (
+    ActionEnvelopeDocument,
+    canonical_payload_sha256,
+    parse_action_envelope,
+)
 from oms_hub.anki.domain import (
     AgentCommandType,
     AgentState,
@@ -25,6 +30,9 @@ from oms_hub.anki.domain import (
     EvidenceSupport,
     GapCard,
     JobStage,
+    PipelineContractVersion,
+    ResolvedModelConfiguration,
+    ResolvedStageModel,
     RetrievalPass,
     ReviewChangeSet,
     SavedReview,
@@ -261,6 +269,9 @@ class AnkiCurationRepository:
         self.database = database
 
     def create_job(self, request: CreateCurationJob) -> CurationJob:
+        model_config = request.resolved_model_config or ResolvedModelConfiguration.legacy(request.provider, request.model)
+        model_config_json = _canonical_json(model_config.canonical_document())
+        model_config_sha256 = _sha256_text(model_config_json)
         configuration = {
             "block_id": request.block_id,
             "source_revision_ids": request.source_revision_ids,
@@ -277,6 +288,8 @@ class AnkiCurationRepository:
             "gap_prompt_version": request.gap_prompt_version,
             "provider": request.provider,
             "model": request.model,
+            "pipeline_contract_version": request.pipeline_contract_version.value,
+            "model_config_sha256": model_config_sha256,
             "semantic_generation": request.semantic_generation,
             "companion_generation": request.companion_generation,
         }
@@ -303,6 +316,9 @@ class AnkiCurationRepository:
                 tag_allowlist_json=_canonical_json(request.tag_allowlist),
                 provider=request.provider,
                 model=request.model,
+                pipeline_contract_version=request.pipeline_contract_version.value,
+                resolved_model_config_json=model_config_json,
+                model_config_sha256=model_config_sha256,
                 semantic_generation=request.semantic_generation,
                 companion_generation=request.companion_generation,
                 configuration_sha256=_sha256_text(_canonical_json(configuration)),
@@ -758,6 +774,8 @@ class AnkiCurationRepository:
                         input_sha256=artifact.input_sha256,
                         content_sha256=artifact.content_sha256,
                         metadata_json=_canonical_json(artifact.metadata),
+                        pipeline_contract_version=artifact.pipeline_contract_version.value,
+                        model_config_sha256=artifact.model_config_sha256 or job.model_config_sha256,
                     )
                 )
             elif (
@@ -1265,7 +1283,7 @@ class AnkiCurationRepository:
     def create_action_envelope(
         self,
         job_id: UUID,
-        envelope: ActionEnvelope,
+        envelope: ActionEnvelopeDocument,
         *,
         expected_review_revision: int | None = None,
     ) -> StoredEnvelope:
@@ -1321,13 +1339,13 @@ class AnkiCurationRepository:
             )
             return None if stored is None else self._envelope(stored)
 
-    def get_envelope(self, envelope_id: UUID) -> ActionEnvelope:
+    def get_envelope(self, envelope_id: UUID) -> ActionEnvelopeDocument:
         with self.database.session() as session:
             stored = session.get(AnkiEnvelopeModel, str(envelope_id))
             if stored is None:
                 raise KeyError(str(envelope_id))
             try:
-                envelope = ActionEnvelope.model_validate_json(stored.payload_json)
+                envelope = parse_action_envelope(stored.payload_json)
             except ValueError as exc:
                 raise ValueError("stored envelope is not an action envelope") from exc
             if (
@@ -1721,6 +1739,7 @@ class AnkiCurationRepository:
 
     @staticmethod
     def _job(stored: AnkiCurationJobModel) -> CurationJob:
+        config = AnkiCurationRepository._resolved_model_config(stored.resolved_model_config_json, stored.provider, stored.model)
         return CurationJob(
             id=UUID(stored.id),
             lecture_id=stored.lecture_id,
@@ -1745,6 +1764,9 @@ class AnkiCurationRepository:
             ),
             provider=stored.provider,
             model=stored.model,
+            pipeline_contract_version=PipelineContractVersion(stored.pipeline_contract_version),
+            resolved_model_config=config,
+            model_config_sha256=stored.model_config_sha256 if stored.model_config_sha256 != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" else _sha256_text(_canonical_json(config.canonical_document())),
             instruction_text=stored.instruction_text,
             instruction_sha256=stored.instruction_sha256,
             target_deck=stored.target_deck,
@@ -1842,11 +1864,27 @@ class AnkiCurationRepository:
             relative_path=stored.relative_path,
             input_sha256=stored.input_sha256,
             content_sha256=stored.content_sha256,
+            pipeline_contract_version=PipelineContractVersion(stored.pipeline_contract_version),
+            model_config_sha256=stored.model_config_sha256,
             metadata=cast(
                 dict[str, Any],
                 json.loads(stored.metadata_json),
             ),
         )
+
+
+    @staticmethod
+    def _resolved_model_config(value: str, provider: str, model: str) -> ResolvedModelConfiguration:
+        try:
+            raw = cast(dict[str, Any], json.loads(value))
+            if not raw:
+                raise ValueError
+            def stage(name: str) -> ResolvedStageModel:
+                item = cast(dict[str, Any], raw[name])
+                return ResolvedStageModel(item["provider"], item["model"], item.get("thinking_mode", "default"), item.get("fixture_validation_signature"))
+            return ResolvedModelConfiguration(raw["profile"], stage("ledger_s2"), stage("classify_s4"), stage("residual_s6"), stage("gap_fill_s7"), bool(raw.get("residual_unlocked", False)))
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return ResolvedModelConfiguration.legacy(provider, model)
 
     @staticmethod
     def _gap_card(stored: AnkiGapCardModel) -> GapCard:

@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -58,6 +59,51 @@ class CurationStage(StrEnum):
     APPLY = "apply"
     SYNC = "sync"
     VERIFY = "verify"
+    CARD_LEDGER = "card_ledger"
+    CARD_CLASSIFY = "card_classify"
+    CARD_RESIDUAL = "card_residual"
+    CARD_GAP_FILL = "card_gap_fill"
+
+
+class PipelineContractVersion(StrEnum):
+    RETRIEVAL_V4 = "retrieval_v4"
+    CARD_CENTRIC_V1 = "card_centric_v1"
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedStageModel:
+    provider: str
+    model: str
+    thinking_mode: str = "default"
+    fixture_validation_signature: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.provider.strip() or not self.model.strip() or not self.thinking_mode.strip():
+            raise ValueError("resolved stage model values cannot be blank")
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedModelConfiguration:
+    profile: str
+    ledger_s2: ResolvedStageModel
+    classify_s4: ResolvedStageModel
+    residual_s6: ResolvedStageModel
+    gap_fill_s7: ResolvedStageModel
+    residual_unlocked: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.profile.strip():
+            raise ValueError("model configuration profile cannot be blank")
+
+    @classmethod
+    def legacy(cls, provider: str, model: str) -> "ResolvedModelConfiguration":
+        stage = ResolvedStageModel(provider=provider, model=model)
+        return cls("legacy_single_model", stage, stage, stage, stage)
+
+    def canonical_document(self) -> dict[str, Any]:
+        def stage(value: ResolvedStageModel) -> dict[str, Any]:
+            return {"provider": value.provider, "model": value.model, "thinking_mode": value.thinking_mode, "fixture_validation_signature": value.fixture_validation_signature}
+        return {"profile": self.profile, "ledger_s2": stage(self.ledger_s2), "classify_s4": stage(self.classify_s4), "residual_s6": stage(self.residual_s6), "gap_fill_s7": stage(self.gap_fill_s7), "residual_unlocked": self.residual_unlocked}
 
 
 class RetrievalPass(StrEnum):
@@ -112,6 +158,8 @@ class CreateCurationJob:
     gap_prompt_version: str
     provider: str
     model: str
+    pipeline_contract_version: PipelineContractVersion = PipelineContractVersion.RETRIEVAL_V4
+    resolved_model_config: ResolvedModelConfiguration | None = None
     source_revision_hashes: dict[int, str] = field(default_factory=dict)
     semantic_generation: str | None = None
     companion_generation: str | None = None
@@ -132,6 +180,9 @@ class CurationJob:
     tag_allowlist: tuple[str, ...]
     provider: str
     model: str
+    pipeline_contract_version: PipelineContractVersion
+    resolved_model_config: ResolvedModelConfiguration
+    model_config_sha256: str
     instruction_text: str
     instruction_sha256: str
     target_deck: str
@@ -225,6 +276,8 @@ class StageArtifact:
     relative_path: str
     input_sha256: str
     content_sha256: str
+    pipeline_contract_version: PipelineContractVersion = field(default=PipelineContractVersion.RETRIEVAL_V4, compare=False)
+    model_config_sha256: str = field(default="", compare=False)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

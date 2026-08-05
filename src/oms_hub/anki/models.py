@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -84,6 +85,9 @@ class AnkiCurationJobModel(Base):
         default="claude-sonnet-5",
         server_default="claude-sonnet-5",
     )
+    pipeline_contract_version: Mapped[str] = mapped_column(String(30), default="retrieval_v4", server_default="retrieval_v4")
+    resolved_model_config_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
+    model_config_sha256: Mapped[str] = mapped_column(String(64), default=EMPTY_SHA256, server_default=EMPTY_SHA256)
     semantic_generation: Mapped[str | None] = mapped_column(
         String(200),
         nullable=True,
@@ -271,6 +275,8 @@ class AnkiStageArtifactModel(Base):
     input_sha256: Mapped[str] = mapped_column(String(64))
     content_sha256: Mapped[str] = mapped_column(String(64))
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    pipeline_contract_version: Mapped[str] = mapped_column(String(30), default="retrieval_v4", server_default="retrieval_v4")
+    model_config_sha256: Mapped[str] = mapped_column(String(64), default=EMPTY_SHA256, server_default=EMPTY_SHA256)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
 
 

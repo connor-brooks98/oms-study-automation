@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
@@ -9,6 +10,7 @@ from oms_hub.anki.ankiconnect import (
 )
 from oms_hub.anki.contracts import (
     ActionEnvelope,
+    ActionEnvelopeV2,
     AddNotesOperation,
     AddTagsOperation,
     RemoveTagsOperation,
@@ -228,6 +230,12 @@ class ApplyCoordinator:
 
     async def apply(self, envelope_id: UUID) -> ApplyResult:
         envelope = self.store.get_envelope(envelope_id)
+        if isinstance(envelope, ActionEnvelopeV2) and not self._supports_v2():
+            return self._finish(
+                envelope,
+                ApplyState.FAILED_BEFORE_APPLY,
+                safe_error="envelope contract v2 unsupported; upgrade required; no mutation performed",
+            )
         mutation_started = any(
             self.store.operation_record(
                 envelope_id,
@@ -309,6 +317,9 @@ class ApplyCoordinator:
             )
 
         return self._finish(envelope, ApplyState.COMPLETE)
+
+    def _supports_v2(self) -> bool:
+        return True
 
     async def _preflight(self) -> str | None:
         if self.runtime is None:

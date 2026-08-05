@@ -1,3 +1,6 @@
+# ruff: noqa: E501
+import hashlib
+import json
 from typing import TYPE_CHECKING
 
 from sqlalchemy import inspect, select, text
@@ -19,7 +22,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 12
+LATEST_SCHEMA_VERSION = 13
 
 
 def _ensure_column(
@@ -88,6 +91,31 @@ def _upgrade_anki_v4_columns(database: "Database") -> None:
     }
     for name, definition in gap_columns.items():
         _ensure_column(database, "anki_gap_cards", name, definition)
+
+
+def _upgrade_anki_contract_v13(database: "Database") -> None:
+    empty_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    for name, definition in {
+        "pipeline_contract_version": "VARCHAR(30) NOT NULL DEFAULT 'retrieval_v4'",
+        "resolved_model_config_json": "TEXT NOT NULL DEFAULT '{}'",
+        "model_config_sha256": f"VARCHAR(64) NOT NULL DEFAULT '{empty_sha256}'",
+    }.items():
+        _ensure_column(database, "anki_curation_jobs", name, definition)
+    for name, definition in {
+        "pipeline_contract_version": "VARCHAR(30) NOT NULL DEFAULT 'retrieval_v4'",
+        "model_config_sha256": f"VARCHAR(64) NOT NULL DEFAULT '{empty_sha256}'",
+    }.items():
+        _ensure_column(database, "anki_stage_artifacts", name, definition)
+    with database.engine.begin() as connection:
+        connection.execute(text("UPDATE anki_curation_jobs SET pipeline_contract_version = 'retrieval_v4' WHERE pipeline_contract_version IS NULL OR pipeline_contract_version = ''"))
+        rows = connection.execute(text("SELECT id, provider, model, resolved_model_config_json FROM anki_curation_jobs")).mappings()
+        for row in rows:
+            config = row["resolved_model_config_json"]
+            if not config or config == "{}":
+                stage = {"provider": row["provider"], "model": row["model"], "thinking_mode": "default", "fixture_validation_signature": None}
+                config = json.dumps({"profile": "legacy_single_model", "ledger_s2": stage, "classify_s4": stage, "residual_s6": stage, "gap_fill_s7": stage, "residual_unlocked": False}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            digest = hashlib.sha256(config.encode("utf-8")).hexdigest()
+            connection.execute(text("UPDATE anki_curation_jobs SET resolved_model_config_json=:config, model_config_sha256=:digest WHERE id=:id"), {"config": config, "digest": digest, "id": row["id"]})
 
 
 def _upgrade_generation_job_columns(database: "Database") -> None:
@@ -312,6 +340,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_studio_columns(database)
     _upgrade_studio_run_active_label_index(database)
     _upgrade_anki_v4_columns(database)
+    _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)
     _seed_llm_task_assignments(database)
     usage_columns = {

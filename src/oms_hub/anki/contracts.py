@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 import hashlib
 import json
 import re
@@ -14,7 +15,13 @@ from pydantic import (
     model_validator,
 )
 
-from oms_hub.anki.domain import AgentCommandType, CreateCurationJob
+from oms_hub.anki.domain import (
+    AgentCommandType,
+    CreateCurationJob,
+    PipelineContractVersion,
+    ResolvedModelConfiguration,
+    ResolvedStageModel,
+)
 from oms_hub.anki.tag_policy import normalize_tag
 
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -35,7 +42,7 @@ def canonical_payload_sha256(value: Any) -> str:
 class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    contract_version: Literal[1] = 1
+    contract_version: int = 1
 
 
 class CreateCurationJobRequest(ContractModel):
@@ -59,6 +66,8 @@ class CreateCurationJobRequest(ContractModel):
     gap_prompt_version: Annotated[str, Field(min_length=1, max_length=100)]
     provider: Literal["openai", "gemini", "anthropic", "openrouter"]
     model: Annotated[str, Field(max_length=200)] | None = None
+    pipeline_contract_version: Literal["retrieval_v4", "card_centric_v1"] = "retrieval_v4"
+    resolved_model_config: dict[str, Any] | None = None
     source_revision_hashes: dict[
         Annotated[int, Field(gt=0)],
         Sha256,
@@ -149,6 +158,7 @@ class CreateCurationJobRequest(ContractModel):
         return self
 
     def to_domain(self, *, model: str) -> CreateCurationJob:
+        resolved = _resolved_model_config(self.resolved_model_config, self.provider, model)
         return CreateCurationJob(
             lecture_id=self.lecture_id,
             block_id=self.block_id,
@@ -164,12 +174,45 @@ class CreateCurationJobRequest(ContractModel):
             gap_prompt_version=self.gap_prompt_version,
             provider=self.provider,
             model=model,
+            pipeline_contract_version=PipelineContractVersion(self.pipeline_contract_version),
+            resolved_model_config=resolved,
             source_revision_hashes=dict(self.source_revision_hashes),
             semantic_generation=self.semantic_generation,
             companion_generation=self.companion_generation,
             summary_outline_id=self.summary_outline_id,
             summary_outline_sha256=self.summary_outline_sha256,
         )
+
+
+def _resolved_model_config(
+    value: dict[str, Any] | None,
+    provider: str,
+    model: str,
+) -> ResolvedModelConfiguration:
+    if value is None:
+        return ResolvedModelConfiguration.legacy(provider, model)
+    try:
+        def stage(name: str) -> ResolvedStageModel:
+            raw = value[name]
+            if not isinstance(raw, dict):
+                raise ValueError("stage configuration must be an object")
+            return ResolvedStageModel(
+                provider=str(raw["provider"]),
+                model=str(raw["model"]),
+                thinking_mode=str(raw.get("thinking_mode", "default")),
+                fixture_validation_signature=(
+                    str(raw["fixture_validation_signature"])
+                    if raw.get("fixture_validation_signature") is not None
+                    else None
+                ),
+            )
+        return ResolvedModelConfiguration(
+            profile=str(value["profile"]), ledger_s2=stage("ledger_s2"),
+            classify_s4=stage("classify_s4"), residual_s6=stage("residual_s6"),
+            gap_fill_s7=stage("gap_fill_s7"), residual_unlocked=bool(value.get("residual_unlocked", False)),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("resolved model configuration is invalid") from exc
 
 
 class TagPatchContract(ContractModel):
@@ -217,6 +260,7 @@ class AgentHeartbeat(ContractModel):
     active_snapshot_id: Annotated[str, Field(max_length=200)] | None
     health: Literal["ok", "degraded", "error"]
     observed_at: datetime
+    supported_envelope_contract_versions: tuple[Literal[1, 2], ...] = (1,)
 
 
 class AgentCommand(ContractModel):
@@ -381,7 +425,7 @@ Operation = Annotated[
 ]
 
 
-class ActionEnvelope(ContractModel):
+class _ActionEnvelopeBase(ContractModel):
     envelope_id: UUID
     snapshot_id: Annotated[str, Field(min_length=1, max_length=200)]
     target_deck: Annotated[str, Field(min_length=1, max_length=1_000)]
@@ -399,7 +443,7 @@ class ActionEnvelope(ContractModel):
     payload_sha256: Sha256
 
     @model_validator(mode="after")
-    def validate_operation_order(self) -> "ActionEnvelope":
+    def validate_operation_order(self) -> "_ActionEnvelopeBase":
         if not self.operations:
             raise ValueError("operations cannot be empty")
         phases = {
@@ -426,6 +470,34 @@ class ActionEnvelope(ContractModel):
         if len(operation_ids) != len(set(operation_ids)):
             raise ValueError("envelope operation IDs must be unique")
         return self
+
+
+class ActionEnvelopeV1(_ActionEnvelopeBase):
+    contract_version: Literal[1] = 1
+
+
+# Public compatibility name: this schema and its canonical bytes are immutable.
+ActionEnvelope = ActionEnvelopeV1
+
+
+class ActionEnvelopeV2(_ActionEnvelopeBase):
+    contract_version: Literal[2] = 2
+    pipeline_contract_version: Literal["card_centric_v1"] = "card_centric_v1"
+    model_config_sha256: Sha256
+    reconciliation_contract_version: Annotated[str, Field(min_length=1, max_length=100)]
+    review_revision: Annotated[int, Field(ge=0)]
+    overflow_acknowledgement_provenance: dict[str, Any]
+
+
+type ActionEnvelopeDocument = ActionEnvelopeV1 | ActionEnvelopeV2
+
+
+def parse_action_envelope(value: str | bytes | dict[str, Any]) -> ActionEnvelopeDocument:
+    if isinstance(value, (str, bytes)):
+        raw = json.loads(value)
+    else:
+        raw = value
+    return ActionEnvelopeV2.model_validate(raw) if raw.get("contract_version") == 2 else ActionEnvelopeV1.model_validate(raw)
 
 
 class OperationReceipt(ContractModel):
