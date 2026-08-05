@@ -27,6 +27,8 @@ class LLMProvider(Protocol):
     name: ProviderName
     capabilities: ProviderCapabilities
 
+    def capabilities_for_model(self, model: str) -> ProviderCapabilities: ...
+
     def clean(
         self,
         raw_text: str,

@@ -121,6 +121,9 @@ class GeminiProvider:
                 ids.append(model_name.removeprefix("models/"))
         return tuple(sorted(ids))
 
+    def capabilities_for_model(self, model: str) -> ProviderCapabilities:
+        return self.capabilities
+
     def _request(
         self,
         api_key: str,

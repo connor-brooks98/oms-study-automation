@@ -95,9 +95,16 @@ class LLMService:
             **arguments,  # type: ignore[arg-type]
         )
 
-    def capabilities_for(self, provider: ProviderName) -> ProviderCapabilities:
-        """Expose adapter guarantees without making a live provider request."""
-        return self.providers[provider].capabilities
+    def capabilities_for(
+        self,
+        provider: ProviderName,
+        model: str | None = None,
+    ) -> ProviderCapabilities:
+        """Expose conservative provider or selected-model guarantees locally."""
+        adapter = self.providers[provider]
+        if model is None:
+            return adapter.capabilities
+        return adapter.capabilities_for_model(model)
 
     def credential_configured(self, provider: ProviderName) -> bool:
         try:

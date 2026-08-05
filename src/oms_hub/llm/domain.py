@@ -22,6 +22,14 @@ class ThinkingMode(StrEnum):
     ENABLED = "enabled"
 
 
+class ThinkingCapability(StrEnum):
+    """The transport a selected model accepts for enabled thinking."""
+
+    UNSUPPORTED = "unsupported"
+    MANUAL = "manual"
+    ADAPTIVE = "adaptive"
+
+
 @dataclass(frozen=True, slots=True)
 class GenerationOptions:
     """Immutable, provider-neutral controls for one text generation call.
@@ -61,10 +69,11 @@ DEFAULT_GENERATION_OPTIONS = GenerationOptions()
 
 @dataclass(frozen=True, slots=True)
 class ProviderCapabilities:
-    """Provider-wide guarantees; model-specific support must not be assumed."""
+    """Provider or selected-model guarantees; support is conservative by default."""
 
     prompt_prefix_caching: bool = False
     thinking: bool = False
+    thinking_capability: ThinkingCapability = ThinkingCapability.UNSUPPORTED
 
     @property
     def supports_prompt_prefix_caching(self) -> bool:
