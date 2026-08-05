@@ -86,6 +86,31 @@ def test_priority_candidate_groups_preserve_deck_order() -> None:
     ]
 
 
+def test_bounded_map_preserves_order_and_limits_concurrency() -> None:
+    async def scenario() -> None:
+        active = 0
+        maximum = 0
+
+        async def operation(value: int) -> int:
+            nonlocal active, maximum
+            active += 1
+            maximum = max(maximum, active)
+            await asyncio.sleep(0.001 * (6 - value))
+            active -= 1
+            return value * 2
+
+        results = await stages_module._bounded_map(
+            tuple(range(6)),
+            operation,
+            limit=3,
+        )
+
+        assert results == (0, 2, 4, 6, 8, 10)
+        assert maximum == 3
+
+    asyncio.run(scenario())
+
+
 def test_preflight_snapshots_all_prompts_for_the_job() -> None:
     runner = CurationServicesRunner.__new__(CurationServicesRunner)
     runner.runtime = ReadyRuntime()

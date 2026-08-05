@@ -1,12 +1,19 @@
 import asyncio
 import hashlib
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Literal, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from oms_hub.anki.audit import AuditRunResult, CardAuditService
+from oms_hub.anki.card_budget import (
+    ANKING_CARD_TARGET,
+    CUSTOM_CARD_TARGET,
+    apply_existing_card_target,
+    candidate_concept_ids,
+    prioritize_gap_facts,
+)
 from oms_hub.anki.convergence import (
     ConvergenceState,
     ExpansionResult,
@@ -99,6 +106,25 @@ from oms_hub.llm.domain import ProviderName
 from oms_hub.llm.structured import StructuredTextService
 
 SourceIndexFactory = Callable[[UUID], LectureSourceIndex]
+
+_CONCEPT_CONCURRENCY = 4
+
+
+async def _bounded_map[Input, Output](
+    values: Sequence[Input],
+    operation: Callable[[Input], Awaitable[Output]],
+    *,
+    limit: int = _CONCEPT_CONCURRENCY,
+) -> tuple[Output, ...]:
+    if limit < 1:
+        raise ValueError("concurrency limit must be positive")
+    semaphore = asyncio.Semaphore(limit)
+
+    async def run(value: Input) -> Output:
+        async with semaphore:
+            return await operation(value)
+
+    return tuple(await asyncio.gather(*(run(value) for value in values)))
 
 
 class PinnedCurationInputValidator:
@@ -409,16 +435,23 @@ class CurationServicesRunner:
         self,
         context: StageContext,
     ) -> StageProduct:
-        groups: dict[str, list[dict[str, Any]]] = {}
-        for concept in _ledger(context).concepts:
+        scope = _retrieval_scope(context)
+
+        async def retrieve(
+            concept: LectureConcept,
+        ) -> tuple[str, list[dict[str, Any]]]:
             candidates = await self.retrieval.retrieve_pass_1(
                 concept,
-                _retrieval_scope(context),
+                scope,
             )
-            groups[concept.concept_id] = [
+            return concept.concept_id, [
                 _candidate_payload(candidate)
                 for candidate in candidates
             ]
+
+        groups = dict(
+            await _bounded_map(_ledger(context).concepts, retrieve)
+        )
         return StageProduct(
             kind="pass_1_candidates",
             payload={"groups": groups},
@@ -443,30 +476,29 @@ class CurationServicesRunner:
             model=context.job.model,
             prompt_version=context.job.judgment_rubric_version,
         )
-        localizations: dict[str, dict[str, Any]] = {}
-        evidence_records: list[SourceEvidence] = []
-        for concept in ledger.concepts:
+        source_scope = SourceScope(
+            revision_ids=context.job.source_revision_ids,
+            source_kinds=tuple(SourceKind),
+        )
+
+        async def localize(
+            concept: LectureConcept,
+        ) -> tuple[str, dict[str, Any] | None, tuple[SourceEvidence, ...]]:
             judgment = _coverage_judgment(
                 context,
                 CurationStage.JUDGMENT_PASS_1,
                 concept.concept_id,
             )
             if judgment.status == "covered":
-                continue
-            localization = await service.localize(
-                concept,
-                SourceScope(
-                    revision_ids=context.job.source_revision_ids,
-                    source_kinds=tuple(SourceKind),
-                ),
-            )
+                return concept.concept_id, None, ()
+            localization = await service.localize(concept, source_scope)
             queries = (
                 service.build_queries(localization)
                 if localization.support != "unsupported"
                 and localization.evidence
                 else ()
             )
-            localizations[concept.concept_id] = {
+            return concept.concept_id, {
                 "support": localization.support,
                 "rationale": localization.rationale,
                 "evidence": [
@@ -476,14 +508,26 @@ class CurationServicesRunner:
                 "queries": [
                     query.model_dump(mode="json") for query in queries
                 ],
-            }
-            evidence_records.extend(
-                _evidence_records(localization)
-            )
+            }, tuple(_evidence_records(localization))
+
+        localization_results = await _bounded_map(
+            ledger.concepts,
+            localize,
+        )
+        localizations = {
+            concept_id: payload
+            for concept_id, payload, _ in localization_results
+            if payload is not None
+        }
+        evidence_records = tuple(
+            record
+            for _, _, records in localization_results
+            for record in records
+        )
         return StageProduct(
             kind="source_rescue",
             payload={"localizations": localizations},
-            source_evidence=tuple(evidence_records),
+            source_evidence=evidence_records,
         )
 
     async def _retrieval_pass_2(
@@ -499,25 +543,32 @@ class CurationServicesRunner:
             dict[str, dict[str, Any]],
             rescue.get("localizations", {}),
         )
-        groups: dict[str, list[dict[str, Any]]] = {}
-        for concept_id, localization in localizations.items():
+        scope = _retrieval_scope(context)
+
+        async def retrieve(
+            item: tuple[str, dict[str, Any]],
+        ) -> tuple[str, list[dict[str, Any]]]:
+            concept_id, localization = item
             raw_queries = localization.get("queries", [])
             queries = [
                 RescueQuery.model_validate(query)
                 for query in raw_queries
             ]
             if not queries:
-                groups[concept_id] = []
-                continue
+                return concept_id, []
             candidates = await self.retrieval.retrieve_pass_2(
                 ledger_by_id[concept_id],
                 queries,
-                _retrieval_scope(context),
+                scope,
             )
-            groups[concept_id] = [
+            return concept_id, [
                 _candidate_payload(candidate)
                 for candidate in candidates
             ]
+
+        groups = dict(
+            await _bounded_map(tuple(localizations.items()), retrieve)
+        )
         return StageProduct(
             kind="pass_2_candidates",
             payload={"groups": groups},
@@ -575,6 +626,50 @@ class CurationServicesRunner:
             ledger,
             pass_number=pass_number,
         )
+        if pass_number > 3:
+            ordered_states = tuple(
+                states[concept.concept_id] for concept in ledger.concepts
+            )
+            manual_review = tuple(
+                state.concept_id
+                for state in ordered_states
+                if pass_number == 5 and not state.converged
+            )
+            previous_stage = {
+                4: CurationStage.CONVERGENCE_PASS_3,
+                5: CurationStage.CONVERGENCE_PASS_4,
+            }[pass_number]
+            schema_name = _payload(context, previous_stage).get(
+                "schema_name",
+                "coverage_v1",
+            )
+            return StageProduct(
+                kind=f"convergence_pass_{pass_number}",
+                payload={
+                    "pass_number": pass_number,
+                    "schema_name": schema_name,
+                    "concepts": [
+                        state.model_dump(mode="json")
+                        for state in ordered_states
+                    ],
+                    "active_concept_ids": [],
+                    "groups": {},
+                    "expanded_paraphrases": expanded_by_id,
+                    "expansions": {},
+                    "judgments": {},
+                    "needs_manual_review": bool(manual_review),
+                    "manual_review_concept_ids": list(manual_review),
+                    "compatibility_skipped_concept_ids": [],
+                    "optimization_skipped": True,
+                    "optimization_reason": (
+                        "Stopped after one convergence pass because later "
+                        "passes were low-yield in measured lecture runs."
+                    ),
+                },
+                candidates=tuple(
+                    self.repository.list_candidates(context.job.id)
+                ),
+            )
         concepts = {concept.concept_id: concept for concept in ledger.concepts}
         next_states: dict[str, ConvergenceState] = dict(states)
         compatibility_skipped: list[str] = []
@@ -691,9 +786,20 @@ class CurationServicesRunner:
         expansion_results: list[ExpansionResult] = []
         judgment_results: list[JudgmentResult] = []
         projected: list[Candidate] = []
-        for concept_id, prior_state, prior_judgment in active:
+
+        async def converge_concept(
+            item: tuple[str, ConvergenceState, CoverageJudgment],
+        ) -> tuple[
+            str,
+            ConvergenceState,
+            ExpansionResult,
+            tuple[str, ...],
+            tuple[Candidate, ...],
+            JudgmentResult | None,
+            tuple[Candidate, ...],
+        ]:
+            concept_id, prior_state, prior_judgment = item
             concept = concepts[concept_id]
-            active_ids.append(concept_id)
             used = (*concept.queries, *expanded_by_id.get(concept_id, ()))
             found_notes = tuple(
                 note
@@ -707,13 +813,7 @@ class CurationServicesRunner:
                 found_notes=found_notes,
                 missing_facts=prior_judgment.missing_facts,
             )
-            expansion_results.append(expansion)
             queries = expansion.expansion.paraphrases
-            expanded_by_id.setdefault(concept_id, []).extend(queries)
-            expansions[concept_id] = {
-                **expansion.expansion.model_dump(mode="json"),
-                "request_ids": list(expansion.request_ids),
-            }
             retrieved = await self.retrieval.retrieve_convergence(
                 concept,
                 queries,
@@ -727,20 +827,24 @@ class CurationServicesRunner:
                 ),
             )
             new_ids = set(growth.new_note_ids)
-            new_candidates = [
+            new_candidates = tuple(
                 candidate
                 for candidate in retrieved
                 if candidate.note_id in new_ids
-            ]
-            groups[concept_id] = [
-                _candidate_payload(candidate) for candidate in new_candidates
-            ]
-            for candidate in new_candidates:
-                candidates_by_id[candidate.note_id] = candidate
+            )
             coverage_complete = not prior_judgment.missing_facts
+            result: JudgmentResult | None = None
+            concept_projected: tuple[Candidate, ...] = ()
             if new_candidates:
                 support_ids = _combined_support_ids(context, concept_id)
-                unknown = support_ids - set(candidates_by_id)
+                concept_candidates = {
+                    **candidates_by_id,
+                    **{
+                        candidate.note_id: candidate
+                        for candidate in new_candidates
+                    },
+                }
+                unknown = support_ids - set(concept_candidates)
                 if unknown:
                     raise PinnedInputChanged(
                         "Coverage support is absent from current candidates"
@@ -749,9 +853,63 @@ class CurationServicesRunner:
                 result = await asyncio.to_thread(
                     coverage_service.judge,
                     concept,
-                    [candidates_by_id[nid] for nid in sorted(judge_ids)],
+                    [concept_candidates[nid] for nid in sorted(judge_ids)],
                     passages=passages,
                 )
+                runtime = (
+                    runtime_judgment_from_v2(result.judgment)
+                    if isinstance(result.judgment, CoverageJudgmentV2)
+                    else result.judgment
+                )
+                supporting = set(runtime.supporting_note_ids)
+                concept_projected = tuple(
+                    _judged_candidate(
+                        concept_candidates[nid],
+                        runtime,
+                        selected=True,
+                    )
+                    for nid in sorted(supporting)
+                )
+                coverage_complete = not runtime.missing_facts
+            return (
+                concept_id,
+                ConvergenceState(
+                    concept_id=concept_id,
+                    passes_run=pass_number,
+                    seen_note_ids=growth.seen_note_ids,
+                    growth=(*prior_state.growth, growth.growth),
+                    converged=growth.converged or coverage_complete,
+                ),
+                expansion,
+                queries,
+                new_candidates,
+                result,
+                concept_projected,
+            )
+
+        converged_results = await _bounded_map(active, converge_concept)
+        for (
+            concept_id,
+            state,
+            expansion,
+            queries,
+            new_candidates,
+            result,
+            concept_projected,
+        ) in converged_results:
+            active_ids.append(concept_id)
+            next_states[concept_id] = state
+            expansion_results.append(expansion)
+            expanded_by_id.setdefault(concept_id, []).extend(queries)
+            expansions[concept_id] = {
+                **expansion.expansion.model_dump(mode="json"),
+                "request_ids": list(expansion.request_ids),
+            }
+            groups[concept_id] = [
+                _candidate_payload(candidate) for candidate in new_candidates
+            ]
+            projected.extend(concept_projected)
+            if result is not None:
                 judgment_results.append(result)
                 judgments[concept_id] = {
                     "judgment": result.judgment.model_dump(mode="json"),
@@ -761,28 +919,6 @@ class CurationServicesRunner:
                     "model": result.model,
                     "request_id": result.request_id,
                 }
-                runtime = (
-                    runtime_judgment_from_v2(result.judgment)
-                    if isinstance(result.judgment, CoverageJudgmentV2)
-                    else result.judgment
-                )
-                supporting = set(runtime.supporting_note_ids)
-                projected.extend(
-                    _judged_candidate(
-                        candidates_by_id[nid],
-                        runtime,
-                        selected=True,
-                    )
-                    for nid in sorted(supporting)
-                )
-                coverage_complete = not runtime.missing_facts
-            next_states[concept_id] = ConvergenceState(
-                concept_id=concept_id,
-                passes_run=pass_number,
-                seen_note_ids=growth.seen_note_ids,
-                growth=(*prior_state.growth, growth.growth),
-                converged=growth.converged or coverage_complete,
-            )
         ordered_states = tuple(
             next_states[concept.concept_id] for concept in ledger.concepts
         )
@@ -862,6 +998,11 @@ class CurationServicesRunner:
             _audited_candidate(candidate, verdict_by_id[candidate.note_id])
             for candidate in candidates
         )
+        selection = apply_existing_card_target(
+            audited,
+            _ledger(context).concepts,
+            target=ANKING_CARD_TARGET,
+        )
         counts = {
             verdict: sum(item.verdict == verdict for item in result.verdicts)
             for verdict in ("keep", "drop", "uncertain")
@@ -876,8 +1017,16 @@ class CurationServicesRunner:
                     for verdict in result.verdicts
                 ],
                 "counts": counts,
+                "selection_budget": {
+                    "mode": "soft_target",
+                    "target": selection.target,
+                    "eligible_existing_cards": selection.eligible_count,
+                    "selected_existing_cards": selection.selected_count,
+                    "concept_coverage_floor": selection.coverage_floor,
+                    "overflow_cards": selection.overflow_count,
+                },
             },
-            candidates=audited,
+            candidates=selection.candidates,
             usage=_audit_usage(result),
             cache_hits=result.cache_hits,
         )
@@ -921,9 +1070,6 @@ class CurationServicesRunner:
         verdicts = tuple(
             AuditVerdictV2.model_validate(value) for value in raw_verdicts
         )
-        keep_ids = {
-            verdict.nid for verdict in verdicts if verdict.verdict == "keep"
-        }
         candidates_by_id = {
             candidate.note_id: candidate
             for candidate in self.repository.list_candidates(context.job.id)
@@ -932,9 +1078,17 @@ class CurationServicesRunner:
             raise PinnedInputChanged(
                 "Card-audit artifact does not partition current candidates"
             )
-        results: dict[str, dict[str, Any]] = {}
-        usages: list[JudgmentResult] = []
-        for concept in ledger.concepts:
+        keep_ids = {
+            verdict.nid
+            for verdict in verdicts
+            if verdict.verdict == "keep"
+            and candidates_by_id[verdict.nid].selected
+        }
+        passages = _source_passages(context)
+
+        async def recompute(
+            concept: LectureConcept,
+        ) -> tuple[str, dict[str, Any], JudgmentResult | None]:
             prior_stage = _final_judgment_stage(context, concept.concept_id)
             prior = _coverage_judgment(
                 context,
@@ -957,31 +1111,35 @@ class CurationServicesRunner:
                 surviving_ids == tuple(sorted(prior_support_ids))
                 and prior_support_ids == set(prior.supporting_note_ids)
             ):
-                results[concept.concept_id] = {
+                return concept.concept_id, {
                     **_judgment_record(
                         context,
                         prior_stage,
                         concept.concept_id,
                     ),
                     "recomputed": False,
-                }
-                continue
-            recomputed = await asyncio.to_thread(
+                }, None
+            result = await asyncio.to_thread(
                 service.judge,
                 concept,
                 [candidates_by_id[nid] for nid in surviving_ids],
-                passages=_source_passages(context),
+                passages=passages,
             )
-            usages.append(recomputed)
-            results[concept.concept_id] = {
-                "judgment": recomputed.judgment.model_dump(mode="json"),
-                "cache_key": recomputed.cache_key,
-                "cache_hit": recomputed.cache_hit,
-                "provider": recomputed.provider.value,
-                "model": recomputed.model,
-                "request_id": recomputed.request_id,
+            return concept.concept_id, {
+                "judgment": result.judgment.model_dump(mode="json"),
+                "cache_key": result.cache_key,
+                "cache_hit": result.cache_hit,
+                "provider": result.provider.value,
+                "model": result.model,
+                "request_id": result.request_id,
                 "recomputed": True,
-            }
+            }, result
+
+        recomputed = await _bounded_map(ledger.concepts, recompute)
+        results = {
+            concept_id: record for concept_id, record, _ in recomputed
+        }
+        usages = [result for _, _, result in recomputed if result is not None]
         return StageProduct(
             kind="audited_coverage_judgments",
             payload={
@@ -1226,6 +1384,7 @@ class CurationServicesRunner:
                 context.job.id
             )
         }
+        missing_by_concept: dict[str, tuple[MissingFactV2, ...]] = {}
         for concept in ledger.concepts:
             judgment = _coverage_judgment(
                 context,
@@ -1237,9 +1396,46 @@ class CurationServicesRunner:
                 raise PinnedInputChanged(
                     "V2 gap generation requires V2 audited missing-fact records"
                 )
+            missing_by_concept[concept.concept_id] = missing_facts
+            expected_fact_ids.update(fact.fact_id for fact in missing_facts)
+
+        selected_existing_concepts = {
+            concept_id
+            for candidate in all_candidates
+            if candidate.selected
+            for concept_id in candidate_concept_ids(candidate)
+        }
+        gap_selection = prioritize_gap_facts(
+            ledger.concepts,
+            missing_by_concept,
+            selected_existing_concepts,
+            target=CUSTOM_CARD_TARGET,
+        )
+        for concept_id, facts in gap_selection.deferred_by_concept.items():
+            unresolved.extend(
+                {
+                    "concept_id": concept_id,
+                    "fact_id": fact.fact_id,
+                    "status": "unresolved",
+                    "reason": "deferred_by_soft_lecture_card_target",
+                }
+                for fact in facts
+            )
+
+        generation_requests: list[
+            tuple[str, V2GapGenerationRequest]
+        ] = []
+        for concept in ledger.concepts:
+            judgment = _coverage_judgment(
+                context,
+                CurationStage.COVERAGE_RECOMPUTE,
+                concept.concept_id,
+            )
+            missing_facts = gap_selection.selected_by_concept[
+                concept.concept_id
+            ]
             if not missing_facts:
                 continue
-            expected_fact_ids.update(fact.fact_id for fact in missing_facts)
             evidence = _v2_gap_evidence(
                 concept,
                 missing_facts,
@@ -1273,32 +1469,49 @@ class CurationServicesRunner:
                         extra=note.extra,
                     )
                 )
-            result = await asyncio.to_thread(
-                service.generate,
-                V2GapGenerationRequest(
-                    concept=concept,
-                    missing_facts=missing_facts,
-                    evidence=evidence,
-                    lecture_title=self.repository.lecture_title(
-                        context.job.lecture_id
-                    ),
-                    lecture_entity_count=ledger.lecture_entity_count,
-                    forbidden_cloze_targets=_forbidden_cloze_targets(
+            generation_requests.append(
+                (
+                    concept.concept_id,
+                    V2GapGenerationRequest(
+                        concept=concept,
+                        missing_facts=missing_facts,
+                        evidence=evidence,
                         lecture_title=self.repository.lecture_title(
                             context.job.lecture_id
                         ),
-                        concept=concept,
                         lecture_entity_count=ledger.lecture_entity_count,
+                        forbidden_cloze_targets=_forbidden_cloze_targets(
+                            lecture_title=self.repository.lecture_title(
+                                context.job.lecture_id
+                            ),
+                            concept=concept,
+                            lecture_entity_count=ledger.lecture_entity_count,
+                        ),
+                        existing_supports=tuple(supporting_notes),
+                        initial_tags=("OMS::Generated",),
                     ),
-                    existing_supports=tuple(supporting_notes),
-                    initial_tags=("OMS::Generated",),
-                ),
+                )
             )
+
+        async def generate(
+            item: tuple[str, V2GapGenerationRequest],
+        ) -> tuple[str, V2GapGenerationResult]:
+            concept_id, request = item
+            return concept_id, await asyncio.to_thread(
+                service.generate,
+                request,
+            )
+
+        generated_results = await _bounded_map(
+            generation_requests,
+            generate,
+        )
+        for concept_id, result in generated_results:
             results.append(result)
             proposals.extend(result.proposals)
             unresolved.extend(
                 {
-                    "concept_id": concept.concept_id,
+                    "concept_id": concept_id,
                     **item.model_dump(mode="json"),
                 }
                 for item in result.unresolved
@@ -1383,6 +1596,17 @@ class CurationServicesRunner:
                 "schema_name": "gap_cards_v2",
                 "proposals": proposal_payloads,
                 "unresolved": unresolved,
+                "selection_budget": {
+                    "mode": "soft_target",
+                    "target": gap_selection.target,
+                    "selected_missing_facts": gap_selection.selected_count,
+                    "deferred_missing_facts": sum(
+                        len(facts)
+                        for facts in gap_selection.deferred_by_concept.values()
+                    ),
+                    "overflow_facts": gap_selection.overflow_count,
+                    "generated_cards": len(cards),
+                },
                 "forbidden_cloze_targets": sorted(
                     {
                         target
@@ -1486,22 +1710,30 @@ class CurationServicesRunner:
             prompt_hash=prompt_hash,
             schema_name=coverage_schema,
         )
-        results: dict[str, dict[str, Any]] = {}
-        projected: list[Candidate] = []
-        usages: list[JudgmentResult] = []
-        for concept_id, values in raw_groups.items():
+        passages = _source_passages(context)
+
+        async def judge_group(
+            item: tuple[str, list[dict[str, Any]]],
+        ) -> tuple[
+            str,
+            dict[str, Any],
+            tuple[Candidate, ...],
+            tuple[JudgmentResult, ...],
+        ]:
+            concept_id, values = item
             candidates = [
                 _candidate_from_payload(value) for value in values
             ]
+            concept_usages: list[JudgmentResult] = []
             for deck_candidates in _priority_candidate_groups(candidates):
                 result = await asyncio.to_thread(
                     service.judge,
                     ledger_by_id[concept_id],
                     deck_candidates,
-                    passages=_source_passages(context),
+                    passages=passages,
                 )
-                usages.append(result)
-                results[concept_id] = {
+                concept_usages.append(result)
+                record = {
                     "judgment": result.judgment.model_dump(mode="json"),
                     "cache_key": result.cache_key,
                     "cache_hit": result.cache_hit,
@@ -1515,7 +1747,7 @@ class CurationServicesRunner:
                     else result.judgment
                 )
                 supporting = set(runtime.supporting_note_ids)
-                projected.extend(
+                concept_candidates = tuple(
                     _judged_candidate(
                         candidate,
                         runtime,
@@ -1525,7 +1757,22 @@ class CurationServicesRunner:
                     if candidate.note_id in supporting
                 )
                 if supporting:
-                    break
+                    return (
+                        concept_id,
+                        record,
+                        concept_candidates,
+                        tuple(concept_usages),
+                    )
+            return concept_id, record, (), tuple(concept_usages)
+
+        judged = await _bounded_map(tuple(raw_groups.items()), judge_group)
+        results = {concept_id: record for concept_id, record, _, _ in judged}
+        projected = [
+            candidate
+            for _, _, candidates, _ in judged
+            for candidate in candidates
+        ]
+        usages = [result for _, _, _, values in judged for result in values]
         merged = _merge_candidates(projected)
         return StageProduct(
             kind=kind,

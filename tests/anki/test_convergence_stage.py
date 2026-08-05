@@ -373,6 +373,50 @@ def test_later_pass_skips_concepts_already_converged() -> None:
     assert retrieval.calls == []
 
 
+def test_pass_four_stops_after_single_low_yield_convergence_pass() -> None:
+    _, _, missing = _fixture()
+    runner, structured, retrieval = _runner(
+        (_candidate(3, RetrievalPass.CONVERGENCE),),
+        CoverageJudgmentV2(
+            concept_id="C01",
+            supporting_note_ids=(1, 2, 3),
+            missing_facts=(missing,),
+            rationale="An additional search result would remain incomplete.",
+        ),
+    )
+    nonconverged = {
+        "pass_number": 3,
+        "schema_name": "coverage_v2",
+        "concepts": [
+            {
+                "concept_id": "C01",
+                "passes_run": 3,
+                "seen_note_ids": [1, 2],
+                "growth": [1.0, 0.5, 0.5],
+                "converged": False,
+            }
+        ],
+        "expanded_paraphrases": {"C01": []},
+        "judgments": {},
+    }
+
+    product = asyncio.run(
+        runner._convergence_pass(
+            _context(
+                convergence_payloads={
+                    CurationStage.CONVERGENCE_PASS_3: nonconverged
+                }
+            ),
+            pass_number=4,
+        )
+    )
+
+    assert product.payload["optimization_skipped"] is True
+    assert product.payload["concepts"] == nonconverged["concepts"]
+    assert structured.calls == []
+    assert retrieval.calls == []
+
+
 def test_stable_pass_three_does_not_require_an_expansion_prompt() -> None:
     _, _, missing = _fixture()
     runner, structured, retrieval = _runner(
