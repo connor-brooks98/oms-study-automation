@@ -35,6 +35,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+document-processing = [
+  "firecrawl-anydoc==0.1.3",
+]
 pdf-inspection = [
   "pdf-inspector @ git+https://github.com/firecrawl/pdf-inspector.git@ae6246ba0c39008931b67f9cee1a898ee405d023",
 ]
