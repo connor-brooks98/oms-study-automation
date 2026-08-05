@@ -165,6 +165,7 @@ def test_explicit_no_support_uses_configured_fallback_and_requires_verification(
     [
         {**_generated(1), "correct_index": 2},
         {"correct_index": 1, "rationale": "", "evidence": [], "uncertainty_note": ""},
+        {**_generated(1), "rationale": " ", "uncertainty_note": "  "},
     ],
 )
 def test_invalid_fallback_contract_does_not_return_a_draft(payload: dict[str, object]) -> None:

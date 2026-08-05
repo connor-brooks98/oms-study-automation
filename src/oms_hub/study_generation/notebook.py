@@ -63,7 +63,7 @@ class NotebookQuestionResult:
             raise NotebookQuestionContractError("NotebookLM answer status is invalid")
         if not isinstance(self.rationale, str) or not self.rationale.strip():
             raise NotebookQuestionContractError("NotebookLM rationale is empty")
-        if _contains_hedge(self.rationale):
+        if self.status is NotebookQuestionStatus.ANSWERED and _contains_hedge(self.rationale):
             raise NotebookQuestionContractError("NotebookLM rationale is hedged")
         if any(not isinstance(item, str) or not item.strip() for item in self.evidence):
             raise NotebookQuestionContractError("NotebookLM evidence is invalid")
@@ -100,7 +100,7 @@ class _NotebookQuestionResponse(BaseModel):
 
     @model_validator(mode="after")
     def result_is_decisive(self) -> "_NotebookQuestionResponse":
-        if _contains_hedge(self.rationale):
+        if self.status == "answered" and _contains_hedge(self.rationale):
             raise ValueError("rationale must not hedge")
         if self.status == "answered":
             if self.correct_index is None:
@@ -748,7 +748,18 @@ def _parse_question_response(value: object, choice_count: int) -> NotebookQuesti
 
 def _contains_hedge(value: str) -> bool:
     normalized = value.casefold()
-    return any(marker in normalized for marker in ("maybe", "might", "could", "not sure"))
+    return any(
+        marker in normalized
+        for marker in (
+            "maybe",
+            "might",
+            "could",
+            "not sure",
+            "probably",
+            "possibly",
+            "appears to be",
+        )
+    )
 
 
 def _validate_revision_source(

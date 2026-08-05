@@ -67,7 +67,15 @@ class GeneratedAnswerContract(BaseModel):
     def evidence_is_nonempty_text(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         if any(not value.strip() for value in values):
             raise ValueError("evidence entries must not be blank")
-        return values
+        return tuple(value.strip() for value in values)
+
+    @field_validator("rationale", "uncertainty_note")
+    @classmethod
+    def required_text_is_not_whitespace(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("required text must not be blank")
+        return normalized
 
 
 class PracticeAnswerResolver:

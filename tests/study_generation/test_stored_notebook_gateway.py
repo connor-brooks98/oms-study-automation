@@ -544,6 +544,10 @@ def test_answer_studio_question_rejects_invalid_source_selection(
         "maybe the answer is 0",
         '{"status":"answered","correct_index":null,"rationale":"Maybe Biceps",'
         '"evidence":["p4"]}',
+        '{"status":"answered","correct_index":0,"rationale":"Probably Biceps",'
+        '"evidence":["p4"]}',
+        '{"status":"answered","correct_index":0,"rationale":"It appears to be Biceps",'
+        '"evidence":["p4"]}',
         '{"status":"answered","correct_index":2,"rationale":"Biceps",' '"evidence":["p4"]}',
     ],
 )
