@@ -145,12 +145,12 @@ def reconcile(snapshot: ReconciliationInput) -> ReconciliationReport:
             passed,
             warned,
         )
-        _record(
+        _warn(
             "A7",
             keep_count >= 10,
             "At least 10 candidate notes must survive the audit",
             passed,
-            failed,
+            warned,
         )
     else:
         passed.extend(("A6", "A7"))
@@ -161,12 +161,12 @@ def reconcile(snapshot: ReconciliationInput) -> ReconciliationReport:
             for concept in snapshot.concepts
         )
         unresolved_rate = unresolved_concepts / len(snapshot.concepts)
-        _record(
+        _warn(
             "A8",
             unresolved_rate <= 0.40,
             "No more than 40% of concepts may remain unresolved",
             passed,
-            failed,
+            warned,
         )
     else:
         passed.append("A8")

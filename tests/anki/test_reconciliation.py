@@ -160,3 +160,35 @@ def test_high_audit_drop_rate_warns_without_blocking_review() -> None:
     assert "A6" in {item.assertion_id for item in report.warned}
     assert "A6" not in {item.assertion_id for item in report.failed}
     assert report.can_render_envelope is True
+
+
+def test_volume_quality_thresholds_warn_without_blocking_review() -> None:
+    expected_ids = tuple(range(1, 6))
+    snapshot = ReconciliationInput(
+        concepts=tuple(
+            ConceptResolution(
+                concept_id=f"C{number:02}",
+                missing_fact_ids=(f"C{number:02}-M1",),
+                status="intentional_gap",
+                converged=True,
+                cited_passage_ids=(),
+            )
+            for number in range(1, 3)
+        ),
+        generated_cards=(),
+        unresolved_fact_ids=("C01-M1", "C02-M1"),
+        expected_audit_nids=expected_ids,
+        audit_verdicts=tuple(
+            AuditResolution(nid=note_id, verdict="keep")
+            for note_id in expected_ids
+        ),
+        source_passage_ids=(),
+        forbidden_cloze_targets=(),
+        prompt_sync_stale=False,
+    )
+
+    report = reconcile(snapshot)
+
+    assert {item.assertion_id for item in report.warned} == {"A7", "A8"}
+    assert report.failed == ()
+    assert report.can_render_envelope is True
