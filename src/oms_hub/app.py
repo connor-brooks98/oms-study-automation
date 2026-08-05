@@ -171,9 +171,7 @@ async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         stop.set()
-        await asyncio.gather(
-            *(asyncio.to_thread(thread.join, 10) for thread in threads)
-        )
+        await asyncio.gather(*(asyncio.to_thread(thread.join, 10) for thread in threads))
         if anki_worker is not None:
             await anki_worker.stop()
         embedder = getattr(app.state, "anki_embedder", None)
@@ -232,13 +230,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         host = (request.url.hostname or "").lower().rstrip(".")
         local_hosts = {"127.0.0.1", "localhost", "testserver"}
         is_public = bool(resolved.public_hostname and host == resolved.public_hostname)
-        is_agent_host = bool(
-            resolved.anki_agent_hostname and host == resolved.anki_agent_hostname
-        )
+        is_agent_host = bool(resolved.anki_agent_hostname and host == resolved.anki_agent_hostname)
         is_agent_path = request.url.path.startswith("/agent/v1/")
-        is_public_quiz = (
-            request.url.path == "/public/quizzes"
-            or request.url.path.startswith("/public/quizzes/")
+        is_public_quiz = request.url.path == "/public/quizzes" or request.url.path.startswith(
+            "/public/quizzes/"
         )
 
         def harden(response: Response) -> Response:
@@ -254,9 +249,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "script-src 'self'; "
                 "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com"
             )
-            response.headers["Permissions-Policy"] = (
-                "camera=(), microphone=(), geolocation=()"
-            )
+            response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
             response.headers["Referrer-Policy"] = "no-referrer"
             response.headers["X-Content-Type-Options"] = "nosniff"
             response.headers["X-Frame-Options"] = "DENY"
@@ -297,10 +290,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             status_code=400,
                         )
                     )
-                if (
-                    request_bytes < 0
-                    or request_bytes > resolved.anki_agent_max_request_bytes
-                ):
+                if request_bytes < 0 or request_bytes > resolved.anki_agent_max_request_bytes:
                     return harden(
                         JSONResponse(
                             {"detail": "agent request is too large"},
@@ -308,9 +298,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         )
                     )
             try:
-                expected_token = request.app.state.secrets.get(
-                    resolved.anki_agent_token_key
-                )
+                expected_token = request.app.state.secrets.get(resolved.anki_agent_token_key)
             except KeyringError:
                 return harden(
                     JSONResponse(
@@ -374,15 +362,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
         elif host in local_hosts:
             if not resolved.allow_local_access:
-                return harden(
-                    JSONResponse(
-                        {"detail": "Local access is disabled"}, status_code=403
-                    )
-                )
+                return harden(JSONResponse({"detail": "Local access is disabled"}, status_code=403))
         else:
-            return harden(
-                JSONResponse({"detail": "Host is not allowed"}, status_code=400)
-            )
+            return harden(JSONResponse({"detail": "Host is not allowed"}, status_code=400))
 
         origin = request.headers.get("origin")
         allowed_origins = {
@@ -393,9 +375,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if resolved.public_hostname:
             allowed_origins.add(f"https://{resolved.public_hostname}")
         allowed_origin = origin_is_allowed(origin, allowed_origins)
-        same_origin_fetch = (
-            request.headers.get("sec-fetch-site", "").casefold() == "same-origin"
-        )
+        same_origin_fetch = request.headers.get("sec-fetch-site", "").casefold() == "same-origin"
         is_mutation = browser_csrf_required(request.method, request.url.path)
         if is_mutation:
             if origin and not (allowed_origin or same_origin_fetch):
@@ -539,20 +519,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved,
         SerialOfficeConverter(resolved.office_timeout_seconds),
     )
-    saved_transcript_prompt = app.state.generation_repository.prompt_path(
-        PromptKind.TRANSCRIPT
-    )
+    saved_transcript_prompt = app.state.generation_repository.prompt_path(PromptKind.TRANSCRIPT)
     transcript_prompt_path = (
         Path(saved_transcript_prompt)
         if saved_transcript_prompt
         else resolved.transcript_prompt_path
     )
     app.state.transcript_prompt = V2PromptLoader(
-        (
-            expanded_path(transcript_prompt_path)
-            if transcript_prompt_path is not None
-            else None
-        ),
+        (expanded_path(transcript_prompt_path) if transcript_prompt_path is not None else None),
         resolved.transcript_prompt_sha256,
     )
     app.state.transcript_pipeline = V2TranscriptPipeline(
@@ -651,13 +625,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         structured = StructuredTextService(app.state.llm_service)
+        from oms_hub.anki.card_centric_fixture_service import ProductionFixtureClassifier
+
+        app.state.card_centric_fixture_classifier = ProductionFixtureClassifier(structured)
         prompt_sync: PromptSynchronizer
         if resolved.anki_prompt_git_sync:
             if resolved.anki_prompt_directory is None:
-                raise ValueError(
-                    "Anki prompt Git sync requires "
-                    "OMS_HUB_ANKI_PROMPT_DIRECTORY"
-                )
+                raise ValueError("Anki prompt Git sync requires OMS_HUB_ANKI_PROMPT_DIRECTORY")
             prompt_sync = GitPromptSynchronizer(
                 resolved.anki_prompt_directory,
                 timeout_seconds=resolved.anki_prompt_git_timeout_seconds,

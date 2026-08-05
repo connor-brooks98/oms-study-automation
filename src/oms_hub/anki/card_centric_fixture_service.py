@@ -9,8 +9,10 @@ import json
 from dataclasses import dataclass
 from typing import Protocol
 
-from oms_hub.anki.card_centric_contracts import CardClassification
+from oms_hub.anki.card_centric_contracts import CardClassification, CardClassificationBatchOutput
 from oms_hub.anki.card_centric_fixture import LECTURE07_FIXTURE, evaluate_lecture07_fixture
+from oms_hub.llm.domain import ProviderName
+from oms_hub.llm.structured import StructuredTextService
 
 FIXTURE_VERSION = "lecture07-real-v1"
 FIXTURE_INPUTS = (
@@ -41,6 +43,36 @@ class FixtureClassifier(Protocol):
         fixture_version: str,
         fixture_inputs: tuple[tuple[object, ...], ...],
     ) -> tuple[CardClassification, ...]: ...
+
+
+@dataclass(slots=True)
+class ProductionFixtureClassifier:
+    """Adapter over the configured structured provider; tests inject the protocol."""
+
+    structured: StructuredTextService
+
+    def classify_fixture(
+        self,
+        *,
+        provider: str,
+        model: str,
+        fixture_version: str,
+        fixture_inputs: tuple[tuple[object, ...], ...],
+    ) -> tuple[CardClassification, ...]:
+        result = self.structured.generate_json(
+            "Classify every real Lecture07 Anki card. Return exact IDs and evidence-aware verdicts.",
+            json.dumps(
+                {
+                    "fixture_version": fixture_version,
+                    "source_prefix": "Lecture07 hematology source excerpts",
+                    "cards": fixture_inputs,
+                }
+            ),
+            provider=ProviderName(provider),
+            model=model,
+            output_model=CardClassificationBatchOutput,
+        )
+        return result.value.results
 
 
 @dataclass(frozen=True, slots=True)
