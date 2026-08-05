@@ -56,6 +56,7 @@ class DocumentProcessorRouter:
         return legacy
 
     def _parse_fallback(self, snapshot: SourceSnapshot, asset_root: Path) -> ParsedDocument:
+        """Use the ordered format adapters; ``supports`` owns MIME/signature checks."""
         processors = tuple(
             processor for processor in self.fallbacks if processor.supports(snapshot)
         )
