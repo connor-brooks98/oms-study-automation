@@ -11,6 +11,12 @@ from sqlalchemy.orm import Session
 
 from oms_hub.anki.apply import ApplyOperationRecord
 from oms_hub.anki.audit import AuditCacheRecord
+from oms_hub.anki.card_centric_review import (
+    OverflowAcknowledgement,
+    issue_acknowledgement,
+    selection_digest,
+    verify_acknowledgement,
+)
 from oms_hub.anki.contracts import (
     ActionEnvelopeDocument,
     canonical_payload_sha256,
@@ -194,6 +200,11 @@ ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
         CurationState.CARD_SCOPING_TAGS,
         CurationState.CARD_CLASSIFYING,
         CurationState.CARD_COVERAGE,
+        CurationState.CARD_SWEEPING_RESIDUAL,
+        CurationState.CARD_GENERATING_GAPS,
+        CurationState.CARD_DEDUPING,
+        CurationState.CARD_SELECTING,
+        CurationState.CARD_RECONCILING,
         CurationState.RETRIEVING_PASS_1,
         CurationState.JUDGING_PASS_1,
         CurationState.LOCALIZING_MISSED_CONCEPTS,
@@ -427,6 +438,113 @@ class AnkiCurationRepository:
                 stored.model = value.ledger_s2.model
                 stored.enabled = True
                 stored.options_json = document
+
+    def issue_card_centric_overflow_acknowledgement(
+        self,
+        job_id: UUID,
+        *,
+        review_revision: int,
+        selected_note_ids: tuple[int, ...],
+        selected_generated_ids: tuple[str, ...],
+        mandatory_note_ids: tuple[int, ...],
+        mandatory_generated_ids: tuple[str, ...],
+        cap: int,
+    ) -> dict[str, Any]:
+        """Persist an HMAC-bound acknowledgement for an all-mandatory overflow."""
+        with self.database.session() as session:
+            job = self._require_job_model(session, job_id)
+            if job.review_revision != review_revision:
+                raise ValueError("review revision is stale")
+            if not set(selected_note_ids) <= set(mandatory_note_ids) or not set(
+                selected_generated_ids
+            ) <= set(mandatory_generated_ids):
+                raise ValueError("only an all-mandatory selection can exceed the cap")
+            secret_setting = session.get(AnkiStageSettingModel, "card_centric_review_secret")
+            if secret_setting is None:
+                secret_setting = AnkiStageSettingModel(
+                    stage="card_centric_review_secret",
+                    provider="local",
+                    model="hmac-sha256",
+                    enabled=True,
+                    options_json=_canonical_json({"secret": uuid4().hex + uuid4().hex}),
+                )
+                session.add(secret_setting)
+                session.flush()
+            secret = str(cast(dict[str, Any], json.loads(secret_setting.options_json))["secret"])
+            acknowledgement = issue_acknowledgement(
+                secret,
+                job_id=job_id,
+                review_revision=review_revision,
+                selected_note_ids=selected_note_ids,
+                selected_generated_ids=selected_generated_ids,
+                mandatory_count=len(selected_note_ids) + len(selected_generated_ids),
+                cap=cap,
+                pipeline_contract_version=job.pipeline_contract_version,
+                model_config_sha256=job.model_config_sha256,
+            )
+            document = acknowledgement.document()
+            session.add(
+                AnkiStageSettingModel(
+                    stage=f"card_centric_ack:{acknowledgement.token}",
+                    provider="local",
+                    model="hmac-sha256",
+                    enabled=True,
+                    options_json=_canonical_json(document),
+                )
+            )
+            return document
+
+    def validate_card_centric_overflow_acknowledgement(
+        self,
+        job_id: UUID,
+        *,
+        review_revision: int,
+        selected_note_ids: tuple[int, ...],
+        selected_generated_ids: tuple[str, ...],
+        cap: int,
+        document: dict[str, Any],
+    ) -> bool:
+        """Accept only the exact server-issued document for this frozen revision."""
+        token = str(document.get("token", ""))
+        if not token:
+            return False
+        with self.database.session() as session:
+            job = self._require_job_model(session, job_id)
+            stored = session.get(AnkiStageSettingModel, f"card_centric_ack:{token}")
+            secret_setting = session.get(AnkiStageSettingModel, "card_centric_review_secret")
+            if stored is None or secret_setting is None:
+                return False
+            try:
+                persisted = cast(dict[str, Any], json.loads(stored.options_json))
+                acknowledgement = OverflowAcknowledgement(
+                    token=str(persisted["token"]),
+                    job_id=UUID(str(persisted["job_id"])),
+                    review_revision=int(persisted["review_revision"]),
+                    selection_digest=str(persisted["selection_digest"]),
+                    mandatory_count=int(persisted["mandatory_count"]),
+                    cap=int(persisted["cap"]),
+                    pipeline_contract_version=str(persisted["pipeline_contract_version"]),
+                    model_config_sha256=str(persisted["model_config_sha256"]),
+                    signature=str(persisted["signature"]),
+                )
+                secret = str(
+                    cast(dict[str, Any], json.loads(secret_setting.options_json))["secret"]
+                )
+            except (KeyError, TypeError, ValueError):
+                return False
+            return (
+                persisted == document
+                and verify_acknowledgement(secret, acknowledgement)
+                and acknowledgement.job_id == job_id
+                and acknowledgement.review_revision == review_revision
+                and acknowledgement.selection_digest
+                == selection_digest(selected_note_ids, selected_generated_ids)
+                and acknowledgement.mandatory_count
+                == len(selected_note_ids) + len(selected_generated_ids)
+                and acknowledgement.cap == cap
+                and acknowledgement.pipeline_contract_version == job.pipeline_contract_version
+                and acknowledgement.model_config_sha256 == job.model_config_sha256
+            )
 
     def require_job(self, job_id: UUID) -> CurationJob:
         with self.database.session() as session:
@@ -1402,6 +1520,14 @@ class AnkiCurationRepository:
                 if envelope.model_config_sha256 != job.model_config_sha256:
                     raise ValueError(
                         "action envelope model configuration does not match job; "
+                        "no mutation performed"
+                    )
+                if envelope.resolved_model_config and (
+                    _sha256_text(_canonical_json(envelope.resolved_model_config))
+                    != job.model_config_sha256
+                ):
+                    raise ValueError(
+                        "action envelope resolved model configuration does not match job; "
                         "no mutation performed"
                     )
                 if envelope.review_revision != job.review_revision:

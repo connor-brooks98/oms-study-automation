@@ -93,6 +93,7 @@ def test_concept_review_groups_keep_yes_maybe_flagged_and_generated_separate() -
             "maybe": [],
             "flagged": [],
             "generated": [{"card_id": "CC-1", "selected": True, "validation_state": "valid"}],
+            "uncovered": False,
         }
     ]
 

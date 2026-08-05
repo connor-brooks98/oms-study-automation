@@ -111,6 +111,43 @@ def test_card_centric_profile_persists_for_the_local_study_hub_user(tmp_path: Pa
     assert repository.card_centric_profile() == profile
 
 
+def test_card_centric_overflow_acknowledgement_is_exact_and_server_signed(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        )
+    )
+    selected = tuple(range(1, 72))
+    acknowledgement = repository.issue_card_centric_overflow_acknowledgement(
+        job.id,
+        review_revision=job.review_revision,
+        selected_note_ids=selected,
+        selected_generated_ids=(),
+        mandatory_note_ids=selected,
+        mandatory_generated_ids=(),
+        cap=70,
+    )
+
+    assert repository.validate_card_centric_overflow_acknowledgement(
+        job.id,
+        review_revision=job.review_revision,
+        selected_note_ids=selected,
+        selected_generated_ids=(),
+        cap=70,
+        document=acknowledgement,
+    )
+    assert not repository.validate_card_centric_overflow_acknowledgement(
+        job.id,
+        review_revision=job.review_revision,
+        selected_note_ids=selected[:-1],
+        selected_generated_ids=(),
+        cap=70,
+        document=acknowledgement,
+    )
+
+
 def _v2_envelope(
     *,
     job_id: UUID,

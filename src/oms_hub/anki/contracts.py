@@ -223,12 +223,9 @@ def _resolved_model_config(
             gap_fill_s7=stage("gap_fill_s7"),
             residual_unlocked=bool(value.get("residual_unlocked", False)),
         )
-        if (
-            version is PipelineContractVersion.CARD_CENTRIC_V1
-            and (
-                resolved.classify_s4.thinking_mode != "disabled"
-                or resolved.residual_s6.thinking_mode != "disabled"
-            )
+        if version is PipelineContractVersion.CARD_CENTRIC_V1 and (
+            resolved.classify_s4.thinking_mode != "disabled"
+            or resolved.residual_s6.thinking_mode != "disabled"
         ):
             raise ValueError("card-centric S4/S6 thinking must be disabled")
         return resolved
@@ -505,6 +502,12 @@ class ActionEnvelopeV2(_ActionEnvelopeBase):
     job_id: UUID
     pipeline_contract_version: Literal["card_centric_v1"] = "card_centric_v1"
     model_config_sha256: Sha256
+    # The digest is an integrity check; the canonical document makes the frozen
+    # plan independently auditable and reproducible.
+    # Empty is accepted only to parse historical pre-document V2 plans; all new
+    # card-centric plans populate this and repository persistence rejects a
+    # mismatched non-empty document.
+    resolved_model_config: dict[str, Any] = Field(default_factory=dict)
     reconciliation_contract_version: Annotated[str, Field(min_length=1, max_length=100)]
     review_revision: Annotated[int, Field(ge=0)]
     overflow_acknowledgement_provenance: dict[str, Any]

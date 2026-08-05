@@ -74,6 +74,7 @@ class CardCentricReconciliationInput(BaseModel):
     concept_ids: tuple[str, ...]
     coverage: dict[str, Literal["covered", "uncovered", "intentional_gap"]]
     required_fact_ids: tuple[str, ...]
+    uncovered_after_s5: tuple[str, ...]
     residual_ran_for: tuple[str, ...]
     generated_cards: tuple[GeneratedResolution, ...]
     unresolved_fact_ids: tuple[str, ...]
@@ -91,6 +92,10 @@ class CardCentricReconciliationInput(BaseModel):
     target: int = Field(default=65, ge=1)
     cap: int = Field(default=70, ge=1)
     mandatory_nids: tuple[int, ...] = ()
+    # These immutable S9 mappings let review-time reconciliation prove that
+    # coverage comes from a currently selected card, never an unselected row.
+    covered_concept_ids_by_nid: dict[int, tuple[str, ...]] = Field(default_factory=dict)
+    generated_concept_id_by_card_id: dict[str, str] = Field(default_factory=dict)
     overflow_acknowledgement: dict[str, str] | None = None
     ledger_provenance_ok: bool = True
 
@@ -107,14 +112,19 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
     required = set(snapshot.required_fact_ids)
     _record(
         "A1",
-        bool(required) or not snapshot.concept_ids or required <= generated_by_fact | unresolved,
+        required == generated_by_fact | unresolved
+        and not generated_by_fact & unresolved
+        and len(snapshot.required_fact_ids) == len(required),
         "Every uncovered-after-S6 fact must be generated or explicitly unresolved",
         passed,
         failed,
     )
     _record(
         "A2",
-        len(required) == len(generated_by_fact | unresolved) and not generated_by_fact & unresolved,
+        len(snapshot.required_fact_ids)
+        == len(snapshot.generated_cards) + len(snapshot.unresolved_fact_ids)
+        and len(snapshot.generated_cards) == len(generated_by_fact)
+        and len(snapshot.unresolved_fact_ids) == len(unresolved),
         "Missing facts must reconcile exactly to generated or unresolved output",
         passed,
         failed,
@@ -157,9 +167,8 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
     )
     _record(
         "A6",
-        snapshot.ledger_provenance_ok
-        and len(snapshot.eligible_yes_nids) == len(set(snapshot.eligible_yes_nids)),
-        "Eligible YES evidence and ledger provenance must be unique and complete",
+        len(snapshot.eligible_yes_nids) + len(snapshot.generated_cards) >= 10,
+        "YES plus generated cards must total at least 10",
         passed,
         failed,
     )
@@ -172,9 +181,7 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
         else 0.0
     )
     _warn("A7", no_rate <= 0.60, "Classify NO-rate exceeds 60%", passed, warned)
-    uncovered = {
-        concept_id for concept_id, status in snapshot.coverage.items() if status == "uncovered"
-    }
+    uncovered = set(snapshot.uncovered_after_s5)
     _record(
         "A8",
         uncovered <= set(snapshot.residual_ran_for),
@@ -215,6 +222,13 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
         set(snapshot.selected_nids) <= set(snapshot.eligible_yes_nids)
         and set(snapshot.selected_generated_card_ids) <= set(snapshot.generated_card_ids),
         "Selected cards must be drawn from eligible existing or generated output",
+        passed,
+        failed,
+    )
+    _record(
+        "selection_mandatory",
+        set(snapshot.mandatory_nids) <= set(snapshot.selected_nids),
+        "Mandatory evidence-backed cards cannot be removed during review",
         passed,
         failed,
     )

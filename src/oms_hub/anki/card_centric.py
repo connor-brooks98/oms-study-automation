@@ -459,21 +459,8 @@ def select_high_yield(
         return (-emphasis, -high, -depth, -len(covered), item.note_id)
 
     ordered = sorted(eligible, key=rank)
-    # First choose one representative per concept, preserving high-yield order.
-    selected: list[CardClassification] = []
-    seen_concepts: set[str] = set()
-    for item in ordered:
-        if (
-            any(concept_id not in seen_concepts for concept_id in item.covered_concept_ids)
-            and len(selected) < cap
-        ):
-            selected.append(item)
-            seen_concepts.update(item.covered_concept_ids)
-    for item in ordered:
-        if item not in selected and len(selected) < min(target, cap):
-            selected.append(item)
     # Mandatory means evidence-backed clean cards covering an emphasized/high
-    # concept. Never drop them merely to hit the normal cap.
+    # concept. They are selected before ordinary target truncation.
     mandatory = [
         item
         for item in ordered
@@ -489,7 +476,23 @@ def select_high_yield(
             raise CardCentricValidationError(
                 "mandatory high-yield overflow requires acknowledgement"
             )
-        selected = mandatory
+        return (
+            tuple(sorted(item.note_id for item in mandatory)),
+            tuple(sorted(item.note_id for item in eligible if item not in mandatory)),
+            tuple(sorted(set(generated_card_ids))),
+        )
+    selected: list[CardClassification] = list(mandatory)
+    seen_concepts: set[str] = set()
+    for item in ordered:
+        if item not in selected and (
+            any(concept_id not in seen_concepts for concept_id in item.covered_concept_ids)
+            and len(selected) < cap
+        ):
+            selected.append(item)
+            seen_concepts.update(item.covered_concept_ids)
+    for item in ordered:
+        if item not in selected and len(selected) < min(target, cap):
+            selected.append(item)
     selected_ids = tuple(sorted(item.note_id for item in selected))
     excluded = tuple(
         sorted(item.note_id for item in eligible if item.note_id not in set(selected_ids))

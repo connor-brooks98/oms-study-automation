@@ -637,6 +637,8 @@ class CurationServicesRunner:
         source = _card_source_index(context)
         stage_model = context.job.resolved_model_config.gap_fill_s7
         output: list[GeneratedCardResolution] = []
+        evidence_records: list[SourceEvidence] = []
+        passages_by_id = {passage.passage_id: passage for passage in source.passages}
         usages: list[StageUsage] = []
         for concept in ledger.concepts:
             if coverage[concept.concept_id]["status"] == "covered":
@@ -690,6 +692,33 @@ class CurationServicesRunner:
                 card_id = hashlib.sha256(
                     f"{concept.concept_id}\0{item.fact_id}\0{item.text}\0{item.extra}".encode()
                 ).hexdigest()[:32]
+                evidence_ids: tuple[str, ...] = ()
+                if item.status == "generated":
+                    cited = tuple(passages_by_id[value] for value in item.source_passage_ids)
+                    evidence_ids = tuple(
+                        source_evidence_id(concept.concept_id, passage.passage_id)
+                        for passage in cited
+                    )
+                    evidence_records.extend(
+                        SourceEvidence(
+                            evidence_id=evidence_id,
+                            concept_id=concept.concept_id,
+                            support=EvidenceSupport.SUPPORTED,
+                            statement=item.text,
+                            source_refs=(
+                                SourceReference(
+                                    source_kind=SourceKind(passage.source_kind),
+                                    revision_id=passage.revision_id,
+                                    locator=passage.passage_id,
+                                    content_hash=passage.content_sha256,
+                                ),
+                            ),
+                            content_hash=hashlib.sha256(
+                                (item.text + "\0" + passage.passage_id).encode()
+                            ).hexdigest(),
+                        )
+                        for evidence_id, passage in zip(evidence_ids, cited, strict=True)
+                    )
                 output.append(
                     GeneratedCardResolution(
                         card_id=f"CC-{card_id}",
@@ -700,6 +729,7 @@ class CurationServicesRunner:
                         source_passage_ids=item.source_passage_ids
                         if item.status == "generated"
                         else ("UNRESOLVED",),
+                        evidence_ids=evidence_ids,
                         split=item.split,
                         status=item.status,
                         reason=item.reason,
@@ -717,6 +747,7 @@ class CurationServicesRunner:
             kind="card_centric_gap_fill",
             payload={"resolutions": [item.model_dump(mode="json") for item in output]},
             usage=_combined_usage("card_gap_fill", usages),
+            source_evidence=tuple(evidence_records),
         )
 
     async def _card_selection(self, context: StageContext) -> StageProduct:
@@ -730,6 +761,7 @@ class CurationServicesRunner:
             generated_card_ids=[item.card_id for item in generated if item.status == "generated"],
         )
         selected_set = set(selected)
+        source_by_id = {passage.passage_id: passage for passage in source.passages}
         candidate_rows = tuple(
             Candidate(
                 note_id=item.note_id,
@@ -770,6 +802,17 @@ class CurationServicesRunner:
                 extra=item.extra,
                 selected=item.card_id in set(generated_ids),
                 validation_state=item.status,
+                source_refs=tuple(
+                    SourceReference(
+                        source_kind=SourceKind(source_by_id[value].source_kind),
+                        revision_id=source_by_id[value].revision_id,
+                        locator=value,
+                        content_hash=source_by_id[value].content_sha256,
+                    )
+                    for value in item.source_passage_ids
+                    if value != "UNRESOLVED"
+                ),
+                evidence_ids=item.evidence_ids,
                 provenance={
                     "card_centric": {
                         "fact_id": item.fact_id,
@@ -1378,9 +1421,14 @@ class CurationServicesRunner:
             card.note_id: card
             for card in _card_records(_payload(context, CurationStage.SOURCE_INDEX))
         }
-        existing = _all_card_classifications(context)
+        existing = tuple(
+            item
+            for item in _all_card_classifications(context)
+            if selection_eligible(item, _card_source_index(context))
+        )
         generated = _card_generated(context)
         resolved: list[GeneratedCardResolution] = []
+        accepted_generated: list[GeneratedCardResolution] = []
         for item in generated:
             if item.status != "generated":
                 resolved.append(item)
@@ -1396,15 +1444,33 @@ class CurationServicesRunner:
                 ),
                 None,
             )
-            if duplicate is None:
+            generated_duplicate = next(
+                (
+                    other.card_id
+                    for other in accepted_generated
+                    if other.concept_id == item.concept_id
+                    and _token_overlap(tokens, _card_tokens(other.text)) >= 0.80
+                ),
+                None,
+            )
+            if duplicate is None and generated_duplicate is None:
                 resolved.append(item)
+                accepted_generated.append(item)
             else:
                 resolved.append(
                     item.model_copy(
                         update={
                             "status": "duplicate_of_existing",
                             "duplicate_of_existing_note_id": duplicate,
-                            "reason": "token-overlap duplicate of eligible existing card",
+                            "duplicate_of_generated_card_id": generated_duplicate,
+                            "reason": (
+                                "token-overlap duplicate of eligible existing card"
+                                if duplicate is not None
+                                else (
+                                    "token-overlap duplicate of generated card "
+                                    f"{generated_duplicate}"
+                                )
+                            ),
                         }
                     )
                 )
@@ -1824,64 +1890,75 @@ class CurationServicesRunner:
                 final_coverage[item.concept_id] = "covered"
             elif item.status in {"unresolved", "duplicate_of_existing"}:
                 final_coverage[item.concept_id] = "intentional_gap"
-        report = reconcile_card_centric(
-            CardCentricReconciliationInput(
-                concept_ids=tuple(concept.concept_id for concept in ledger.concepts),
-                coverage=final_coverage,
-                required_fact_ids=required_fact_ids,
-                residual_ran_for=tuple(
-                    _payload(context, CurationStage.CARD_RESIDUAL).get("uncovered_concept_ids", [])
-                ),
-                generated_cards=tuple(
-                    GeneratedResolution(card_id=item.card_id, fact_id=item.fact_id, text=item.text)
-                    for item in generated
-                    if item.status == "generated"
-                ),
-                unresolved_fact_ids=tuple(
-                    item.fact_id for item in generated if item.status != "generated"
-                ),
-                expected_scoped_nids=scope.scoped_note_ids,
-                classifications=tuple(
-                    AuditResolution(
-                        nid=item.note_id,
-                        verdict=cast(
-                            Literal["keep", "drop", "uncertain"],
-                            {"YES": "keep", "NO": "drop", "MAYBE": "uncertain"}[item.verdict],
-                        ),
-                    )
-                    for item in classifications
-                    if item.note_id in set(scope.scoped_note_ids)
-                ),
-                eligible_yes_nids=tuple(
-                    item.note_id
-                    for item in classifications
-                    if selection_eligible(item, _card_source_index(context))
-                ),
-                selected_nids=tuple(selection["selected_existing_note_ids"]),
-                selected_generated_card_ids=tuple(selection["selected_generated_card_ids"]),
-                generated_card_ids=tuple(
-                    item.card_id for item in generated if item.status == "generated"
-                ),
-                source_passage_ids=tuple(
-                    passage.passage_id for passage in _card_source_index(context).passages
-                ),
-                forbidden_cloze_targets=ledger.forbidden_cloze_targets,
-                prompt_sync_stale=bool(
-                    _payload(context, CurationStage.PREFLIGHT).get("prompt_sync_stale", False)
-                ),
-                untagged_rate=census.trust.untagged_rate,
-                target=int(selection["target"]),
-                cap=int(selection["cap"]),
-                mandatory_nids=tuple(selection["mandatory_note_ids"]),
-                overflow_acknowledgement=selection.get("overflow_acknowledgement"),
-            )
+        snapshot = CardCentricReconciliationInput(
+            concept_ids=tuple(concept.concept_id for concept in ledger.concepts),
+            coverage=final_coverage,
+            required_fact_ids=required_fact_ids,
+            uncovered_after_s5=tuple(
+                concept_id
+                for concept_id, value in _card_coverage_payload(context).items()
+                if value["status"] == "uncovered"
+            ),
+            residual_ran_for=tuple(
+                _payload(context, CurationStage.CARD_RESIDUAL).get("uncovered_concept_ids", [])
+            ),
+            generated_cards=tuple(
+                GeneratedResolution(card_id=item.card_id, fact_id=item.fact_id, text=item.text)
+                for item in generated
+                if item.status == "generated"
+            ),
+            unresolved_fact_ids=tuple(
+                item.fact_id for item in generated if item.status != "generated"
+            ),
+            expected_scoped_nids=scope.scoped_note_ids,
+            classifications=tuple(
+                AuditResolution(
+                    nid=item.note_id,
+                    verdict=cast(
+                        Literal["keep", "drop", "uncertain"],
+                        {"YES": "keep", "NO": "drop", "MAYBE": "uncertain"}[item.verdict],
+                    ),
+                )
+                for item in classifications
+                if item.note_id in set(scope.scoped_note_ids)
+            ),
+            eligible_yes_nids=tuple(
+                item.note_id
+                for item in classifications
+                if selection_eligible(item, _card_source_index(context))
+            ),
+            selected_nids=tuple(selection["selected_existing_note_ids"]),
+            selected_generated_card_ids=tuple(selection["selected_generated_card_ids"]),
+            generated_card_ids=tuple(
+                item.card_id for item in generated if item.status == "generated"
+            ),
+            source_passage_ids=tuple(
+                passage.passage_id for passage in _card_source_index(context).passages
+            ),
+            forbidden_cloze_targets=ledger.forbidden_cloze_targets,
+            prompt_sync_stale=bool(
+                _payload(context, CurationStage.PREFLIGHT).get("prompt_sync_stale", False)
+            ),
+            untagged_rate=census.trust.untagged_rate,
+            target=int(selection["target"]),
+            cap=int(selection["cap"]),
+            mandatory_nids=tuple(selection["mandatory_note_ids"]),
+            covered_concept_ids_by_nid={
+                item.note_id: item.covered_concept_ids for item in classifications
+            },
+            generated_concept_id_by_card_id={
+                item.card_id: item.concept_id for item in generated if item.status == "generated"
+            },
+            overflow_acknowledgement=selection.get("overflow_acknowledgement"),
         )
+        report = reconcile_card_centric(snapshot)
         return StageProduct(
             kind="card_centric_reconciliation",
             payload={
                 "contract_version": "card_centric_s9_v1",
                 **report.model_dump(mode="json"),
                 "selection": selection,
+                "snapshot": snapshot.model_dump(mode="json"),
             },
             blocking_error=None
             if report.can_render_envelope
@@ -2205,11 +2282,11 @@ def _token_overlap(left: set[str], right: set[str]) -> float:
 
 
 def _card_ledger_prompt(catalog: AnkiPromptCatalogService) -> str:
-    return AnkiPromptLibrary(catalog.bundled_directory).load("lecture-concept-ledger").content
+    return AnkiPromptLibrary(catalog.bundled_directory).load("card-centric-ledger-v1").content
 
 
 def _card_gap_prompt(catalog: AnkiPromptCatalogService) -> str:
-    return AnkiPromptLibrary(catalog.bundled_directory).load("gap-card-generation").content
+    return AnkiPromptLibrary(catalog.bundled_directory).load("card-centric-gap-v1").content
 
 
 def _resolved_prompt(

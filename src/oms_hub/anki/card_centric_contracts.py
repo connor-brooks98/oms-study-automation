@@ -369,17 +369,26 @@ class GeneratedCardResolution(CardCentricContract):
     text: str = Field(min_length=1)
     extra: str = ""
     source_passage_ids: tuple[str, ...] = Field(min_length=1)
+    evidence_ids: tuple[str, ...] = ()
     split: bool = False
     status: Literal["generated", "unresolved", "duplicate_of_existing"] = "generated"
     duplicate_of_existing_note_id: int | None = None
+    duplicate_of_generated_card_id: str | None = None
     reason: str = ""
 
     @model_validator(mode="after")
     def generated_resolution_integrity(self) -> "GeneratedCardResolution":
-        if self.status == "duplicate_of_existing" and self.duplicate_of_existing_note_id is None:
-            raise ValueError("duplicate generated card must identify existing note")
+        if self.status == "duplicate_of_existing" and (
+            self.duplicate_of_existing_note_id is None
+            and self.duplicate_of_generated_card_id is None
+        ):
+            raise ValueError("duplicate generated card must identify its duplicate")
         if self.status != "generated" and not self.reason.strip():
             raise ValueError("unresolved generation needs a reason")
+        if self.status == "generated" and not self.evidence_ids:
+            raise ValueError("generated cards require materialized evidence")
+        if len(self.evidence_ids) != len(set(self.evidence_ids)):
+            raise ValueError("generated evidence IDs must be unique")
         return self
 
 

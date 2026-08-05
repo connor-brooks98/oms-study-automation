@@ -13,6 +13,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import Field
 
 from oms_hub.anki.apply import ApplyCoordinator, ApplyGateway, ApplyResult
+from oms_hub.anki.card_centric_contracts import CardConceptLedger
 from oms_hub.anki.contracts import (
     AddNotesOperation,
     AddTagsOperation,
@@ -49,9 +50,11 @@ from oms_hub.anki.gaps import (
 )
 from oms_hub.anki.paths import LectureIdentity, target_deck, target_tag
 from oms_hub.anki.reconciliation import (
+    CardCentricReconciliationInput,
     GeneratedResolution,
     ReconciliationInput,
     reconcile,
+    reconcile_card_centric,
 )
 from oms_hub.anki.repository import (
     AnkiCurationRepository,
@@ -85,6 +88,7 @@ class ReviewChangeSetRequest(ContractModel):
     candidate_selections: dict[Annotated[int, Field(gt=0)], bool]
     gap_edits: tuple[GapCardEditRequest, ...]
     tag_patches: tuple[TagPatchContract, ...]
+    overflow_acknowledgement: dict[str, Any] | None = None
 
     def to_domain(self) -> ReviewChangeSet:
         return ReviewChangeSet(
@@ -107,6 +111,13 @@ class ReviewChangeSetRequest(ContractModel):
 
 class EnvelopeRequest(ContractModel):
     review_revision: Annotated[int, Field(ge=0)]
+    overflow_acknowledgement: dict[str, Any] | None = None
+
+
+class OverflowAcknowledgementRequest(ContractModel):
+    review_revision: Annotated[int, Field(ge=0)]
+    selected_existing_note_ids: tuple[Annotated[int, Field(gt=0)], ...]
+    selected_generated_card_ids: tuple[Annotated[str, Field(min_length=1, max_length=100)], ...]
 
 
 class ApplyConfirmationRequest(EnvelopeRequest):
@@ -461,6 +472,7 @@ async def read_anki_review(
         reconciliation = _review_reconciliation_summary(
             reconciliation,
             gaps,
+            candidates,
         )
     reconciliation_allows_review = reconciliation is None or bool(
         reconciliation.get("can_render_envelope", False)
@@ -475,7 +487,11 @@ async def read_anki_review(
             "generated_cards": [_gap_payload(card, evidence) for card in gaps],
             "unresolved": unresolved,
         },
-        "concepts": _concept_review_groups(candidates, gaps),
+        "concepts": _concept_review_groups(
+            candidates,
+            gaps,
+            _card_ledger_concept_ids(request, job_id),
+        ),
         "evidence": [_evidence_payload(item) for item in evidence],
         "tag_policy": _tag_policy_payload(_tag_policy(request)),
         "can_edit": job.state is CurationState.READY_FOR_REVIEW,
@@ -499,6 +515,39 @@ async def save_anki_review(
             detail="This review is already frozen or is not ready",
         )
     change_set = payload.to_domain()
+    if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1:
+        committed = _reconciliation_summary(request, job_id) or {}
+        selection = cast(dict[str, Any], committed.get("selection", {}))
+        selected_existing = tuple(
+            candidate.note_id
+            for candidate in repository.list_candidates(job_id)
+            if change_set.candidate_selections.get(candidate.note_id, candidate.selected)
+        )
+        selected_generated = tuple(
+            edit.card_id for edit in change_set.gap_edits if edit.card_id and edit.selected
+        )
+        edited_ids = {edit.card_id for edit in change_set.gap_edits if edit.card_id}
+        selected_generated += tuple(
+            card.card_id
+            for card in repository.list_gap_cards(job_id)
+            if card.card_id not in edited_ids and card.selected
+        )
+        cap = int(selection.get("cap", 70))
+        if len(selected_existing) + len(selected_generated) > cap and not (
+            payload.overflow_acknowledgement
+            and repository.validate_card_centric_overflow_acknowledgement(
+                job_id,
+                review_revision=job.review_revision,
+                selected_note_ids=selected_existing,
+                selected_generated_ids=selected_generated,
+                cap=cap,
+                document=payload.overflow_acknowledgement,
+            )
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="selection exceeds the cap without an exact server acknowledgement",
+            )
     for edit in change_set.gap_edits:
         try:
             validate_gap_card_fields(edit.text.strip(), edit.extra.strip())
@@ -539,6 +588,39 @@ async def save_anki_review(
         )
         raise HTTPException(status_code=code, detail=str(exc)) from exc
     return {"job_id": str(saved.job_id), "revision": saved.revision}
+
+
+@router.post("/api/anki/jobs/{job_id}/overflow-acknowledgement")
+def issue_anki_overflow_acknowledgement(
+    request: Request,
+    job_id: UUID,
+    payload: OverflowAcknowledgementRequest,
+) -> dict[str, Any]:
+    """Issue the one-time review document; clients never supply its signature."""
+    repository = _repository(request)
+    job = _require_job(repository, job_id)
+    if job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V1:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="not a card-centric job")
+    committed = _reconciliation_summary(request, job_id) or {}
+    selection = cast(dict[str, Any], committed.get("selection", {}))
+    cap = int(selection.get("cap", 70))
+    try:
+        document = repository.issue_card_centric_overflow_acknowledgement(
+            job_id,
+            review_revision=payload.review_revision,
+            selected_note_ids=payload.selected_existing_note_ids,
+            selected_generated_ids=payload.selected_generated_card_ids,
+            mandatory_note_ids=tuple(selection.get("mandatory_note_ids", [])),
+            # S7 cards represent required uncovered facts; only the initial required
+            # generated set may participate in the overflow exception.
+            mandatory_generated_ids=tuple(selection.get("selected_generated_card_ids", [])),
+            cap=cap,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    return document
 
 
 @router.get("/api/anki/jobs/{job_id}/evidence/{evidence_id}")
@@ -607,10 +689,39 @@ async def build_anki_envelope(
         )
     gap_cards = repository.list_gap_cards(job_id)
     reconciliation = _reconciliation_summary(request, job_id)
+    if (
+        reconciliation is not None
+        and job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1
+    ):
+        selection = cast(dict[str, Any], reconciliation.get("selection", {}))
+        selected_notes = tuple(
+            candidate.note_id
+            for candidate in repository.list_candidates(job_id)
+            if candidate.selected
+        )
+        selected_generated = tuple(card.card_id for card in gap_cards if card.selected)
+        cap = int(selection.get("cap", 70))
+        if len(selected_notes) + len(selected_generated) > cap and not (
+            payload.overflow_acknowledgement
+            and repository.validate_card_centric_overflow_acknowledgement(
+                job_id,
+                review_revision=job.review_revision,
+                selected_note_ids=selected_notes,
+                selected_generated_ids=selected_generated,
+                cap=cap,
+                document=payload.overflow_acknowledgement,
+            )
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="selection overflow acknowledgement is missing, stale, or forged",
+            )
     if reconciliation is not None:
         reconciliation = _review_reconciliation_summary(
             reconciliation,
             gap_cards,
+            repository.list_candidates(job_id),
+            overflow_acknowledgement=payload.overflow_acknowledgement,
         )
     if reconciliation is not None and not reconciliation.get(
         "can_render_envelope",
@@ -654,6 +765,7 @@ async def build_anki_envelope(
                 generated_cards=proposals,
                 job_id=job.id,
                 model_config_sha256=job.model_config_sha256,
+                resolved_model_config=job.resolved_model_config.canonical_document(),
                 reconciliation_contract_version=str(
                     reconciliation.get("contract_version", "card_centric_s9_v1")
                 )
@@ -916,33 +1028,48 @@ def _job_payload(job: CurationJob) -> dict[str, Any]:
 def _concept_review_groups(
     candidates: list[Candidate],
     gaps: list[GapCard],
+    ledger_concept_ids: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     """Small concept-first projection; selection/edit state remains canonical in rows."""
-    groups: dict[str, dict[str, Any]] = {}
+    groups: dict[str, dict[str, Any]] = {
+        concept_id: {
+            "concept_id": concept_id,
+            "yes": [],
+            "maybe": [],
+            "flagged": [],
+            "generated": [],
+            "uncovered": True,
+        }
+        for concept_id in ledger_concept_ids
+    }
     for candidate in candidates:
-        item = groups.setdefault(
-            candidate.best_concept_id,
-            {
-                "concept_id": candidate.best_concept_id,
-                "yes": [],
-                "maybe": [],
-                "flagged": [],
-                "generated": [],
-            },
-        )
         audit = candidate.provenance.get("card_centric", {})
         verdict = str(audit.get("verdict", candidate.verdict)).upper()
+        concept_ids = tuple(audit.get("covered_concept_ids", ())) or (candidate.best_concept_id,)
         summary = {
             "note_id": candidate.note_id,
             "reason": candidate.reason,
             "selected": candidate.selected,
         }
-        if audit.get("flags"):
-            item["flagged"].append(summary)
-        elif verdict == "YES":
-            item["yes"].append(summary)
-        elif verdict == "MAYBE":
-            item["maybe"].append(summary)
+        for concept_id in concept_ids:
+            item = groups.setdefault(
+                concept_id,
+                {
+                    "concept_id": concept_id,
+                    "yes": [],
+                    "maybe": [],
+                    "flagged": [],
+                    "generated": [],
+                    "uncovered": True,
+                },
+            )
+            if audit.get("flags"):
+                item["flagged"].append(summary)
+            elif verdict == "YES":
+                item["yes"].append(summary)
+                item["uncovered"] = False
+            elif verdict == "MAYBE":
+                item["maybe"].append(summary)
     for gap in gaps:
         item = groups.setdefault(
             gap.concept_id,
@@ -961,10 +1088,34 @@ def _concept_review_groups(
                 "validation_state": gap.validation_state,
             }
         )
+        if gap.selected and gap.validation_state == "generated":
+            item["uncovered"] = False
     for item in groups.values():
         for key in ("yes", "maybe", "flagged", "generated"):
             item[key].sort(key=lambda value: str(value.get("note_id", value.get("card_id", ""))))
     return [groups[key] for key in sorted(groups)]
+
+
+def _card_ledger_concept_ids(request: Request, job_id: UUID) -> tuple[str, ...]:
+    pipeline = getattr(request.app.state, "anki_curation_pipeline", None)
+    artifacts = getattr(pipeline, "artifacts", None)
+    if artifacts is None:
+        return ()
+    artifact = next(
+        (
+            item
+            for item in reversed(_repository(request).list_stage_artifacts(job_id))
+            if item.stage is CurationStage.CARD_LEDGER
+        ),
+        None,
+    )
+    if artifact is None:
+        return ()
+    try:
+        ledger = CardConceptLedger.model_validate(artifacts.read(artifact).get("ledger"))
+    except (OSError, TypeError, ValueError):
+        return ()
+    return tuple(concept.concept_id for concept in ledger.concepts)
 
 
 def _candidate_payload(
@@ -1181,12 +1332,64 @@ def _reconciliation_summary(
 def _review_reconciliation_summary(
     committed: dict[str, Any],
     cards: list[GapCard],
+    candidates: list[Candidate] | None = None,
+    *,
+    overflow_acknowledgement: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     snapshot_payload = committed.get("snapshot")
     if not isinstance(snapshot_payload, dict):
         return committed
     try:
-        snapshot = ReconciliationInput.model_validate(snapshot_payload)
+        if committed.get("contract_version") == "card_centric_s9_v1":
+            snapshot = CardCentricReconciliationInput.model_validate(snapshot_payload)
+            selected_existing = tuple(
+                candidate.note_id for candidate in (candidates or []) if candidate.selected
+            )
+            selected_generated = tuple(card.card_id for card in cards if card.selected)
+            selected_coverage = {
+                concept_id
+                for note_id in selected_existing
+                for concept_id in snapshot.covered_concept_ids_by_nid.get(note_id, ())
+            } | {
+                snapshot.generated_concept_id_by_card_id[card_id]
+                for card_id in selected_generated
+                if card_id in snapshot.generated_concept_id_by_card_id
+            }
+            reviewed_coverage = {
+                concept_id: (
+                    "covered"
+                    if concept_id in selected_coverage
+                    else "intentional_gap"
+                    if status == "intentional_gap"
+                    else "uncovered"
+                )
+                for concept_id, status in snapshot.coverage.items()
+            }
+            selected_generated_resolutions = tuple(
+                item for item in snapshot.generated_cards if item.card_id in set(selected_generated)
+            )
+            reviewed_snapshot = snapshot.model_copy(
+                update={
+                    "coverage": reviewed_coverage,
+                    "selected_nids": selected_existing,
+                    "selected_generated_card_ids": selected_generated,
+                    "generated_cards": selected_generated_resolutions,
+                    "overflow_acknowledgement": overflow_acknowledgement,
+                }
+            )
+            report = reconcile_card_centric(reviewed_snapshot)
+            return {
+                **committed,
+                **report.model_dump(mode="json"),
+                "selection": {
+                    **committed.get("selection", {}),
+                    "selected_existing_note_ids": list(selected_existing),
+                    "selected_generated_card_ids": list(selected_generated),
+                    "overflow_acknowledgement": overflow_acknowledgement,
+                },
+                "snapshot": reviewed_snapshot.model_dump(mode="json"),
+            }
+        legacy_snapshot = ReconciliationInput.model_validate(snapshot_payload)
         selected_cards = tuple(
             GeneratedResolution(
                 card_id=card.card_id,
@@ -1196,8 +1399,10 @@ def _review_reconciliation_summary(
             for card in cards
             if card.selected and card.card_id and str(card.provenance.get("fact_id", "")).strip()
         )
-        reviewed_snapshot = snapshot.model_copy(update={"generated_cards": selected_cards})
-        report = reconcile(reviewed_snapshot)
+        legacy_reviewed_snapshot = legacy_snapshot.model_copy(
+            update={"generated_cards": selected_cards}
+        )
+        report = reconcile(legacy_reviewed_snapshot)
     except (TypeError, ValueError):
         return {
             **committed,
@@ -1212,7 +1417,7 @@ def _review_reconciliation_summary(
     return {
         **committed,
         **report.model_dump(mode="json"),
-        "snapshot": reviewed_snapshot.model_dump(mode="json"),
+        "snapshot": legacy_reviewed_snapshot.model_dump(mode="json"),
     }
 
 
