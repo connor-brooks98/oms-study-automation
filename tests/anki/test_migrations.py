@@ -430,3 +430,228 @@ def test_studio_run_active_label_index_is_created_and_migration_is_idempotent(
         pragma_names = {row[1] for row in rows}
 
     assert "ix_studio_runs_active_label" in pragma_names
+
+
+def _create_schema_v12_anki_contract_database(path: str) -> None:
+    """Create the actual pre-v13 Anki table shapes, including history."""
+    with closing(sqlite3.connect(path)) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_version (
+                id INTEGER PRIMARY KEY,
+                version INTEGER NOT NULL,
+                updated_at VARCHAR(40) NOT NULL
+            );
+            INSERT INTO schema_version (id, version, updated_at)
+            VALUES (1, 12, '2026-08-04T00:00:00+00:00');
+
+            CREATE TABLE lectures (
+                id INTEGER PRIMARY KEY,
+                subject VARCHAR(100) NOT NULL,
+                exam_number INTEGER NOT NULL,
+                lecture_number INTEGER NOT NULL,
+                topic VARCHAR(300) NOT NULL,
+                lecturer VARCHAR(300) NOT NULL,
+                exam_date VARCHAR(10),
+                scheduled_start_utc VARCHAR(40),
+                campus VARCHAR(20),
+                created_at VARCHAR(40) NOT NULL,
+                updated_at VARCHAR(40) NOT NULL,
+                UNIQUE (subject, exam_number, lecture_number)
+            );
+            INSERT INTO lectures (
+                id, subject, exam_number, lecture_number, topic, lecturer,
+                created_at, updated_at
+            ) VALUES (
+                7, 'Heme Lymph', 1, 4, 'Anemia I', 'Professor',
+                '2026-08-04T00:00:00+00:00', '2026-08-04T00:00:00+00:00'
+            );
+
+            CREATE TABLE anki_curation_jobs (
+                id VARCHAR(36) PRIMARY KEY,
+                lecture_id INTEGER NOT NULL,
+                state VARCHAR(30) NOT NULL,
+                attempts INTEGER NOT NULL,
+                target_deck TEXT NOT NULL,
+                target_tag TEXT NOT NULL,
+                index_snapshot_id VARCHAR(200) NOT NULL,
+                amboss_input TEXT NOT NULL,
+                amboss_sha256 VARCHAR(64) NOT NULL,
+                block_id VARCHAR(200),
+                source_revision_ids_json TEXT NOT NULL,
+                source_revision_hashes_json TEXT NOT NULL,
+                summary_outline_id INTEGER,
+                summary_outline_sha256 VARCHAR(64),
+                deck_allowlist_json TEXT NOT NULL,
+                tag_allowlist_json TEXT NOT NULL,
+                provider VARCHAR(30) NOT NULL,
+                model VARCHAR(200) NOT NULL,
+                semantic_generation VARCHAR(200),
+                companion_generation VARCHAR(200),
+                source_index_generation VARCHAR(200),
+                configuration_sha256 VARCHAR(64) NOT NULL,
+                apply_state VARCHAR(50) NOT NULL,
+                instruction_text TEXT NOT NULL,
+                instruction_sha256 VARCHAR(64) NOT NULL,
+                lcl_prompt_version VARCHAR(100) NOT NULL,
+                judgment_rubric_version VARCHAR(100) NOT NULL,
+                gap_prompt_version VARCHAR(100) NOT NULL,
+                warnings_json TEXT NOT NULL,
+                counts_json TEXT NOT NULL,
+                review_revision INTEGER NOT NULL,
+                error TEXT,
+                lease_owner VARCHAR(100),
+                lease_expires_at VARCHAR(40),
+                available_at VARCHAR(40),
+                started_at VARCHAR(40),
+                ready_at VARCHAR(40),
+                completed_at VARCHAR(40),
+                created_at VARCHAR(40) NOT NULL,
+                updated_at VARCHAR(40) NOT NULL,
+                FOREIGN KEY(lecture_id) REFERENCES lectures (id)
+            );
+            INSERT INTO anki_curation_jobs VALUES (
+                '00000000-0000-0000-0000-000000000013', 7, 'ready', 3,
+                'OMS::Heme', 'oms::heme', 'snapshot-13', 'legacy input',
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                'heme-block', '[101,102]', '{"101":"b","102":"c"}',
+                41,
+                'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                '["OMS::Heme","OMS::Shared"]', '["oms::heme"]', 'openai',
+                'gpt-4.1', 'semantic-9', 'companion-8', 'index-7',
+                'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+                'pending', 'legacy instructions',
+                'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+                'lcl-v2', 'judgment-v2', 'gap-v2', '["historical warning"]',
+                '{"approved":2,"rejected":1}', 6, 'prior error', 'worker-2',
+                '2026-08-04T01:00:00+00:00', '2026-08-04T00:30:00+00:00',
+                '2026-08-04T00:00:00+00:00', '2026-08-04T00:05:00+00:00',
+                '2026-08-04T00:10:00+00:00', '2026-08-04T00:00:00+00:00',
+                '2026-08-04T00:15:00+00:00'
+            );
+
+            CREATE TABLE anki_stage_artifacts (
+                id INTEGER PRIMARY KEY,
+                job_id VARCHAR(36) NOT NULL,
+                artifact_id VARCHAR(200) NOT NULL,
+                stage VARCHAR(30) NOT NULL,
+                kind VARCHAR(100) NOT NULL,
+                relative_path TEXT NOT NULL,
+                input_sha256 VARCHAR(64) NOT NULL,
+                content_sha256 VARCHAR(64) NOT NULL,
+                metadata_json TEXT NOT NULL,
+                created_at VARCHAR(40) NOT NULL,
+                FOREIGN KEY(job_id) REFERENCES anki_curation_jobs (id),
+                UNIQUE (job_id, artifact_id)
+            );
+            INSERT INTO anki_stage_artifacts VALUES (
+                13, '00000000-0000-0000-0000-000000000013', 'artifact-13',
+                'classify', 'classification', 'jobs/13/classify.json',
+                'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+                '{"note_count":3}', '2026-08-04T00:12:00+00:00'
+            );
+            """
+        )
+        connection.commit()
+
+
+def test_schema_v12_contract_upgrade_backfills_historical_provenance_idempotently(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "hub-v12-contract.db"
+    _create_schema_v12_anki_contract_database(str(database_path))
+
+    legacy_job_columns = (
+        "id, lecture_id, state, attempts, target_deck, target_tag, "
+        "index_snapshot_id, amboss_input, amboss_sha256, block_id, "
+        "source_revision_ids_json, source_revision_hashes_json, summary_outline_id, "
+        "summary_outline_sha256, deck_allowlist_json, tag_allowlist_json, provider, "
+        "model, semantic_generation, companion_generation, source_index_generation, "
+        "configuration_sha256, apply_state, instruction_text, instruction_sha256, "
+        "lcl_prompt_version, judgment_rubric_version, gap_prompt_version, warnings_json, "
+        "counts_json, review_revision, error, lease_owner, lease_expires_at, "
+        "available_at, started_at, ready_at, completed_at, created_at, updated_at"
+    )
+    legacy_artifact_columns = (
+        "id, job_id, artifact_id, stage, kind, relative_path, input_sha256, "
+        "content_sha256, metadata_json, created_at"
+    )
+    with closing(sqlite3.connect(database_path)) as connection:
+        legacy_job = connection.execute(
+            f"SELECT {legacy_job_columns} FROM anki_curation_jobs"
+        ).fetchone()
+        legacy_artifact = connection.execute(
+            f"SELECT {legacy_artifact_columns} FROM anki_stage_artifacts"
+        ).fetchone()
+
+    expected_config = (
+        '{"classify_s4":{"fixture_validation_signature":null,"model":"gpt-4.1",'
+        '"provider":"openai","thinking_mode":"default"},"gap_fill_s7":'
+        '{"fixture_validation_signature":null,"model":"gpt-4.1","provider":'
+        '"openai","thinking_mode":"default"},"ledger_s2":'
+        '{"fixture_validation_signature":null,"model":"gpt-4.1","provider":'
+        '"openai","thinking_mode":"default"},"profile":"legacy_single_model",'
+        '"residual_s6":{"fixture_validation_signature":null,"model":"gpt-4.1",'
+        '"provider":"openai","thinking_mode":"default"},"residual_unlocked":false}'
+    )
+    expected_config_sha256 = "3a4f2231901cec8e24440a26576ab5020f074e7bd2e3c5c12fb7fab652ee8f59"
+    empty_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+    with Database(f"sqlite:///{database_path}") as database:
+        database.migrate()
+        with database.session() as session:
+            upgraded_job = session.execute(
+                text(
+                    f"SELECT {legacy_job_columns}, pipeline_contract_version, "
+                    "resolved_model_config_json, model_config_sha256 "
+                    "FROM anki_curation_jobs"
+                )
+            ).one()
+            upgraded_artifact = session.execute(
+                text(
+                    f"SELECT {legacy_artifact_columns}, pipeline_contract_version, "
+                    "model_config_sha256 FROM anki_stage_artifacts"
+                )
+            ).one()
+            counts = session.execute(
+                text(
+                    "SELECT (SELECT COUNT(*) FROM anki_curation_jobs), "
+                    "(SELECT COUNT(*) FROM anki_stage_artifacts)"
+                )
+            ).one()
+
+        database.migrate()
+        with database.session() as session:
+            repeated_job = session.execute(
+                text(
+                    f"SELECT {legacy_job_columns}, pipeline_contract_version, "
+                    "resolved_model_config_json, model_config_sha256 "
+                    "FROM anki_curation_jobs"
+                )
+            ).one()
+            repeated_artifact = session.execute(
+                text(
+                    f"SELECT {legacy_artifact_columns}, pipeline_contract_version, "
+                    "model_config_sha256 FROM anki_stage_artifacts"
+                )
+            ).one()
+            repeated_counts = session.execute(
+                text(
+                    "SELECT (SELECT COUNT(*) FROM anki_curation_jobs), "
+                    "(SELECT COUNT(*) FROM anki_stage_artifacts)"
+                )
+            ).one()
+
+    assert upgraded_job[:-3] == legacy_job
+    assert upgraded_job[-3:] == (
+        "retrieval_v4",
+        expected_config,
+        expected_config_sha256,
+    )
+    assert upgraded_artifact[:-2] == legacy_artifact
+    assert upgraded_artifact[-2:] == ("retrieval_v4", empty_sha256)
+    assert counts == (1, 1)
+    assert repeated_job == upgraded_job
+    assert repeated_artifact == upgraded_artifact
+    assert repeated_counts == counts
