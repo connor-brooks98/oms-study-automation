@@ -12,6 +12,7 @@ from oms_hub.anki.card_centric_contracts import (
     CardCentricSourceIndex,
     CardClassification,
     CardClassificationBatchOutput,
+    CardConceptLedger,
     CardRecord,
     CensusTrust,
     ClassifierBatchAudit,
@@ -28,6 +29,57 @@ from oms_hub.llm.structured import StructuredTextService
 
 class CardCentricValidationError(ValueError):
     """A card-centric artifact or model response cannot be trusted."""
+
+
+@dataclass(frozen=True, slots=True)
+class CardCentricLedgerResult:
+    ledger: CardConceptLedger
+    request_id: str
+    input_tokens: int
+    output_tokens: int
+    cost_microusd: int
+
+
+@dataclass(slots=True)
+class CardCentricLedgerService:
+    """One cached-prefix S2 call.  The returned ledger is not a retrieval index."""
+
+    structured: StructuredTextService
+    instruction: str
+
+    def generate(
+        self,
+        *,
+        source_index: CardCentricSourceIndex,
+        provider: ProviderName,
+        model: str,
+    ) -> CardCentricLedgerResult:
+        result = self.structured.generate_json(
+            self.instruction,
+            json.dumps(
+                {
+                    "summary_passages": [
+                        {"passage_id": passage.passage_id, "text": passage.text}
+                        for passage in source_index.passages
+                        if passage.authority == "summary"
+                    ],
+                    "contract": "coverage_checklist_only",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            output_model=CardConceptLedger,
+            provider=provider,
+            model=model,
+            options=GenerationOptions(cacheable_source_prefix=source_index.prefix),
+        )
+        return CardCentricLedgerResult(
+            ledger=result.value,
+            request_id=result.request_id,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cost_microusd=result.cost_microusd,
+        )
 
 
 _SOURCE_ORDER = {"summary": 0, "transcript": 1, "slide": 2}
@@ -109,9 +161,7 @@ def build_snapshot_census(
     _unique_card_ids(cards)
     normalized_decks = tuple(sorted({deck.casefold() for deck in deck_allowlist}))
     normalized_scope = _scope_tokens(scope_tokens)
-    system_universe = tuple(
-        sorted(set(_scope_tokens(system_tokens)) | set(normalized_scope))
-    )
+    system_universe = tuple(sorted(set(_scope_tokens(system_tokens)) | set(normalized_scope)))
     mapping: dict[
         int,
         Literal[
@@ -134,9 +184,7 @@ def build_snapshot_census(
         else:
             mapping[card.note_id] = "untagged"
     tagged = sum(value == "target_tagged" for value in mapping.values())
-    other_system = sum(
-        value == "other_system_excluded" for value in mapping.values()
-    )
+    other_system = sum(value == "other_system_excluded" for value in mapping.values())
     untagged = sum(value == "untagged" for value in mapping.values())
     deck_excluded = sum(value == "deck_excluded" for value in mapping.values())
     denominator = tagged + other_system + untagged
@@ -196,8 +244,7 @@ def scope_cards(
         sorted(
             card.note_id
             for card in cards
-            if census.mapping[card.note_id] == "target_tagged"
-            and _matches_scope(card.tags, tokens)
+            if census.mapping[card.note_id] == "target_tagged" and _matches_scope(card.tags, tokens)
         )
     )
     unscoped = tuple(sorted(ids - set(scoped)))
@@ -277,9 +324,7 @@ class CardCentricClassifier:
                 batch_count=len(batches),
                 cache_prefix_sha256=hashlib.sha256(source_index.prefix.encode()).hexdigest(),
                 cache_mode=(
-                    "ephemeral"
-                    if self.capabilities.prompt_prefix_caching
-                    else "ordinary_prefix"
+                    "ephemeral" if self.capabilities.prompt_prefix_caching else "ordinary_prefix"
                 ),
                 provider=provider.value,
                 model=model,
@@ -375,6 +420,85 @@ def selection_eligible(
             for passage_id in result.supporting_passage_ids
         )
     )
+
+
+def select_high_yield(
+    classifications: Sequence[CardClassification],
+    *,
+    ledger: CardConceptLedger,
+    generated_card_ids: Sequence[str] = (),
+    overflow_acknowledgement: dict[str, str] | None = None,
+    target: int = 65,
+    cap: int = 70,
+) -> tuple[tuple[int, ...], tuple[int, ...], tuple[str, ...]]:
+    """Stable, evidence-first selection without a minimum-padding rule.
+
+    A clean grounded YES is eligible.  Deep/emphasized/high concepts are protected
+    before ordinary cards; then coverage diversity and note ID make every tie
+    deterministic.  Generated cards are not used to manufacture a 60-card floor.
+    """
+    if not 1 <= target <= cap:
+        raise CardCentricValidationError("selection target/cap is invalid")
+    concepts = {concept.concept_id: concept for concept in ledger.concepts}
+    eligible = [
+        item
+        for item in classifications
+        if item.verdict == "YES" and not item.flags and item.supporting_passage_ids
+    ]
+    if len({item.note_id for item in eligible}) != len(eligible):
+        raise CardCentricValidationError("eligible selection note IDs are not unique")
+
+    def rank(item: CardClassification) -> tuple[int, int, int, int, int]:
+        covered = [concepts[value] for value in item.covered_concept_ids if value in concepts]
+        emphasis = int(any(concept.emphasis_flag for concept in covered))
+        high = int(any(concept.importance == "high" for concept in covered))
+        depth = max(
+            ({"deep": 2, "medium": 1, "surface": 0}[concept.depth] for concept in covered),
+            default=0,
+        )
+        return (-emphasis, -high, -depth, -len(covered), item.note_id)
+
+    ordered = sorted(eligible, key=rank)
+    # First choose one representative per concept, preserving high-yield order.
+    selected: list[CardClassification] = []
+    seen_concepts: set[str] = set()
+    for item in ordered:
+        if (
+            any(concept_id not in seen_concepts for concept_id in item.covered_concept_ids)
+            and len(selected) < cap
+        ):
+            selected.append(item)
+            seen_concepts.update(item.covered_concept_ids)
+    for item in ordered:
+        if item not in selected and len(selected) < min(target, cap):
+            selected.append(item)
+    # Mandatory means evidence-backed clean cards covering an emphasized/high
+    # concept. Never drop them merely to hit the normal cap.
+    mandatory = [
+        item
+        for item in ordered
+        if any(
+            concepts[c].emphasis_flag or concepts[c].importance == "high"
+            for c in item.covered_concept_ids
+            if c in concepts
+        )
+    ]
+    if len(mandatory) > cap:
+        ack = overflow_acknowledgement
+        if not ack or not {"acknowledged_by", "acknowledged_at", "reason"} <= set(ack):
+            raise CardCentricValidationError(
+                "mandatory high-yield overflow requires acknowledgement"
+            )
+        selected = mandatory
+    selected_ids = tuple(sorted(item.note_id for item in selected))
+    excluded = tuple(
+        sorted(item.note_id for item in eligible if item.note_id not in set(selected_ids))
+    )
+    # Generated cards are source-grounded coverage candidates, not padding.  If
+    # capacity remains, retain a stable subset; the S9 cap invariant prevents
+    # accidental expansion during review/envelope construction.
+    generated = tuple(sorted(set(generated_card_ids)))[: max(0, cap - len(selected_ids))]
+    return selected_ids, excluded, generated
 
 
 def _to_card_passage(passage: SourcePassage) -> CardCentricPassage:

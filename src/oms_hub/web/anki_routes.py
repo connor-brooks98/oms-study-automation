@@ -30,6 +30,7 @@ from oms_hub.anki.domain import (
     CurationState,
     GapCard,
     GapCardEdit,
+    PipelineContractVersion,
     RetrievalPass,
     ReviewChangeSet,
     SourceEvidence,
@@ -239,9 +240,7 @@ def create_anki_job(
         note_ids=semantic.manifest.note_ids,
         content_hashes=semantic.manifest.content_hashes,
     )
-    minimum_coverage = (
-        request.app.state.settings.anki_semantic_min_coverage
-    )
+    minimum_coverage = request.app.state.settings.anki_semantic_min_coverage
     if alignment.coverage < minimum_coverage:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -286,8 +285,7 @@ def create_anki_job(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "Curation requires the current lecture slides, transcript, "
-                "and NotebookLM outline"
+                "Curation requires the current lecture slides, transcript, and NotebookLM outline"
             ),
         )
 
@@ -323,9 +321,7 @@ def create_anki_job(
         request.app.state.llm_settings,
     )
     resolved_model = (
-        payload.model
-        if payload.model
-        else llm_settings.assignment(LLMTask.ANKI_CURATION).model
+        payload.model if payload.model else llm_settings.assignment(LLMTask.ANKI_CURATION).model
     )
     domain = replace(
         payload.to_domain(model=resolved_model),
@@ -337,6 +333,8 @@ def create_anki_job(
     )
     try:
         job = _repository(request).create_job(domain)
+        if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1:
+            _repository(request).save_card_centric_profile(job.resolved_model_config)
     except KeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -455,8 +453,7 @@ async def read_anki_review(
             reviewed_patch=reviewed_patches.get(candidate.note_id),
         )
         for candidate in candidates
-        if candidate.retrieval_pass
-        in {RetrievalPass.PASS_2_RESCUE, RetrievalPass.CONVERGENCE}
+        if candidate.retrieval_pass in {RetrievalPass.PASS_2_RESCUE, RetrievalPass.CONVERGENCE}
     ]
     unresolved = _unresolved_payload(request, job_id, candidates, gaps, evidence)
     reconciliation = _reconciliation_summary(request, job_id)
@@ -465,9 +462,8 @@ async def read_anki_review(
             reconciliation,
             gaps,
         )
-    reconciliation_allows_review = (
-        reconciliation is None
-        or bool(reconciliation.get("can_render_envelope", False))
+    reconciliation_allows_review = reconciliation is None or bool(
+        reconciliation.get("can_render_envelope", False)
     )
     return {
         "job": _job_payload(job),
@@ -479,12 +475,12 @@ async def read_anki_review(
             "generated_cards": [_gap_payload(card, evidence) for card in gaps],
             "unresolved": unresolved,
         },
+        "concepts": _concept_review_groups(candidates, gaps),
         "evidence": [_evidence_payload(item) for item in evidence],
         "tag_policy": _tag_policy_payload(_tag_policy(request)),
         "can_edit": job.state is CurationState.READY_FOR_REVIEW,
         "can_build_envelope": (
-            job.state is CurationState.READY_FOR_REVIEW
-            and reconciliation_allows_review
+            job.state is CurationState.READY_FOR_REVIEW and reconciliation_allows_review
         ),
     }
 
@@ -636,24 +632,51 @@ async def build_anki_envelope(
     evidence_ids = {item.evidence_id for item in repository.list_source_evidence(job_id)}
     try:
         proposals = tuple(
-            _gap_proposal(card, job, evidence_ids)
-            for card in gap_cards
-            if card.selected
+            _gap_proposal(card, job, evidence_ids) for card in gap_cards if card.selected
         )
-        envelope = EnvelopeBuilder(_tag_policy(request)).build(
-            ReviewChangeSet(
-                expected_revision=job.review_revision,
-                candidate_selections={
-                    candidate.note_id: candidate.selected for candidate in candidates
-                },
-                tag_patches=tuple(patches.values()),
-            ),
-            current,
-            envelope_id=uuid5(job.id, f"review:{job.review_revision}"),
-            snapshot_id=job.index_snapshot_id,
-            target_deck=job.target_deck,
-            target_tag=job.target_tag,
-            generated_cards=proposals,
+        builder = EnvelopeBuilder(_tag_policy(request))
+        changeset = ReviewChangeSet(
+            expected_revision=job.review_revision,
+            candidate_selections={
+                candidate.note_id: candidate.selected for candidate in candidates
+            },
+            tag_patches=tuple(patches.values()),
+        )
+        envelope_id = uuid5(job.id, f"review:{job.review_revision}")
+        envelope = (
+            builder.build_v2(
+                changeset,
+                current,
+                envelope_id=envelope_id,
+                snapshot_id=job.index_snapshot_id,
+                target_deck=job.target_deck,
+                target_tag=job.target_tag,
+                generated_cards=proposals,
+                job_id=job.id,
+                model_config_sha256=job.model_config_sha256,
+                reconciliation_contract_version=str(
+                    reconciliation.get("contract_version", "card_centric_s9_v1")
+                )
+                if reconciliation
+                else "card_centric_s9_v1",
+                review_revision=job.review_revision,
+                overflow_acknowledgement_provenance=(
+                    reconciliation.get("selection", {}).get("overflow_acknowledgement")
+                    or {"required": False}
+                )
+                if reconciliation
+                else {"required": False},
+            )
+            if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1
+            else builder.build(
+                changeset,
+                current,
+                envelope_id=envelope_id,
+                snapshot_id=job.index_snapshot_id,
+                target_deck=job.target_deck,
+                target_tag=job.target_tag,
+                generated_cards=proposals,
+            )
         )
         stored = repository.create_action_envelope(
             job_id,
@@ -741,6 +764,7 @@ async def retry_anki_sync(
 
 def _page_context(request: Request) -> dict[str, Any]:
     catalog = CatalogRepository(request.app.state.database)
+    anki_repository = _repository(request)
     revisions = IngestionRepository(request.app.state.database)
     outlines = GenerationRepository(request.app.state.database)
     lectures: list[dict[str, Any]] = []
@@ -748,11 +772,7 @@ def _page_context(request: Request) -> dict[str, Any]:
         current = revisions.list_current_revisions(lecture.id)
         outline = outlines.current_outline(lecture.id)
         current_kinds = {revision.kind for revision in current}
-        outline_available = (
-            outline is not None
-            and outline.current
-            and outline.path.is_file()
-        )
+        outline_available = outline is not None and outline.current and outline.path.is_file()
         identity = LectureIdentity(
             course=lecture.subject,
             exam_number=lecture.exam_number,
@@ -786,9 +806,7 @@ def _page_context(request: Request) -> dict[str, Any]:
                     else None
                 ),
                 "source_ready": (
-                    {UploadKind.SLIDES, UploadKind.TRANSCRIPTS}.issubset(
-                        current_kinds
-                    )
+                    {UploadKind.SLIDES, UploadKind.TRANSCRIPTS}.issubset(current_kinds)
                     and outline_available
                 ),
                 "source_status": {
@@ -817,12 +835,8 @@ def _page_context(request: Request) -> dict[str, Any]:
                 "lectures": [],
             }
             exams_by_course[course][exam_number] = exam_group
-            cast(list[dict[str, Any]], course_group["exams"]).append(
-                exam_group
-            )
-        cast(list[dict[str, Any]], exam_group["lectures"]).append(
-            lecture_payload
-        )
+            cast(list[dict[str, Any]], course_group["exams"]).append(exam_group)
+        cast(list[dict[str, Any]], exam_group["lectures"]).append(lecture_payload)
     settings = request.app.state.settings
     llm_settings = cast(
         LLMSettingsRepository,
@@ -830,9 +844,9 @@ def _page_context(request: Request) -> dict[str, Any]:
     )
     provider_preferences = llm_settings.list()
     active_provider = llm_settings.assignment(LLMTask.ANKI_CURATION)
+    saved_profile = anki_repository.card_centric_profile()
     provider_models = {
-        preference.provider.value: preference.model
-        for preference in provider_preferences
+        preference.provider.value: preference.model for preference in provider_preferences
     }
     companion = getattr(request.app.state, "anki_companion_index", None)
     snapshot_id = companion.snapshot_id() if companion is not None else None
@@ -857,6 +871,9 @@ def _page_context(request: Request) -> dict[str, Any]:
             "gap_prompt_version": preferred_prompt("gap_cards", "gap-card-generation"),
             "index_snapshot_id": snapshot_id,
             "semantic_model": settings.anki_semantic_model,
+            "card_centric_profile": (
+                saved_profile.canonical_document() if saved_profile is not None else None
+            ),
         },
         "provider_models": provider_models,
         "prompt_catalog": catalog_payload,
@@ -894,6 +911,60 @@ def _job_payload(job: CurationJob) -> dict[str, Any]:
         "created_at": job.created_at,
         "updated_at": job.updated_at,
     }
+
+
+def _concept_review_groups(
+    candidates: list[Candidate],
+    gaps: list[GapCard],
+) -> list[dict[str, Any]]:
+    """Small concept-first projection; selection/edit state remains canonical in rows."""
+    groups: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        item = groups.setdefault(
+            candidate.best_concept_id,
+            {
+                "concept_id": candidate.best_concept_id,
+                "yes": [],
+                "maybe": [],
+                "flagged": [],
+                "generated": [],
+            },
+        )
+        audit = candidate.provenance.get("card_centric", {})
+        verdict = str(audit.get("verdict", candidate.verdict)).upper()
+        summary = {
+            "note_id": candidate.note_id,
+            "reason": candidate.reason,
+            "selected": candidate.selected,
+        }
+        if audit.get("flags"):
+            item["flagged"].append(summary)
+        elif verdict == "YES":
+            item["yes"].append(summary)
+        elif verdict == "MAYBE":
+            item["maybe"].append(summary)
+    for gap in gaps:
+        item = groups.setdefault(
+            gap.concept_id,
+            {
+                "concept_id": gap.concept_id,
+                "yes": [],
+                "maybe": [],
+                "flagged": [],
+                "generated": [],
+            },
+        )
+        item["generated"].append(
+            {
+                "card_id": gap.card_id,
+                "selected": gap.selected,
+                "validation_state": gap.validation_state,
+            }
+        )
+    for item in groups.values():
+        for key in ("yes", "maybe", "flagged", "generated"):
+            item[key].sort(key=lambda value: str(value.get("note_id", value.get("card_id", ""))))
+    return [groups[key] for key in sorted(groups)]
 
 
 def _candidate_payload(
@@ -1057,9 +1128,7 @@ def _convergence_summary(
     artifact = next(
         (
             item
-            for item in reversed(
-                _repository(request).list_stage_artifacts(job_id)
-            )
+            for item in reversed(_repository(request).list_stage_artifacts(job_id))
             if item.stage in convergence_stages
         ),
         None,
@@ -1071,14 +1140,10 @@ def _convergence_summary(
         raw_states = payload.get("concepts")
         if not isinstance(raw_states, list) or not raw_states:
             return None
-        states = tuple(
-            ConvergenceState.model_validate(value) for value in raw_states
-        )
+        states = tuple(ConvergenceState.model_validate(value) for value in raw_states)
     except (OSError, ValueError):
         return None
-    manual_review = [
-        state.concept_id for state in states if not state.converged
-    ]
+    manual_review = [state.concept_id for state in states if not state.converged]
     return {
         "passes_run": max(state.passes_run for state in states),
         "concepts_converged": sum(state.converged for state in states),
@@ -1099,9 +1164,7 @@ def _reconciliation_summary(
     artifact = next(
         (
             item
-            for item in reversed(
-                _repository(request).list_stage_artifacts(job_id)
-            )
+            for item in reversed(_repository(request).list_stage_artifacts(job_id))
             if item.stage is CurationStage.RECONCILIATION
         ),
         None,
@@ -1131,13 +1194,9 @@ def _review_reconciliation_summary(
                 text=card.text,
             )
             for card in cards
-            if card.selected
-            and card.card_id
-            and str(card.provenance.get("fact_id", "")).strip()
+            if card.selected and card.card_id and str(card.provenance.get("fact_id", "")).strip()
         )
-        reviewed_snapshot = snapshot.model_copy(
-            update={"generated_cards": selected_cards}
-        )
+        reviewed_snapshot = snapshot.model_copy(update={"generated_cards": selected_cards})
         report = reconcile(reviewed_snapshot)
     except (TypeError, ValueError):
         return {
@@ -1423,8 +1482,7 @@ def _review_counts(
     return {
         "pass_1_matches": sum(item.retrieval_pass.value == "pass_1" for item in candidates),
         "recovered_in_pass_2": sum(
-            item.retrieval_pass
-            in {RetrievalPass.PASS_2_RESCUE, RetrievalPass.CONVERGENCE}
+            item.retrieval_pass in {RetrievalPass.PASS_2_RESCUE, RetrievalPass.CONVERGENCE}
             for item in candidates
         ),
         "generated_cards": len(gaps),

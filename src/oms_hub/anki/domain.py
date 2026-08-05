@@ -14,6 +14,11 @@ class CurationState(StrEnum):
     CARD_SCOPING_TAGS = "card_scoping_tags"
     CARD_CLASSIFYING = "card_classifying"
     CARD_COVERAGE = "card_coverage"
+    CARD_SWEEPING_RESIDUAL = "card_sweeping_residual"
+    CARD_GENERATING_GAPS = "card_generating_gaps"
+    CARD_DEDUPING = "card_deduping"
+    CARD_SELECTING = "card_selecting"
+    CARD_RECONCILING = "card_reconciling"
     BUILDING_LCL = "building_lcl"
     RETRIEVING_PASS_1 = "retrieving_pass_1"
     JUDGING_PASS_1 = "judging_pass_1"
@@ -68,6 +73,7 @@ class CurationStage(StrEnum):
     CARD_COVERAGE = "card_coverage"
     CARD_RESIDUAL = "card_residual"
     CARD_GAP_FILL = "card_gap_fill"
+    CARD_SELECTION = "card_selection"
 
 
 class PipelineContractVersion(StrEnum):
@@ -103,6 +109,13 @@ class ResolvedModelConfiguration:
     def __post_init__(self) -> None:
         if not self.profile.strip():
             raise ValueError("model configuration profile cannot be blank")
+        if (self.classify_s4.provider, self.classify_s4.model) != (
+            self.ledger_s2.provider,
+            self.ledger_s2.model,
+        ) and not self.classify_s4.fixture_validation_signature:
+            raise ValueError("cheaper S4 model is not validated on the Lecture07 fixture")
+        if not self.residual_unlocked and self.residual_s6 != self.classify_s4:
+            raise ValueError("S6 must match S4 unless residual model is explicitly unlocked")
 
     @classmethod
     def legacy(cls, provider: str, model: str) -> "ResolvedModelConfiguration":

@@ -9,11 +9,14 @@ from oms_hub.anki.card_centric import (
     build_snapshot_census,
     build_source_index,
     scope_cards,
+    select_high_yield,
     selection_eligible,
 )
 from oms_hub.anki.card_centric_contracts import (
     CardClassification,
     CardClassificationBatchOutput,
+    CardConcept,
+    CardConceptLedger,
     CardRecord,
     CensusTrust,
     SnapshotCensus,
@@ -81,15 +84,21 @@ def test_source_index_orders_summary_transcript_slides_and_hashes_stably() -> No
     assert first.source_sha256 == second.source_sha256
     assert first.passages[0].passage_id.startswith("SUM:12:CORE:01:P:")
     assert all(
-        passage.passage_id.startswith(("SLD:", "TRX:", "SUM:"))
-        for passage in first.passages
+        passage.passage_id.startswith(("SLD:", "TRX:", "SUM:")) for passage in first.passages
     )
     assert 'id="SUM:12:CORE:01:P:' in first.prefix
 
 
 def test_census_accounts_for_every_note_and_refuses_unsafe_untagged_rate() -> None:
     census = build_snapshot_census(
-        [_card(1), _card(2, ()), _card(3, ("#AK_Step::Heme",),)],
+        [
+            _card(1),
+            _card(2, ()),
+            _card(
+                3,
+                ("#AK_Step::Heme",),
+            ),
+        ],
         deck_allowlist=("AnKing",),
         scope_tokens=("heme",),
     )
@@ -193,6 +202,52 @@ def test_tag_scope_is_a_complete_deterministic_partition() -> None:
     assert scoped.scoped_note_ids == (1, 3)
     assert scoped.unscoped_note_ids == (2,)
     assert set(scoped.scoped_note_ids) | set(scoped.unscoped_note_ids) == {1, 2, 3}
+
+
+def test_high_yield_selection_is_stable_protects_mandatory_and_never_pads() -> None:
+    ledger = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="high yield fact",
+                primary_entity="Disease",
+                aliases=(),
+                depth="deep",
+                emphasis_flag=True,
+                importance="high",
+            ),
+            CardConcept(
+                concept_id="C02",
+                canonical_statement="surface fact",
+                primary_entity="Finding",
+                aliases=(),
+                depth="surface",
+                emphasis_flag=False,
+                importance="low",
+            ),
+        ),
+    )
+    classifications = tuple(
+        CardClassification(
+            note_id=note_id,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="grounded",
+            covered_concept_ids=("C01" if note_id == 2 else "C02",),
+            supporting_passage_ids=("SLD:07:P:0001",),
+        )
+        for note_id in (3, 2)
+    )
+    selected, excluded, generated = select_high_yield(
+        classifications,
+        ledger=ledger,
+        target=65,
+        cap=70,
+    )
+    assert selected == (2, 3)
+    assert excluded == ()
+    assert generated == ()
 
 
 def test_classifier_rejects_invented_ids_ungrounded_yes_and_partial_batch() -> None:

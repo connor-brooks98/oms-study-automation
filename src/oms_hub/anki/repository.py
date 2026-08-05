@@ -60,6 +60,7 @@ from oms_hub.anki.models import (
     AnkiReviewChangeSetModel,
     AnkiSourceEvidenceModel,
     AnkiStageArtifactModel,
+    AnkiStageSettingModel,
     AnkiTagPatchModel,
 )
 from oms_hub.db import Database
@@ -100,7 +101,15 @@ ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
         CurationState.CARD_COVERAGE,
         CurationState.FAILED,
     },
-    CurationState.CARD_COVERAGE: {CurationState.FAILED},
+    CurationState.CARD_COVERAGE: {CurationState.CARD_SWEEPING_RESIDUAL, CurationState.FAILED},
+    CurationState.CARD_SWEEPING_RESIDUAL: {
+        CurationState.CARD_GENERATING_GAPS,
+        CurationState.FAILED,
+    },
+    CurationState.CARD_GENERATING_GAPS: {CurationState.CARD_DEDUPING, CurationState.FAILED},
+    CurationState.CARD_DEDUPING: {CurationState.CARD_SELECTING, CurationState.FAILED},
+    CurationState.CARD_SELECTING: {CurationState.CARD_RECONCILING, CurationState.FAILED},
+    CurationState.CARD_RECONCILING: {CurationState.READY_FOR_REVIEW, CurationState.FAILED},
     CurationState.BUILDING_LCL: {
         CurationState.RETRIEVING_PASS_1,
         CurationState.FAILED,
@@ -212,6 +221,11 @@ _INTERRUPTED_PRE_REVIEW_STATES = {
     CurationState.CARD_SCOPING_TAGS,
     CurationState.CARD_CLASSIFYING,
     CurationState.CARD_COVERAGE,
+    CurationState.CARD_SWEEPING_RESIDUAL,
+    CurationState.CARD_GENERATING_GAPS,
+    CurationState.CARD_DEDUPING,
+    CurationState.CARD_SELECTING,
+    CurationState.CARD_RECONCILING,
     CurationState.RETRIEVING_PASS_1,
     CurationState.JUDGING_PASS_1,
     CurationState.LOCALIZING_MISSED_CONCEPTS,
@@ -236,6 +250,11 @@ _CLAIMABLE_STATES = {
     CurationState.CARD_SCOPING_TAGS,
     CurationState.CARD_CLASSIFYING,
     CurationState.CARD_COVERAGE,
+    CurationState.CARD_SWEEPING_RESIDUAL,
+    CurationState.CARD_GENERATING_GAPS,
+    CurationState.CARD_DEDUPING,
+    CurationState.CARD_SELECTING,
+    CurationState.CARD_RECONCILING,
     CurationState.RETRIEVING_PASS_1,
     CurationState.JUDGING_PASS_1,
     CurationState.LOCALIZING_MISSED_CONCEPTS,
@@ -259,6 +278,9 @@ _RETRY_STATE_BY_STAGE = {
     CurationStage.CARD_TAG_SCOPE: CurationState.CARD_SCOPING_TAGS,
     CurationStage.CARD_CLASSIFY: CurationState.CARD_CLASSIFYING,
     CurationStage.CARD_COVERAGE: CurationState.CARD_COVERAGE,
+    CurationStage.CARD_RESIDUAL: CurationState.CARD_SWEEPING_RESIDUAL,
+    CurationStage.CARD_GAP_FILL: CurationState.CARD_GENERATING_GAPS,
+    CurationStage.CARD_SELECTION: CurationState.CARD_SELECTING,
     CurationStage.RETRIEVAL_PASS_1: CurationState.RETRIEVING_PASS_1,
     CurationStage.JUDGMENT_PASS_1: CurationState.JUDGING_PASS_1,
     CurationStage.RESCUE: CurationState.LOCALIZING_MISSED_CONCEPTS,
@@ -273,6 +295,7 @@ _RETRY_STATE_BY_STAGE = {
     CurationStage.GAPS: CurationState.GENERATING_GAPS,
     CurationStage.RECONCILIATION: CurationState.RECONCILING,
 }
+
 
 class InvalidCurationTransition(ValueError):
     """A curation job did not match the required state transition."""
@@ -302,16 +325,12 @@ class AnkiCurationRepository:
                 request.provider,
                 request.model,
             )
-            if request.pipeline_contract_version
-            is PipelineContractVersion.CARD_CENTRIC_V1
+            if request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1
             else ResolvedModelConfiguration.legacy(request.provider, request.model)
         )
-        if (
-            request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1
-            and (
-                model_config.classify_s4.thinking_mode != "disabled"
-                or model_config.residual_s6.thinking_mode != "disabled"
-            )
+        if request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1 and (
+            model_config.classify_s4.thinking_mode != "disabled"
+            or model_config.residual_s6.thinking_mode != "disabled"
         ):
             raise ValueError("card-centric S4/S6 thinking must be disabled")
         model_config_json = _canonical_json(model_config.canonical_document())
@@ -375,6 +394,40 @@ class AnkiCurationRepository:
             session.flush()
             return self._job(stored)
 
+    def card_centric_profile(self) -> ResolvedModelConfiguration | None:
+        """The local Study Hub has one signed-in operator; this is that user's default."""
+        with self.database.session() as session:
+            stored = session.get(AnkiStageSettingModel, "card_centric_profile")
+            if stored is None:
+                return None
+            try:
+                return self._resolved_model_config(
+                    stored.options_json,
+                    stored.provider,
+                    stored.model,
+                )
+            except (TypeError, ValueError):
+                return None
+
+    def save_card_centric_profile(self, value: ResolvedModelConfiguration) -> None:
+        document = _canonical_json(value.canonical_document())
+        with self.database.session() as session:
+            stored = session.get(AnkiStageSettingModel, "card_centric_profile")
+            if stored is None:
+                stored = AnkiStageSettingModel(
+                    stage="card_centric_profile",
+                    provider=value.ledger_s2.provider,
+                    model=value.ledger_s2.model,
+                    enabled=True,
+                    options_json=document,
+                )
+                session.add(stored)
+            else:
+                stored.provider = value.ledger_s2.provider
+                stored.model = value.ledger_s2.model
+                stored.enabled = True
+                stored.options_json = document
+
     def require_job(self, job_id: UUID) -> CurationJob:
         with self.database.session() as session:
             stored = session.get(AnkiCurationJobModel, str(job_id))
@@ -426,8 +479,6 @@ class AnkiCurationRepository:
             stored = session.scalar(
                 select(AnkiCurationJobModel)
                 .where(
-                    AnkiCurationJobModel.pipeline_contract_version
-                    == PipelineContractVersion.RETRIEVAL_V4.value,
                     AnkiCurationJobModel.state.in_([state.value for state in _CLAIMABLE_STATES]),
                     or_(
                         AnkiCurationJobModel.available_at.is_(None),
@@ -568,7 +619,15 @@ class AnkiCurationRepository:
             )
             if failed_stage is None:
                 raise ValueError("failed curation job has no resumable stage")
-            target_state = _RETRY_STATE_BY_STAGE.get(CurationStage(failed_stage.stage))
+            stage = CurationStage(failed_stage.stage)
+            card = stored.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V1.value
+            target_state = (
+                CurationState.CARD_DEDUPING
+                if card and stage is CurationStage.DEDUPE
+                else CurationState.CARD_RECONCILING
+                if card and stage is CurationStage.RECONCILIATION
+                else _RETRY_STATE_BY_STAGE.get(stage)
+            )
             if target_state is None:
                 raise ValueError("failed curation stage cannot be retried")
             if target_state not in ALLOWED_TRANSITIONS[CurationState.FAILED]:
@@ -811,8 +870,7 @@ class AnkiCurationRepository:
                 or existing.relative_path != artifact.relative_path
                 or existing.input_sha256 != artifact.input_sha256
                 or existing.content_sha256 != artifact.content_sha256
-                or existing.pipeline_contract_version
-                != artifact.pipeline_contract_version.value
+                or existing.pipeline_contract_version != artifact.pipeline_contract_version.value
                 or existing.model_config_sha256 != artifact.model_config_sha256
                 or cast(
                     dict[str, Any],

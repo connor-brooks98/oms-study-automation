@@ -54,18 +54,6 @@ class RecordingRunner:
         )
 
 
-class FailClosedCardRunner(RecordingRunner):
-    async def run(self, context: StageContext) -> StageProduct:
-        product = await super().run(context)
-        if context.stage is CurationStage.CARD_COVERAGE:
-            return StageProduct(
-                kind="card_centric_deferred_stage",
-                payload={"failure_code": "coverage_s5_not_implemented"},
-                blocking_error="card_centric_v1 stops safely at deferred coverage_s5 stage",
-            )
-        return product
-
-
 class MutableInputValidator:
     def __init__(self) -> None:
         self.error: str | None = None
@@ -559,7 +547,7 @@ def test_contract_version_controls_graph_and_stage_hash(
     assert original != _stage_input_hash(card_job, CurationStage.PREFLIGHT, ())
 
 
-def test_card_centric_graph_is_version_isolated_and_fails_closed_after_s4(
+def test_card_centric_graph_is_version_isolated_and_reaches_review(
     repository: AnkiCurationRepository,
     tmp_path: Path,
 ) -> None:
@@ -570,25 +558,18 @@ def test_card_centric_graph_is_version_isolated_and_fails_closed_after_s4(
         pipeline = CurationPipeline(
             repository,
             StageArtifactStore(tmp_path / "artifacts"),
-            FailClosedCardRunner(),
+            RecordingRunner(),
             input_validator=MutableInputValidator(),
         )
         for expected in pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V1):
             result = await pipeline.run_stage(card_job.id)
             assert result is not None
             assert result.stage is expected.stage
-        failed = repository.require_job(card_job.id)
-        assert failed.state is CurationState.FAILED
-        assert failed.error == "card_centric_v1 stops safely at deferred coverage_s5 stage"
-        assert [
-            artifact.stage for artifact in repository.list_stage_artifacts(card_job.id)
-        ] == [
-            CurationStage.PREFLIGHT,
-            CurationStage.SOURCE_INDEX,
-            CurationStage.CARD_LEDGER,
-            CurationStage.CARD_TAG_SCOPE,
-            CurationStage.CARD_CLASSIFY,
-            CurationStage.CARD_COVERAGE,
+        completed = repository.require_job(card_job.id)
+        assert completed.state is CurationState.READY_FOR_REVIEW
+        assert [artifact.stage for artifact in repository.list_stage_artifacts(card_job.id)] == [
+            definition.stage
+            for definition in pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V1)
         ]
 
     asyncio.run(scenario())

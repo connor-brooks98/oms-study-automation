@@ -645,6 +645,58 @@
       provider.value,
       model.value,
     );
+    const profile = form.querySelector("[data-curation-profile]");
+    const stagePanel = form.querySelector("[data-curation-stage-models]");
+    const stageInputs = {
+      s2: form.querySelector("[name=s2_model]"),
+      s4: form.querySelector("[name=s4_model]"),
+      s6: form.querySelector("[name=s6_model]"),
+      s7: form.querySelector("[name=s7_model]"),
+    };
+    const updateProfile = () => {
+      const selected = String(profile?.value || "balanced");
+      const current = String(model.value || "").trim();
+      Object.values(stageInputs).forEach((input) => {
+        if (input && !input.value) input.value = current;
+      });
+      if (stagePanel) stagePanel.hidden = selected !== "custom";
+      const estimate = form.querySelector("[data-curation-estimate]");
+      if (estimate) estimate.textContent = selected === "max_quality"
+        ? "Max quality: strong model at every LLM stage."
+        : selected === "fast_cheap"
+          ? "Fast / cheap: only fixture-passing S4/S6 models may be used as defaults."
+          : selected === "custom"
+            ? "Custom: S6 follows S4 unless explicitly unlocked by a validated configuration."
+            : "Balanced profile. S6 matches classify; S4/S6 use non-thinking mode.";
+    };
+    try {
+      const saved = JSON.parse(
+        documentRef.querySelector("#anki-profile-default")?.textContent || "null",
+      );
+      if (saved && typeof saved === "object") {
+        const profileName = String(saved.profile || "custom");
+        if ([...profile.options].some((option) => option.value === profileName)) {
+          profile.value = profileName;
+        } else {
+          profile.value = "custom";
+        }
+        [
+          ["ledger_s2", stageInputs.s2],
+          ["classify_s4", stageInputs.s4],
+          ["residual_s6", stageInputs.s6],
+          ["gap_fill_s7", stageInputs.s7],
+        ].forEach(([key, input]) => {
+          if (input && saved[key] && typeof saved[key].model === "string") {
+            input.value = saved[key].model;
+          }
+        });
+      }
+    } catch {
+      // An unavailable local default must never block a new curation run.
+    }
+    profile?.addEventListener("change", updateProfile);
+    model.addEventListener("change", updateProfile);
+    updateProfile();
     clearLecture();
 
     const refresh = documentRef.querySelector("[data-refresh-jobs]");
@@ -746,6 +798,18 @@
         ).trim(),
         provider: String(values.get("provider") || "").trim(),
         model: String(values.get("model") || "").trim(),
+        pipeline_contract_version: "card_centric_v1",
+      };
+      const selectedProfile = String(values.get("curation_profile") || "balanced");
+      const selectedProvider = body.provider;
+      const selectedModel = body.model;
+      body.resolved_model_config = {
+        profile: selectedProfile,
+        ledger_s2: { provider: selectedProvider, model: String(values.get("s2_model") || selectedModel), thinking_mode: "default" },
+        classify_s4: { provider: selectedProvider, model: String(values.get("s4_model") || selectedModel), thinking_mode: "disabled" },
+        residual_s6: { provider: selectedProvider, model: String(values.get("s6_model") || selectedModel), thinking_mode: "disabled" },
+        gap_fill_s7: { provider: selectedProvider, model: String(values.get("s7_model") || selectedModel), thinking_mode: "default" },
+        residual_unlocked: false,
       };
       submit.disabled = true;
       message.textContent = "Pinning sources and adding this run to the queue…";
@@ -1084,10 +1148,46 @@
       : "This combines initial matches and missed-topic recovery. Change a selection to update Final immediately.";
   };
 
+  const renderConceptGroups = (documentRef, concepts) => {
+    const container = documentRef.querySelector("[data-group-concepts]");
+    if (!container) return;
+    container.replaceChildren();
+    const items = Array.isArray(concepts) ? concepts : [];
+    if (!items.length) {
+      container.append(emptyGroup(documentRef, "No concept checklist is available."));
+      return;
+    }
+    items.forEach((concept) => {
+      const details = element(documentRef, "details", "anki-concept-review");
+      const summary = element(documentRef, "summary", "", String(concept.concept_id || "Concept"));
+      const counts = [
+        ["YES", concept.yes],
+        ["MAYBE", concept.maybe],
+        ["Flagged", concept.flagged],
+        ["Generated", concept.generated],
+      ].map(([label, values]) => `${label}: ${Array.isArray(values) ? values.length : 0}`).join(" · ");
+      summary.append(` — ${counts}`);
+      details.append(summary);
+      [
+        ["YES", concept.yes, "note_id"],
+        ["MAYBE", concept.maybe, "note_id"],
+        ["Flagged", concept.flagged, "note_id"],
+        ["Generated", concept.generated, "card_id"],
+      ].forEach(([label, values, idKey]) => {
+        if (!Array.isArray(values) || !values.length) return;
+        const line = element(documentRef, "p", "field-help");
+        line.textContent = `${label}: ${values.map((value) => value[idKey]).join(", ")}`;
+        details.append(line);
+      });
+      container.append(details);
+    });
+  };
+
   const renderReview = (documentRef, review) => {
     const groups = review.groups;
     const convergence = convergenceDisplay(review.convergence);
     const reconciliation = reconciliationDisplay(review.reconciliation);
+    renderConceptGroups(documentRef, review.concepts);
     documentRef.querySelector("[data-count-convergence]").textContent =
       convergence.count;
     documentRef.querySelector("[data-label-convergence]").textContent =

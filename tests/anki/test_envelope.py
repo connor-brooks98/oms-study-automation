@@ -117,9 +117,7 @@ def test_envelope_is_deterministic_ordered_and_self_contained() -> None:
         "sync",
         "verify",
     ]
-    assert len({operation.operation_id for operation in first.operations}) == len(
-        first.operations
-    )
+    assert len({operation.operation_id for operation in first.operations}) == len(first.operations)
     assert first.touched_note_hashes == {
         note.note_id: field_hash(note.fields),
     }
@@ -133,20 +131,14 @@ def test_envelope_is_deterministic_ordered_and_self_contained() -> None:
     }
 
     add_notes = next(
-        operation
-        for operation in first.operations
-        if operation.operation_type == "add_notes"
+        operation for operation in first.operations if operation.operation_type == "add_notes"
     )
     generated = add_notes.notes[0]  # type: ignore[union-attr]
     assert generated["deckName"] == "OMS::Heme::Lecture 3"
     assert generated["fields"] == _proposal().fields
     assert TARGET_TAG in generated["tags"]
     assert "OMS::Generated" in generated["tags"]
-    marker_tags = [
-        tag
-        for tag in generated["tags"]
-        if tag.startswith("OMS::Curation::Envelope_")
-    ]
+    marker_tags = [tag for tag in generated["tags"] if tag.startswith("OMS::Curation::Envelope_")]
     assert len(marker_tags) == 1
 
     existing_note_tag_operations = [
@@ -160,20 +152,37 @@ def test_envelope_is_deterministic_ordered_and_self_contained() -> None:
     )
 
 
+def test_v2_envelope_binds_card_centric_job_and_reconciliation() -> None:
+    note = _current_note()
+    envelope = EnvelopeBuilder(_policy()).build_v2(
+        _changeset(note),
+        {note.note_id: note},
+        envelope_id=ENVELOPE_ID,
+        snapshot_id="snapshot-1",
+        target_deck="OMS::Heme::Lecture 3",
+        target_tag=TARGET_TAG,
+        job_id=UUID("924ab797-23ac-4f14-a622-ded77fe8d701"),
+        model_config_sha256="b" * 64,
+        reconciliation_contract_version="card_centric_s9_v1",
+        review_revision=3,
+        overflow_acknowledgement_provenance={"required": False},
+    )
+
+    assert envelope.contract_version == 2
+    assert envelope.pipeline_contract_version == "card_centric_v1"
+    assert envelope.payload_sha256 != "0" * 64
+
+
 def test_operation_ids_change_when_the_canonical_payload_changes() -> None:
     note = _current_note()
     first = _build(note, proposal=_proposal())
     changed = _proposal(initial_tags=("OMS::Generated", "OMS::HighYield"))
     second = _build(note, proposal=changed)
     first_add = next(
-        operation
-        for operation in first.operations
-        if operation.operation_type == "add_notes"
+        operation for operation in first.operations if operation.operation_type == "add_notes"
     )
     second_add = next(
-        operation
-        for operation in second.operations
-        if operation.operation_type == "add_notes"
+        operation for operation in second.operations if operation.operation_type == "add_notes"
     )
 
     assert first_add.operation_id != second_add.operation_id

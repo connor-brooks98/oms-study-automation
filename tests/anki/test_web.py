@@ -47,6 +47,7 @@ from oms_hub.study_generation.domain import GenerationKind
 from oms_hub.study_generation.outline import OutlinePdfRenderer
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.web.anki_routes import (
+    _concept_review_groups,
     _convergence_summary,
     _reconciliation_summary,
     _review_reconciliation_summary,
@@ -56,6 +57,44 @@ SHA = "a" * 64
 TARGET_TAG = "AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_4"
 AGENT_HOST = "anki-agent.test"
 AGENT_TOKEN = "test-agent-token"
+
+
+def test_concept_review_groups_keep_yes_maybe_flagged_and_generated_separate() -> None:
+    candidate = Candidate(
+        note_id=42,
+        content_hash="a" * 64,
+        best_concept_id="C01",
+        provenance={"card_centric": {"verdict": "YES", "flags": []}},
+        scores={},
+        predicted_band="YES",
+        verdict="yes",
+        confidence=1.0,
+        reason="grounded",
+        context_trap=False,
+        recall_direction="card_centric",
+        mnemonic_classification="none",
+        dedupe_disposition="eligible",
+        selected=True,
+    )
+    gap = GapCard(
+        concept_id="C01",
+        text="{{c1::fact}}",
+        extra="",
+        content_hash="b" * 64,
+        card_id="CC-1",
+    )
+
+    groups = _concept_review_groups([candidate], [gap])
+
+    assert groups == [
+        {
+            "concept_id": "C01",
+            "yes": [{"note_id": 42, "reason": "grounded", "selected": True}],
+            "maybe": [],
+            "flagged": [],
+            "generated": [{"card_id": "CC-1", "selected": True, "validation_state": "valid"}],
+        }
+    ]
 
 
 class AgentSecretStore:
@@ -179,9 +218,7 @@ class FakeCompanionIndex:
         del note_ids, content_hashes
         return SimpleNamespace(
             coverage=self.semantic_coverage,
-            missing_or_stale_note_ids=(
-                () if self.semantic_coverage >= 0.995 else (42,)
-            ),
+            missing_or_stale_note_ids=(() if self.semantic_coverage >= 0.995 else (42,)),
         )
 
     def get_note(self, note_id: int) -> object | None:
@@ -206,9 +243,7 @@ class FakeSemanticStore:
     def load(self) -> object:
         return SimpleNamespace(
             manifest=SimpleNamespace(
-                generation=UUID(
-                    "33a3b975-0e93-41e6-8a44-ec255c7e1269"
-                ),
+                generation=UUID("33a3b975-0e93-41e6-8a44-ec255c7e1269"),
                 note_ids=(42,),
                 content_hashes=("b" * 64,),
             )
@@ -582,15 +617,9 @@ def test_anki_bootstrap_uses_saved_anki_curation_assignment_and_models(
     payload = response.json()
     assert payload["defaults"]["provider"] == "anthropic"
     assert payload["defaults"]["model"] == "claude-sonnet-4-6"
-    assert payload["defaults"]["lcl_prompt_version"] == (
-        "lecture-concept-ledger"
-    )
-    assert payload["defaults"]["judgment_rubric_version"] == (
-        "coverage-rubric"
-    )
-    assert payload["defaults"]["gap_prompt_version"] == (
-        "gap-card-generation"
-    )
+    assert payload["defaults"]["lcl_prompt_version"] == ("lecture-concept-ledger")
+    assert payload["defaults"]["judgment_rubric_version"] == ("coverage-rubric")
+    assert payload["defaults"]["gap_prompt_version"] == ("gap-card-generation")
     assert payload["provider_models"] == {
         "anthropic": "claude-sonnet-4-6",
         "gemini": "gemini-3.6-flash",
@@ -650,9 +679,7 @@ def test_anki_page_renders_openrouter_provider_option(
     document = HTMLParser(response.text)
     provider_select = document.css_first('select[name="provider"]')
     assert provider_select is not None
-    values = {
-        option.attributes.get("value") for option in provider_select.css("option")
-    }
+    values = {option.attributes.get("value") for option in provider_select.css("option")}
     assert values == {"anthropic", "openai", "gemini", "openrouter"}
 
 
@@ -1033,9 +1060,7 @@ def test_review_convergence_summary_exposes_manual_review_warning() -> None:
         content_sha256="c" * 64,
     )
     repository = SimpleNamespace(
-        list_stage_artifacts=lambda requested: (
-            [artifact] if requested == job_id else []
-        )
+        list_stage_artifacts=lambda requested: [artifact] if requested == job_id else []
     )
     payload = {
         "pass_number": 5,
@@ -1094,16 +1119,12 @@ def test_review_reads_committed_reconciliation_findings() -> None:
         "schema_name": "reconciliation_v2",
         "passed": ["A1", "A2"],
         "failed": [],
-        "warned": [
-            {"assertion_id": "A9", "message": "Some passages are uncited"}
-        ],
+        "warned": [{"assertion_id": "A9", "message": "Some passages are uncited"}],
         "can_render_envelope": True,
         "snapshot": {"source_passage_ids": ["SLD:07:0001"]},
     }
     repository = SimpleNamespace(
-        list_stage_artifacts=lambda requested: (
-            [artifact] if requested == job_id else []
-        )
+        list_stage_artifacts=lambda requested: [artifact] if requested == job_id else []
     )
     request = SimpleNamespace(
         app=SimpleNamespace(

@@ -8,6 +8,7 @@ from uuid import UUID, uuid5
 
 from oms_hub.anki.contracts import (
     ActionEnvelope,
+    ActionEnvelopeV2,
     AddNotesOperation,
     AddTagsOperation,
     Operation,
@@ -73,15 +74,11 @@ class EnvelopeBuilder:
         patches_by_note = {}
         for patch in changeset.tag_patches:
             if patch.note_id in patches_by_note:
-                raise EnvelopeBuildError(
-                    f"note {patch.note_id} has more than one tag patch"
-                )
+                raise EnvelopeBuildError(f"note {patch.note_id} has more than one tag patch")
             patches_by_note[patch.note_id] = patch
 
         selected_note_ids = {
-            note_id
-            for note_id, selected in changeset.candidate_selections.items()
-            if selected
+            note_id for note_id, selected in changeset.candidate_selections.items() if selected
         }
         affected_note_ids = selected_note_ids | set(patches_by_note)
         missing = affected_note_ids - set(current_collection)
@@ -115,20 +112,17 @@ class EnvelopeBuilder:
         changed_note_ids = {
             note_id
             for note_id in affected_note_ids
-            if _tag_keys(original_tags[note_id])
-            != _tag_keys(resulting_tags[note_id])
+            if _tag_keys(original_tags[note_id]) != _tag_keys(resulting_tags[note_id])
         }
         touched_hashes = {
             note_id: field_hash(current_collection[note_id].fields)
             for note_id in sorted(changed_note_ids)
         }
         expected_tag_hashes = {
-            note_id: tag_hash(original_tags[note_id])
-            for note_id in sorted(changed_note_ids)
+            note_id: tag_hash(original_tags[note_id]) for note_id in sorted(changed_note_ids)
         }
         expected_note_tags = {
-            note_id: resulting_tags[note_id]
-            for note_id in sorted(changed_note_ids)
+            note_id: resulting_tags[note_id] for note_id in sorted(changed_note_ids)
         }
 
         operations: list[Operation] = []
@@ -136,12 +130,8 @@ class EnvelopeBuilder:
         additions: dict[str, list[int]] = defaultdict(list)
         display_tags: dict[str, str] = {}
         for note_id in sorted(changed_note_ids):
-            before_by_key = {
-                tag.casefold(): tag for tag in original_tags[note_id]
-            }
-            after_by_key = {
-                tag.casefold(): tag for tag in resulting_tags[note_id]
-            }
+            before_by_key = {tag.casefold(): tag for tag in original_tags[note_id]}
+            after_by_key = {tag.casefold(): tag for tag in resulting_tags[note_id]}
             for key in sorted(before_by_key.keys() - after_by_key.keys()):
                 tag = before_by_key[key]
                 display_tags[key] = tag
@@ -197,9 +187,7 @@ class EnvelopeBuilder:
         )
         if generated_notes:
             payload = {"notes": generated_notes}
-            stable_target = ",".join(
-                _marker_tag(note["tags"]) for note in generated_notes
-            )
+            stable_target = ",".join(_marker_tag(note["tags"]) for note in generated_notes)
             digest, operation_id = _operation_identity(
                 envelope_id,
                 "add_notes",
@@ -254,9 +242,36 @@ class EnvelopeBuilder:
             operations=tuple(operations),
             payload_sha256="0" * 64,
         )
-        return envelope.model_copy(
-            update={"payload_sha256": canonical_payload_sha256(envelope)}
+        return envelope.model_copy(update={"payload_sha256": canonical_payload_sha256(envelope)})
+
+    def build_v2(
+        self,
+        *args: Any,
+        job_id: UUID,
+        model_config_sha256: str,
+        reconciliation_contract_version: str,
+        review_revision: int,
+        overflow_acknowledgement_provenance: dict[str, Any],
+        **kwargs: Any,
+    ) -> ActionEnvelopeV2:
+        """Lift the immutable V1 mutation plan into the job-bound V2 envelope."""
+        if not overflow_acknowledgement_provenance:
+            overflow_acknowledgement_provenance = {"required": False}
+        base = self.build(*args, **kwargs)
+        value = base.model_dump(mode="python")
+        value.update(
+            {
+                "contract_version": 2,
+                "job_id": job_id,
+                "model_config_sha256": model_config_sha256,
+                "reconciliation_contract_version": reconciliation_contract_version,
+                "review_revision": review_revision,
+                "overflow_acknowledgement_provenance": overflow_acknowledgement_provenance,
+                "payload_sha256": "0" * 64,
+            }
         )
+        envelope = ActionEnvelopeV2.model_validate(value)
+        return envelope.model_copy(update={"payload_sha256": canonical_payload_sha256(envelope)})
 
     def _generated_notes(
         self,
@@ -275,14 +290,9 @@ class EnvelopeBuilder:
         for proposal in ordered:
             stable_id = (proposal.concept_id, proposal.content_hash)
             if stable_id in stable_ids:
-                raise EnvelopeBuildError(
-                    f"duplicate generated proposal {proposal.concept_id}"
-                )
+                raise EnvelopeBuildError(f"duplicate generated proposal {proposal.concept_id}")
             stable_ids.add(stable_id)
-            marker = (
-                f"OMS::Curation::Envelope_{envelope_id.hex}"
-                f"::Card_{proposal.content_hash}"
-            )
+            marker = f"OMS::Curation::Envelope_{envelope_id.hex}::Card_{proposal.content_hash}"
             tags = self.tag_policy.validate_initial_tags(
                 (*proposal.initial_tags, target_tag, marker)
             )
@@ -329,13 +339,8 @@ def _marker_tag(tags: object) -> str:
     if not isinstance(tags, list):
         raise EnvelopeBuildError("generated note tags are malformed")
     markers = [
-        tag
-        for tag in tags
-        if isinstance(tag, str)
-        and tag.startswith("OMS::Curation::Envelope_")
+        tag for tag in tags if isinstance(tag, str) and tag.startswith("OMS::Curation::Envelope_")
     ]
     if len(markers) != 1:
-        raise EnvelopeBuildError(
-            "generated note requires one deterministic marker tag"
-        )
+        raise EnvelopeBuildError("generated note requires one deterministic marker tag")
     return markers[0]

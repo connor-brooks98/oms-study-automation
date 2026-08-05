@@ -147,7 +147,32 @@ CARD_CENTRIC_V1_STAGES = (
     PipelineStageDefinition(
         CurationState.CARD_COVERAGE,
         CurationStage.CARD_COVERAGE,
-        CurationState.FAILED,
+        CurationState.CARD_SWEEPING_RESIDUAL,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_SWEEPING_RESIDUAL,
+        CurationStage.CARD_RESIDUAL,
+        CurationState.CARD_GENERATING_GAPS,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_GENERATING_GAPS,
+        CurationStage.CARD_GAP_FILL,
+        CurationState.CARD_DEDUPING,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_DEDUPING,
+        CurationStage.DEDUPE,
+        CurationState.CARD_SELECTING,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_SELECTING,
+        CurationStage.CARD_SELECTION,
+        CurationState.CARD_RECONCILING,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_RECONCILING,
+        CurationStage.RECONCILIATION,
+        CurationState.READY_FOR_REVIEW,
     ),
 )
 _STAGE_BY_STATE = {definition.state: definition for definition in PIPELINE_STAGES}

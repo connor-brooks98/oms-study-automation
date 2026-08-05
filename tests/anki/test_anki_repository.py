@@ -24,6 +24,8 @@ from oms_hub.anki.domain import (
     GapCard,
     GapCardEdit,
     PipelineContractVersion,
+    ResolvedModelConfiguration,
+    ResolvedStageModel,
     RetrievalPass,
     ReviewChangeSet,
     SourceEvidence,
@@ -94,6 +96,21 @@ def _job_request(lecture_id: int, *, snapshot: str = "snapshot-1") -> CreateCura
     )
 
 
+def test_card_centric_profile_persists_for_the_local_study_hub_user(tmp_path: Path) -> None:
+    repository, _ = _prepared_repository(tmp_path)
+    profile = ResolvedModelConfiguration(
+        profile="custom",
+        ledger_s2=ResolvedStageModel("anthropic", "sonnet"),
+        classify_s4=ResolvedStageModel("anthropic", "haiku", "disabled", "fixture-v1"),
+        residual_s6=ResolvedStageModel("anthropic", "haiku", "disabled", "fixture-v1"),
+        gap_fill_s7=ResolvedStageModel("anthropic", "sonnet"),
+    )
+
+    repository.save_card_centric_profile(profile)
+
+    assert repository.card_centric_profile() == profile
+
+
 def _v2_envelope(
     *,
     job_id: UUID,
@@ -136,8 +153,7 @@ def _envelope_row_counts(repository: AnkiCurationRepository) -> tuple[int, int]:
     with repository.database.session() as session:
         return (
             session.scalar(select(func.count()).select_from(AnkiEnvelopeModel)) or 0,
-            session.scalar(select(func.count()).select_from(AnkiEnvelopeOperationModel))
-            or 0,
+            session.scalar(select(func.count()).select_from(AnkiEnvelopeOperationModel)) or 0,
         )
 
 
@@ -896,9 +912,7 @@ def test_v2_envelope_rejects_provenance_mismatches_without_mutation(
     )
     envelope = _v2_envelope(
         job_id=job.id,
-        pipeline_contract_version=(
-            PipelineContractVersion.CARD_CENTRIC_V1.value
-        ),
+        pipeline_contract_version=(PipelineContractVersion.CARD_CENTRIC_V1.value),
         model_config_sha256=(
             str(value) if field == "model_config_sha256" else job.model_config_sha256
         ),

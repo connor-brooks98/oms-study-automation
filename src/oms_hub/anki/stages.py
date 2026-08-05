@@ -9,14 +9,21 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from oms_hub.anki.audit import AuditRunResult, CardAuditService
 from oms_hub.anki.card_centric import (
     CardCentricClassifier,
+    CardCentricLedgerService,
     build_snapshot_census,
     build_source_index,
     scope_cards,
+    select_high_yield,
+    selection_eligible,
 )
 from oms_hub.anki.card_centric_contracts import (
     CardCentricSourceIndex,
+    CardClassification,
+    CardConceptLedger,
+    CardGapBatch,
     CardRecord,
     ClassifierResult,
+    GeneratedCardResolution,
     SnapshotCensus,
     TagScopeResult,
 )
@@ -75,10 +82,12 @@ from oms_hub.anki.prompts import (
 )
 from oms_hub.anki.reconciliation import (
     AuditResolution,
+    CardCentricReconciliationInput,
     ConceptResolution,
     GeneratedResolution,
     ReconciliationInput,
     reconcile,
+    reconcile_card_centric,
 )
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.anki.rescue import (
@@ -112,7 +121,7 @@ from oms_hub.anki.v2_contracts import (
 )
 from oms_hub.ingestion.domain import StudyRevision
 from oms_hub.ingestion.repository import IngestionRepository
-from oms_hub.llm.domain import ProviderCapabilities, ProviderName
+from oms_hub.llm.domain import GenerationOptions, ProviderCapabilities, ProviderName
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.llm.structured import StructuredTextService
 
@@ -143,12 +152,9 @@ class PinnedCurationInputValidator:
 
     def validate(self, job_id: UUID) -> None:
         job = self.repository.require_job(job_id)
-        if set(job.source_revision_hashes) != set(
-            job.source_revision_ids
-        ):
+        if set(job.source_revision_hashes) != set(job.source_revision_ids):
             raise PinnedInputChanged(
-                "Selected source revisions are missing immutable hashes; "
-                "start a new curation job"
+                "Selected source revisions are missing immutable hashes; start a new curation job"
             )
         for revision_id in job.source_revision_ids:
             try:
@@ -159,40 +165,29 @@ class PinnedCurationInputValidator:
                 ) from exc
             if revision.lecture_id != job.lecture_id:
                 raise PinnedInputChanged(
-                    f"Selected source revision {revision_id} belongs to "
-                    "another lecture"
+                    f"Selected source revision {revision_id} belongs to another lecture"
                 )
-            if (
-                revision_fingerprint(revision)
-                != job.source_revision_hashes[revision_id]
-            ):
+            if revision_fingerprint(revision) != job.source_revision_hashes[revision_id]:
                 raise PinnedInputChanged(
-                    f"Selected source revision {revision_id} changed after "
-                    "the job was queued"
+                    f"Selected source revision {revision_id} changed after the job was queued"
                 )
             if not revision.immutable_source_path.is_file():
                 raise PinnedInputChanged(
-                    f"Selected source revision {revision_id} file is "
-                    "unavailable"
+                    f"Selected source revision {revision_id} file is unavailable"
                 )
 
         if job.summary_outline_id is not None:
             if job.summary_outline_sha256 is None or self.outlines is None:
                 raise PinnedInputChanged(
-                    "The job has an incomplete summary pin; start a new "
-                    "curation job"
+                    "The job has an incomplete summary pin; start a new curation job"
                 )
             outline = self.outlines.outline(job.summary_outline_id)
             if outline is None:
                 raise PinnedInputChanged("Pinned NotebookLM summary is unavailable")
             if outline.lecture_id != job.lecture_id:
-                raise PinnedInputChanged(
-                    "Pinned NotebookLM summary belongs to another lecture"
-                )
+                raise PinnedInputChanged("Pinned NotebookLM summary belongs to another lecture")
             if not outline.current:
-                raise PinnedInputChanged(
-                    "Pinned NotebookLM summary is no longer current"
-                )
+                raise PinnedInputChanged("Pinned NotebookLM summary is no longer current")
             if (
                 outline.sha256 != job.summary_outline_sha256
                 or not outline.path.is_file()
@@ -206,13 +201,11 @@ class PinnedCurationInputValidator:
         companion_generation = self.companion.snapshot_id()
         if job.companion_generation is None:
             raise PinnedInputChanged(
-                "The job has no pinned companion-index generation; "
-                "start a new curation job"
+                "The job has no pinned companion-index generation; start a new curation job"
             )
         if companion_generation != job.companion_generation:
             raise PinnedInputChanged(
-                f"Pinned companion generation {job.companion_generation} "
-                "is no longer active"
+                f"Pinned companion generation {job.companion_generation} is no longer active"
             )
         if job.pipeline_contract_version.value == "retrieval_v4":
             semantic = self.semantic_store.load(
@@ -221,21 +214,17 @@ class PinnedCurationInputValidator:
             )
             if job.semantic_generation is None:
                 raise PinnedInputChanged(
-                    "The job has no pinned semantic generation; "
-                    "start a new curation job"
+                    "The job has no pinned semantic generation; start a new curation job"
                 )
             if str(semantic.manifest.generation) != job.semantic_generation:
                 raise PinnedInputChanged(
-                    f"Pinned semantic generation {job.semantic_generation} "
-                    "is no longer active"
+                    f"Pinned semantic generation {job.semantic_generation} is no longer active"
                 )
         if job.source_index_generation is not None:
             try:
                 generation = self.source_indexes(job.id).current_generation()
             except (FileNotFoundError, ValueError) as exc:
-                raise PinnedInputChanged(
-                    "The job's lecture source index is unavailable"
-                ) from exc
+                raise PinnedInputChanged("The job's lecture source index is unavailable") from exc
             if str(generation) != job.source_index_generation:
                 raise PinnedInputChanged(
                     f"Pinned source index generation "
@@ -266,6 +255,7 @@ class CurationServicesRunner:
         self.source_extractor = source_extractor
         self.source_indexes = source_indexes
         self.companion = companion
+        self.semantic = semantic
         self.structured = structured
         self.llm_settings = llm_settings
         self.retrieval = RetrievalService(
@@ -299,26 +289,23 @@ class CurationServicesRunner:
             CurationStage.CONVERGENCE_PASS_5: self._convergence_pass_5,
             CurationStage.CARD_AUDIT: self._card_audit,
             CurationStage.COVERAGE_RECOMPUTE: self._coverage_recompute,
-            CurationStage.DEDUPE: self._finalize_outcomes,
+            CurationStage.DEDUPE: self._dedupe_stage,
             CurationStage.GAPS: self._generate_gaps,
-            CurationStage.RECONCILIATION: self._reconciliation,
-            CurationStage.CARD_LEDGER: self._card_ledger_placeholder,
+            CurationStage.RECONCILIATION: self._reconciliation_stage,
+            CurationStage.CARD_LEDGER: self._card_ledger,
             CurationStage.CARD_TAG_SCOPE: self._card_tag_scope,
             CurationStage.CARD_CLASSIFY: self._card_classify,
-            CurationStage.CARD_COVERAGE: self._card_coverage_placeholder,
+            CurationStage.CARD_COVERAGE: self._card_coverage,
+            CurationStage.CARD_RESIDUAL: self._card_residual,
+            CurationStage.CARD_GAP_FILL: self._card_gap_fill,
+            CurationStage.CARD_SELECTION: self._card_selection,
         }
         return await handlers[context.stage](context)
 
     async def _preflight(self, context: StageContext) -> StageProduct:
         result = await self.runtime.ensure_running()
-        if (
-            not result.reachable
-            or not result.collection_accessible
-            or not result.sync_available
-        ):
-            raise RuntimeError(
-                result.blocking_reason or "Local Anki preflight failed"
-            )
+        if not result.reachable or not result.collection_accessible or not result.sync_available:
+            raise RuntimeError(result.blocking_reason or "Local Anki preflight failed")
         sync_result = await asyncio.to_thread(self.prompt_sync.sync)
         prompt_snapshot = await asyncio.to_thread(
             self.prompts.load_job_snapshot,
@@ -341,9 +328,7 @@ class CurationServicesRunner:
                         "prompt_hash": prompt.prompt_hash,
                         "content": prompt.content,
                         "path": str(prompt.path),
-                        "source_paths": [
-                            str(path) for path in prompt.source_paths
-                        ],
+                        "source_paths": [str(path) for path in prompt.source_paths],
                         "metadata": prompt.metadata.model_dump(
                             mode="json",
                             by_alias=True,
@@ -408,13 +393,8 @@ class CurationServicesRunner:
             context.job.source_revision_ids,
             summary_outline_id=context.job.summary_outline_id,
         )
-        if any(
-            passage.lecture_id != context.job.lecture_id
-            for passage in passages
-        ):
-            raise ValueError(
-                "selected source revisions contain another lecture"
-            )
+        if any(passage.lecture_id != context.job.lecture_id for passage in passages):
+            raise ValueError("selected source revisions contain another lecture")
         if context.job.pipeline_contract_version.value == "card_centric_v1":
             usable = [
                 passage
@@ -433,9 +413,7 @@ class CurationServicesRunner:
                 source_revision_hashes=context.job.source_revision_hashes,
                 summary_outline_sha256=context.job.summary_outline_sha256,
             )
-            cards = tuple(
-                _card_record(note) for note in self.companion.list_notes()
-            )
+            cards = tuple(_card_record(note) for note in self.companion.list_notes())
             census = build_snapshot_census(
                 cards,
                 deck_allowlist=context.job.deck_allowlist,
@@ -450,34 +428,45 @@ class CurationServicesRunner:
                     "cards": [card.model_dump(mode="json") for card in cards],
                 },
             )
-        generation = await self.source_indexes(
-            context.job.id
-        ).refresh(passages)
+        generation = await self.source_indexes(context.job.id).refresh(passages)
         return StageProduct(
             kind="lecture_source_index",
             payload={
                 "generation": str(generation.generation),
                 "passage_count": generation.passage_count,
                 "indexed_count": generation.indexed_count,
-                "passages": [
-                    _passage_payload(passage) for passage in passages
-                ],
+                "passages": [_passage_payload(passage) for passage in passages],
             },
-            job_pins={
-                "source_index_generation": str(generation.generation)
-            },
+            job_pins={"source_index_generation": str(generation.generation)},
         )
 
-    async def _card_ledger_placeholder(self, context: StageContext) -> StageProduct:
+    async def _card_ledger(self, context: StageContext) -> StageProduct:
         source = _card_source_index(context)
+        stage_model = context.job.resolved_model_config.ledger_s2
+        result = await asyncio.to_thread(
+            CardCentricLedgerService(
+                self.structured,
+                _card_ledger_prompt(self.prompts),
+            ).generate,
+            source_index=source,
+            provider=ProviderName(stage_model.provider),
+            model=stage_model.model,
+        )
         return StageProduct(
-            kind="card_centric_ledger_placeholder",
+            kind="card_centric_ledger",
             payload={
-                "concept_ids": [],
+                "ledger": result.ledger.model_dump(mode="json"),
                 "source_sha256": source.source_sha256,
-                "deferred_stage": "ledger_s2",
-                "status": "placeholder",
+                "provenance": {
+                    "provider": stage_model.provider,
+                    "model": stage_model.model,
+                    "request_id": result.request_id,
+                    "cache_prefix_sha256": hashlib.sha256(source.prefix.encode()).hexdigest(),
+                },
             },
+            usage=StageUsage(
+                result.request_id, result.input_tokens, result.output_tokens, result.cost_microusd
+            ),
         )
 
     async def _card_tag_scope(self, context: StageContext) -> StageProduct:
@@ -492,9 +481,7 @@ class CurationServicesRunner:
                     "census": census.model_dump(mode="json"),
                     "detail": census.trust.reason,
                 },
-                blocking_error=(
-                    "card_centric_v1 tag scope blocked: " + census.trust.reason
-                ),
+                blocking_error=("card_centric_v1 tag scope blocked: " + census.trust.reason),
             )
         scope = scope_cards(
             cards,
@@ -515,10 +502,7 @@ class CurationServicesRunner:
         scope_payload = _payload(context, CurationStage.CARD_TAG_SCOPE)
         try:
             scope = TagScopeResult.model_validate(scope_payload["scope"])
-            concept_ids = tuple(
-                str(value)
-                for value in _payload(context, CurationStage.CARD_LEDGER).get("concept_ids", [])
-            )
+            concept_ids = tuple(concept.concept_id for concept in _card_ledger(context).concepts)
         except (KeyError, TypeError, ValueError) as exc:
             raise PinnedInputChanged("card-centric scope or ledger artifact is malformed") from exc
         cards_by_id = {card.note_id: card for card in _card_records(source_payload)}
@@ -553,22 +537,277 @@ class CurationServicesRunner:
             },
             usage=_card_classifier_usage(classified),
             cache_hits=sum(
-                audit.cache_read_input_tokens > 0
-                for audit in classified.telemetry.batches
+                audit.cache_read_input_tokens > 0 for audit in classified.telemetry.batches
             ),
         )
 
-    async def _card_coverage_placeholder(self, context: StageContext) -> StageProduct:
+    async def _card_coverage(self, context: StageContext) -> StageProduct:
+        source = _card_source_index(context)
+        ledger = _card_ledger(context)
+        classified = _card_classifier(context, CurationStage.CARD_CLASSIFY)
+        coverage: dict[str, list[dict[str, Any]]] = {
+            concept.concept_id: [] for concept in ledger.concepts
+        }
+        for item in classified.results:
+            if not selection_eligible(item, source):
+                continue
+            for concept_id in item.covered_concept_ids:
+                if concept_id in coverage:
+                    coverage[concept_id].append(
+                        {
+                            "note_id": item.note_id,
+                            "supporting_passage_ids": list(item.supporting_passage_ids),
+                        }
+                    )
         return StageProduct(
-            kind="card_centric_deferred_stage",
+            kind="card_centric_coverage",
             payload={
-                "failure_code": "coverage_s5_not_implemented",
-                "next_required_stage": "coverage_s5",
-                "message": "card_centric_v1 stops before coverage/residual/gap stages",
+                "coverage": {
+                    concept_id: {
+                        "status": "covered" if evidence else "uncovered",
+                        "evidence": sorted(evidence, key=lambda value: value["note_id"]),
+                    }
+                    for concept_id, evidence in coverage.items()
+                },
+                "source_sha256": source.source_sha256,
             },
-            blocking_error=(
-                "card_centric_v1 stops safely at deferred coverage_s5 stage"
+        )
+
+    async def _card_residual(self, context: StageContext) -> StageProduct:
+        """S6: whole-deck semantic recall only for still-uncovered concepts."""
+        ledger = _card_ledger(context)
+        coverage = _card_coverage_payload(context)
+        uncovered = tuple(
+            concept
+            for concept in ledger.concepts
+            if coverage[concept.concept_id]["status"] == "uncovered"
+        )
+        source_payload = _payload(context, CurationStage.SOURCE_INDEX)
+        cards = {card.note_id: card for card in _card_records(source_payload)}
+        scoped = TagScopeResult.model_validate(
+            _payload(context, CurationStage.CARD_TAG_SCOPE)["scope"]
+        )
+        if not uncovered:
+            return StageProduct(
+                kind="card_centric_residual",
+                payload={"audits": [], "classifier": None, "uncovered_concept_ids": []},
+            )
+        queries = tuple(
+            f"{concept.primary_entity} {alias}"
+            for concept in uncovered
+            for alias in (concept.aliases or (concept.primary_entity,))
+        )
+        hits = await self.semantic.search(queries, eligible_note_ids=set(cards), limit=12)
+        audit: list[dict[str, Any]] = []
+        hit_ids: set[int] = set()
+        for query, found in zip(queries, hits, strict=True):
+            ids = tuple(sorted({item.note_id for item in found} - set(scoped.scoped_note_ids)))
+            hit_ids.update(ids)
+            audit.append(
+                {"query": query, "hit_note_ids": list(ids), "classified_note_ids": list(ids)}
+            )
+        selected = tuple(cards[note_id] for note_id in sorted(hit_ids) if note_id in cards)
+        stage_model = context.job.resolved_model_config.residual_s6
+        classified = await CardCentricClassifier(
+            self.structured,
+            instruction=_card_classifier_prompt(self.prompts),
+            capabilities=_structured_capabilities(
+                self.structured, ProviderName(stage_model.provider), stage_model.model
             ),
+        ).classify(
+            selected,
+            source_index=_card_source_index(context),
+            concept_ids=tuple(concept.concept_id for concept in ledger.concepts),
+            provider=ProviderName(stage_model.provider),
+            model=stage_model.model,
+        )
+        return StageProduct(
+            kind="card_centric_residual",
+            payload={
+                "audits": audit,
+                "classifier": classified.model_dump(mode="json"),
+                "uncovered_concept_ids": [concept.concept_id for concept in uncovered],
+            },
+            usage=_card_classifier_usage(classified),
+        )
+
+    async def _card_gap_fill(self, context: StageContext) -> StageProduct:
+        ledger = _card_ledger(context)
+        coverage = _merged_card_coverage(context)
+        source = _card_source_index(context)
+        stage_model = context.job.resolved_model_config.gap_fill_s7
+        output: list[GeneratedCardResolution] = []
+        usages: list[StageUsage] = []
+        for concept in ledger.concepts:
+            if coverage[concept.concept_id]["status"] == "covered":
+                continue
+            result = await asyncio.to_thread(
+                self.structured.generate_json,
+                _card_gap_prompt(self.prompts),
+                json.dumps(
+                    {
+                        "concept": concept.model_dump(mode="json"),
+                        "missing_facts": [
+                            {
+                                "fact_id": f"{concept.concept_id}-M1",
+                                "statement": concept.canonical_statement,
+                            }
+                        ],
+                        "evidence_passages": [
+                            {
+                                "passage_id": passage.passage_id,
+                                "source_kind": passage.source_kind,
+                                "text": passage.text,
+                            }
+                            for passage in source.passages
+                            if passage.authority != "summary"
+                        ],
+                        "lecture_title": self.repository.lecture_title(context.job.lecture_id),
+                        "lecture_entity_count": ledger.lecture_entity_count,
+                        "forbidden_cloze_targets": list(ledger.forbidden_cloze_targets),
+                        "existing_supports": [],
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                output_model=CardGapBatch,
+                provider=ProviderName(stage_model.provider),
+                model=stage_model.model,
+                options=GenerationOptions(cacheable_source_prefix=source.prefix),
+            )
+            expected = f"{concept.concept_id}-M1"
+            if {item.fact_id for item in result.value.resolutions} != {expected}:
+                raise PinnedInputChanged(
+                    "card-centric gap output must resolve every missing fact exactly once"
+                )
+            for item in result.value.resolutions:
+                if item.status == "generated" and (
+                    not set(item.source_passage_ids)
+                    <= {passage.passage_id for passage in source.passages}
+                    or all(value.startswith("SUM:") for value in item.source_passage_ids)
+                ):
+                    raise PinnedInputChanged("generated card must cite primary lecture evidence")
+                card_id = hashlib.sha256(
+                    f"{concept.concept_id}\0{item.fact_id}\0{item.text}\0{item.extra}".encode()
+                ).hexdigest()[:32]
+                output.append(
+                    GeneratedCardResolution(
+                        card_id=f"CC-{card_id}",
+                        concept_id=concept.concept_id,
+                        fact_id=item.fact_id,
+                        text=item.text,
+                        extra=item.extra,
+                        source_passage_ids=item.source_passage_ids
+                        if item.status == "generated"
+                        else ("UNRESOLVED",),
+                        split=item.split,
+                        status=item.status,
+                        reason=item.reason,
+                    )
+                )
+            usages.append(
+                StageUsage(
+                    result.request_id,
+                    result.input_tokens,
+                    result.output_tokens,
+                    result.cost_microusd,
+                )
+            )
+        return StageProduct(
+            kind="card_centric_gap_fill",
+            payload={"resolutions": [item.model_dump(mode="json") for item in output]},
+            usage=_combined_usage("card_gap_fill", usages),
+        )
+
+    async def _card_selection(self, context: StageContext) -> StageProduct:
+        source = _card_source_index(context)
+        ledger = _card_ledger(context)
+        classifications = _all_card_classifications(context)
+        generated = _card_deduped(context)
+        selected, excluded, generated_ids = select_high_yield(
+            classifications,
+            ledger=ledger,
+            generated_card_ids=[item.card_id for item in generated if item.status == "generated"],
+        )
+        selected_set = set(selected)
+        candidate_rows = tuple(
+            Candidate(
+                note_id=item.note_id,
+                content_hash=next(
+                    card.content_sha256
+                    for card in _card_records(_payload(context, CurationStage.SOURCE_INDEX))
+                    if card.note_id == item.note_id
+                ),
+                best_concept_id=(
+                    item.covered_concept_ids[0] if item.covered_concept_ids else "unmapped"
+                ),
+                provenance={
+                    "card_centric": {
+                        "verdict": item.verdict,
+                        "primary_subject": item.primary_subject,
+                        "covered_concept_ids": list(item.covered_concept_ids),
+                        "supporting_passage_ids": list(item.supporting_passage_ids),
+                        "flags": list(item.flags),
+                    }
+                },
+                scores={},
+                predicted_band=item.verdict,
+                verdict=item.verdict.lower(),
+                confidence=1.0 if item.verdict == "YES" else 0.5,
+                reason=item.reason,
+                context_trap="context_trap" in item.flags,
+                recall_direction="card_centric",
+                mnemonic_classification="none",
+                dedupe_disposition="eligible" if item.note_id in selected_set else "excluded",
+                selected=item.note_id in selected_set,
+            )
+            for item in classifications
+        )
+        gap_cards = tuple(
+            GapCard(
+                concept_id=item.concept_id,
+                text=item.text,
+                extra=item.extra,
+                selected=item.card_id in set(generated_ids),
+                validation_state=item.status,
+                provenance={
+                    "card_centric": {
+                        "fact_id": item.fact_id,
+                        "source_passage_ids": list(item.source_passage_ids),
+                        "reason": item.reason,
+                    }
+                },
+                content_hash=hashlib.sha256(
+                    f"{item.concept_id}\0{item.text}\0{item.extra}".encode()
+                ).hexdigest(),
+                card_id=item.card_id,
+            )
+            for item in generated
+            if item.status == "generated"
+        )
+        return StageProduct(
+            kind="card_centric_selection",
+            payload={
+                "selected_existing_note_ids": list(selected),
+                "excluded_existing_note_ids": list(excluded),
+                "selected_generated_card_ids": list(generated_ids),
+                "target": 65,
+                "cap": 70,
+                "minimum_target": 60,
+                "mandatory_note_ids": [
+                    item.note_id
+                    for item in classifications
+                    if selection_eligible(item, source)
+                    and any(
+                        concept.importance == "high" or concept.emphasis_flag
+                        for concept in ledger.concepts
+                        if concept.concept_id in item.covered_concept_ids
+                    )
+                ],
+                "overflow_acknowledgement": None,
+            },
+            candidates=candidate_rows,
+            gap_cards=gap_cards,
         )
 
     async def _lcl(self, context: StageContext) -> StageProduct:
@@ -582,9 +821,7 @@ class CurationServicesRunner:
             context.job.lcl_prompt_version,
         )
         if schema_name not in {"lcl_v1", "lcl_v2"}:
-            raise PinnedInputChanged(
-                "Pinned LCL prompt schema is unsupported"
-            )
+            raise PinnedInputChanged("Pinned LCL prompt schema is unsupported")
         lcl_schema = cast(Literal["lcl_v1", "lcl_v2"], schema_name)
         service = LCLService(
             self.structured,
@@ -627,10 +864,7 @@ class CurationServicesRunner:
                 concept,
                 _retrieval_scope(context),
             )
-            groups[concept.concept_id] = [
-                _candidate_payload(candidate)
-                for candidate in candidates
-            ]
+            groups[concept.concept_id] = [_candidate_payload(candidate) for candidate in candidates]
         return StageProduct(
             kind="pass_1_candidates",
             payload={"groups": groups},
@@ -674,24 +908,16 @@ class CurationServicesRunner:
             )
             queries = (
                 service.build_queries(localization)
-                if localization.support != "unsupported"
-                and localization.evidence
+                if localization.support != "unsupported" and localization.evidence
                 else ()
             )
             localizations[concept.concept_id] = {
                 "support": localization.support,
                 "rationale": localization.rationale,
-                "evidence": [
-                    _passage_payload(passage)
-                    for passage in localization.evidence
-                ],
-                "queries": [
-                    query.model_dump(mode="json") for query in queries
-                ],
+                "evidence": [_passage_payload(passage) for passage in localization.evidence],
+                "queries": [query.model_dump(mode="json") for query in queries],
             }
-            evidence_records.extend(
-                _evidence_records(localization)
-            )
+            evidence_records.extend(_evidence_records(localization))
         return StageProduct(
             kind="source_rescue",
             payload={"localizations": localizations},
@@ -702,10 +928,7 @@ class CurationServicesRunner:
         self,
         context: StageContext,
     ) -> StageProduct:
-        ledger_by_id = {
-            concept.concept_id: concept
-            for concept in _ledger(context).concepts
-        }
+        ledger_by_id = {concept.concept_id: concept for concept in _ledger(context).concepts}
         rescue = _payload(context, CurationStage.RESCUE)
         localizations = cast(
             dict[str, dict[str, Any]],
@@ -714,10 +937,7 @@ class CurationServicesRunner:
         groups: dict[str, list[dict[str, Any]]] = {}
         for concept_id, localization in localizations.items():
             raw_queries = localization.get("queries", [])
-            queries = [
-                RescueQuery.model_validate(query)
-                for query in raw_queries
-            ]
+            queries = [RescueQuery.model_validate(query) for query in raw_queries]
             if not queries:
                 groups[concept_id] = []
                 continue
@@ -726,10 +946,7 @@ class CurationServicesRunner:
                 queries,
                 _retrieval_scope(context),
             )
-            groups[concept_id] = [
-                _candidate_payload(candidate)
-                for candidate in candidates
-            ]
+            groups[concept_id] = [_candidate_payload(candidate) for candidate in candidates]
         return StageProduct(
             kind="pass_2_candidates",
             payload={"groups": groups},
@@ -750,9 +967,7 @@ class CurationServicesRunner:
                 CurationStage.JUDGMENT_PASS_1,
             )
         )
-        merged = _merge_candidates(
-            (*pass_1, *(product.candidates or ()))
-        )
+        merged = _merge_candidates((*pass_1, *(product.candidates or ())))
         return replace(product, candidates=merged)
 
     async def _convergence_pass_3(
@@ -790,9 +1005,7 @@ class CurationServicesRunner:
         concepts = {concept.concept_id: concept for concept in ledger.concepts}
         next_states: dict[str, ConvergenceState] = dict(states)
         compatibility_skipped: list[str] = []
-        active: list[
-            tuple[str, ConvergenceState, CoverageJudgment]
-        ] = []
+        active: list[tuple[str, ConvergenceState, CoverageJudgment]] = []
         for concept_id, state in states.items():
             if state.converged:
                 continue
@@ -802,22 +1015,15 @@ class CurationServicesRunner:
                 concept_id,
             )
             if not judgment.missing_facts:
-                next_states[concept_id] = state.model_copy(
-                    update={"converged": True}
-                )
+                next_states[concept_id] = state.model_copy(update={"converged": True})
             elif not concepts[concept_id].primary_entity:
                 compatibility_skipped.append(concept_id)
-                next_states[concept_id] = state.model_copy(
-                    update={"converged": True}
-                )
+                next_states[concept_id] = state.model_copy(update={"converged": True})
             else:
                 active.append((concept_id, state, judgment))
         existing = tuple(self.repository.list_candidates(context.job.id))
         if not active:
-            ordered_states = tuple(
-                next_states[concept.concept_id]
-                for concept in ledger.concepts
-            )
+            ordered_states = tuple(next_states[concept.concept_id] for concept in ledger.concepts)
             schema_name = _payload(
                 context,
                 _final_judgment_stage(
@@ -830,10 +1036,7 @@ class CurationServicesRunner:
                 payload={
                     "pass_number": pass_number,
                     "schema_name": schema_name,
-                    "concepts": [
-                        state.model_dump(mode="json")
-                        for state in ordered_states
-                    ],
+                    "concepts": [state.model_dump(mode="json") for state in ordered_states],
                     "active_concept_ids": [],
                     "groups": {},
                     "expanded_paraphrases": expanded_by_id,
@@ -841,9 +1044,7 @@ class CurationServicesRunner:
                     "judgments": {},
                     "needs_manual_review": False,
                     "manual_review_concept_ids": [],
-                    "compatibility_skipped_concept_ids": (
-                        compatibility_skipped
-                    ),
+                    "compatibility_skipped_concept_ids": (compatibility_skipped),
                 },
                 candidates=existing,
             )
@@ -851,13 +1052,14 @@ class CurationServicesRunner:
             context,
             "paraphrase-expansion",
         )
-        if _resolved_prompt_schema(
-            context,
-            "paraphrase-expansion",
-        ) != "paraphrase_v2":
-            raise PinnedInputChanged(
-                "Pinned paraphrase-expansion schema is unsupported"
+        if (
+            _resolved_prompt_schema(
+                context,
+                "paraphrase-expansion",
             )
+            != "paraphrase_v2"
+        ):
+            raise PinnedInputChanged("Pinned paraphrase-expansion schema is unsupported")
         expansion_service = ParaphraseExpansionService(
             self.structured,
             provider=_provider(context),
@@ -874,9 +1076,7 @@ class CurationServicesRunner:
             context.job.judgment_rubric_version,
         )
         if coverage_schema_name not in {"coverage_v1", "coverage_v2"}:
-            raise PinnedInputChanged(
-                "Pinned coverage prompt schema is unsupported"
-            )
+            raise PinnedInputChanged("Pinned coverage prompt schema is unsupported")
         coverage_service = JudgmentService(
             self.structured,
             self.repository,
@@ -891,9 +1091,7 @@ class CurationServicesRunner:
                 coverage_schema_name,
             ),
         )
-        candidates_by_id = {
-            candidate.note_id: candidate for candidate in existing
-        }
+        candidates_by_id = {candidate.note_id: candidate for candidate in existing}
         passages = _source_passages(context)
         scope = _retrieval_scope(context)
         groups: dict[str, list[dict[str, Any]]] = {}
@@ -934,19 +1132,11 @@ class CurationServicesRunner:
             )
             growth = update_growth(
                 seen_note_ids=prior_state.seen_note_ids,
-                retrieved_note_ids=tuple(
-                    candidate.note_id for candidate in retrieved
-                ),
+                retrieved_note_ids=tuple(candidate.note_id for candidate in retrieved),
             )
             new_ids = set(growth.new_note_ids)
-            new_candidates = [
-                candidate
-                for candidate in retrieved
-                if candidate.note_id in new_ids
-            ]
-            groups[concept_id] = [
-                _candidate_payload(candidate) for candidate in new_candidates
-            ]
+            new_candidates = [candidate for candidate in retrieved if candidate.note_id in new_ids]
+            groups[concept_id] = [_candidate_payload(candidate) for candidate in new_candidates]
             for candidate in new_candidates:
                 candidates_by_id[candidate.note_id] = candidate
             coverage_complete = not prior_judgment.missing_facts
@@ -954,9 +1144,7 @@ class CurationServicesRunner:
                 support_ids = _combined_support_ids(context, concept_id)
                 unknown = support_ids - set(candidates_by_id)
                 if unknown:
-                    raise PinnedInputChanged(
-                        "Coverage support is absent from current candidates"
-                    )
+                    raise PinnedInputChanged("Coverage support is absent from current candidates")
                 judge_ids = support_ids | new_ids
                 result = await asyncio.to_thread(
                     coverage_service.judge,
@@ -995,13 +1183,9 @@ class CurationServicesRunner:
                 growth=(*prior_state.growth, growth.growth),
                 converged=growth.converged or coverage_complete,
             )
-        ordered_states = tuple(
-            next_states[concept.concept_id] for concept in ledger.concepts
-        )
+        ordered_states = tuple(next_states[concept.concept_id] for concept in ledger.concepts)
         manual_review = tuple(
-            state.concept_id
-            for state in ordered_states
-            if pass_number == 5 and not state.converged
+            state.concept_id for state in ordered_states if pass_number == 5 and not state.converged
         )
         candidates = _merge_candidates((*existing, *projected))
         return StageProduct(
@@ -1009,9 +1193,7 @@ class CurationServicesRunner:
             payload={
                 "pass_number": pass_number,
                 "schema_name": coverage_schema_name,
-                "concepts": [
-                    state.model_dump(mode="json") for state in ordered_states
-                ],
+                "concepts": [state.model_dump(mode="json") for state in ordered_states],
                 "active_concept_ids": active_ids,
                 "groups": groups,
                 "expanded_paraphrases": expanded_by_id,
@@ -1041,14 +1223,10 @@ class CurationServicesRunner:
             "card-relevance-audit",
         )
         if metadata.get("schema") != "audit_verdict_v2":
-            raise PinnedInputChanged(
-                "Pinned card-audit prompt schema is unsupported"
-            )
+            raise PinnedInputChanged("Pinned card-audit prompt schema is unsupported")
         batch_size = metadata.get("batch_size", 30)
         if not isinstance(batch_size, int) or batch_size < 1:
-            raise PinnedInputChanged(
-                "Pinned card-audit batch size is malformed"
-            )
+            raise PinnedInputChanged("Pinned card-audit batch size is malformed")
         service = CardAuditService(
             self.structured,
             self.repository,
@@ -1062,9 +1240,7 @@ class CurationServicesRunner:
         result = await asyncio.to_thread(
             service.audit,
             lecture_id=context.job.lecture_id,
-            lecture_title=self.repository.lecture_title(
-                context.job.lecture_id
-            ),
+            lecture_title=self.repository.lecture_title(context.job.lecture_id),
             lecture_entity_count=_ledger(context).lecture_entity_count,
             candidates=candidates,
             passages=_source_passages(context),
@@ -1083,10 +1259,7 @@ class CurationServicesRunner:
             payload={
                 "schema_name": "audit_verdict_v2",
                 "prompt_hash": prompt_hash,
-                "verdicts": [
-                    verdict.model_dump(mode="json")
-                    for verdict in result.verdicts
-                ],
+                "verdicts": [verdict.model_dump(mode="json") for verdict in result.verdicts],
                 "counts": counts,
             },
             candidates=audited,
@@ -1108,9 +1281,7 @@ class CurationServicesRunner:
             context.job.judgment_rubric_version,
         )
         if schema_name not in {"coverage_v1", "coverage_v2"}:
-            raise PinnedInputChanged(
-                "Pinned coverage prompt schema is unsupported"
-            )
+            raise PinnedInputChanged("Pinned coverage prompt schema is unsupported")
         coverage_schema = cast(
             Literal["coverage_v1", "coverage_v2"],
             schema_name,
@@ -1130,20 +1301,14 @@ class CurationServicesRunner:
         raw_verdicts = audit_payload.get("verdicts")
         if not isinstance(raw_verdicts, list):
             raise PinnedInputChanged("Card-audit artifact is malformed")
-        verdicts = tuple(
-            AuditVerdictV2.model_validate(value) for value in raw_verdicts
-        )
-        keep_ids = {
-            verdict.nid for verdict in verdicts if verdict.verdict == "keep"
-        }
+        verdicts = tuple(AuditVerdictV2.model_validate(value) for value in raw_verdicts)
+        keep_ids = {verdict.nid for verdict in verdicts if verdict.verdict == "keep"}
         candidates_by_id = {
             candidate.note_id: candidate
             for candidate in self.repository.list_candidates(context.job.id)
         }
         if set(candidates_by_id) != {verdict.nid for verdict in verdicts}:
-            raise PinnedInputChanged(
-                "Card-audit artifact does not partition current candidates"
-            )
+            raise PinnedInputChanged("Card-audit artifact does not partition current candidates")
         results: dict[str, dict[str, Any]] = {}
         usages: list[JudgmentResult] = []
         for concept in ledger.concepts:
@@ -1159,15 +1324,10 @@ class CurationServicesRunner:
             )
             unknown_support_ids = prior_support_ids - set(candidates_by_id)
             if unknown_support_ids:
-                raise PinnedInputChanged(
-                    "Coverage support is absent from current candidates"
-                )
-            surviving_ids = tuple(
-                sorted(prior_support_ids & keep_ids)
-            )
-            if (
-                surviving_ids == tuple(sorted(prior_support_ids))
-                and prior_support_ids == set(prior.supporting_note_ids)
+                raise PinnedInputChanged("Coverage support is absent from current candidates")
+            surviving_ids = tuple(sorted(prior_support_ids & keep_ids))
+            if surviving_ids == tuple(sorted(prior_support_ids)) and prior_support_ids == set(
+                prior.supporting_note_ids
             ):
                 results[concept.concept_id] = {
                     **_judgment_record(
@@ -1202,6 +1362,55 @@ class CurationServicesRunner:
             },
             usage=_judgment_usage("coverage_recompute", usages),
             cache_hits=sum(result.cache_hit for result in usages),
+        )
+
+    async def _dedupe_stage(
+        self,
+        context: StageContext,
+    ) -> StageProduct:
+        if context.job.pipeline_contract_version.value == "card_centric_v1":
+            return await self._card_dedupe(context)
+        return await self._finalize_outcomes(context)
+
+    async def _card_dedupe(self, context: StageContext) -> StageProduct:
+        """S8 deterministic lexical duplicate check inside each concept cluster."""
+        cards = {
+            card.note_id: card
+            for card in _card_records(_payload(context, CurationStage.SOURCE_INDEX))
+        }
+        existing = _all_card_classifications(context)
+        generated = _card_generated(context)
+        resolved: list[GeneratedCardResolution] = []
+        for item in generated:
+            if item.status != "generated":
+                resolved.append(item)
+                continue
+            tokens = _card_tokens(item.text)
+            duplicate = next(
+                (
+                    classification.note_id
+                    for classification in existing
+                    if item.concept_id in classification.covered_concept_ids
+                    and _token_overlap(tokens, _card_tokens(cards[classification.note_id].text))
+                    >= 0.80
+                ),
+                None,
+            )
+            if duplicate is None:
+                resolved.append(item)
+            else:
+                resolved.append(
+                    item.model_copy(
+                        update={
+                            "status": "duplicate_of_existing",
+                            "duplicate_of_existing_note_id": duplicate,
+                            "reason": "token-overlap duplicate of eligible existing card",
+                        }
+                    )
+                )
+        return StageProduct(
+            kind="card_centric_dedupe",
+            payload={"resolutions": [item.model_dump(mode="json") for item in resolved]},
         )
 
     async def _finalize_outcomes(
@@ -1252,19 +1461,14 @@ class CurationServicesRunner:
         if schema_name == "gap_cards_v2":
             return await self._generate_gaps_v2(context)
         if schema_name != "gap_cards_v1":
-            raise PinnedInputChanged(
-                "Pinned gap-generation prompt schema is unsupported"
-            )
+            raise PinnedInputChanged("Pinned gap-generation prompt schema is unsupported")
         return await self._generate_gaps_v1(context)
 
     async def _generate_gaps_v1(
         self,
         context: StageContext,
     ) -> StageProduct:
-        ledger_by_id = {
-            concept.concept_id: concept
-            for concept in _ledger(context).concepts
-        }
+        ledger_by_id = {concept.concept_id: concept for concept in _ledger(context).concepts}
         outcomes = cast(
             dict[str, str],
             _payload(context, CurationStage.DEDUPE).get(
@@ -1326,11 +1530,8 @@ class CurationServicesRunner:
 
         existing_notes = [
             note
-            for candidate in self.repository.list_candidates(
-                context.job.id
-            )
-            if (note := self.companion.get_note(candidate.note_id))
-            is not None
+            for candidate in self.repository.list_candidates(context.job.id)
+            if (note := self.companion.get_note(candidate.note_id)) is not None
         ]
         dedupe = DeduplicationService(self.embedder)
         cards: list[GapCard] = []
@@ -1366,9 +1567,7 @@ class CurationServicesRunner:
                     extra=proposal.fields.get("Extra", ""),
                     selected=classification.disposition == "unique",
                     validation_state=(
-                        "valid"
-                        if classification.disposition == "unique"
-                        else "overlap"
+                        "valid" if classification.disposition == "unique" else "overlap"
                     ),
                     source_refs=proposal.source_refs,
                     evidence_ids=proposal.evidence_ids,
@@ -1378,9 +1577,7 @@ class CurationServicesRunner:
                         "model": proposal.model,
                         "prompt_version": proposal.prompt_version,
                         "confidence": proposal.confidence,
-                        "dedupe_disposition": (
-                            classification.disposition
-                        ),
+                        "dedupe_disposition": (classification.disposition),
                         "nearest_matches": [
                             {
                                 "identifier": match.identifier,
@@ -1422,21 +1619,15 @@ class CurationServicesRunner:
             prompt_text=prompt_text,
             prompt_hash=prompt_hash,
         )
-        all_candidates = tuple(
-            self.repository.list_candidates(context.job.id)
-        )
-        candidate_by_id = {
-            candidate.note_id: candidate for candidate in all_candidates
-        }
+        all_candidates = tuple(self.repository.list_candidates(context.job.id))
+        candidate_by_id = {candidate.note_id: candidate for candidate in all_candidates}
         proposals: list[GapCardProposal] = []
         unresolved: list[dict[str, Any]] = []
         results: list[V2GapGenerationResult] = []
         expected_fact_ids: set[str] = set()
         evidence_records = {
             record.evidence_id: record
-            for record in self.repository.list_source_evidence(
-                context.job.id
-            )
+            for record in self.repository.list_source_evidence(context.job.id)
         }
         for concept in ledger.concepts:
             judgment = _coverage_judgment(
@@ -1462,9 +1653,7 @@ class CurationServicesRunner:
                     concept=concept,
                     support="supported",
                     evidence=evidence,
-                    rationale=(
-                        "Audited missing facts are grounded in primary sources."
-                    ),
+                    rationale=("Audited missing facts are grounded in primary sources."),
                 )
             ):
                 evidence_records[record.evidence_id] = record
@@ -1491,14 +1680,10 @@ class CurationServicesRunner:
                     concept=concept,
                     missing_facts=missing_facts,
                     evidence=evidence,
-                    lecture_title=self.repository.lecture_title(
-                        context.job.lecture_id
-                    ),
+                    lecture_title=self.repository.lecture_title(context.job.lecture_id),
                     lecture_entity_count=ledger.lecture_entity_count,
                     forbidden_cloze_targets=_forbidden_cloze_targets(
-                        lecture_title=self.repository.lecture_title(
-                            context.job.lecture_id
-                        ),
+                        lecture_title=self.repository.lecture_title(context.job.lecture_id),
                         concept=concept,
                         lecture_entity_count=ledger.lecture_entity_count,
                     ),
@@ -1578,9 +1763,7 @@ class CurationServicesRunner:
             if card.provenance.get("fact_id")
         }
         unresolved_fact_ids = {
-            str(item.get("fact_id", ""))
-            for item in unresolved
-            if item.get("fact_id")
+            str(item.get("fact_id", "")) for item in unresolved if item.get("fact_id")
         }
         if (
             generated_fact_ids & unresolved_fact_ids
@@ -1600,9 +1783,7 @@ class CurationServicesRunner:
                         target
                         for concept in ledger.concepts
                         for target in _forbidden_cloze_targets(
-                            lecture_title=self.repository.lecture_title(
-                                context.job.lecture_id
-                            ),
+                            lecture_title=self.repository.lecture_title(context.job.lecture_id),
                             concept=concept,
                             lecture_entity_count=ledger.lecture_entity_count,
                         )
@@ -1612,6 +1793,99 @@ class CurationServicesRunner:
             source_evidence=tuple(evidence_records.values()),
             gap_cards=tuple(cards),
             usage=_v2_gap_usage(results),
+        )
+
+    async def _reconciliation_stage(
+        self,
+        context: StageContext,
+    ) -> StageProduct:
+        if context.job.pipeline_contract_version.value == "card_centric_v1":
+            return await self._card_reconciliation(context)
+        return await self._reconciliation(context)
+
+    async def _card_reconciliation(self, context: StageContext) -> StageProduct:
+        ledger = _card_ledger(context)
+        coverage = _merged_card_coverage(context)
+        classifications = _all_card_classifications(context)
+        generated = _card_deduped(context)
+        selection = _payload(context, CurationStage.CARD_SELECTION)
+        scope = TagScopeResult.model_validate(
+            _payload(context, CurationStage.CARD_TAG_SCOPE)["scope"]
+        )
+        census = _card_census(_payload(context, CurationStage.SOURCE_INDEX))
+        required_fact_ids = tuple(
+            f"{concept_id}-M1"
+            for concept_id, value in coverage.items()
+            if value["status"] == "uncovered"
+        )
+        final_coverage = {concept_id: value["status"] for concept_id, value in coverage.items()}
+        for item in generated:
+            if item.status == "generated":
+                final_coverage[item.concept_id] = "covered"
+            elif item.status in {"unresolved", "duplicate_of_existing"}:
+                final_coverage[item.concept_id] = "intentional_gap"
+        report = reconcile_card_centric(
+            CardCentricReconciliationInput(
+                concept_ids=tuple(concept.concept_id for concept in ledger.concepts),
+                coverage=final_coverage,
+                required_fact_ids=required_fact_ids,
+                residual_ran_for=tuple(
+                    _payload(context, CurationStage.CARD_RESIDUAL).get("uncovered_concept_ids", [])
+                ),
+                generated_cards=tuple(
+                    GeneratedResolution(card_id=item.card_id, fact_id=item.fact_id, text=item.text)
+                    for item in generated
+                    if item.status == "generated"
+                ),
+                unresolved_fact_ids=tuple(
+                    item.fact_id for item in generated if item.status != "generated"
+                ),
+                expected_scoped_nids=scope.scoped_note_ids,
+                classifications=tuple(
+                    AuditResolution(
+                        nid=item.note_id,
+                        verdict=cast(
+                            Literal["keep", "drop", "uncertain"],
+                            {"YES": "keep", "NO": "drop", "MAYBE": "uncertain"}[item.verdict],
+                        ),
+                    )
+                    for item in classifications
+                    if item.note_id in set(scope.scoped_note_ids)
+                ),
+                eligible_yes_nids=tuple(
+                    item.note_id
+                    for item in classifications
+                    if selection_eligible(item, _card_source_index(context))
+                ),
+                selected_nids=tuple(selection["selected_existing_note_ids"]),
+                selected_generated_card_ids=tuple(selection["selected_generated_card_ids"]),
+                generated_card_ids=tuple(
+                    item.card_id for item in generated if item.status == "generated"
+                ),
+                source_passage_ids=tuple(
+                    passage.passage_id for passage in _card_source_index(context).passages
+                ),
+                forbidden_cloze_targets=ledger.forbidden_cloze_targets,
+                prompt_sync_stale=bool(
+                    _payload(context, CurationStage.PREFLIGHT).get("prompt_sync_stale", False)
+                ),
+                untagged_rate=census.trust.untagged_rate,
+                target=int(selection["target"]),
+                cap=int(selection["cap"]),
+                mandatory_nids=tuple(selection["mandatory_note_ids"]),
+                overflow_acknowledgement=selection.get("overflow_acknowledgement"),
+            )
+        )
+        return StageProduct(
+            kind="card_centric_reconciliation",
+            payload={
+                "contract_version": "card_centric_s9_v1",
+                **report.model_dump(mode="json"),
+                "selection": selection,
+            },
+            blocking_error=None
+            if report.can_render_envelope
+            else "card-centric reconciliation failed",
         )
 
     async def _reconciliation(
@@ -1630,9 +1904,7 @@ class CurationServicesRunner:
                     "warned": [
                         {
                             "assertion_id": "legacy_v1",
-                            "message": (
-                                "Legacy V1 run cannot provide V2 reconciliation"
-                            ),
+                            "message": ("Legacy V1 run cannot provide V2 reconciliation"),
                         }
                     ],
                     "snapshot": None,
@@ -1650,9 +1922,7 @@ class CurationServicesRunner:
                 "metrics": _reconciliation_metrics(snapshot),
             },
             blocking_error=(
-                "Reconciliation failed: " + ", ".join(failed_ids)
-                if failed_ids
-                else None
+                "Reconciliation failed: " + ", ".join(failed_ids) if failed_ids else None
             ),
         )
 
@@ -1667,10 +1937,7 @@ class CurationServicesRunner:
             dict[str, list[dict[str, Any]]],
             _payload(context, source_stage).get("groups", {}),
         )
-        ledger_by_id = {
-            concept.concept_id: concept
-            for concept in _ledger(context).concepts
-        }
+        ledger_by_id = {concept.concept_id: concept for concept in _ledger(context).concepts}
         prompt_text, prompt_hash = _resolved_prompt(
             context,
             context.job.judgment_rubric_version,
@@ -1680,9 +1947,7 @@ class CurationServicesRunner:
             context.job.judgment_rubric_version,
         )
         if schema_name not in {"coverage_v1", "coverage_v2"}:
-            raise PinnedInputChanged(
-                "Pinned coverage prompt schema is unsupported"
-            )
+            raise PinnedInputChanged("Pinned coverage prompt schema is unsupported")
         coverage_schema = cast(
             Literal["coverage_v1", "coverage_v2"],
             schema_name,
@@ -1702,9 +1967,7 @@ class CurationServicesRunner:
         projected: list[Candidate] = []
         usages: list[JudgmentResult] = []
         for concept_id, values in raw_groups.items():
-            candidates = [
-                _candidate_from_payload(value) for value in values
-            ]
+            candidates = [_candidate_from_payload(value) for value in values]
             for deck_candidates in _priority_candidate_groups(candidates):
                 result = await asyncio.to_thread(
                     service.judge,
@@ -1743,10 +2006,7 @@ class CurationServicesRunner:
             payload={
                 "schema_name": schema_name,
                 "judgments": results,
-                "projected_candidates": [
-                    _candidate_payload(candidate)
-                    for candidate in merged
-                ],
+                "projected_candidates": [_candidate_payload(candidate) for candidate in merged],
             },
             candidates=merged,
             usage=_judgment_usage(kind, usages),
@@ -1774,9 +2034,7 @@ def _provider(context: StageContext) -> ProviderName:
 
 
 def _card_classifier_prompt(catalog: AnkiPromptCatalogService) -> str:
-    prompt = AnkiPromptLibrary(catalog.bundled_directory).load(
-        "card-centric-classifier"
-    )
+    prompt = AnkiPromptLibrary(catalog.bundled_directory).load("card-centric-classifier")
     return prompt.content
 
 
@@ -1841,14 +2099,117 @@ def _card_classifier_usage(classified: ClassifierResult) -> StageUsage | None:
     request_ids = [audit.request_id for audit in audits]
     identity = json.dumps(request_ids, separators=(",", ":"))
     return StageUsage(
-        request_id=(
-            "card_classify:"
-            f"{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
-        ),
+        request_id=(f"card_classify:{hashlib.sha256(identity.encode()).hexdigest()[:24]}"),
         input_tokens=sum(audit.input_tokens for audit in audits),
         output_tokens=sum(audit.output_tokens for audit in audits),
         cost_microusd=sum(audit.cost_microusd for audit in audits),
     )
+
+
+def _card_ledger(context: StageContext) -> CardConceptLedger:
+    try:
+        return CardConceptLedger.model_validate(
+            _payload(context, CurationStage.CARD_LEDGER)["ledger"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PinnedInputChanged("card-centric ledger artifact is malformed") from exc
+
+
+def _card_classifier(context: StageContext, stage: CurationStage) -> ClassifierResult:
+    try:
+        return ClassifierResult.model_validate(_payload(context, stage)["classifier"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PinnedInputChanged("card-centric classifier artifact is malformed") from exc
+
+
+def _all_card_classifications(context: StageContext) -> tuple[CardClassification, ...]:
+    primary = _card_classifier(context, CurationStage.CARD_CLASSIFY).results
+    residual_raw = _payload(context, CurationStage.CARD_RESIDUAL).get("classifier")
+    if residual_raw is None:
+        return primary
+    try:
+        residual = ClassifierResult.model_validate(residual_raw).results
+    except ValueError as exc:
+        raise PinnedInputChanged("card-centric residual classifier artifact is malformed") from exc
+    combined = (*primary, *residual)
+    if len({item.note_id for item in combined}) != len(combined):
+        raise PinnedInputChanged("card-centric classifiers judged one note more than once")
+    return tuple(sorted(combined, key=lambda item: item.note_id))
+
+
+def _card_coverage_payload(context: StageContext) -> dict[str, dict[str, Any]]:
+    raw = _payload(context, CurationStage.CARD_COVERAGE).get("coverage")
+    if not isinstance(raw, dict):
+        raise PinnedInputChanged("card-centric coverage artifact is malformed")
+    return cast(dict[str, dict[str, Any]], raw)
+
+
+def _merged_card_coverage(context: StageContext) -> dict[str, dict[str, Any]]:
+    coverage = {
+        key: {"status": value["status"], "evidence": list(value.get("evidence", []))}
+        for key, value in _card_coverage_payload(context).items()
+    }
+    source = _card_source_index(context)
+    for item in _all_card_classifications(context):
+        if selection_eligible(item, source):
+            for concept_id in item.covered_concept_ids:
+                if concept_id in coverage:
+                    coverage[concept_id]["status"] = "covered"
+                    coverage[concept_id]["evidence"].append(
+                        {
+                            "note_id": item.note_id,
+                            "supporting_passage_ids": list(item.supporting_passage_ids),
+                        }
+                    )
+    return coverage
+
+
+def _card_generated(context: StageContext) -> tuple[GeneratedCardResolution, ...]:
+    raw = _payload(context, CurationStage.CARD_GAP_FILL).get("resolutions", [])
+    try:
+        return tuple(GeneratedCardResolution.model_validate(value) for value in raw)
+    except (TypeError, ValueError) as exc:
+        raise PinnedInputChanged("card-centric gap artifact is malformed") from exc
+
+
+def _card_deduped(context: StageContext) -> tuple[GeneratedCardResolution, ...]:
+    raw = _payload(context, CurationStage.DEDUPE).get("resolutions", [])
+    try:
+        return tuple(GeneratedCardResolution.model_validate(value) for value in raw)
+    except (TypeError, ValueError) as exc:
+        raise PinnedInputChanged("card-centric dedupe artifact is malformed") from exc
+
+
+def _combined_usage(label: str, usages: Sequence[StageUsage]) -> StageUsage | None:
+    if not usages:
+        return None
+    joined = json.dumps([value.request_id for value in usages], separators=(",", ":"))
+    return StageUsage(
+        f"{label}:{hashlib.sha256(joined.encode()).hexdigest()[:24]}",
+        sum(value.input_tokens for value in usages),
+        sum(value.output_tokens for value in usages),
+        sum(value.cost_microusd for value in usages),
+    )
+
+
+def _card_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in __import__("re").findall(r"[a-z0-9]+", value.casefold())
+        if len(token) > 2
+    }
+
+
+def _token_overlap(left: set[str], right: set[str]) -> float:
+    return len(left & right) / len(left | right) if left or right else 0.0
+
+
+def _card_ledger_prompt(catalog: AnkiPromptCatalogService) -> str:
+    return AnkiPromptLibrary(catalog.bundled_directory).load("lecture-concept-ledger").content
+
+
+def _card_gap_prompt(catalog: AnkiPromptCatalogService) -> str:
+    return AnkiPromptLibrary(catalog.bundled_directory).load("gap-card-generation").content
 
 
 def _resolved_prompt(
@@ -1874,9 +2235,7 @@ def _resolved_prompt(
         ):
             raise PinnedInputChanged("Pinned prompt snapshot is malformed")
         return content, prompt_hash
-    raise PinnedInputChanged(
-        f"Pinned prompt {prompt_id} is unavailable; start a new curation job"
-    )
+    raise PinnedInputChanged(f"Pinned prompt {prompt_id} is unavailable; start a new curation job")
 
 
 def _resolved_prompt_schema(
@@ -1899,9 +2258,7 @@ def _resolved_prompt_schema(
         if not isinstance(schema_name, str) or not schema_name.strip():
             raise PinnedInputChanged("Pinned prompt schema is missing")
         return schema_name.strip()
-    raise PinnedInputChanged(
-        f"Pinned prompt {prompt_id} is unavailable; start a new curation job"
-    )
+    raise PinnedInputChanged(f"Pinned prompt {prompt_id} is unavailable; start a new curation job")
 
 
 def _resolved_prompt_metadata(
@@ -1921,9 +2278,7 @@ def _resolved_prompt_metadata(
         if not isinstance(metadata, dict):
             raise PinnedInputChanged("Pinned prompt metadata is malformed")
         return dict(metadata)
-    raise PinnedInputChanged(
-        f"Pinned prompt {prompt_id} is unavailable; start a new curation job"
-    )
+    raise PinnedInputChanged(f"Pinned prompt {prompt_id} is unavailable; start a new curation job")
 
 
 def revision_fingerprint(revision: StudyRevision) -> str:
@@ -1951,9 +2306,7 @@ def _payload(
     try:
         return context.prior_payloads[stage]
     except KeyError:
-        raise PinnedInputChanged(
-            f"Committed {stage.value} artifact is unavailable"
-        ) from None
+        raise PinnedInputChanged(f"Committed {stage.value} artifact is unavailable") from None
 
 
 def _source_passages(context: StageContext) -> list[SourcePassage]:
@@ -1968,9 +2321,7 @@ def _ledger(context: StageContext) -> LectureConceptLedger:
     payload = _payload(context, CurationStage.LCL)
     schema_name = payload.get("schema_name", "lcl_v1")
     if schema_name == "lcl_v2":
-        ledger = LectureConceptLedgerV2.model_validate(
-            payload.get("ledger")
-        )
+        ledger = LectureConceptLedgerV2.model_validate(payload.get("ledger"))
         return runtime_ledger_from_v2(
             ledger,
             _source_passages(context),
@@ -2001,9 +2352,7 @@ def _coverage_judgment(
     if not isinstance(raw, dict) or not isinstance(raw.get("judgment"), dict):
         raise PinnedInputChanged("Coverage judgment artifact is malformed")
     if schema_name == "coverage_v2":
-        return runtime_judgment_from_v2(
-            CoverageJudgmentV2.model_validate(raw["judgment"])
-        )
+        return runtime_judgment_from_v2(CoverageJudgmentV2.model_validate(raw["judgment"]))
     if schema_name != "coverage_v1":
         raise PinnedInputChanged("Committed coverage schema is unsupported")
     return CoverageJudgment.model_validate(raw["judgment"])
@@ -2031,9 +2380,7 @@ def _final_judgment_stage(
         judgments = payload.get("judgments")
         if isinstance(judgments, dict) and concept_id in judgments:
             return stage
-    raise PinnedInputChanged(
-        "Coverage judgment artifact is absent for a lecture concept"
-    )
+    raise PinnedInputChanged("Coverage judgment artifact is absent for a lecture concept")
 
 
 def _combined_support_ids(
@@ -2084,9 +2431,7 @@ def _prior_convergence(
             CurationStage.RETRIEVAL_PASS_2,
         )
         for concept in ledger.concepts:
-            first_ids = _group_note_ids(
-                first_groups.get(concept.concept_id, [])
-            )
+            first_ids = _group_note_ids(first_groups.get(concept.concept_id, []))
             judgment = _coverage_judgment(
                 context,
                 _final_judgment_stage(context, concept.concept_id),
@@ -2103,9 +2448,7 @@ def _prior_convergence(
                 continue
             second_update = update_growth(
                 seen_note_ids=first_ids,
-                retrieved_note_ids=_group_note_ids(
-                    second_groups.get(concept.concept_id, [])
-                ),
+                retrieved_note_ids=_group_note_ids(second_groups.get(concept.concept_id, [])),
             )
             states[concept.concept_id] = ConvergenceState(
                 concept_id=concept.concept_id,
@@ -2115,9 +2458,7 @@ def _prior_convergence(
                     1.0 if first_ids else 0.0,
                     second_update.growth,
                 ),
-                converged=(
-                    not judgment.missing_facts or second_update.converged
-                ),
+                converged=(not judgment.missing_facts or second_update.converged),
             )
         return states, {concept.concept_id: [] for concept in ledger.concepts}
     previous_stage = {
@@ -2135,9 +2476,7 @@ def _prior_convergence(
     }
     expected = {concept.concept_id for concept in ledger.concepts}
     if set(states) != expected or len(states) != len(raw_states):
-        raise PinnedInputChanged(
-            "Convergence artifact does not partition lecture concepts"
-        )
+        raise PinnedInputChanged("Convergence artifact does not partition lecture concepts")
     raw_expanded = payload.get("expanded_paraphrases", {})
     if not isinstance(raw_expanded, dict):
         raise PinnedInputChanged("Convergence paraphrases are malformed")
@@ -2145,8 +2484,7 @@ def _prior_convergence(
     for concept_id in expected:
         values = raw_expanded.get(concept_id, [])
         if not isinstance(values, list) or any(
-            not isinstance(value, str) or not value.strip()
-            for value in values
+            not isinstance(value, str) or not value.strip() for value in values
         ):
             raise PinnedInputChanged("Convergence paraphrases are malformed")
         expanded[concept_id] = list(values)
@@ -2166,9 +2504,7 @@ def _retrieval_groups(
 
 
 def _group_note_ids(values: Sequence[dict[str, Any]]) -> tuple[int, ...]:
-    return tuple(
-        sorted({_candidate_from_payload(value).note_id for value in values})
-    )
+    return tuple(sorted({_candidate_from_payload(value).note_id for value in values}))
 
 
 def _retrieval_scope(context: StageContext) -> RetrievalScope:
@@ -2222,29 +2558,17 @@ def _passage_from_payload(value: object) -> SourcePassage:
                 str(value["extraction_status"]),
             ),
             slide_number=(
-                None
-                if value.get("slide_number") is None
-                else int(value["slide_number"])
+                None if value.get("slide_number") is None else int(value["slide_number"])
             ),
             start_seconds=(
-                None
-                if value.get("start_seconds") is None
-                else float(value["start_seconds"])
+                None if value.get("start_seconds") is None else float(value["start_seconds"])
             ),
-            end_seconds=(
-                None
-                if value.get("end_seconds") is None
-                else float(value["end_seconds"])
-            ),
-            summary_backrefs=tuple(
-                str(item) for item in value.get("summary_backrefs", [])
-            ),
+            end_seconds=(None if value.get("end_seconds") is None else float(value["end_seconds"])),
+            summary_backrefs=tuple(str(item) for item in value.get("summary_backrefs", [])),
             summary_section=cast(Any, value.get("summary_section")),
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise PinnedInputChanged(
-            "Source passage artifact is malformed"
-        ) from exc
+        raise PinnedInputChanged("Source passage artifact is malformed") from exc
 
 
 def _candidate_payload(candidate: Candidate) -> dict[str, Any]:
@@ -2273,10 +2597,7 @@ def _candidate_from_payload(value: Mapping[str, Any]) -> Candidate:
         content_hash=str(value["content_hash"]),
         best_concept_id=str(value["best_concept_id"]),
         provenance=dict(value["provenance"]),
-        scores={
-            str(key): float(score)
-            for key, score in dict(value["scores"]).items()
-        },
+        scores={str(key): float(score) for key, score in dict(value["scores"]).items()},
         predicted_band=str(value["predicted_band"]),
         verdict=str(value["verdict"]),
         confidence=float(value["confidence"]),
@@ -2300,18 +2621,10 @@ def _judged_candidate(
         candidate,
         predicted_band=judgment.status,
         verdict=(
-            "include"
-            if selected
-            else "uncertain"
-            if judgment.status == "partial"
-            else "drop"
+            "include" if selected else "uncertain" if judgment.status == "partial" else "drop"
         ),
         confidence=(
-            1.0
-            if judgment.status == "covered"
-            else 0.7
-            if judgment.status == "partial"
-            else 0.0
+            1.0 if judgment.status == "covered" else 0.7 if judgment.status == "partial" else 0.0
         ),
         reason=judgment.rationale,
         selected=selected,
@@ -2332,9 +2645,7 @@ def _audited_candidate(
             "drop": "drop",
             "uncertain": "uncertain",
         }[audit.verdict],
-        confidence={"keep": 1.0, "drop": 0.0, "uncertain": 0.5}[
-            audit.verdict
-        ],
+        confidence={"keep": 1.0, "drop": 0.0, "uncertain": 0.5}[audit.verdict],
         reason=audit.reason,
         context_trap="context_trap" in audit.structure_issue,
         selected=audit.verdict == "keep",
@@ -2378,11 +2689,7 @@ def _projected_candidates(
     values = payload.get("projected_candidates", [])
     if not isinstance(values, list):
         raise PinnedInputChanged("Judgment artifact is malformed")
-    return tuple(
-        _candidate_from_payload(value)
-        for value in values
-        if isinstance(value, dict)
-    )
+    return tuple(_candidate_from_payload(value) for value in values if isinstance(value, dict))
 
 
 def _localization(
@@ -2395,10 +2702,7 @@ def _localization(
     return RescueLocalization(
         concept=concept,
         support=cast(RescueSupport, str(value["support"])),
-        evidence=tuple(
-            _passage_from_payload(passage)
-            for passage in raw_evidence
-        ),
+        evidence=tuple(_passage_from_payload(passage) for passage in raw_evidence),
         rationale=str(value["rationale"]),
     )
 
@@ -2412,13 +2716,10 @@ def _localization_from_concept(
         evidence = tuple(
             passage
             for reference in concept.source_refs
-            if (passage := by_id[reference.passage_id]).source_kind
-            is not SourceKind.SUMMARY
+            if (passage := by_id[reference.passage_id]).source_kind is not SourceKind.SUMMARY
         )
     except KeyError as exc:
-        raise PinnedInputChanged(
-            "Concept evidence is absent from the source artifact"
-        ) from exc
+        raise PinnedInputChanged("Concept evidence is absent from the source artifact") from exc
     if not evidence:
         raise PinnedInputChanged("Concept has no primary source evidence")
     return RescueLocalization(
@@ -2469,25 +2770,17 @@ def _v2_gap_evidence(
 ) -> tuple[SourcePassage, ...]:
     passage_by_source_id = {passage.source_id: passage for passage in passages}
     requested_ids = set(concept.source_passage_ids)
-    requested_ids.update(
-        passage_id
-        for fact in missing_facts
-        for passage_id in fact.passage_ids
-    )
+    requested_ids.update(passage_id for fact in missing_facts for passage_id in fact.passage_ids)
     missing_ids = requested_ids - set(passage_by_source_id)
     if missing_ids:
-        raise PinnedInputChanged(
-            "Gap-generation evidence is absent from the source artifact"
-        )
+        raise PinnedInputChanged("Gap-generation evidence is absent from the source artifact")
     evidence = tuple(
         passage_by_source_id[source_id]
         for source_id in sorted(requested_ids)
         if passage_by_source_id[source_id].source_kind is not SourceKind.SUMMARY
     )
     if not evidence:
-        raise PinnedInputChanged(
-            "Audited missing facts have no primary-source evidence"
-        )
+        raise PinnedInputChanged("Audited missing facts have no primary-source evidence")
     return evidence
 
 
@@ -2514,9 +2807,7 @@ def _gap_card_from_proposal(
         text=proposal.fields["Text"],
         extra=proposal.fields.get("Extra", ""),
         selected=classification.disposition == "unique",
-        validation_state=(
-            "valid" if classification.disposition == "unique" else "overlap"
-        ),
+        validation_state=("valid" if classification.disposition == "unique" else "overlap"),
         source_refs=proposal.source_refs,
         evidence_ids=proposal.evidence_ids,
         provenance={
@@ -2596,9 +2887,7 @@ def _reconciliation_snapshot(
             CurationStage.COVERAGE_RECOMPUTE,
             concept.concept_id,
         )
-        missing_fact_ids = tuple(
-            fact.fact_id for fact in judgment.missing_fact_records
-        )
+        missing_fact_ids = tuple(fact.fact_id for fact in judgment.missing_fact_records)
         missing = set(missing_fact_ids)
         resolved = generated_fact_ids | unresolved_ids
         status = (
@@ -2637,9 +2926,7 @@ def _reconciliation_snapshot(
         if isinstance(item, dict)
     )
     candidates = tuple(repository.list_candidates(context.job.id))
-    intentionally_uncited = {
-        item.passage_id for item in ledger.intentionally_uncited
-    }
+    intentionally_uncited = {item.passage_id for item in ledger.intentionally_uncited}
     source_passage_ids = tuple(
         passage.source_id
         for passage in _source_passages(context)
@@ -2654,9 +2941,7 @@ def _reconciliation_snapshot(
         concepts=tuple(concepts),
         generated_cards=generated_cards,
         unresolved_fact_ids=unresolved_fact_ids,
-        expected_audit_nids=tuple(
-            candidate.note_id for candidate in candidates
-        ),
+        expected_audit_nids=tuple(candidate.note_id for candidate in candidates),
         audit_verdicts=audit_verdicts,
         source_passage_ids=source_passage_ids,
         forbidden_cloze_targets=tuple(str(value) for value in raw_forbidden),
@@ -2669,15 +2954,11 @@ def _reconciliation_metrics(
 ) -> dict[str, Any]:
     audit_keep = sum(item.verdict == "keep" for item in snapshot.audit_verdicts)
     audit_drop = sum(item.verdict == "drop" for item in snapshot.audit_verdicts)
-    audit_uncertain = sum(
-        item.verdict == "uncertain" for item in snapshot.audit_verdicts
-    )
+    audit_uncertain = sum(item.verdict == "uncertain" for item in snapshot.audit_verdicts)
     audit_total = len(snapshot.audit_verdicts)
     unresolved = set(snapshot.unresolved_fact_ids)
     cited = {
-        passage_id
-        for concept in snapshot.concepts
-        for passage_id in concept.cited_passage_ids
+        passage_id for concept in snapshot.concepts for passage_id in concept.cited_passage_ids
     }
     return {
         "audit_keep": audit_keep,
@@ -2685,12 +2966,9 @@ def _reconciliation_metrics(
         "audit_uncertain": audit_uncertain,
         "audit_drop_rate": audit_drop / audit_total if audit_total else 0.0,
         "unresolved_concepts": sum(
-            bool(set(concept.missing_fact_ids) & unresolved)
-            for concept in snapshot.concepts
+            bool(set(concept.missing_fact_ids) & unresolved) for concept in snapshot.concepts
         ),
-        "uncited_passage_ids": sorted(
-            set(snapshot.source_passage_ids) - cited
-        ),
+        "uncited_passage_ids": sorted(set(snapshot.source_passage_ids) - cited),
         "prompt_sync_stale": snapshot.prompt_sync_stale,
     }
 
@@ -2735,10 +3013,7 @@ def _judgment_usage(
         separators=(",", ":"),
     )
     return StageUsage(
-        request_id=(
-            f"{kind}:"
-            f"{hashlib.sha256(request_identity.encode()).hexdigest()[:24]}"
-        ),
+        request_id=(f"{kind}:{hashlib.sha256(request_identity.encode()).hexdigest()[:24]}"),
         input_tokens=sum(result.input_tokens for result in results),
         output_tokens=sum(result.output_tokens for result in results),
         cost_microusd=sum(result.cost_microusd for result in results),
@@ -2750,14 +3025,8 @@ def _convergence_usage(
     expansions: Sequence[ExpansionResult],
     judgments: Sequence[JudgmentResult],
 ) -> StageUsage | None:
-    request_ids = [
-        request_id
-        for expansion in expansions
-        for request_id in expansion.request_ids
-    ]
-    request_ids.extend(
-        result.request_id or result.cache_key for result in judgments
-    )
+    request_ids = [request_id for expansion in expansions for request_id in expansion.request_ids]
+    request_ids.extend(result.request_id or result.cache_key for result in judgments)
     if not request_ids:
         return None
     identity = json.dumps(
@@ -2767,8 +3036,7 @@ def _convergence_usage(
     )
     return StageUsage(
         request_id=(
-            f"convergence_pass_{pass_number}:"
-            f"{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
+            f"convergence_pass_{pass_number}:{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
         ),
         input_tokens=(
             sum(result.input_tokens for result in expansions)
@@ -2794,10 +3062,7 @@ def _audit_usage(result: AuditRunResult) -> StageUsage | None:
         separators=(",", ":"),
     )
     return StageUsage(
-        request_id=(
-            "card_audit:"
-            f"{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
-        ),
+        request_id=(f"card_audit:{hashlib.sha256(identity.encode()).hexdigest()[:24]}"),
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
         cost_microusd=result.cost_microusd,
@@ -2810,8 +3075,7 @@ def _proposal_usage(
     if not proposals:
         return None
     request_ids = [
-        str(proposal.provenance.get("generation_request_id", "unknown"))
-        for proposal in proposals
+        str(proposal.provenance.get("generation_request_id", "unknown")) for proposal in proposals
     ]
     digest = hashlib.sha256(
         json.dumps(
@@ -2852,10 +3116,7 @@ def _v2_gap_usage(
         separators=(",", ":"),
     )
     return StageUsage(
-        request_id=(
-            "gaps_v2:"
-            f"{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
-        ),
+        request_id=(f"gaps_v2:{hashlib.sha256(identity.encode()).hexdigest()[:24]}"),
         input_tokens=sum(attempt.input_tokens for attempt in attempts),
         output_tokens=sum(attempt.output_tokens for attempt in attempts),
         cost_microusd=sum(attempt.cost_microusd for attempt in attempts),

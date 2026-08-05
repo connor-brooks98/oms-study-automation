@@ -120,6 +120,26 @@
             <option value="{{ defaults.model }}">{{ defaults.model }}</option>
           </select>
         </label>
+        <fieldset class="anki-field-wide" data-curation-models>
+          <legend>Models</legend>
+          <label>Curation profile
+            <select name="curation_profile" data-curation-profile>
+              <option value="balanced" selected>Balanced</option>
+              <option value="max_quality">Max quality</option>
+              <option value="fast_cheap">Fast / cheap</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </label>
+          <p class="field-help" data-curation-estimate>Balanced profile. S6 matches classify; S4/S6 use non-thinking mode.</p>
+          <div class="anki-form-grid" data-curation-stage-models hidden>
+            <label>Concept ledger (S2)<input name="s2_model" readonly></label>
+            <label>Classify (S4)<input name="s4_model" readonly></label>
+            <label>Residual sweep (S6)<input name="s6_model" readonly></label>
+            <label>Gap generation (S7)<input name="s7_model" readonly></label>
+          </div>
+          <p class="field-help" data-s4-fixture>Classify defaults are fixture-gated. Unvalidated custom S4 choices require a fixture run before they become a default.</p>
+          <p class="field-help" data-s7-warning hidden>Gap cards enter your permanent deck; a weaker S7 model risks subtle errors.</p>
+        </fieldset>
         <label class="anki-field-wide">
           Focus for this lecture
           <textarea name="instruction_text" rows="3" placeholder="Optional: prioritize lecturer comparisons, red-highlighted facts, or exam framing."></textarea>
@@ -202,6 +222,7 @@
 </section>
 <script id="anki-lecture-data" type="application/json">{{ lectures|tojson }}</script>
 <script id="anki-provider-models" type="application/json">{{ provider_models|tojson }}</script>
+<script id="anki-profile-default" type="application/json">{{ defaults.card_centric_profile|tojson }}</script>
 {% endblock %}
 {% block scripts %}
 <script src="/static/anki.js?v=20260804.1" defer></script>
