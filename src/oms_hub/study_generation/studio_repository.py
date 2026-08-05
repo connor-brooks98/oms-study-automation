@@ -157,21 +157,53 @@ class StudioRepository:
         if not payload_path.is_file() or sha256_file(payload_path) != snapshot_sha256:
             raise ValueError("local import snapshot could not be verified")
         with self.database.session() as session:
-            model = session.get(StudioSourceModel, source_id)
-            if model is None:
-                raise KeyError(source_id)
-            if model.purpose != StudioSourcePurpose.LOCAL_IMPORT.value:
-                raise ValueError("only local import sources can become ready")
-            model.payload_path = str(payload_path)
-            model.snapshot_sha256 = snapshot_sha256
-            model.media_type = media_type
-            model.final_url = final_url
-            model.state = StudioSourceState.READY.value
-            model.next_attempt_at = None
-            model.diagnostic_source = None
-            model.error = None
+            result = session.execute(
+                update(StudioSourceModel)
+                .where(
+                    StudioSourceModel.id == source_id,
+                    StudioSourceModel.purpose == StudioSourcePurpose.LOCAL_IMPORT.value,
+                    StudioSourceModel.state == StudioSourceState.PENDING.value,
+                    StudioSourceModel.payload_path.is_(None),
+                    StudioSourceModel.snapshot_sha256.is_(None),
+                    StudioSourceModel.media_type.is_(None),
+                    StudioSourceModel.final_url.is_(None),
+                )
+                .values(
+                    payload_path=str(payload_path),
+                    snapshot_sha256=snapshot_sha256,
+                    media_type=media_type,
+                    final_url=final_url,
+                    state=StudioSourceState.READY.value,
+                    next_attempt_at=None,
+                    diagnostic_source=None,
+                    error=None,
+                )
+            )
+            if cast(CursorResult[Any], result).rowcount != 1:
+                raise ValueError("local import source is no longer pending")
             session.flush()
+            model = session.get(StudioSourceModel, source_id)
+            assert model is not None
             return self._domain(model)
+
+    def fail_import_source(self, source_id: str) -> bool:
+        """Fail a newly-created import source without reviving a terminal row."""
+        with self.database.session() as session:
+            result = session.execute(
+                update(StudioSourceModel)
+                .where(
+                    StudioSourceModel.id == source_id,
+                    StudioSourceModel.purpose == StudioSourcePurpose.LOCAL_IMPORT.value,
+                    StudioSourceModel.state == StudioSourceState.PENDING.value,
+                )
+                .values(
+                    state=StudioSourceState.FAILED.value,
+                    diagnostic_source="source_processing",
+                    error="local import source processing failed",
+                    next_attempt_at=None,
+                )
+            )
+            return cast(CursorResult[Any], result).rowcount == 1
 
     def claim_next(self, now: datetime | None = None) -> StudioSource | None:
         now = now or datetime.now(UTC)

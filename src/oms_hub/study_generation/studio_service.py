@@ -69,13 +69,17 @@ class StudioService:
             purpose=StudioSourcePurpose.LOCAL_IMPORT,
         )
         path = self.payload_root / source.id / f"original{suffix}"
-        digest = verified_atomic_write(payload, path)
-        return self.repository.mark_import_ready(
-            source.id,
-            path,
-            digest,
-            media_type=self._media_type(filename_path),
-        )
+        try:
+            digest = verified_atomic_write(payload, path)
+            return self.repository.mark_import_ready(
+                source.id,
+                path,
+                digest,
+                media_type=self._media_type(filename_path),
+            )
+        except Exception:
+            self.repository.fail_import_source(source.id)
+            raise
 
     def add_import_text(
         self,
@@ -98,13 +102,17 @@ class StudioService:
             purpose=StudioSourcePurpose.LOCAL_IMPORT,
         )
         path = self.payload_root / source.id / "pasted.txt"
-        digest = verified_atomic_write(payload, path)
-        return self.repository.mark_import_ready(
-            source.id,
-            path,
-            digest,
-            media_type="text/plain",
-        )
+        try:
+            digest = verified_atomic_write(payload, path)
+            return self.repository.mark_import_ready(
+                source.id,
+                path,
+                digest,
+                media_type="text/plain",
+            )
+        except Exception:
+            self.repository.fail_import_source(source.id)
+            raise
 
     def add_import_url(
         self,
@@ -131,8 +139,8 @@ class StudioService:
                 media_type=snapshot.media_type,
                 final_url=snapshot.original_url,
             )
-        except (OSError, ValueError) as error:
-            self.repository.fail(source.id, "source_processing", str(error), retry=False)
+        except Exception:
+            self.repository.fail_import_source(source.id)
             raise
 
     def queue_import_run(

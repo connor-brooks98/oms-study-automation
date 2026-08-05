@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as OrmSession
 
 from oms_hub.db import Database
+from oms_hub.files.atomic import verified_atomic_write
 from oms_hub.models import (
     PublishedQuizMediaModel,
     PublishedQuizModel,
@@ -114,6 +115,62 @@ def _ready_local_source(repository: StudioRepository, title: str):
         assert stored is not None
         stored.state = StudioSourceState.READY.value
     return repository.get(source.id)
+
+
+def _pending_local_source(repository: StudioRepository, title: str):
+    return repository.create_source(
+        "Neuro",
+        1,
+        StudioSourceType.FILE,
+        title,
+        purpose=StudioSourcePurpose.LOCAL_IMPORT,
+    )
+
+
+@pytest.mark.parametrize("transition", ["failed", "deleted"])
+def test_mark_import_ready_cannot_resurrect_changed_source_state(
+    tmp_path: Path,
+    transition: str,
+) -> None:
+    repository = _repository(tmp_path)
+    source = _pending_local_source(repository, "Questions")
+    path = tmp_path / "snapshot.txt"
+    digest = verified_atomic_write(b"Question", path)
+    if transition == "failed":
+        repository.fail(source.id, "source_processing", "download failed", retry=False)
+    else:
+        repository.mark_source_deleted(source.id)
+
+    with pytest.raises(ValueError, match="no longer pending"):
+        repository.mark_import_ready(
+            source.id, path, digest, media_type="text/plain"
+        )
+
+    stored = repository.get(source.id)
+    assert stored is not None
+    assert stored.state.value == transition
+    assert stored.payload_path is None
+    assert stored.snapshot_sha256 is None
+
+
+def test_mark_import_ready_cannot_replace_an_existing_snapshot(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    source = _pending_local_source(repository, "Questions")
+    first = tmp_path / "first.txt"
+    first_digest = verified_atomic_write(b"first", first)
+    ready = repository.mark_import_ready(
+        source.id, first, first_digest, media_type="text/plain"
+    )
+    second = tmp_path / "second.txt"
+    second_digest = verified_atomic_write(b"second", second)
+
+    with pytest.raises(ValueError, match="no longer pending"):
+        repository.mark_import_ready(
+            source.id, second, second_digest, media_type="text/plain"
+        )
+
+    stored = repository.get(source.id)
+    assert stored == ready
 
 
 def test_import_run_persists_ordered_source_roles_and_stage_artifact(tmp_path: Path) -> None:
