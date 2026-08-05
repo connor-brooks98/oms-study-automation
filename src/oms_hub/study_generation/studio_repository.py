@@ -41,6 +41,29 @@ from oms_hub.study_generation.studio_domain import (
     StudioStoredImage,
 )
 
+_ACTIVE_LABEL_INDEX = "ix_studio_runs_active_label"
+
+
+def _is_active_label_conflict(error: IntegrityError) -> bool:
+    """Return True only when ``error`` is the active-label uniqueness index.
+
+    SQLite's own IntegrityError message doesn't include the index name for
+    a UNIQUE violation (it lists the participating columns instead), so we
+    match on those columns; other dialects that do surface the index name
+    (e.g. Postgres) are matched directly. Anything else -- notably a
+    foreign-key violation, which shares the same exception type -- is left
+    for the caller to re-raise unchanged.
+    """
+    message = str(error.orig)
+    if _ACTIVE_LABEL_INDEX in message:
+        return True
+    return (
+        "UNIQUE constraint failed" in message
+        and "destination_subject_key" in message
+        and "destination_exam_number" in message
+        and "label_key" in message
+    )
+
 
 class StudioRepository:
     def __init__(self, database: Database):
@@ -295,9 +318,11 @@ class StudioRepository:
             try:
                 session.flush()
             except IntegrityError as error:
-                raise ValueError(
-                    "this quiz label is already in use for the destination exam"
-                ) from error
+                if _is_active_label_conflict(error):
+                    raise ValueError(
+                        "this quiz label is already in use for the destination exam"
+                    ) from error
+                raise
             for position, source in enumerate(ordered):
                 assert source.remote_source_id is not None
                 session.add(

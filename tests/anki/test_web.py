@@ -590,6 +590,44 @@ def test_anki_page_renders_dependent_course_exam_lecture_selects(
     assert document.css_first(".anki-exam-group") is None
 
 
+def test_anki_page_renders_openrouter_provider_option(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, _, _, _, _ = prepared_app
+
+    response = client.get("/anki")
+
+    assert response.status_code == 200
+    document = HTMLParser(response.text)
+    provider_select = document.css_first('select[name="provider"]')
+    assert provider_select is not None
+    values = {
+        option.attributes.get("value") for option in provider_select.css("option")
+    }
+    assert values == {"anthropic", "openai", "gemini", "openrouter"}
+
+
+def test_anki_bootstrap_selects_openrouter_default_when_assigned(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, _, _, _ = prepared_app
+    app.state.llm_settings.set_assignment(
+        LLMTask.ANKI_CURATION,
+        ProviderName.OPENROUTER,
+        "openai/gpt-4o-mini",
+    )
+
+    response = client.get("/anki")
+
+    assert response.status_code == 200
+    document = HTMLParser(response.text)
+    provider_select = document.css_first('select[name="provider"]')
+    assert provider_select is not None
+    selected = provider_select.css_first("option[selected]")
+    assert selected is not None
+    assert selected.attributes.get("value") == "openrouter"
+
+
 def test_create_and_list_job_pins_server_generations_and_rejects_amboss(
     prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
 ) -> None:
@@ -630,6 +668,21 @@ def test_create_job_pins_explicit_model(
 
     assert created.status_code == 201
     assert created.json()["model"] == "claude-sonnet-4-6"
+
+
+def test_create_job_accepts_openrouter_provider(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, _, lecture_id, revision_id, _ = prepared_app
+    payload = _create_payload(lecture_id, revision_id)
+    payload["provider"] = "openrouter"
+    payload["model"] = "openai/gpt-4o-mini"
+
+    created = client.post("/api/anki/jobs", json=payload)
+
+    assert created.status_code == 201
+    assert created.json()["provider"] == "openrouter"
+    assert created.json()["model"] == "openai/gpt-4o-mini"
 
 
 def test_create_job_without_model_uses_anki_curation_assignment_default(

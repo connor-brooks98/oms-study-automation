@@ -113,6 +113,8 @@ def settings_page(request: Request) -> HTMLResponse:
         ProviderName.OPENROUTER: "OpenRouter",
     }
     preferences = _llm_settings(request).list()
+    assignments = _assignment_rows(request)
+    usage_counts = _provider_usage_counts(assignments)
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
@@ -122,7 +124,7 @@ def settings_page(request: Request) -> HTMLResponse:
                     "name": preference.provider.value,
                     "label": labels[preference.provider],
                     "model": preference.model,
-                    "active": preference.active,
+                    "used_by_count": usage_counts.get(preference.provider.value, 0),
                     "configured": _llm_service(
                         request
                     ).credential_configured(preference.provider),
@@ -137,7 +139,7 @@ def settings_page(request: Request) -> HTMLResponse:
                 }
                 for preference in preferences
             ),
-            "assignments": _assignment_rows(request),
+            "assignments": assignments,
             "openrouter": _openrouter_context(request),
             "notebook_status": (
                 request.app.state.notebook_connection.status()
@@ -184,6 +186,16 @@ def _assignment_rows(request: Request) -> tuple[dict[str, object], ...]:
             }
         )
     return tuple(rows)
+
+
+def _provider_usage_counts(
+    assignments: tuple[dict[str, object], ...],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in assignments:
+        provider = cast(str, row["provider"])
+        counts[provider] = counts.get(provider, 0) + 1
+    return counts
 
 
 def _openrouter_context(request: Request) -> dict[str, object]:

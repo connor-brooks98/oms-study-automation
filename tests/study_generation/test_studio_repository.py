@@ -1,9 +1,11 @@
 from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session as OrmSession
 
 from oms_hub.db import Database
-from oms_hub.models import PublishedQuizMediaModel, PublishedQuizModel
+from oms_hub.models import PublishedQuizMediaModel, PublishedQuizModel, StudioRunModel
 from oms_hub.study_generation.domain import (
     NativeQuiz,
     QuizChoice,
@@ -194,3 +196,46 @@ def test_queue_run_rejects_conflicting_active_label_past_the_precheck(
 
     # The original active run for the label is untouched.
     assert repository.get_run(held.id).label == "Practice Quiz"
+
+
+def test_queue_run_does_not_mislabel_a_genuine_fk_violation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A supersedes_run_id that vanishes between the pre-check and the
+    flush (a TOCTOU race the in-memory pre-check cannot close) trips the
+    ``supersedes_run_id`` foreign key, not the active-label unique index.
+    That must surface as the underlying IntegrityError, not get
+    mislabeled as the (unrelated) "label already in use" ValueError.
+    """
+    repository = _repository(tmp_path)
+    held = _queued_run(repository, label="Practice Quiz")
+    held_source_id = held.sources[0].source_id
+
+    original_get = OrmSession.get
+
+    def _fake_get(
+        self: OrmSession, entity: object, ident: object, *args: object, **kwargs: object
+    ) -> object:
+        if entity is StudioRunModel and ident == "ghost-run":
+            # Pretend the run still exists so the in-memory pre-check
+            # passes, simulating a delete that lands after the check but
+            # before the flush.
+            return held
+        return original_get(self, entity, ident, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(OrmSession, "get", _fake_get)
+
+    with pytest.raises(IntegrityError) as excinfo:
+        repository.queue_run(
+            "Neuro",
+            1,
+            "Draft a quiz.",
+            [held_source_id],
+            "Brand New Label",
+            "Neuro",
+            1,
+            supersedes_run_id="ghost-run",
+        )
+
+    assert "already in use" not in str(excinfo.value)

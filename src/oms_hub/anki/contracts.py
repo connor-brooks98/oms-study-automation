@@ -57,7 +57,7 @@ class CreateCurationJobRequest(ContractModel):
     lcl_prompt_version: Annotated[str, Field(min_length=1, max_length=100)]
     judgment_rubric_version: Annotated[str, Field(min_length=1, max_length=100)]
     gap_prompt_version: Annotated[str, Field(min_length=1, max_length=100)]
-    provider: Literal["openai", "gemini", "anthropic"]
+    provider: Literal["openai", "gemini", "anthropic", "openrouter"]
     model: Annotated[str, Field(max_length=200)] | None = None
     source_revision_hashes: dict[
         Annotated[int, Field(gt=0)],

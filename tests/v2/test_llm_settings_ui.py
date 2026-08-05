@@ -1,5 +1,6 @@
 import re
 
+from oms_hub.llm.domain import LLMTask, ProviderName
 from tests.v2.test_llm_settings_routes import prepared_client
 
 
@@ -26,6 +27,37 @@ def test_settings_renders_four_secret_safe_provider_cards(tmp_path):
     assert response.text.count("data-toggle-password") == 4
     assert response.text.count("data-test-connection") == 4
     assert response.text.count('data-diagnostic aria-live="polite"') == 4
+
+
+def test_settings_provider_kicker_reflects_task_assignment_counts(tmp_path):
+    client, app, _ = prepared_client(tmp_path)
+    # Bind two of the three task assignments to Gemini and the third to
+    # Anthropic, so OpenAI and OpenRouter are left unused. The kicker
+    # should reflect this derived usage, not the retired "active" column.
+    app.state.llm_settings.set_assignment(
+        LLMTask.TRANSCRIPTS,
+        ProviderName.GEMINI,
+        "gemini-3.6-flash",
+    )
+    app.state.llm_settings.set_assignment(
+        LLMTask.ANKI_CURATION,
+        ProviderName.GEMINI,
+        "gemini-3.6-flash",
+    )
+    app.state.llm_settings.set_assignment(
+        LLMTask.ACCURACY_REVIEW,
+        ProviderName.ANTHROPIC,
+        "claude-sonnet-5",
+    )
+
+    response = client.get("/settings")
+
+    assert response.status_code == 200
+    assert "Active" not in response.text
+    assert "Available" not in response.text
+    assert response.text.count("Used by 2 tasks") == 1
+    assert response.text.count("Used by 1 task") == 1
+    assert response.text.count("Not assigned") == 2
 
 
 def test_settings_renders_external_script(tmp_path):

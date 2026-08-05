@@ -79,6 +79,15 @@ def test_create_job_rejects_invalid_run_scope(
         CreateCurationJobRequest.model_validate(payload)
 
 
+def test_create_job_accepts_openrouter_provider() -> None:
+    payload = _job_payload()
+    payload["provider"] = "openrouter"
+
+    request = CreateCurationJobRequest.model_validate(payload)
+
+    assert request.provider == "openrouter"
+
+
 def test_create_job_allows_omitted_model() -> None:
     payload = _job_payload()
     del payload["model"]

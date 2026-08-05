@@ -25,7 +25,9 @@
       <article class="card provider-card" data-provider-card data-provider="{{ provider.name }}">
         <div class="provider-card-heading">
           <div>
-            <p class="provider-kicker">{{ "Active" if provider.active else "Available" }}</p>
+            <p class="provider-kicker">
+              {% if provider.used_by_count == 0 %}Not assigned{% elif provider.used_by_count == 1 %}Used by 1 task{% else %}Used by {{ provider.used_by_count }} tasks{% endif %}
+            </p>
             <h3>{{ provider.label }}</h3>
           </div>
           <span class="credential-state {{ 'is-configured' if provider.configured else '' }}" data-configured-state>
