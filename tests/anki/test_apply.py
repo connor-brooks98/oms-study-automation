@@ -300,6 +300,35 @@ def test_v2_without_capability_fails_before_gateway_activity() -> None:
     asyncio.run(scenario())
 
 
+def test_v2_with_explicit_capability_applies_idempotently() -> None:
+    async def scenario() -> None:
+        gateway = FakeGateway()
+        v1 = _envelope(gateway)
+        payload = v1.model_dump()
+        payload.update(
+            {
+                "contract_version": 2,
+                "pipeline_contract_version": "card_centric_v1",
+                "model_config_sha256": "a" * 64,
+                "reconciliation_contract_version": "reconciliation-v1",
+                "review_revision": 1,
+                "overflow_acknowledgement_provenance": {"reviewer": "local"},
+            }
+        )
+        v2 = ActionEnvelopeV2.model_validate(payload)
+        v2 = v2.model_copy(update={"payload_sha256": canonical_payload_sha256(v2)})
+        store = InMemoryApplyStore((v2,))
+        coordinator = ApplyCoordinator(
+            store, gateway, supported_envelope_versions=frozenset({1, 2})
+        )
+        assert (await coordinator.apply(v2.envelope_id)).state is ApplyState.COMPLETE
+        calls = list(gateway.mutation_calls)
+        assert (await coordinator.apply(v2.envelope_id)).state is ApplyState.COMPLETE
+        assert gateway.mutation_calls == calls
+
+    asyncio.run(scenario())
+
+
 def test_tag_add_remove_and_read_back_verification_complete() -> None:
     async def scenario() -> None:
         gateway = FakeGateway()
