@@ -575,37 +575,6 @@ async def save_anki_review(
     change_set = payload.to_domain()
     if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1:
         committed = _reconciliation_summary(request, job_id) or {}
-        selection = cast(dict[str, Any], committed.get("selection", {}))
-        selected_existing = tuple(
-            candidate.note_id
-            for candidate in repository.list_candidates(job_id)
-            if change_set.candidate_selections.get(candidate.note_id, candidate.selected)
-        )
-        selected_generated = tuple(
-            edit.card_id for edit in change_set.gap_edits if edit.card_id and edit.selected
-        )
-        edited_ids = {edit.card_id for edit in change_set.gap_edits if edit.card_id}
-        selected_generated += tuple(
-            card.card_id
-            for card in repository.list_gap_cards(job_id)
-            if card.card_id not in edited_ids and card.selected
-        )
-        cap = int(selection.get("cap", 70))
-        if len(selected_existing) + len(selected_generated) > cap and not (
-            payload.overflow_acknowledgement
-            and repository.validate_card_centric_overflow_acknowledgement(
-                job_id,
-                review_revision=job.review_revision,
-                selected_note_ids=selected_existing,
-                selected_generated_ids=selected_generated,
-                cap=cap,
-                document=payload.overflow_acknowledgement,
-            )
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="selection exceeds the cap without an exact server acknowledgement",
-            )
     for edit in change_set.gap_edits:
         try:
             validate_gap_card_fields(edit.text.strip(), edit.extra.strip())
@@ -632,7 +601,15 @@ async def save_anki_review(
                     detail=str(exc),
                 ) from exc
     try:
-        saved = repository.save_review(job_id, change_set)
+        snapshot = (
+            committed.get("snapshot")
+            if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1
+            else None
+        )
+        saved = repository.save_review(
+            job_id, change_set,
+            card_centric_snapshot=snapshot if isinstance(snapshot, dict) else None,
+        )
     except KeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -673,6 +650,9 @@ def issue_anki_overflow_acknowledgement(
             # generated set may participate in the overflow exception.
             mandatory_generated_ids=tuple(selection.get("selected_generated_card_ids", [])),
             cap=cap,
+        )
+        repository.persist_card_centric_overflow_acknowledgement(
+            job_id, review_revision=payload.review_revision, document=document
         )
     except ValueError as exc:
         raise HTTPException(
@@ -774,7 +754,10 @@ async def build_anki_envelope(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="selection overflow acknowledgement is missing, stale, or forged",
             )
-    if reconciliation is not None:
+    if (
+        reconciliation is not None
+        and job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V1
+    ):
         reconciliation = _review_reconciliation_summary(
             reconciliation,
             gap_cards,
@@ -1366,6 +1349,12 @@ def _reconciliation_summary(
     request: Request,
     job_id: UUID,
 ) -> dict[str, Any] | None:
+    repository = _repository(request)
+    job = repository.require_job(job_id) if hasattr(repository, "require_job") else None
+    if job is not None and job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1:
+        reviewed = repository.reviewed_reconciliation(job_id, job.review_revision)
+        if reviewed is not None:
+            return reviewed
     pipeline = getattr(request.app.state, "anki_curation_pipeline", None)
     artifacts = getattr(pipeline, "artifacts", None)
     if artifacts is None:

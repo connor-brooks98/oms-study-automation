@@ -54,6 +54,13 @@ class CardCentricLedgerService:
         provider: ProviderName,
         model: str,
     ) -> CardCentricLedgerResult:
+        summary_prefix = "\n\n".join(
+            f'<passage id="{passage.passage_id}">\n{passage.text}\n</passage>'
+            for passage in source_index.passages
+            if passage.authority == "summary"
+        )
+        if not summary_prefix:
+            raise CardCentricValidationError("ledger requires summary passages")
         result = self.structured.generate_json(
             self.instruction,
             json.dumps(
@@ -71,7 +78,9 @@ class CardCentricLedgerService:
             output_model=CardConceptLedger,
             provider=provider,
             model=model,
-            options=GenerationOptions(cacheable_source_prefix=source_index.prefix),
+            # S2 is deliberately summary-only: transcript and slide text are
+            # reserved for the source-grounded S4/S6/S7 calls.
+            options=GenerationOptions(cacheable_source_prefix=summary_prefix),
         )
         return CardCentricLedgerResult(
             ledger=result.value,
@@ -426,6 +435,7 @@ def select_high_yield(
     classifications: Sequence[CardClassification],
     *,
     ledger: CardConceptLedger,
+    source_index: CardCentricSourceIndex,
     generated_card_ids: Sequence[str] = (),
     overflow_acknowledgement: dict[str, str] | None = None,
     target: int = 65,
@@ -443,7 +453,7 @@ def select_high_yield(
     eligible = [
         item
         for item in classifications
-        if item.verdict == "YES" and not item.flags and item.supporting_passage_ids
+        if selection_eligible(item, source_index)
     ]
     if len({item.note_id for item in eligible}) != len(eligible):
         raise CardCentricValidationError("eligible selection note IDs are not unique")

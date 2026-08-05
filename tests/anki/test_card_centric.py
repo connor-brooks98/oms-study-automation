@@ -5,6 +5,7 @@ import pytest
 
 from oms_hub.anki.card_centric import (
     CardCentricClassifier,
+    CardCentricLedgerService,
     CardCentricValidationError,
     build_snapshot_census,
     build_source_index,
@@ -205,6 +206,11 @@ def test_tag_scope_is_a_complete_deterministic_partition() -> None:
 
 
 def test_high_yield_selection_is_stable_protects_mandatory_and_never_pads() -> None:
+    source = build_source_index(
+        [_passage(SourceKind.SLIDE, "slide:1", "evidence")],
+        snapshot_id="snapshot-1",
+        source_revision_hashes={7: "a" * 64},
+    )
     ledger = CardConceptLedger(
         lecture_entity_count=1,
         concepts=(
@@ -235,13 +241,14 @@ def test_high_yield_selection_is_stable_protects_mandatory_and_never_pads() -> N
             primary_subject="fixture",
             reason="grounded",
             covered_concept_ids=("C01" if note_id == 2 else "C02",),
-            supporting_passage_ids=("SLD:07:P:0001",),
+            supporting_passage_ids=(source.passages[0].passage_id,),
         )
         for note_id in (3, 2)
     )
     selected, excluded, generated = select_high_yield(
         classifications,
         ledger=ledger,
+        source_index=source,
         target=65,
         cap=70,
     )
@@ -379,6 +386,65 @@ def test_classifier_uses_cached_prefix_and_restores_parallel_batch_order() -> No
     assert all(options.cacheable_source_prefix == source.prefix for options in generator.options)
     assert result.telemetry.batch_count == 3
     assert [batch.note_ids for batch in result.telemetry.batches] == [(3,), (1,), (2,)]
+
+
+def test_ledger_s2_round_trip_caches_only_the_summary_prefix() -> None:
+    source = build_source_index(
+        [
+            _passage(SourceKind.SLIDE, "slide:1", "slide-only phrase"),
+            _passage(SourceKind.TRANSCRIPT, "transcript:1", "transcript-only phrase"),
+            SourcePassage.create(
+                revision_id=9,
+                lecture_id=12,
+                artifact_id="outline:9",
+                source_kind=SourceKind.SUMMARY,
+                locator="summary:core:1",
+                text="summary-only phrase",
+                source_id="SUM:12:CORE:01",
+                summary_section="core",
+            ),
+        ],
+        snapshot_id="snapshot-1",
+        source_revision_hashes={7: "a" * 64},
+    )
+    generator = _LedgerGenerator()
+    result = CardCentricLedgerService(
+        StructuredTextService(generator), "dedicated S2 ledger instruction"
+    ).generate(source_index=source, provider=ProviderName.ANTHROPIC, model="sonnet")
+
+    assert result.ledger.concepts[0].concept_id == "C01"
+    assert generator.instruction == "dedicated S2 ledger instruction"
+    assert "summary-only phrase" in generator.options.cacheable_source_prefix
+    assert "slide-only phrase" not in generator.options.cacheable_source_prefix
+    assert "transcript-only phrase" not in generator.options.cacheable_source_prefix
+
+
+class _LedgerGenerator:
+    def __init__(self) -> None:
+        self.instruction = ""
+        self.options = None
+
+    def generate_text(self, instruction, input_text, *, output_schema, provider, model, options):
+        del input_text, output_schema, provider, model
+        self.instruction = instruction
+        self.options = options
+        return GeneratedText(
+            text=CardConceptLedger(
+                lecture_entity_count=1,
+                concepts=(
+                    CardConcept(
+                        concept_id="C01", canonical_statement="fact", primary_entity="fact",
+                        aliases=(), depth="deep", emphasis_flag=False, importance="high",
+                    ),
+                ),
+            ).model_dump_json(),
+            provider=ProviderName.ANTHROPIC,
+            model="sonnet",
+            request_id="request",
+            input_tokens=10,
+            output_tokens=5,
+            cost_microusd=1,
+        )
 
 
 def test_classifier_contract_requires_one_line_reason_and_architecture_flags() -> None:

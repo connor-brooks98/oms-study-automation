@@ -1536,6 +1536,37 @@
       return saved;
     };
 
+    const acknowledgeOverflowIfNeeded = async () => {
+      const selectedExisting = [...documentRef.querySelectorAll(
+        "[data-candidate-selection]",
+      )].filter((input) => input.checked).map((input) => Number(input.value));
+      const selectedGenerated = [...documentRef.querySelectorAll(
+        "[data-gap-selection]",
+      )].filter((input) => input.checked).map((input) => String(
+        input.closest(".anki-generated-card")?.dataset.cardId || "",
+      )).filter(Boolean);
+      if (selectedExisting.length + selectedGenerated.length <= 70) return null;
+      if (!root.confirm(
+        "This selection exceeds the 70-card cap. Confirm the exact mandatory selection before freezing the apply plan.",
+      )) {
+        throw new Error("The over-cap selection was not confirmed.");
+      }
+      return requestJson(
+        documentRef,
+        fetchImpl,
+        `/api/anki/jobs/${jobId}/overflow-acknowledgement`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            contract_version: 1,
+            review_revision: revision,
+            selected_existing_note_ids: selectedExisting,
+            selected_generated_card_ids: selectedGenerated,
+          }),
+        },
+      );
+    };
+
     documentRef.querySelector("[data-save-review]")
       ?.addEventListener("click", async (event) => {
         const button = event.currentTarget;
@@ -1558,6 +1589,10 @@
         message.textContent = "Validating and freezing this review…";
         try {
           await saveReview();
+          // This is intentionally requested after save: its signature binds
+          // the current revision and exact persisted selection. Any reselection
+          // or stale revision therefore requires a new server acknowledgement.
+          const overflowAcknowledgement = await acknowledgeOverflowIfNeeded();
           const plan = await requestJson(
             documentRef,
             fetchImpl,
@@ -1567,6 +1602,7 @@
               body: JSON.stringify({
                 contract_version: 1,
                 review_revision: revision,
+                overflow_acknowledgement: overflowAcknowledgement,
               }),
             },
           );

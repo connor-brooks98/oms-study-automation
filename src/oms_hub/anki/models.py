@@ -240,6 +240,19 @@ class AnkiGapCardModel(Base):
     )
 
 
+class AnkiReviewedReconciliationModel(Base):
+    """Revision-bound S9 result, committed in the same transaction as review edits."""
+
+    __tablename__ = "anki_reviewed_reconciliations"
+    __table_args__ = (UniqueConstraint("job_id", "review_revision"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("anki_curation_jobs.id"))
+    review_revision: Mapped[int]
+    payload_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
 class AnkiSourceEvidenceModel(Base):
     __tablename__ = "anki_source_evidence"
     __table_args__ = (

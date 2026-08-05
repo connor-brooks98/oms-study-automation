@@ -167,7 +167,7 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
     )
     _record(
         "A6",
-        len(snapshot.eligible_yes_nids) + len(snapshot.generated_cards) >= 10,
+        len(snapshot.selected_nids) + len(snapshot.selected_generated_card_ids) >= 10,
         "YES plus generated cards must total at least 10",
         passed,
         failed,

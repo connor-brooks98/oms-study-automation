@@ -60,7 +60,10 @@ class ProductionFixtureClassifier:
         fixture_inputs: tuple[tuple[object, ...], ...],
     ) -> tuple[CardClassification, ...]:
         result = self.structured.generate_json(
-            "Classify every real Lecture07 Anki card. Return exact IDs and evidence-aware verdicts.",
+            (
+                "Classify every real Lecture07 Anki card. Return exact IDs and "
+                "evidence-aware verdicts."
+            ),
             json.dumps(
                 {
                     "fixture_version": fixture_version,

@@ -110,6 +110,8 @@ class ApplyStore(Protocol):
         summary: dict[str, Any],
     ) -> None: ...
 
+    def validate_card_centric_envelope_acknowledgement(self, envelope_id: UUID) -> bool: ...
+
 
 class InMemoryApplyStore:
     """Small durable-store analogue used by state-machine tests and local tools."""
@@ -208,6 +210,10 @@ class InMemoryApplyStore:
     def summary(self, envelope_id: UUID) -> dict[str, Any]:
         return dict(self._summaries.get(envelope_id, {}))
 
+    def validate_card_centric_envelope_acknowledgement(self, envelope_id: UUID) -> bool:
+        del envelope_id
+        return True
+
 
 class ApplyCoordinator:
     def __init__(
@@ -225,6 +231,16 @@ class ApplyCoordinator:
 
     async def apply(self, envelope_id: UUID) -> ApplyResult:
         envelope = self.store.get_envelope(envelope_id)
+        if (
+            isinstance(envelope, ActionEnvelopeV2)
+            and not self.store.validate_card_centric_envelope_acknowledgement(envelope_id)
+        ):
+            return self._finish(
+                envelope,
+                ApplyState.FAILED_BEFORE_APPLY,
+                safe_error=("selection overflow acknowledgement is missing, stale, or forged; "
+                            "no mutation performed"),
+            )
         if isinstance(envelope, ActionEnvelopeV2) and 2 not in self.supported_envelope_versions:
             return self._finish(
                 envelope,

@@ -704,7 +704,9 @@ class CurationServicesRunner:
                             evidence_id=evidence_id,
                             concept_id=concept.concept_id,
                             support=EvidenceSupport.SUPPORTED,
-                            statement=item.text,
+                            # Evidence is the cited immutable lecture passage,
+                            # never the model-authored card that cites it.
+                            statement=passage.text,
                             source_refs=(
                                 SourceReference(
                                     source_kind=SourceKind(passage.source_kind),
@@ -713,9 +715,7 @@ class CurationServicesRunner:
                                     content_hash=passage.content_sha256,
                                 ),
                             ),
-                            content_hash=hashlib.sha256(
-                                (item.text + "\0" + passage.passage_id).encode()
-                            ).hexdigest(),
+                            content_hash=passage.content_sha256,
                         )
                         for evidence_id, passage in zip(evidence_ids, cited, strict=True)
                     )
@@ -747,7 +747,12 @@ class CurationServicesRunner:
             kind="card_centric_gap_fill",
             payload={"resolutions": [item.model_dump(mode="json") for item in output]},
             usage=_combined_usage("card_gap_fill", usages),
-            source_evidence=tuple(evidence_records),
+            # Two split cards may cite one passage. They intentionally share
+            # its evidence identity; persist one durable record referenced by
+            # both cards rather than inserting duplicate primary keys.
+            source_evidence=tuple(
+                {item.evidence_id: item for item in evidence_records}.values()
+            ),
         )
 
     async def _card_selection(self, context: StageContext) -> StageProduct:
@@ -758,6 +763,7 @@ class CurationServicesRunner:
         selected, excluded, generated_ids = select_high_yield(
             classifications,
             ledger=ledger,
+            source_index=source,
             generated_card_ids=[item.card_id for item in generated if item.status == "generated"],
         )
         mandatory_note_ids = tuple(
@@ -770,17 +776,6 @@ class CurationServicesRunner:
                 if concept.concept_id in item.covered_concept_ids
             )
         )
-        overflow_acknowledgement = None
-        if len(selected) + len(generated_ids) > 70:
-            overflow_acknowledgement = self.repository.issue_card_centric_overflow_acknowledgement(
-                context.job.id,
-                review_revision=context.job.review_revision,
-                selected_note_ids=selected,
-                selected_generated_ids=generated_ids,
-                mandatory_note_ids=mandatory_note_ids,
-                mandatory_generated_ids=generated_ids,
-                cap=70,
-            )
         selected_set = set(selected)
         source_by_id = {passage.passage_id: passage for passage in source.passages}
         candidate_rows = tuple(
@@ -815,6 +810,7 @@ class CurationServicesRunner:
                 selected=item.note_id in selected_set,
             )
             for item in classifications
+            if selection_eligible(item, source)
         )
         gap_cards = tuple(
             GapCard(
@@ -859,7 +855,9 @@ class CurationServicesRunner:
                 "cap": 70,
                 "minimum_target": 60,
                 "mandatory_note_ids": list(mandatory_note_ids),
-                "overflow_acknowledgement": overflow_acknowledgement,
+                # Review acknowledgements are issued only after the reviewer has
+                # saved the exact selection at a concrete review revision.
+                "overflow_acknowledgement": None,
             },
             candidates=candidate_rows,
             gap_cards=gap_cards,

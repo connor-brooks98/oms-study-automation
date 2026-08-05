@@ -2,10 +2,12 @@ from pathlib import Path
 
 from oms_hub.anki.reconciliation import (
     AuditResolution,
+    CardCentricReconciliationInput,
     ConceptResolution,
     GeneratedResolution,
     ReconciliationInput,
     reconcile,
+    reconcile_card_centric,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "lecture_07_v1_reconciliation.json"
@@ -134,3 +136,39 @@ def test_stale_prompt_and_nonconvergence_are_warnings() -> None:
 
     assert {item.assertion_id for item in report.warned} == {"A9", "A10", "A11"}
     assert report.can_render_envelope is True
+
+
+def test_card_centric_s9_uses_only_the_selected_eligible_cards() -> None:
+    eligible = tuple(range(1, 11))
+    snapshot = CardCentricReconciliationInput(
+        concept_ids=("C01",),
+        coverage={"C01": "covered"},
+        required_fact_ids=(), uncovered_after_s5=(), residual_ran_for=(),
+        generated_cards=(), unresolved_fact_ids=(), expected_scoped_nids=eligible,
+        classifications=tuple(AuditResolution(nid=nid, verdict="keep") for nid in eligible),
+        eligible_yes_nids=eligible, selected_nids=(1,), selected_generated_card_ids=(),
+        generated_card_ids=(), source_passage_ids=(), forbidden_cloze_targets=(),
+        prompt_sync_stale=False, untagged_rate=0, covered_concept_ids_by_nid={1: ()},
+    )
+
+    report = reconcile_card_centric(snapshot)
+
+    assert {item.assertion_id for item in report.failed} >= {"A6"}
+
+
+def test_card_centric_s9_rejects_coverage_from_an_unselected_yes_card() -> None:
+    snapshot = CardCentricReconciliationInput(
+        concept_ids=("C01",),
+        coverage={"C01": "uncovered"},
+        required_fact_ids=(), uncovered_after_s5=(), residual_ran_for=(),
+        generated_cards=(), unresolved_fact_ids=(), expected_scoped_nids=(1,),
+        classifications=(AuditResolution(nid=1, verdict="keep"),),
+        eligible_yes_nids=(1,), selected_nids=(), selected_generated_card_ids=(),
+        generated_card_ids=(), source_passage_ids=(), forbidden_cloze_targets=(),
+        prompt_sync_stale=False, untagged_rate=0,
+        covered_concept_ids_by_nid={1: ("C01",)},
+    )
+
+    report = reconcile_card_centric(snapshot)
+
+    assert "A4" in {item.assertion_id for item in report.failed}

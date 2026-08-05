@@ -19,6 +19,7 @@ from oms_hub.anki.card_centric_review import (
 )
 from oms_hub.anki.contracts import (
     ActionEnvelopeDocument,
+    ActionEnvelopeV2,
     canonical_payload_sha256,
     parse_action_envelope,
 )
@@ -64,11 +65,13 @@ from oms_hub.anki.models import (
     AnkiGapCardModel,
     AnkiJobStageModel,
     AnkiReviewChangeSetModel,
+    AnkiReviewedReconciliationModel,
     AnkiSourceEvidenceModel,
     AnkiStageArtifactModel,
     AnkiStageSettingModel,
     AnkiTagPatchModel,
 )
+from oms_hub.anki.reconciliation import CardCentricReconciliationInput, reconcile_card_centric
 from oms_hub.db import Database
 from oms_hub.llm.domain import ProviderName
 from oms_hub.models import LectureModel, utc_now
@@ -572,6 +575,91 @@ class AnkiCurationRepository:
                 and acknowledgement.cap == cap
                 and acknowledgement.pipeline_contract_version == job.pipeline_contract_version
                 and acknowledgement.model_config_sha256 == job.model_config_sha256
+            )
+
+    def reviewed_reconciliation(self, job_id: UUID, review_revision: int) -> dict[str, Any] | None:
+        with self.database.session() as session:
+            stored = session.scalar(select(AnkiReviewedReconciliationModel).where(
+                AnkiReviewedReconciliationModel.job_id == str(job_id),
+                AnkiReviewedReconciliationModel.review_revision == review_revision,
+            ))
+            return None if stored is None else cast(dict[str, Any], json.loads(stored.payload_json))
+
+    def persist_card_centric_overflow_acknowledgement(
+        self, job_id: UUID, *, review_revision: int, document: dict[str, Any]
+    ) -> None:
+        """Attach a server-issued acknowledgement to its exact reviewed S9 row."""
+        with self.database.session() as session:
+            job = self._require_job_model(session, job_id)
+            if job.review_revision != review_revision:
+                raise ValueError("review revision is stale")
+            stored = session.scalar(select(AnkiReviewedReconciliationModel).where(
+                AnkiReviewedReconciliationModel.job_id == str(job_id),
+                AnkiReviewedReconciliationModel.review_revision == review_revision,
+            ))
+            if stored is None:
+                raise ValueError("current reviewed reconciliation is unavailable")
+            payload = cast(dict[str, Any], json.loads(stored.payload_json))
+            snapshot = CardCentricReconciliationInput.model_validate(payload["snapshot"])
+            if not self.validate_card_centric_overflow_acknowledgement(
+                job_id, review_revision=review_revision,
+                selected_note_ids=snapshot.selected_nids,
+                selected_generated_ids=snapshot.selected_generated_card_ids,
+                cap=snapshot.cap, document=document,
+            ):
+                raise ValueError("selection overflow acknowledgement is missing, stale, or forged")
+            reviewed = snapshot.model_copy(update={"overflow_acknowledgement": document})
+            report = reconcile_card_centric(reviewed)
+            payload.update(report.model_dump(mode="json"))
+            payload["snapshot"] = reviewed.model_dump(mode="json")
+            payload["selection"] = {
+                **cast(dict[str, Any], payload.get("selection", {})),
+                "overflow_acknowledgement": document,
+            }
+            stored.payload_json = _canonical_json(payload)
+
+    def validate_card_centric_envelope_acknowledgement(self, envelope_id: UUID) -> bool:
+        """Run before the coordinator syncs or mutates Anki."""
+        with self.database.session() as session:
+            row = session.get(AnkiEnvelopeModel, str(envelope_id))
+            if row is None:
+                return False
+            try:
+                envelope = parse_action_envelope(row.payload_json)
+            except ValueError:
+                return False
+            if not isinstance(envelope, ActionEnvelopeV2):
+                return True
+            job = self._require_job_model(session, UUID(row.job_id))
+            if envelope.review_revision != job.review_revision:
+                return False
+            reviewed = session.scalar(select(AnkiReviewedReconciliationModel).where(
+                AnkiReviewedReconciliationModel.job_id == row.job_id,
+                AnkiReviewedReconciliationModel.review_revision == envelope.review_revision,
+            ))
+            if reviewed is None:
+                return False
+            try:
+                snapshot = CardCentricReconciliationInput.model_validate(
+                    json.loads(reviewed.payload_json)["snapshot"]
+                )
+            except (KeyError, TypeError, ValueError):
+                return False
+            total = len(snapshot.selected_nids) + len(snapshot.selected_generated_card_ids)
+            if total <= snapshot.cap:
+                return envelope.overflow_acknowledgement_provenance == {"required": False}
+            document = snapshot.overflow_acknowledgement
+            return bool(
+                document
+                and document == envelope.overflow_acknowledgement_provenance
+                and self.validate_card_centric_overflow_acknowledgement(
+                UUID(row.job_id),
+                    review_revision=envelope.review_revision,
+                    selected_note_ids=snapshot.selected_nids,
+                    selected_generated_ids=snapshot.selected_generated_card_ids,
+                    cap=snapshot.cap,
+                    document=document,
+                )
             )
 
     def require_job(self, job_id: UUID) -> CurationJob:
@@ -1185,6 +1273,8 @@ class AnkiCurationRepository:
         self,
         job_id: UUID,
         change_set: ReviewChangeSet,
+        *,
+        card_centric_snapshot: dict[str, Any] | None = None,
     ) -> SavedReview:
         with self.database.session() as session:
             job = self._require_job_model(session, job_id)
@@ -1279,8 +1369,70 @@ class AnkiCurationRepository:
                     )
                 )
             job.review_revision += 1
+            if card_centric_snapshot is not None:
+                self._persist_reviewed_card_centric_snapshot(
+                    session, job_id, revision=job.review_revision,
+                    snapshot_payload=card_centric_snapshot,
+                )
             session.flush()
             return SavedReview(job_id=job_id, revision=job.review_revision)
+
+    def _persist_reviewed_card_centric_snapshot(
+        self,
+        session: Session,
+        job_id: UUID,
+        *,
+        revision: int,
+        snapshot_payload: dict[str, Any],
+    ) -> None:
+        """Materialize selected-only S9 in the review transaction."""
+        snapshot = CardCentricReconciliationInput.model_validate(snapshot_payload)
+        candidates = session.scalars(select(AnkiCandidateModel).where(
+            AnkiCandidateModel.job_id == str(job_id)
+        )).all()
+        cards = session.scalars(select(AnkiGapCardModel).where(
+            AnkiGapCardModel.job_id == str(job_id)
+        )).all()
+        selected_nids = tuple(item.note_id for item in candidates if item.selected)
+        selected_cards = tuple(item.id for item in cards if item.selected)
+        selected_coverage = {
+            concept_id for note_id in selected_nids
+            for concept_id in snapshot.covered_concept_ids_by_nid.get(note_id, ())
+        } | {
+            snapshot.generated_concept_id_by_card_id[card_id] for card_id in selected_cards
+            if card_id in snapshot.generated_concept_id_by_card_id
+        }
+        coverage = {
+            concept_id: "covered" if concept_id in selected_coverage else "intentional_gap"
+            if state == "intentional_gap" else "uncovered"
+            for concept_id, state in snapshot.coverage.items()
+        }
+        reviewed = snapshot.model_copy(update={
+            "coverage": coverage,
+            "selected_nids": selected_nids,
+            "selected_generated_card_ids": selected_cards,
+            "generated_cards": tuple(
+                item for item in snapshot.generated_cards if item.card_id in set(selected_cards)
+            ),
+            "overflow_acknowledgement": None,
+        })
+        report = reconcile_card_centric(reviewed)
+        payload = {
+            "contract_version": "card_centric_s9_v1",
+            **report.model_dump(mode="json"),
+            "selection": {
+                "selected_existing_note_ids": list(selected_nids),
+                "selected_generated_card_ids": list(selected_cards),
+                "cap": reviewed.cap,
+                "target": reviewed.target,
+                "mandatory_note_ids": list(reviewed.mandatory_nids),
+                "overflow_acknowledgement": None,
+            },
+            "snapshot": reviewed.model_dump(mode="json"),
+        }
+        session.add(AnkiReviewedReconciliationModel(
+            job_id=str(job_id), review_revision=revision, payload_json=_canonical_json(payload)
+        ))
 
     def list_tag_patches(self, job_id: UUID) -> list[TagPatch]:
         with self.database.session() as session:
