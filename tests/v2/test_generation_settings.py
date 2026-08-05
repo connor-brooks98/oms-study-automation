@@ -98,6 +98,23 @@ def test_transcript_prompt_path_can_be_saved_and_tested_without_content(tmp_path
     ) == str(prompt)
 
 
+def test_saving_transcript_prompt_updates_active_ingestion_prompt(tmp_path):
+    client, app = prepared_client(tmp_path)
+    prompt = tmp_path / "Moved Transcript Cleaning.md"
+    prompt.write_text("active transcript instructions", encoding="utf-8")
+
+    saved = client.post(
+        "/settings/generation/prompts/transcript",
+        json={"path": str(prompt)},
+    )
+
+    assert saved.status_code == 200
+    assert app.state.transcript_prompt.path == prompt
+    assert app.state.transcript_prompt.inspect().text == (
+        "active transcript instructions"
+    )
+
+
 def test_transcript_prompt_test_rejects_files_over_64_kib(tmp_path):
     client, _ = prepared_client(tmp_path)
     prompt = tmp_path / "Oversized Transcript Cleaning.md"

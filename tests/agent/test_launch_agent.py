@@ -1,7 +1,10 @@
 import os
 import plistlib
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 
 def test_launch_agent_template_runs_read_only_agent_without_a_token() -> None:
@@ -16,6 +19,10 @@ def test_launch_agent_template_runs_read_only_agent_without_a_token() -> None:
     assert "bearer" not in payload.casefold()
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="launchd installer can only execute on macOS",
+)
 def test_installer_writes_valid_plist_and_prints_status_command(
     tmp_path: Path,
 ) -> None:

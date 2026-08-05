@@ -118,6 +118,12 @@ def save_prompt_path(
         _repository(request).set_prompt_path(selected, update.path)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
+    if selected is PromptKind.TRANSCRIPT:
+        active_prompt = cast(
+            TranscriptPromptLoader,
+            request.app.state.transcript_prompt,
+        )
+        active_prompt.path = expanded_path(Path(update.path.strip()))
     return JSONResponse(
         {"kind": selected.value, "path": update.path.strip()},
         headers={"Cache-Control": "no-store"},
