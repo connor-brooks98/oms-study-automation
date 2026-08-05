@@ -34,6 +34,13 @@ class AgentLedger:
                     result_json TEXT NOT NULL,
                     completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
+                CREATE TABLE IF NOT EXISTS operation_journal (
+                    operation_id TEXT PRIMARY KEY,
+                    content_hash TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    result_json TEXT,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
                 CREATE TABLE IF NOT EXISTS metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -107,8 +114,7 @@ class AgentLedger:
         )
         with closing(self._connect()) as connection, connection:
             existing = connection.execute(
-                "SELECT content_hash, result_json FROM completed_operations "
-                "WHERE operation_id = ?",
+                "SELECT content_hash, result_json FROM completed_operations WHERE operation_id = ?",
                 (identifier,),
             ).fetchone()
             if existing is not None:
@@ -124,6 +130,61 @@ class AgentLedger:
                 (identifier, content_hash, result_json),
             )
         return result
+
+    def begin_operation(
+        self, operation_id: UUID, content_hash: str
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Durably record intent before a local side effect is attempted."""
+        identifier = str(operation_id)
+        with closing(self._connect()) as connection, connection:
+            row = connection.execute(
+                "SELECT content_hash, state, result_json FROM operation_journal "
+                "WHERE operation_id = ?",
+                (identifier,),
+            ).fetchone()
+            if row is None:
+                legacy = connection.execute(
+                    "SELECT content_hash, result_json FROM completed_operations "
+                    "WHERE operation_id = ?",
+                    (identifier,),
+                ).fetchone()
+                if legacy is not None:
+                    if legacy[0] != content_hash:
+                        raise OperationIdentityConflict(
+                            "operation identity was reused with different content"
+                        )
+                    return "completed", cast(dict[str, Any], json.loads(str(legacy[1])))
+                connection.execute(
+                    "INSERT INTO operation_journal (operation_id, content_hash, state) "
+                    "VALUES (?, ?, 'intent')",
+                    (identifier, content_hash),
+                )
+                return "intent", None
+            stored_hash, state, result_json = row
+            if stored_hash != content_hash:
+                raise OperationIdentityConflict(
+                    "operation identity was reused with different content"
+                )
+            return str(state), None if result_json is None else cast(
+                dict[str, Any], json.loads(result_json)
+            )
+
+    def complete_operation(
+        self, operation_id: UUID, content_hash: str, result: dict[str, Any]
+    ) -> None:
+        identifier = str(operation_id)
+        encoded = json.dumps(result, sort_keys=True, separators=(",", ":"))
+        with closing(self._connect()) as connection, connection:
+            changed = connection.execute(
+                "UPDATE operation_journal SET state='completed', result_json=?, "
+                "updated_at=CURRENT_TIMESTAMP "
+                "WHERE operation_id=? AND content_hash=?",
+                (encoded, identifier, content_hash),
+            )
+            if changed.rowcount != 1:
+                raise OperationIdentityConflict(
+                    "operation intent is absent or has a different digest"
+                )
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path)

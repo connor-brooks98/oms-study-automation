@@ -57,8 +57,8 @@ class FixtureValidation:
     metrics: dict[str, object]
 
 
-def fixture_for(path: Path | None) -> Lecture07Fixture:
-    return load_lecture07_fixture(path)
+def fixture_for(path: Path | None, required_sha256: str | None = None) -> Lecture07Fixture:
+    return load_lecture07_fixture(path, required_sha256)
 
 
 async def validate_fixture(

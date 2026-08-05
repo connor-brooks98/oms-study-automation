@@ -232,7 +232,10 @@ async def run_card_centric_fixture(
             detail="Fixture classifier is not configured",
         )
     try:
-        fixture = fixture_for(request.app.state.settings.anki_fixture_artifact_path)
+        fixture = fixture_for(
+            request.app.state.settings.anki_fixture_artifact_path,
+            request.app.state.settings.anki_card_centric_fixture_sha256,
+        )
         result = await validate_fixture(
             classifier, provider=payload.provider, model=payload.model, fixture=fixture
         )
@@ -394,12 +397,19 @@ def create_anki_job(
             domain.resolved_model_config.classify_s4.provider,
             domain.resolved_model_config.classify_s4.model,
         )
+        try:
+            current_fixture = fixture_for(
+                request.app.state.settings.anki_fixture_artifact_path,
+                request.app.state.settings.anki_card_centric_fixture_sha256,
+            )
+        except FixtureUnavailable:
+            current_fixture = None
         if (
             not record
             or not record.get("passed")
-            or not isinstance(record.get("fixture_version"), str)
-            or not isinstance(record.get("fixture_sha256"), str)
-            or len(record["fixture_sha256"]) != 64
+            or current_fixture is None
+            or record.get("fixture_version") != current_fixture.version
+            or record.get("fixture_sha256") != current_fixture.sha256
         ):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -612,7 +622,8 @@ async def save_anki_review(
             else None
         )
         saved = repository.save_review(
-            job_id, change_set,
+            job_id,
+            change_set,
             card_centric_snapshot=snapshot if isinstance(snapshot, dict) else None,
         )
     except KeyError as exc:

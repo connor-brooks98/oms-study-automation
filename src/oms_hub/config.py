@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     anki_prompt_git_sync: bool = False
     anki_prompt_git_timeout_seconds: int = Field(default=30, ge=1, le=300)
     anki_fixture_artifact_path: Path | None = None
+    anki_card_centric_fixture_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     anki_focused_retrieval_limit: int = Field(default=200, ge=1, le=5_000)
     anki_global_retrieval_limit: int = Field(default=50, ge=1, le=1_000)
     anki_semantic_model: str = Field(
@@ -153,9 +154,7 @@ class Settings(BaseSettings):
         try:
             port = parsed.port
         except ValueError as exc:
-            raise ValueError(
-                "AnkiConnect must use a loopback URL with a valid port"
-            ) from exc
+            raise ValueError("AnkiConnect must use a loopback URL with a valid port") from exc
         if (
             parsed.scheme != "http"
             or parsed.hostname not in {"127.0.0.1", "localhost"}
@@ -176,10 +175,7 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_local_service_ports(self) -> Self:
         anki_connect_port = urlsplit(self.anki_connect_url).port
-        if (
-            self.anki_enabled
-            and anki_connect_port == self.dashboard_port
-        ):
+        if self.anki_enabled and anki_connect_port == self.dashboard_port:
             raise ValueError(
                 "Study Hub and AnkiConnect cannot share port "
                 f"{self.dashboard_port}; set OMS_HUB_DASHBOARD_PORT "

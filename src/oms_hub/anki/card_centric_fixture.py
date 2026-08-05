@@ -26,7 +26,9 @@ class Lecture07Fixture:
     sha256: str
 
 
-def load_lecture07_fixture(path: Path | None) -> Lecture07Fixture:
+def load_lecture07_fixture(
+    path: Path | None, required_sha256: str | None = None
+) -> Lecture07Fixture:
     if path is None or not path.is_file():
         raise FixtureUnavailable("Lecture07 private fixture artifact is unavailable")
     try:
@@ -35,8 +37,11 @@ def load_lecture07_fixture(path: Path | None) -> Lecture07Fixture:
             raise TypeError
         claimed = str(raw.pop("sha256"))
         canonical = json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        if hashlib.sha256(canonical.encode()).hexdigest() != claimed:
+        computed = hashlib.sha256(canonical.encode()).hexdigest()
+        if computed != claimed:
             raise FixtureUnavailable("Lecture07 fixture hash does not match immutable contents")
+        if required_sha256 is not None and computed != required_sha256:
+            raise FixtureUnavailable("Lecture07 fixture does not match configured SHA-256 pin")
         source = CardCentricSourceIndex.model_validate(raw["source_index"])
         cards = tuple(raw["cards"])
         baseline = {int(key): str(value) for key, value in dict(raw["baseline_verdicts"]).items()}
@@ -71,7 +76,7 @@ def load_lecture07_fixture(path: Path | None) -> Lecture07Fixture:
         baseline=baseline,
         missed_concept_ids=missed,
         named_cases=named,
-        sha256=claimed,
+        sha256=computed,
     )
 
 
