@@ -62,8 +62,17 @@ class LectureConceptV2(V2Contract):
     @model_validator(mode="after")
     def validate_search_and_importance(self) -> "LectureConceptV2":
         primary = self.primary_entity.casefold()
-        if any(primary not in value.casefold() for value in self.paraphrases):
-            raise ValueError("every paraphrase must retain the primary entity")
+        paraphrases = tuple(
+            value
+            if primary in value.casefold()
+            else f"{self.primary_entity}: {value}"
+            for value in self.paraphrases
+        )
+        if len({value.casefold() for value in paraphrases}) != len(paraphrases):
+            raise ValueError(
+                "entity-normalized paraphrases cannot contain duplicates"
+            )
+        object.__setattr__(self, "paraphrases", paraphrases)
         expected = (
             "high"
             if self.depth == "deep" or self.emphasis_flag

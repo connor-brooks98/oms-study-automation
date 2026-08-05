@@ -57,8 +57,8 @@ def test_lcl_v2_requires_unique_concepts_and_passage_disposition() -> None:
         )
 
 
-def test_lcl_v2_rejects_paraphrase_that_drops_primary_entity() -> None:
-    with pytest.raises(ValidationError, match="primary entity"):
+def test_lcl_v2_prefixes_primary_entity_when_a_paraphrase_drops_it() -> None:
+    concept = LectureConceptV2.model_validate(
         _concept().model_copy(
             update={
                 "paraphrases": (
@@ -67,17 +67,14 @@ def test_lcl_v2_rejects_paraphrase_that_drops_primary_entity() -> None:
                     "hereditary spherocytosis diagnostic test",
                 )
             }
-        ).model_validate(
-            _concept().model_copy(
-                update={
-                    "paraphrases": (
-                        "increased MCHC",
-                        "hereditary spherocytosis CBC finding",
-                        "hereditary spherocytosis diagnostic test",
-                    )
-                }
-            ).model_dump()
-        )
+        ).model_dump()
+    )
+
+    assert concept.paraphrases == (
+        "hereditary spherocytosis: increased MCHC",
+        "hereditary spherocytosis CBC finding",
+        "hereditary spherocytosis diagnostic test",
+    )
 
 
 def test_coverage_v2_missing_facts_are_atomic_and_unique() -> None:
