@@ -13,9 +13,11 @@ from oms_hub.document_processing.domain import (
 )
 from oms_hub.llm.domain import GeneratedText, LLMTask, ProviderName
 from oms_hub.study_generation.practice_extraction import (
+    ExtractionError,
     PracticeQuestionExtractor,
     SourceDocument,
 )
+from oms_hub.study_generation.practice_matching import pair_supplied_answers
 
 
 @dataclass(frozen=True)
@@ -88,7 +90,7 @@ def _document(
     )
 
 
-def valid_extraction_json() -> str:
+def valid_extraction_json(source_id: str = "source-1") -> str:
     return json.dumps(
         {
             "questions": [
@@ -98,8 +100,10 @@ def valid_extraction_json() -> str:
                     "choices": ["Biceps", "Triceps"],
                     "supplied_correct_index": 0,
                     "rationale": None,
-                    "source_segment_keys": ["questions-1"],
-                    "candidate_asset_keys": ["figure-1"],
+                    "source_segments": [
+                        {"source_id": source_id, "segment_key": "questions-1"}
+                    ],
+                    "candidate_assets": [{"source_id": source_id, "asset_key": "figure-1"}],
                     "confidence": 0.95,
                 },
                 {
@@ -108,8 +112,10 @@ def valid_extraction_json() -> str:
                     "choices": ["Biceps", "Triceps"],
                     "supplied_correct_index": None,
                     "rationale": None,
-                    "source_segment_keys": ["questions-1"],
-                    "candidate_asset_keys": [],
+                    "source_segments": [
+                        {"source_id": source_id, "segment_key": "questions-1"}
+                    ],
+                    "candidate_assets": [],
                     "confidence": 0.85,
                 },
             ],
@@ -131,16 +137,26 @@ def test_extractor_retries_schema_failure_once(tmp_path: Path) -> None:
     assert result.provider_metadata[-1].request_id == "request-2"
 
 
-@pytest.mark.parametrize("reference_field", ["source_segment_keys", "candidate_asset_keys"])
+@pytest.mark.parametrize("reference_field", ["source_segments", "candidate_assets"])
 def test_extractor_rejects_invented_source_references(
     tmp_path: Path, reference_field: str
 ) -> None:
     payload = json.loads(valid_extraction_json())
-    payload["questions"][0][reference_field] = ["invented"]
-    extractor = PracticeQuestionExtractor(StructuredGenerator([json.dumps(payload)]))
+    key = "segment_key" if reference_field == "source_segments" else "asset_key"
+    payload["questions"][0][reference_field] = [{"source_id": "source-1", key: "invented"}]
+    extractor = PracticeQuestionExtractor(
+        StructuredGenerator([json.dumps(payload), json.dumps(payload)])
+    )
 
-    with pytest.raises(ValueError, match="unknown"):
+    with pytest.raises(ExtractionError, match="schema validation") as error:
         extractor.extract((_document(tmp_path),))
+
+    assert len(error.value.raw_responses) == 2
+    assert len(error.value.provider_metadata) == 2
+    assert (
+        "previous response failed schema validation"
+        in extractor.generator.requests[1].instruction
+    )
 
 
 def test_extractor_merges_identical_chunk_duplicates_and_blocks_conflicts(tmp_path: Path) -> None:
@@ -159,7 +175,7 @@ def test_extractor_merges_identical_chunk_duplicates_and_blocks_conflicts(tmp_pa
 
     result = extractor.extract((document,))
 
-    assert len(result.questions) == 2
+    assert len(result.questions) == 3
     assert any("conflicting duplicate question" in item.message for item in result.diagnostics)
     assert all(len(request.input_text) < 180 for request in extractor.generator.requests)
 
@@ -200,3 +216,75 @@ def test_heading_section_stays_together_when_the_section_fits_the_bound(tmp_path
     PracticeQuestionExtractor(generator, max_input_characters=260).extract((document,))
 
     assert len(generator.requests) == 1
+
+
+def test_document_scoped_citations_preserve_real_question_source_refs(tmp_path: Path) -> None:
+    questions = _document(tmp_path, source_id="questions")
+    answers = _document(tmp_path, source_id="answers")
+    generator = StructuredGenerator(
+        [valid_extraction_json("questions"), valid_extraction_json("answers")]
+    )
+    result = PracticeQuestionExtractor(generator, max_input_characters=230).extract(
+        (questions, answers)
+    )
+
+    drafts = pair_supplied_answers(
+        result.questions,
+        result.answers,
+        question_source_refs=result.question_source_refs,
+    )
+
+    assert result.question_source_refs[0][0].source_id == "questions"
+    assert result.question_source_refs[0][0].segment_key == "questions-1"
+    assert result.question_source_refs[0][0].locator == "page 1"
+    assert drafts[0].source_refs == result.question_source_refs[0]
+
+
+def test_wrong_document_citation_retries_then_retains_failure_evidence(tmp_path: Path) -> None:
+    questions = _document(tmp_path, source_id="questions")
+    answers = _document(
+        tmp_path,
+        source_id="answers",
+        segments=(
+            ParsedSegment("answers-1", SegmentKind.PARAGRAPH, "1. A", DocumentLocator("page 2")),
+        ),
+    )
+    wrong = json.loads(valid_extraction_json("questions"))
+    wrong["questions"][0]["source_segments"][0]["source_id"] = "answers"
+    generator = StructuredGenerator([json.dumps(wrong), json.dumps(wrong)])
+
+    with pytest.raises(ExtractionError) as error:
+        PracticeQuestionExtractor(generator).extract((questions, answers))
+
+    assert len(generator.requests) == 2
+    assert len(error.value.raw_responses) == 2
+    assert [item.request_id for item in error.value.provider_metadata] == ["request-1", "request-2"]
+
+
+@pytest.mark.parametrize(
+    ("second_identifier", "second_source_id"),
+    [
+        ("1", "source-2"),
+        ("2", "source-1"),
+    ],
+)
+def test_merge_blocks_one_axis_question_identity_conflicts(
+    tmp_path: Path,
+    second_identifier: str,
+    second_source_id: str,
+) -> None:
+    first = json.loads(valid_extraction_json("source-1"))
+    second = json.loads(valid_extraction_json("source-2"))
+    second_question = second["questions"][0]
+    second_question["original_identifier"] = second_identifier
+    second_question["source_segments"][0]["source_id"] = second_source_id
+    documents = (
+        _document(tmp_path, source_id="source-1"),
+        _document(tmp_path, source_id="source-2"),
+    )
+    generator = StructuredGenerator([json.dumps(first), json.dumps(second)])
+
+    result = PracticeQuestionExtractor(generator, max_input_characters=230).extract(documents)
+
+    assert len(result.questions) >= 2
+    assert any(item.severity.value == "blocker" for item in result.diagnostics)

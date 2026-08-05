@@ -2,9 +2,11 @@ import pytest
 from pydantic import ValidationError
 
 from oms_hub.study_generation.practice_contracts import (
+    AssetCitation,
     ExtractedAnswer,
     ExtractedQuestion,
     ExtractionPayload,
+    SegmentCitation,
 )
 
 
@@ -15,8 +17,8 @@ def _question(**overrides: object) -> dict[str, object]:
         "choices": ["Biceps", "Triceps"],
         "supplied_correct_index": 0,
         "rationale": "Biceps flexes the elbow.",
-        "source_segment_keys": ["questions-1"],
-        "candidate_asset_keys": ["figure-1"],
+        "source_segments": [{"source_id": "source-1", "segment_key": "questions-1"}],
+        "candidate_assets": [{"source_id": "source-1", "asset_key": "figure-1"}],
         "confidence": 0.9,
         **overrides,
     }
@@ -40,12 +42,12 @@ def test_payload_rejects_unrecognized_fields_and_preserves_tuple_collections() -
 
     payload = ExtractionPayload.model_validate(
         {
-            "questions": [_question(candidate_asset_keys=[])],
+            "questions": [_question(candidate_assets=[])],
             "answers": [
                 {
                     "original_identifier": "1.",
                     "correct_index": 0,
-                    "source_segment_keys": ["answers-1"],
+                    "source_segments": [{"source_id": "source-1", "segment_key": "answers-1"}],
                 }
             ],
         }
@@ -57,6 +59,21 @@ def test_payload_rejects_unrecognized_fields_and_preserves_tuple_collections() -
             original_identifier="1.",
             correct_index=0,
             rationale=None,
-            source_segment_keys=("answers-1",),
+            source_segments=(SegmentCitation(source_id="source-1", segment_key="answers-1"),),
         ),
     )
+
+
+def test_citations_are_strict_immutable_structured_values() -> None:
+    question = ExtractedQuestion.model_validate(_question())
+
+    assert question.source_segments == (
+        SegmentCitation(source_id="source-1", segment_key="questions-1"),
+    )
+    assert question.candidate_assets == (
+        AssetCitation(source_id="source-1", asset_key="figure-1"),
+    )
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        SegmentCitation.model_validate(
+            {"source_id": "source-1", "segment_key": "questions-1", "locator": "fake"}
+        )

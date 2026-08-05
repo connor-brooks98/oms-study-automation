@@ -29,8 +29,13 @@ def normalize_identifier(value: str | None) -> str | None:
 def pair_supplied_answers(
     questions: tuple[ExtractedQuestion, ...],
     answers: tuple[ExtractedAnswer, ...],
+    *,
+    question_source_refs: tuple[tuple[QuestionSourceRef, ...], ...] | None = None,
 ) -> tuple[QuestionDraft, ...]:
     """Pair only unambiguous supplied answers, retaining every ambiguity as review work."""
+
+    if question_source_refs is not None and len(question_source_refs) != len(questions):
+        raise ValueError("question_source_refs must align with questions")
 
     question_ids = tuple(
         normalize_identifier(question.original_identifier) for question in questions
@@ -80,11 +85,21 @@ def pair_supplied_answers(
         question_id_counts,
         answer_id_counts,
     ):
-        for question_index, answer in enumerate(answers):
-            if question_index in matched_answers or question_index in matched_answer_indexes:
+        residual_questions = [
+            question_index
+            for question_index in range(len(questions))
+            if question_index not in matched_answers
+        ]
+        residual_answers = [
+            answer_index
+            for answer_index in range(len(answers))
+            if answer_index not in matched_answer_indexes
+        ]
+        for question_index, answer_index in zip(residual_questions, residual_answers, strict=True):
+            if _ids_contradict(question_ids[question_index], answer_ids[answer_index]):
                 continue
-            matched_answers[question_index] = answer
-            matched_answer_indexes.add(question_index)
+            matched_answers[question_index] = answers[answer_index]
+            matched_answer_indexes.add(answer_index)
 
     for answer_index, answer in enumerate(answers):
         if answer_index not in matched_answer_indexes:
@@ -102,6 +117,7 @@ def pair_supplied_answers(
             question_diagnostics.append(
                 _blocker("missing-supplied-answer", "supplied answer is missing")
             )
+            question_diagnostics.append(_blocker("unmatched-question", "question is unmatched"))
         drafts.append(
             QuestionDraft(
                 question_id=_question_id(index, question, question_ids[index]),
@@ -111,9 +127,8 @@ def pair_supplied_answers(
                 correct_index=correct_index,
                 rationale=_rationale(supplied, question),
                 image_ref=None,
-                source_refs=tuple(
-                    QuestionSourceRef("unknown", key, "unknown")
-                    for key in question.source_segment_keys
+                source_refs=(
+                    question_source_refs[index] if question_source_refs is not None else ()
                 ),
                 answer_provenance=(
                     AnswerProvenance.PROVIDED_BY_SOURCE if correct_index is not None else None
@@ -141,9 +156,11 @@ def _can_align_by_source_order(
         count > 1 for count in answer_id_counts.values()
     ):
         return False
-    return all(identifier is None for identifier in question_ids) or all(
-        identifier is None for identifier in answer_ids
-    )
+    return True
+
+
+def _ids_contradict(question_id: str | None, answer_id: str | None) -> bool:
+    return question_id is not None and answer_id is not None and question_id != answer_id
 
 
 def _supplied_answers(
@@ -203,8 +220,8 @@ def _append_unmatched_answer_diagnostic(
 def _question_id(index: int, question: ExtractedQuestion, identifier: str | None) -> str:
     if identifier is not None:
         return f"question-{identifier}-{index + 1}"
-    if question.source_segment_keys:
-        return f"question-{question.source_segment_keys[0]}-{index + 1}"
+    if question.source_segments:
+        return f"question-{question.source_segments[0].segment_key}-{index + 1}"
     return f"question-{index + 1}"
 
 

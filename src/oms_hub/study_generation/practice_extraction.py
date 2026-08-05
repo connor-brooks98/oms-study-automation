@@ -12,16 +12,22 @@ from oms_hub.study_generation.practice_contracts import (
     ExtractedAnswer,
     ExtractedQuestion,
     ExtractionPayload,
+    SegmentCitation,
     validate_source_references,
 )
-from oms_hub.study_generation.practice_domain import DiagnosticSeverity, DraftDiagnostic
+from oms_hub.study_generation.practice_domain import (
+    DiagnosticSeverity,
+    DraftDiagnostic,
+    QuestionSourceRef,
+)
 from oms_hub.study_generation.practice_matching import normalize_identifier
 
 _DEFAULT_MAX_INPUT_CHARACTERS = 60_000
 _EXTRACTION_INSTRUCTION = """Extract supplied practice questions and answer-key entries.
 Return only JSON matching the provided schema. Preserve source wording, cite every
-question and answer with source_segment_keys, and cite only candidate_asset_keys
-present in the input. Do not invent questions, answers, references, or assets."""
+question and answer with document-qualified source_segments, and cite only
+document-qualified candidate_assets present in the input. Do not invent
+questions, answers, references, or assets."""
 
 
 class ExtractionTextGenerator(Protocol):
@@ -77,6 +83,7 @@ class ExtractionProviderMetadata:
 class ExtractionResult:
     questions: tuple[ExtractedQuestion, ...]
     answers: tuple[ExtractedAnswer, ...]
+    question_source_refs: tuple[tuple[QuestionSourceRef, ...], ...]
     provider_metadata: tuple[ExtractionProviderMetadata, ...]
     diagnostics: tuple[DraftDiagnostic, ...]
 
@@ -120,29 +127,29 @@ class PracticeQuestionExtractor:
         if not sources:
             raise ValueError("at least one parsed document is required")
         chunks = _chunks(sources, self.max_input_characters)
-        known_segment_keys, known_asset_keys = _known_keys(sources)
+        canonical_documents = tuple(source.document for source in sources)
         metadata: list[ExtractionProviderMetadata] = []
         diagnostics: list[DraftDiagnostic] = []
-        merged_questions: dict[tuple[str | None, tuple[str, ...]], ExtractedQuestion] = {}
+        merged_questions: list[ExtractedQuestion] = []
+        question_source_refs: list[tuple[QuestionSourceRef, ...]] = []
+        questions_by_composite: dict[
+            tuple[str | None, tuple[SegmentCitation, ...]], list[ExtractedQuestion]
+        ] = {}
+        source_refs_by_identifier: dict[str, set[tuple[SegmentCitation, ...]]] = {}
+        identifiers_by_source_refs: dict[tuple[SegmentCitation, ...], set[str | None]] = {}
         answers: list[ExtractedAnswer] = []
 
         for chunk in chunks:
-            payload, attempts = self._extract_chunk(chunk)
+            payload, attempts = self._extract_chunk(chunk, canonical_documents)
             metadata.extend(attempts)
-            validate_source_references(
-                payload,
-                segment_keys=known_segment_keys,
-                asset_keys=known_asset_keys,
-            )
             for question in payload.questions:
-                key = (
-                    _normalized_identifier(question.original_identifier),
-                    tuple(sorted(question.source_segment_keys)),
-                )
-                existing = merged_questions.get(key)
-                if existing is None:
-                    merged_questions[key] = question
-                elif existing != question:
+                normalized_identifier = _normalized_identifier(question.original_identifier)
+                citations = tuple(sorted(question.source_segments, key=_citation_sort_key))
+                composite = (normalized_identifier, citations)
+                existing = questions_by_composite.get(composite, [])
+                if any(item == question for item in existing):
+                    continue
+                if existing:
                     diagnostics.append(
                         DraftDiagnostic(
                             "conflicting-duplicate-question",
@@ -150,19 +157,53 @@ class PracticeQuestionExtractor:
                             DiagnosticSeverity.BLOCKER,
                         )
                     )
+                if (
+                    normalized_identifier is not None
+                    and citations
+                    not in source_refs_by_identifier.get(normalized_identifier, set())
+                    and normalized_identifier in source_refs_by_identifier
+                ):
+                    diagnostics.append(
+                        DraftDiagnostic(
+                            "conflicting-question-identifier",
+                            "question identifier cites different source references; "
+                            "review is required",
+                            DiagnosticSeverity.BLOCKER,
+                        )
+                    )
+                prior_identifiers = identifiers_by_source_refs.get(citations, set())
+                if prior_identifiers and normalized_identifier not in prior_identifiers:
+                    diagnostics.append(
+                        DraftDiagnostic(
+                            "conflicting-question-source-reference",
+                            "source reference identifies different questions; review is required",
+                            DiagnosticSeverity.BLOCKER,
+                        )
+                    )
+                questions_by_composite.setdefault(composite, []).append(question)
+                if normalized_identifier is not None:
+                    source_refs_by_identifier.setdefault(normalized_identifier, set()).add(
+                        citations
+                    )
+                identifiers_by_source_refs.setdefault(citations, set()).add(normalized_identifier)
+                merged_questions.append(question)
+                question_source_refs.append(
+                    _resolve_question_source_refs(question, canonical_documents)
+                )
             for answer in payload.answers:
                 if answer not in answers:
                     answers.append(answer)
 
         return ExtractionResult(
-            tuple(merged_questions.values()),
+            tuple(merged_questions),
             tuple(answers),
+            tuple(question_source_refs),
             tuple(metadata),
             tuple(diagnostics),
         )
 
     def _extract_chunk(
-        self, chunk: str
+        self, chunk: str, documents: tuple[ParsedDocument, ...]
     ) -> tuple[ExtractionPayload, tuple[ExtractionProviderMetadata, ...]]:
         metadata: list[ExtractionProviderMetadata] = []
         responses: list[str] = []
@@ -177,7 +218,9 @@ class PracticeQuestionExtractor:
             metadata.append(ExtractionProviderMetadata.from_generated(generated))
             responses.append(generated.text)
             try:
-                return _parse_payload(generated.text), tuple(metadata)
+                payload = _parse_payload(generated.text)
+                validate_source_references(payload, documents=documents)
+                return payload, tuple(metadata)
             except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as error:
                 if attempt == 1:
                     raise ExtractionError(
@@ -202,10 +245,24 @@ def _source_document(document: ParsedDocument | SourceDocument) -> SourceDocumen
     return SourceDocument(document, document.source_id, "unspecified")
 
 
-def _known_keys(sources: tuple[SourceDocument, ...]) -> tuple[set[str], set[str]]:
-    segment_keys = {segment.key for source in sources for segment in source.document.segments}
-    asset_keys = {asset.key for source in sources for asset in source.document.assets}
-    return segment_keys, asset_keys
+def _resolve_question_source_refs(
+    question: ExtractedQuestion, documents: tuple[ParsedDocument, ...]
+) -> tuple[QuestionSourceRef, ...]:
+    documents_by_id = {document.source_id: document for document in documents}
+    references: list[QuestionSourceRef] = []
+    for citation in question.source_segments:
+        document = documents_by_id[citation.source_id]
+        segment = next(
+            segment for segment in document.segments if segment.key == citation.segment_key
+        )
+        references.append(
+            QuestionSourceRef(citation.source_id, citation.segment_key, segment.locator.label)
+        )
+    return tuple(references)
+
+
+def _citation_sort_key(citation: SegmentCitation) -> tuple[str, str]:
+    return citation.source_id, citation.segment_key
 
 
 def _chunks(sources: tuple[SourceDocument, ...], maximum: int) -> tuple[str, ...]:

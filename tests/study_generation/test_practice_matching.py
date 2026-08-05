@@ -1,4 +1,8 @@
-from oms_hub.study_generation.practice_contracts import ExtractedAnswer, ExtractedQuestion
+from oms_hub.study_generation.practice_contracts import (
+    ExtractedAnswer,
+    ExtractedQuestion,
+    SegmentCitation,
+)
 from oms_hub.study_generation.practice_domain import AnswerProvenance, DiagnosticSeverity
 from oms_hub.study_generation.practice_matching import pair_supplied_answers
 
@@ -10,8 +14,10 @@ def question(identifier: str | None, stem: str, *, confidence: float = 0.9) -> E
         choices=("A", "B"),
         supplied_correct_index=None,
         rationale=None,
-        source_segment_keys=(f"question-{stem}",),
-        candidate_asset_keys=(),
+        source_segments=(
+            SegmentCitation(source_id="questions", segment_key=f"question-{stem}"),
+        ),
+        candidate_assets=(),
         confidence=confidence,
     )
 
@@ -21,7 +27,9 @@ def answer(identifier: str | None, index: int) -> ExtractedAnswer:
         original_identifier=identifier,
         correct_index=index,
         rationale=None,
-        source_segment_keys=(f"answer-{identifier}",),
+        source_segments=(
+            SegmentCitation(source_id="answers", segment_key=f"answer-{identifier}"),
+        ),
     )
 
 
@@ -66,6 +74,15 @@ def test_aligned_order_only_pairs_complete_unique_identifier_sets() -> None:
 
     assert [draft.correct_index for draft in drafts] == [1, 0]
     assert all(draft.answer_provenance is AnswerProvenance.PROVIDED_BY_SOURCE for draft in drafts)
+
+
+def test_residual_source_order_pairs_after_exact_identifier_match() -> None:
+    drafts = pair_supplied_answers(
+        questions=(question("1", "First"), question("2", "Second")),
+        answers=(answer("1", 1), answer(None, 0)),
+    )
+
+    assert [draft.correct_index for draft in drafts] == [1, 0]
 
 
 def test_different_numbered_sets_do_not_fall_back_to_source_order() -> None:
