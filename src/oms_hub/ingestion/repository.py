@@ -9,6 +9,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
+from oms_hub.files.atomic import sha256_file
 from oms_hub.ingestion.domain import (
     IngestionJob,
     MatchDecision,
@@ -28,6 +29,16 @@ from oms_hub.models import (
     UploadItemModel,
     utc_now,
 )
+
+
+def _filed_artifact_matches(revision: StudyRevisionModel) -> bool:
+    if not revision.canonical_derived_path or not revision.derived_sha256:
+        return False
+    path = Path(revision.canonical_derived_path)
+    try:
+        return path.is_file() and sha256_file(path) == revision.derived_sha256
+    except OSError:
+        return False
 
 
 class IngestionRepository:
@@ -749,19 +760,30 @@ class IngestionRepository:
         item: UploadItemModel,
     ) -> None:
         exact = session.scalar(
-            select(StudyRevisionModel.id).where(
+            select(StudyRevisionModel).where(
                 StudyRevisionModel.lecture_id == item.lecture_id,
                 StudyRevisionModel.kind == item.kind,
                 StudyRevisionModel.source_sha256 == item.sha256,
                 StudyRevisionModel.current.is_(True),
             )
         )
-        if exact is not None:
+        if exact is not None and _filed_artifact_matches(exact):
             item.state = UploadState.COMPLETE.value
             item.error = None
             evidence = list(json.loads(item.evidence_json))
-            evidence.append("Exact transcript already processed")
+            label = (
+                "transcript"
+                if item.kind == UploadKind.TRANSCRIPTS.value
+                else "slide"
+            )
+            evidence.append(f"Exact {label} already processed")
             item.evidence_json = json.dumps(evidence)
+            return
+        if exact is not None:
+            evidence = list(json.loads(item.evidence_json))
+            evidence.append("Exact source queued to repair filed artifact")
+            item.evidence_json = json.dumps(evidence)
+            self._enqueue(session, item.id, "process")
             return
         current = session.scalar(
             select(StudyRevisionModel.id).where(

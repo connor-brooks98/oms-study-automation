@@ -122,6 +122,63 @@ def test_exact_current_transcript_completes_without_a_job(tmp_path):
     assert repository.count_jobs("exact-transcript", "process") == 0
 
 
+def test_exact_current_slide_queues_repair_when_filed_pdf_checksum_changed(
+    tmp_path,
+):
+    database, repository, lecture_id = _prepared_repository(tmp_path)
+    source = b"PowerPoint source"
+    source_digest = hashlib.sha256(source).hexdigest()
+    original_pdf = b"Original converted PDF"
+    original_pdf_digest = hashlib.sha256(original_pdf).hexdigest()
+    _, source_path, _ = _add_upload(
+        repository,
+        tmp_path,
+        "current-slide",
+        source,
+    )
+    immutable_pdf = tmp_path / "immutable.pdf"
+    immutable_pdf.write_bytes(original_pdf)
+    filed_pdf = tmp_path / "filed.pdf"
+    filed_pdf.write_bytes(b"Changed after filing")
+    with database.session() as session:
+        session.add(
+            StudyRevisionModel(
+                upload_item_id="current-slide",
+                lecture_id=lecture_id,
+                kind=UploadKind.SLIDES.value,
+                source_sha256=source_digest,
+                immutable_source_path=str(source_path),
+                derived_sha256=original_pdf_digest,
+                immutable_derived_path=str(immutable_pdf),
+                canonical_source_path=str(source_path),
+                canonical_derived_path=str(filed_pdf),
+                icloud_path=str(tmp_path / "icloud.pdf"),
+                state="current",
+                current=True,
+            )
+        )
+    batch_id = repository.create_batch(UploadKind.SLIDES)
+    duplicate_path = tmp_path / "duplicate-slide.ready"
+    duplicate_path.write_bytes(source)
+    repository.add_item(
+        UploadKind.SLIDES,
+        StagedUpload(
+            batch_id=batch_id,
+            item_id="duplicate-slide",
+            path=duplicate_path,
+            sha256=source_digest,
+            size_bytes=len(source),
+            original_filename="duplicate-slide.pptx",
+        ),
+    )
+
+    repository.set_manual_assignment("duplicate-slide", lecture_id)
+
+    duplicate = repository.require_item("duplicate-slide")
+    assert duplicate.state is UploadState.QUEUED
+    assert repository.count_jobs("duplicate-slide", "process") == 1
+
+
 def test_different_transcript_for_cleaned_lecture_awaits_confirmation(
     tmp_path,
 ):
