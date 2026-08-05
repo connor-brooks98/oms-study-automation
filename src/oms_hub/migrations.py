@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 import hashlib
 import json
 from typing import TYPE_CHECKING
@@ -34,25 +33,15 @@ def _ensure_column(
     inspector = inspect(database.engine)
     if not inspector.has_table(table_name):
         return
-    columns = {
-        column["name"]
-        for column in inspector.get_columns(table_name)
-    }
+    columns = {column["name"] for column in inspector.get_columns(table_name)}
     if column_name in columns:
         return
     with database.engine.begin() as connection:
-        connection.execute(
-            text(
-                f"ALTER TABLE {table_name} "
-                f"ADD COLUMN {column_name} {definition}"
-            )
-        )
+        connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
 
 
 def _upgrade_anki_v4_columns(database: "Database") -> None:
-    empty_sha256 = (
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    )
+    empty_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     job_columns = {
         "block_id": "VARCHAR(200)",
         "source_revision_ids_json": "TEXT NOT NULL DEFAULT '[]'",
@@ -66,9 +55,7 @@ def _upgrade_anki_v4_columns(database: "Database") -> None:
         "semantic_generation": "VARCHAR(200)",
         "companion_generation": "VARCHAR(200)",
         "source_index_generation": "VARCHAR(200)",
-        "configuration_sha256": (
-            f"VARCHAR(64) NOT NULL DEFAULT '{empty_sha256}'"
-        ),
+        "configuration_sha256": (f"VARCHAR(64) NOT NULL DEFAULT '{empty_sha256}'"),
         "apply_state": "VARCHAR(50) NOT NULL DEFAULT 'pending'",
         "lease_owner": "VARCHAR(100)",
         "lease_expires_at": "VARCHAR(40)",
@@ -107,15 +94,47 @@ def _upgrade_anki_contract_v13(database: "Database") -> None:
     }.items():
         _ensure_column(database, "anki_stage_artifacts", name, definition)
     with database.engine.begin() as connection:
-        connection.execute(text("UPDATE anki_curation_jobs SET pipeline_contract_version = 'retrieval_v4' WHERE pipeline_contract_version IS NULL OR pipeline_contract_version = ''"))
-        rows = connection.execute(text("SELECT id, provider, model, resolved_model_config_json FROM anki_curation_jobs")).mappings()
+        connection.execute(
+            text(
+                "UPDATE anki_curation_jobs SET pipeline_contract_version = "
+                "'retrieval_v4' WHERE pipeline_contract_version IS NULL OR "
+                "pipeline_contract_version = ''"
+            )
+        )
+        rows = connection.execute(
+            text("SELECT id, provider, model, resolved_model_config_json FROM anki_curation_jobs")
+        ).mappings()
         for row in rows:
             config = row["resolved_model_config_json"]
             if not config or config == "{}":
-                stage = {"provider": row["provider"], "model": row["model"], "thinking_mode": "default", "fixture_validation_signature": None}
-                config = json.dumps({"profile": "legacy_single_model", "ledger_s2": stage, "classify_s4": stage, "residual_s6": stage, "gap_fill_s7": stage, "residual_unlocked": False}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                stage = {
+                    "provider": row["provider"],
+                    "model": row["model"],
+                    "thinking_mode": "default",
+                    "fixture_validation_signature": None,
+                }
+                config = json.dumps(
+                    {
+                        "profile": "legacy_single_model",
+                        "ledger_s2": stage,
+                        "classify_s4": stage,
+                        "residual_s6": stage,
+                        "gap_fill_s7": stage,
+                        "residual_unlocked": False,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
             digest = hashlib.sha256(config.encode("utf-8")).hexdigest()
-            connection.execute(text("UPDATE anki_curation_jobs SET resolved_model_config_json=:config, model_config_sha256=:digest WHERE id=:id"), {"config": config, "digest": digest, "id": row["id"]})
+            connection.execute(
+                text(
+                    "UPDATE anki_curation_jobs SET "
+                    "resolved_model_config_json=:config, "
+                    "model_config_sha256=:digest WHERE id=:id"
+                ),
+                {"config": config, "digest": digest, "id": row["id"]},
+            )
 
 
 def _upgrade_generation_job_columns(database: "Database") -> None:
@@ -275,9 +294,7 @@ def _rebuild_gap_card_table(database: "Database") -> None:
             )
         )
         connection.execute(text("DROP TABLE anki_gap_cards"))
-        connection.execute(
-            text("ALTER TABLE anki_gap_cards_v11 RENAME TO anki_gap_cards")
-        )
+        connection.execute(text("ALTER TABLE anki_gap_cards_v11 RENAME TO anki_gap_cards"))
 
 
 def _seed_llm_task_assignments(database: "Database") -> None:
@@ -289,18 +306,13 @@ def _seed_llm_task_assignments(database: "Database") -> None:
     if not inspector.has_table("llm_task_assignments"):
         return
     with database.session() as session:
-        existing = {
-            row.task
-            for row in session.scalars(select(LLMTaskAssignmentModel)).all()
-        }
+        existing = {row.task for row in session.scalars(select(LLMTaskAssignmentModel)).all()}
         missing = {task.value for task in LLMTask} - existing
         if not missing:
             return
 
         active_row = session.scalar(
-            select(LLMProviderSettingModel).where(
-                LLMProviderSettingModel.active.is_(True)
-            )
+            select(LLMProviderSettingModel).where(LLMProviderSettingModel.active.is_(True))
         )
         if active_row is not None:
             default_provider = active_row.provider
@@ -344,8 +356,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_gap_card_identity(database)
     _seed_llm_task_assignments(database)
     usage_columns = {
-        column["name"]
-        for column in inspect(database.engine).get_columns("study_usage")
+        column["name"] for column in inspect(database.engine).get_columns("study_usage")
     }
     if "provider" not in usage_columns:
         with database.engine.begin() as connection:
@@ -357,9 +368,7 @@ def migrate_database(database: "Database") -> None:
             )
     source_columns = {
         column["name"]
-        for column in inspect(database.engine).get_columns(
-            "notebook_source_mappings"
-        )
+        for column in inspect(database.engine).get_columns("notebook_source_mappings")
     }
     if "display_title" not in source_columns:
         with database.engine.begin() as connection:
@@ -375,9 +384,7 @@ def migrate_database(database: "Database") -> None:
             return
 
         existing_steps = set(
-            session.execute(
-                select(LectureStepModel.lecture_id, LectureStepModel.name)
-            ).all()
+            session.execute(select(LectureStepModel.lecture_id, LectureStepModel.name)).all()
         )
         lecture_ids = session.scalars(select(LectureModel.id)).all()
         for lecture_id in lecture_ids:
@@ -392,8 +399,6 @@ def migrate_database(database: "Database") -> None:
                     )
 
         if version is None:
-            session.add(
-                SchemaVersionModel(id=1, version=LATEST_SCHEMA_VERSION)
-            )
+            session.add(SchemaVersionModel(id=1, version=LATEST_SCHEMA_VERSION))
         else:
             version.version = LATEST_SCHEMA_VERSION

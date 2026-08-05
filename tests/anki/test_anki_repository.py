@@ -74,9 +74,7 @@ def _job_request(lecture_id: int, *, snapshot: str = "snapshot-1") -> CreateCura
         tag_allowlist=("#AK_Step2_v12::Hematology",),
         instruction_text="Focus on red-highlighted material.",
         target_deck="OMS-II_Custom_Cards::Heme_Lymph::Exam_1::Lec4_Anemia_I",
-        target_tag=(
-            "AnkiHub_Optional::LMU_OMS_II::HemeLymph::Block1::Lec4_Anemia_I"
-        ),
+        target_tag=("AnkiHub_Optional::LMU_OMS_II::HemeLymph::Block1::Lec4_Anemia_I"),
         index_snapshot_id=snapshot,
         lcl_prompt_version="lcl-v1",
         judgment_rubric_version="judgment-v1",
@@ -161,9 +159,7 @@ def test_transition_requires_expected_state_and_allowed_edge(tmp_path) -> None:
 def test_recovery_releases_interrupted_pre_review_jobs_in_place(tmp_path) -> None:
     repository, lecture_id = _prepared_repository(tmp_path)
     interrupted = repository.create_job(_job_request(lecture_id, snapshot="snapshot-1"))
-    envelope_pending = repository.create_job(
-        _job_request(lecture_id, snapshot="snapshot-2")
-    )
+    envelope_pending = repository.create_job(_job_request(lecture_id, snapshot="snapshot-2"))
     claimed = repository.claim_next_job(datetime.now(UTC))
     assert claimed is not None
     repository.transition(
@@ -197,10 +193,7 @@ def test_recovery_releases_interrupted_pre_review_jobs_in_place(tmp_path) -> Non
     assert recovered.state is CurationState.PREFLIGHT
     assert recovered.lease_owner is None
     assert recovered.lease_expires_at is None
-    assert (
-        repository.require_job(envelope_pending.id).state
-        is CurationState.ENVELOPE_PENDING
-    )
+    assert repository.require_job(envelope_pending.id).state is CurationState.ENVELOPE_PENDING
 
 
 def test_stage_lifecycle_records_usage_and_safe_failure(tmp_path) -> None:
@@ -334,6 +327,7 @@ def test_source_evidence_and_stage_artifacts_round_trip(tmp_path) -> None:
         relative_path="jobs/example/source-index-manifest.json",
         input_sha256="d" * 64,
         content_sha256="e" * 64,
+        model_config_sha256=job.model_config_sha256,
         metadata={"passages": 12},
     )
 
@@ -606,9 +600,7 @@ def test_card_audit_cache_round_trips_immutable_record(tmp_path) -> None:
 def test_lecture_title_is_available_for_blind_audit_context(tmp_path) -> None:
     repository, lecture_id = _prepared_repository(tmp_path)
 
-    assert repository.lecture_title(lecture_id) == (
-        "Heme Lymph Exam 1 Lecture 4: Anemia I"
-    )
+    assert repository.lecture_title(lecture_id) == ("Heme Lymph Exam 1 Lecture 4: Anemia I")
 
 
 def test_review_changes_and_tag_patches_are_append_only(
@@ -714,9 +706,7 @@ def test_action_envelope_operation_journal_is_durable(tmp_path) -> None:
         target_tag="AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_3",
     )
     sync = next(
-        operation
-        for operation in envelope.operations
-        if isinstance(operation, SyncOperation)
+        operation for operation in envelope.operations if isinstance(operation, SyncOperation)
     )
 
     stored = repository.create_action_envelope(job.id, envelope)
@@ -741,7 +731,4 @@ def test_action_envelope_operation_journal_is_durable(tmp_path) -> None:
     assert operation.state == "complete"
     assert operation.attempts == 1
     assert operation.result == {"sync_status": "complete"}
-    assert (
-        repository.require_job(job.id).apply_state
-        is ApplyState.APPLIED_LOCAL_SYNC_RETRYABLE
-    )
+    assert repository.require_job(job.id).apply_state is ApplyState.APPLIED_LOCAL_SYNC_RETRYABLE

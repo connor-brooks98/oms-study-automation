@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 import hashlib
 import json
 import os
@@ -205,18 +204,12 @@ class StageArtifactStore:
         }
         encoded = _canonical_json(document).encode("utf-8") + b"\n"
         content_sha256 = hashlib.sha256(encoded).hexdigest()
-        relative = (
-            Path(str(job_id))
-            / stage.value
-            / f"{content_sha256}.json"
-        )
+        relative = Path(str(job_id)) / stage.value / f"{content_sha256}.json"
         destination = self.root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         if destination.exists():
             if destination.read_bytes() != encoded:
-                raise ValueError(
-                    "immutable stage artifact has conflicting content"
-                )
+                raise ValueError("immutable stage artifact has conflicting content")
         else:
             descriptor, temporary_name = tempfile.mkstemp(
                 prefix=f".{content_sha256}-",
@@ -247,11 +240,7 @@ class StageArtifactStore:
 
     def read(self, artifact: StageArtifact) -> dict[str, Any]:
         relative = PurePosixPath(artifact.relative_path)
-        if (
-            relative.is_absolute()
-            or ".." in relative.parts
-            or not relative.parts
-        ):
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
             raise ValueError("stage artifact path is unsafe")
         path = self.root.joinpath(*relative.parts)
         try:
@@ -261,9 +250,7 @@ class StageArtifactStore:
                 f"Committed artifact {artifact.artifact_id} is unavailable"
             ) from exc
         if hashlib.sha256(encoded).hexdigest() != artifact.content_sha256:
-            raise PinnedInputChanged(
-                f"Committed artifact {artifact.artifact_id} changed"
-            )
+            raise PinnedInputChanged(f"Committed artifact {artifact.artifact_id} changed")
         try:
             document = json.loads(encoded)
         except json.JSONDecodeError as exc:
@@ -276,9 +263,7 @@ class StageArtifactStore:
             or document.get("kind") != artifact.kind
             or not isinstance(document.get("payload"), dict)
         ):
-            raise PinnedInputChanged(
-                f"Committed artifact {artifact.artifact_id} is invalid"
-            )
+            raise PinnedInputChanged(f"Committed artifact {artifact.artifact_id} is invalid")
         return dict(document["payload"])
 
 
@@ -305,7 +290,8 @@ class CurationPipeline:
         job = self.repository.require_job(job_id)
         if job.pipeline_contract_version is not PipelineContractVersion.RETRIEVAL_V4:
             raise UnsupportedPipelineContract(
-                f"pipeline contract {job.pipeline_contract_version.value} is unsupported; upgrade required; no mutation performed"
+                f"pipeline contract {job.pipeline_contract_version.value} is "
+                "unsupported; upgrade required; no mutation performed"
             )
         definition = stage_definition(job.state, job.pipeline_contract_version)
         if definition is None:
@@ -318,12 +304,9 @@ class CurationPipeline:
         )
         try:
             self.input_validator.validate(job_id)
-            prior_artifacts = tuple(
-                self.repository.list_stage_artifacts(job_id)
-            )
+            prior_artifacts = tuple(self.repository.list_stage_artifacts(job_id))
             prior_payloads = {
-                artifact.stage: self.artifacts.read(artifact)
-                for artifact in prior_artifacts
+                artifact.stage: self.artifacts.read(artifact) for artifact in prior_artifacts
             }
             input_sha256 = _stage_input_hash(
                 job,

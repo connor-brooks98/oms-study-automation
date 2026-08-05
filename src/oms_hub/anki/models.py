@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,9 +25,7 @@ class AnkiCurationInstructionModel(Base):
 
 class AnkiCurationJobModel(Base):
     __tablename__ = "anki_curation_jobs"
-    __table_args__ = (
-        Index("ix_anki_curation_jobs_state_created", "state", "created_at"),
-    )
+    __table_args__ = (Index("ix_anki_curation_jobs_state_created", "state", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     lecture_id: Mapped[int] = mapped_column(ForeignKey("lectures.id"))
@@ -85,9 +82,13 @@ class AnkiCurationJobModel(Base):
         default="claude-sonnet-5",
         server_default="claude-sonnet-5",
     )
-    pipeline_contract_version: Mapped[str] = mapped_column(String(30), default="retrieval_v4", server_default="retrieval_v4")
+    pipeline_contract_version: Mapped[str] = mapped_column(
+        String(30), default="retrieval_v4", server_default="retrieval_v4"
+    )
     resolved_model_config_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
-    model_config_sha256: Mapped[str] = mapped_column(String(64), default=EMPTY_SHA256, server_default=EMPTY_SHA256)
+    model_config_sha256: Mapped[str] = mapped_column(
+        String(64), default=EMPTY_SHA256, server_default=EMPTY_SHA256
+    )
     semantic_generation: Mapped[str | None] = mapped_column(
         String(200),
         nullable=True,
@@ -198,9 +199,7 @@ class AnkiCandidateModel(Base):
 
 class AnkiGapCardModel(Base):
     __tablename__ = "anki_gap_cards"
-    __table_args__ = (
-        Index("ix_anki_gap_cards_job_concept", "job_id", "concept_id"),
-    )
+    __table_args__ = (Index("ix_anki_gap_cards_job_concept", "job_id", "concept_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     job_id: Mapped[str] = mapped_column(ForeignKey("anki_curation_jobs.id"))
@@ -275,8 +274,12 @@ class AnkiStageArtifactModel(Base):
     input_sha256: Mapped[str] = mapped_column(String(64))
     content_sha256: Mapped[str] = mapped_column(String(64))
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
-    pipeline_contract_version: Mapped[str] = mapped_column(String(30), default="retrieval_v4", server_default="retrieval_v4")
-    model_config_sha256: Mapped[str] = mapped_column(String(64), default=EMPTY_SHA256, server_default=EMPTY_SHA256)
+    pipeline_contract_version: Mapped[str] = mapped_column(
+        String(30), default="retrieval_v4", server_default="retrieval_v4"
+    )
+    model_config_sha256: Mapped[str] = mapped_column(
+        String(64), default=EMPTY_SHA256, server_default=EMPTY_SHA256
+    )
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
 
 
@@ -312,9 +315,7 @@ class AnkiReviewChangeSetModel(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    job_id: Mapped[str] = mapped_column(
-        ForeignKey("anki_curation_jobs.id")
-    )
+    job_id: Mapped[str] = mapped_column(ForeignKey("anki_curation_jobs.id"))
     revision: Mapped[int]
     prior_revision: Mapped[int]
     reviewer: Mapped[str] = mapped_column(String(200))
@@ -476,9 +477,7 @@ class AnkiStageSettingModel(Base):
 
 class AnkiAgentCommandModel(Base):
     __tablename__ = "anki_agent_commands"
-    __table_args__ = (
-        Index("ix_anki_agent_commands_state_created", "state", "created_at"),
-    )
+    __table_args__ = (Index("ix_anki_agent_commands_state_created", "state", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     command_type: Mapped[str] = mapped_column(String(30))

@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 import hashlib
 import json
 from collections.abc import Sequence
@@ -269,7 +268,9 @@ class AnkiCurationRepository:
         self.database = database
 
     def create_job(self, request: CreateCurationJob) -> CurationJob:
-        model_config = request.resolved_model_config or ResolvedModelConfiguration.legacy(request.provider, request.model)
+        model_config = request.resolved_model_config or ResolvedModelConfiguration.legacy(
+            request.provider, request.model
+        )
         model_config_json = _canonical_json(model_config.canonical_document())
         model_config_sha256 = _sha256_text(model_config_json)
         configuration = {
@@ -307,9 +308,7 @@ class AnkiCurationRepository:
                 _legacy_amboss_sha256=_sha256_text(""),
                 block_id=request.block_id,
                 source_revision_ids_json=_canonical_json(request.source_revision_ids),
-                source_revision_hashes_json=_canonical_json(
-                    request.source_revision_hashes
-                ),
+                source_revision_hashes_json=_canonical_json(request.source_revision_hashes),
                 summary_outline_id=request.summary_outline_id,
                 summary_outline_sha256=request.summary_outline_sha256,
                 deck_allowlist_json=_canonical_json(request.deck_allowlist),
@@ -356,10 +355,7 @@ class AnkiCurationRepository:
         with self.database.session() as session:
             stored = session.scalars(
                 select(AnkiCurationJobModel)
-                .where(
-                    AnkiCurationJobModel.state
-                    != CurationState.REMOVED.value
-                )
+                .where(AnkiCurationJobModel.state != CurationState.REMOVED.value)
                 .order_by(
                     AnkiCurationJobModel.created_at.desc(),
                     AnkiCurationJobModel.id.desc(),
@@ -387,9 +383,7 @@ class AnkiCurationRepository:
             stored = session.scalar(
                 select(AnkiCurationJobModel)
                 .where(
-                    AnkiCurationJobModel.state.in_(
-                        [state.value for state in _CLAIMABLE_STATES]
-                    ),
+                    AnkiCurationJobModel.state.in_([state.value for state in _CLAIMABLE_STATES]),
                     or_(
                         AnkiCurationJobModel.available_at.is_(None),
                         AnkiCurationJobModel.available_at <= now_text,
@@ -452,9 +446,7 @@ class AnkiCurationRepository:
                 .where(
                     AnkiCurationJobModel.id == str(job_id),
                     AnkiCurationJobModel.lease_owner == worker_id,
-                    AnkiCurationJobModel.state.in_(
-                        [state.value for state in _CLAIMABLE_STATES]
-                    ),
+                    AnkiCurationJobModel.state.in_([state.value for state in _CLAIMABLE_STATES]),
                 )
                 .values(lease_expires_at=expires)
             )
@@ -531,9 +523,7 @@ class AnkiCurationRepository:
             )
             if failed_stage is None:
                 raise ValueError("failed curation job has no resumable stage")
-            target_state = _RETRY_STATE_BY_STAGE.get(
-                CurationStage(failed_stage.stage)
-            )
+            target_state = _RETRY_STATE_BY_STAGE.get(CurationStage(failed_stage.stage))
             if target_state is None:
                 raise ValueError("failed curation stage cannot be retried")
             if target_state not in ALLOWED_TRANSITIONS[CurationState.FAILED]:
@@ -553,13 +543,8 @@ class AnkiCurationRepository:
             stored = self._require_job_model(session, job_id)
             if stored.state != CurationState.FAILED.value:
                 raise ValueError("only a failed curation job can be removed")
-            if (
-                CurationState.REMOVED
-                not in ALLOWED_TRANSITIONS[CurationState.FAILED]
-            ):
-                raise InvalidCurationTransition(
-                    "transition failed -> removed is not allowed"
-                )
+            if CurationState.REMOVED not in ALLOWED_TRANSITIONS[CurationState.FAILED]:
+                raise InvalidCurationTransition("transition failed -> removed is not allowed")
             stored.state = CurationState.REMOVED.value
             stored.available_at = None
             stored.lease_owner = None
@@ -610,9 +595,7 @@ class AnkiCurationRepository:
                 .values(**values)
             )
             if cast(CursorResult[Any], changed).rowcount != 1:
-                raise InvalidCurationTransition(
-                    f"job {job_id} is not in {expected_state.value}"
-                )
+                raise InvalidCurationTransition(f"job {job_id} is not in {expected_state.value}")
             stored = session.get(AnkiCurationJobModel, str(job_id))
             assert stored is not None
             session.refresh(stored)
@@ -749,9 +732,7 @@ class AnkiCurationRepository:
         with self.database.session() as session:
             job = self._require_job_model(session, job_id)
             if job.state != expected_state.value:
-                raise InvalidCurationTransition(
-                    f"job {job_id} is not in {expected_state.value}"
-                )
+                raise InvalidCurationTransition(f"job {job_id} is not in {expected_state.value}")
             if lease_owner is not None and job.lease_owner != lease_owner:
                 raise InvalidCurationTransition(f"worker no longer owns job {job_id}")
             stored_stage = self._require_stage(session, job_id, stage)
@@ -791,9 +772,7 @@ class AnkiCurationRepository:
                 != artifact.metadata
             ):
                 raise ValueError("artifact identity was reused with different content")
-            stored_stage.state = (
-                "failed" if target_state is CurationState.FAILED else "complete"
-            )
+            stored_stage.state = "failed" if target_state is CurationState.FAILED else "complete"
             stored_stage.finished_at = utc_now()
             stored_stage.cache_hits = cache_hits
             stored_stage.error = failure_detail
@@ -868,7 +847,7 @@ class AnkiCurationRepository:
         artifact: StageArtifact,
     ) -> None:
         with self.database.session() as session:
-            self._require_job_model(session, job_id)
+            job = self._require_job_model(session, job_id)
             existing = session.scalar(
                 select(AnkiStageArtifactModel).where(
                     AnkiStageArtifactModel.job_id == str(job_id),
@@ -880,9 +859,7 @@ class AnkiCurationRepository:
                     existing.content_sha256 != artifact.content_sha256
                     or existing.input_sha256 != artifact.input_sha256
                 ):
-                    raise ValueError(
-                        "artifact identity was reused with different content"
-                    )
+                    raise ValueError("artifact identity was reused with different content")
                 return
             session.add(
                 AnkiStageArtifactModel(
@@ -894,6 +871,10 @@ class AnkiCurationRepository:
                     input_sha256=artifact.input_sha256,
                     content_sha256=artifact.content_sha256,
                     metadata_json=_canonical_json(artifact.metadata),
+                    pipeline_contract_version=artifact.pipeline_contract_version.value,
+                    model_config_sha256=(
+                        artifact.model_config_sha256 or job.model_config_sha256
+                    ),
                 )
             )
 
@@ -972,20 +953,13 @@ class AnkiCurationRepository:
                 conditions = [AnkiGapCardModel.job_id == str(job_id)]
                 if edit.card_id:
                     conditions.append(AnkiGapCardModel.id == edit.card_id)
-                    gap = session.scalar(
-                        select(AnkiGapCardModel).where(*conditions)
-                    )
+                    gap = session.scalar(select(AnkiGapCardModel).where(*conditions))
                 else:
-                    conditions.append(
-                        AnkiGapCardModel.concept_id == edit.concept_id
-                    )
-                    matches = session.scalars(
-                        select(AnkiGapCardModel).where(*conditions)
-                    ).all()
+                    conditions.append(AnkiGapCardModel.concept_id == edit.concept_id)
+                    matches = session.scalars(select(AnkiGapCardModel).where(*conditions)).all()
                     if len(matches) > 1:
                         raise ValueError(
-                            "gap card edit requires card_id when a concept "
-                            "has multiple cards"
+                            "gap card edit requires card_id when a concept has multiple cards"
                         )
                     gap = matches[0] if matches else None
                 if gap is None:
@@ -1292,6 +1266,18 @@ class AnkiCurationRepository:
         payload_json = _canonical_json(envelope.model_dump(mode="json"))
         with self.database.session() as session:
             job = self._require_job_model(session, job_id)
+            if envelope.contract_version == 2:
+                agent = session.get(AnkiAgentStateModel, 1)
+                versions = (
+                    cast(dict[str, Any], json.loads(agent.versions_json))
+                    if agent is not None
+                    else {}
+                )
+                supported = versions.get("supported_envelope_contract_versions", [1])
+                if 2 not in supported:
+                    raise ValueError(
+                        "envelope contract v2 unsupported; upgrade required; no mutation performed"
+                    )
             if expected_review_revision is not None and (
                 job.state != CurationState.READY_FOR_REVIEW.value
                 or job.review_revision != expected_review_revision
@@ -1600,9 +1586,7 @@ class AnkiCurationRepository:
     ) -> None:
         if len({candidate.note_id for candidate in candidates}) != len(candidates):
             raise ValueError("projected candidates must have unique note IDs")
-        session.execute(
-            delete(AnkiCandidateModel).where(AnkiCandidateModel.job_id == str(job_id))
-        )
+        session.execute(delete(AnkiCandidateModel).where(AnkiCandidateModel.job_id == str(job_id)))
         for candidate in candidates:
             session.add(
                 AnkiCandidateModel(
@@ -1634,9 +1618,7 @@ class AnkiCurationRepository:
         if len({item.evidence_id for item in evidence}) != len(evidence):
             raise ValueError("projected source evidence IDs must be unique")
         session.execute(
-            delete(AnkiSourceEvidenceModel).where(
-                AnkiSourceEvidenceModel.job_id == str(job_id)
-            )
+            delete(AnkiSourceEvidenceModel).where(AnkiSourceEvidenceModel.job_id == str(job_id))
         )
         for item in evidence:
             session.add(
@@ -1670,9 +1652,7 @@ class AnkiCurationRepository:
         supplied_ids = [card.card_id for card in cards if card.card_id]
         if len(supplied_ids) != len(set(supplied_ids)):
             raise ValueError("projected gap cards must have unique card IDs")
-        session.execute(
-            delete(AnkiGapCardModel).where(AnkiGapCardModel.job_id == str(job_id))
-        )
+        session.execute(delete(AnkiGapCardModel).where(AnkiGapCardModel.job_id == str(job_id)))
         for card in cards:
             session.add(
                 AnkiGapCardModel(
@@ -1702,8 +1682,7 @@ class AnkiCurationRepository:
                     evidence_ids_json=_canonical_json(card.evidence_ids),
                     provenance_json=_canonical_json(card.provenance),
                     initial_tags_json=_canonical_json(card.initial_tags),
-                    content_hash=card.content_hash
-                    or _sha256_text(f"{card.text}\0{card.extra}"),
+                    content_hash=card.content_hash or _sha256_text(f"{card.text}\0{card.extra}"),
                 )
             )
 
@@ -1739,7 +1718,14 @@ class AnkiCurationRepository:
 
     @staticmethod
     def _job(stored: AnkiCurationJobModel) -> CurationJob:
-        config = AnkiCurationRepository._resolved_model_config(stored.resolved_model_config_json, stored.provider, stored.model)
+        config = AnkiCurationRepository._resolved_model_config(
+            stored.resolved_model_config_json, stored.provider, stored.model
+        )
+        expected_model_config_sha256 = _sha256_text(_canonical_json(config.canonical_document()))
+        if stored.resolved_model_config_json not in {"", "{}"} and (
+            stored.model_config_sha256 != expected_model_config_sha256
+        ):
+            raise ValueError("stored resolved model configuration failed integrity checks")
         return CurationJob(
             id=UUID(stored.id),
             lecture_id=stored.lecture_id,
@@ -1756,17 +1742,13 @@ class AnkiCurationRepository:
                     json.loads(stored.source_revision_hashes_json),
                 ).items()
             },
-            deck_allowlist=tuple(
-                str(value) for value in json.loads(stored.deck_allowlist_json)
-            ),
-            tag_allowlist=tuple(
-                str(value) for value in json.loads(stored.tag_allowlist_json)
-            ),
+            deck_allowlist=tuple(str(value) for value in json.loads(stored.deck_allowlist_json)),
+            tag_allowlist=tuple(str(value) for value in json.loads(stored.tag_allowlist_json)),
             provider=stored.provider,
             model=stored.model,
             pipeline_contract_version=PipelineContractVersion(stored.pipeline_contract_version),
             resolved_model_config=config,
-            model_config_sha256=stored.model_config_sha256 if stored.model_config_sha256 != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" else _sha256_text(_canonical_json(config.canonical_document())),
+            model_config_sha256=expected_model_config_sha256,
             instruction_text=stored.instruction_text,
             instruction_sha256=stored.instruction_sha256,
             target_deck=stored.target_deck,
@@ -1872,19 +1854,37 @@ class AnkiCurationRepository:
             ),
         )
 
-
     @staticmethod
     def _resolved_model_config(value: str, provider: str, model: str) -> ResolvedModelConfiguration:
+        if value in {"", "{}"}:
+            return ResolvedModelConfiguration.legacy(provider, model)
         try:
             raw = cast(dict[str, Any], json.loads(value))
             if not raw:
                 raise ValueError
+
             def stage(name: str) -> ResolvedStageModel:
                 item = cast(dict[str, Any], raw[name])
-                return ResolvedStageModel(item["provider"], item["model"], item.get("thinking_mode", "default"), item.get("fixture_validation_signature"))
-            return ResolvedModelConfiguration(raw["profile"], stage("ledger_s2"), stage("classify_s4"), stage("residual_s6"), stage("gap_fill_s7"), bool(raw.get("residual_unlocked", False)))
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-            return ResolvedModelConfiguration.legacy(provider, model)
+                return ResolvedStageModel(
+                    item["provider"],
+                    item["model"],
+                    item.get("thinking_mode", "default"),
+                    item.get("fixture_validation_signature"),
+                )
+
+            resolved = ResolvedModelConfiguration(
+                raw["profile"],
+                stage("ledger_s2"),
+                stage("classify_s4"),
+                stage("residual_s6"),
+                stage("gap_fill_s7"),
+                bool(raw.get("residual_unlocked", False)),
+            )
+            if _canonical_json(resolved.canonical_document()) != value:
+                raise ValueError("stored resolved model configuration is not canonical")
+            return resolved
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("stored resolved model configuration is invalid") from exc
 
     @staticmethod
     def _gap_card(stored: AnkiGapCardModel) -> GapCard:

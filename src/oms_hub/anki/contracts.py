@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 import hashlib
 import json
 import re
@@ -42,7 +41,7 @@ def canonical_payload_sha256(value: Any) -> str:
 class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    contract_version: int = 1
+    contract_version: Literal[1] = 1
 
 
 class CreateCurationJobRequest(ContractModel):
@@ -151,9 +150,7 @@ class CreateCurationJobRequest(ContractModel):
             self.source_revision_ids
         ):
             raise ValueError("source revision hashes must match selected revisions")
-        if (self.summary_outline_id is None) != (
-            self.summary_outline_sha256 is None
-        ):
+        if (self.summary_outline_id is None) != (self.summary_outline_sha256 is None):
             raise ValueError("summary outline ID and hash must be supplied together")
         return self
 
@@ -192,6 +189,7 @@ def _resolved_model_config(
     if value is None:
         return ResolvedModelConfiguration.legacy(provider, model)
     try:
+
         def stage(name: str) -> ResolvedStageModel:
             raw = value[name]
             if not isinstance(raw, dict):
@@ -206,10 +204,14 @@ def _resolved_model_config(
                     else None
                 ),
             )
+
         return ResolvedModelConfiguration(
-            profile=str(value["profile"]), ledger_s2=stage("ledger_s2"),
-            classify_s4=stage("classify_s4"), residual_s6=stage("residual_s6"),
-            gap_fill_s7=stage("gap_fill_s7"), residual_unlocked=bool(value.get("residual_unlocked", False)),
+            profile=str(value["profile"]),
+            ledger_s2=stage("ledger_s2"),
+            classify_s4=stage("classify_s4"),
+            residual_s6=stage("residual_s6"),
+            gap_fill_s7=stage("gap_fill_s7"),
+            residual_unlocked=bool(value.get("residual_unlocked", False)),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("resolved model configuration is invalid") from exc
@@ -425,7 +427,8 @@ Operation = Annotated[
 ]
 
 
-class _ActionEnvelopeBase(ContractModel):
+class _ActionEnvelopeBase(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
     envelope_id: UUID
     snapshot_id: Annotated[str, Field(min_length=1, max_length=200)]
     target_deck: Annotated[str, Field(min_length=1, max_length=1_000)]
@@ -458,9 +461,7 @@ class _ActionEnvelopeBase(ContractModel):
         if observed != sorted(observed):
             raise ValueError("envelope operations are out of order")
         if observed.count(4) != 1 or observed.count(5) != 1:
-            raise ValueError(
-                "envelope requires exactly one sync and one verify operation"
-            )
+            raise ValueError("envelope requires exactly one sync and one verify operation")
         touched_ids = set(self.touched_note_hashes)
         if self.expected_tag_hashes and set(self.expected_tag_hashes) != touched_ids:
             raise ValueError("expected tag hashes must match touched note IDs")
@@ -497,7 +498,11 @@ def parse_action_envelope(value: str | bytes | dict[str, Any]) -> ActionEnvelope
         raw = json.loads(value)
     else:
         raw = value
-    return ActionEnvelopeV2.model_validate(raw) if raw.get("contract_version") == 2 else ActionEnvelopeV1.model_validate(raw)
+    return (
+        ActionEnvelopeV2.model_validate(raw)
+        if raw.get("contract_version") == 2
+        else ActionEnvelopeV1.model_validate(raw)
+    )
 
 
 class OperationReceipt(ContractModel):

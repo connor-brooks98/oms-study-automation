@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -80,6 +79,10 @@ class ResolvedStageModel:
     def __post_init__(self) -> None:
         if not self.provider.strip() or not self.model.strip() or not self.thinking_mode.strip():
             raise ValueError("resolved stage model values cannot be blank")
+        if self.provider not in {"openai", "gemini", "anthropic", "openrouter"}:
+            raise ValueError("resolved stage model provider is unsupported")
+        if self.thinking_mode not in {"default", "enabled", "disabled"}:
+            raise ValueError("resolved stage model thinking mode is unsupported")
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,8 +105,21 @@ class ResolvedModelConfiguration:
 
     def canonical_document(self) -> dict[str, Any]:
         def stage(value: ResolvedStageModel) -> dict[str, Any]:
-            return {"provider": value.provider, "model": value.model, "thinking_mode": value.thinking_mode, "fixture_validation_signature": value.fixture_validation_signature}
-        return {"profile": self.profile, "ledger_s2": stage(self.ledger_s2), "classify_s4": stage(self.classify_s4), "residual_s6": stage(self.residual_s6), "gap_fill_s7": stage(self.gap_fill_s7), "residual_unlocked": self.residual_unlocked}
+            return {
+                "provider": value.provider,
+                "model": value.model,
+                "thinking_mode": value.thinking_mode,
+                "fixture_validation_signature": value.fixture_validation_signature,
+            }
+
+        return {
+            "profile": self.profile,
+            "ledger_s2": stage(self.ledger_s2),
+            "classify_s4": stage(self.classify_s4),
+            "residual_s6": stage(self.residual_s6),
+            "gap_fill_s7": stage(self.gap_fill_s7),
+            "residual_unlocked": self.residual_unlocked,
+        }
 
 
 class RetrievalPass(StrEnum):
@@ -276,8 +292,8 @@ class StageArtifact:
     relative_path: str
     input_sha256: str
     content_sha256: str
-    pipeline_contract_version: PipelineContractVersion = field(default=PipelineContractVersion.RETRIEVAL_V4, compare=False)
-    model_config_sha256: str = field(default="", compare=False)
+    pipeline_contract_version: PipelineContractVersion = PipelineContractVersion.RETRIEVAL_V4
+    model_config_sha256: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

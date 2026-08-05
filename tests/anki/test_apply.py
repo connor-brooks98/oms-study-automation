@@ -13,7 +13,11 @@ from oms_hub.anki.apply import (
     ApplyCoordinator,
     InMemoryApplyStore,
 )
-from oms_hub.anki.contracts import ActionEnvelope
+from oms_hub.anki.contracts import (
+    ActionEnvelope,
+    ActionEnvelopeV2,
+    canonical_payload_sha256,
+)
 from oms_hub.anki.domain import ApplyState, ReviewChangeSet, TagPatch
 from oms_hub.anki.envelope import CurrentCollectionNote, EnvelopeBuilder
 from oms_hub.anki.gaps import GapCardProposal
@@ -64,11 +68,7 @@ class FakeGateway:
     async def find_notes(self, query: str) -> list[int]:
         assert query.startswith("tag:")
         marker = query.removeprefix("tag:")
-        return [
-            note_id
-            for note_id, note in self.notes.items()
-            if marker in note["tags"]
-        ]
+        return [note_id for note_id, note in self.notes.items() if marker in note["tags"]]
 
     async def remove_tags(
         self,
@@ -154,10 +154,7 @@ class CrashOnceAfterResultStore(InMemoryApplyStore):
         result: dict[str, Any],
     ) -> None:
         super().complete_operation(envelope_id, operation_id, result)
-        if (
-            operation_id in self.operation_ids
-            and operation_id not in self.crashed
-        ):
+        if operation_id in self.operation_ids and operation_id not in self.crashed:
             self.crashed.add(operation_id)
             raise SimulatedProcessExit
 
@@ -201,10 +198,7 @@ def _current(gateway: FakeGateway) -> CurrentCollectionNote:
     raw = gateway.notes[42]
     return CurrentCollectionNote(
         note_id=42,
-        fields={
-            name: str(value["value"])
-            for name, value in raw["fields"].items()
-        },
+        fields={name: str(value["value"]) for name, value in raw["fields"].items()},
         tags=tuple(raw["tags"]),
     )
 
@@ -278,6 +272,34 @@ def test_leading_sync_failure_makes_zero_mutation_calls() -> None:
     asyncio.run(scenario())
 
 
+def test_v2_without_capability_fails_before_gateway_activity() -> None:
+    async def scenario() -> None:
+        gateway = FakeGateway()
+        v1 = _envelope(gateway)
+        payload = v1.model_dump()
+        payload.update(
+            {
+                "contract_version": 2,
+                "pipeline_contract_version": "card_centric_v1",
+                "model_config_sha256": "a" * 64,
+                "reconciliation_contract_version": "reconciliation-v1",
+                "review_revision": 1,
+                "overflow_acknowledgement_provenance": {"reviewer": "local"},
+            }
+        )
+        v2 = ActionEnvelopeV2.model_validate(payload)
+        v2 = v2.model_copy(update={"payload_sha256": canonical_payload_sha256(v2)})
+        store = InMemoryApplyStore((v2,))
+
+        result = await ApplyCoordinator(store, gateway).apply(v2.envelope_id)
+
+        assert result.state is ApplyState.FAILED_BEFORE_APPLY
+        assert gateway.sync_calls == 0
+        assert gateway.mutation_calls == []
+
+    asyncio.run(scenario())
+
+
 def test_tag_add_remove_and_read_back_verification_complete() -> None:
     async def scenario() -> None:
         gateway = FakeGateway()
@@ -334,9 +356,7 @@ def test_duplicate_rejected_generated_note_is_terminal_not_retryable() -> None:
         envelope = _envelope(gateway, generated=True)
         store = InMemoryApplyStore((envelope,))
 
-        result = await ApplyCoordinator(store, gateway).apply(
-            envelope.envelope_id
-        )
+        result = await ApplyCoordinator(store, gateway).apply(envelope.envelope_id)
 
         assert result.state is ApplyState.COMPLETE
         assert result.created_note_ids == ()
@@ -387,15 +407,11 @@ def test_trailing_sync_failure_is_classified_and_can_resume(
         first = await ApplyCoordinator(store, gateway).apply(envelope.envelope_id)
 
         assert first.state is expected_state
-        assert set(gateway.notes[42]["tags"]) == set(
-            envelope.expected_note_tags[42]
-        )
+        assert set(gateway.notes[42]["tags"]) == set(envelope.expected_note_tags[42])
         mutation_count = len(gateway.mutation_calls)
         gateway.sync_failures.clear()
 
-        resumed = await ApplyCoordinator(store, gateway).apply(
-            envelope.envelope_id
-        )
+        resumed = await ApplyCoordinator(store, gateway).apply(envelope.envelope_id)
 
         assert resumed.state is ApplyState.COMPLETE
         assert len(gateway.mutation_calls) == mutation_count
@@ -409,9 +425,7 @@ def test_partial_mutation_failure_records_local_changes_and_stops() -> None:
         gateway = FakeGateway()
         envelope = _envelope(gateway)
         store = InMemoryApplyStore((envelope,))
-        gateway.mutation_failures["add_tags"] = AnkiConnectActionError(
-            "tag rejected"
-        )
+        gateway.mutation_failures["add_tags"] = AnkiConnectActionError("tag rejected")
 
         result = await ApplyCoordinator(store, gateway).apply(envelope.envelope_id)
 
@@ -427,19 +441,13 @@ def test_restart_after_every_durable_operation_is_idempotent() -> None:
     async def scenario() -> None:
         gateway = FakeGateway()
         envelope = _envelope(gateway, generated=True)
-        operation_ids = {
-            operation.operation_id for operation in envelope.operations
-        }
+        operation_ids = {operation.operation_id for operation in envelope.operations}
         store = CrashOnceAfterResultStore(envelope, operation_ids)
 
         for _ in envelope.operations:
             with pytest.raises(SimulatedProcessExit):
-                await ApplyCoordinator(store, gateway).apply(
-                    envelope.envelope_id
-                )
-        result = await ApplyCoordinator(store, gateway).apply(
-            envelope.envelope_id
-        )
+                await ApplyCoordinator(store, gateway).apply(envelope.envelope_id)
+        result = await ApplyCoordinator(store, gateway).apply(envelope.envelope_id)
 
         assert result.state is ApplyState.COMPLETE
         assert gateway.mutation_calls.count("remove_tags") == 1
@@ -484,13 +492,9 @@ def test_verification_mismatch_reports_expected_and_actual_values() -> None:
 
         assert result.state is ApplyState.APPLY_PARTIAL
         tag_difference = next(
-            difference
-            for difference in result.differences
-            if difference["kind"] == "tags"
+            difference for difference in result.differences if difference["kind"] == "tags"
         )
-        assert tag_difference["expected"] == list(
-            envelope.expected_note_tags[42]
-        )
+        assert tag_difference["expected"] == list(envelope.expected_note_tags[42])
         assert "actual" in tag_difference
 
     asyncio.run(scenario())

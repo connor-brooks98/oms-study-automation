@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
@@ -22,9 +21,7 @@ from oms_hub.anki.envelope import field_hash
 from oms_hub.anki.runtime import AnkiPreflight
 from oms_hub.anki.tag_policy import tag_hash
 
-MutationOperation = (
-    RemoveTagsOperation | AddTagsOperation | AddNotesOperation
-)
+MutationOperation = RemoveTagsOperation | AddTagsOperation | AddNotesOperation
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,9 +115,7 @@ class InMemoryApplyStore:
     """Small durable-store analogue used by state-machine tests and local tools."""
 
     def __init__(self, envelopes: Sequence[ActionEnvelope] = ()) -> None:
-        self._envelopes = {
-            envelope.envelope_id: envelope for envelope in envelopes
-        }
+        self._envelopes = {envelope.envelope_id: envelope for envelope in envelopes}
         self._operations = {
             (envelope.envelope_id, operation.operation_id): ApplyOperationRecord(
                 state="pending",
@@ -129,9 +124,7 @@ class InMemoryApplyStore:
             for envelope in envelopes
             for operation in envelope.operations
         }
-        self._states = {
-            envelope.envelope_id: ApplyState.PENDING for envelope in envelopes
-        }
+        self._states = {envelope.envelope_id: ApplyState.PENDING for envelope in envelopes}
         self._summaries: dict[UUID, dict[str, Any]] = {}
 
     def put(self, envelope: ActionEnvelope) -> None:
@@ -140,9 +133,9 @@ class InMemoryApplyStore:
         self._envelopes[envelope.envelope_id] = envelope
         self._states[envelope.envelope_id] = ApplyState.PENDING
         for operation in envelope.operations:
-            self._operations[
-                (envelope.envelope_id, operation.operation_id)
-            ] = ApplyOperationRecord(state="pending", attempts=0)
+            self._operations[(envelope.envelope_id, operation.operation_id)] = ApplyOperationRecord(
+                state="pending", attempts=0
+            )
 
     def get_envelope(self, envelope_id: UUID) -> ActionEnvelope:
         try:
@@ -223,18 +216,22 @@ class ApplyCoordinator:
         gateway: ApplyGateway,
         *,
         runtime: ApplyRuntime | None = None,
+        supported_envelope_versions: frozenset[int] = frozenset({1}),
     ) -> None:
         self.store = store
         self.gateway = gateway
         self.runtime = runtime
+        self.supported_envelope_versions = supported_envelope_versions
 
     async def apply(self, envelope_id: UUID) -> ApplyResult:
         envelope = self.store.get_envelope(envelope_id)
-        if isinstance(envelope, ActionEnvelopeV2) and not self._supports_v2():
+        if isinstance(envelope, ActionEnvelopeV2) and 2 not in self.supported_envelope_versions:
             return self._finish(
                 envelope,
                 ApplyState.FAILED_BEFORE_APPLY,
-                safe_error="envelope contract v2 unsupported; upgrade required; no mutation performed",
+                safe_error=(
+                    "envelope contract v2 unsupported; upgrade required; no mutation performed"
+                ),
             )
         mutation_started = any(
             self.store.operation_record(
@@ -243,8 +240,7 @@ class ApplyCoordinator:
             ).attempts
             > 0
             for operation in envelope.operations
-            if operation.operation_type
-            in {"store_media", "remove_tags", "add_tags", "add_notes"}
+            if operation.operation_type in {"store_media", "remove_tags", "add_tags", "add_notes"}
         )
         if not mutation_started:
             preflight_error = await self._preflight()
@@ -318,18 +314,11 @@ class ApplyCoordinator:
 
         return self._finish(envelope, ApplyState.COMPLETE)
 
-    def _supports_v2(self) -> bool:
-        return True
-
     async def _preflight(self) -> str | None:
         if self.runtime is None:
             return None
         result = await self.runtime.ensure_running()
-        if (
-            not result.reachable
-            or not result.collection_accessible
-            or not result.sync_available
-        ):
+        if not result.reachable or not result.collection_accessible or not result.sync_available:
             return result.blocking_reason or "Anki preflight failed"
         return None
 
@@ -413,13 +402,10 @@ class ApplyCoordinator:
     ) -> bool:
         raw_notes = await self.gateway.notes_info(operation.note_ids)
         if len(raw_notes) != len(operation.note_ids):
-            raise AnkiConnectError(
-                "Anki did not return every note targeted by a tag operation"
-            )
+            raise AnkiConnectError("Anki did not return every note targeted by a tag operation")
         target = operation.tag.casefold()
         return all(
-            (target in {tag.casefold() for tag in _raw_tags(raw)})
-            is should_exist
+            (target in {tag.casefold() for tag in _raw_tags(raw)}) is should_exist
             for raw in raw_notes
         )
 
@@ -439,9 +425,7 @@ class ApplyCoordinator:
             marker = _generated_marker(note)
             matches = await self.gateway.find_notes(f"tag:{marker}")
             if len(matches) > 1:
-                raise AnkiConnectError(
-                    f"generated-note marker {marker} matched multiple notes"
-                )
+                raise AnkiConnectError(f"generated-note marker {marker} matched multiple notes")
             if matches:
                 resolved.append(matches[0])
             else:
@@ -449,15 +433,9 @@ class ApplyCoordinator:
                 missing_notes.append(note)
                 missing_positions.append(position)
         recovered_count = len(operation.notes) - len(missing_notes)
-        created = (
-            await self.gateway.add_notes(missing_notes)
-            if missing_notes
-            else []
-        )
+        created = await self.gateway.add_notes(missing_notes) if missing_notes else []
         if len(created) != len(missing_notes):
-            raise AnkiConnectError(
-                "Anki did not return one ID per generated note"
-            )
+            raise AnkiConnectError("Anki did not return one ID per generated note")
         for position, note_id in zip(missing_positions, created, strict=True):
             resolved[position] = note_id
         rejected_duplicates = tuple(
@@ -595,10 +573,7 @@ class ApplyCoordinator:
             actual_tags = _canonical_tags(_raw_tags(raw))
             if before_apply:
                 expected_tag_hash = envelope.expected_tag_hashes.get(note_id)
-                if (
-                    expected_tag_hash is not None
-                    and tag_hash(actual_tags) != expected_tag_hash
-                ):
+                if expected_tag_hash is not None and tag_hash(actual_tags) != expected_tag_hash:
                     differences.append(
                         {
                             "note_id": note_id,
@@ -610,10 +585,7 @@ class ApplyCoordinator:
                     )
             else:
                 expected_tags = envelope.expected_note_tags.get(note_id)
-                if (
-                    expected_tags is not None
-                    and _tag_keys(actual_tags) != _tag_keys(expected_tags)
-                ):
+                if expected_tags is not None and _tag_keys(actual_tags) != _tag_keys(expected_tags):
                     differences.append(
                         {
                             "note_id": note_id,
@@ -717,9 +689,7 @@ class ApplyCoordinator:
                 continue
             values = record.result.get("rejected_duplicates")
             if isinstance(values, list):
-                rejected.extend(
-                    value for value in values if isinstance(value, dict)
-                )
+                rejected.extend(value for value in values if isinstance(value, dict))
         return tuple(rejected)
 
     def _finish(
@@ -782,32 +752,22 @@ def _raw_fields(note: Mapping[str, Any]) -> dict[str, str]:
 
 def _raw_tags(note: Mapping[str, Any]) -> tuple[str, ...]:
     tags = note.get("tags")
-    if not isinstance(tags, list) or not all(
-        isinstance(tag, str) for tag in tags
-    ):
+    if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
         raise AnkiConnectError("Anki returned invalid note tags")
     return tuple(tags)
 
 
 def _note_tags(note: Mapping[str, Any]) -> tuple[str, ...]:
     tags = note.get("tags")
-    if not isinstance(tags, list) or not all(
-        isinstance(tag, str) for tag in tags
-    ):
+    if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
         raise AnkiConnectError("generated note has invalid tags")
     return tuple(tags)
 
 
 def _generated_marker(note: Mapping[str, Any]) -> str:
-    markers = [
-        tag
-        for tag in _note_tags(note)
-        if tag.startswith("OMS::Curation::Envelope_")
-    ]
+    markers = [tag for tag in _note_tags(note) if tag.startswith("OMS::Curation::Envelope_")]
     if len(markers) != 1:
-        raise AnkiConnectError(
-            "generated note does not have exactly one idempotency marker"
-        )
+        raise AnkiConnectError("generated note does not have exactly one idempotency marker")
     return markers[0]
 
 
