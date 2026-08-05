@@ -24,8 +24,43 @@ from oms_hub.anki.contracts import (
 )
 from oms_hub.anki.domain import AgentCommandType
 
-
-FROZEN_V1_ENVELOPE_JSON = """{"envelope_id":"5dc4f15e-df92-4a32-964e-026b5d518a80","snapshot_id":"snapshot-1","target_deck":"OMS::Heme::Lecture 3","target_tag":"AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_3","touched_note_hashes":{"42":"97636c3cafc9cf9287688c82824d94231eb3a87a68bb8451bfddc6d8b7608fbd"},"expected_tag_hashes":{"42":"45529c4c41f2019c65848f4115f2f50ad21216119b190635e2192f6c9d919e24"},"expected_note_tags":{"42":["#Pathoma::Hematology","AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_3","OMS::Reviewed"]},"operations":[{"contract_version":1,"operation_id":"2612a8bd-7b75-5ef2-8843-3523ac6a5387","content_sha256":"c9f2acc6003a24c549b6d1c282029ab4e67198629ba3efdbc6a26432606d0739","operation_type":"remove_tags","note_ids":[42],"tag":"OMS::Old"},{"contract_version":1,"operation_id":"b0bf9586-e33c-5064-b6af-a016398f085e","content_sha256":"427243f614a53e89f37d802af37bfeb4cfc306bde9255d7bf9aca4b1a754216f","operation_type":"add_tags","note_ids":[42],"tag":"AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_3"},{"contract_version":1,"operation_id":"795dfcdb-4fc3-50d5-9dfb-70a62cc04269","content_sha256":"aae2035592606788b6f40a38de6a04714f0acaa2f4981eab28938ed0b79945dc","operation_type":"add_tags","note_ids":[42],"tag":"OMS::Reviewed"},{"contract_version":1,"operation_id":"43f7dab4-db80-561f-bcf2-315e70e1abf6","content_sha256":"32a890eda9ec84baabbec9a2bb4052de23c5a3eae381e77f69caff8ffde9ca16","operation_type":"sync"},{"contract_version":1,"operation_id":"142c8a4a-8ca4-5e44-9c32-a01b9fdf6723","content_sha256":"135aa9f371f8e73d0d409ca65f84c4462d40a5850e75b479834fb028628006f9","operation_type":"verify","note_ids":[]}],"payload_sha256":"bfa5e4d0317dd2ef1c1d3117fd4aedae63d20866f86ffd79b43e5affd75010cd","contract_version":1}"""
+FROZEN_V1_ENVELOPE_JSON = (
+    "{\"envelope_id\":\"5dc4f15e-df92-4a32-964e-026b5d518a80\","
+    "\"snapshot_id\":\"snapshot-1\",\"target_deck\":\"OMS::Heme::Lecture 3\","
+    "\"target_tag\":\"AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_3\","
+    "\"touched_note_hashes\":{\"42\":"
+    "\"97636c3cafc9cf9287688c82824d94231eb3a87a68bb8451bfddc6d8b7608fbd\"},"
+    "\"expected_tag_hashes\":{\"42\":"
+    "\"45529c4c41f2019c65848f4115f2f50ad21216119b190635e2192f6c9d919e24\"},"
+    "\"expected_note_tags\":{\"42\":[\"#Pathoma::Hematology\","
+    "\"AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_3\",\"OMS::Reviewed\"]},"
+    "\"operations\":[{\"contract_version\":1,"
+    "\"operation_id\":\"2612a8bd-7b75-5ef2-8843-3523ac6a5387\","
+    "\"content_sha256\":"
+    "\"c9f2acc6003a24c549b6d1c282029ab4e67198629ba3efdbc6a26432606d0739\","
+    "\"operation_type\":\"remove_tags\",\"note_ids\":[42],\"tag\":\"OMS::Old\"},"
+    "{\"contract_version\":1,"
+    "\"operation_id\":\"b0bf9586-e33c-5064-b6af-a016398f085e\","
+    "\"content_sha256\":"
+    "\"427243f614a53e89f37d802af37bfeb4cfc306bde9255d7bf9aca4b1a754216f\","
+    "\"operation_type\":\"add_tags\",\"note_ids\":[42],"
+    "\"tag\":\"AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_3\"},{\"contract_version\":1,"
+    "\"operation_id\":\"795dfcdb-4fc3-50d5-9dfb-70a62cc04269\","
+    "\"content_sha256\":"
+    "\"aae2035592606788b6f40a38de6a04714f0acaa2f4981eab28938ed0b79945dc\","
+    "\"operation_type\":\"add_tags\",\"note_ids\":[42],\"tag\":\"OMS::Reviewed\"},"
+    "{\"contract_version\":1,"
+    "\"operation_id\":\"43f7dab4-db80-561f-bcf2-315e70e1abf6\","
+    "\"content_sha256\":"
+    "\"32a890eda9ec84baabbec9a2bb4052de23c5a3eae381e77f69caff8ffde9ca16\","
+    "\"operation_type\":\"sync\"},{\"contract_version\":1,"
+    "\"operation_id\":\"142c8a4a-8ca4-5e44-9c32-a01b9fdf6723\","
+    "\"content_sha256\":"
+    "\"135aa9f371f8e73d0d409ca65f84c4462d40a5850e75b479834fb028628006f9\","
+    "\"operation_type\":\"verify\",\"note_ids\":[]}],\"payload_sha256\":"
+    "\"bfa5e4d0317dd2ef1c1d3117fd4aedae63d20866f86ffd79b43e5affd75010cd\","
+    "\"contract_version\":1}"
+)
 FROZEN_V1_PAYLOAD_SHA256 = "bfa5e4d0317dd2ef1c1d3117fd4aedae63d20866f86ffd79b43e5affd75010cd"
 
 
