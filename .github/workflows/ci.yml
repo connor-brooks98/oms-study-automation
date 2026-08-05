@@ -27,6 +27,10 @@ jobs:
         run: mypy src
 
       - name: Pytest
+        env:
+          # GitHub's Linux runners do not provide an OS credential backend.
+          # Tests that exercise credentials inject their own in-memory store.
+          PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
         run: pytest -q -m "not windows_office"
 
   javascript:
