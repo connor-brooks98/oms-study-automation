@@ -76,6 +76,15 @@ def library_styles() -> FileResponse:
     )
 
 
+@router.get("/assets/tokens.css", include_in_schema=False)
+def design_tokens() -> FileResponse:
+    return FileResponse(
+        _STATIC_ROOT / "tokens.css",
+        media_type="text/css",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
 def _repository(request: Request) -> GenerationRepository:
     return cast(
         GenerationRepository,
@@ -213,6 +222,8 @@ def quiz_content(request: Request, token: str) -> JSONResponse:
         media.image_key: (
             f"/public/quizzes/{published.token}/media/{media.image_key}",
             media.alt_text,
+            media.width,
+            media.height,
         )
         for media in _repository(request).published_quiz_media(published.token)
     }

@@ -11,7 +11,6 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.14"
 dependencies = [
   "fastapi>=0.115,<1",
-  "fastembed>=0.7,<1",
   "httpx>=0.28,<1",
   "jinja2>=3.1,<4",
   "keyring>=25,<26",
@@ -69,6 +68,9 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -206,6 +206,7 @@
     const course = page.querySelector("[data-studio-course]");
     const exam = page.querySelector("[data-studio-exam]");
     const list = page.querySelector("[data-source-list]");
+    const sourceStatus = page.querySelector("[data-source-status]");
     const picker = page.querySelector("[data-source-picker]");
     const sourceFilter = page.querySelector("[data-source-filter]");
     const selectAllButton = page.querySelector("[data-select-all-sources]");
@@ -243,6 +244,7 @@
           loadJson(`/studio/runs?${query}`),
         ]);
         if (pollStatus) pollStatus.textContent = "";
+        if (sourceStatus) sourceStatus.textContent = "";
         pollDelayMs = basePollDelayMs;
         const activeSources = renderSources(documentRef, list, sourcePayload.sources || []);
         renderSourcePicker(documentRef, picker, sourcePayload.sources || []);
@@ -267,7 +269,16 @@
       picker.textContent = "Select a source course and exam first.";
       runList.textContent = "Select a source course and exam to view runs.";
     });
-    exam.addEventListener("change", refresh);
+    exam.addEventListener("change", () => {
+      if (exam.value) {
+        list.textContent = "";
+        const loading = documentRef.createElement("li");
+        loading.textContent = "Loading sources…";
+        list.append(loading);
+        if (sourceStatus) sourceStatus.textContent = "Loading sources…";
+      }
+      refresh();
+    });
     destinationCourse.addEventListener("change", () => {
       populateExams(documentRef, destinationCourse, destinationExam);
     });
@@ -405,7 +416,12 @@
         if (!response.ok) throw new Error(payload.detail || "Studio action could not be completed.");
         await refresh();
       } catch (error) {
-        runList.textContent = error instanceof Error ? error.message : "Studio action could not be completed.";
+        const detail = error instanceof Error ? error.message : "Studio action could not be completed.";
+        if (deleteButton) {
+          if (sourceStatus) sourceStatus.textContent = detail;
+        } else {
+          runList.textContent = detail;
+        }
       } finally {
         target.disabled = false;
       }

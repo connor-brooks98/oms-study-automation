@@ -324,7 +324,9 @@ def _resolved_review(request: Request, run_id: str) -> StudioQuizReview:
     return review
 
 
-def _preview_image_urls(review: StudioQuizReview) -> dict[str, tuple[str, str]]:
+def _preview_image_urls(
+    review: StudioQuizReview,
+) -> dict[str, tuple[str, str, int | None, int | None]]:
     active_keys = {
         requirement.key
         for requirement in image_requirements(
@@ -335,6 +337,8 @@ def _preview_image_urls(review: StudioQuizReview) -> dict[str, tuple[str, str]]:
         requirement.image_key: (
             f"/studio/runs/{review.run.id}/preview/media/{requirement.image_key}",
             requirement.description,
+            requirement.image.width if requirement.image is not None else None,
+            requirement.image.height if requirement.image is not None else None,
         )
         for requirement in review.requirements
         if requirement.image_key in active_keys and requirement.image is not None

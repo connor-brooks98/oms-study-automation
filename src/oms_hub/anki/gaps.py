@@ -183,7 +183,10 @@ class V2GapGenerationRequest:
             raise ValueError(
                 "V2 gap generation existing support note IDs must be unique"
             )
-        if any(not fact.fact_id.startswith(f"{self.concept.concept_id}-M") for fact in self.missing_facts):
+        if any(
+            not fact.fact_id.startswith(f"{self.concept.concept_id}-M")
+            for fact in self.missing_facts
+        ):
             raise ValueError("V2 gap generation facts must belong to the concept")
 
 

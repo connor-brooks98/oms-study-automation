@@ -327,7 +327,8 @@ def test_pass_three_expands_and_judges_when_growth_remains_high() -> None:
     assert "Iron deficiency first causes" in structured.inputs[0]
     assert product.usage is not None
     assert product.usage.input_tokens == 40
-    assert passage.source_id in product.payload["judgments"]["C01"]["judgment"]["missing_facts"][0]["passage_ids"]
+    missing_fact = product.payload["judgments"]["C01"]["judgment"]["missing_facts"][0]
+    assert passage.source_id in missing_fact["passage_ids"]
 
 
 def test_later_pass_skips_concepts_already_converged() -> None:

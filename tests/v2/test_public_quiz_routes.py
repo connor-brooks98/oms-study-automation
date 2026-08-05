@@ -158,6 +158,7 @@ def test_public_quiz_assets_are_served_inside_the_bypass_path(tmp_path):
         styles = client.get("/public/quizzes/assets/player.css")
         library_script = client.get("/public/quizzes/assets/library.js")
         library_styles = client.get("/public/quizzes/assets/library.css")
+        tokens = client.get("/public/quizzes/assets/tokens.css")
 
     assert script.status_code == 200
     assert script.headers["content-type"].startswith("text/javascript")
@@ -165,6 +166,8 @@ def test_public_quiz_assets_are_served_inside_the_bypass_path(tmp_path):
     assert styles.headers["content-type"].startswith("text/css")
     assert library_script.status_code == 200
     assert library_styles.status_code == 200
+    assert tokens.status_code == 200
+    assert tokens.headers["content-type"].startswith("text/css")
 
 
 def test_answer_feedback_is_limited_to_the_requested_question(tmp_path):

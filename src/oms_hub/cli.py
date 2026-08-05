@@ -31,6 +31,7 @@ from oms_hub.security.secret_store import (
 )
 from oms_hub.tracker_import import TrackerImporter
 from oms_hub.transcripts.prompt import PromptLoader
+from oms_hub.workers import SyncWorker
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +51,10 @@ def import_tracker(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_worker(stop: threading.Event, worker: object) -> None:
+def _run_worker(stop: threading.Event, worker: SyncWorker) -> None:
     while not stop.is_set():
         try:
-            worker.run_once()  # type: ignore[attr-defined]
+            worker.run_once()
         except Exception:
             logger.exception("V2 ingestion worker failed")
         stop.wait(5)
@@ -225,6 +226,8 @@ def _anki_index_query(args: argparse.Namespace) -> str:
 def prompt_initialize(args: argparse.Namespace) -> int:
     del args
     settings = Settings()
+    if settings.transcript_prompt_path is None:
+        raise SystemExit("OMS_HUB_TRANSCRIPT_PROMPT_PATH is required")
     path = PromptLoader(
         expanded_path(settings.transcript_prompt_path),
         None,
@@ -236,6 +239,8 @@ def prompt_initialize(args: argparse.Namespace) -> int:
 def prompt_fingerprint(args: argparse.Namespace) -> int:
     del args
     settings = Settings()
+    if settings.transcript_prompt_path is None:
+        raise SystemExit("OMS_HUB_TRANSCRIPT_PROMPT_PATH is required")
     prompt = PromptLoader(
         expanded_path(settings.transcript_prompt_path),
         None,
@@ -247,6 +252,8 @@ def prompt_fingerprint(args: argparse.Namespace) -> int:
 def validate_config(args: argparse.Namespace) -> int:
     del args
     settings = Settings()
+    if settings.transcript_prompt_path is None:
+        raise SystemExit("OMS_HUB_TRANSCRIPT_PROMPT_PATH is required")
     required_paths = {
         "study root": expanded_path(settings.study_root),
         "transcript prompt": expanded_path(settings.transcript_prompt_path),

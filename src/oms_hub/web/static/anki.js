@@ -650,8 +650,12 @@
     const refresh = documentRef.querySelector("[data-refresh-jobs]");
     refresh?.addEventListener("click", async () => {
       refresh.disabled = true;
+      const message = documentRef.querySelector("#anki-jobs-message");
       try {
         await refreshJobs(documentRef, fetchImpl);
+        if (message) message.textContent = "";
+      } catch (error) {
+        if (message) message.textContent = error.message;
       } finally {
         refresh.disabled = false;
       }
@@ -1151,19 +1155,6 @@
     documentRef.querySelector("#anki-review-content").hidden = false;
     const page = documentRef.querySelector("[data-anki-review]");
     page.dataset.reviewView = "final";
-    documentRef.querySelectorAll("[data-review-view]").forEach((button) => {
-      button.addEventListener("click", () => {
-        page.dataset.reviewView = button.dataset.reviewView;
-        documentRef.querySelectorAll("[data-review-view]").forEach((item) => {
-          item.classList.toggle("is-active", item === button);
-        });
-        applyReviewFilters(documentRef);
-      });
-    });
-    documentRef.querySelector("[data-review-search]")?.addEventListener(
-      "input",
-      () => applyReviewFilters(documentRef),
-    );
     documentRef.querySelectorAll(
       "[data-candidate-selection], [data-gap-selection]",
     ).forEach((input) => {
@@ -1334,6 +1325,25 @@
       });
     }
 
+    if (page.dataset.reviewListenersBound !== "true") {
+      page.dataset.reviewListenersBound = "true";
+      documentRef.querySelectorAll("[data-review-view]").forEach((button) => {
+        button.addEventListener("click", () => {
+          page.dataset.reviewView = button.dataset.reviewView;
+          documentRef.querySelectorAll("[data-review-view]").forEach((item) => {
+            const active = item === button;
+            item.classList.toggle("is-active", active);
+            item.setAttribute("aria-pressed", String(active));
+          });
+          applyReviewFilters(documentRef);
+        });
+      });
+      documentRef.querySelector("[data-review-search]")?.addEventListener(
+        "input",
+        () => applyReviewFilters(documentRef),
+      );
+    }
+
     const basePollDelayMs = 2500;
     const maxPollDelayMs = 30000;
     let pollDelayMs = basePollDelayMs;
@@ -1458,10 +1468,14 @@
     documentRef.querySelector("[data-confirm-apply]")
       ?.addEventListener("click", async (event) => {
         const button = event.currentTarget;
+        const statusNode = dialog.querySelector("[data-dialog-status]");
         const errorNode = dialog.querySelector("[data-dialog-error]");
         button.disabled = true;
-        errorNode.textContent =
-          "Syncing first, then applying the frozen plan…";
+        if (errorNode) errorNode.textContent = "";
+        if (statusNode) {
+          statusNode.textContent =
+            "Syncing first, then applying the frozen plan…";
+        }
         try {
           const result = await requestJson(
             documentRef,
@@ -1478,9 +1492,12 @@
           );
           dialogConfirmed = true;
           dialog.close();
+          if (statusNode) statusNode.textContent = "";
           showRecovery(documentRef, result.recovery, result.apply_state);
           message.textContent = result.recovery.message;
+          await refreshJob().catch(handlePollError);
         } catch (error) {
+          if (statusNode) statusNode.textContent = "";
           errorNode.textContent = error.message;
           button.disabled = false;
         }

@@ -25,6 +25,8 @@ def test_anki_settings_default_to_disabled_and_data_directory_child(
     assert settings.anki_semantic_dimensions == 1024
     assert settings.anki_semantic_min_coverage == 0.995
     assert settings.anki_connect_url == "http://127.0.0.1:8765"
+    assert settings.dashboard_port == 8787
+    assert settings.transcript_prompt_path is None
 
 
 def test_voyage_key_reads_standard_environment_variable(
@@ -59,7 +61,7 @@ def test_explicit_anki_data_directory_and_tailnet_hostname_are_normalized(
         ("anki_agent_token_key", "token with spaces"),
         ("anki_focused_retrieval_limit", 0),
         ("anki_global_retrieval_limit", 0),
-        ("anki_image_medium_estimate_usd", -0.01),
+        ("anki_worker_max_stage_attempts", 0),
     ],
 )
 def test_anki_settings_reject_unsafe_values(field: str, value: object) -> None:

@@ -325,7 +325,7 @@ def image_requirements(quiz: NativeQuiz) -> tuple[QuizImageRef, ...]:
 
 def public_quiz_content(
     quiz: NativeQuiz,
-    image_urls: Mapping[str, tuple[str, str]] | None = None,
+    image_urls: Mapping[str, tuple[str, str, int | None, int | None]] | None = None,
 ) -> dict[str, object]:
     questions: list[dict[str, object]] = []
     for question in quiz.questions:
@@ -340,7 +340,12 @@ def public_quiz_content(
         if question.image_ref is not None and image_urls is not None:
             media = image_urls.get(question.image_ref.key)
             if media is not None:
-                item["image_url"], item["image_alt"] = media
+                image_url, image_alt, image_width, image_height = media
+                item["image_url"] = image_url
+                item["image_alt"] = image_alt
+                if image_width is not None and image_height is not None:
+                    item["image_width"] = image_width
+                    item["image_height"] = image_height
         for field_name in ("area", "learning_objective", "topic"):
             value = getattr(question, field_name)
             if value is not None:

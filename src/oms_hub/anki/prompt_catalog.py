@@ -133,7 +133,11 @@ class AnkiPromptCatalogService:
             schema = prompt.metadata.schema_name or ""
             role = _SCHEMA_ROLES.get(schema)
             if role is None:
-                issues.append(PromptCatalogIssue(path, f"Unsupported prompt schema {schema or '(missing)'}"))
+                issues.append(
+                    PromptCatalogIssue(
+                        path, f"Unsupported prompt schema {schema or '(missing)'}"
+                    )
+                )
                 continue
             choices[role].append(_choice(prompt))
         return PromptCatalog(

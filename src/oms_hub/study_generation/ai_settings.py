@@ -40,7 +40,10 @@ class StudyAISettingsRepository:
 
     def _ensure_defaults(self) -> None:
         with self.database.session() as session:
-            if session.scalar(select(StudyAISettingModel.id).where(StudyAISettingModel.id == 1)) is None:
+            existing = session.scalar(
+                select(StudyAISettingModel.id).where(StudyAISettingModel.id == 1)
+            )
+            if existing is None:
                 session.add(StudyAISettingModel(id=1))
 
     @staticmethod

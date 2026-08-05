@@ -133,6 +133,38 @@ def test_await_image_review_reentry_preserves_published_asset(
     assert image.path.is_file()
 
 
+def test_list_runs_batches_source_lookups_without_mixing_runs(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    first = _queued_run(repository, label="First Quiz")
+    second = _queued_run(repository, label="Second Quiz")
+
+    runs = {run.id: run for run in repository.list_runs("Neuro", 1)}
+
+    assert set(runs) == {first.id, second.id}
+    assert [source.source_id for source in runs[first.id].sources] == [
+        source.source_id for source in first.sources
+    ]
+    assert [source.source_id for source in runs[second.id].sources] == [
+        source.source_id for source in second.sources
+    ]
+    # Each run was created with its own freshly-created source, so a
+    # regression that mixed the batched sources across runs would surface
+    # here as identical (or empty) source lists.
+    assert runs[first.id].sources[0].source_id != runs[second.id].sources[0].source_id
+
+
+def test_list_runs_honors_limit(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _queued_run(repository, label="First Quiz")
+    _queued_run(repository, label="Second Quiz")
+    _queued_run(repository, label="Third Quiz")
+
+    assert len(repository.list_runs("Neuro", 1, limit=2)) == 2
+    assert len(repository.list_runs("Neuro", 1, limit=50)) == 3
+
+
 def test_queue_run_rejects_conflicting_active_label_past_the_precheck(
     tmp_path: Path,
 ) -> None:

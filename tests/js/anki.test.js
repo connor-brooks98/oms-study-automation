@@ -610,6 +610,10 @@ class FakeReviewDocument {
   querySelector(selector) {
     return this.registry[selector] || null;
   }
+
+  querySelectorAll(selector) {
+    return this.registry[`${selector}[]`] || [];
+  }
 }
 
 const buildReviewDom = () => {
@@ -618,7 +622,9 @@ const buildReviewDom = () => {
   const message = new FakeReviewElement("p");
   const dialog = new FakeReviewElement("dialog");
   const dialogError = new FakeReviewElement("p");
+  const dialogStatus = new FakeReviewElement("p");
   dialog._children["[data-dialog-error]"] = dialogError;
+  dialog._children["[data-dialog-status]"] = dialogStatus;
   const saveButton = new FakeReviewElement("button");
   const buildButton = new FakeReviewElement("button");
   const confirmButton = new FakeReviewElement("button");
@@ -646,6 +652,7 @@ const buildReviewDom = () => {
     documentRef: new FakeReviewDocument(registry),
     dialog,
     dialogError,
+    dialogStatus,
     saveButton,
     buildButton,
     confirmButton,
@@ -681,6 +688,40 @@ test("closing the apply dialog without confirming re-enables save/build-envelope
 
   assert.equal(saveButton.disabled, false);
   assert.equal(buildButton.disabled, false);
+});
+
+test("confirm-apply writes progress to the status node and errors to the alert node", async () => {
+  const { documentRef, dialogError, dialogStatus, confirmButton } =
+    buildReviewDom();
+  const fetchImpl = async (url) => {
+    if (String(url).endsWith("/apply")) {
+      return {
+        ok: false,
+        async json() {
+          return { detail: "Apply was rejected." };
+        },
+      };
+    }
+    throw new Error("not needed for this test");
+  };
+
+  anki.initializeReview(documentRef, fetchImpl);
+  await flushMicrotasks();
+
+  const [confirmHandler] = confirmButton._listeners.click;
+  const handlerPromise = confirmHandler({ currentTarget: confirmButton });
+  // Immediately after the click, before the failing fetch resolves, the
+  // status node (not the alert node) should carry the in-progress copy.
+  assert.match(dialogStatus.textContent, /Syncing/);
+  assert.equal(dialogError.textContent, "");
+
+  await handlerPromise;
+
+  // Once the request fails, the status line is cleared and the error goes
+  // to the dedicated alert node instead.
+  assert.equal(dialogStatus.textContent, "");
+  assert.equal(dialogError.textContent, "Apply was rejected.");
+  assert.equal(confirmButton.disabled, false);
 });
 
 test("closing the apply dialog after a successful confirm leaves the buttons disabled", async () => {

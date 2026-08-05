@@ -51,7 +51,8 @@
   </div>
   <section class="card studio-status">
     <h2>Sources</h2>
-    <ul data-source-list aria-live="polite">
+    <p data-source-status class="field-message" role="status" aria-live="polite"></p>
+    <ul data-source-list>
       <li>Select a course and exam to view sources.</li>
     </ul>
   </section>
@@ -89,7 +90,7 @@
       <p data-run-message aria-live="polite"></p>
     </form>
   </section>
-  <section class="card studio-image-drop" data-image-dropzone tabindex="0" aria-label="Drop an image source here">
+  <section class="card studio-image-drop" data-image-dropzone tabindex="0" role="button" aria-label="Drop an image source here">
     <h2>Drop an image from Google Images</h2>
     <p>Drag an image onto this area. Study Hub uploads it directly as a NotebookLM source; you do not need to save it first.</p>
     <p data-image-drop-message aria-live="polite">Select a course and exam before dropping an image.</p>

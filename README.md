@@ -22,6 +22,15 @@ Copy-Item .env.example .env
 .\.venv\Scripts\oms-hub.exe serve
 ```
 
+Before sending a change, run the same checks CI runs:
+
+```powershell
+.\.venv\Scripts\mypy
+.\.venv\Scripts\ruff check src tests scripts
+.\.venv\Scripts\pytest -q
+node --test tests/js
+```
+
 Open the loopback URL configured by `OMS_HUB_DASHBOARD_PORT`. The example
 configuration uses `http://127.0.0.1:8787` so local AnkiConnect can keep its
 standard loopback port, `8765`. Upload the tracker on Settings, then use the

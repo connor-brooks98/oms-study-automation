@@ -577,6 +577,7 @@
         );
         const track = element(documentRef, "div", "quiz-progress");
         track.setAttribute("role", "progressbar");
+        track.setAttribute("aria-label", "Quiz progress");
         track.setAttribute("aria-valuemin", "0");
         track.setAttribute("aria-valuemax", String(content.questions.length));
         track.setAttribute("aria-valuenow", String(state.currentIndex + 1));
@@ -606,6 +607,10 @@
           image.src = question.image_url;
           image.alt = question.image_alt || "Question source image";
           image.loading = "lazy";
+          if (question.image_width && question.image_height) {
+            image.width = question.image_width;
+            image.height = question.image_height;
+          }
           figure.append(image);
           body.append(figure);
         }
@@ -779,15 +784,13 @@
         }
         body.append(answers);
 
+        const feedback = element(documentRef, "section", "quiz-feedback");
+        feedback.setAttribute("role", "status");
+        feedback.setAttribute("aria-live", "polite");
         if (questionProgress.submitted) {
-          const feedback = element(
-            documentRef,
-            "section",
-            questionProgress.feedback.correct
-              ? "quiz-feedback is-correct"
-              : "quiz-feedback is-incorrect",
+          feedback.classList.add(
+            questionProgress.feedback.correct ? "is-correct" : "is-incorrect",
           );
-          feedback.setAttribute("aria-live", "polite");
           feedback.append(
             element(
               documentRef,
@@ -810,8 +813,12 @@
               questionProgress.feedback.rationale,
             ),
           );
-          body.append(feedback);
         } else {
+          feedback.hidden = true;
+        }
+        body.append(feedback);
+
+        if (!questionProgress.submitted) {
           body.append(
             element(
               documentRef,
@@ -833,14 +840,14 @@
             submit.disabled = true;
             submit.textContent = "Checking…";
             try {
-              const feedback = await answerRequest(
+              const feedbackResult = await answerRequest(
                 fetchImpl,
                 app.dataset.answerUrl,
                 question.id,
                 questionProgress.selectedChoiceId,
                 csrfToken(documentRef),
               );
-              state = recordFeedback(state, question.id, feedback);
+              state = recordFeedback(state, question.id, feedbackResult);
               persist();
               render();
             } catch (error) {

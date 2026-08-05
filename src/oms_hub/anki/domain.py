@@ -89,26 +89,11 @@ class SourceKind(StrEnum):
     SUMMARY = "summary"
 
 
-class Verdict(StrEnum):
-    INCLUDE = "include"
-    UNCERTAIN = "uncertain"
-    DROP = "drop"
-
-
 class AgentCommandType(StrEnum):
     FULL_SNAPSHOT = "full_snapshot"
     DELTA_SNAPSHOT = "delta_snapshot"
     FETCH_MEDIA = "fetch_media"
     APPLY_ENVELOPE = "apply_envelope"
-
-
-class EnvelopeOperationType(StrEnum):
-    STORE_MEDIA = "store_media"
-    ADD_TAGS = "add_tags"
-    REMOVE_TAGS = "remove_tags"
-    ADD_NOTES = "add_notes"
-    SYNC = "sync"
-    VERIFY = "verify"
 
 
 @dataclass(frozen=True, slots=True)

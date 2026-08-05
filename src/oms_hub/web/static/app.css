@@ -1168,7 +1168,7 @@ textarea {
 }
 .anki-apply-dialog form { padding: 1.4rem 1.5rem; }
 .anki-apply-dialog h2 { font-size: 1.2rem; }
-.anki-apply-dialog form > p:not(.eyebrow, .anki-dialog-error) {
+.anki-apply-dialog form > p:not(.eyebrow, .anki-dialog-error, .anki-dialog-status) {
   margin: .55rem 0;
   color: var(--text-2);
   font-size: .82rem;
@@ -1205,6 +1205,11 @@ textarea {
   min-height: 1.1rem;
   margin: .5rem 0;
   color: var(--failed);
+  font-size: .74rem;
+}
+.anki-dialog-status {
+  min-height: 1.1rem;
+  margin: .5rem 0;
   font-size: .74rem;
 }
 .anki-dialog-actions { justify-content: flex-end; margin-top: .6rem; }
@@ -1557,6 +1562,66 @@ code { overflow-wrap: anywhere; }
 .studio-image-drop.is-dragging,
 .studio-image-drop:focus-visible { border-color: var(--brand-mid); background: var(--brand-tint); }
 .muted { color: var(--text-3); font-size: .75rem; }
+
+.checkbox-inline {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  color: var(--text-2);
+  font-size: .8rem;
+  font-weight: 500;
+}
+.checkbox-inline input[type="checkbox"] { width: auto; min-height: 0; }
+
+.studio-image-message { margin-bottom: .8rem; }
+.studio-image-requirements { display: grid; gap: 1rem; }
+.studio-image-empty { color: var(--text-2); }
+.studio-image-load-error { display: grid; gap: .6rem; justify-items: start; }
+.studio-image-card { padding: 1.1rem 1.3rem; margin-bottom: 0; }
+.studio-image-source,
+.studio-image-locator,
+.studio-image-description { margin: .2rem 0; color: var(--text-2); font-size: .82rem; }
+.studio-image-upload-status { margin: .6rem 0; font-weight: 600; font-size: .82rem; }
+.studio-image-upload {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .6rem;
+  margin: .6rem 0;
+}
+.studio-image-upload input[type="file"] { width: auto; min-height: 0; }
+.studio-preview-link { display: inline-flex; margin-bottom: 1rem; }
+.studio-image-question-list {
+  display: grid;
+  gap: .5rem;
+  margin: .8rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.studio-image-question-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  padding: .55rem .75rem;
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+  background: var(--surface);
+}
+.studio-image-question-list li.is-overridden {
+  border-color: oklch(.7 .1 70);
+  background: oklch(.97 .03 80);
+}
+.studio-image-question-list li.is-overridden::after {
+  content: "Skipped";
+  flex: none;
+  padding: .2rem .5rem;
+  border-radius: 999px;
+  color: oklch(.4 .1 70);
+  background: oklch(.93 .05 80);
+  font: 600 .64rem/1 "IBM Plex Mono", monospace;
+  text-transform: uppercase;
+}
 
 @media (max-width: 720px) {
   .utility-nav { padding-inline: 1rem; }

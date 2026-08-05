@@ -198,7 +198,12 @@ def _select_candidate(
 ) -> _ExtractedImage | None:
     if not candidates:
         return None
-    numbers = [int(value) for value in re.findall(r"(?:page|slide|p\.?)[^0-9]{0,4}(\d+)", locator.casefold())]
+    numbers = [
+        int(value)
+        for value in re.findall(
+            r"(?:page|slide|p\.?)[^0-9]{0,4}(\d+)", locator.casefold()
+        )
+    ]
     if numbers:
         matches = tuple(
             candidate

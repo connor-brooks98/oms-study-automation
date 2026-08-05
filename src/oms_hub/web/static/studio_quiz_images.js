@@ -99,6 +99,21 @@
     }
   };
 
+  const renderLoadError = (documentRef, container, message, onRetry) => {
+    container.replaceChildren();
+    const wrap = documentRef.createElement("div");
+    wrap.className = "studio-image-load-error";
+    wrap.append(textNode(documentRef, "p", "studio-image-empty", message));
+    const retry = documentRef.createElement("button");
+    retry.type = "button";
+    retry.className = "button secondary compact";
+    retry.dataset.retryImageReview = "true";
+    retry.textContent = "Retry";
+    retry.addEventListener("click", onRetry);
+    wrap.append(retry);
+    container.append(wrap);
+  };
+
   const initialize = (documentRef, fetchImpl = root.fetch.bind(root)) => {
     const page = documentRef.querySelector("[data-image-review-page]");
     if (!page) return;
@@ -126,6 +141,8 @@
       const body = new FormData();
       body.append("file", file);
       const token = csrf(documentRef);
+      const uploadButton = form.querySelector("button[type=submit]");
+      if (uploadButton) uploadButton.disabled = true;
       try {
         const response = await fetchImpl(
           `/studio/runs/${encodeURIComponent(runId)}/images/${encodeURIComponent(form.dataset.uploadKey)}`,
@@ -137,6 +154,7 @@
         await refresh();
       } catch (error) {
         message.textContent = error instanceof Error ? error.message : "Image could not be uploaded.";
+        if (uploadButton) uploadButton.disabled = false;
       }
     });
 
@@ -162,12 +180,17 @@
       }
     });
 
-    refresh().catch((error) => {
-      message.textContent = error instanceof Error ? error.message : "Image review could not be loaded.";
-    });
+    const loadInitial = () => {
+      refresh().catch((error) => {
+        const detail = error instanceof Error ? error.message : "Image review could not be loaded.";
+        message.textContent = detail;
+        renderLoadError(documentRef, container, detail, loadInitial);
+      });
+    };
+    loadInitial();
   };
 
-  const api = { initialize, renderReview };
+  const api = { initialize, renderReview, renderLoadError };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) {
     root.document.addEventListener(

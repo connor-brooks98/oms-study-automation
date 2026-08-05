@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///C:/ProgramData/OMSStudyHub/hub.db"
     timezone: str = "America/New_York"
     dashboard_host: str = "127.0.0.1"
-    dashboard_port: int = Field(default=8765, ge=1024, le=65535)
+    dashboard_port: int = Field(default=8787, ge=1024, le=65535)
     public_hostname: str | None = None
     cloudflare_access_issuer: str | None = None
     cloudflare_access_audience: str | None = None
@@ -56,9 +56,7 @@ class Settings(BaseSettings):
         ge=1,
     )
     upload_session_hours: int = Field(default=24, ge=1, le=168)
-    transcript_prompt_path: Path = Path(
-        r"C:\Users\conbr\Documents\Main Vault\Anki AI Prompts\Transcript Cleaning.md"
-    )
+    transcript_prompt_path: Path | None = None
     transcript_prompt_sha256: str | None = Field(
         default=None,
         pattern=r"^[0-9a-f]{64}$",
@@ -68,33 +66,21 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5.2"
     openai_input_usd_per_million: float = Field(default=2.50, ge=0)
     openai_output_usd_per_million: float = Field(default=15.00, ge=0)
-    generation_timeout_seconds: int = Field(default=180, ge=30, le=600)
     anki_enabled: bool = False
     anki_data_dir: Path | None = None
     anki_agent_hostname: str | None = None
     anki_agent_token_key: str = "anki-agent-token"
-    anki_agent_heartbeat_max_age_seconds: int = Field(
-        default=24 * 60 * 60,
-        ge=60,
-        le=30 * 24 * 60 * 60,
-    )
     anki_agent_max_request_bytes: int = Field(
         default=100 * 1024 * 1024,
         ge=256,
         le=500 * 1024 * 1024,
     )
-    anki_snapshot_max_age_hours: int = Field(default=48, ge=1, le=24 * 30)
     anki_worker_poll_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
     anki_worker_lease_seconds: int = Field(default=120, ge=3, le=3_600)
     anki_worker_max_stage_attempts: int = Field(default=3, ge=1, le=10)
     anki_prompt_directory: Path | None = None
     anki_prompt_git_sync: bool = False
     anki_prompt_git_timeout_seconds: int = Field(default=30, ge=1, le=300)
-    anki_embedding_model: str = Field(
-        default="BAAI/bge-small-en-v1.5",
-        min_length=1,
-        max_length=200,
-    )
     anki_focused_retrieval_limit: int = Field(default=200, ge=1, le=5_000)
     anki_global_retrieval_limit: int = Field(default=50, ge=1, le=1_000)
     anki_semantic_model: str = Field(
@@ -120,9 +106,6 @@ class Settings(BaseSettings):
     anki_executable_path: Path = Path(r"C:\Program Files\Anki\anki.exe")
     anki_startup_attempts: int = Field(default=20, ge=1, le=120)
     anki_startup_poll_seconds: float = Field(default=1.0, gt=0, le=30.0)
-    anki_image_low_estimate_usd: float = Field(default=0.0, ge=0)
-    anki_image_medium_estimate_usd: float = Field(default=0.0, ge=0)
-    anki_image_high_estimate_usd: float = Field(default=0.0, ge=0)
 
     @property
     def resolved_anki_data_dir(self) -> Path:

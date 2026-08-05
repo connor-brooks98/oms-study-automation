@@ -63,6 +63,19 @@ button:disabled { cursor: not-allowed; }
   border-bottom: 1px solid var(--quiz-border);
 }
 
+.studio-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .75rem;
+  padding: 1rem 1.2rem;
+  margin-bottom: 1.2rem;
+  border: 1px solid var(--quiz-border);
+  border-radius: .75rem;
+  background: var(--quiz-card);
+}
+.studio-preview-actions p { margin: 0; }
+
 .quiz-meta {
   display: flex;
   align-items: center;

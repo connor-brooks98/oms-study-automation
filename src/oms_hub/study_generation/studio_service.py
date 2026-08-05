@@ -120,8 +120,16 @@ class StudioService:
                             if total > self.max_file_bytes:
                                 raise ValueError("dropped image exceeds the upload limit")
                             chunks.append(chunk)
-                        filename = Path(urlparse(current_url).path).name or f"dropped-image{suffix}"
-                        if Path(filename).suffix.casefold() not in {".png", ".jpg", ".jpeg", ".webp"}:
+                        filename = (
+                            Path(urlparse(current_url).path).name
+                            or f"dropped-image{suffix}"
+                        )
+                        if Path(filename).suffix.casefold() not in {
+                            ".png",
+                            ".jpg",
+                            ".jpeg",
+                            ".webp",
+                        }:
                             filename = f"dropped-image{suffix}"
                         return self.add_file(
                             subject,

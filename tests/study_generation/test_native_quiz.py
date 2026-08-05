@@ -86,6 +86,35 @@ def test_invalid_notebook_quiz_is_rejected_before_publication(override, message)
         parse_native_quiz(json.dumps(_payload(**override)))
 
 
+def test_public_content_includes_image_dimensions_only_when_provided():
+    payload = _payload(
+        image_ref={
+            "key": "img-1",
+            "source_title": "Lecture slides",
+            "locator": "Slide 4",
+            "description": "Diagram of the nephron",
+        },
+    )
+    quiz = parse_native_quiz(json.dumps(payload))
+
+    with_dimensions = public_quiz_content(
+        quiz,
+        {"img-1": ("https://example.test/img-1.png", "Nephron diagram", 800, 600)},
+    )
+    assert with_dimensions["questions"][0]["image_url"] == (
+        "https://example.test/img-1.png"
+    )
+    assert with_dimensions["questions"][0]["image_width"] == 800
+    assert with_dimensions["questions"][0]["image_height"] == 600
+
+    without_dimensions = public_quiz_content(
+        quiz,
+        {"img-1": ("https://example.test/img-1.png", "Nephron diagram", None, None)},
+    )
+    assert "image_width" not in without_dimensions["questions"][0]
+    assert "image_height" not in without_dimensions["questions"][0]
+
+
 def test_public_content_omits_answers_and_rationales():
     content = public_quiz_content(parse_native_quiz(json.dumps(_payload())))
 

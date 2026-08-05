@@ -31,6 +31,13 @@ h1 { margin: 0; color: var(--brand); font-size: clamp(1.8rem, 4vw, 2.6rem); }
 .course-content { padding: 0 1rem 1rem; }
 .exam-card { border-top: 1px solid var(--border); }
 .exam-button { padding: .85rem .4rem; font-weight: 650; }
+.chevron {
+  width: .75rem;
+  color: var(--muted);
+  font-size: .75rem;
+  transition: transform 150ms ease;
+}
+[aria-expanded="true"] > .chevron { transform: rotate(90deg); }
 .lecture-list { display: grid; gap: .6rem; padding-bottom: .5rem; }
 .lecture-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .6rem; align-items: stretch; }
 .quiz-link { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 1rem; padding: .8rem .9rem; border: 1px solid var(--border); border-radius: .55rem; color: var(--text); background: var(--surface); text-decoration: none; }

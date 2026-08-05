@@ -31,11 +31,16 @@ class ApprovedPrompt:
 
 
 class PromptLoader:
-    def __init__(self, path: Path, approved_sha256: str | None):
+    def __init__(self, path: Path | None, approved_sha256: str | None):
         self.path = path
         self.approved_sha256 = approved_sha256
 
     def initialize(self) -> Path:
+        if self.path is None:
+            raise PromptInvalid(
+                "Transcript cleaning prompt path is not configured; "
+                "set OMS_HUB_TRANSCRIPT_PROMPT_PATH"
+            )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with self.path.open("x", encoding="utf-8", newline="\n") as destination:
@@ -45,6 +50,11 @@ class PromptLoader:
         return self.path
 
     def inspect(self) -> ApprovedPrompt:
+        if self.path is None:
+            raise PromptInvalid(
+                "Transcript cleaning prompt path is not configured; "
+                "set OMS_HUB_TRANSCRIPT_PROMPT_PATH"
+            )
         try:
             with self.path.open("rb") as source:
                 payload = source.read(MAX_PROMPT_BYTES + 1)

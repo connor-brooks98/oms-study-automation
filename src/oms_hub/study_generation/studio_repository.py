@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -322,6 +323,7 @@ class StudioRepository:
         self,
         subject_key: str | None = None,
         exam_number: int | None = None,
+        limit: int = 50,
     ) -> list[StudioRun]:
         with self.database.session() as session:
             statement = select(StudioRunModel).order_by(
@@ -333,7 +335,22 @@ class StudioRepository:
                 )
             if exam_number is not None:
                 statement = statement.where(StudioRunModel.exam_number == exam_number)
-            return [self._run_domain(session, model) for model in session.scalars(statement).all()]
+            statement = statement.limit(limit)
+            models = session.scalars(statement).all()
+            run_ids = [model.id for model in models]
+            sources_by_run: dict[str, list[StudioRunSourceModel]] = {}
+            if run_ids:
+                snapshots = session.scalars(
+                    select(StudioRunSourceModel)
+                    .where(StudioRunSourceModel.run_id.in_(run_ids))
+                    .order_by(StudioRunSourceModel.run_id, StudioRunSourceModel.position)
+                ).all()
+                for snapshot in snapshots:
+                    sources_by_run.setdefault(snapshot.run_id, []).append(snapshot)
+            return [
+                self._run_domain(session, model, sources_by_run.get(model.id, ()))
+                for model in models
+            ]
 
     def claim_next_run(self, now: datetime | None = None) -> StudioRun | None:
         now = now or datetime.now(UTC)
@@ -741,12 +758,20 @@ class StudioRepository:
         )
 
     @staticmethod
-    def _run_domain(session: Session, model: StudioRunModel) -> StudioRun:
-        snapshots = session.scalars(
-            select(StudioRunSourceModel)
-            .where(StudioRunSourceModel.run_id == model.id)
-            .order_by(StudioRunSourceModel.position)
-        ).all()
+    def _run_domain(
+        session: Session,
+        model: StudioRunModel,
+        sources: Sequence[StudioRunSourceModel] | None = None,
+    ) -> StudioRun:
+        snapshots = (
+            sources
+            if sources is not None
+            else session.scalars(
+                select(StudioRunSourceModel)
+                .where(StudioRunSourceModel.run_id == model.id)
+                .order_by(StudioRunSourceModel.position)
+            ).all()
+        )
         return StudioRun(
             model.id,
             model.subject,

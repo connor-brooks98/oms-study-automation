@@ -36,6 +36,19 @@ def _dispatch_factory(progid: str) -> Any:
     return win32com.client.DispatchEx(progid)
 
 
+def _force_disable_macros(application: Any) -> None:
+    """Block VBA macros in documents opened by the automated conversion.
+
+    ``AutomationSecurity`` is not exposed by every Office COM application
+    (or by test doubles), so this is best-effort: msoAutomationSecurityForceDisable
+    is 3.
+    """
+    try:
+        application.AutomationSecurity = 3
+    except Exception:  # noqa: BLE001 - optional/unsupported COM property
+        pass
+
+
 class SerialOfficeConverter:
     _lock = threading.Lock()
 
@@ -75,6 +88,7 @@ class SerialOfficeConverter:
             if source.suffix.casefold() in {".ppt", ".pptx"}:
                 application = self.factory("PowerPoint.Application")
                 application.DisplayAlerts = 1
+                _force_disable_macros(application)
                 document = application.Presentations.Open(
                     str(source),
                     ReadOnly=True,
@@ -85,6 +99,7 @@ class SerialOfficeConverter:
                 application = self.factory("Word.Application")
                 application.Visible = False
                 application.DisplayAlerts = 0
+                _force_disable_macros(application)
                 document = application.Documents.Open(str(source), ReadOnly=True)
                 document.ExportAsFixedFormat(str(destination), 17)
         finally:

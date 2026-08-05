@@ -114,18 +114,19 @@ from oms_hub.web.settings_routes import api_router as settings_api_router
 from oms_hub.web.settings_routes import router as settings_router
 from oms_hub.web.studio_routes import router as studio_router
 from oms_hub.web.upload_routes import router as upload_router
+from oms_hub.workers import SyncWorker
 
 logger = logging.getLogger(__name__)
 
 
 def _run_sync_worker(
     stop: threading.Event,
-    worker: object,
+    worker: SyncWorker,
     name: str,
 ) -> None:
     while not stop.is_set():
         try:
-            worked = bool(worker.run_once())  # type: ignore[attr-defined]
+            worked = worker.run_once()
         except Exception:
             logger.exception("%s worker failed", name)
             worked = False
@@ -538,7 +539,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         SerialOfficeConverter(resolved.office_timeout_seconds),
     )
     app.state.transcript_prompt = V2PromptLoader(
-        expanded_path(resolved.transcript_prompt_path),
+        (
+            expanded_path(resolved.transcript_prompt_path)
+            if resolved.transcript_prompt_path is not None
+            else None
+        ),
         resolved.transcript_prompt_sha256,
     )
     app.state.transcript_pipeline = V2TranscriptPipeline(

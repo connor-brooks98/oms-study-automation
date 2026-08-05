@@ -63,22 +63,6 @@ def normalize_vectors(values: NDArray[np.float32]) -> NDArray[np.float32]:
     return cast(NDArray[np.float32], vectors / lengths)
 
 
-class FastEmbedder:
-    def __init__(self, model_name: str) -> None:
-        from fastembed import TextEmbedding
-
-        self._model_name = model_name
-        self._model = TextEmbedding(model_name=model_name)
-
-    @property
-    def model_name(self) -> str:
-        return self._model_name
-
-    def embed(self, texts: Sequence[str]) -> NDArray[np.float32]:
-        vectors = np.asarray(list(self._model.embed(list(texts))), dtype=np.float32)
-        return normalize_vectors(vectors)
-
-
 class AtomicVectorStore:
     def __init__(self, root: Path) -> None:
         self.root = root

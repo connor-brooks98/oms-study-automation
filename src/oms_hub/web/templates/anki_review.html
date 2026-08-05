@@ -61,8 +61,8 @@
 
     <section class="anki-review-toolbar" aria-label="Review filters">
       <div class="anki-review-switcher" role="group" aria-label="Review view">
-        <button class="button secondary is-active" type="button" data-review-view="final">Final proposed changes <span data-count-final>0</span></button>
-        <button class="button secondary" type="button" data-review-view="candidates">Candidates <span data-count-candidates>0</span></button>
+        <button class="button secondary is-active" type="button" data-review-view="final" aria-pressed="true">Final proposed changes <span data-count-final>0</span></button>
+        <button class="button secondary" type="button" data-review-view="candidates" aria-pressed="false">Candidates <span data-count-candidates>0</span></button>
       </div>
       <label class="anki-review-search">Search cards
         <input type="search" placeholder="Search card text, note ID, extra, or tags" data-review-search>
@@ -127,6 +127,7 @@
         <div><dt>Tags removed</dt><dd data-plan-removed>0</dd></div>
       </dl>
       <p class="anki-confirm-note"><strong>This is the only step that can change your Anki collection.</strong></p>
+      <p class="anki-dialog-status" data-dialog-status role="status" aria-live="polite"></p>
       <p class="anki-dialog-error" data-dialog-error role="alert"></p>
       <div class="anki-dialog-actions">
         <button class="button secondary" value="cancel">Go back</button>
