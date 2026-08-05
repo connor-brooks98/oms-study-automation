@@ -14,6 +14,7 @@ from oms_hub.anki.domain import (
     CurationStage,
     CurationState,
     PipelineContractVersion,
+    StageArtifact,
 )
 from oms_hub.anki.pipeline import (
     PIPELINE_STAGES,
@@ -84,35 +85,6 @@ def test_stage_artifact_store_rejects_document_provenance_mismatch(tmp_path: Pat
         store.read(tampered)
 
 
-def test_stage_artifact_store_allows_schema_12_migrated_retrieval_v4_sentinel(
-    repository: AnkiCurationRepository,
-    tmp_path: Path,
-) -> None:
-    store = StageArtifactStore(tmp_path / "artifacts")
-    job = _job(repository)
-    sentinel = hashlib.sha256(b"").hexdigest()
-    artifact = store.write(
-        job.id,
-        CurationStage.PREFLIGHT,
-        StageProduct(kind="preflight_report", payload={"ready": True}),
-        input_sha256="a" * 64,
-        model_config_sha256=sentinel,
-    )
-    legacy_job = replace(
-        job,
-        pipeline_contract_version=PipelineContractVersion.RETRIEVAL_V4,
-        model_config_sha256="b" * 64,
-    )
-
-    assert store.read(artifact, job=legacy_job) == {"ready": True}
-    card_centric_job = replace(
-        legacy_job,
-        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
-    )
-    with pytest.raises(PinnedInputChanged, match="pipeline contract"):
-        store.read(artifact, job=card_centric_job)
-
-
 def test_stage_artifact_store_rejects_nonlegacy_model_configuration_mismatch(
     repository: AnkiCurationRepository,
     tmp_path: Path,
@@ -129,6 +101,40 @@ def test_stage_artifact_store_rejects_nonlegacy_model_configuration_mismatch(
 
     with pytest.raises(PinnedInputChanged, match="model configuration"):
         store.read(artifact, job=replace(job, model_config_sha256="b" * 64))
+
+
+def test_stage_artifact_store_rejects_v1_document_without_migration_sentinel(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+) -> None:
+    store = StageArtifactStore(tmp_path / "artifacts")
+    job = _job(repository)
+    document = {
+        "artifact_version": 1,
+        "job_id": str(job.id),
+        "stage": CurationStage.PREFLIGHT.value,
+        "kind": "preflight_report",
+        "payload": {"ready": True},
+        "metadata": {"source": "legacy"},
+    }
+    encoded = json.dumps(document, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    content_sha256 = hashlib.sha256(encoded).hexdigest()
+    artifact = StageArtifact(
+        artifact_id=f"preflight:{content_sha256}",
+        stage=CurationStage.PREFLIGHT,
+        kind="preflight_report",
+        relative_path=f"{job.id}/preflight/{content_sha256}.json",
+        input_sha256="a" * 64,
+        content_sha256=content_sha256,
+        model_config_sha256=job.model_config_sha256,
+        metadata={"source": "legacy"},
+    )
+    path = tmp_path / "artifacts" / artifact.relative_path
+    path.parent.mkdir(parents=True)
+    path.write_bytes(encoded)
+
+    with pytest.raises(PinnedInputChanged, match="invalid provenance"):
+        store.read(artifact, job=job)
 
 
 @pytest.fixture

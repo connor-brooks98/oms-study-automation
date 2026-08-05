@@ -1,8 +1,14 @@
 import sqlite3
 from contextlib import closing
+from dataclasses import replace
+from uuid import UUID
 
+import pytest
 from sqlalchemy import inspect, text
 
+from oms_hub.anki.domain import PipelineContractVersion
+from oms_hub.anki.pipeline import PinnedInputChanged, StageArtifactStore
+from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.db import Database
 from oms_hub.migrations import LATEST_SCHEMA_VERSION
 
@@ -511,7 +517,7 @@ def _create_schema_v12_anki_contract_database(path: str) -> None:
                 FOREIGN KEY(lecture_id) REFERENCES lectures (id)
             );
             INSERT INTO anki_curation_jobs VALUES (
-                '00000000-0000-0000-0000-000000000013', 7, 'ready', 3,
+                '00000000-0000-0000-0000-000000000013', 7, 'ready_for_review', 3,
                 'OMS::Heme', 'oms::heme', 'snapshot-13', 'legacy input',
                 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                 'heme-block', '[101,102]', '{"101":"b","102":"c"}',
@@ -545,10 +551,12 @@ def _create_schema_v12_anki_contract_database(path: str) -> None:
                 UNIQUE (job_id, artifact_id)
             );
             INSERT INTO anki_stage_artifacts VALUES (
-                13, '00000000-0000-0000-0000-000000000013', 'artifact-13',
-                'classify', 'classification', 'jobs/13/classify.json',
+                13, '00000000-0000-0000-0000-000000000013',
+                'retrieval_pass_1:8b67a32a27bdda2de0849f3db0749ce4be046ce4b8553229b930401bcdba0df7',
+                'retrieval_pass_1', 'classification',
+                '00000000-0000-0000-0000-000000000013/retrieval_pass_1/8b67a32a27bdda2de0849f3db0749ce4be046ce4b8553229b930401bcdba0df7.json',
                 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-                'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+                '8b67a32a27bdda2de0849f3db0749ce4be046ce4b8553229b930401bcdba0df7',
                 '{"note_count":3}', '2026-08-04T00:12:00+00:00'
             );
             """
@@ -600,6 +608,28 @@ def test_schema_v12_contract_upgrade_backfills_historical_provenance_idempotentl
 
     with Database(f"sqlite:///{database_path}") as database:
         database.migrate()
+        repository = AnkiCurationRepository(database)
+        job = repository.require_job(UUID("00000000-0000-0000-0000-000000000013"))
+        artifact = repository.list_stage_artifacts(job.id)[0]
+        artifact_root = tmp_path / "legacy-artifacts"
+        artifact_path = artifact_root / artifact.relative_path
+        artifact_path.parent.mkdir(parents=True)
+        artifact_path.write_text(
+            "{\"artifact_version\":1,\"job_id\":\"00000000-0000-0000-0000-000000000013\","
+            "\"kind\":\"classification\",\"metadata\":{\"note_count\":3},"
+            "\"payload\":{\"note_ids\":[11,12,13]},\"stage\":\"retrieval_pass_1\"}\n",
+            encoding="utf-8",
+        )
+        artifacts = StageArtifactStore(artifact_root)
+        assert artifacts.read(artifact, job=job) == {"note_ids": [11, 12, 13]}
+        with pytest.raises(PinnedInputChanged, match="invalid provenance"):
+            artifacts.read(
+                artifact,
+                job=replace(
+                    job,
+                    pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+                ),
+            )
         with database.session() as session:
             upgraded_job = session.execute(
                 text(

@@ -270,16 +270,39 @@ class StageArtifactStore:
         expected_path = (
             f"{document.get('job_id')}/{artifact.stage.value}/{artifact.content_sha256}.json"
         )
+        artifact_version = document.get("artifact_version")
+        is_v2 = type(artifact_version) is int and artifact_version == 2
+        is_migrated_v1 = (
+            type(artifact_version) is int
+            and artifact_version == 1
+            and job is not None
+            and artifact.pipeline_contract_version is PipelineContractVersion.RETRIEVAL_V4
+            and artifact.model_config_sha256 == _EMPTY_DOCUMENT_SHA256
+            and job.pipeline_contract_version is PipelineContractVersion.RETRIEVAL_V4
+        )
         if (
-            document.get("artifact_version") != 2
+            not (is_v2 or is_migrated_v1)
             or document.get("stage") != artifact.stage.value
             or document.get("kind") != artifact.kind
-            or document.get("pipeline_contract_version")
-            != artifact.pipeline_contract_version.value
-            or document.get("model_config_sha256") != artifact.model_config_sha256
             or document.get("metadata") != artifact.metadata
             or artifact.artifact_id != f"{artifact.stage.value}:{artifact.content_sha256}"
             or artifact.relative_path != expected_path
+            or (
+                "pipeline_contract_version" in document
+                and document["pipeline_contract_version"]
+                != artifact.pipeline_contract_version.value
+            )
+            or (
+                "model_config_sha256" in document
+                and document["model_config_sha256"] != artifact.model_config_sha256
+            )
+            or (
+                is_v2
+                and (
+                    "pipeline_contract_version" not in document
+                    or "model_config_sha256" not in document
+                )
+            )
         ):
             raise PinnedInputChanged(
                 f"Committed artifact {artifact.artifact_id} has invalid provenance"
