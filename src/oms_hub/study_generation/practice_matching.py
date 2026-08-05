@@ -96,11 +96,19 @@ def pair_supplied_answers(
             for answer_index in range(len(answers))
             if answer_index not in matched_answer_indexes
         ]
-        for question_index, answer_index in zip(residual_questions, residual_answers, strict=True):
-            if _ids_contradict(question_ids[question_index], answer_ids[answer_index]):
-                continue
-            matched_answers[question_index] = answers[answer_index]
-            matched_answer_indexes.add(answer_index)
+        if not _residual_labels_contradict(
+            residual_questions,
+            residual_answers,
+            question_ids,
+            answer_ids,
+        ):
+            for question_index, answer_index in zip(
+                residual_questions, residual_answers, strict=True
+            ):
+                if _ids_contradict(question_ids[question_index], answer_ids[answer_index]):
+                    continue
+                matched_answers[question_index] = answers[answer_index]
+                matched_answer_indexes.add(answer_index)
 
     for answer_index, answer in enumerate(answers):
         if answer_index not in matched_answer_indexes:
@@ -162,6 +170,17 @@ def _can_align_by_source_order(
 
 def _ids_contradict(question_id: str | None, answer_id: str | None) -> bool:
     return question_id is not None and answer_id is not None and question_id != answer_id
+
+
+def _residual_labels_contradict(
+    question_indexes: list[int],
+    answer_indexes: list[int],
+    question_ids: tuple[str | None, ...],
+    answer_ids: tuple[str | None, ...],
+) -> bool:
+    question_labels = {question_ids[index] for index in question_indexes} - {None}
+    answer_labels = {answer_ids[index] for index in answer_indexes} - {None}
+    return bool(question_labels and answer_labels and question_labels != answer_labels)
 
 
 def _supplied_answers(

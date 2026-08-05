@@ -85,6 +85,16 @@ def test_residual_source_order_pairs_after_exact_identifier_match() -> None:
     assert [draft.correct_index for draft in drafts] == [1, 0]
 
 
+def test_conflicting_staggered_residual_labels_disable_all_source_order_pairing() -> None:
+    drafts = pair_supplied_answers(
+        (question(None, "First"), question("B", "Second")),
+        (answer("C", 1), answer(None, 0)),
+    )
+
+    assert all(draft.correct_index is None for draft in drafts)
+    assert all(draft.verification_required for draft in drafts)
+
+
 def test_different_numbered_sets_do_not_fall_back_to_source_order() -> None:
     drafts = pair_supplied_answers(
         questions=(question("1", "First"), question("2", "Second")),
