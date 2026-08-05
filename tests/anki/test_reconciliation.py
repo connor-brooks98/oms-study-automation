@@ -134,3 +134,29 @@ def test_stale_prompt_and_nonconvergence_are_warnings() -> None:
 
     assert {item.assertion_id for item in report.warned} == {"A9", "A10", "A11"}
     assert report.can_render_envelope is True
+
+
+def test_high_audit_drop_rate_warns_without_blocking_review() -> None:
+    expected_ids = tuple(range(1, 21))
+    snapshot = ReconciliationInput(
+        concepts=(),
+        generated_cards=(),
+        unresolved_fact_ids=(),
+        expected_audit_nids=expected_ids,
+        audit_verdicts=tuple(
+            AuditResolution(
+                nid=note_id,
+                verdict="keep" if note_id <= 10 else "drop",
+            )
+            for note_id in expected_ids
+        ),
+        source_passage_ids=(),
+        forbidden_cloze_targets=(),
+        prompt_sync_stale=False,
+    )
+
+    report = reconcile(snapshot)
+
+    assert "A6" in {item.assertion_id for item in report.warned}
+    assert "A6" not in {item.assertion_id for item in report.failed}
+    assert report.can_render_envelope is True

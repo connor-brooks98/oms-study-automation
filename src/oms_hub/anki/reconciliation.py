@@ -138,12 +138,12 @@ def reconcile(snapshot: ReconciliationInput) -> ReconciliationReport:
         keep_count = sum(
             item.verdict == "keep" for item in snapshot.audit_verdicts
         )
-        _record(
+        _warn(
             "A6",
             verdict_count > 0 and drop_count / verdict_count <= 0.35,
             "Audit drop rate cannot exceed 35%",
             passed,
-            failed,
+            warned,
         )
         _record(
             "A7",
