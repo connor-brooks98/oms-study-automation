@@ -14,11 +14,8 @@ from pydantic import Field
 
 from oms_hub.anki.apply import ApplyCoordinator, ApplyGateway, ApplyResult
 from oms_hub.anki.card_centric_contracts import CardConceptLedger
-from oms_hub.anki.card_centric_fixture_service import (
-    FIXTURE_SHA256,
-    FIXTURE_VERSION,
-    validate_fixture,
-)
+from oms_hub.anki.card_centric_fixture import FixtureUnavailable
+from oms_hub.anki.card_centric_fixture_service import fixture_for, validate_fixture
 from oms_hub.anki.contracts import (
     AddNotesOperation,
     AddTagsOperation,
@@ -225,7 +222,9 @@ def list_anki_jobs(
 
 
 @router.post("/api/anki/fixture-validation")
-def run_card_centric_fixture(request: Request, payload: FixtureValidationRequest) -> dict[str, Any]:
+async def run_card_centric_fixture(
+    request: Request, payload: FixtureValidationRequest
+) -> dict[str, Any]:
     classifier = getattr(request.app.state, "card_centric_fixture_classifier", None)
     if classifier is None:
         raise HTTPException(
@@ -233,14 +232,19 @@ def run_card_centric_fixture(request: Request, payload: FixtureValidationRequest
             detail="Fixture classifier is not configured",
         )
     try:
-        result = validate_fixture(classifier, provider=payload.provider, model=payload.model)
+        fixture = fixture_for(request.app.state.settings.anki_fixture_artifact_path)
+        result = await validate_fixture(
+            classifier, provider=payload.provider, model=payload.model, fixture=fixture
+        )
+    except FixtureUnavailable as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except (TypeError, ValueError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
     record = {
-        "fixture_version": FIXTURE_VERSION,
-        "fixture_sha256": FIXTURE_SHA256,
+        "fixture_version": result.metrics["fixture_version"],
+        "fixture_sha256": result.metrics["fixture_sha256"],
         "provider": payload.provider,
         "model": payload.model,
         "passed": result.passed,
@@ -393,8 +397,9 @@ def create_anki_job(
         if (
             not record
             or not record.get("passed")
-            or record.get("fixture_version") != FIXTURE_VERSION
-            or record.get("fixture_sha256") != FIXTURE_SHA256
+            or not isinstance(record.get("fixture_version"), str)
+            or not isinstance(record.get("fixture_sha256"), str)
+            or len(record["fixture_sha256"]) != 64
         ):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

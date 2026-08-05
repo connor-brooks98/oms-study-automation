@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     anki_prompt_directory: Path | None = None
     anki_prompt_git_sync: bool = False
     anki_prompt_git_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    anki_fixture_artifact_path: Path | None = None
     anki_focused_retrieval_limit: int = Field(default=200, ge=1, le=5_000)
     anki_global_retrieval_limit: int = Field(default=50, ge=1, le=1_000)
     anki_semantic_model: str = Field(

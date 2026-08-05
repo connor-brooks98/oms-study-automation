@@ -1,4 +1,4 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from uuid import UUID
@@ -222,7 +222,7 @@ class ApplyCoordinator:
         gateway: ApplyGateway,
         *,
         runtime: ApplyRuntime | None = None,
-        supported_envelope_versions: frozenset[int] = frozenset({1}),
+        supported_envelope_versions: frozenset[int] | Callable[[], frozenset[int]] = frozenset({1}),
     ) -> None:
         self.store = store
         self.gateway = gateway
@@ -241,7 +241,12 @@ class ApplyCoordinator:
                 safe_error=("selection overflow acknowledgement is missing, stale, or forged; "
                             "no mutation performed"),
             )
-        if isinstance(envelope, ActionEnvelopeV2) and 2 not in self.supported_envelope_versions:
+        versions = (
+            self.supported_envelope_versions()
+            if callable(self.supported_envelope_versions)
+            else self.supported_envelope_versions
+        )
+        if isinstance(envelope, ActionEnvelopeV2) and 2 not in versions:
             return self._finish(
                 envelope,
                 ApplyState.FAILED_BEFORE_APPLY,

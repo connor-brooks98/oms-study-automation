@@ -171,6 +171,7 @@ def test_run_once_heartbeats_polls_one_command_and_uploads_snapshot() -> None:
         "active_snapshot_id",
         "health",
         "observed_at",
+        "supported_envelope_contract_versions",
     }
     assert snapshots.commands[0].command_id == COMMAND_ID
     assert hub.uploads == [(COMMAND_ID, _snapshot())]

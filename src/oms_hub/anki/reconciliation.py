@@ -77,6 +77,10 @@ class CardCentricReconciliationInput(BaseModel):
     uncovered_after_s5: tuple[str, ...]
     residual_ran_for: tuple[str, ...]
     generated_cards: tuple[GeneratedResolution, ...]
+    # Immutable S7/S8 partition retained across review revisions. The
+    # ``generated_cards`` field is the selected-only S9 view.
+    canonical_generated_cards: tuple[GeneratedResolution, ...] = ()
+    canonical_unresolved_fact_ids: tuple[str, ...] = ()
     unresolved_fact_ids: tuple[str, ...]
     expected_scoped_nids: tuple[int, ...]
     classifications: tuple[AuditResolution, ...]

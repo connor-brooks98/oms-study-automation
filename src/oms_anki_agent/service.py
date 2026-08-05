@@ -5,10 +5,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import UUID
 
 from oms_anki_agent.ankiconnect import AnkiConnectUnavailable
+from oms_anki_agent.apply import AgentEnvelopeApplier, LocalAnki
 from oms_anki_agent.hub_client import HubClientError
 from oms_anki_agent.ledger import AgentLedger
 from oms_anki_agent.snapshot import (
@@ -20,6 +21,7 @@ from oms_anki_agent.snapshot import (
 from oms_hub.anki.contracts import (
     AgentCommand,
     AgentHeartbeat,
+    EnvelopeReceipt,
 )
 from oms_hub.anki.domain import AgentCommandType
 
@@ -38,6 +40,8 @@ class ServiceHub(Protocol):
         command_id: UUID,
         snapshot: SnapshotUpload,
     ) -> dict[str, str]: ...
+
+    def upload_receipt(self, command_id: UUID, receipt: EnvelopeReceipt) -> dict[str, str]: ...
 
 
 class ServiceAnki(Protocol):
@@ -95,6 +99,15 @@ class AgentService:
         self.monotonic = monotonic
         self.sleep = sleep
         self.active_snapshot_id: str | None = None
+        self.envelope_applier = (
+            AgentEnvelopeApplier(
+                anki=cast(LocalAnki, anki),
+                ledger=cast(AgentLedger, getattr(snapshots, "ledger", None)),
+                agent_id=settings.agent_id,
+            )
+            if getattr(snapshots, "ledger", None) is not None
+            else None
+        )
 
     def run_once(self) -> str:
         ankiconnect_version = self._ensure_anki()
@@ -107,15 +120,21 @@ class AgentService:
                 active_snapshot_id=self.active_snapshot_id,
                 health="ok",
                 observed_at=self.now(),
+                supported_envelope_contract_versions=(1, 2),
             )
         )
         command = self.hub.next_command()
         if command is None:
             return "idle"
         if command.command_type is AgentCommandType.APPLY_ENVELOPE:
-            raise WriteCommandDisabled(
-                "apply_envelope is disabled until idempotent apply is installed"
-            )
+            if self.envelope_applier is None:
+                raise WriteCommandDisabled("apply requires the local durable operation ledger")
+            raw = command.payload.get("envelope", command.payload)
+            if not isinstance(raw, dict):
+                raise ValueError("apply command lacks an action envelope")
+            receipt = self.envelope_applier.apply(raw)
+            self.hub.upload_receipt(command.command_id, receipt)
+            return "envelope_applied"
         if command.command_type not in {
             AgentCommandType.FULL_SNAPSHOT,
             AgentCommandType.DELTA_SNAPSHOT,

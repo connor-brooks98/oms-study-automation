@@ -461,7 +461,7 @@ class CurationServicesRunner:
                     "provider": stage_model.provider,
                     "model": stage_model.model,
                     "request_id": result.request_id,
-                    "cache_prefix_sha256": hashlib.sha256(source.prefix.encode()).hexdigest(),
+                    "cache_prefix_sha256": result.cache_prefix_sha256,
                 },
             },
             usage=StageUsage(
@@ -796,6 +796,7 @@ class CurationServicesRunner:
                         "covered_concept_ids": list(item.covered_concept_ids),
                         "supporting_passage_ids": list(item.supporting_passage_ids),
                         "flags": list(item.flags),
+                        "selection_eligible": selection_eligible(item, source),
                     }
                 },
                 scores={},
@@ -807,10 +808,9 @@ class CurationServicesRunner:
                 recall_direction="card_centric",
                 mnemonic_classification="none",
                 dedupe_disposition="eligible" if item.note_id in selected_set else "excluded",
-                selected=item.note_id in selected_set,
+                selected=item.note_id in selected_set and selection_eligible(item, source),
             )
             for item in classifications
-            if selection_eligible(item, source)
         )
         gap_cards = tuple(
             GapCard(
@@ -1916,6 +1916,13 @@ class CurationServicesRunner:
                 GeneratedResolution(card_id=item.card_id, fact_id=item.fact_id, text=item.text)
                 for item in generated
                 if item.status == "generated"
+            ),
+            canonical_generated_cards=tuple(
+                GeneratedResolution(card_id=item.card_id, fact_id=item.fact_id, text=item.text)
+                for item in generated if item.status == "generated"
+            ),
+            canonical_unresolved_fact_ids=tuple(
+                item.fact_id for item in generated if item.status != "generated"
             ),
             unresolved_fact_ids=tuple(
                 item.fact_id for item in generated if item.status != "generated"

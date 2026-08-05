@@ -38,6 +38,7 @@ class CardCentricLedgerResult:
     input_tokens: int
     output_tokens: int
     cost_microusd: int
+    cache_prefix_sha256: str
 
 
 @dataclass(slots=True)
@@ -88,6 +89,7 @@ class CardCentricLedgerService:
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
             cost_microusd=result.cost_microusd,
+            cache_prefix_sha256=hashlib.sha256(summary_prefix.encode()).hexdigest(),
         )
 
 

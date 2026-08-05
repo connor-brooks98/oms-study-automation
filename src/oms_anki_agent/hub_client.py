@@ -5,7 +5,7 @@ import httpx
 from pydantic import ValidationError
 
 from oms_anki_agent.snapshot import PreparedSnapshot, SnapshotUpload
-from oms_hub.anki.contracts import AgentCommand, AgentHeartbeat
+from oms_hub.anki.contracts import AgentCommand, AgentHeartbeat, EnvelopeReceipt
 from oms_hub.security.secret_store import SecretStore
 
 
@@ -71,7 +71,7 @@ class HubClient:
         self,
         command_id: UUID,
         snapshot: SnapshotUpload,
-    ) -> dict[str, str]:
+        ) -> dict[str, str]:
         if isinstance(snapshot, PreparedSnapshot):
             with snapshot.payload_path.open("rb") as stream:
                 return self._object(
@@ -89,6 +89,11 @@ class HubClient:
                 json=snapshot.model_dump(mode="json"),
             )
         )
+
+    def upload_receipt(self, command_id: UUID, receipt: EnvelopeReceipt) -> dict[str, str]:
+        return self._object(self._request(
+            "POST", f"/agent/v1/commands/{command_id}/receipt", json=receipt.model_dump(mode="json")
+        ))
 
     def _request(
         self,

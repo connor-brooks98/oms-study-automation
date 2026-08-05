@@ -1296,6 +1296,14 @@ class AnkiCurationRepository:
                 )
                 if candidate is None:
                     raise KeyError(note_id)
+                card_centric = cast(dict[str, Any], json.loads(candidate.provenance_json)).get(
+                    "card_centric", {}
+                )
+                if selected and isinstance(card_centric, dict) and (
+                    "selection_eligible" in card_centric
+                    and not bool(card_centric["selection_eligible"])
+                ):
+                    raise ValueError("review cannot select an ineligible card")
                 candidate.selected = selected
             for edit in change_set.gap_edits:
                 conditions = [AnkiGapCardModel.job_id == str(job_id)]
@@ -1412,7 +1420,9 @@ class AnkiCurationRepository:
             "selected_nids": selected_nids,
             "selected_generated_card_ids": selected_cards,
             "generated_cards": tuple(
-                item for item in snapshot.generated_cards if item.card_id in set(selected_cards)
+                item
+                for item in (snapshot.canonical_generated_cards or snapshot.generated_cards)
+                if item.card_id in set(selected_cards)
             ),
             "overflow_acknowledgement": None,
         })
