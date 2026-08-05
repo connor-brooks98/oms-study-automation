@@ -341,6 +341,35 @@ def test_v2_ledger_maps_every_depth_and_emphasis_summary_item() -> None:
         service.generate(passages)
 
 
+def test_v2_repair_reports_all_missing_passage_dispositions_together() -> None:
+    passages = _v2_passages()
+    valid = _v2_ledger(passages)
+    concept = valid.concepts[0].model_copy(
+        update={"passage_ids": (passages[0].source_id,)}
+    )
+    invalid = valid.model_copy(update={"concepts": (concept,)})
+    structured = V2StructuredService(invalid)
+    service = LCLService(
+        structured,  # type: ignore[arg-type]
+        provider=ProviderName.OPENAI,
+        model="gpt-5.2",
+        prompt_version="lecture-concept-ledger",
+        prompt_text="# V2 ledger prompt",
+        schema_name="lcl_v2",
+    )
+
+    with pytest.raises(LCLGenerationError):
+        service.generate(passages)
+
+    repair_payload = json.loads(structured.calls[1][1])
+    validation_error = repair_payload["validation_error"]
+    assert "missing_primary_passage_ids" in validation_error
+    assert passages[1].source_id in validation_error
+    assert "missing_summary_passage_ids" in validation_error
+    assert passages[2].source_id in validation_error
+    assert passages[3].source_id in validation_error
+
+
 def test_v2_ledger_adapts_to_runtime_without_losing_v2_fields() -> None:
     passages = _v2_passages()
     ledger = _v2_ledger(passages)

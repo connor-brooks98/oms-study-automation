@@ -496,9 +496,10 @@ def _validate_ledger_v2(
         for source_id, passage in source_by_id.items()
         if passage.source_kind is not SourceKind.SUMMARY
     }
+    partition_errors: list[str] = []
     missing_primary_ids = sorted(primary_ids - cited_ids - uncited_ids)
     if missing_primary_ids:
-        raise LCLGenerationError(
+        partition_errors.append(
             "every primary passage requires a cited or intentionally uncited "
             "disposition: "
             f"missing_primary_passage_ids={_format_ids(missing_primary_ids)}"
@@ -511,10 +512,12 @@ def _validate_ledger_v2(
     }
     missing_summary_ids = sorted(required_summary_ids - cited_ids)
     if missing_summary_ids:
-        raise LCLGenerationError(
+        partition_errors.append(
             "every DEPTH or EMPHASIS summary item must map to a concept: "
             f"missing_summary_passage_ids={_format_ids(missing_summary_ids)}"
         )
+    if partition_errors:
+        raise LCLGenerationError("; ".join(partition_errors))
 
 
 def _canonicalize_summary_emphasis(
@@ -619,11 +622,13 @@ def _repair_instruction(
 ) -> str:
     repair = (
         f"Repair the invalid lecture concept ledger for {prompt_version}. "
-        "Correct only the reported validation defects, use only the supplied "
-        "source bundle, and return the complete corrected ledger. If the "
-        "validation error lists missing passage IDs, give every one exactly "
-        "one disposition: cite it under a concept or use an allowed "
-        "intentionally_uncited reason."
+        "Correct the reported validation defects without removing or changing "
+        "any already-valid concept or passage disposition. Use only the "
+        "supplied source bundle and return the complete corrected ledger. "
+        "Recheck the entire ledger before returning it: every non-summary "
+        "passage must be cited or intentionally uncited, and every DEPTH or "
+        "EMPHASIS summary passage must be cited by a primary-grounded concept. "
+        "Give every listed missing passage ID exactly one valid disposition."
     )
     return repair if prompt_text is None else f"{prompt_text}\n\n{repair}"
 
