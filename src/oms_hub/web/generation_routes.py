@@ -130,7 +130,7 @@ def test_prompt_path(request: Request, kind: str) -> JSONResponse:
     if selected is PromptKind.TRANSCRIPT:
         configured = _repository(request).prompt_path(selected)
         try:
-            prompt = TranscriptPromptLoader(
+            transcript_prompt = TranscriptPromptLoader(
                 expanded_path(Path(configured)) if configured else None,
                 None,
             ).inspect()
@@ -148,7 +148,7 @@ def test_prompt_path(request: Request, kind: str) -> JSONResponse:
                 "kind": selected.value,
                 "state": "valid",
                 "path": configured,
-                "sha256": prompt.sha256,
+                "sha256": transcript_prompt.sha256,
                 "modified_at": None,
             },
             headers={"Cache-Control": "no-store"},
