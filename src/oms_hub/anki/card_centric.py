@@ -471,11 +471,9 @@ def select_high_yield(
         )
     ]
     if len(mandatory) > cap:
-        ack = overflow_acknowledgement
-        if not ack or not {"acknowledged_by", "acknowledged_at", "reason"} <= set(ack):
-            raise CardCentricValidationError(
-                "mandatory high-yield overflow requires acknowledgement"
-            )
+        # The stage issues the durable server acknowledgement after it has the
+        # canonical selection.  Do not truncate mandatory evidence merely to
+        # fit the ordinary cap.
         return (
             tuple(sorted(item.note_id for item in mandatory)),
             tuple(sorted(item.note_id for item in eligible if item not in mandatory)),

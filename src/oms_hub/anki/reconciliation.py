@@ -96,7 +96,7 @@ class CardCentricReconciliationInput(BaseModel):
     # coverage comes from a currently selected card, never an unselected row.
     covered_concept_ids_by_nid: dict[int, tuple[str, ...]] = Field(default_factory=dict)
     generated_concept_id_by_card_id: dict[str, str] = Field(default_factory=dict)
-    overflow_acknowledgement: dict[str, str] | None = None
+    overflow_acknowledgement: dict[str, object] | None = None
     ledger_provenance_ok: bool = True
 
 
@@ -207,8 +207,7 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
     overflow_ok = total <= snapshot.cap or (
         set(snapshot.mandatory_nids) <= set(snapshot.selected_nids)
         and snapshot.overflow_acknowledgement is not None
-        and {"acknowledged_by", "acknowledged_at", "reason"}
-        <= set(snapshot.overflow_acknowledgement)
+        and {"token", "selection_digest", "signature"} <= set(snapshot.overflow_acknowledgement)
     )
     _record(
         "selection_cap",

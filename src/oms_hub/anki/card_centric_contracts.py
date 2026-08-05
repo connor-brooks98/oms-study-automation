@@ -429,7 +429,7 @@ class SelectionEvidence(CardCentricContract):
     cap: int = Field(ge=1)
     minimum_target: int = Field(ge=1)
     mandatory_note_ids: tuple[int, ...] = ()
-    overflow_acknowledgement: dict[str, str] | None = None
+    overflow_acknowledgement: dict[str, object] | None = None
 
     @model_validator(mode="after")
     def validate_selection_cap(self) -> "SelectionEvidence":

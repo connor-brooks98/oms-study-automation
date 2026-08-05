@@ -1342,6 +1342,9 @@ def _review_reconciliation_summary(
     try:
         if committed.get("contract_version") == "card_centric_s9_v1":
             snapshot = CardCentricReconciliationInput.model_validate(snapshot_payload)
+            acknowledgement = overflow_acknowledgement or committed.get("selection", {}).get(
+                "overflow_acknowledgement"
+            )
             selected_existing = tuple(
                 candidate.note_id for candidate in (candidates or []) if candidate.selected
             )
@@ -1374,7 +1377,7 @@ def _review_reconciliation_summary(
                     "selected_nids": selected_existing,
                     "selected_generated_card_ids": selected_generated,
                     "generated_cards": selected_generated_resolutions,
-                    "overflow_acknowledgement": overflow_acknowledgement,
+                    "overflow_acknowledgement": acknowledgement,
                 }
             )
             report = reconcile_card_centric(reviewed_snapshot)
@@ -1385,7 +1388,7 @@ def _review_reconciliation_summary(
                     **committed.get("selection", {}),
                     "selected_existing_note_ids": list(selected_existing),
                     "selected_generated_card_ids": list(selected_generated),
-                    "overflow_acknowledgement": overflow_acknowledgement,
+                    "overflow_acknowledgement": acknowledgement,
                 },
                 "snapshot": reviewed_snapshot.model_dump(mode="json"),
             }

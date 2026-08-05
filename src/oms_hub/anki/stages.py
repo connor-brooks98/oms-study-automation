@@ -760,6 +760,27 @@ class CurationServicesRunner:
             ledger=ledger,
             generated_card_ids=[item.card_id for item in generated if item.status == "generated"],
         )
+        mandatory_note_ids = tuple(
+            item.note_id
+            for item in classifications
+            if selection_eligible(item, source)
+            and any(
+                concept.importance == "high" or concept.emphasis_flag
+                for concept in ledger.concepts
+                if concept.concept_id in item.covered_concept_ids
+            )
+        )
+        overflow_acknowledgement = None
+        if len(selected) + len(generated_ids) > 70:
+            overflow_acknowledgement = self.repository.issue_card_centric_overflow_acknowledgement(
+                context.job.id,
+                review_revision=context.job.review_revision,
+                selected_note_ids=selected,
+                selected_generated_ids=generated_ids,
+                mandatory_note_ids=mandatory_note_ids,
+                mandatory_generated_ids=generated_ids,
+                cap=70,
+            )
         selected_set = set(selected)
         source_by_id = {passage.passage_id: passage for passage in source.passages}
         candidate_rows = tuple(
@@ -837,17 +858,8 @@ class CurationServicesRunner:
                 "target": 65,
                 "cap": 70,
                 "minimum_target": 60,
-                "mandatory_note_ids": [
-                    item.note_id
-                    for item in classifications
-                    if selection_eligible(item, source)
-                    and any(
-                        concept.importance == "high" or concept.emphasis_flag
-                        for concept in ledger.concepts
-                        if concept.concept_id in item.covered_concept_ids
-                    )
-                ],
-                "overflow_acknowledgement": None,
+                "mandatory_note_ids": list(mandatory_note_ids),
+                "overflow_acknowledgement": overflow_acknowledgement,
             },
             candidates=candidate_rows,
             gap_cards=gap_cards,
