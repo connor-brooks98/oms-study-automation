@@ -36,6 +36,23 @@ class CardCentricPassage(CardCentricContract):
     content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     text: str = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def validate_classifier_passage_id(self) -> "CardCentricPassage":
+        prefixes = {
+            "summary": "SUM:",
+            "transcript": "TRX:",
+            "slide": "SLD:",
+        }
+        prefix = prefixes[self.authority]
+        if (
+            not self.source_id.startswith(prefix)
+            or not self.passage_id.startswith(f"{self.source_id}:P:")
+        ):
+            raise ValueError(
+                "classifier passage IDs must be unique source-prefixed IDs"
+            )
+        return self
+
 
 class CardCentricSourceIndex(CardCentricContract):
     snapshot_id: str = Field(min_length=1)
@@ -93,14 +110,31 @@ class CensusTrust(CardCentricContract):
     untagged_rate: float = Field(ge=0, le=1)
     safe_untagged_rate: float = Field(gt=0, le=1)
 
+    @field_validator("safe_untagged_rate")
+    @classmethod
+    def three_percent_threshold(cls, value: float) -> float:
+        if value != 0.03:
+            raise ValueError("card-centric untagged threshold must be three percent")
+        return value
+
 
 class SnapshotCensus(CardCentricContract):
     snapshot_id: str = Field(min_length=1)
     denominator_count: int = Field(ge=0)
     tagged_count: int = Field(ge=0)
+    other_system_tagged_count: int = Field(ge=0)
     untagged_count: int = Field(ge=0)
+    deck_excluded_count: int = Field(ge=0)
     excluded_count: int = Field(ge=0)
-    mapping: dict[int, Literal["tagged", "untagged", "excluded"]]
+    mapping: dict[
+        int,
+        Literal[
+            "target_tagged",
+            "other_system_excluded",
+            "untagged",
+            "deck_excluded",
+        ],
+    ]
     filters_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     trust: CensusTrust
 
@@ -108,17 +142,45 @@ class SnapshotCensus(CardCentricContract):
     def validate_accounting(self) -> "SnapshotCensus":
         counts = {
             status: sum(value == status for value in self.mapping.values())
-            for status in ("tagged", "untagged", "excluded")
+            for status in (
+                "target_tagged",
+                "other_system_excluded",
+                "untagged",
+                "deck_excluded",
+            )
         }
         if (
-            len(self.mapping) != self.denominator_count
-            or counts["tagged"] != self.tagged_count
+            len(self.mapping) != self.denominator_count + self.deck_excluded_count
+            or counts["target_tagged"] != self.tagged_count
+            or counts["other_system_excluded"] != self.other_system_tagged_count
             or counts["untagged"] != self.untagged_count
-            or counts["excluded"] != self.excluded_count
-            or self.tagged_count + self.untagged_count + self.excluded_count
+            or counts["deck_excluded"] != self.deck_excluded_count
+            or self.excluded_count
+            != self.other_system_tagged_count + self.deck_excluded_count
+            or (
+                self.tagged_count
+                + self.other_system_tagged_count
+                + self.untagged_count
+            )
             != self.denominator_count
         ):
             raise ValueError("snapshot census counts do not exactly account for notes")
+        expected_rate = (
+            0.0
+            if self.denominator_count == 0
+            else self.untagged_count / self.denominator_count
+        )
+        expected_decision = (
+            "trusted"
+            if self.denominator_count > 0
+            and expected_rate < self.trust.safe_untagged_rate
+            else "blocked"
+        )
+        if (
+            self.trust.untagged_rate != expected_rate
+            or self.trust.decision != expected_decision
+        ):
+            raise ValueError("snapshot census trust does not match counted untagged rate")
         return self
 
 
@@ -148,6 +210,10 @@ CardFlag = Literal[
     "ambiguous",
     "non_atomic",
     "poor_cloze",
+    "context_trap",
+    "enumeration",
+    "stat_cloze",
+    "over_cloze",
 ]
 
 
@@ -155,7 +221,7 @@ class CardClassification(CardCentricContract):
     note_id: int = Field(gt=0)
     verdict: CardVerdict
     primary_subject: str = Field(min_length=1, max_length=500)
-    reason: str = Field(default="", max_length=500)
+    reason: str = Field(min_length=1, max_length=500)
     covered_concept_ids: tuple[str, ...] = ()
     supporting_passage_ids: tuple[str, ...] = ()
     flags: tuple[CardFlag, ...] = ()
@@ -166,6 +232,13 @@ class CardClassification(CardCentricContract):
         if len(value) != len(set(value)) or any(not item.strip() for item in value):
             raise ValueError("classifier identifiers and flags must be unique and nonblank")
         return value
+
+    @field_validator("reason")
+    @classmethod
+    def one_line_reason(cls, value: str) -> str:
+        if not value.strip() or "\n" in value or "\r" in value:
+            raise ValueError("classifier reason must be nonblank and one line")
+        return value.strip()
 
 
 class CardClassificationBatchOutput(CardCentricContract):

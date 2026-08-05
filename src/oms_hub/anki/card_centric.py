@@ -31,6 +31,19 @@ class CardCentricValidationError(ValueError):
 
 
 _SOURCE_ORDER = {"summary": 0, "transcript": 1, "slide": 2}
+CARD_CENTRIC_SYSTEM_TOKENS = (
+    "cardio",
+    "endo",
+    "gi",
+    "heme",
+    "msk",
+    "neuro",
+    "onc",
+    "psych",
+    "renal",
+    "resp",
+)
+_UNTAGGED_SAFE_RATE = 0.03
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,42 +104,59 @@ def build_snapshot_census(
     deck_allowlist: tuple[str, ...],
     scope_tokens: tuple[str, ...],
     snapshot_id: str = "companion_snapshot",
-    untagged_safe_rate: float = 0.03,
+    system_tokens: tuple[str, ...] = CARD_CENTRIC_SYSTEM_TOKENS,
 ) -> SnapshotCensus:
-    if not 0 < untagged_safe_rate <= 1:
-        raise ValueError("untagged safe rate must be between zero and one")
     _unique_card_ids(cards)
     normalized_decks = tuple(sorted({deck.casefold() for deck in deck_allowlist}))
     normalized_scope = _scope_tokens(scope_tokens)
-    mapping: dict[int, Literal["tagged", "untagged", "excluded"]] = {}
+    system_universe = tuple(
+        sorted(set(_scope_tokens(system_tokens)) | set(normalized_scope))
+    )
+    mapping: dict[
+        int,
+        Literal[
+            "target_tagged",
+            "other_system_excluded",
+            "untagged",
+            "deck_excluded",
+        ],
+    ] = {}
     for card in cards:
         eligible = not normalized_decks or bool(
             {deck.casefold() for deck in card.deck_names} & set(normalized_decks)
         )
         if not eligible:
-            mapping[card.note_id] = "excluded"
+            mapping[card.note_id] = "deck_excluded"
         elif _matches_scope(card.tags, normalized_scope):
-            mapping[card.note_id] = "tagged"
+            mapping[card.note_id] = "target_tagged"
+        elif _matches_scope(card.tags, system_universe):
+            mapping[card.note_id] = "other_system_excluded"
         else:
             mapping[card.note_id] = "untagged"
-    tagged = sum(value == "tagged" for value in mapping.values())
+    tagged = sum(value == "target_tagged" for value in mapping.values())
+    other_system = sum(
+        value == "other_system_excluded" for value in mapping.values()
+    )
     untagged = sum(value == "untagged" for value in mapping.values())
-    excluded = sum(value == "excluded" for value in mapping.values())
-    in_scope_denominator = tagged + untagged
-    rate = 0.0 if in_scope_denominator == 0 else untagged / in_scope_denominator
-    trusted = rate < untagged_safe_rate
+    deck_excluded = sum(value == "deck_excluded" for value in mapping.values())
+    denominator = tagged + other_system + untagged
+    rate = 0.0 if denominator == 0 else untagged / denominator
+    trusted = denominator > 0 and rate < _UNTAGGED_SAFE_RATE
     return SnapshotCensus(
         snapshot_id=snapshot_id,
-        denominator_count=len(cards),
+        denominator_count=denominator,
         tagged_count=tagged,
+        other_system_tagged_count=other_system,
         untagged_count=untagged,
-        excluded_count=excluded,
+        deck_excluded_count=deck_excluded,
+        excluded_count=other_system + deck_excluded,
         mapping={note_id: mapping[note_id] for note_id in sorted(mapping)},
         filters_sha256=_sha(
             {
                 "snapshot_id": snapshot_id,
                 "deck_allowlist": normalized_decks,
                 "scope_tokens": normalized_scope,
+                "system_tokens": system_universe,
                 "cards": [
                     {"note_id": card.note_id, "content_sha256": card.content_sha256}
                     for card in sorted(cards, key=lambda card: card.note_id)
@@ -138,11 +168,15 @@ def build_snapshot_census(
             reason=(
                 "untagged rate is within the card_centric_v1 tag-scope threshold"
                 if trusted
-                else "untagged rate exceeds the card_centric_v1 tag-scope threshold; "
-                "residual sweep is not implemented"
+                else (
+                    "no deck-eligible notes are available for tag-scope trust"
+                    if denominator == 0
+                    else "untagged rate exceeds the card_centric_v1 tag-scope threshold; "
+                    "residual sweep is not implemented"
+                )
             ),
             untagged_rate=rate,
-            safe_untagged_rate=untagged_safe_rate,
+            safe_untagged_rate=_UNTAGGED_SAFE_RATE,
         ),
     )
 
@@ -162,7 +196,7 @@ def scope_cards(
         sorted(
             card.note_id
             for card in cards
-            if census.mapping[card.note_id] == "tagged"
+            if census.mapping[card.note_id] == "target_tagged"
             and _matches_scope(card.tags, tokens)
         )
     )
@@ -355,7 +389,7 @@ def _to_card_passage(passage: SourcePassage) -> CardCentricPassage:
             f"source kind {passage.source_kind.value} is not usable in card-centric prefix"
         )
     return CardCentricPassage(
-        passage_id=passage.passage_id,
+        passage_id=f"{passage.source_id}:P:{passage.passage_id[:16]}",
         source_id=passage.source_id,
         source_kind=authority,
         authority=authority,

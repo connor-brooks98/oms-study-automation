@@ -9,11 +9,14 @@ from oms_hub.anki.card_centric import (
     build_snapshot_census,
     build_source_index,
     scope_cards,
+    selection_eligible,
 )
 from oms_hub.anki.card_centric_contracts import (
     CardClassification,
     CardClassificationBatchOutput,
     CardRecord,
+    CensusTrust,
+    SnapshotCensus,
 )
 from oms_hub.anki.domain import SourceKind
 from oms_hub.anki.sources import SourcePassage
@@ -76,7 +79,12 @@ def test_source_index_orders_summary_transcript_slides_and_hashes_stably() -> No
     ]
     assert first.prefix == second.prefix
     assert first.source_sha256 == second.source_sha256
-    assert "SUM:12:CORE:01" in first.prefix
+    assert first.passages[0].passage_id.startswith("SUM:12:CORE:01:P:")
+    assert all(
+        passage.passage_id.startswith(("SLD:", "TRX:", "SUM:"))
+        for passage in first.passages
+    )
+    assert 'id="SUM:12:CORE:01:P:' in first.prefix
 
 
 def test_census_accounts_for_every_note_and_refuses_unsafe_untagged_rate() -> None:
@@ -95,13 +103,90 @@ def test_census_accounts_for_every_note_and_refuses_unsafe_untagged_rate() -> No
     assert "untagged" in census.trust.reason
 
 
-def test_tag_scope_is_a_complete_deterministic_partition() -> None:
-    cards = [_card(3), _card(1), _card(2, ())]
+def test_census_excludes_other_recognized_systems_from_untagged_count() -> None:
+    cards = [
+        *[_card(note_id) for note_id in range(1, 98)],
+        _card(98, ("#AK_Step::Cardio",)),
+        _card(99, ("#AK_Step::GI",)),
+        _card(100, ()),
+    ]
+
     census = build_snapshot_census(
         cards,
         deck_allowlist=("AnKing",),
         scope_tokens=("heme",),
-        untagged_safe_rate=0.5,
+    )
+
+    assert census.denominator_count == 100
+    assert census.tagged_count == 97
+    assert census.other_system_tagged_count == 2
+    assert census.untagged_count == 1
+    assert census.trust.untagged_rate == 0.01
+    assert census.trust.decision == "trusted"
+    assert census.mapping[98] == "other_system_excluded"
+    assert census.mapping[99] == "other_system_excluded"
+    assert census.mapping[100] == "untagged"
+
+
+def test_census_rejects_inconsistent_rate_decision_and_zero_denominator() -> None:
+    mapping = {1: "target_tagged"}
+    with pytest.raises(ValueError, match="trust"):
+        SnapshotCensus(
+            snapshot_id="snapshot-1",
+            denominator_count=1,
+            tagged_count=1,
+            other_system_tagged_count=0,
+            untagged_count=0,
+            deck_excluded_count=0,
+            excluded_count=0,
+            mapping=mapping,
+            filters_sha256="a" * 64,
+            trust=CensusTrust(
+                decision="blocked",
+                reason="bad",
+                untagged_rate=0.01,
+                safe_untagged_rate=0.03,
+            ),
+        )
+
+    zero = build_snapshot_census(
+        [_card(1, ("#AK_Step::Cardio",))],
+        deck_allowlist=("Different deck",),
+        scope_tokens=("heme",),
+    )
+    assert zero.denominator_count == 0
+    assert zero.trust.untagged_rate == 0.0
+    assert zero.trust.decision == "blocked"
+
+    with pytest.raises(ValueError, match="three percent"):
+        CensusTrust(
+            decision="trusted",
+            reason="bad threshold",
+            untagged_rate=0.0,
+            safe_untagged_rate=0.04,
+        )
+
+
+def test_census_blocks_exactly_at_the_three_percent_boundary() -> None:
+    census = build_snapshot_census(
+        [
+            *[_card(note_id) for note_id in range(1, 98)],
+            *[_card(note_id, ()) for note_id in range(98, 101)],
+        ],
+        deck_allowlist=("AnKing",),
+        scope_tokens=("heme",),
+    )
+
+    assert census.trust.untagged_rate == 0.03
+    assert census.trust.decision == "blocked"
+
+
+def test_tag_scope_is_a_complete_deterministic_partition() -> None:
+    cards = [_card(3), _card(1), _card(2, ("#AK_Step::Cardio",))]
+    census = build_snapshot_census(
+        cards,
+        deck_allowlist=("AnKing",),
+        scope_tokens=("heme",),
     )
     scoped = scope_cards(cards, census=census, scope_tokens=("heme",))
 
@@ -122,17 +207,39 @@ def test_classifier_rejects_invented_ids_ungrounded_yes_and_partial_batch() -> N
     for output in (
         CardClassificationBatchOutput(
             results=(
-                CardClassification(note_id=9, verdict="NO", primary_subject="x"),
+                CardClassification(
+                    note_id=9,
+                    verdict="NO",
+                    primary_subject="x",
+                    reason="not taught",
+                ),
             )
         ),
         CardClassificationBatchOutput(
             results=(
-                CardClassification(note_id=1, verdict="YES", primary_subject="x"),
-                CardClassification(note_id=2, verdict="NO", primary_subject="x"),
+                CardClassification(
+                    note_id=1,
+                    verdict="YES",
+                    primary_subject="x",
+                    reason="taught",
+                ),
+                CardClassification(
+                    note_id=2,
+                    verdict="NO",
+                    primary_subject="x",
+                    reason="not taught",
+                ),
             )
         ),
         CardClassificationBatchOutput(
-            results=(CardClassification(note_id=1, verdict="NO", primary_subject="x"),)
+            results=(
+                CardClassification(
+                    note_id=1,
+                    verdict="NO",
+                    primary_subject="x",
+                    reason="not taught",
+                ),
+            )
         ),
     ):
         with pytest.raises(CardCentricValidationError):
@@ -142,6 +249,54 @@ def test_classifier_rejects_invented_ids_ungrounded_yes_and_partial_batch() -> N
                 source_index=source,
                 concept_ids=(),
             )
+
+
+def test_classifier_validates_only_canonical_source_prefixed_passage_ids() -> None:
+    raw = _passage(SourceKind.SLIDE, "slide:1", "evidence")
+    source = build_source_index(
+        [raw],
+        snapshot_id="snapshot-1",
+        source_revision_hashes={7: "a" * 64},
+    )
+    card = _card(1)
+    classifier = CardCentricClassifier(StructuredTextService(_Generator([])))
+    canonical = source.passages[0].passage_id
+    accepted = CardClassificationBatchOutput(
+        results=(
+            CardClassification(
+                note_id=1,
+                verdict="YES",
+                primary_subject="anemia",
+                reason="slide supports the tested fact",
+                supporting_passage_ids=(canonical,),
+            ),
+        )
+    )
+
+    result = classifier.validate_output(
+        accepted,
+        cards=(card,),
+        source_index=source,
+        concept_ids=(),
+    )
+    assert selection_eligible(result[0], source)
+
+    opaque = accepted.model_copy(
+        update={
+            "results": (
+                accepted.results[0].model_copy(
+                    update={"supporting_passage_ids": (raw.passage_id,)}
+                ),
+            )
+        }
+    )
+    with pytest.raises(CardCentricValidationError, match="passage"):
+        classifier.validate_output(
+            opaque,
+            cards=(card,),
+            source_index=source,
+            concept_ids=(),
+        )
 
 
 def test_classifier_uses_cached_prefix_and_restores_parallel_batch_order() -> None:
@@ -171,6 +326,25 @@ def test_classifier_uses_cached_prefix_and_restores_parallel_batch_order() -> No
     assert [batch.note_ids for batch in result.telemetry.batches] == [(3,), (1,), (2,)]
 
 
+def test_classifier_contract_requires_one_line_reason_and_architecture_flags() -> None:
+    classified = CardClassification(
+        note_id=1,
+        verdict="MAYBE",
+        primary_subject="anemia",
+        reason="lecture context is ambiguous",
+        flags=("context_trap", "enumeration", "stat_cloze", "over_cloze"),
+    )
+
+    assert classified.flags[-1] == "over_cloze"
+    with pytest.raises(ValueError, match="reason"):
+        CardClassification(
+            note_id=1,
+            verdict="NO",
+            primary_subject="anemia",
+            reason="line one\nline two",
+        )
+
+
 class _Generator:
     def __init__(self, outputs: list[CardClassificationBatchOutput]) -> None:
         self.outputs = list(outputs)
@@ -184,7 +358,12 @@ class _Generator:
             if self.outputs
             else CardClassificationBatchOutput(
                 results=tuple(
-                    CardClassification(note_id=item["note_id"], verdict="NO", primary_subject="x")
+                    CardClassification(
+                        note_id=item["note_id"],
+                        verdict="NO",
+                        primary_subject="x",
+                        reason="not taught",
+                    )
                     for item in json.loads(input_text)["cards"]
                 )
             )
