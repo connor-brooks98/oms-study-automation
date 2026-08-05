@@ -21,7 +21,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 14
+LATEST_SCHEMA_VERSION = 15
 
 
 def _ensure_column(
@@ -224,6 +224,45 @@ def _upgrade_studio_run_active_label_index(database: "Database") -> None:
         )
 
 
+def _upgrade_quiz_import_v15(database: "Database") -> None:
+    """Add durable direct-import provenance without disturbing older workflows."""
+    source_columns = {
+        "purpose": "VARCHAR(30) NOT NULL DEFAULT 'notebook'",
+        "snapshot_sha256": "VARCHAR(64)",
+        "media_type": "VARCHAR(100)",
+        "final_url": "TEXT",
+    }
+    for name, definition in source_columns.items():
+        _ensure_column(database, "studio_sources", name, definition)
+
+    run_columns = {
+        "workflow_kind": "VARCHAR(30) NOT NULL DEFAULT 'notebook_generation'",
+        "content_kind": "VARCHAR(30) NOT NULL DEFAULT 'exam_review'",
+    }
+    for name, definition in run_columns.items():
+        _ensure_column(database, "studio_runs", name, definition)
+
+    _ensure_column(
+        database,
+        "published_quizzes",
+        "content_kind",
+        "VARCHAR(30) NOT NULL DEFAULT 'lecture_quiz'",
+    )
+    inspector = inspect(database.engine)
+    if not inspector.has_table("published_quizzes"):
+        return
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE published_quizzes SET content_kind = "
+                "CASE WHEN studio_run_id IS NOT NULL THEN 'exam_review' "
+                "ELSE 'lecture_quiz' END "
+                "WHERE content_kind IS NULL OR content_kind = '' "
+                "OR (studio_run_id IS NOT NULL AND content_kind = 'lecture_quiz')"
+            )
+        )
+
+
 def _upgrade_gap_card_identity(database: "Database") -> None:
     if database.engine.dialect.name != "sqlite":
         return
@@ -351,6 +390,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_generation_job_columns(database)
     _upgrade_studio_columns(database)
     _upgrade_studio_run_active_label_index(database)
+    _upgrade_quiz_import_v15(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

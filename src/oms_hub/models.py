@@ -346,6 +346,10 @@ class StudioSourceModel(Base):
     original_filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
     payload_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    purpose: Mapped[str] = mapped_column(String(30), default="notebook")
+    snapshot_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    media_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    final_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     state: Mapped[str] = mapped_column(String(30), default="pending")
     attempts: Mapped[int] = mapped_column(default=0)
     next_attempt_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
@@ -384,6 +388,10 @@ class StudioRunModel(Base):
     label: Mapped[str] = mapped_column(String(300))
     label_key: Mapped[str] = mapped_column(String(300), default="")
     prompt: Mapped[str] = mapped_column(Text)
+    workflow_kind: Mapped[str] = mapped_column(
+        String(30), default="notebook_generation"
+    )
+    content_kind: Mapped[str] = mapped_column(String(30), default="exam_review")
     state: Mapped[str] = mapped_column(String(30), default="queued")
     stage: Mapped[str] = mapped_column(String(30), default="validate")
     attempts: Mapped[int] = mapped_column(default=0)
@@ -415,6 +423,64 @@ class StudioRunSourceModel(Base):
     remote_source_id: Mapped[str] = mapped_column(String(200))
     source_title: Mapped[str] = mapped_column(String(500))
     position: Mapped[int]
+
+
+class StudioImportRunSourceModel(Base):
+    __tablename__ = "studio_import_run_sources"
+    __table_args__ = (
+        UniqueConstraint("run_id", "source_id"),
+        UniqueConstraint("run_id", "position"),
+        Index("ix_studio_import_run_sources_run", "run_id", "position"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("studio_runs.id"))
+    source_id: Mapped[str] = mapped_column(ForeignKey("studio_sources.id"))
+    source_role: Mapped[str] = mapped_column(String(40))
+    attach_to_notebook: Mapped[bool] = mapped_column(default=False)
+    remote_notebook_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    remote_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    position: Mapped[int]
+
+
+class StudioRunArtifactModel(Base):
+    __tablename__ = "studio_run_artifacts"
+    __table_args__ = (
+        UniqueConstraint("run_id", "artifact_key"),
+        Index("ix_studio_run_artifacts_run", "run_id", "artifact_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("studio_runs.id"))
+    artifact_key: Mapped[str] = mapped_column(String(500))
+    signature_sha256: Mapped[str] = mapped_column(String(64))
+    payload_json: Mapped[str] = mapped_column(Text)
+    provider: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class StudioQuestionReviewModel(Base):
+    __tablename__ = "studio_question_reviews"
+    __table_args__ = (
+        UniqueConstraint("run_id", "question_id"),
+        Index("ix_studio_question_reviews_run", "run_id", "question_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("studio_runs.id"))
+    question_id: Mapped[str] = mapped_column(String(200))
+    answer_provenance: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    verification_required: Mapped[bool] = mapped_column(default=False)
+    verified_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    source_refs_json: Mapped[str] = mapped_column(Text, default="[]")
+    extraction_confidence: Mapped[float] = mapped_column()
+    diagnostics_json: Mapped[str] = mapped_column(Text, default="[]")
+    original_identifier: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
 
 
 class StudioRunAttemptModel(Base):
@@ -595,6 +661,7 @@ class PublishedQuizModel(Base):
     label_key: Mapped[str] = mapped_column(String(300), default="")
     title: Mapped[str] = mapped_column(String(300))
     payload_json: Mapped[str] = mapped_column(Text)
+    content_kind: Mapped[str] = mapped_column(String(30), default="lecture_quiz")
     version: Mapped[int] = mapped_column(default=1)
     active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)

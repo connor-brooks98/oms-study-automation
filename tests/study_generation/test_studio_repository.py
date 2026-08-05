@@ -1,18 +1,38 @@
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as OrmSession
 
 from oms_hub.db import Database
-from oms_hub.models import PublishedQuizMediaModel, PublishedQuizModel, StudioRunModel
+from oms_hub.models import (
+    PublishedQuizMediaModel,
+    PublishedQuizModel,
+    StudioRunModel,
+    StudioSourceModel,
+)
 from oms_hub.study_generation.domain import (
     NativeQuiz,
     QuizChoice,
     QuizImageRef,
     QuizQuestion,
 )
-from oms_hub.study_generation.studio_domain import StudioSourceType, StudioStoredImage
+from oms_hub.study_generation.practice_domain import (
+    AnswerProvenance,
+    DiagnosticSeverity,
+    DraftDiagnostic,
+    ImportSourceRole,
+    ImportSourceSelection,
+    QuestionDraft,
+    QuestionSourceRef,
+    QuizContentKind,
+)
+from oms_hub.study_generation.studio_domain import (
+    StudioSourceState,
+    StudioSourceType,
+    StudioStoredImage,
+)
 from oms_hub.study_generation.studio_repository import StudioRepository
 
 _OPEN_DATABASES: list[Database] = []
@@ -78,6 +98,112 @@ def _stored_image(tmp_path: Path, name: str) -> StudioStoredImage:
         height=100,
         original_filename=name,
     )
+
+
+def _ready_local_source(repository: StudioRepository, title: str):
+    source = repository.create_source("Neuro", 1, StudioSourceType.FILE, title)
+    with repository.database.session() as session:
+        stored = session.get(StudioSourceModel, source.id)
+        assert stored is not None
+        stored.state = StudioSourceState.READY.value
+    return repository.get(source.id)
+
+
+def test_import_run_persists_ordered_source_roles_and_stage_artifact(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    questions = _ready_local_source(repository, "Questions")
+    answers = _ready_local_source(repository, "Answers")
+    assert questions is not None
+    assert answers is not None
+
+    run = repository.queue_import_run(
+        "Neuro",
+        1,
+        "Exam review",
+        "Neuro",
+        1,
+        QuizContentKind.PRACTICE_QUESTIONS,
+        (
+            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
+            ImportSourceSelection(answers.id, ImportSourceRole.ANSWER_KEY),
+        ),
+    )
+    repository.save_run_artifact(run.id, f"parse:{questions.id}", "a" * 64, "{}")
+    repository.save_run_artifact(run.id, f"parse:{questions.id}", "b" * 64, "{\"v\": 2}")
+
+    assert [source.role for source in repository.import_sources(run.id)] == [
+        ImportSourceRole.QUESTIONS,
+        ImportSourceRole.ANSWER_KEY,
+    ]
+    with repository.database.session() as session:
+        artifact = session.execute(
+            text(
+                "SELECT signature_sha256, payload_json FROM studio_run_artifacts "
+                "WHERE run_id = :run_id"
+            ),
+            {"run_id": run.id},
+        ).one()
+    assert artifact == ("b" * 64, '{"v": 2}')
+
+
+def test_save_question_reviews_replaces_prior_provenance_for_the_run(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    source = _ready_local_source(repository, "Questions")
+    assert source is not None
+    run = repository.queue_import_run(
+        "Neuro",
+        1,
+        "Exam review",
+        "Neuro",
+        1,
+        QuizContentKind.PRACTICE_QUESTIONS,
+        (ImportSourceSelection(source.id, ImportSourceRole.QUESTIONS),),
+    )
+    initial = QuestionDraft(
+        "q1",
+        "1",
+        "What is the diagnosis?",
+        ("A", "B"),
+        0,
+        "Because.",
+        None,
+        (QuestionSourceRef(source.id, "s1", "p1"),),
+        AnswerProvenance.GENERATED_BY_AI,
+        0.5,
+        (DraftDiagnostic("needs-review", "Verify answer", DiagnosticSeverity.BLOCKER),),
+        True,
+        None,
+    )
+    corrected = QuestionDraft(
+        "q1",
+        "1",
+        "What is the diagnosis?",
+        ("A", "B"),
+        0,
+        "Because.",
+        None,
+        (QuestionSourceRef(source.id, "s1", "p1"),),
+        AnswerProvenance.MANUALLY_CORRECTED,
+        1.0,
+        (),
+        False,
+        "2026-08-05T12:00:00+00:00",
+    )
+
+    repository.save_question_reviews(run.id, (initial,))
+    repository.save_question_reviews(run.id, (corrected,))
+
+    with repository.database.session() as session:
+        review = session.execute(
+            text(
+                "SELECT answer_provenance, verification_required, diagnostics_json "
+                "FROM studio_question_reviews WHERE run_id = :run_id AND question_id = 'q1'"
+            ),
+            {"run_id": run.id},
+        ).one()
+    assert review == ("manually_corrected", 0, "[]")
 
 
 def test_await_image_review_reentry_deletes_orphaned_asset(tmp_path: Path) -> None:

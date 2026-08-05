@@ -236,6 +236,7 @@ class PublishedQuizRecord:
     quiz: NativeQuiz
     version: int
     active: bool
+    content_kind: str = "lecture_quiz"
 
 
 @dataclass(frozen=True, slots=True)

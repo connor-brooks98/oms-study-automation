@@ -1,5 +1,6 @@
+import json
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -14,8 +15,11 @@ from oms_hub.db import Database
 from oms_hub.models import (
     PublishedQuizMediaModel,
     PublishedQuizModel,
+    StudioImportRunSourceModel,
+    StudioQuestionReviewModel,
     StudioQuizImageOverrideModel,
     StudioQuizImageRequirementModel,
+    StudioRunArtifactModel,
     StudioRunAttemptModel,
     StudioRunModel,
     StudioRunSourceModel,
@@ -27,7 +31,16 @@ from oms_hub.study_generation.native_quiz import (
     parse_native_quiz,
     serialize_native_quiz,
 )
+from oms_hub.study_generation.practice_domain import (
+    ImportSourceRole,
+    ImportSourceSelection,
+    QuestionDraft,
+    QuizContentKind,
+    QuizWorkflowKind,
+    StudioSourcePurpose,
+)
 from oms_hub.study_generation.studio_domain import (
+    StudioImportRunSource,
     StudioQuizImageRequirement,
     StudioQuizReview,
     StudioRun,
@@ -336,6 +349,126 @@ class StudioRepository:
                 )
             session.flush()
             return self._run_domain(session, model)
+
+    def queue_import_run(
+        self,
+        subject: str,
+        exam_number: int,
+        label: str,
+        destination_subject: str,
+        destination_exam_number: int,
+        content_kind: QuizContentKind,
+        sources: Sequence[ImportSourceSelection],
+    ) -> StudioRun:
+        if len({source.source_id for source in sources}) != len(sources):
+            raise ValueError("selected import sources contain duplicates")
+        with self.database.session() as session:
+            model = StudioRunModel(
+                id=str(uuid4()),
+                subject=subject,
+                subject_key=normalize_subject(subject),
+                exam_number=exam_number,
+                destination_subject=destination_subject,
+                destination_subject_key=normalize_subject(destination_subject),
+                destination_exam_number=destination_exam_number,
+                label=label,
+                label_key=normalize_subject(label),
+                prompt="",
+                workflow_kind=QuizWorkflowKind.DIRECT_IMPORT.value,
+                content_kind=content_kind.value,
+            )
+            session.add(model)
+            session.flush()
+            for position, source in enumerate(sources):
+                session.add(
+                    StudioImportRunSourceModel(
+                        run_id=model.id,
+                        source_id=source.source_id,
+                        source_role=source.role.value,
+                        attach_to_notebook=source.attach_to_notebook,
+                        position=position,
+                    )
+                )
+            session.flush()
+            return self._run_domain(session, model)
+
+    def import_sources(self, run_id: str) -> tuple[StudioImportRunSource, ...]:
+        with self.database.session() as session:
+            models = session.scalars(
+                select(StudioImportRunSourceModel)
+                .where(StudioImportRunSourceModel.run_id == run_id)
+                .order_by(StudioImportRunSourceModel.position)
+            ).all()
+            return tuple(
+                StudioImportRunSource(
+                    model.source_id,
+                    ImportSourceRole(model.source_role),
+                    model.attach_to_notebook,
+                    model.remote_notebook_id,
+                    model.remote_source_id,
+                    model.position,
+                )
+                for model in models
+            )
+
+    def save_run_artifact(
+        self,
+        run_id: str,
+        artifact_key: str,
+        signature_sha256: str,
+        payload_json: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        request_id: str | None = None,
+    ) -> None:
+        with self.database.session() as session:
+            stored = session.scalar(
+                select(StudioRunArtifactModel).where(
+                    StudioRunArtifactModel.run_id == run_id,
+                    StudioRunArtifactModel.artifact_key == artifact_key,
+                )
+            )
+            if stored is None:
+                stored = StudioRunArtifactModel(run_id=run_id, artifact_key=artifact_key)
+                session.add(stored)
+            stored.signature_sha256 = signature_sha256
+            stored.payload_json = payload_json
+            stored.provider = provider
+            stored.model = model
+            stored.request_id = request_id
+
+    def save_question_reviews(self, run_id: str, drafts: Sequence[QuestionDraft]) -> None:
+        if len({draft.question_id for draft in drafts}) != len(drafts):
+            raise ValueError("question drafts contain duplicate question identifiers")
+        with self.database.session() as session:
+            session.execute(
+                delete(StudioQuestionReviewModel).where(
+                    StudioQuestionReviewModel.run_id == run_id
+                )
+            )
+            session.add_all(
+                StudioQuestionReviewModel(
+                    run_id=run_id,
+                    question_id=draft.question_id,
+                    answer_provenance=(
+                        draft.answer_provenance.value
+                        if draft.answer_provenance is not None
+                        else None
+                    ),
+                    verification_required=draft.verification_required,
+                    verified_at=draft.verified_at,
+                    source_refs_json=json.dumps(
+                        [asdict(source_ref) for source_ref in draft.source_refs]
+                    ),
+                    extraction_confidence=draft.extraction_confidence,
+                    diagnostics_json=json.dumps(
+                        [asdict(diagnostic) for diagnostic in draft.diagnostics]
+                    ),
+                    original_identifier=draft.original_identifier,
+                )
+                for draft in drafts
+            )
 
     def get_run(self, run_id: str) -> StudioRun:
         with self.database.session() as session:
@@ -780,6 +913,10 @@ class StudioRepository:
             model.remote_notebook_id,
             model.remote_source_id,
             model.converted_from_pptx,
+            StudioSourcePurpose(model.purpose),
+            model.snapshot_sha256,
+            model.media_type,
+            model.final_url,
         )
 
     @staticmethod
@@ -826,6 +963,8 @@ class StudioRepository:
                 )
                 for snapshot in snapshots
             ),
+            QuizWorkflowKind(model.workflow_kind),
+            QuizContentKind(model.content_kind),
         )
 
     @classmethod

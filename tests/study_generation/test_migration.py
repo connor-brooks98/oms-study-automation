@@ -1,7 +1,10 @@
+from pathlib import Path
+
 from sqlalchemy import inspect, text
 
 from oms_hub.db import Database
 from oms_hub.migrations import LATEST_SCHEMA_VERSION
+from oms_hub.models import PublishedQuizModel
 
 
 def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
@@ -98,3 +101,147 @@ def test_existing_generation_jobs_gain_later_optional_columns(tmp_path):
             )
         ).one()
     assert preserved == ("outline", "complete", 1)
+
+
+def _v14_database(tmp_path: Path) -> Database:
+    database = Database(f"sqlite:///{tmp_path / 'legacy-v14.db'}")
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE schema_version (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    version INTEGER NOT NULL,
+                    updated_at VARCHAR(40) NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO schema_version (id, version, updated_at) "
+                "VALUES (1, 14, '2026-08-05T12:00:00+00:00')"
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE studio_sources (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    subject VARCHAR(100) NOT NULL,
+                    subject_key VARCHAR(100) NOT NULL,
+                    exam_number INTEGER NOT NULL,
+                    source_type VARCHAR(20) NOT NULL,
+                    title VARCHAR(500) NOT NULL,
+                    original_filename VARCHAR(500),
+                    payload_path TEXT,
+                    source_url TEXT,
+                    state VARCHAR(30) NOT NULL,
+                    attempts INTEGER NOT NULL,
+                    next_attempt_at VARCHAR(40),
+                    diagnostic_source VARCHAR(40),
+                    error TEXT,
+                    remote_notebook_id VARCHAR(200),
+                    remote_source_id VARCHAR(200),
+                    converted_from_pptx BOOLEAN NOT NULL,
+                    created_at VARCHAR(40) NOT NULL,
+                    updated_at VARCHAR(40) NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE studio_runs (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    subject VARCHAR(100) NOT NULL,
+                    subject_key VARCHAR(100) NOT NULL,
+                    exam_number INTEGER NOT NULL,
+                    destination_subject VARCHAR(100) NOT NULL,
+                    destination_subject_key VARCHAR(100) NOT NULL,
+                    destination_exam_number INTEGER NOT NULL,
+                    label VARCHAR(300) NOT NULL,
+                    label_key VARCHAR(300) NOT NULL,
+                    prompt TEXT NOT NULL,
+                    state VARCHAR(30) NOT NULL,
+                    stage VARCHAR(30) NOT NULL,
+                    attempts INTEGER NOT NULL,
+                    next_attempt_at VARCHAR(40),
+                    diagnostic_source VARCHAR(40),
+                    error TEXT,
+                    notebook_id VARCHAR(200),
+                    raw_response TEXT,
+                    draft_payload_json TEXT,
+                    published_token VARCHAR(64),
+                    supersedes_run_id VARCHAR(36),
+                    created_at VARCHAR(40) NOT NULL,
+                    updated_at VARCHAR(40) NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE published_quizzes (
+                    token VARCHAR(64) NOT NULL PRIMARY KEY,
+                    lecture_id INTEGER,
+                    job_id VARCHAR(36),
+                    studio_run_id VARCHAR(36),
+                    destination_subject VARCHAR(100) NOT NULL,
+                    destination_subject_key VARCHAR(100) NOT NULL,
+                    destination_exam_number INTEGER NOT NULL,
+                    label VARCHAR(300) NOT NULL,
+                    label_key VARCHAR(300) NOT NULL,
+                    title VARCHAR(300) NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    active BOOLEAN NOT NULL,
+                    created_at VARCHAR(40) NOT NULL,
+                    updated_at VARCHAR(40) NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO published_quizzes (
+                    token, lecture_id, studio_run_id, destination_subject,
+                    destination_subject_key, destination_exam_number, label,
+                    label_key, title, payload_json, version, active, created_at, updated_at
+                ) VALUES
+                    ('lecture-token', 1, NULL, 'Neuro', 'neuro', 1, 'Lecture',
+                     'lecture', 'Lecture', '{"title":"Lecture","questions":[]}', 1, 1,
+                     '2026-08-05T12:00:00+00:00', '2026-08-05T12:00:00+00:00'),
+                    ('studio-token', NULL, 'studio-run', 'Neuro', 'neuro', 1, 'Studio',
+                     'studio', 'Studio', '{"title":"Studio","questions":[]}', 1, 1,
+                     '2026-08-05T12:00:00+00:00', '2026-08-05T12:00:00+00:00')
+                """
+            )
+        )
+    return database
+
+
+def test_v15_migration_backfills_existing_quiz_and_studio_rows_idempotently(
+    tmp_path: Path,
+) -> None:
+    database = _v14_database(tmp_path)
+
+    database.migrate()
+    database.migrate()
+
+    with database.session() as session:
+        lecture_quiz = session.get(PublishedQuizModel, "lecture-token")
+        studio_quiz = session.get(PublishedQuizModel, "studio-token")
+        assert lecture_quiz is not None
+        assert studio_quiz is not None
+        assert lecture_quiz.content_kind == "lecture_quiz"
+        assert studio_quiz.content_kind == "exam_review"
+    names = set(inspect(database.engine).get_table_names())
+    assert {
+        "studio_import_run_sources",
+        "studio_run_artifacts",
+        "studio_question_reviews",
+    } <= names
