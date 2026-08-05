@@ -21,6 +21,7 @@ from oms_hub.anki.contracts import (
 from oms_hub.anki.domain import ApplyState, ReviewChangeSet, TagPatch
 from oms_hub.anki.envelope import CurrentCollectionNote, EnvelopeBuilder
 from oms_hub.anki.gaps import GapCardProposal
+from oms_hub.anki.runtime import AnkiPreflight
 from oms_hub.anki.tag_policy import TagPolicy, tag_hash
 from oms_hub.llm.domain import ProviderName
 
@@ -47,6 +48,8 @@ class FakeGateway:
         }
         self.next_note_id = 100
         self.sync_calls = 0
+        self.notes_info_calls = 0
+        self.find_notes_calls = 0
         self.mutation_calls: list[str] = []
         self.sync_failures: dict[int, Exception] = {}
         self.mutation_failures: dict[str, Exception] = {}
@@ -63,9 +66,11 @@ class FakeGateway:
         self,
         note_ids: Sequence[int],
     ) -> list[dict[str, Any]]:
+        self.notes_info_calls += 1
         return [self.notes[note_id] for note_id in note_ids if note_id in self.notes]
 
     async def find_notes(self, query: str) -> list[int]:
+        self.find_notes_calls += 1
         assert query.startswith("tag:")
         marker = query.removeprefix("tag:")
         return [note_id for note_id, note in self.notes.items() if marker in note["tags"]]
@@ -185,6 +190,22 @@ class SimulatedProcessExit(RuntimeError):
     pass
 
 
+class FakeRuntime:
+    def __init__(self) -> None:
+        self.preflight_calls = 0
+
+    async def ensure_running(self) -> AnkiPreflight:
+        self.preflight_calls += 1
+        return AnkiPreflight(
+            reachable=True,
+            ankiconnect_version=6,
+            active_profile="Main",
+            collection_accessible=True,
+            sync_available=True,
+            blocking_reason=None,
+        )
+
+
 def _policy() -> TagPolicy:
     return TagPolicy(
         pipeline_owned_roots=("OMS",),
@@ -256,6 +277,23 @@ def _envelope(
     )
 
 
+def _v2_envelope(gateway: FakeGateway) -> ActionEnvelopeV2:
+    v1 = _envelope(gateway)
+    payload = v1.model_dump(mode="json")
+    payload.update(
+        {
+            "contract_version": 2,
+            "pipeline_contract_version": "card_centric_v1",
+            "model_config_sha256": "a" * 64,
+            "reconciliation_contract_version": "reconciliation-v1",
+            "review_revision": 1,
+            "overflow_acknowledgement_provenance": {"reviewer": "local"},
+        }
+    )
+    v2 = ActionEnvelopeV2.model_validate(payload)
+    return v2.model_copy(update={"payload_sha256": canonical_payload_sha256(v2)})
+
+
 def test_leading_sync_failure_makes_zero_mutation_calls() -> None:
     async def scenario() -> None:
         gateway = FakeGateway()
@@ -272,29 +310,37 @@ def test_leading_sync_failure_makes_zero_mutation_calls() -> None:
     asyncio.run(scenario())
 
 
-def test_v2_without_capability_fails_before_gateway_activity() -> None:
+@pytest.mark.parametrize(
+    "supported_versions",
+    [None, frozenset({1})],
+    ids=["default-v1-only", "explicit-v1-only"],
+)
+def test_v2_without_capability_fails_before_preflight_or_gateway_activity(
+    supported_versions: frozenset[int] | None,
+) -> None:
     async def scenario() -> None:
         gateway = FakeGateway()
-        v1 = _envelope(gateway)
-        payload = v1.model_dump()
-        payload.update(
-            {
-                "contract_version": 2,
-                "pipeline_contract_version": "card_centric_v1",
-                "model_config_sha256": "a" * 64,
-                "reconciliation_contract_version": "reconciliation-v1",
-                "review_revision": 1,
-                "overflow_acknowledgement_provenance": {"reviewer": "local"},
-            }
-        )
-        v2 = ActionEnvelopeV2.model_validate(payload)
-        v2 = v2.model_copy(update={"payload_sha256": canonical_payload_sha256(v2)})
+        runtime = FakeRuntime()
+        v2 = _v2_envelope(gateway)
         store = InMemoryApplyStore((v2,))
 
-        result = await ApplyCoordinator(store, gateway).apply(v2.envelope_id)
+        coordinator = (
+            ApplyCoordinator(store, gateway, runtime=runtime)
+            if supported_versions is None
+            else ApplyCoordinator(
+                store,
+                gateway,
+                runtime=runtime,
+                supported_envelope_versions=supported_versions,
+            )
+        )
+        result = await coordinator.apply(v2.envelope_id)
 
         assert result.state is ApplyState.FAILED_BEFORE_APPLY
+        assert runtime.preflight_calls == 0
         assert gateway.sync_calls == 0
+        assert gateway.notes_info_calls == 0
+        assert gateway.find_notes_calls == 0
         assert gateway.mutation_calls == []
 
     asyncio.run(scenario())
@@ -303,20 +349,7 @@ def test_v2_without_capability_fails_before_gateway_activity() -> None:
 def test_v2_with_explicit_capability_applies_idempotently() -> None:
     async def scenario() -> None:
         gateway = FakeGateway()
-        v1 = _envelope(gateway)
-        payload = v1.model_dump()
-        payload.update(
-            {
-                "contract_version": 2,
-                "pipeline_contract_version": "card_centric_v1",
-                "model_config_sha256": "a" * 64,
-                "reconciliation_contract_version": "reconciliation-v1",
-                "review_revision": 1,
-                "overflow_acknowledgement_provenance": {"reviewer": "local"},
-            }
-        )
-        v2 = ActionEnvelopeV2.model_validate(payload)
-        v2 = v2.model_copy(update={"payload_sha256": canonical_payload_sha256(v2)})
+        v2 = _v2_envelope(gateway)
         store = InMemoryApplyStore((v2,))
         coordinator = ApplyCoordinator(
             store, gateway, supported_envelope_versions=frozenset({1, 2})

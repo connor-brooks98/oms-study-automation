@@ -3,9 +3,14 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+from sqlalchemy import func, select
 
 from oms_hub.anki.audit import AuditCacheRecord
-from oms_hub.anki.contracts import SyncOperation
+from oms_hub.anki.contracts import (
+    ActionEnvelopeV2,
+    SyncOperation,
+    canonical_payload_sha256,
+)
 from oms_hub.anki.domain import (
     ApplyState,
     Candidate,
@@ -28,6 +33,7 @@ from oms_hub.anki.domain import (
 )
 from oms_hub.anki.envelope import EnvelopeBuilder
 from oms_hub.anki.judgment import JudgmentCacheRecord
+from oms_hub.anki.models import AnkiEnvelopeModel, AnkiEnvelopeOperationModel
 from oms_hub.anki.repository import (
     AnkiCurationRepository,
     InvalidCurationTransition,
@@ -84,6 +90,46 @@ def _job_request(lecture_id: int, *, snapshot: str = "snapshot-1") -> CreateCura
         summary_outline_id=91,
         summary_outline_sha256="b" * 64,
     )
+
+
+def _v2_envelope() -> ActionEnvelopeV2:
+    v1 = EnvelopeBuilder(
+        TagPolicy(
+            pipeline_owned_roots=("OMS",),
+            approved_optional_roots=("AnkiHub_Optional::LMU_OMS_II",),
+            source_managed_roots=("#Pathoma",),
+            version="tags-v1",
+        )
+    ).build(
+        ReviewChangeSet(expected_revision=0),
+        {},
+        envelope_id=UUID("5dc4f15e-df92-4a32-964e-026b5d518a80"),
+        snapshot_id="snapshot-1",
+        target_deck="OMS::Heme::Lecture 3",
+        target_tag="AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_3",
+    )
+    payload = v1.model_dump(mode="json")
+    payload.update(
+        {
+            "contract_version": 2,
+            "pipeline_contract_version": "card_centric_v1",
+            "model_config_sha256": "a" * 64,
+            "reconciliation_contract_version": "reconciliation-v1",
+            "review_revision": 0,
+            "overflow_acknowledgement_provenance": {"reviewer": "local"},
+        }
+    )
+    v2 = ActionEnvelopeV2.model_validate(payload)
+    return v2.model_copy(update={"payload_sha256": canonical_payload_sha256(v2)})
+
+
+def _envelope_row_counts(repository: AnkiCurationRepository) -> tuple[int, int]:
+    with repository.database.session() as session:
+        return (
+            session.scalar(select(func.count()).select_from(AnkiEnvelopeModel)) or 0,
+            session.scalar(select(func.count()).select_from(AnkiEnvelopeOperationModel))
+            or 0,
+        )
 
 
 def test_create_job_snapshots_all_mutable_inputs(tmp_path) -> None:
@@ -685,6 +731,74 @@ def test_envelope_is_immutable_and_receipt_updates_delivery_state(tmp_path) -> N
     }
     with pytest.raises(ValueError, match="already has an envelope"):
         repository.create_envelope(job.id, draft)
+
+
+@pytest.mark.parametrize(
+    ("versions", "case"),
+    [
+        (None, "missing heartbeat"),
+        ({}, "old heartbeat without the capability field"),
+        (
+            {"supported_envelope_contract_versions": (1,)},
+            "explicit V1-only heartbeat",
+        ),
+    ],
+)
+def test_v2_envelope_creation_requires_persisted_agent_capability(
+    tmp_path: Path,
+    versions: dict[str, object] | None,
+    case: str,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    before = repository.require_job(job.id)
+    if versions is not None:
+        repository.record_agent_heartbeat(
+            agent_id="anki-agent",
+            heartbeat_at="2026-08-05T18:00:00+00:00",
+            versions=versions,
+            active_snapshot_id="snapshot-1",
+            health={"status": "ok"},
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="envelope contract v2 unsupported; upgrade required; no mutation performed",
+    ):
+        repository.create_action_envelope(
+            job.id,
+            _v2_envelope(),
+            expected_review_revision=before.review_revision,
+        )
+
+    after = repository.require_job(job.id)
+    assert _envelope_row_counts(repository) == (0, 0), case
+    assert (after.state, after.review_revision, after.apply_state) == (
+        before.state,
+        before.review_revision,
+        before.apply_state,
+    )
+
+
+def test_v2_envelope_creation_persists_when_agent_advertises_capability(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    repository.record_agent_heartbeat(
+        agent_id="anki-agent",
+        heartbeat_at="2026-08-05T18:00:00+00:00",
+        versions={"supported_envelope_contract_versions": (1, 2)},
+        active_snapshot_id="snapshot-1",
+        health={"status": "ok"},
+    )
+    envelope = _v2_envelope()
+
+    stored = repository.create_action_envelope(job.id, envelope)
+
+    assert stored.payload_sha256 == canonical_payload_sha256(envelope)
+    assert repository.get_envelope(envelope.envelope_id) == envelope
+    assert _envelope_row_counts(repository) == (1, len(envelope.operations))
 
 
 def test_action_envelope_operation_journal_is_durable(tmp_path) -> None:
