@@ -10,6 +10,10 @@ class CurationState(StrEnum):
     SNAPSHOTTING_EMBEDDINGS = "snapshotting_embeddings"
     BUILDING_COMPANION_INDEX = "building_companion_index"
     BUILDING_SOURCE_INDEX = "building_source_index"
+    CARD_BUILDING_LEDGER = "card_building_ledger"
+    CARD_SCOPING_TAGS = "card_scoping_tags"
+    CARD_CLASSIFYING = "card_classifying"
+    CARD_COVERAGE = "card_coverage"
     BUILDING_LCL = "building_lcl"
     RETRIEVING_PASS_1 = "retrieving_pass_1"
     JUDGING_PASS_1 = "judging_pass_1"
@@ -59,7 +63,9 @@ class CurationStage(StrEnum):
     SYNC = "sync"
     VERIFY = "verify"
     CARD_LEDGER = "card_ledger"
+    CARD_TAG_SCOPE = "card_tag_scope"
     CARD_CLASSIFY = "card_classify"
+    CARD_COVERAGE = "card_coverage"
     CARD_RESIDUAL = "card_residual"
     CARD_GAP_FILL = "card_gap_fill"
 
@@ -102,6 +108,26 @@ class ResolvedModelConfiguration:
     def legacy(cls, provider: str, model: str) -> "ResolvedModelConfiguration":
         stage = ResolvedStageModel(provider=provider, model=model)
         return cls("legacy_single_model", stage, stage, stage, stage)
+
+    @classmethod
+    def card_centric_default(
+        cls,
+        provider: str,
+        model: str,
+    ) -> "ResolvedModelConfiguration":
+        standard = ResolvedStageModel(provider=provider, model=model)
+        classifier = ResolvedStageModel(
+            provider=provider,
+            model=model,
+            thinking_mode="disabled",
+        )
+        return cls(
+            "card_centric_default",
+            standard,
+            classifier,
+            classifier,
+            standard,
+        )
 
     def canonical_document(self) -> dict[str, Any]:
         def stage(value: ResolvedStageModel) -> dict[str, Any]:

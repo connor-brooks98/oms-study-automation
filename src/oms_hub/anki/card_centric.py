@@ -1,0 +1,392 @@
+"""Deterministic S1/S3 and batched S4 services for card_centric_v1."""
+
+import asyncio
+import hashlib
+import json
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from typing import Literal
+
+from oms_hub.anki.card_centric_contracts import (
+    CardCentricPassage,
+    CardCentricSourceIndex,
+    CardClassification,
+    CardClassificationBatchOutput,
+    CardRecord,
+    CensusTrust,
+    ClassifierBatchAudit,
+    ClassifierResult,
+    ClassifierTelemetry,
+    SnapshotCensus,
+    TagScopeResult,
+)
+from oms_hub.anki.domain import SourceKind
+from oms_hub.anki.sources import SourcePassage
+from oms_hub.llm.domain import GenerationOptions, ProviderCapabilities, ProviderName
+from oms_hub.llm.structured import StructuredTextService
+
+
+class CardCentricValidationError(ValueError):
+    """A card-centric artifact or model response cannot be trusted."""
+
+
+_SOURCE_ORDER = {"summary": 0, "transcript": 1, "slide": 2}
+
+
+@dataclass(frozen=True, slots=True)
+class _CompletedBatch:
+    results: tuple[CardClassification, ...]
+    audit: ClassifierBatchAudit
+
+
+def build_source_index(
+    passages: Iterable[SourcePassage],
+    *,
+    snapshot_id: str,
+    source_revision_hashes: dict[int, str],
+    summary_outline_sha256: str | None = None,
+) -> CardCentricSourceIndex:
+    """Build the immutable S1 prefix: summary, transcript, then slides."""
+    converted = [_to_card_passage(passage) for passage in passages]
+    ordered = tuple(
+        sorted(
+            converted,
+            key=lambda passage: (
+                _SOURCE_ORDER[passage.authority],
+                passage.source_id,
+                passage.passage_id,
+            ),
+        )
+    )
+    if not ordered:
+        raise CardCentricValidationError("source index has no usable passages")
+    if len({passage.passage_id for passage in ordered}) != len(ordered):
+        raise CardCentricValidationError("source index has duplicate passage IDs")
+    prefix = "\n\n".join(
+        "<passage"
+        f' id="{passage.passage_id}" source_id="{passage.source_id}"'
+        f' authority="{passage.authority}">\n{passage.text}\n</passage>'
+        for passage in ordered
+    )
+    document = {
+        "snapshot_id": snapshot_id,
+        "source_revision_hashes": dict(sorted(source_revision_hashes.items())),
+        "summary_outline_sha256": summary_outline_sha256,
+        "passages": [passage.model_dump(mode="json") for passage in ordered],
+        "prefix": prefix,
+    }
+    return CardCentricSourceIndex(
+        snapshot_id=snapshot_id,
+        source_revision_hashes=source_revision_hashes,
+        summary_outline_sha256=summary_outline_sha256,
+        passages=ordered,
+        prefix=prefix,
+        source_sha256=_sha(document),
+    )
+
+
+def build_snapshot_census(
+    cards: Sequence[CardRecord],
+    *,
+    deck_allowlist: tuple[str, ...],
+    scope_tokens: tuple[str, ...],
+    snapshot_id: str = "companion_snapshot",
+    untagged_safe_rate: float = 0.03,
+) -> SnapshotCensus:
+    if not 0 < untagged_safe_rate <= 1:
+        raise ValueError("untagged safe rate must be between zero and one")
+    _unique_card_ids(cards)
+    normalized_decks = tuple(sorted({deck.casefold() for deck in deck_allowlist}))
+    normalized_scope = _scope_tokens(scope_tokens)
+    mapping: dict[int, Literal["tagged", "untagged", "excluded"]] = {}
+    for card in cards:
+        eligible = not normalized_decks or bool(
+            {deck.casefold() for deck in card.deck_names} & set(normalized_decks)
+        )
+        if not eligible:
+            mapping[card.note_id] = "excluded"
+        elif _matches_scope(card.tags, normalized_scope):
+            mapping[card.note_id] = "tagged"
+        else:
+            mapping[card.note_id] = "untagged"
+    tagged = sum(value == "tagged" for value in mapping.values())
+    untagged = sum(value == "untagged" for value in mapping.values())
+    excluded = sum(value == "excluded" for value in mapping.values())
+    in_scope_denominator = tagged + untagged
+    rate = 0.0 if in_scope_denominator == 0 else untagged / in_scope_denominator
+    trusted = rate < untagged_safe_rate
+    return SnapshotCensus(
+        snapshot_id=snapshot_id,
+        denominator_count=len(cards),
+        tagged_count=tagged,
+        untagged_count=untagged,
+        excluded_count=excluded,
+        mapping={note_id: mapping[note_id] for note_id in sorted(mapping)},
+        filters_sha256=_sha(
+            {
+                "snapshot_id": snapshot_id,
+                "deck_allowlist": normalized_decks,
+                "scope_tokens": normalized_scope,
+                "cards": [
+                    {"note_id": card.note_id, "content_sha256": card.content_sha256}
+                    for card in sorted(cards, key=lambda card: card.note_id)
+                ],
+            }
+        ),
+        trust=CensusTrust(
+            decision="trusted" if trusted else "blocked",
+            reason=(
+                "untagged rate is within the card_centric_v1 tag-scope threshold"
+                if trusted
+                else "untagged rate exceeds the card_centric_v1 tag-scope threshold; "
+                "residual sweep is not implemented"
+            ),
+            untagged_rate=rate,
+            safe_untagged_rate=untagged_safe_rate,
+        ),
+    )
+
+
+def scope_cards(
+    cards: Sequence[CardRecord],
+    *,
+    census: SnapshotCensus,
+    scope_tokens: tuple[str, ...],
+) -> TagScopeResult:
+    _unique_card_ids(cards)
+    ids = {card.note_id for card in cards}
+    if ids != set(census.mapping):
+        raise CardCentricValidationError("census mapping does not match snapshot cards")
+    tokens = _scope_tokens(scope_tokens)
+    scoped = tuple(
+        sorted(
+            card.note_id
+            for card in cards
+            if census.mapping[card.note_id] == "tagged"
+            and _matches_scope(card.tags, tokens)
+        )
+    )
+    unscoped = tuple(sorted(ids - set(scoped)))
+    if set(scoped) & set(unscoped) or set(scoped) | set(unscoped) != ids:
+        raise CardCentricValidationError("tag scope does not partition snapshot cards")
+    return TagScopeResult(
+        snapshot_id=census.snapshot_id,
+        filters_sha256=census.filters_sha256,
+        scoped_note_ids=scoped,
+        unscoped_note_ids=unscoped,
+    )
+
+
+@dataclass(slots=True)
+class CardCentricClassifier:
+    structured: StructuredTextService
+    instruction: str = (
+        "Classify every supplied Anki card against the cached lecture sources. "
+        "Return YES, MAYBE, or NO. YES requires cited source support. "
+        "Do not invent IDs; return exactly one result per card."
+    )
+    batch_size: int = 40
+    concurrency: int = 8
+    capabilities: ProviderCapabilities = ProviderCapabilities()
+
+    def __post_init__(self) -> None:
+        if self.batch_size < 1 or self.concurrency < 1:
+            raise ValueError("classifier batch size and concurrency must be positive")
+
+    async def classify(
+        self,
+        cards: Sequence[CardRecord],
+        *,
+        source_index: CardCentricSourceIndex,
+        concept_ids: tuple[str, ...],
+        provider: ProviderName,
+        model: str,
+    ) -> ClassifierResult:
+        _unique_card_ids(cards)
+        batches = tuple(_batches(cards, self.batch_size))
+        semaphore = asyncio.Semaphore(self.concurrency)
+
+        async def one(
+            batch_index: int,
+            batch: tuple[CardRecord, ...],
+        ) -> _CompletedBatch:
+            async with semaphore:
+                return await asyncio.to_thread(
+                    self._classify_batch,
+                    batch,
+                    batch_index=batch_index,
+                    source_index=source_index,
+                    concept_ids=concept_ids,
+                    provider=provider,
+                    model=model,
+                )
+
+        completed = await asyncio.gather(
+            *(one(index, batch) for index, batch in enumerate(batches))
+        )
+        results = tuple(
+            sorted(
+                (item for batch in completed for item in batch.results),
+                key=lambda item: item.note_id,
+            )
+        )
+        audits = tuple(
+            sorted(
+                (batch.audit for batch in completed),
+                key=lambda item: item.batch_index,
+            )
+        )
+        request_ids = tuple(audit.request_id for audit in audits)
+        return ClassifierResult(
+            results=results,
+            telemetry=ClassifierTelemetry(
+                batch_count=len(batches),
+                cache_prefix_sha256=hashlib.sha256(source_index.prefix.encode()).hexdigest(),
+                cache_mode=(
+                    "ephemeral"
+                    if self.capabilities.prompt_prefix_caching
+                    else "ordinary_prefix"
+                ),
+                provider=provider.value,
+                model=model,
+                request_ids=request_ids,
+                batches=audits,
+            ),
+        )
+
+    def _classify_batch(
+        self,
+        cards: tuple[CardRecord, ...],
+        *,
+        batch_index: int,
+        source_index: CardCentricSourceIndex,
+        concept_ids: tuple[str, ...],
+        provider: ProviderName,
+        model: str,
+    ) -> _CompletedBatch:
+        result = self.structured.generate_json(
+            self.instruction,
+            json.dumps(
+                {
+                    "cards": [card.model_dump(mode="json") for card in cards],
+                    "allowed_concept_ids": list(concept_ids),
+                    "allowed_supporting_passage_ids": [
+                        passage.passage_id for passage in source_index.passages
+                    ],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            output_model=CardClassificationBatchOutput,
+            provider=provider,
+            model=model,
+            options=GenerationOptions(cacheable_source_prefix=source_index.prefix),
+        )
+        return _CompletedBatch(
+            results=self.validate_output(
+                result.value,
+                cards=cards,
+                source_index=source_index,
+                concept_ids=concept_ids,
+            ),
+            audit=ClassifierBatchAudit(
+                batch_index=batch_index,
+                note_ids=tuple(card.note_id for card in cards),
+                request_id=result.request_id,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                cost_microusd=result.cost_microusd,
+                cache_creation_input_tokens=result.cache_creation_input_tokens,
+                cache_read_input_tokens=result.cache_read_input_tokens,
+            ),
+        )
+
+    def validate_output(
+        self,
+        output: CardClassificationBatchOutput,
+        *,
+        cards: Sequence[CardRecord],
+        source_index: CardCentricSourceIndex,
+        concept_ids: tuple[str, ...],
+    ) -> tuple[CardClassification, ...]:
+        expected = {card.note_id for card in cards}
+        observed = [result.note_id for result in output.results]
+        if len(observed) != len(set(observed)) or set(observed) != expected:
+            raise CardCentricValidationError(
+                "classifier output does not exactly partition batch cards"
+            )
+        passages = {passage.passage_id: passage for passage in source_index.passages}
+        allowed_concepts = set(concept_ids)
+        for result in output.results:
+            if not set(result.covered_concept_ids) <= allowed_concepts:
+                raise CardCentricValidationError("classifier invented a concept ID")
+            if not set(result.supporting_passage_ids) <= set(passages):
+                raise CardCentricValidationError("classifier invented a supporting passage ID")
+            if result.verdict == "YES" and not result.supporting_passage_ids:
+                raise CardCentricValidationError("classifier returned an ungrounded YES")
+        return tuple(sorted(output.results, key=lambda item: item.note_id))
+
+
+def selection_eligible(
+    result: CardClassification,
+    source_index: CardCentricSourceIndex,
+) -> bool:
+    """Encode future S5 coverage eligibility now, before S5 exists."""
+    passages = {passage.passage_id: passage for passage in source_index.passages}
+    return (
+        result.verdict == "YES"
+        and not result.flags
+        and any(
+            passage_id in passages and passages[passage_id].authority != "summary"
+            for passage_id in result.supporting_passage_ids
+        )
+    )
+
+
+def _to_card_passage(passage: SourcePassage) -> CardCentricPassage:
+    if passage.source_kind is SourceKind.SUMMARY:
+        authority: Literal["summary", "transcript", "slide"] = "summary"
+    elif passage.source_kind is SourceKind.TRANSCRIPT:
+        authority = "transcript"
+    elif passage.source_kind in {SourceKind.SLIDE, SourceKind.SPEAKER_NOTES}:
+        authority = "slide"
+    else:
+        raise CardCentricValidationError(
+            f"source kind {passage.source_kind.value} is not usable in card-centric prefix"
+        )
+    return CardCentricPassage(
+        passage_id=passage.passage_id,
+        source_id=passage.source_id,
+        source_kind=authority,
+        authority=authority,
+        revision_id=passage.revision_id,
+        content_sha256=passage.content_hash,
+        text=passage.text,
+    )
+
+
+def _scope_tokens(tokens: tuple[str, ...]) -> tuple[str, ...]:
+    values = tuple(sorted({value.strip().casefold() for value in tokens if value.strip()}))
+    if not values:
+        raise CardCentricValidationError("tag scope has no resolved tokens")
+    return values
+
+
+def _matches_scope(tags: Sequence[str], tokens: tuple[str, ...]) -> bool:
+    return any(token in tag.casefold() for token in tokens for tag in tags)
+
+
+def _unique_card_ids(cards: Sequence[CardRecord]) -> None:
+    if len({card.note_id for card in cards}) != len(cards):
+        raise CardCentricValidationError("snapshot contains duplicate note IDs")
+
+
+def _batches(cards: Sequence[CardRecord], size: int) -> Iterable[tuple[CardRecord, ...]]:
+    for start in range(0, len(cards), size):
+        yield tuple(cards[start : start + size])
+
+
+def _sha(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()

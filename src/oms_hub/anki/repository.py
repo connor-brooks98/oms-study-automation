@@ -85,8 +85,22 @@ ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
     },
     CurationState.BUILDING_SOURCE_INDEX: {
         CurationState.BUILDING_LCL,
+        CurationState.CARD_BUILDING_LEDGER,
         CurationState.FAILED,
     },
+    CurationState.CARD_BUILDING_LEDGER: {
+        CurationState.CARD_SCOPING_TAGS,
+        CurationState.FAILED,
+    },
+    CurationState.CARD_SCOPING_TAGS: {
+        CurationState.CARD_CLASSIFYING,
+        CurationState.FAILED,
+    },
+    CurationState.CARD_CLASSIFYING: {
+        CurationState.CARD_COVERAGE,
+        CurationState.FAILED,
+    },
+    CurationState.CARD_COVERAGE: {CurationState.FAILED},
     CurationState.BUILDING_LCL: {
         CurationState.RETRIEVING_PASS_1,
         CurationState.FAILED,
@@ -167,6 +181,10 @@ ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
         CurationState.PREFLIGHT,
         CurationState.BUILDING_SOURCE_INDEX,
         CurationState.BUILDING_LCL,
+        CurationState.CARD_BUILDING_LEDGER,
+        CurationState.CARD_SCOPING_TAGS,
+        CurationState.CARD_CLASSIFYING,
+        CurationState.CARD_COVERAGE,
         CurationState.RETRIEVING_PASS_1,
         CurationState.JUDGING_PASS_1,
         CurationState.LOCALIZING_MISSED_CONCEPTS,
@@ -190,6 +208,10 @@ _INTERRUPTED_PRE_REVIEW_STATES = {
     CurationState.BUILDING_COMPANION_INDEX,
     CurationState.BUILDING_SOURCE_INDEX,
     CurationState.BUILDING_LCL,
+    CurationState.CARD_BUILDING_LEDGER,
+    CurationState.CARD_SCOPING_TAGS,
+    CurationState.CARD_CLASSIFYING,
+    CurationState.CARD_COVERAGE,
     CurationState.RETRIEVING_PASS_1,
     CurationState.JUDGING_PASS_1,
     CurationState.LOCALIZING_MISSED_CONCEPTS,
@@ -210,6 +232,10 @@ _CLAIMABLE_STATES = {
     CurationState.PREFLIGHT,
     CurationState.BUILDING_SOURCE_INDEX,
     CurationState.BUILDING_LCL,
+    CurationState.CARD_BUILDING_LEDGER,
+    CurationState.CARD_SCOPING_TAGS,
+    CurationState.CARD_CLASSIFYING,
+    CurationState.CARD_COVERAGE,
     CurationState.RETRIEVING_PASS_1,
     CurationState.JUDGING_PASS_1,
     CurationState.LOCALIZING_MISSED_CONCEPTS,
@@ -229,6 +255,10 @@ _RETRY_STATE_BY_STAGE = {
     CurationStage.PREFLIGHT: CurationState.PREFLIGHT,
     CurationStage.SOURCE_INDEX: CurationState.BUILDING_SOURCE_INDEX,
     CurationStage.LCL: CurationState.BUILDING_LCL,
+    CurationStage.CARD_LEDGER: CurationState.CARD_BUILDING_LEDGER,
+    CurationStage.CARD_TAG_SCOPE: CurationState.CARD_SCOPING_TAGS,
+    CurationStage.CARD_CLASSIFY: CurationState.CARD_CLASSIFYING,
+    CurationStage.CARD_COVERAGE: CurationState.CARD_COVERAGE,
     CurationStage.RETRIEVAL_PASS_1: CurationState.RETRIEVING_PASS_1,
     CurationStage.JUDGMENT_PASS_1: CurationState.JUDGING_PASS_1,
     CurationStage.RESCUE: CurationState.LOCALIZING_MISSED_CONCEPTS,
@@ -267,9 +297,23 @@ class AnkiCurationRepository:
         self.database = database
 
     def create_job(self, request: CreateCurationJob) -> CurationJob:
-        model_config = request.resolved_model_config or ResolvedModelConfiguration.legacy(
-            request.provider, request.model
+        model_config = request.resolved_model_config or (
+            ResolvedModelConfiguration.card_centric_default(
+                request.provider,
+                request.model,
+            )
+            if request.pipeline_contract_version
+            is PipelineContractVersion.CARD_CENTRIC_V1
+            else ResolvedModelConfiguration.legacy(request.provider, request.model)
         )
+        if (
+            request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1
+            and (
+                model_config.classify_s4.thinking_mode != "disabled"
+                or model_config.residual_s6.thinking_mode != "disabled"
+            )
+        ):
+            raise ValueError("card-centric S4/S6 thinking must be disabled")
         model_config_json = _canonical_json(model_config.canonical_document())
         model_config_sha256 = _sha256_text(model_config_json)
         configuration = {

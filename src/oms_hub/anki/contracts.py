@@ -155,7 +155,13 @@ class CreateCurationJobRequest(ContractModel):
         return self
 
     def to_domain(self, *, model: str) -> CreateCurationJob:
-        resolved = _resolved_model_config(self.resolved_model_config, self.provider, model)
+        version = PipelineContractVersion(self.pipeline_contract_version)
+        resolved = _resolved_model_config(
+            self.resolved_model_config,
+            self.provider,
+            model,
+            version=version,
+        )
         return CreateCurationJob(
             lecture_id=self.lecture_id,
             block_id=self.block_id,
@@ -171,7 +177,7 @@ class CreateCurationJobRequest(ContractModel):
             gap_prompt_version=self.gap_prompt_version,
             provider=self.provider,
             model=model,
-            pipeline_contract_version=PipelineContractVersion(self.pipeline_contract_version),
+            pipeline_contract_version=version,
             resolved_model_config=resolved,
             source_revision_hashes=dict(self.source_revision_hashes),
             semantic_generation=self.semantic_generation,
@@ -185,8 +191,12 @@ def _resolved_model_config(
     value: dict[str, Any] | None,
     provider: str,
     model: str,
+    *,
+    version: PipelineContractVersion = PipelineContractVersion.RETRIEVAL_V4,
 ) -> ResolvedModelConfiguration:
     if value is None:
+        if version is PipelineContractVersion.CARD_CENTRIC_V1:
+            return ResolvedModelConfiguration.card_centric_default(provider, model)
         return ResolvedModelConfiguration.legacy(provider, model)
     try:
 
@@ -205,7 +215,7 @@ def _resolved_model_config(
                 ),
             )
 
-        return ResolvedModelConfiguration(
+        resolved = ResolvedModelConfiguration(
             profile=str(value["profile"]),
             ledger_s2=stage("ledger_s2"),
             classify_s4=stage("classify_s4"),
@@ -213,6 +223,15 @@ def _resolved_model_config(
             gap_fill_s7=stage("gap_fill_s7"),
             residual_unlocked=bool(value.get("residual_unlocked", False)),
         )
+        if (
+            version is PipelineContractVersion.CARD_CENTRIC_V1
+            and (
+                resolved.classify_s4.thinking_mode != "disabled"
+                or resolved.residual_s6.thinking_mode != "disabled"
+            )
+        ):
+            raise ValueError("card-centric S4/S6 thinking must be disabled")
+        return resolved
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("resolved model configuration is invalid") from exc
 

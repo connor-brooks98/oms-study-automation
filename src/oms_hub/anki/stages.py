@@ -7,6 +7,19 @@ from typing import Any, Literal, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from oms_hub.anki.audit import AuditRunResult, CardAuditService
+from oms_hub.anki.card_centric import (
+    CardCentricClassifier,
+    build_snapshot_census,
+    build_source_index,
+    scope_cards,
+)
+from oms_hub.anki.card_centric_contracts import (
+    CardCentricSourceIndex,
+    CardRecord,
+    ClassifierResult,
+    SnapshotCensus,
+    TagScopeResult,
+)
 from oms_hub.anki.convergence import (
     ConvergenceState,
     ExpansionResult,
@@ -55,7 +68,11 @@ from oms_hub.anki.pipeline import (
     StageProduct,
 )
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
-from oms_hub.anki.prompts import PromptSynchronizer, StaticPromptSynchronizer
+from oms_hub.anki.prompts import (
+    AnkiPromptLibrary,
+    PromptSynchronizer,
+    StaticPromptSynchronizer,
+)
 from oms_hub.anki.reconciliation import (
     AuditResolution,
     ConceptResolution,
@@ -95,7 +112,7 @@ from oms_hub.anki.v2_contracts import (
 )
 from oms_hub.ingestion.domain import StudyRevision
 from oms_hub.ingestion.repository import IngestionRepository
-from oms_hub.llm.domain import ProviderName
+from oms_hub.llm.domain import ProviderCapabilities, ProviderName
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.llm.structured import StructuredTextService
 
@@ -197,20 +214,21 @@ class PinnedCurationInputValidator:
                 f"Pinned companion generation {job.companion_generation} "
                 "is no longer active"
             )
-        semantic = self.semantic_store.load(
-            expected_model=self.semantic_model,
-            expected_dimensions=self.semantic_dimensions,
-        )
-        if job.semantic_generation is None:
-            raise PinnedInputChanged(
-                "The job has no pinned semantic generation; "
-                "start a new curation job"
+        if job.pipeline_contract_version.value == "retrieval_v4":
+            semantic = self.semantic_store.load(
+                expected_model=self.semantic_model,
+                expected_dimensions=self.semantic_dimensions,
             )
-        if str(semantic.manifest.generation) != job.semantic_generation:
-            raise PinnedInputChanged(
-                f"Pinned semantic generation {job.semantic_generation} "
-                "is no longer active"
-            )
+            if job.semantic_generation is None:
+                raise PinnedInputChanged(
+                    "The job has no pinned semantic generation; "
+                    "start a new curation job"
+                )
+            if str(semantic.manifest.generation) != job.semantic_generation:
+                raise PinnedInputChanged(
+                    f"Pinned semantic generation {job.semantic_generation} "
+                    "is no longer active"
+                )
         if job.source_index_generation is not None:
             try:
                 generation = self.source_indexes(job.id).current_generation()
@@ -284,6 +302,10 @@ class CurationServicesRunner:
             CurationStage.DEDUPE: self._finalize_outcomes,
             CurationStage.GAPS: self._generate_gaps,
             CurationStage.RECONCILIATION: self._reconciliation,
+            CurationStage.CARD_LEDGER: self._card_ledger_placeholder,
+            CurationStage.CARD_TAG_SCOPE: self._card_tag_scope,
+            CurationStage.CARD_CLASSIFY: self._card_classify,
+            CurationStage.CARD_COVERAGE: self._card_coverage_placeholder,
         }
         return await handlers[context.stage](context)
 
@@ -304,7 +326,7 @@ class CurationServicesRunner:
             coverage_id=context.job.judgment_rubric_version,
             gap_id=context.job.gap_prompt_version,
         )
-        return StageProduct(
+        product = StageProduct(
             kind="anki_preflight",
             payload={
                 "reachable": result.reachable,
@@ -333,6 +355,49 @@ class CurationServicesRunner:
                 "prompt_sync_detail": sync_result.detail,
             },
         )
+        if (
+            getattr(context.job, "pipeline_contract_version", None) is None
+            or context.job.pipeline_contract_version.value != "card_centric_v1"
+        ):
+            return product
+        try:
+            passages = await asyncio.to_thread(
+                self.source_extractor.extract,
+                context.job.source_revision_ids,
+                summary_outline_id=context.job.summary_outline_id,
+            )
+        except Exception as exc:  # source errors become an actionable S0 artifact
+            return StageProduct(
+                kind="card_centric_preflight_failure",
+                payload={
+                    "failure_code": "source_preflight_failed",
+                    "detail": str(exc),
+                },
+                blocking_error="card_centric_v1 preflight failed: source_preflight_failed",
+            )
+        kinds = {passage.source_kind for passage in passages}
+        required = {SourceKind.SLIDE, SourceKind.TRANSCRIPT, SourceKind.SUMMARY}
+        if not required <= kinds:
+            missing = sorted(kind.value for kind in required - kinds)
+            return StageProduct(
+                kind="card_centric_preflight_failure",
+                payload={
+                    "failure_code": "required_sources_missing",
+                    "missing_source_kinds": missing,
+                },
+                blocking_error=(
+                    "card_centric_v1 preflight failed: required_sources_missing "
+                    + ", ".join(missing)
+                ),
+            )
+        return StageProduct(
+            kind="card_centric_preflight",
+            payload={
+                **product.payload,
+                "required_source_kinds": ["slide", "transcript", "summary"],
+                "source_passage_count": len(passages),
+            },
+        )
 
     async def _source_index(
         self,
@@ -350,6 +415,41 @@ class CurationServicesRunner:
             raise ValueError(
                 "selected source revisions contain another lecture"
             )
+        if context.job.pipeline_contract_version.value == "card_centric_v1":
+            usable = [
+                passage
+                for passage in passages
+                if passage.source_kind
+                in {
+                    SourceKind.SUMMARY,
+                    SourceKind.TRANSCRIPT,
+                    SourceKind.SLIDE,
+                    SourceKind.SPEAKER_NOTES,
+                }
+            ]
+            source = build_source_index(
+                usable,
+                snapshot_id=context.job.index_snapshot_id,
+                source_revision_hashes=context.job.source_revision_hashes,
+                summary_outline_sha256=context.job.summary_outline_sha256,
+            )
+            cards = tuple(
+                _card_record(note) for note in self.companion.list_notes()
+            )
+            census = build_snapshot_census(
+                cards,
+                deck_allowlist=context.job.deck_allowlist,
+                scope_tokens=context.job.tag_allowlist,
+                snapshot_id=context.job.companion_generation or context.job.index_snapshot_id,
+            )
+            return StageProduct(
+                kind="card_centric_source_index",
+                payload={
+                    "source_index": source.model_dump(mode="json"),
+                    "census": census.model_dump(mode="json"),
+                    "cards": [card.model_dump(mode="json") for card in cards],
+                },
+            )
         generation = await self.source_indexes(
             context.job.id
         ).refresh(passages)
@@ -366,6 +466,109 @@ class CurationServicesRunner:
             job_pins={
                 "source_index_generation": str(generation.generation)
             },
+        )
+
+    async def _card_ledger_placeholder(self, context: StageContext) -> StageProduct:
+        source = _card_source_index(context)
+        return StageProduct(
+            kind="card_centric_ledger_placeholder",
+            payload={
+                "concept_ids": [],
+                "source_sha256": source.source_sha256,
+                "deferred_stage": "ledger_s2",
+                "status": "placeholder",
+            },
+        )
+
+    async def _card_tag_scope(self, context: StageContext) -> StageProduct:
+        source_payload = _payload(context, CurationStage.SOURCE_INDEX)
+        cards = _card_records(source_payload)
+        census = _card_census(source_payload)
+        if census.trust.decision != "trusted":
+            return StageProduct(
+                kind="card_centric_tag_scope_failure",
+                payload={
+                    "failure_code": "tag_scope_untrusted",
+                    "census": census.model_dump(mode="json"),
+                    "detail": census.trust.reason,
+                },
+                blocking_error=(
+                    "card_centric_v1 tag scope blocked: " + census.trust.reason
+                ),
+            )
+        scope = scope_cards(
+            cards,
+            census=census,
+            scope_tokens=context.job.tag_allowlist,
+        )
+        return StageProduct(
+            kind="card_centric_tag_scope",
+            payload={
+                "scope": scope.model_dump(mode="json"),
+                "census": census.model_dump(mode="json"),
+            },
+        )
+
+    async def _card_classify(self, context: StageContext) -> StageProduct:
+        source_payload = _payload(context, CurationStage.SOURCE_INDEX)
+        source = _card_source_index(context)
+        scope_payload = _payload(context, CurationStage.CARD_TAG_SCOPE)
+        try:
+            scope = TagScopeResult.model_validate(scope_payload["scope"])
+            concept_ids = tuple(
+                str(value)
+                for value in _payload(context, CurationStage.CARD_LEDGER).get("concept_ids", [])
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PinnedInputChanged("card-centric scope or ledger artifact is malformed") from exc
+        cards_by_id = {card.note_id: card for card in _card_records(source_payload)}
+        if set(scope.scoped_note_ids) | set(scope.unscoped_note_ids) != set(cards_by_id):
+            raise PinnedInputChanged("card-centric scope does not partition census cards")
+        selected = tuple(cards_by_id[note_id] for note_id in scope.scoped_note_ids)
+        stage_model = context.job.resolved_model_config.classify_s4
+        capabilities = _structured_capabilities(
+            self.structured,
+            ProviderName(stage_model.provider),
+            stage_model.model,
+        )
+        classifier = CardCentricClassifier(
+            self.structured,
+            instruction=_card_classifier_prompt(self.prompts),
+            capabilities=capabilities,
+        )
+        classified = await classifier.classify(
+            selected,
+            source_index=source,
+            concept_ids=concept_ids,
+            provider=ProviderName(stage_model.provider),
+            model=stage_model.model,
+        )
+        return StageProduct(
+            kind="card_centric_classification",
+            payload={
+                "classifier": classified.model_dump(mode="json"),
+                "model_config": context.job.resolved_model_config.canonical_document(),
+                "source_sha256": source.source_sha256,
+                "scoped_note_count": len(selected),
+            },
+            usage=_card_classifier_usage(classified),
+            cache_hits=sum(
+                audit.cache_read_input_tokens > 0
+                for audit in classified.telemetry.batches
+            ),
+        )
+
+    async def _card_coverage_placeholder(self, context: StageContext) -> StageProduct:
+        return StageProduct(
+            kind="card_centric_deferred_stage",
+            payload={
+                "failure_code": "coverage_s5_not_implemented",
+                "next_required_stage": "coverage_s5",
+                "message": "card_centric_v1 stops before coverage/residual/gap stages",
+            },
+            blocking_error=(
+                "card_centric_v1 stops safely at deferred coverage_s5 stage"
+            ),
         )
 
     async def _lcl(self, context: StageContext) -> StageProduct:
@@ -1568,6 +1771,84 @@ def _priority_candidate_groups(
 
 def _provider(context: StageContext) -> ProviderName:
     return ProviderName(context.job.provider)
+
+
+def _card_classifier_prompt(catalog: AnkiPromptCatalogService) -> str:
+    prompt = AnkiPromptLibrary(catalog.bundled_directory).load(
+        "card-centric-classifier"
+    )
+    return prompt.content
+
+
+def _structured_capabilities(
+    structured: StructuredTextService,
+    provider: ProviderName,
+    model: str,
+) -> ProviderCapabilities:
+    """Use Wave 2's model-aware capability API when the generator exposes it."""
+    capabilities_for = getattr(structured.generator, "capabilities_for", None)
+    if not callable(capabilities_for):
+        return ProviderCapabilities()
+    capabilities = capabilities_for(provider, model)
+    if not isinstance(capabilities, ProviderCapabilities):
+        raise PinnedInputChanged("LLM capability report is invalid")
+    return capabilities
+
+
+def _card_record(note: Any) -> CardRecord:
+    return CardRecord(
+        note_id=note.note_id,
+        content_sha256=note.content_sha256,
+        text=note.text,
+        extra=note.extra,
+        tags=tuple(note.tags),
+        deck_names=tuple(note.deck_names),
+    )
+
+
+def _card_records(payload: dict[str, Any]) -> tuple[CardRecord, ...]:
+    raw = payload.get("cards")
+    if not isinstance(raw, list):
+        raise PinnedInputChanged("card-centric source-index cards are malformed")
+    try:
+        cards = tuple(CardRecord.model_validate(value) for value in raw)
+    except (TypeError, ValueError) as exc:
+        raise PinnedInputChanged("card-centric source-index cards are malformed") from exc
+    if len({card.note_id for card in cards}) != len(cards):
+        raise PinnedInputChanged("card-centric source-index has duplicate cards")
+    return cards
+
+
+def _card_census(payload: dict[str, Any]) -> SnapshotCensus:
+    try:
+        return SnapshotCensus.model_validate(payload["census"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PinnedInputChanged("card-centric census is malformed") from exc
+
+
+def _card_source_index(context: StageContext) -> CardCentricSourceIndex:
+    payload = _payload(context, CurationStage.SOURCE_INDEX)
+    try:
+        return CardCentricSourceIndex.model_validate(payload["source_index"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PinnedInputChanged("card-centric source index is malformed") from exc
+
+
+def _card_classifier_usage(classified: ClassifierResult) -> StageUsage | None:
+    audits = classified.telemetry.batches
+    if not audits:
+        return None
+    request_ids = [audit.request_id for audit in audits]
+    identity = json.dumps(request_ids, separators=(",", ":"))
+    return StageUsage(
+        request_id=(
+            "card_classify:"
+            f"{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
+        ),
+        input_tokens=sum(audit.input_tokens for audit in audits),
+        output_tokens=sum(audit.output_tokens for audit in audits),
+        cost_microusd=sum(audit.cost_microusd for audit in audits),
+    )
 
 
 def _resolved_prompt(

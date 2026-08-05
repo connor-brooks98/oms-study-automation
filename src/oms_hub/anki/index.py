@@ -380,6 +380,10 @@ class AnkiIndex:
             ).fetchall()
         return _row_to_note(row, media_rows, deck_rows, source_rows)
 
+    def list_notes(self) -> tuple[NormalizedNote, ...]:
+        """Return the immutable companion snapshot in stable note-ID order."""
+        return tuple(self._all_notes())
+
     def search_tag(self, prefix: str) -> list[int]:
         with closing(sqlite3.connect(self.database_path)) as connection, connection:
             rows = connection.execute(

@@ -23,8 +23,8 @@ from oms_hub.anki.pipeline import (
     StageArtifactStore,
     StageContext,
     StageProduct,
-    UnsupportedPipelineContract,
     _stage_input_hash,
+    pipeline_stages,
     stage_definition,
 )
 from oms_hub.anki.repository import AnkiCurationRepository
@@ -52,6 +52,18 @@ class RecordingRunner:
             },
             metadata={"runner": "fake"},
         )
+
+
+class FailClosedCardRunner(RecordingRunner):
+    async def run(self, context: StageContext) -> StageProduct:
+        product = await super().run(context)
+        if context.stage is CurationStage.CARD_COVERAGE:
+            return StageProduct(
+                kind="card_centric_deferred_stage",
+                payload={"failure_code": "coverage_s5_not_implemented"},
+                blocking_error="card_centric_v1 stops safely at deferred coverage_s5 stage",
+            )
+        return product
 
 
 class MutableInputValidator:
@@ -191,6 +203,35 @@ def _claimed_job(repository: AnkiCurationRepository):
     assert claimed is not None
     assert claimed.id == job.id
     repository.release_lease(job.id, "worker-1")
+    return claimed
+
+
+def _claimed_card_job(repository: AnkiCurationRepository):
+    card = repository.create_job(
+        CreateCurationJob(
+            lecture_id=repository._test_lecture_id,  # type: ignore[attr-defined]
+            block_id="heme-block",
+            source_revision_ids=(11, 12),
+            deck_allowlist=("AnKing Step Deck",),
+            tag_allowlist=("#Pathoma",),
+            instruction_text="Focus on lecture objectives.",
+            target_deck="OMS::Heme::Lecture 4",
+            target_tag="AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_4",
+            index_snapshot_id="snapshot-1",
+            lcl_prompt_version="lcl-v1",
+            judgment_rubric_version="judgment-v1",
+            gap_prompt_version="gap-v1",
+            provider="anthropic",
+            model="claude-sonnet",
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        )
+    )
+    claimed = repository.transition(
+        card.id,
+        CurationState.QUEUED,
+        CurationState.PREFLIGHT,
+    )
+    assert claimed.id == card.id
     return claimed
 
 
@@ -508,10 +549,46 @@ def test_contract_version_controls_graph_and_stage_hash(
     assert stage_definition(CurationState.PREFLIGHT) == PIPELINE_STAGES[0]
     assert PIPELINE_STAGES[0].next_state is CurationState.BUILDING_SOURCE_INDEX
     card_job = replace(job, pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1)
-    with pytest.raises(UnsupportedPipelineContract, match="upgrade required"):
-        stage_definition(CurationState.PREFLIGHT, card_job.pipeline_contract_version)
+    card_stages = pipeline_stages(card_job.pipeline_contract_version)
+    assert card_stages[0].stage is CurationStage.PREFLIGHT
+    assert card_stages[1].next_state is CurationState.CARD_BUILDING_LEDGER
     original = _stage_input_hash(job, CurationStage.PREFLIGHT, ())
     assert original != _stage_input_hash(
         replace(job, model_config_sha256="f" * 64), CurationStage.PREFLIGHT, ()
     )
     assert original != _stage_input_hash(card_job, CurationStage.PREFLIGHT, ())
+
+
+def test_card_centric_graph_is_version_isolated_and_fails_closed_after_s4(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        card_job = _claimed_card_job(repository)
+        assert card_job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1
+        assert card_job.resolved_model_config.classify_s4.thinking_mode == "disabled"
+        pipeline = CurationPipeline(
+            repository,
+            StageArtifactStore(tmp_path / "artifacts"),
+            FailClosedCardRunner(),
+            input_validator=MutableInputValidator(),
+        )
+        for expected in pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V1):
+            result = await pipeline.run_stage(card_job.id)
+            assert result is not None
+            assert result.stage is expected.stage
+        failed = repository.require_job(card_job.id)
+        assert failed.state is CurationState.FAILED
+        assert failed.error == "card_centric_v1 stops safely at deferred coverage_s5 stage"
+        assert [
+            artifact.stage for artifact in repository.list_stage_artifacts(card_job.id)
+        ] == [
+            CurationStage.PREFLIGHT,
+            CurationStage.SOURCE_INDEX,
+            CurationStage.CARD_LEDGER,
+            CurationStage.CARD_TAG_SCOPE,
+            CurationStage.CARD_CLASSIFY,
+            CurationStage.CARD_COVERAGE,
+        ]
+
+    asyncio.run(scenario())

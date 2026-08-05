@@ -118,6 +118,38 @@ PIPELINE_STAGES = (
         CurationState.READY_FOR_REVIEW,
     ),
 )
+CARD_CENTRIC_V1_STAGES = (
+    PipelineStageDefinition(
+        CurationState.PREFLIGHT,
+        CurationStage.PREFLIGHT,
+        CurationState.BUILDING_SOURCE_INDEX,
+    ),
+    PipelineStageDefinition(
+        CurationState.BUILDING_SOURCE_INDEX,
+        CurationStage.SOURCE_INDEX,
+        CurationState.CARD_BUILDING_LEDGER,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_BUILDING_LEDGER,
+        CurationStage.CARD_LEDGER,
+        CurationState.CARD_SCOPING_TAGS,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_SCOPING_TAGS,
+        CurationStage.CARD_TAG_SCOPE,
+        CurationState.CARD_CLASSIFYING,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_CLASSIFYING,
+        CurationStage.CARD_CLASSIFY,
+        CurationState.CARD_COVERAGE,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_COVERAGE,
+        CurationStage.CARD_COVERAGE,
+        CurationState.FAILED,
+    ),
+)
 _STAGE_BY_STATE = {definition.state: definition for definition in PIPELINE_STAGES}
 
 
@@ -128,6 +160,8 @@ class UnsupportedPipelineContract(RuntimeError):
 def pipeline_stages(version: PipelineContractVersion) -> tuple[PipelineStageDefinition, ...]:
     if version is PipelineContractVersion.RETRIEVAL_V4:
         return PIPELINE_STAGES
+    if version is PipelineContractVersion.CARD_CENTRIC_V1:
+        return CARD_CENTRIC_V1_STAGES
     raise UnsupportedPipelineContract(
         f"pipeline contract {version.value} is unsupported; upgrade required; no mutation performed"
     )
@@ -356,11 +390,6 @@ class CurationPipeline:
         lease_owner: str | None = None,
     ) -> StageRunResult | None:
         job = self.repository.require_job(job_id)
-        if job.pipeline_contract_version is not PipelineContractVersion.RETRIEVAL_V4:
-            raise UnsupportedPipelineContract(
-                f"pipeline contract {job.pipeline_contract_version.value} is "
-                "unsupported; upgrade required; no mutation performed"
-            )
         definition = stage_definition(job.state, job.pipeline_contract_version)
         if definition is None:
             return None

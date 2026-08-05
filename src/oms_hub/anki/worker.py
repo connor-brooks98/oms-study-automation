@@ -151,7 +151,7 @@ class AnkiCurationWorker:
         current = self.repository.require_job(job_id)
         if current.state is CurationState.CANCELED:
             return
-        definition = stage_definition(state)
+        definition = stage_definition(state, current.pipeline_contract_version)
         attempts = 1
         if definition is not None:
             stage = self.repository.get_stage(job_id, definition.stage)

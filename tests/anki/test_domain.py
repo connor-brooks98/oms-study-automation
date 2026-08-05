@@ -8,7 +8,11 @@ from oms_hub.anki.domain import (
 
 
 def test_v4_pipeline_states_are_explicit() -> None:
-    assert tuple(state.value for state in CurationState) == (
+    assert tuple(
+        state.value
+        for state in CurationState
+        if not state.value.startswith("card_")
+    ) == (
         "queued",
         "preflight",
         "snapshotting_embeddings",
