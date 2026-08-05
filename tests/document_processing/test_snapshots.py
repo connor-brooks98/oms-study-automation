@@ -2,6 +2,7 @@ import hashlib
 import socket
 from collections.abc import Iterator
 from pathlib import Path
+from threading import Event
 
 import httpx
 import pytest
@@ -217,31 +218,132 @@ def test_web_asset_sanitized_expansion_is_checked_before_an_atomic_write(
     assert not asset_root.exists()
 
 
-def test_web_asset_reuses_first_immutable_snapshot_when_a_repeated_url_changes(
+def test_web_asset_snapshot_is_scoped_to_the_requested_asset_root(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
-    payloads = iter((_png_bytes(), _different_png_bytes()))
     requests = 0
 
     def handler(_: httpx.Request) -> httpx.Response:
         nonlocal requests
         requests += 1
-        return httpx.Response(200, content=next(payloads), headers={"content-type": "image/png"})
+        return httpx.Response(200, content=_png_bytes(), headers={"content-type": "image/png"})
 
     service = URLSnapshotService(
         tmp_path, max_bytes=1024 * 1024, transport=httpx.MockTransport(handler)
     )
     first = service.fetch_asset(
-        "https://professor.example/page", "/figure.png", tmp_path / "assets"
+        "https://professor.example/page", "/figure.png", tmp_path / "first-assets"
     )
-    repeated = service.fetch_asset(
-        "https://professor.example/page", "/figure.png", tmp_path / "assets"
+    second = service.fetch_asset(
+        "https://professor.example/page", "/figure.png", tmp_path / "second-assets"
     )
 
-    assert requests == 1
-    assert repeated == first
-    assert len(tuple((tmp_path / "assets").iterdir())) == 1
+    assert requests == 2
+    assert first.path is not None and first.path.parent.name == "first-assets"
+    assert second.path is not None and second.path.parent.name == "second-assets"
+
+
+def test_web_asset_does_not_reuse_a_prior_snapshot_when_current_budget_is_exhausted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    service = URLSnapshotService(
+        tmp_path,
+        max_bytes=1024 * 1024,
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200, content=_png_bytes(), headers={"content-type": "image/png"}
+            )
+        ),
+    )
+    service.fetch_asset("https://professor.example/page", "/figure.png", tmp_path / "first-assets")
+
+    with pytest.raises(ValueError, match="byte limit"):
+        service.fetch_asset(
+            "https://professor.example/page",
+            "/figure.png",
+            tmp_path / "second-assets",
+            max_bytes=1,
+        )
+
+    assert not (tmp_path / "second-assets").exists()
+
+
+def test_url_snapshot_hard_deadline_stops_hanging_dns_without_writing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    released = Event()
+    completed = Event()
+
+    def hanging_dns(*_: object) -> list[object]:
+        released.wait()
+        completed.set()
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", hanging_dns)
+    service = URLSnapshotService(tmp_path, max_bytes=1024, deadline_seconds=0.01)
+
+    with pytest.raises(ValueError, match="deadline"):
+        service.fetch("source-1", "Questions", "https://professor.example/questions")
+
+    released.set()
+    assert completed.wait(1)
+    assert not (tmp_path / "source-1").exists()
+
+
+def test_url_snapshot_hard_deadline_stops_hanging_headers_without_writing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    released = Event()
+    completed = Event()
+
+    def hanging_headers(_: httpx.Request) -> httpx.Response:
+        released.wait()
+        completed.set()
+        return httpx.Response(200, content=b"Question", headers={"content-type": "text/plain"})
+
+    service = URLSnapshotService(
+        tmp_path,
+        max_bytes=1024,
+        deadline_seconds=0.01,
+        transport=httpx.MockTransport(hanging_headers),
+    )
+
+    with pytest.raises(ValueError, match="deadline"):
+        service.fetch("source-1", "Questions", "https://professor.example/questions")
+
+    released.set()
+    assert completed.wait(1)
+    assert not (tmp_path / "source-1").exists()
+
+
+def test_url_snapshot_hard_deadline_stops_hanging_stream_read_without_writing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    released = Event()
+    completed = Event()
+    service = URLSnapshotService(
+        tmp_path,
+        max_bytes=1024,
+        deadline_seconds=0.01,
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                content=_wait_for_release_chunks(released, completed),
+                headers={"content-type": "text/plain"},
+            )
+        ),
+    )
+
+    with pytest.raises(ValueError, match="deadline"):
+        service.fetch("source-1", "Questions", "https://professor.example/questions")
+
+    released.set()
+    assert completed.wait(1)
+    assert not (tmp_path / "source-1").exists()
 
 
 def test_snapshot_client_disables_environment_proxy_inheritance(
@@ -298,6 +400,12 @@ def _different_png_bytes() -> bytes:
     output = BytesIO()
     Image.new("RGB", (2, 2), "orange").save(output, format="PNG")
     return output.getvalue()
+
+
+def _wait_for_release_chunks(released: Event, completed: Event) -> Iterator[bytes]:
+    released.wait()
+    completed.set()
+    yield b"Question"
 
 
 def _noisy_jpeg_bytes() -> bytes:
