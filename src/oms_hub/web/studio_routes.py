@@ -5,7 +5,7 @@ from typing import Annotated, cast
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 from oms_hub.files.atomic import sha256_file
 from oms_hub.study_generation.domain import NativeQuiz
@@ -18,6 +18,11 @@ from oms_hub.study_generation.notebook import StoredNotebookLMGateway
 from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
     NotebookGatewayError,
+)
+from oms_hub.study_generation.practice_domain import (
+    ImportSourceRole,
+    ImportSourceSelection,
+    QuizContentKind,
 )
 from oms_hub.study_generation.quiz_images import (
     MAX_QUIZ_IMAGE_BYTES,
@@ -42,6 +47,22 @@ class StudioRunRequest(BaseModel):
     label: str = Field(min_length=1, max_length=300)
     destination_subject: str = Field(min_length=1, max_length=100)
     destination_exam_number: int = Field(ge=1)
+
+
+class ImportRunSourceInput(BaseModel):
+    source_id: Annotated[str, StringConstraints(pattern=r"^[0-9a-f-]{36}$")]
+    role: ImportSourceRole
+    attach_to_notebook: bool = False
+
+
+class ImportRunInput(BaseModel):
+    subject: str = Field(min_length=1, max_length=100)
+    exam_number: int = Field(ge=1)
+    label: str = Field(min_length=1, max_length=300)
+    destination_subject: str = Field(min_length=1, max_length=100)
+    destination_exam_number: int = Field(ge=1)
+    content_kind: QuizContentKind = QuizContentKind.PRACTICE_QUESTIONS
+    sources: list[ImportRunSourceInput] = Field(min_length=1, max_length=50)
 
 
 class PreviewAnswerSubmission(BaseModel):
@@ -551,6 +572,113 @@ def queue_run(request: Request, submission: StudioRunRequest) -> JSONResponse:
 
 def _service(request: Request) -> StudioService:
     return cast(StudioService, request.app.state.studio_service)
+
+
+@router.post("/import/runs", status_code=202)
+def queue_import_run(request: Request, submission: ImportRunInput) -> JSONResponse:
+    require_form_csrf(request, None)
+    subject = _validated_subject(request, submission.subject, submission.exam_number)
+    destination_subject = _validated_subject(
+        request,
+        submission.destination_subject,
+        submission.destination_exam_number,
+    )
+    try:
+        run = _service(request).queue_import_run(
+            subject,
+            submission.exam_number,
+            submission.label,
+            destination_subject,
+            submission.destination_exam_number,
+            submission.content_kind,
+            tuple(
+                ImportSourceSelection(
+                    source.source_id,
+                    source.role,
+                    source.attach_to_notebook,
+                )
+                for source in submission.sources
+            ),
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return JSONResponse(
+        {"id": run.id, "state": run.state.value, "stage": run.stage.value},
+        status_code=202,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/import/sources/file", status_code=202)
+def add_import_file(
+    request: Request,
+    subject: Annotated[str, Form()],
+    exam_number: Annotated[int, Form()],
+    title: Annotated[str, Form()],
+    file: Annotated[UploadFile, File()],
+    csrf_token: Annotated[str | None, Form()] = None,
+) -> JSONResponse:
+    require_form_csrf(request, csrf_token)
+    canonical_subject = _validated_subject(request, subject, exam_number)
+    service = _service(request)
+    payload = file.file.read(service.max_file_bytes + 1)
+    try:
+        source = service.add_import_file(
+            canonical_subject,
+            exam_number,
+            title,
+            file.filename or "source",
+            payload,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return JSONResponse({"id": source.id, "state": source.state.value}, status_code=202)
+
+
+@router.post("/import/sources/text", status_code=202)
+def add_import_text(
+    request: Request,
+    subject: Annotated[str, Form()],
+    exam_number: Annotated[int, Form()],
+    title: Annotated[str, Form()],
+    text: Annotated[str, Form()],
+    csrf_token: Annotated[str | None, Form()] = None,
+) -> JSONResponse:
+    require_form_csrf(request, csrf_token)
+    canonical_subject = _validated_subject(request, subject, exam_number)
+    try:
+        source = _service(request).add_import_text(
+            canonical_subject,
+            exam_number,
+            title,
+            text,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return JSONResponse({"id": source.id, "state": source.state.value}, status_code=202)
+
+
+@router.post("/import/sources/url", status_code=202)
+def add_import_url(
+    request: Request,
+    subject: Annotated[str, Form()],
+    exam_number: Annotated[int, Form()],
+    title: Annotated[str, Form()],
+    url: Annotated[str, Form()],
+    csrf_token: Annotated[str | None, Form()] = None,
+) -> JSONResponse:
+    require_form_csrf(request, csrf_token)
+    canonical_subject = _validated_subject(request, subject, exam_number)
+    try:
+        source = _service(request).add_import_url(
+            canonical_subject,
+            exam_number,
+            title,
+            url,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return JSONResponse({"id": source.id, "state": source.state.value}, status_code=202)
 
 
 @router.post("/sources/file", status_code=202)

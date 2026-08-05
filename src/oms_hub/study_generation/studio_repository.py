@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
+from oms_hub.files.atomic import sha256_file
 from oms_hub.models import (
     PublishedQuizMediaModel,
     PublishedQuizModel,
@@ -92,6 +93,7 @@ class StudioRepository:
         payload_path: Path | None = None,
         source_url: str | None = None,
         original_filename: str | None = None,
+        purpose: StudioSourcePurpose = StudioSourcePurpose.NOTEBOOK,
     ) -> StudioSource:
         with self.database.session() as session:
             model = StudioSourceModel(
@@ -104,6 +106,7 @@ class StudioRepository:
                 payload_path=str(payload_path) if payload_path else None,
                 source_url=source_url,
                 original_filename=original_filename,
+                purpose=purpose.value,
             )
             session.add(model)
             session.flush()
@@ -142,12 +145,41 @@ class StudioRepository:
             session.flush()
             return self._domain(model)
 
+    def mark_import_ready(
+        self,
+        source_id: str,
+        payload_path: Path,
+        snapshot_sha256: str,
+        *,
+        media_type: str,
+        final_url: str | None = None,
+    ) -> StudioSource:
+        if not payload_path.is_file() or sha256_file(payload_path) != snapshot_sha256:
+            raise ValueError("local import snapshot could not be verified")
+        with self.database.session() as session:
+            model = session.get(StudioSourceModel, source_id)
+            if model is None:
+                raise KeyError(source_id)
+            if model.purpose != StudioSourcePurpose.LOCAL_IMPORT.value:
+                raise ValueError("only local import sources can become ready")
+            model.payload_path = str(payload_path)
+            model.snapshot_sha256 = snapshot_sha256
+            model.media_type = media_type
+            model.final_url = final_url
+            model.state = StudioSourceState.READY.value
+            model.next_attempt_at = None
+            model.diagnostic_source = None
+            model.error = None
+            session.flush()
+            return self._domain(model)
+
     def claim_next(self, now: datetime | None = None) -> StudioSource | None:
         now = now or datetime.now(UTC)
         with self.database.session() as session:
             model = session.scalar(
                 select(StudioSourceModel)
                 .where(
+                    StudioSourceModel.purpose == StudioSourcePurpose.NOTEBOOK.value,
                     StudioSourceModel.state == StudioSourceState.PENDING.value,
                     or_(
                         StudioSourceModel.next_attempt_at.is_(None),
@@ -360,25 +392,99 @@ class StudioRepository:
         content_kind: QuizContentKind,
         sources: Sequence[ImportSourceSelection],
     ) -> StudioRun:
+        if not sources:
+            raise ValueError("select at least one import source")
         if len({source.source_id for source in sources}) != len(sources):
             raise ValueError("selected import sources contain duplicates")
+        if not any(
+            source.role
+            in {ImportSourceRole.QUESTIONS, ImportSourceRole.COMBINED}
+            for source in sources
+        ):
+            raise ValueError("select a Questions or Combined source")
+        if any(
+            source.attach_to_notebook
+            and source.role
+            not in {ImportSourceRole.SUPPORTING_REFERENCE, ImportSourceRole.COMBINED}
+            for source in sources
+        ):
+            raise ValueError(
+                "only Supporting Reference or Combined sources may attach to NotebookLM"
+            )
+        subject_key = normalize_subject(subject)
+        destination_key = normalize_subject(destination_subject)
+        label_key = normalize_subject(label)
         with self.database.session() as session:
+            stored_sources = list(
+                session.scalars(
+                    select(StudioSourceModel).where(
+                        StudioSourceModel.id.in_([source.source_id for source in sources])
+                    )
+                ).all()
+            )
+            source_by_id = {source.id: source for source in stored_sources}
+            if len(source_by_id) != len(sources):
+                raise ValueError("a selected import source no longer exists")
+            ordered_sources = [source_by_id[source.source_id] for source in sources]
+            if any(
+                source.subject_key != subject_key or source.exam_number != exam_number
+                for source in ordered_sources
+            ):
+                raise ValueError("selected import sources belong to another course or exam")
+            if any(
+                source.purpose != StudioSourcePurpose.LOCAL_IMPORT.value
+                or source.state != StudioSourceState.READY.value
+                for source in ordered_sources
+            ):
+                raise ValueError("all selected import sources must be ready local sources")
+            active_run = session.scalar(
+                select(StudioRunModel).where(
+                    StudioRunModel.destination_subject_key == destination_key,
+                    StudioRunModel.destination_exam_number == destination_exam_number,
+                    StudioRunModel.label_key == label_key,
+                    StudioRunModel.state.in_(
+                        {
+                            StudioRunState.QUEUED.value,
+                            StudioRunState.RUNNING.value,
+                            StudioRunState.RETRYING.value,
+                        }
+                    ),
+                )
+            )
+            published = session.scalar(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id.is_not(None),
+                    PublishedQuizModel.destination_subject_key == destination_key,
+                    PublishedQuizModel.destination_exam_number == destination_exam_number,
+                    PublishedQuizModel.label_key == label_key,
+                    PublishedQuizModel.active.is_(True),
+                )
+            )
+            if active_run is not None or published is not None:
+                raise ValueError("this quiz label is already in use for the destination exam")
             model = StudioRunModel(
                 id=str(uuid4()),
                 subject=subject,
-                subject_key=normalize_subject(subject),
+                subject_key=subject_key,
                 exam_number=exam_number,
                 destination_subject=destination_subject,
-                destination_subject_key=normalize_subject(destination_subject),
+                destination_subject_key=destination_key,
                 destination_exam_number=destination_exam_number,
                 label=label,
-                label_key=normalize_subject(label),
+                label_key=label_key,
                 prompt="",
                 workflow_kind=QuizWorkflowKind.DIRECT_IMPORT.value,
                 content_kind=content_kind.value,
             )
             session.add(model)
-            session.flush()
+            try:
+                session.flush()
+            except IntegrityError as error:
+                if _is_active_label_conflict(error):
+                    raise ValueError(
+                        "this quiz label is already in use for the destination exam"
+                    ) from error
+                raise
             for position, source in enumerate(sources):
                 session.add(
                     StudioImportRunSourceModel(

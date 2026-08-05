@@ -27,6 +27,7 @@ from oms_hub.study_generation.practice_domain import (
     QuestionDraft,
     QuestionSourceRef,
     QuizContentKind,
+    StudioSourcePurpose,
 )
 from oms_hub.study_generation.studio_domain import (
     StudioSourceState,
@@ -101,7 +102,13 @@ def _stored_image(tmp_path: Path, name: str) -> StudioStoredImage:
 
 
 def _ready_local_source(repository: StudioRepository, title: str):
-    source = repository.create_source("Neuro", 1, StudioSourceType.FILE, title)
+    source = repository.create_source(
+        "Neuro",
+        1,
+        StudioSourceType.FILE,
+        title,
+        purpose=StudioSourcePurpose.LOCAL_IMPORT,
+    )
     with repository.database.session() as session:
         stored = session.get(StudioSourceModel, source.id)
         assert stored is not None
