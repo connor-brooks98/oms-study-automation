@@ -1,11 +1,23 @@
 import asyncio
+import json
 import logging
 import re
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from oms_hub.study_generation.domain import (
     LectureSourceSet,
@@ -23,6 +35,7 @@ from oms_hub.study_generation.notebook_errors import (
     translate_notebook_error,
 )
 from oms_hub.study_generation.notebook_storage import PlaintextNotebookStorage
+from oms_hub.study_generation.practice_domain import QuestionDraft
 from oms_hub.study_generation.repository import GenerationRepository
 
 logger = logging.getLogger(__name__)
@@ -31,6 +44,72 @@ _active_client: ContextVar[Any | None] = ContextVar(
     "notebooklm_active_client",
     default=None,
 )
+
+
+class NotebookQuestionStatus(StrEnum):
+    ANSWERED = "answered"
+    NO_SUPPORT = "no_support"
+
+
+@dataclass(frozen=True, slots=True)
+class NotebookQuestionResult:
+    status: NotebookQuestionStatus
+    correct_index: int | None
+    rationale: str | None
+    evidence: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, NotebookQuestionStatus):
+            raise NotebookQuestionContractError("NotebookLM answer status is invalid")
+        if not isinstance(self.rationale, str) or not self.rationale.strip():
+            raise NotebookQuestionContractError("NotebookLM rationale is empty")
+        if _contains_hedge(self.rationale):
+            raise NotebookQuestionContractError("NotebookLM rationale is hedged")
+        if any(not isinstance(item, str) or not item.strip() for item in self.evidence):
+            raise NotebookQuestionContractError("NotebookLM evidence is invalid")
+        if self.status is NotebookQuestionStatus.ANSWERED:
+            if self.correct_index is None or self.correct_index < 0 or not self.evidence:
+                raise NotebookQuestionContractError("NotebookLM answered result is incomplete")
+        elif self.correct_index is not None:
+            raise NotebookQuestionContractError("NotebookLM no_support result is inconsistent")
+
+
+class NotebookQuestionContractError(ValueError):
+    """NotebookLM did not provide a complete, decisive question result."""
+
+
+class _NotebookQuestionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    status: Literal["answered", "no_support"]
+    correct_index: int | None
+    rationale: str = Field(min_length=1, max_length=20_000)
+    evidence: tuple[str, ...] = Field(max_length=50)
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def lists_become_tuples(cls, values: object) -> object:
+        return tuple(values) if isinstance(values, list) else values
+
+    @field_validator("evidence")
+    @classmethod
+    def evidence_is_nonempty_text(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not value.strip() for value in values):
+            raise ValueError("evidence entries must not be blank")
+        return values
+
+    @model_validator(mode="after")
+    def result_is_decisive(self) -> "_NotebookQuestionResponse":
+        if _contains_hedge(self.rationale):
+            raise ValueError("rationale must not hedge")
+        if self.status == "answered":
+            if self.correct_index is None:
+                raise ValueError("answered result requires correct_index")
+            if not self.evidence:
+                raise ValueError("answered result requires evidence")
+        elif self.correct_index is not None:
+            raise ValueError("no_support result must not include correct_index")
+        return self
 
 
 class NotebookGateway(Protocol):
@@ -249,6 +328,25 @@ class StoredNotebookLMGateway:
             _run(self._ask_studio(subject, exam_number, prompt, source_ids)),
         )
 
+    def answer_studio_question(
+        self,
+        subject: str,
+        exam_number: int,
+        question: QuestionDraft,
+        source_ids: tuple[str, ...],
+    ) -> NotebookQuestionResult:
+        return cast(
+            NotebookQuestionResult,
+            _run(
+                self._answer_studio_question(
+                    subject,
+                    exam_number,
+                    question,
+                    source_ids,
+                )
+            ),
+        )
+
     def delete_studio_source(self, notebook_id: str, source_id: str) -> None:
         _run(self._delete_studio_source(notebook_id, source_id))
 
@@ -291,6 +389,40 @@ class StoredNotebookLMGateway:
                 return notebook.id, text.strip()
             finally:
                 _active_client.reset(token)
+
+    async def _answer_studio_question(
+        self,
+        subject: str,
+        exam_number: int,
+        question: QuestionDraft,
+        source_ids: tuple[str, ...],
+    ) -> NotebookQuestionResult:
+        if not source_ids:
+            raise SourceIsolationError("at least one supporting source must be selected")
+        if len(source_ids) != len(set(source_ids)):
+            raise SourceIsolationError("supporting source selection contains duplicates")
+        async with self._with_client() as client:
+            token = _active_client.set(client)
+            try:
+                notebook = await self._ensure_notebook(subject, exam_number)
+                remote_by_id = {
+                    str(remote.id): remote for remote in await client.sources.list(notebook.id)
+                }
+                for source_id in source_ids:
+                    remote = remote_by_id.get(source_id)
+                    if remote is None:
+                        raise SourceIsolationError("selected supporting source is missing")
+                    if not _remote_ready(remote):
+                        raise SourceIsolationError("selected supporting source is not ready")
+                response = await client.chat.ask(
+                    notebook.id,
+                    _studio_question_prompt(question),
+                    source_ids=list(source_ids),
+                )
+            finally:
+                _active_client.reset(token)
+        text = getattr(response, "answer", None) or getattr(response, "text", None)
+        return _parse_question_response(text, len(question.choices))
 
     async def _attach_studio_source(
         self,
@@ -575,6 +707,48 @@ def _stored_client_context(storage_path: Path) -> Any:
 def _remote_ready(remote: Any) -> bool:
     status = str(getattr(remote, "status", "")).casefold()
     return status == "ready" or status.endswith(".ready")
+
+
+def _studio_question_prompt(question: QuestionDraft) -> str:
+    choices = "\n".join(
+        f"{index}. {choice}" for index, choice in enumerate(question.choices)
+    )
+    return (
+        "Answer this one multiple-choice question using only the selected sources. "
+        "Return JSON only with status, correct_index, rationale, and evidence. "
+        "status must be answered or no_support. answered requires one decisive "
+        "zero-based correct_index and nonempty evidence. no_support requires "
+        "correct_index null and is allowed only when the selected sources do not "
+        "support an answer.\n\n"
+        f"Question: {question.stem}\nChoices:\n{choices}"
+    )
+
+
+def _parse_question_response(value: object, choice_count: int) -> NotebookQuestionResult:
+    if not isinstance(value, str) or not value.strip():
+        raise NotebookQuestionContractError("NotebookLM question response is empty")
+    try:
+        payload = json.loads(value)
+        parsed = _NotebookQuestionResponse.model_validate(payload)
+    except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as error:
+        raise NotebookQuestionContractError(
+            "NotebookLM question response violates the required contract"
+        ) from error
+    if parsed.correct_index is not None and parsed.correct_index >= choice_count:
+        raise NotebookQuestionContractError(
+            "NotebookLM answer index is outside the available choices"
+        )
+    return NotebookQuestionResult(
+        NotebookQuestionStatus(parsed.status),
+        parsed.correct_index,
+        parsed.rationale,
+        parsed.evidence,
+    )
+
+
+def _contains_hedge(value: str) -> bool:
+    normalized = value.casefold()
+    return any(marker in normalized for marker in ("maybe", "might", "could", "not sure"))
 
 
 def _validate_revision_source(
