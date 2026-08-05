@@ -28,7 +28,9 @@ class PresentationRenderer:
             return PresentationRenderResult(
                 (), ("slide renderer supports only PowerPoint sources",)
             )
-        with TemporaryDirectory(prefix="oms-slide-render-") as temporary_directory:
+        with TemporaryDirectory(
+            prefix="oms-slide-render-", ignore_cleanup_errors=True
+        ) as temporary_directory:
             pdf_path = Path(temporary_directory) / "slides.pdf"
             try:
                 self.converter.convert(source.path, pdf_path)

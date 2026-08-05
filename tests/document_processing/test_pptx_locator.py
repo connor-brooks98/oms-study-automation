@@ -1,4 +1,6 @@
+import os
 import sys
+import tempfile
 from io import BytesIO
 from pathlib import Path
 
@@ -189,6 +191,26 @@ def test_renderer_preserves_unavailable_warning_when_temp_pdf_is_locked(
         original_unlink(path, missing_ok=missing_ok)
 
     monkeypatch.setattr(Path, "unlink", locked_unlink)
+    rendered = PresentationRenderer(_UnavailableConverter()).render(
+        snapshot_for(source), tmp_path / "assets"
+    )
+
+    assert rendered.assets == ()
+    assert rendered.warnings == ("slide renderer unavailable: Office is unavailable",)
+
+
+def test_renderer_preserves_warning_when_temporary_directory_cleanup_hits_locked_pdf(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = build_pptx(
+        tmp_path / "questions.pptx",
+        slides=(SlideFixture("Question", "Which structure?"),),
+    )
+
+    def locked_rmtree(name: str, *, onexc) -> None:
+        onexc(os.unlink, name, PermissionError("locked PDF"))
+
+    monkeypatch.setattr(tempfile._shutil, "rmtree", locked_rmtree)
     rendered = PresentationRenderer(_UnavailableConverter()).render(
         snapshot_for(source), tmp_path / "assets"
     )
