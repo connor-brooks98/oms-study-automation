@@ -8,12 +8,7 @@ from tempfile import TemporaryDirectory
 
 from oms_hub.document_processing.assets import persist_asset
 from oms_hub.document_processing.domain import DocumentLocator, ParsedAsset, SourceSnapshot
-from oms_hub.files.office import (
-    OfficeConversionError,
-    OfficeConverter,
-    OfficeTimeoutError,
-    OfficeUnavailableError,
-)
+from oms_hub.files.office import OfficeConverter
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,10 +33,13 @@ class PresentationRenderer:
             try:
                 self.converter.convert(source.path, pdf_path)
                 return self._rasterize(pdf_path, asset_root)
-            except (OfficeUnavailableError, OfficeTimeoutError, OfficeConversionError) as error:
+            except Exception as error:  # noqa: BLE001 - renderer degradation is non-blocking
                 return PresentationRenderResult((), (f"slide renderer unavailable: {error}",))
             finally:
-                pdf_path.unlink(missing_ok=True)
+                try:
+                    pdf_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _rasterize(self, pdf_path: Path, asset_root: Path) -> PresentationRenderResult:
         import fitz  # type: ignore[import-untyped]

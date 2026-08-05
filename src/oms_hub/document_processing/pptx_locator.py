@@ -44,7 +44,8 @@ def _locate_assets(
     warnings: list[str] = []
     for asset in parsed_assets:
         matches = image_locations.get(_normalize_part_name(asset.origin), ())
-        if len(matches) == 1:
+        slide_numbers = {match.slide_number for match in matches}
+        if len(slide_numbers) == 1:
             match = matches[0]
             located = replace(
                 asset,
@@ -55,10 +56,13 @@ def _locate_assets(
             )
             assets.append(located)
             if located.path is not None:
-                keys_by_location[(match.slide_number, match.image_number)] = located.key
+                for occurrence in matches:
+                    keys_by_location[(occurrence.slide_number, occurrence.image_number)] = (
+                        located.key
+                    )
             continue
         assets.append(asset)
-        if matches:
+        if slide_numbers:
             warnings.append(
                 f"asset {asset.key!r} occurs on multiple slides and was not automatically bound"
             )

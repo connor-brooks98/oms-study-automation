@@ -1,11 +1,12 @@
 import hashlib
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
-from oms_hub.document_processing.anydoc_adapter import AnydocProcessor
+from oms_hub.document_processing.anydoc_adapter import AnydocProcessor, convert_anydoc_document
 from oms_hub.document_processing.assets import persist_asset
 from oms_hub.document_processing.domain import SegmentKind, SourceSnapshot
 from oms_hub.document_processing.pptx_locator import PptxLocatorEnricher
@@ -72,6 +73,55 @@ def test_adapter_leaves_pdf_sources_to_the_page_aware_pdf_processor(tmp_path: Pa
     )
 
     assert not AnydocProcessor(PptxLocatorEnricher()).supports(snapshot)
+
+
+def test_converter_attaches_images_nested_in_anydoc_table_cells(tmp_path: Path) -> None:
+    source = tmp_path / "questions.docx"
+    source.write_bytes(b"fixture")
+    snapshot = SourceSnapshot(
+        id="questions-docx",
+        title="Questions",
+        path=source,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+    )
+    image_inline = SimpleNamespace(
+        kind="image",
+        text=None,
+        content=None,
+        source=SimpleNamespace(asset_id=0),
+    )
+    cell_block = SimpleNamespace(
+        kind="paragraph", text=None, content=[image_inline], table=None, blocks=None, list=None
+    )
+    table_block = SimpleNamespace(
+        kind="table",
+        text=None,
+        content=None,
+        table=SimpleNamespace(
+            grid=[[SimpleNamespace(cell=SimpleNamespace(blocks=[cell_block]))]]
+        ),
+        blocks=None,
+        list=None,
+    )
+    document = SimpleNamespace(
+        assets=[
+            SimpleNamespace(
+                id=0,
+                media_type="image/png",
+                data=_png_payload(),
+                origin_part="word/media/image1.png",
+            )
+        ],
+        blocks=[table_block],
+        notes=[],
+    )
+
+    parsed = convert_anydoc_document(snapshot, document, tmp_path / "assets", "docx")
+
+    images = tuple(segment for segment in parsed.segments if segment.kind is SegmentKind.IMAGE)
+    assert len(images) == 1
+    assert images[0].asset_keys == ("asset-0",)
 
 
 def _jpeg_payload() -> bytes:

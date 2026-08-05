@@ -207,6 +207,14 @@ def _image_sources(block: Any) -> Iterable[Any]:
             yield inline.source
         if inline.content:
             yield from _image_sources_from_inlines(inline.content)
+    table = getattr(block, "table", None)
+    if table:
+        for row in table.grid:
+            for slot in row:
+                cell = slot.cell
+                if cell is not None:
+                    for cell_block in cell.blocks:
+                        yield from _image_sources(cell_block)
 
 
 def _image_sources_from_inlines(inlines: Iterable[Any]) -> Iterable[Any]:
