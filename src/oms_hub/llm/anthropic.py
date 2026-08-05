@@ -44,12 +44,20 @@ _UNSUPPORTED_SCHEMA_KEYS = frozenset(
     }
 )
 
-_ADAPTIVE_THINKING_MODEL_PREFIXES = ("claude-sonnet-5",)
-_MANUAL_THINKING_MODEL_PREFIXES = (
-    "claude-3-7-sonnet",
-    "claude-haiku-4",
-    "claude-opus-4",
-    "claude-sonnet-4",
+_ADAPTIVE_THINKING_MODEL_FAMILIES = (
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+)
+_MANUAL_THINKING_MODELS = frozenset(
+    {
+        "claude-3-7-sonnet",
+        "claude-3-7-sonnet-latest",
+        "claude-3-7-sonnet-20250219",
+        "claude-haiku-4",
+        "claude-opus-4",
+        "claude-sonnet-4",
+    }
 )
 _CACHE_CREATION_INPUT_MULTIPLIER = 1.25
 _CACHE_READ_INPUT_MULTIPLIER = 0.1
@@ -160,6 +168,7 @@ class AnthropicProvider:
             max_tokens=32768,
             output_schema=output_schema,
             options=options,
+            include_disabled_thinking=True,
         )
         return self._generated_text(response, model)
 
@@ -194,8 +203,14 @@ class AnthropicProvider:
         max_tokens: int,
         output_schema: dict[str, object] | None,
         options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
+        include_disabled_thinking: bool = False,
     ) -> httpx.Response:
-        thinking = self._thinking_request(model, max_tokens, options)
+        thinking = self._thinking_request(
+            model,
+            max_tokens,
+            options,
+            include_disabled_thinking=include_disabled_thinking,
+        )
         message_content: str | list[dict[str, object]] = content
         if options.cacheable_source_prefix is not None:
             message_content = [
@@ -242,10 +257,17 @@ class AnthropicProvider:
         model: str,
         max_tokens: int,
         options: GenerationOptions,
+        *,
+        include_disabled_thinking: bool,
     ) -> dict[str, object] | None:
-        if options.thinking is ThinkingMode.DISABLED:
-            return None
         capability = self.capabilities_for_model(model).thinking_capability
+        if options.thinking is ThinkingMode.DISABLED:
+            if (
+                include_disabled_thinking
+                and capability is ThinkingCapability.ADAPTIVE
+            ):
+                return {"type": "disabled"}
+            return None
         if capability is ThinkingCapability.ADAPTIVE:
             return {"type": "adaptive"}
         if capability is ThinkingCapability.MANUAL:
@@ -349,9 +371,12 @@ class AnthropicProvider:
 
 def _thinking_capability(model: str) -> ThinkingCapability:
     normalized = model.casefold()
-    if normalized.startswith(_ADAPTIVE_THINKING_MODEL_PREFIXES):
+    if any(
+        normalized == family or normalized.startswith(f"{family}-")
+        for family in _ADAPTIVE_THINKING_MODEL_FAMILIES
+    ):
         return ThinkingCapability.ADAPTIVE
-    if normalized.startswith(_MANUAL_THINKING_MODEL_PREFIXES):
+    if normalized in _MANUAL_THINKING_MODELS:
         return ThinkingCapability.MANUAL
     return ThinkingCapability.UNSUPPORTED
 

@@ -48,6 +48,7 @@ def test_anthropic_provider_sends_messages_request_and_parses_usage():
     request = route.calls.last.request
     assert request.headers["x-api-key"] == "secret"
     assert request.headers["anthropic-version"] == "2023-06-01"
+    assert "thinking" not in json.loads(request.content)
     assert result.provider is ProviderName.ANTHROPIC
     assert result.text == "Cleaned Claude lecture."
     assert result.model == "claude-sonnet-5"
@@ -86,10 +87,57 @@ def test_anthropic_structured_generation_sends_output_config():
         },
     )
 
-    payload = route.calls.last.request.content.decode()
-    assert '"output_config"' in payload
-    assert '"json_schema"' in payload
+    payload = json.loads(route.calls.last.request.content)
+    assert "output_config" in payload
+    assert payload["thinking"] == {"type": "disabled"}
     assert result.text == '{"answer":"iron"}'
+
+
+@respx.mock
+def test_anthropic_sonnet_5_explicit_disabled_thinking_is_encoded() -> None:
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "message-disabled",
+                "model": "claude-sonnet-5",
+                "content": [{"type": "text", "text": '{"answer":"iron"}'}],
+                "usage": {"input_tokens": 10, "output_tokens": 4},
+            },
+        )
+    )
+
+    AnthropicProvider().generate_text(
+        "Return JSON.",
+        "Question",
+        api_key="secret",
+        model="claude-sonnet-5",
+        output_schema={"type": "object"},
+        options=GenerationOptions(thinking=ThinkingMode.DISABLED),
+    )
+
+    assert json.loads(route.calls.last.request.content)["thinking"] == {
+        "type": "disabled"
+    }
+
+
+@respx.mock
+def test_anthropic_connection_test_omits_sonnet_5_thinking_control() -> None:
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "message-connection",
+                "model": "claude-sonnet-5",
+                "content": [{"type": "text", "text": "OK"}],
+                "usage": {"input_tokens": 5, "output_tokens": 1},
+            },
+        )
+    )
+
+    AnthropicProvider().test_connection("secret", "claude-sonnet-5")
+
+    assert "thinking" not in json.loads(route.calls.last.request.content)
 
 
 @respx.mock
@@ -189,6 +237,62 @@ def test_anthropic_compatible_model_uses_manual_thinking_budget() -> None:
         is ThinkingCapability.MANUAL
     )
     assert payload["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+
+
+@respx.mock
+def test_anthropic_manual_thinking_model_omits_default_disabled_control() -> None:
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "message-manual-default",
+                "model": "claude-3-7-sonnet-latest",
+                "content": [{"type": "text", "text": '{"answer":"iron"}'}],
+                "usage": {"input_tokens": 10, "output_tokens": 4},
+            },
+        )
+    )
+
+    AnthropicProvider().generate_text(
+        "Return JSON.",
+        "Question",
+        api_key="secret",
+        model="claude-3-7-sonnet-latest",
+        output_schema={"type": "object"},
+    )
+
+    assert "thinking" not in json.loads(route.calls.last.request.content)
+
+
+@pytest.mark.parametrize("model", ("claude-opus-4-7", "claude-opus-4-8"))
+@respx.mock
+def test_anthropic_adaptive_only_opus_release_uses_adaptive_thinking(
+    model: str,
+) -> None:
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "message-opus-adaptive",
+                "model": model,
+                "content": [{"type": "text", "text": '{"answer":"iron"}'}],
+                "usage": {"input_tokens": 10, "output_tokens": 4},
+            },
+        )
+    )
+
+    AnthropicProvider().generate_text(
+        "Return JSON.",
+        "Question",
+        api_key="secret",
+        model=model,
+        output_schema={"type": "object"},
+        options=GenerationOptions(thinking=ThinkingMode.ENABLED),
+    )
+
+    assert json.loads(route.calls.last.request.content)["thinking"] == {
+        "type": "adaptive"
+    }
 
 
 def test_anthropic_rejects_unknown_model_thinking_before_network() -> None:
