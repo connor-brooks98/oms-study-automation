@@ -56,7 +56,8 @@ class AgentEnvelopeApplier:
                     operation.operation_id, operation.content_sha256, result
                 )
             assert result is not None
-            created.extend(int(value) for value in result.get("note_ids", []))
+            if isinstance(operation, AddNotesOperation):
+                created.extend(int(value) for value in result.get("note_ids", []))
             if "filename" in result:
                 media.append(str(result["filename"]))
             if isinstance(operation, SyncOperation):
@@ -101,11 +102,34 @@ class AgentEnvelopeApplier:
                 raise ValueError("add-tags postcondition failed")
             return {"note_ids": list(operation.note_ids), "tag": operation.tag}
         if isinstance(operation, AddNotesOperation):
-            note_ids = self._find_generated(operation.notes)
-            if not note_ids:
-                note_ids = self.anki.add_notes(operation.notes)
-            self._verify_generated(operation.notes, note_ids)
-            return {"note_ids": note_ids}
+            # Preflight every marker before adding anything. A mixed crash
+            # recovery must never re-send a recovered note or proceed past an
+            # ambiguous idempotency marker.
+            note_ids: list[int | None] = []
+            missing: list[dict[str, Any]] = []
+            missing_positions: list[int] = []
+            for position, note in enumerate(operation.notes):
+                marker = self._marker(note)
+                matches = self.anki.find_notes(f"tag:{marker}")
+                if len(matches) > 1:
+                    raise ValueError("generated-note marker is ambiguous; no new notes were added")
+                if matches:
+                    note_ids.append(matches[0])
+                else:
+                    note_ids.append(None)
+                    missing.append(note)
+                    missing_positions.append(position)
+            if missing:
+                added = self.anki.add_notes(tuple(missing))
+                if len(added) != len(missing):
+                    raise ValueError("Anki did not create every missing generated note")
+                for position, note_id in zip(missing_positions, added, strict=True):
+                    note_ids[position] = note_id
+            if any(note_id is None for note_id in note_ids):
+                raise ValueError("generated-note recovery did not resolve every note")
+            resolved = [note_id for note_id in note_ids if note_id is not None]
+            self._verify_generated(operation.notes, resolved)
+            return {"note_ids": resolved}
         if isinstance(operation, SyncOperation):
             self.anki.sync()
             return {"status": "complete"}
@@ -122,15 +146,12 @@ class AgentEnvelopeApplier:
             for note in notes
         )
 
-    def _find_generated(self, notes: tuple[dict[str, Any], ...]) -> list[int]:
-        found: list[int] = []
-        for note in notes:
-            marker = next((str(tag) for tag in note.get("tags", []) if "Envelope_" in str(tag)), "")
-            matches = self.anki.find_notes(f"tag:{marker}") if marker else []
-            if len(matches) != 1:
-                return []
-            found.append(matches[0])
-        return found
+    @staticmethod
+    def _marker(note: dict[str, Any]) -> str:
+        marker = next((str(tag) for tag in note.get("tags", []) if "Envelope_" in str(tag)), "")
+        if not marker:
+            raise ValueError("generated note has no deterministic envelope marker")
+        return marker
 
     def _verify_generated(self, expected: tuple[dict[str, Any], ...], note_ids: list[int]) -> None:
         actual = self.anki.notes_info(tuple(note_ids))
@@ -147,3 +168,7 @@ class AgentEnvelopeApplier:
                     seen = seen.get("value", "")
                 if str(seen) != str(value):
                     raise ValueError("generated-note fields do not match envelope")
+            expected_deck = wanted.get("deckName")
+            observed_deck = observed.get("deckName")
+            if observed_deck is not None and str(observed_deck) != str(expected_deck):
+                raise ValueError("generated-note deck does not match envelope")
