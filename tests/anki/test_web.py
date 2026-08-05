@@ -54,6 +54,13 @@ from oms_hub.web.anki_routes import (
 
 SHA = "a" * 64
 TARGET_TAG = "AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_4"
+AGENT_HOST = "anki-agent.test"
+AGENT_TOKEN = "test-agent-token"
+
+
+class AgentSecretStore:
+    def get(self, key: str) -> str | None:
+        return AGENT_TOKEN if key == "anki-agent-token" else None
 
 
 class FakeGateway:
@@ -215,6 +222,8 @@ def prepared_app(tmp_path: Path) -> tuple[TestClient, Any, int, int, FakeGateway
             _env_file=None,
             data_dir=tmp_path,
             database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+            anki_agent_hostname=AGENT_HOST,
+            anki_agent_token_key="anki-agent-token",
         )
     )
     slides_path = tmp_path / "slides.pptx"
@@ -318,6 +327,7 @@ def prepared_app(tmp_path: Path) -> tuple[TestClient, Any, int, int, FakeGateway
         gateway,
         runtime=runtime,
     )
+    app.state.secrets = AgentSecretStore()
     client = TestClient(app)
     yield client, app, lecture_id, revision_id, gateway
     client.close()
@@ -342,6 +352,45 @@ def _create_payload(lecture_id: int, revision_id: int) -> dict[str, Any]:
         "provider": "anthropic",
         "model": "claude-sonnet-5",
     }
+
+
+def test_agent_heartbeat_persists_envelope_capabilities_end_to_end(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, _, _, _ = prepared_app
+    headers = {
+        "host": AGENT_HOST,
+        "authorization": f"Bearer {AGENT_TOKEN}",
+        "x-oms-agent-id": "anki-agent",
+    }
+    base = {
+        "contract_version": 1,
+        "agent_id": "anki-agent",
+        "agent_version": "0.1.0",
+        "anki_version": "25.02",
+        "ankiconnect_version": 6,
+        "active_snapshot_id": None,
+        "health": "ok",
+        "observed_at": "2026-08-05T18:00:00Z",
+    }
+
+    response = client.post(
+        "/agent/v1/heartbeat",
+        headers=headers,
+        json={**base, "supported_envelope_contract_versions": [1, 2]},
+    )
+
+    assert response.status_code == 200
+    assert app.state.anki_repository.agent_state().versions[
+        "supported_envelope_contract_versions"
+    ] == [1, 2]
+
+    response = client.post("/agent/v1/heartbeat", headers=headers, json=base)
+
+    assert response.status_code == 200
+    assert app.state.anki_repository.agent_state().versions[
+        "supported_envelope_contract_versions"
+    ] == [1]
 
 
 def _ready_job(app: Any, lecture_id: int, revision_id: int) -> UUID:

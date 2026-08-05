@@ -73,6 +73,9 @@ def heartbeat(request: Request, payload: AgentHeartbeat) -> dict[str, str]:
             "agent": payload.agent_version,
             "anki": payload.anki_version,
             "ankiconnect": payload.ankiconnect_version,
+            "supported_envelope_contract_versions": list(
+                payload.supported_envelope_contract_versions
+            ),
         },
         active_snapshot_id=payload.active_snapshot_id,
         health={"state": payload.health},

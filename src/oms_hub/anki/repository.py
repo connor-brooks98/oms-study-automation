@@ -244,7 +244,6 @@ _RETRY_STATE_BY_STAGE = {
     CurationStage.RECONCILIATION: CurationState.RECONCILING,
 }
 
-
 class InvalidCurationTransition(ValueError):
     """A curation job did not match the required state transition."""
 
@@ -733,6 +732,7 @@ class AnkiCurationRepository:
             raise ValueError("failed stage commits require failure detail")
         with self.database.session() as session:
             job = self._require_job_model(session, job_id)
+            self._validate_stage_artifact_for_commit(job, job_id, stage, artifact)
             if job.state != expected_state.value:
                 raise InvalidCurationTransition(f"job {job_id} is not in {expected_state.value}")
             if lease_owner is not None and job.lease_owner != lease_owner:
@@ -767,6 +767,9 @@ class AnkiCurationRepository:
                 or existing.relative_path != artifact.relative_path
                 or existing.input_sha256 != artifact.input_sha256
                 or existing.content_sha256 != artifact.content_sha256
+                or existing.pipeline_contract_version
+                != artifact.pipeline_contract_version.value
+                or existing.model_config_sha256 != artifact.model_config_sha256
                 or cast(
                     dict[str, Any],
                     json.loads(existing.metadata_json),
@@ -850,6 +853,7 @@ class AnkiCurationRepository:
     ) -> None:
         with self.database.session() as session:
             job = self._require_job_model(session, job_id)
+            self._validate_stage_artifact_for_commit(job, job_id, artifact.stage, artifact)
             existing = session.scalar(
                 select(AnkiStageArtifactModel).where(
                     AnkiStageArtifactModel.job_id == str(job_id),
@@ -860,6 +864,12 @@ class AnkiCurationRepository:
                 if (
                     existing.content_sha256 != artifact.content_sha256
                     or existing.input_sha256 != artifact.input_sha256
+                    or existing.stage != artifact.stage.value
+                    or existing.kind != artifact.kind
+                    or existing.relative_path != artifact.relative_path
+                    or existing.pipeline_contract_version
+                    != artifact.pipeline_contract_version.value
+                    or existing.model_config_sha256 != artifact.model_config_sha256
                 ):
                     raise ValueError("artifact identity was reused with different content")
                 return
@@ -1277,6 +1287,20 @@ class AnkiCurationRepository:
                 if 2 not in supported:
                     raise ValueError(
                         "envelope contract v2 unsupported; upgrade required; no mutation performed"
+                    )
+                if envelope.pipeline_contract_version != job.pipeline_contract_version:
+                    raise ValueError(
+                        "action envelope pipeline contract does not match job; "
+                        "no mutation performed"
+                    )
+                if envelope.model_config_sha256 != job.model_config_sha256:
+                    raise ValueError(
+                        "action envelope model configuration does not match job; "
+                        "no mutation performed"
+                    )
+                if envelope.review_revision != job.review_revision:
+                    raise ValueError(
+                        "action envelope review revision does not match job; no mutation performed"
                     )
             if expected_review_revision is not None and (
                 job.state != CurationState.READY_FOR_REVIEW.value
@@ -1853,6 +1877,31 @@ class AnkiCurationRepository:
                 json.loads(stored.metadata_json),
             ),
         )
+
+    @staticmethod
+    def _validate_stage_artifact_provenance(
+        job: AnkiCurationJobModel,
+        artifact: StageArtifact,
+    ) -> None:
+        if artifact.pipeline_contract_version.value != job.pipeline_contract_version:
+            raise ValueError("stage artifact pipeline contract does not match job")
+        if artifact.model_config_sha256 != job.model_config_sha256:
+            raise ValueError("stage artifact model configuration does not match job")
+
+    @classmethod
+    def _validate_stage_artifact_for_commit(
+        cls,
+        job: AnkiCurationJobModel,
+        job_id: UUID,
+        stage: CurationStage,
+        artifact: StageArtifact,
+    ) -> None:
+        cls._validate_stage_artifact_provenance(job, artifact)
+        if artifact.artifact_id != f"{stage.value}:{artifact.content_sha256}":
+            raise ValueError("stage artifact identity does not match committed stage")
+        expected_path = f"{job_id}/{stage.value}/{artifact.content_sha256}.json"
+        if artifact.relative_path != expected_path:
+            raise ValueError("stage artifact path does not match committed job provenance")
 
     @staticmethod
     def _resolved_model_config(value: str, provider: str, model: str) -> ResolvedModelConfiguration:

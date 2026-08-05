@@ -26,6 +26,9 @@ class PinnedInputChanged(ValueError):
     """A source or index generation pinned by the job is no longer valid."""
 
 
+_EMPTY_DOCUMENT_SHA256 = hashlib.sha256(b"").hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class PipelineStageDefinition:
     state: CurationState
@@ -238,7 +241,12 @@ class StageArtifactStore:
             metadata=dict(product.metadata),
         )
 
-    def read(self, artifact: StageArtifact) -> dict[str, Any]:
+    def read(
+        self,
+        artifact: StageArtifact,
+        *,
+        job: CurationJob | None = None,
+    ) -> dict[str, Any]:
         relative = PurePosixPath(artifact.relative_path)
         if relative.is_absolute() or ".." in relative.parts or not relative.parts:
             raise ValueError("stage artifact path is unsafe")
@@ -257,14 +265,51 @@ class StageArtifactStore:
             raise PinnedInputChanged(
                 f"Committed artifact {artifact.artifact_id} is invalid"
             ) from exc
+        if not isinstance(document, dict) or not isinstance(document.get("payload"), dict):
+            raise PinnedInputChanged(f"Committed artifact {artifact.artifact_id} is invalid")
+        expected_path = (
+            f"{document.get('job_id')}/{artifact.stage.value}/{artifact.content_sha256}.json"
+        )
         if (
-            not isinstance(document, dict)
+            document.get("artifact_version") != 2
             or document.get("stage") != artifact.stage.value
             or document.get("kind") != artifact.kind
-            or not isinstance(document.get("payload"), dict)
+            or document.get("pipeline_contract_version")
+            != artifact.pipeline_contract_version.value
+            or document.get("model_config_sha256") != artifact.model_config_sha256
+            or document.get("metadata") != artifact.metadata
+            or artifact.artifact_id != f"{artifact.stage.value}:{artifact.content_sha256}"
+            or artifact.relative_path != expected_path
         ):
-            raise PinnedInputChanged(f"Committed artifact {artifact.artifact_id} is invalid")
+            raise PinnedInputChanged(
+                f"Committed artifact {artifact.artifact_id} has invalid provenance"
+            )
+        if job is not None:
+            self._validate_job_provenance(artifact, job)
         return dict(document["payload"])
+
+    @staticmethod
+    def _validate_job_provenance(artifact: StageArtifact, job: CurationJob) -> None:
+        job_id = str(job.id)
+        if not artifact.relative_path.startswith(f"{job_id}/"):
+            raise PinnedInputChanged(
+                f"Committed artifact {artifact.artifact_id} job provenance changed"
+            )
+        if artifact.pipeline_contract_version is not job.pipeline_contract_version:
+            raise PinnedInputChanged(
+                f"Committed artifact {artifact.artifact_id} pipeline contract changed"
+            )
+        if artifact.model_config_sha256 == job.model_config_sha256:
+            return
+        if (
+            artifact.pipeline_contract_version is PipelineContractVersion.RETRIEVAL_V4
+            and job.pipeline_contract_version is PipelineContractVersion.RETRIEVAL_V4
+            and artifact.model_config_sha256 == _EMPTY_DOCUMENT_SHA256
+        ):
+            return
+        raise PinnedInputChanged(
+            f"Committed artifact {artifact.artifact_id} model configuration changed"
+        )
 
 
 class CurationPipeline:
@@ -306,7 +351,8 @@ class CurationPipeline:
             self.input_validator.validate(job_id)
             prior_artifacts = tuple(self.repository.list_stage_artifacts(job_id))
             prior_payloads = {
-                artifact.stage: self.artifacts.read(artifact) for artifact in prior_artifacts
+                artifact.stage: self.artifacts.read(artifact, job=job)
+                for artifact in prior_artifacts
             }
             input_sha256 = _stage_input_hash(
                 job,

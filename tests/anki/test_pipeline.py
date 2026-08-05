@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,6 +61,74 @@ class MutableInputValidator:
         del job_id
         if self.error is not None:
             raise PinnedInputChanged(self.error)
+
+
+def test_stage_artifact_store_rejects_document_provenance_mismatch(tmp_path: Path) -> None:
+    store = StageArtifactStore(tmp_path / "artifacts")
+    job_id = UUID("d1b4bdc2-7d4f-44b4-a2a8-a926fcba6e19")
+    artifact = store.write(
+        job_id,
+        CurationStage.PREFLIGHT,
+        StageProduct(kind="preflight_report", payload={"ready": True}),
+        input_sha256="a" * 64,
+        model_config_sha256="b" * 64,
+    )
+    path = tmp_path / "artifacts" / artifact.relative_path
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["job_id"] = str(UUID("a1b4bdc2-7d4f-44b4-a2a8-a926fcba6e19"))
+    encoded = json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n"
+    tampered = replace(artifact, content_sha256=hashlib.sha256(encoded.encode()).hexdigest())
+    path.write_text(encoded, encoding="utf-8")
+
+    with pytest.raises(PinnedInputChanged, match="provenance"):
+        store.read(tampered)
+
+
+def test_stage_artifact_store_allows_schema_12_migrated_retrieval_v4_sentinel(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+) -> None:
+    store = StageArtifactStore(tmp_path / "artifacts")
+    job = _job(repository)
+    sentinel = hashlib.sha256(b"").hexdigest()
+    artifact = store.write(
+        job.id,
+        CurationStage.PREFLIGHT,
+        StageProduct(kind="preflight_report", payload={"ready": True}),
+        input_sha256="a" * 64,
+        model_config_sha256=sentinel,
+    )
+    legacy_job = replace(
+        job,
+        pipeline_contract_version=PipelineContractVersion.RETRIEVAL_V4,
+        model_config_sha256="b" * 64,
+    )
+
+    assert store.read(artifact, job=legacy_job) == {"ready": True}
+    card_centric_job = replace(
+        legacy_job,
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+    )
+    with pytest.raises(PinnedInputChanged, match="pipeline contract"):
+        store.read(artifact, job=card_centric_job)
+
+
+def test_stage_artifact_store_rejects_nonlegacy_model_configuration_mismatch(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+) -> None:
+    store = StageArtifactStore(tmp_path / "artifacts")
+    job = _job(repository)
+    artifact = store.write(
+        job.id,
+        CurationStage.PREFLIGHT,
+        StageProduct(kind="preflight_report", payload={"ready": True}),
+        input_sha256="a" * 64,
+        model_config_sha256="a" * 64,
+    )
+
+    with pytest.raises(PinnedInputChanged, match="model configuration"):
+        store.read(artifact, job=replace(job, model_config_sha256="b" * 64))
 
 
 @pytest.fixture

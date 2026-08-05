@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
@@ -22,6 +23,7 @@ from oms_hub.anki.domain import (
     EvidenceSupport,
     GapCard,
     GapCardEdit,
+    PipelineContractVersion,
     RetrievalPass,
     ReviewChangeSet,
     SourceEvidence,
@@ -92,7 +94,12 @@ def _job_request(lecture_id: int, *, snapshot: str = "snapshot-1") -> CreateCura
     )
 
 
-def _v2_envelope() -> ActionEnvelopeV2:
+def _v2_envelope(
+    *,
+    pipeline_contract_version: str = "card_centric_v1",
+    model_config_sha256: str = "a" * 64,
+    review_revision: int = 0,
+) -> ActionEnvelopeV2:
     v1 = EnvelopeBuilder(
         TagPolicy(
             pipeline_owned_roots=("OMS",),
@@ -112,10 +119,10 @@ def _v2_envelope() -> ActionEnvelopeV2:
     payload.update(
         {
             "contract_version": 2,
-            "pipeline_contract_version": "card_centric_v1",
-            "model_config_sha256": "a" * 64,
+            "pipeline_contract_version": pipeline_contract_version,
+            "model_config_sha256": model_config_sha256,
             "reconciliation_contract_version": "reconciliation-v1",
-            "review_revision": 0,
+            "review_revision": review_revision,
             "overflow_acknowledgement_provenance": {"reviewer": "local"},
         }
     )
@@ -367,10 +374,10 @@ def test_source_evidence_and_stage_artifacts_round_trip(tmp_path) -> None:
         content_hash="c" * 64,
     )
     artifact = StageArtifact(
-        artifact_id="artifact-1",
+        artifact_id=f"source_index:{'e' * 64}",
         stage=CurationStage.SOURCE_INDEX,
         kind="source-index-manifest",
-        relative_path="jobs/example/source-index-manifest.json",
+        relative_path=f"{job.id}/source_index/{'e' * 64}.json",
         input_sha256="d" * 64,
         content_sha256="e" * 64,
         model_config_sha256=job.model_config_sha256,
@@ -382,6 +389,48 @@ def test_source_evidence_and_stage_artifacts_round_trip(tmp_path) -> None:
 
     assert repository.list_source_evidence(job.id) == [evidence]
     assert repository.list_stage_artifacts(job.id) == [artifact]
+
+
+@pytest.mark.parametrize(
+    ("pipeline_contract_version", "model_config_sha256", "message"),
+    [
+        (PipelineContractVersion.CARD_CENTRIC_V1, None, "pipeline contract"),
+        (PipelineContractVersion.RETRIEVAL_V4, "f" * 64, "model configuration"),
+    ],
+)
+def test_stage_commit_rejects_artifact_provenance_mismatch_without_mutation(
+    tmp_path: Path,
+    pipeline_contract_version: PipelineContractVersion,
+    model_config_sha256: str | None,
+    message: str,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    repository.start_stage(job.id, CurationStage.PREFLIGHT)
+    artifact = StageArtifact(
+        artifact_id=f"preflight:{'c' * 64}",
+        stage=CurationStage.PREFLIGHT,
+        kind="preflight_report",
+        relative_path=f"{job.id}/preflight/{'c' * 64}.json",
+        input_sha256="a" * 64,
+        content_sha256="c" * 64,
+        pipeline_contract_version=pipeline_contract_version,
+        model_config_sha256=model_config_sha256 or job.model_config_sha256,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        repository.commit_stage(
+            job.id,
+            expected_state=CurationState.QUEUED,
+            target_state=CurationState.PREFLIGHT,
+            stage=CurationStage.PREFLIGHT,
+            artifact=artifact,
+        )
+
+    assert repository.list_stage_artifacts(job.id) == []
+    assert repository.require_job(job.id).state is CurationState.QUEUED
+    stage = repository.get_stage(job.id, CurationStage.PREFLIGHT)
+    assert stage is not None and stage.state == "running"
 
 
 def test_candidates_gaps_and_review_revision_are_persisted(tmp_path) -> None:
@@ -784,7 +833,12 @@ def test_v2_envelope_creation_persists_when_agent_advertises_capability(
     tmp_path: Path,
 ) -> None:
     repository, lecture_id = _prepared_repository(tmp_path)
-    job = repository.create_job(_job_request(lecture_id))
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        )
+    )
     repository.record_agent_heartbeat(
         agent_id="anki-agent",
         heartbeat_at="2026-08-05T18:00:00+00:00",
@@ -792,13 +846,72 @@ def test_v2_envelope_creation_persists_when_agent_advertises_capability(
         active_snapshot_id="snapshot-1",
         health={"status": "ok"},
     )
-    envelope = _v2_envelope()
+    envelope = _v2_envelope(
+        pipeline_contract_version=job.pipeline_contract_version.value,
+        model_config_sha256=job.model_config_sha256,
+        review_revision=job.review_revision,
+    )
 
     stored = repository.create_action_envelope(job.id, envelope)
 
     assert stored.payload_sha256 == canonical_payload_sha256(envelope)
     assert repository.get_envelope(envelope.envelope_id) == envelope
     assert _envelope_row_counts(repository) == (1, len(envelope.operations))
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("pipeline_contract_version", "retrieval_v4", "pipeline contract"),
+        ("model_config_sha256", "f" * 64, "model configuration"),
+        ("review_revision", 1, "review revision"),
+    ],
+)
+def test_v2_envelope_rejects_provenance_mismatches_without_mutation(
+    tmp_path: Path,
+    field: str,
+    value: str | int,
+    message: str,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=(
+                PipelineContractVersion.RETRIEVAL_V4
+                if field == "pipeline_contract_version"
+                else PipelineContractVersion.CARD_CENTRIC_V1
+            ),
+        )
+    )
+    repository.record_agent_heartbeat(
+        agent_id="anki-agent",
+        heartbeat_at="2026-08-05T18:00:00+00:00",
+        versions={"supported_envelope_contract_versions": (1, 2)},
+        active_snapshot_id="snapshot-1",
+        health={"status": "ok"},
+    )
+    envelope = _v2_envelope(
+        pipeline_contract_version=(
+            PipelineContractVersion.CARD_CENTRIC_V1.value
+        ),
+        model_config_sha256=(
+            str(value) if field == "model_config_sha256" else job.model_config_sha256
+        ),
+        review_revision=int(value) if field == "review_revision" else job.review_revision,
+    )
+    before = repository.require_job(job.id)
+
+    with pytest.raises(ValueError, match=message):
+        repository.create_action_envelope(job.id, envelope)
+
+    after = repository.require_job(job.id)
+    assert _envelope_row_counts(repository) == (0, 0)
+    assert (after.state, after.review_revision, after.apply_state) == (
+        before.state,
+        before.review_revision,
+        before.apply_state,
+    )
 
 
 def test_action_envelope_operation_journal_is_durable(tmp_path) -> None:
