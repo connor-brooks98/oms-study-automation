@@ -96,6 +96,7 @@ def _job_request(lecture_id: int, *, snapshot: str = "snapshot-1") -> CreateCura
 
 def _v2_envelope(
     *,
+    job_id: UUID,
     pipeline_contract_version: str = "card_centric_v1",
     model_config_sha256: str = "a" * 64,
     review_revision: int = 0,
@@ -119,6 +120,7 @@ def _v2_envelope(
     payload.update(
         {
             "contract_version": 2,
+            "job_id": str(job_id),
             "pipeline_contract_version": pipeline_contract_version,
             "model_config_sha256": model_config_sha256,
             "reconciliation_contract_version": "reconciliation-v1",
@@ -816,7 +818,7 @@ def test_v2_envelope_creation_requires_persisted_agent_capability(
     ):
         repository.create_action_envelope(
             job.id,
-            _v2_envelope(),
+            _v2_envelope(job_id=job.id),
             expected_review_revision=before.review_revision,
         )
 
@@ -847,6 +849,7 @@ def test_v2_envelope_creation_persists_when_agent_advertises_capability(
         health={"status": "ok"},
     )
     envelope = _v2_envelope(
+        job_id=job.id,
         pipeline_contract_version=job.pipeline_contract_version.value,
         model_config_sha256=job.model_config_sha256,
         review_revision=job.review_revision,
@@ -892,6 +895,7 @@ def test_v2_envelope_rejects_provenance_mismatches_without_mutation(
         health={"status": "ok"},
     )
     envelope = _v2_envelope(
+        job_id=job.id,
         pipeline_contract_version=(
             PipelineContractVersion.CARD_CENTRIC_V1.value
         ),
@@ -906,6 +910,43 @@ def test_v2_envelope_rejects_provenance_mismatches_without_mutation(
         repository.create_action_envelope(job.id, envelope)
 
     after = repository.require_job(job.id)
+    assert _envelope_row_counts(repository) == (0, 0)
+    assert (after.state, after.review_revision, after.apply_state) == (
+        before.state,
+        before.review_revision,
+        before.apply_state,
+    )
+
+
+def test_v2_envelope_cannot_be_replayed_to_another_matching_job(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    request = replace(
+        _job_request(lecture_id),
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+    )
+    job_a = repository.create_job(request)
+    job_b = repository.create_job(request)
+    repository.record_agent_heartbeat(
+        agent_id="anki-agent",
+        heartbeat_at="2026-08-05T18:00:00+00:00",
+        versions={"supported_envelope_contract_versions": (1, 2)},
+        active_snapshot_id="snapshot-1",
+        health={"status": "ok"},
+    )
+    envelope = _v2_envelope(
+        job_id=job_a.id,
+        pipeline_contract_version=job_a.pipeline_contract_version.value,
+        model_config_sha256=job_a.model_config_sha256,
+        review_revision=job_a.review_revision,
+    )
+    before = repository.require_job(job_b.id)
+
+    with pytest.raises(ValueError, match="job ID"):
+        repository.create_action_envelope(job_b.id, envelope)
+
+    after = repository.require_job(job_b.id)
     assert _envelope_row_counts(repository) == (0, 0)
     assert (after.state, after.review_revision, after.apply_state) == (
         before.state,

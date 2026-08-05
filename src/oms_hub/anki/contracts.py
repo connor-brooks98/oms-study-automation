@@ -483,6 +483,7 @@ ActionEnvelope = ActionEnvelopeV1
 
 class ActionEnvelopeV2(_ActionEnvelopeBase):
     contract_version: Literal[2] = 2
+    job_id: UUID
     pipeline_contract_version: Literal["card_centric_v1"] = "card_centric_v1"
     model_config_sha256: Sha256
     reconciliation_contract_version: Annotated[str, Field(min_length=1, max_length=100)]

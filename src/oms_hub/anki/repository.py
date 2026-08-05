@@ -1277,6 +1277,10 @@ class AnkiCurationRepository:
         with self.database.session() as session:
             job = self._require_job_model(session, job_id)
             if envelope.contract_version == 2:
+                if envelope.job_id != job_id:
+                    raise ValueError(
+                        "action envelope job ID does not match caller job; no mutation performed"
+                    )
                 agent = session.get(AnkiAgentStateModel, 1)
                 versions = (
                     cast(dict[str, Any], json.loads(agent.versions_json))

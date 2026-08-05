@@ -283,6 +283,7 @@ def _v2_envelope(gateway: FakeGateway) -> ActionEnvelopeV2:
     payload.update(
         {
             "contract_version": 2,
+            "job_id": "ab43d53a-55aa-4ef5-909b-0833b10254d7",
             "pipeline_contract_version": "card_centric_v1",
             "model_config_sha256": "a" * 64,
             "reconciliation_contract_version": "reconciliation-v1",
