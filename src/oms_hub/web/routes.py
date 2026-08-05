@@ -17,6 +17,7 @@ from oms_hub.progress import overall_status
 from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.study_generation.domain import GenerationKind
 from oms_hub.study_generation.repository import GenerationRepository
+from oms_hub.study_generation.service import revision_readiness_problem
 from oms_hub.web.schemas import LectureApi, StepApi
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -164,6 +165,8 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
             request.app.state.database
         ).list_current_revisions(lecture_id)
     }
+    slide_revision = revisions.get(UploadKind.SLIDES)
+    transcript_revision = revisions.get(UploadKind.TRANSCRIPTS)
     generation = GenerationRepository(request.app.state.database)
     outline = generation.current_outline(lecture_id)
     quiz = generation.current_quiz(lecture_id)
@@ -181,9 +184,11 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
             if release_steps
             else 0,
             "release_steps": release_steps,
-            "slide_revision": revisions.get(UploadKind.SLIDES),
-            "transcript_revision": revisions.get(
-                UploadKind.TRANSCRIPTS
+            "slide_revision": slide_revision,
+            "slide_problem": revision_readiness_problem(slide_revision),
+            "transcript_revision": transcript_revision,
+            "transcript_problem": revision_readiness_problem(
+                transcript_revision
             ),
             "course_hue": _course_hue(lecture.subject),
             "outline_output": outline,

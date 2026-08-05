@@ -76,10 +76,26 @@ class StructuredTextService:
         json_text = match.group("body") if match is not None else raw_text
         try:
             payload = json.loads(json_text)
-            value = output_model.model_validate(payload)
-        except (json.JSONDecodeError, ValidationError, TypeError) as exc:
+        except json.JSONDecodeError as exc:
             raise StructuredOutputError(
-                "structured output failed JSON schema validation",
+                "structured output failed JSON schema validation: "
+                f"$: invalid JSON at line {exc.lineno}, column {exc.colno}",
+                raw_text=raw_text,
+                generation=generated,
+            ) from exc
+        try:
+            value = output_model.model_validate(payload)
+        except ValidationError as exc:
+            raise StructuredOutputError(
+                "structured output failed JSON schema validation: "
+                + _validation_details(exc),
+                raw_text=raw_text,
+                generation=generated,
+            ) from exc
+        except TypeError as exc:
+            raise StructuredOutputError(
+                "structured output failed JSON schema validation: "
+                "$: invalid structured value",
                 raw_text=raw_text,
                 generation=generated,
             ) from exc
@@ -98,3 +114,19 @@ class StructuredTextService:
 def sanitize_model_text(value: str, *, max_characters: int = 200_000) -> str:
     sanitized = _CONTROL.sub("", value).strip()
     return sanitized[:max_characters]
+
+
+def _validation_details(error: ValidationError) -> str:
+    details: list[str] = []
+    for item in error.errors(
+        include_url=False,
+        include_context=False,
+        include_input=False,
+    )[:6]:
+        location = "$" + "".join(
+            f"[{part}]" if isinstance(part, int) else f".{part}"
+            for part in item["loc"]
+        )
+        message = sanitize_model_text(str(item["msg"]), max_characters=240)
+        details.append(f"{location}: {message}")
+    return "; ".join(details) or "$: value does not match the schema"

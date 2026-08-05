@@ -102,6 +102,29 @@ def test_generate_json_rejects_invalid_or_schema_mismatched_output(
     assert "validation" in str(raised.value).casefold()
 
 
+def test_schema_validation_error_identifies_the_invalid_field_without_echoing_input() -> None:
+    private_value = "do-not-echo-this-response-value"
+    service = StructuredTextService(
+        FakeTextGenerator(
+            [_generated(f'{{"value": "{private_value}", "labels": []}}')]
+        )
+    )
+
+    with pytest.raises(StructuredOutputError) as raised:
+        service.generate_json(
+            "Return the answer.",
+            "Question",
+            output_model=Answer,
+            provider=ProviderName.OPENAI,
+            model="gpt-5.2",
+        )
+
+    message = str(raised.value)
+    assert "$.value" in message
+    assert "valid integer" in message
+    assert private_value not in message
+
+
 def test_generate_json_accepts_a_complete_json_fence() -> None:
     service = StructuredTextService(
         FakeTextGenerator(

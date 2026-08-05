@@ -35,34 +35,38 @@
   </section>
 
   <div class="file-card-grid">
-    <section class="file-card {{ 'ready' if slide_revision else 'missing' }}">
+    <section class="file-card {{ 'ready' if slide_revision and not slide_problem else 'missing' }}">
       <div class="file-card-title">
         <span class="file-state-icon" aria-hidden="true">{{ "✓" if slide_revision else "↑" }}</span>
         <h2>Lecture Slides (PPTX / PDF)</h2>
       </div>
-      <p class="file-caption">{{ slide_revision.canonical_derived_path.name if slide_revision else "Not yet uploaded" }}</p>
+      <p class="file-caption">{% if slide_revision and slide_problem %}Lecture PDF {{ slide_problem }}.{% elif slide_revision %}{{ slide_revision.canonical_derived_path.name }}{% else %}Not yet uploaded{% endif %}</p>
       <div class="file-actions">
         <a class="button secondary" href="/uploads/slides?lecture_id={{ lecture.id }}">Upload Lecture PPTX</a>
         {% if slide_revision %}
         <a class="button secondary" href="/artifacts/{{ slide_revision.id }}/pptx">Download PPTX</a>
+        {% endif %}
+        {% if slide_revision and not slide_problem %}
         <a class="button primary" href="/artifacts/{{ slide_revision.id }}/pdf">Open Lecture PDF</a>
-        {% else %}
+        {% elif not slide_revision %}
         <a class="button disabled" href="/uploads/slides" aria-disabled="true">Open Lecture PDF</a>
         {% endif %}
       </div>
     </section>
-    <section class="file-card {{ 'ready' if transcript_revision else 'missing' }}">
+    <section class="file-card {{ 'ready' if transcript_revision and not transcript_problem else 'missing' }}">
       <div class="file-card-title">
         <span class="file-state-icon" aria-hidden="true">{{ "✓" if transcript_revision else "↑" }}</span>
         <h2>Transcript (TXT)</h2>
       </div>
-      <p class="file-caption">{{ transcript_revision.canonical_derived_path.name if transcript_revision else "Not yet uploaded" }}</p>
+      <p class="file-caption">{% if transcript_revision and transcript_problem %}Cleaned transcript {{ transcript_problem }}.{% elif transcript_revision %}{{ transcript_revision.canonical_derived_path.name }}{% else %}Not yet uploaded{% endif %}</p>
       <div class="file-actions">
         <a class="button secondary" href="/uploads/transcripts?lecture_id={{ lecture.id }}">Upload Lecture Transcript</a>
         {% if transcript_revision %}
         <a class="button secondary" href="/artifacts/{{ transcript_revision.id }}/raw">Open Raw Transcript</a>
+        {% endif %}
+        {% if transcript_revision and not transcript_problem %}
         <a class="button primary" href="/artifacts/{{ transcript_revision.id }}/cleaned">Open Cleaned Transcript</a>
-        {% else %}
+        {% elif not transcript_revision %}
         <a class="button disabled" href="/uploads/transcripts" aria-disabled="true">Open Cleaned Transcript</a>
         {% endif %}
       </div>
