@@ -59,6 +59,41 @@ Success: no issues found in 2 source files
 All checks passed!
 ```
 
+## Second follow-up contract correction
+
+`fix: preserve quiz review edits and public ids` assigns `q1`, `q2`, and so on
+only when the private review draft becomes a native/public quiz. Imported draft
+identifiers remain private review-route keys and cannot become public schema
+identifiers. Preview and published public content/answer flows therefore use
+the same valid public IDs while retaining the existing choice IDs and media
+references.
+
+Partial review edits now normalize and validate only supplied fields. Omitted
+answer fields are preserved exactly, which permits metadata review of incomplete
+drafts and avoids reopening verification for a stem/topic/area/objective-only
+edit. Explicit choices, correct-index, and rationale changes retain strict
+validation and the established manual-correction/reverification transition;
+invalid edits are rejected before anything is persisted.
+
+Second-correction verification:
+
+```text
+./.venv/bin/pytest -q tests/study_generation/test_practice_review.py tests/study_generation/test_studio_repository.py tests/study_generation/test_studio_worker.py tests/v2/test_quiz_builder_routes.py tests/v2/test_public_quiz_routes.py
+passed
+
+./.venv/bin/pytest -q tests/study_generation tests/v2
+passed
+
+node --test tests/js/studio_quiz_review.test.js tests/js/studio_quiz_images.test.js tests/js/notebook_studio.test.js tests/js/public_quiz.test.js
+21 passed
+
+./.venv/bin/mypy src/oms_hub/study_generation/practice_review.py
+Success: no issues found in 1 source file
+
+./.venv/bin/ruff check src/oms_hub/study_generation/practice_review.py tests/study_generation/test_practice_review.py tests/v2/test_quiz_builder_routes.py
+All checks passed!
+```
+
 ## Follow-up verification correction
 
 `fix: reverify edited quiz rationales` closes a review-state gap: a normalized

@@ -186,6 +186,65 @@ def test_non_answer_metadata_edit_preserves_existing_verification(tmp_path: Path
     assert updated.verified_at == verified.verified_at
 
 
+def test_partial_metadata_edit_preserves_whitespace_and_verification(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    draft = replace(
+        _draft("question-1", generated=True),
+        choices=(" A ", " B "),
+        rationale=" Because. ",
+    )
+    service.store("run-1", (draft,))
+    verified = service.verify_generated_answer("run-1", "question-1")
+
+    updated = service.update_question("run-1", "question-1", {"topic": "Neuro"})
+
+    assert updated.draft.choices == (" A ", " B ")
+    assert updated.draft.rationale == " Because. "
+    assert updated.answer_provenance is AnswerProvenance.GENERATED_BY_AI
+    assert updated.verified_at == verified.verified_at
+
+
+def test_metadata_edit_allows_incomplete_draft_and_invalid_answer_edit_is_atomic(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    incomplete = replace(_draft("q1", generated=True), correct_index=None, rationale=None)
+    service.store("run-1", (incomplete,))
+
+    updated = service.update_question("run-1", "q1", {"area": "Neuro"})
+    assert updated.area == "Neuro"
+    assert updated.draft.correct_index is None
+    assert updated.draft.rationale is None
+    before = service.question("run-1", "q1")
+
+    with pytest.raises(ValueError, match="choices"):
+        service.update_question("run-1", "q1", {"choices": ["Only choice"]})
+    assert service.question("run-1", "q1") == before
+
+
+def test_choice_edit_rejects_an_invalid_existing_correct_index_atomically(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    draft = replace(_draft("q1", generated=False), choices=("A", "B", "C"), correct_index=2)
+    service.store("run-1", (draft,))
+
+    with pytest.raises(ValueError, match="correct index"):
+        service.update_question("run-1", "q1", {"choices": ["A", "B"]})
+    assert service.question("run-1", "q1").draft == draft
+
+
+def test_native_quiz_uses_public_question_ids_not_import_identifiers(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.store(
+        "run-1",
+        (_draft("question-1", generated=False), _draft("question-2", generated=False)),
+    )
+
+    quiz = service.to_native_quiz("run-1")
+
+    assert tuple(question.id for question in quiz.questions) == ("q1", "q2")
+    assert tuple(question.choices[0].id for question in quiz.questions) == ("c1", "c1")
+
+
 def test_rationale_edit_marks_supplied_answer_manual_without_new_verification(
     tmp_path: Path,
 ) -> None:

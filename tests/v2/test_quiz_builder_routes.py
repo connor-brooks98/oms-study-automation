@@ -298,3 +298,45 @@ def test_candidate_preview_is_question_scoped_and_selection_is_csrf_protected(tm
     assert forbidden.status_code == 403
     assert selected.status_code == 200
     assert selected.json()["questions"][0]["selected_candidate_id"] == candidate["candidate_id"]
+
+
+def test_imported_private_question_ids_are_replaced_for_preview_and_public_grading(
+    tmp_path,
+) -> None:
+    client = _client(tmp_path)
+    run_id = _direct_review_run(client)
+    verified = client.post(
+        f"/studio/runs/{run_id}/questions/question-1/verify-answer",
+        headers=_csrf_headers(client),
+    )
+    preview_content = client.get(f"/studio/runs/{run_id}/preview/content")
+    preview_answer = client.post(
+        f"/studio/runs/{run_id}/preview/answer",
+        json={"question_id": "q1", "choice_id": "c1"},
+    )
+    published = client.post(
+        f"/studio/runs/{run_id}/publication",
+        headers=_csrf_headers(client),
+    )
+    token = published.json()["token"]
+    public_content = client.get(f"/public/quizzes/{token}/content")
+    public_page = client.get(f"/public/quizzes/{token}")
+    public_answer = client.post(
+        f"/public/quizzes/{token}/answer",
+        json={"question_id": "q1", "choice_id": "c1"},
+        headers=_csrf_headers(client),
+    )
+
+    assert verified.status_code == 200
+    assert preview_content.status_code == 200
+    assert preview_content.json()["questions"][0]["id"] == "q1"
+    assert "question-1" not in preview_content.text
+    assert preview_answer.status_code == 200
+    assert preview_answer.json()["correct"] is True
+    assert published.status_code == 200
+    assert public_content.status_code == 200
+    assert public_content.json()["questions"][0]["id"] == "q1"
+    assert "question-1" not in public_content.text
+    assert public_page.status_code == 200
+    assert public_answer.status_code == 200
+    assert public_answer.json()["correct"] is True

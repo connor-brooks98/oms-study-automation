@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -362,18 +362,27 @@ class PracticeReviewService:
         unknown = set(values) - allowed
         if unknown:
             raise ValueError("question edit contains unsupported fields")
-        stem = _required_text(values.get("stem", draft.stem), "stem")
-        choices = _choices(values.get("choices", draft.choices))
-        correct_index = values.get("correct_index", draft.correct_index)
-        if not isinstance(correct_index, int) or isinstance(correct_index, bool):
-            raise ValueError("correct index is invalid")
-        if not 0 <= correct_index < len(choices):
-            raise ValueError("correct index is outside the available choices")
-        rationale = _required_text(values.get("rationale", draft.rationale), "rationale")
+        stem = draft.stem if "stem" not in values else _required_text(values["stem"], "stem")
+        choices = draft.choices if "choices" not in values else _choices(values["choices"])
+        correct_index = (
+            draft.correct_index
+            if "correct_index" not in values
+            else values["correct_index"]
+        )
+        rationale = (
+            draft.rationale
+            if "rationale" not in values
+            else _required_text(values["rationale"], "rationale")
+        )
+        if "choices" in values or "correct_index" in values:
+            if not isinstance(correct_index, int) or isinstance(correct_index, bool):
+                raise ValueError("correct index is invalid")
+            if not 0 <= correct_index < len(choices):
+                raise ValueError("correct index is outside the available choices")
         answer_changed = (
-            choices != draft.choices
-            or correct_index != draft.correct_index
-            or rationale != draft.rationale
+            ("choices" in values and choices != draft.choices)
+            or ("correct_index" in values and correct_index != draft.correct_index)
+            or ("rationale" in values and rationale != draft.rationale)
         )
         requires_verification = (
             draft.verification_required
@@ -383,7 +392,7 @@ class PracticeReviewService:
             draft,
             stem=stem,
             choices=choices,
-            correct_index=correct_index,
+            correct_index=cast(int | None, correct_index),
             rationale=rationale,
             answer_provenance=(AnswerProvenance.MANUALLY_CORRECTED if answer_changed else draft.answer_provenance),  # noqa: E501
             verification_required=(requires_verification if answer_changed else draft.verification_required),  # noqa: E501
@@ -391,9 +400,13 @@ class PracticeReviewService:
         )
         updated = ReviewQuestion(
             updated_draft,
-            _optional_text(values.get("topic", current.topic)),
-            _optional_text(values.get("area", current.area)),
-            _optional_text(values.get("learning_objective", current.learning_objective)),
+            current.topic if "topic" not in values else _optional_text(values["topic"]),
+            current.area if "area" not in values else _optional_text(values["area"]),
+            (
+                current.learning_objective
+                if "learning_objective" not in values
+                else _optional_text(values["learning_objective"])
+            ),
             current.chosen_image,
         )
         questions = tuple(
@@ -490,7 +503,7 @@ def _native_quiz(questions: tuple[ReviewQuestion, ...], title: str) -> NativeQui
         title,
         tuple(
             QuizQuestion(
-                item.draft.question_id,
+                f"q{number}",
                 item.draft.stem,
                 tuple(QuizChoice(f"c{number}", choice) for number, choice in enumerate(item.draft.choices, 1)),  # noqa: E501
                 f"c{(item.draft.correct_index or 0) + 1}",
@@ -500,7 +513,7 @@ def _native_quiz(questions: tuple[ReviewQuestion, ...], title: str) -> NativeQui
                 item.learning_objective,
                 item.topic,
             )
-            for item in questions
+            for number, item in enumerate(questions, start=1)
         ),
     )
 
