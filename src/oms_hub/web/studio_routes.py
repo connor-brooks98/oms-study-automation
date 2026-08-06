@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Annotated, cast
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -874,6 +874,18 @@ def rerun(request: Request, run_id: str) -> JSONResponse:
         {"id": successor.id, "state": successor.state.value},
         status_code=202,
     )
+
+
+@router.delete("/runs/{run_id}", status_code=204)
+def remove_run_from_history(request: Request, run_id: str) -> Response:
+    require_form_csrf(request, None)
+    try:
+        request.app.state.studio_repository.hide_run(run_id)
+    except KeyError as error:
+        raise HTTPException(404, "Studio run was not found") from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return Response(status_code=204)
 
 
 @router.delete("/runs/{run_id}/publication")

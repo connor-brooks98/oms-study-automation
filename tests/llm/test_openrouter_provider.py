@@ -115,6 +115,39 @@ def test_openrouter_structured_generation_sends_json_schema():
 
 
 @respx.mock
+def test_openrouter_structured_generation_uses_the_strict_schema_normalizer():
+    route = respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "gen-json-strict",
+                "model": "openai/gpt-4o-mini",
+                "choices": [{"message": {"content": '{"answer":null}'}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+            },
+        )
+    )
+
+    OpenRouterProvider().generate_text(
+        "Return a grounded answer.",
+        "Question",
+        api_key="secret",
+        model="openai/gpt-4o-mini",
+        output_schema={
+            "type": "object",
+            "properties": {"answer": {"type": "string", "default": ""}},
+        },
+    )
+
+    schema = json.loads(route.calls.last.request.content)["response_format"]["json_schema"][
+        "schema"
+    ]
+    assert schema["required"] == ["answer"]
+    assert schema["additionalProperties"] is False
+    assert "default" not in schema["properties"]["answer"]
+
+
+@respx.mock
 def test_openrouter_generation_preserves_prefix_order_without_cache_telemetry() -> None:
     route = respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
         return_value=httpx.Response(

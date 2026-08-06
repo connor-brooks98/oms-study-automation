@@ -178,13 +178,28 @@
         unpublish.textContent = "Unpublish";
         card.append(unpublish);
       }
-      if (run.state === "complete" || run.state === "failed") {
+      if (["awaiting_images", "awaiting_review", "complete", "failed"].includes(run.state)) {
+        const actions = documentRef.createElement("div");
+        actions.className = "studio-run-actions";
         const rerun = documentRef.createElement("button");
         rerun.type = "button";
         rerun.className = "button secondary compact";
         rerun.dataset.rerun = run.id;
-        rerun.textContent = "Re-run";
-        card.append(rerun);
+        rerun.textContent = "↻";
+        rerun.ariaLabel = "Re-run this quiz";
+        rerun.title = "Re-run";
+        rerun.setAttribute?.("aria-label", "Re-run this quiz");
+        actions.append(rerun);
+        const remove = documentRef.createElement("button");
+        remove.type = "button";
+        remove.className = "button danger compact";
+        remove.dataset.removeRun = run.id;
+        remove.textContent = "×";
+        remove.ariaLabel = "Remove run from history";
+        remove.title = "Remove from history";
+        remove.setAttribute?.("aria-label", "Remove run from history");
+        actions.append(remove);
+        card.append(actions);
       }
       const attempts = run.attempt_history || [];
       attempts.forEach((attempt) => {
@@ -507,6 +522,7 @@
     page.addEventListener("click", async (event) => {
       const deleteButton = event.target.closest?.("[data-delete-source]");
       const rerunButton = event.target.closest?.("[data-rerun]");
+      const removeRunButton = event.target.closest?.("[data-remove-run]");
       const unpublishButton = event.target.closest?.("[data-unpublish-run]");
       const removeImportSource = event.target.closest?.("[data-remove-import-source]");
       if (removeImportSource) {
@@ -519,7 +535,7 @@
         }
         return;
       }
-      const target = deleteButton || rerunButton || unpublishButton;
+      const target = deleteButton || rerunButton || removeRunButton || unpublishButton;
       if (!target) return;
       const token = csrf(documentRef);
       let url;
@@ -531,6 +547,10 @@
       } else if (rerunButton) {
         url = `/studio/runs/${encodeURIComponent(rerunButton.dataset.rerun)}/rerun`;
         method = "POST";
+      } else if (removeRunButton) {
+        if (!root.confirm("Remove this run from history? A published quiz will remain available.")) return;
+        url = `/studio/runs/${encodeURIComponent(removeRunButton.dataset.removeRun)}`;
+        method = "DELETE";
       } else {
         if (!root.confirm("Unpublish this quiz? Private run history will be retained.")) return;
         url = `/studio/runs/${encodeURIComponent(unpublishButton.dataset.unpublishRun)}/publication`;

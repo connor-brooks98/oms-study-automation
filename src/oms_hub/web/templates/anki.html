@@ -138,7 +138,11 @@
             <label>Gap generation (S7)<input name="s7_model" readonly></label>
           </div>
           <p class="field-help" data-s4-fixture>Classify defaults are fixture-gated. Unvalidated custom S4 choices require a fixture run before they become a default.</p>
+          {% if fixture_available %}
           <button type="button" data-run-fixture>Run fixture test</button>
+          {% else %}
+          <p class="field-help" data-fixture-unavailable>{{ fixture_status }}</p>
+          {% endif %}
           <span class="field-help" data-fixture-result aria-live="polite"></span>
           <p class="field-help" data-s7-warning hidden>Gap cards enter your permanent deck; a weaker S7 model risks subtle errors.</p>
         </fieldset>

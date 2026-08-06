@@ -201,6 +201,37 @@ def test_prompt_keeps_source_order_and_source_context(tmp_path: Path) -> None:
     assert prompt.index("segment_key: heading") < prompt.index("segment_key: questions-1")
 
 
+def test_extractor_blocks_partial_results_when_source_has_a_sequential_question_set(
+    tmp_path: Path,
+) -> None:
+    segments = tuple(
+        ParsedSegment(
+            f"question-{number}",
+            SegmentKind.PARAGRAPH,
+            f"{number}. Question {number}? A. One B. Two",
+            DocumentLocator(f"block {number}"),
+        )
+        for number in range(1, 17)
+    )
+    document = _document(tmp_path, segments=segments)
+    partial = json.loads(valid_extraction_json())
+    partial["questions"] = [partial["questions"][0]]
+    partial["questions"][0]["source_segments"] = [
+        {"source_id": "source-1", "segment_key": "question-1"}
+    ]
+
+    result = PracticeQuestionExtractor(StructuredGenerator([json.dumps(partial)])).extract(
+        (document,)
+    )
+
+    assert any(
+        diagnostic.code == "incomplete-sequential-question-extraction"
+        and diagnostic.severity.value == "blocker"
+        and "2 through 16" in diagnostic.message
+        for diagnostic in result.diagnostics
+    )
+
+
 def test_heading_section_stays_together_when_the_section_fits_the_bound(tmp_path: Path) -> None:
     document = _document(
         tmp_path,

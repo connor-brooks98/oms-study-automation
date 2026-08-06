@@ -43,6 +43,54 @@ def test_settings_renders_a_secret_safe_voyage_embedding_card(tmp_path):
     assert "sentinel-voyage-secret" not in response.text
 
 
+def test_settings_groups_controls_in_five_accessible_disclosures(tmp_path):
+    client, _, secrets = prepared_client(tmp_path)
+    secrets.set("openai-api-key", "sentinel-secret")
+
+    response = client.get("/settings")
+
+    assert response.status_code == 200
+    assert response.text.count('<details class="settings-disclosure') == 5
+    for label in (
+        "AI Providers",
+        "Task Assignments",
+        "Prompt Files",
+        "Lecture Exam Tracker",
+        "Runtime &amp; Remote Access",
+    ):
+        assert label in response.text
+    assert response.text.index("AI Providers") < response.text.index(
+        "data-provider-card"
+    )
+    assert response.text.index("AI Providers") < response.text.index(
+        "data-voyage-card"
+    )
+    assert response.text.index("AI Providers") < response.text.index(
+        "data-notebook-card"
+    )
+    assert response.text.index("Prompt Files") < response.text.index(
+        "data-anki-prompt-directory"
+    )
+    assert "sentinel-secret" not in response.text
+
+
+def test_runtime_remote_access_exposes_only_the_safe_anki_port_override(tmp_path):
+    client, _, secrets = prepared_client(tmp_path)
+    secrets.set("voyage-api-key", "sentinel-voyage-secret")
+
+    response = client.get("/settings")
+
+    assert response.status_code == 200
+    assert "Read-only recovery boundary" in response.text
+    assert "Study Hub listener" in response.text
+    assert "AnkiConnect endpoint" in response.text
+    assert "Remote Access" in response.text
+    assert "Not configured" in response.text
+    assert "data-runtime-save" in response.text
+    assert "data-runtime-clear" in response.text
+    assert "sentinel-voyage-secret" not in response.text
+
+
 def test_settings_provider_kicker_reflects_task_assignment_counts(tmp_path):
     client, app, _ = prepared_client(tmp_path)
     # Bind two existing assignments to Gemini and the third to Anthropic.

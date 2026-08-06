@@ -99,3 +99,18 @@ test("direct run history labels review stages and links to question review", () 
   assert.equal(card.children[2].textContent, "Review questions");
   assert.equal(card.children[2].href, "/studio/runs/run-1/review");
 });
+
+test("terminal runs expose compact rerun and history-only remove actions", () => {
+  const container = new Element("div");
+  studio.renderRuns(documentRef, container, [{
+    id: "run-1", label: "Imported set", state: "complete", stage: "complete",
+    attempts: 1, error: null, workflow_kind: "direct_import", review_url: null,
+    image_review_url: null, published_url: "/quizzes/token", attempt_history: [],
+  }]);
+
+  const actions = container.children[0].children.at(-1);
+  assert.equal(actions.className, "studio-run-actions");
+  assert.equal(actions.children[0].dataset.rerun, "run-1");
+  assert.equal(actions.children[1].dataset.removeRun, "run-1");
+  assert.equal(actions.children[1].ariaLabel, "Remove run from history");
+});

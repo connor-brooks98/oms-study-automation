@@ -87,6 +87,70 @@ def test_web_processor_downloads_each_resolved_image_url_once(tmp_path: Path) ->
     assert len(parsed.segments) == 2
 
 
+def test_web_processor_uses_article_content_and_leaf_div_question_blocks(tmp_path: Path) -> None:
+    """Blog-style sources commonly put question text directly in nested divs."""
+    source = tmp_path / "blogger.html"
+    source.write_text(
+        "<html><body><aside><p>Popular posts</p></aside>"
+        "<div class='post-body entry-content'><div><div>1. First question?</div>"
+        "<div>A. First option</div><div>B. Second option</div></div>"
+        "<div><div>2. Second question?</div><div>A. Yes</div><div>B. No</div></div>"
+        "</div><footer><p>Comments</p></footer></body></html>",
+        encoding="utf-8",
+    )
+
+    parsed = WebProcessor(_FailingAssetService()).parse(_snapshot(source), tmp_path / "assets")
+
+    assert tuple(segment.text for segment in parsed.segments) == (
+        "1. First question?",
+        "A. First option",
+        "B. Second option",
+        "2. Second question?",
+        "A. Yes",
+        "B. No",
+    )
+
+
+def test_web_processor_keeps_all_16_numbered_blogger_question_blocks(tmp_path: Path) -> None:
+    source = tmp_path / "sixteen-questions.html"
+    questions = "".join(
+        f"<div><div>{number}. Question {number}?</div><div>A. One</div><div>B. Two</div></div>"
+        for number in range(1, 17)
+    )
+    source.write_text(
+        f"<html><body><div class='sidebar'><p>Popular posts</p></div>"
+        f"<div class='post-body entry-content'>{questions}</div>"
+        "<div class='comments'><p>Leave a comment</p></div></body></html>",
+        encoding="utf-8",
+    )
+
+    parsed = WebProcessor(_FailingAssetService()).parse(_snapshot(source), tmp_path / "assets")
+
+    stems = [segment.text for segment in parsed.segments if segment.text.endswith("?")]
+    assert stems == [f"{number}. Question {number}?" for number in range(1, 17)]
+    assert all("Popular posts" not in segment.text for segment in parsed.segments)
+
+
+def test_web_processor_prefers_nested_post_body_over_outer_main_chrome(tmp_path: Path) -> None:
+    source = tmp_path / "nested-content-root.html"
+    source.write_text(
+        "<html><body><main><header><p>Pathology Notes</p></header>"
+        "<div class='post-body entry-content'><div>1. First question?</div>"
+        "<div>A. One</div><div>B. Two</div></div>"
+        "<section class='popular-posts'><p>Popular posts from this blog</p></section>"
+        "</main></body></html>",
+        encoding="utf-8",
+    )
+
+    parsed = WebProcessor(_FailingAssetService()).parse(_snapshot(source), tmp_path / "assets")
+
+    assert tuple(segment.text for segment in parsed.segments) == (
+        "1. First question?",
+        "A. One",
+        "B. Two",
+    )
+
+
 class _AssetService:
     max_bytes = 1024 * 1024
 

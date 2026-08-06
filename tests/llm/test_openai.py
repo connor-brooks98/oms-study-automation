@@ -12,7 +12,8 @@ from oms_hub.llm.domain import (
     ProviderName,
     ThinkingMode,
 )
-from oms_hub.llm.openai import OpenAIProvider
+from oms_hub.llm.openai import OpenAIProvider, openai_output_schema
+from oms_hub.study_generation.practice_contracts import ExtractionPayload
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
 
@@ -129,6 +130,27 @@ def test_openai_structured_generation_sends_json_schema():
     assert '"json_schema"' in payload
     assert '"structured_output"' in payload
     assert result.text == '{"answer":"iron"}'
+
+
+def test_openai_output_schema_makes_pydantic_optionals_strict_schema_compatible() -> None:
+    schema = openai_output_schema(ExtractionPayload.model_json_schema())
+
+    def assert_strict(value: object) -> None:
+        if isinstance(value, list):
+            for item in value:
+                assert_strict(item)
+            return
+        if not isinstance(value, dict):
+            return
+        properties = value.get("properties")
+        if isinstance(properties, dict):
+            assert value["required"] == list(properties)
+            assert value["additionalProperties"] is False
+            assert "default" not in value
+        for child in value.values():
+            assert_strict(child)
+
+    assert_strict(schema)
 
 
 @respx.mock

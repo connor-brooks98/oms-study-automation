@@ -8,11 +8,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/public/quizzes/assets/player.css">
+  <link rel="stylesheet" href="/public/quizzes/assets/player.css?v={{ player_asset_version }}">
 </head>
 <body class="public-quiz-page">
   <a class="skip-link" href="#quiz-player">Skip to quiz</a>
-  <nav class="quiz-app"><a href="{{ library_url }}" aria-label="{{ library_label }}">← {{ library_label }}</a></nav>
+  <nav class="quiz-page-nav" aria-label="Quiz library">
+    <a class="quiz-library-button" href="{{ library_url }}" aria-label="{{ library_label }}">← {{ library_label }}</a>
+  </nav>
   <main
     id="quiz-player"
     class="quiz-app"
@@ -31,6 +33,6 @@
       <p>Loading quiz…</p>
     </section>
   </main>
-  <script src="/public/quizzes/assets/player.js" defer></script>
+  <script src="/public/quizzes/assets/player.js?v={{ player_asset_version }}" defer></script>
 </body>
 </html>

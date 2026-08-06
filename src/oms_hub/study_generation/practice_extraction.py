@@ -1,6 +1,7 @@
 """Bounded, provenance-preserving extraction of imported practice questions."""
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -194,6 +195,28 @@ class PracticeQuestionExtractor:
                 if answer not in answers:
                     answers.append(answer)
 
+        expected_identifiers = _sequential_question_identifiers(sources)
+        extracted_identifiers = {
+            identifier
+            for question in merged_questions
+            if (identifier := _normalized_identifier(question.original_identifier)) is not None
+        }
+        missing_identifiers = tuple(
+            identifier
+            for identifier in expected_identifiers
+            if identifier not in extracted_identifiers
+        )
+        if missing_identifiers:
+            diagnostics.append(
+                DraftDiagnostic(
+                    "incomplete-sequential-question-extraction",
+                    "source contains explicitly numbered questions "
+                    f"{_identifier_range(expected_identifiers)} but extraction did not return "
+                    f"{_identifier_range(missing_identifiers)}; review is required",
+                    DiagnosticSeverity.BLOCKER,
+                )
+            )
+
         return ExtractionResult(
             tuple(merged_questions),
             tuple(answers),
@@ -348,3 +371,42 @@ def _normalized_identifier(value: str | None) -> str | None:
         return normalized_number
     compact = " ".join(value.casefold().split())
     return compact.rstrip(".:") or None
+
+
+_LEADING_QUESTION_NUMBER = re.compile(r"^\s*(\d{1,3})\s*[.)]\s+\S")
+
+
+def _sequential_question_identifiers(sources: tuple[SourceDocument, ...]) -> tuple[str, ...]:
+    """Return a conservative explicit-number sequence from canonical source text.
+
+    This is a publication safety check, not a second parser: it only activates
+    when at least three consecutive leading question numbers are visible.
+    """
+    numbers: set[int] = set()
+    for source in sources:
+        for segment in source.document.segments:
+            match = _LEADING_QUESTION_NUMBER.match(segment.text)
+            if match is not None:
+                numbers.add(int(match.group(1)))
+    longest: tuple[int, ...] = ()
+    current: list[int] = []
+    for number in sorted(numbers):
+        if current and number != current[-1] + 1:
+            if len(current) > len(longest):
+                longest = tuple(current)
+            current = []
+        current.append(number)
+    if len(current) > len(longest):
+        longest = tuple(current)
+    return tuple(str(number) for number in longest) if len(longest) >= 3 else ()
+
+
+def _identifier_range(identifiers: tuple[str, ...]) -> str:
+    if len(identifiers) == 1:
+        return identifiers[0]
+    if all(
+        int(right) == int(left) + 1
+        for left, right in zip(identifiers, identifiers[1:], strict=False)
+    ):
+        return f"{identifiers[0]} through {identifiers[-1]}"
+    return ", ".join(identifiers)

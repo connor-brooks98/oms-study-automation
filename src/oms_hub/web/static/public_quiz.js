@@ -560,6 +560,7 @@
           content.lecture_number != null
             ? `Lecture ${content.lecture_number}`
             : null,
+          content.topic,
         ].filter(Boolean).join(" · ");
         meta.append(
           element(
@@ -613,19 +614,6 @@
           }
           figure.append(image);
           body.append(figure);
-        }
-
-        const dimensions = [
-          ["Area", question.area],
-          ["Objective", question.learning_objective || question.objective],
-          ["Topic", question.topic],
-        ].filter(([, value]) => value);
-        if (dimensions.length > 0) {
-          const tags = element(documentRef, "div", "quiz-dimensions");
-          for (const [label, value] of dimensions) {
-            tags.append(element(documentRef, "span", "quiz-dimension", `${label}: ${value}`));
-          }
-          body.append(tags);
         }
 
         const tools = element(documentRef, "div", "quiz-tools");
@@ -865,7 +853,12 @@
           });
           body.append(submit);
         }
-        const navigation = element(documentRef, "nav", "quiz-navigation");
+        const navigation = element(
+          documentRef,
+          "nav",
+          "quiz-navigation quiz-navigation-card",
+        );
+        navigation.setAttribute("aria-label", "Quiz question navigation");
         const back = element(
           documentRef,
           "button",
@@ -898,9 +891,33 @@
           render();
         });
         navigation.append(back, forward);
-        body.append(navigation);
+
+        const dimensions = [
+          ["Area", question.area],
+          ["Objective", question.learning_objective || question.objective],
+          ["Topic", question.topic],
+        ].filter(([, value]) => value);
+        if (dimensions.length > 0) {
+          const information = element(
+            documentRef,
+            "details",
+            "quiz-information",
+          );
+          const summary = element(
+            documentRef,
+            "summary",
+            "quiz-information-summary",
+            "Question Information",
+          );
+          const tags = element(documentRef, "div", "quiz-dimensions");
+          for (const [label, value] of dimensions) {
+            tags.append(element(documentRef, "span", "quiz-dimension", `${label}: ${value}`));
+          }
+          information.append(summary, tags);
+          body.append(information);
+        }
         shell.append(header, body);
-        app.append(shell);
+        app.append(navigation, shell);
         restoreFocus(app, focusKey);
       };
 

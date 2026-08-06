@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from selectolax.parser import HTMLParser
 
 from oms_hub.anki.apply import ApplyCoordinator
+from oms_hub.anki.card_centric import build_source_index
 from oms_hub.anki.domain import (
     Candidate,
     CreateCurationJob,
@@ -32,6 +33,7 @@ from oms_hub.anki.domain import (
 from oms_hub.anki.models import AnkiCurationJobModel
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.anki.runtime import AnkiPreflight
+from oms_hub.anki.sources import SourcePassage
 from oms_hub.anki.stages import revision_fingerprint
 from oms_hub.anki.tag_policy import TagPolicy, tag_hash
 from oms_hub.app import create_app
@@ -58,6 +60,46 @@ SHA = "a" * 64
 TARGET_TAG = "AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_4"
 AGENT_HOST = "anki-agent.test"
 AGENT_TOKEN = "test-agent-token"
+
+
+def _pinned_private_fixture(tmp_path: Path) -> tuple[Path, str]:
+    """Build a structurally valid external fixture without checking it into Git."""
+    passage = SourcePassage.create(
+        revision_id=1,
+        lecture_id=7,
+        artifact_id="private-slides",
+        source_kind=SourceKind.SLIDE,
+        locator="slide:1",
+        text="Lecture07 source evidence",
+    )
+    source = build_source_index(
+        [passage], snapshot_id="private-fixture", source_revision_hashes={1: SHA}
+    )
+    cards = [
+        {
+            "note_id": 10_000 + index,
+            "content_sha256": f"{index + 1:064x}",
+            "text": f"real private card {index}",
+            "extra": "",
+            "tags": ["#AK::Heme"],
+        }
+        for index in range(124)
+    ]
+    payload: dict[str, Any] = {
+        "fixture_version": "private-v1",
+        "source_index": source.model_dump(mode="json"),
+        "cards": cards,
+        "baseline_verdicts": {str(card["note_id"]): "YES" for card in cards},
+        "missed_concept_ids": [f"C{index:02d}" for index in range(1, 7)],
+        "named_cases": {"real_missed_concepts": [card["note_id"] for card in cards[:6]]},
+    }
+    pin = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    payload["sha256"] = pin
+    path = tmp_path / "private-lecture07.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path, pin
 
 
 def test_concept_review_groups_keep_yes_maybe_flagged_and_generated_separate() -> None:
@@ -683,6 +725,38 @@ def test_anki_page_renders_openrouter_provider_option(
     assert provider_select is not None
     values = {option.attributes.get("value") for option in provider_select.css("option")}
     assert values == {"anthropic", "openai", "gemini", "openrouter"}
+
+
+def test_anki_page_hides_private_fixture_action_when_artifact_is_unavailable(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, _, _, _, _ = prepared_app
+
+    response = client.get("/anki")
+
+    assert response.status_code == 200
+    document = HTMLParser(response.text)
+    assert document.css_first("[data-run-fixture]") is None
+    unavailable = document.css_first("[data-fixture-unavailable]")
+    assert unavailable is not None
+    assert "not installed and SHA-256 pinned" in unavailable.text()
+
+
+def test_anki_page_shows_fixture_action_for_a_valid_pinned_external_artifact(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+    tmp_path: Path,
+) -> None:
+    client, app, _, _, _ = prepared_app
+    path, pin = _pinned_private_fixture(tmp_path)
+    app.state.settings.anki_fixture_artifact_path = path
+    app.state.settings.anki_card_centric_fixture_sha256 = pin
+
+    response = client.get("/anki")
+
+    assert response.status_code == 200
+    document = HTMLParser(response.text)
+    assert document.css_first("[data-run-fixture]") is not None
+    assert document.css_first("[data-fixture-unavailable]") is None
 
 
 def test_anki_bootstrap_selects_openrouter_default_when_assigned(

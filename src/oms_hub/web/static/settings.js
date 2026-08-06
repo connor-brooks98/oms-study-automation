@@ -573,6 +573,77 @@
       });
     }
 
+    const runtimePortCard = documentRef.querySelector("[data-runtime-anki-port]");
+    if (runtimePortCard) {
+      const input = runtimePortCard.querySelector("[data-runtime-port-input]");
+      const saveButton = runtimePortCard.querySelector("[data-runtime-save]");
+      const clearButton = runtimePortCard.querySelector("[data-runtime-clear]");
+      const source = runtimePortCard.querySelector("[data-runtime-port-source]");
+      const message = runtimePortCard.querySelector("[data-runtime-message]");
+
+      const renderRuntime = (result) => {
+        input.value = String(result.anki_connect_port);
+        const staged = result.source === "staged_override";
+        const active = result.source === "active_override";
+        source.textContent = staged
+          ? "Staged override"
+          : active ? "Active override" : "Deployment value";
+        source.classList.toggle("is-configured", staged || active);
+        clearButton.disabled = result.source === "environment";
+        message.textContent = result.message || (
+          active
+            ? "The audited AnkiConnect override is active; no restart is required."
+            : result.restart_required && result.source === "environment"
+              ? "The deployment value will take effect after Study Hub restarts."
+              : result.restart_required
+                ? "A restart is required before the staged override takes effect."
+                : "Using the managed deployment value."
+        );
+      };
+
+      saveButton.addEventListener("click", async () => {
+        saveButton.disabled = true;
+        clearButton.disabled = true;
+        message.textContent = "Staging AnkiConnect port…";
+        try {
+          const result = await postJson(
+            fetchImpl,
+            "/settings/runtime/anki-connect-port",
+            { port: Number(input.value) },
+            token(),
+            "PUT",
+          );
+          renderRuntime(result);
+        } catch (error) {
+          message.textContent = error.message;
+          clearButton.disabled = source.textContent === "Deployment value";
+        } finally {
+          saveButton.disabled = false;
+        }
+      });
+
+      clearButton.addEventListener("click", async () => {
+        saveButton.disabled = true;
+        clearButton.disabled = true;
+        message.textContent = "Resetting to the deployment value…";
+        try {
+          const result = await postJson(
+            fetchImpl,
+            "/settings/runtime/anki-connect-port",
+            {},
+            token(),
+            "DELETE",
+          );
+          renderRuntime(result);
+        } catch (error) {
+          message.textContent = error.message;
+          clearButton.disabled = false;
+        } finally {
+          saveButton.disabled = false;
+        }
+      });
+    }
+
     const notebookCard = documentRef.querySelector("[data-notebook-card]");
     if (notebookCard) {
       const connectButton = notebookCard.querySelector("[data-notebook-connect]");

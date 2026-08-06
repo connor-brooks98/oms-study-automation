@@ -137,6 +137,26 @@ Configure the selected curation language-model provider under **Settings → AI
 providers**. The lecture concept ledger, candidate judgments, rescue queries,
 and card generation use that existing provider layer.
 
+### Optional immutable Lecture07 validation fixture
+
+The S4/S6 fixture is intentionally a private, externally supplied artifact. It
+is not included in this repository or release package. If it has not been
+installed and SHA-256 pinned, **Run fixture test** is unavailable in the Anki
+page; this is expected and keeps cheaper S4/S6 defaults fail-closed.
+
+After receiving the approved artifact through the private delivery channel,
+place it outside the checkout and set both untracked `.env` values before
+restarting Study Hub:
+
+```text
+OMS_HUB_ANKI_FIXTURE_ARTIFACT_PATH=C:\ProgramData\OMSStudyHub\private\lecture07-fixture.json
+OMS_HUB_ANKI_CARD_CENTRIC_FIXTURE_SHA256=<the approved 64-character lowercase SHA-256>
+```
+
+Do not substitute a synthetic fixture, omit the hash, or copy the artifact into
+Git. A missing, invalid, or hash-mismatched fixture remains unavailable and
+cannot validate a model.
+
 ## 6. Build or refresh the Anki index
 
 Keep Anki open and stop Study Hub while publishing a new collection

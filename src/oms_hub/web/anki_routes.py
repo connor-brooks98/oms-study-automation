@@ -1044,6 +1044,23 @@ def _page_context(request: Request) -> dict[str, Any]:
     catalog = request.app.state.anki_prompt_catalog.catalog()
     catalog_payload = catalog.payload()
     indexed_decks = list(companion.list_deck_names()) if companion is not None else []
+    fixture_available = False
+    fixture_status = (
+        "The private Lecture07 fixture is not installed and SHA-256 pinned, so "
+        "fixture validation is unavailable."
+    )
+    try:
+        fixture_for(
+            settings.anki_fixture_artifact_path,
+            settings.anki_card_centric_fixture_sha256,
+        )
+    except FixtureUnavailable:
+        # The artifact is deliberately external to this repository.  Do not make
+        # a missing or changed fixture look runnable in the curation UI.
+        pass
+    else:
+        fixture_available = True
+        fixture_status = "Immutable Lecture07 fixture is installed and SHA-256 pinned."
 
     def preferred_prompt(role: str, preferred: str) -> str:
         choices = cast(dict[str, list[dict[str, str]]], catalog_payload["choices"])[role]
@@ -1070,6 +1087,8 @@ def _page_context(request: Request) -> dict[str, Any]:
         "prompt_catalog": catalog_payload,
         "indexed_decks": indexed_decks,
         "tag_policy": _tag_policy_payload(getattr(request.app.state, "anki_tag_policy", None)),
+        "fixture_available": fixture_available,
+        "fixture_status": fixture_status,
     }
 
 

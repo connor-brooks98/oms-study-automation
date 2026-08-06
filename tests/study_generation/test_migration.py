@@ -245,3 +245,7 @@ def test_v15_migration_backfills_existing_quiz_and_studio_rows_idempotently(
         "studio_run_artifacts",
         "studio_question_reviews",
     } <= names
+    run_columns = {
+        column["name"] for column in inspect(database.engine).get_columns("studio_runs")
+    }
+    assert "history_hidden_at" in run_columns

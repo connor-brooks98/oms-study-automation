@@ -14,6 +14,8 @@ from oms_hub.models import (
     LectureStepModel,
     LLMProviderSettingModel,
     LLMTaskAssignmentModel,
+    RuntimeSettingAuditModel,
+    RuntimeSettingModel,
     SchemaVersionModel,
     StudyAISettingModel,
 )
@@ -21,7 +23,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 15
+LATEST_SCHEMA_VERSION = 17
 
 
 def _ensure_column(
@@ -263,6 +265,24 @@ def _upgrade_quiz_import_v15(database: "Database") -> None:
         )
 
 
+def _upgrade_studio_history_v16(database: "Database") -> None:
+    """Keep run-history removal separate from the published quiz record."""
+    _ensure_column(database, "studio_runs", "history_hidden_at", "VARCHAR(40)")
+
+
+def _upgrade_runtime_settings_v17(database: "Database") -> None:
+    """Ensure the remote-safe setting tables exist on an upgraded install.
+
+    ``create_schema`` creates the additive tables.  Keep this named migration
+    so schema version 17 documents the recovery-boundary setting surface.
+    """
+    inspector = inspect(database.engine)
+    if not inspector.has_table(RuntimeSettingModel.__tablename__):
+        database.create_schema()
+    if not inspector.has_table(RuntimeSettingAuditModel.__tablename__):
+        database.create_schema()
+
+
 def _upgrade_gap_card_identity(database: "Database") -> None:
     if database.engine.dialect.name != "sqlite":
         return
@@ -399,6 +419,8 @@ def migrate_database(database: "Database") -> None:
     _upgrade_studio_columns(database)
     _upgrade_studio_run_active_label_index(database)
     _upgrade_quiz_import_v15(database)
+    _upgrade_studio_history_v16(database)
+    _upgrade_runtime_settings_v17(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

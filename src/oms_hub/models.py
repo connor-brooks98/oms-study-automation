@@ -24,6 +24,33 @@ class SchemaVersionModel(Base):
     )
 
 
+class RuntimeSettingModel(Base):
+    """Allowlisted, staged runtime overrides; never a generic .env mirror."""
+
+    __tablename__ = "runtime_settings"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(String(500))
+    revision: Mapped[int] = mapped_column(default=1)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class RuntimeSettingAuditModel(Base):
+    """Append-only operator record for the small remotely writable allowlist."""
+
+    __tablename__ = "runtime_setting_audit"
+    __table_args__ = (Index("ix_runtime_setting_audit_key_revision", "key", "revision"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(100))
+    action: Mapped[str] = mapped_column(String(30))
+    previous_value: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    value: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    revision: Mapped[int] = mapped_column()
+    actor: Mapped[str] = mapped_column(String(320))
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
 class LectureModel(Base):
     __tablename__ = "lectures"
     __table_args__ = (
@@ -402,6 +429,7 @@ class StudioRunModel(Base):
     raw_response: Mapped[str | None] = mapped_column(Text, nullable=True)
     draft_payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    history_hidden_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     supersedes_run_id: Mapped[str | None] = mapped_column(
         ForeignKey("studio_runs.id"),
         nullable=True,

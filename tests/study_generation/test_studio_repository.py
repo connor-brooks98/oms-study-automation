@@ -210,6 +210,97 @@ def test_import_run_persists_ordered_source_roles_and_stage_artifact(tmp_path: P
     assert artifact == ("b" * 64, '{"v": 2}')
 
 
+def test_rerun_import_clones_import_bindings_and_can_replace_published_predecessor(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    questions = _ready_local_source(repository, "Questions")
+    supporting = _ready_local_source(repository, "Reference")
+    assert questions is not None and supporting is not None
+    original = repository.queue_import_run(
+        "Neuro",
+        1,
+        "Exam review",
+        "Neuro",
+        1,
+        QuizContentKind.PRACTICE_QUESTIONS,
+        (
+            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
+            ImportSourceSelection(
+                supporting.id, ImportSourceRole.SUPPORTING_REFERENCE, attach_to_notebook=True
+            ),
+        ),
+    )
+    with repository.database.session() as session:
+        previous = session.get(StudioRunModel, original.id)
+        assert previous is not None
+        previous.state = "complete"
+        previous.published_token = "published-token"
+        session.add(
+            PublishedQuizModel(
+                token="published-token",
+                title="Exam review",
+                payload_json="{}",
+                studio_run_id=original.id,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Exam review",
+                label_key="exam review",
+                active=True,
+            )
+        )
+
+    successor = repository.rerun(original.id)
+
+    assert successor.workflow_kind.value == "direct_import"
+    assert successor.content_kind is QuizContentKind.PRACTICE_QUESTIONS
+    assert successor.prompt == ""
+    assert successor.supersedes_run_id == original.id
+    bindings = repository.import_sources(successor.id)
+    assert [
+        (binding.source_id, binding.role, binding.attach_to_notebook)
+        for binding in bindings
+    ] == [
+        (questions.id, ImportSourceRole.QUESTIONS, False),
+        (supporting.id, ImportSourceRole.SUPPORTING_REFERENCE, True),
+    ]
+    with repository.database.session() as session:
+        published = session.get(PublishedQuizModel, "published-token")
+        assert published is not None and published.active
+
+
+def test_remove_run_from_history_hides_it_without_removing_its_publication(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    run = _queued_run(repository)
+    with repository.database.session() as session:
+        stored = session.get(StudioRunModel, run.id)
+        assert stored is not None
+        stored.state = "complete"
+        stored.published_token = "published-token"
+        session.add(
+            PublishedQuizModel(
+                token="published-token",
+                title="Practice Quiz",
+                payload_json="{}",
+                studio_run_id=run.id,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Practice Quiz",
+                label_key="practice quiz",
+                active=True,
+            )
+        )
+
+    repository.hide_run(run.id)
+
+    assert all(item.id != run.id for item in repository.list_runs())
+    with repository.database.session() as session:
+        published = session.get(PublishedQuizModel, "published-token")
+        assert published is not None and published.active
+
+
 def test_save_question_reviews_replaces_prior_provenance_for_the_run(
     tmp_path: Path,
 ) -> None:

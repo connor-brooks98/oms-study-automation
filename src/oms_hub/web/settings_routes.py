@@ -28,6 +28,7 @@ from oms_hub.llm.openrouter import (
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.llm.service import SECRET_KEYS, LLMService
 from oms_hub.repositories import CatalogRepository
+from oms_hub.runtime_settings import RuntimeSettingsRepository, RuntimeSettingStatus
 from oms_hub.security.secret_store import VOYAGE_API_KEY_SECRET, SecretStore
 from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
 from oms_hub.study_generation.domain import PromptKind
@@ -78,6 +79,10 @@ class AccuracyGateUpdate(BaseModel):
 
 class OpenRouterModelUpdate(BaseModel):
     model: str = Field(min_length=1, max_length=200)
+
+
+class AnkiConnectPortUpdate(BaseModel):
+    port: int
 
 
 def _service(request: Request) -> TrackerPreviewService:
@@ -168,8 +173,89 @@ def settings_page(request: Request) -> HTMLResponse:
                 or str(request.app.state.settings.anki_prompt_directory or "")
             ),
             "voyage_configured": _voyage_configured(request),
+            "runtime": _runtime_context(request),
         },
     )
+
+
+def _runtime_context(request: Request) -> dict[str, object]:
+    status = _runtime_settings(request).status()
+    base = request.app.state.base_settings
+    return {
+        "anki_connect_port": status.anki_connect_port,
+        "source": status.source,
+        "revision": status.revision,
+        "restart_required": status.restart_required,
+        "dashboard_status": "Configured (managed deployment)",
+        "cloudflare_status": (
+            "Configured (managed outside Study Hub)"
+            if base.cloudflare_access_issuer
+            else "Not configured"
+        ),
+        "public_hostname_status": (
+            "Configured (managed outside Study Hub)"
+            if base.public_hostname
+            else "Not configured"
+        ),
+        "anki_agent_status": (
+            "Configured (managed deployment)"
+            if base.anki_agent_hostname
+            else "Not configured"
+        ),
+    }
+
+
+@router.put("/runtime/anki-connect-port")
+def stage_anki_connect_port(
+    request: Request,
+    update: AnkiConnectPortUpdate,
+) -> JSONResponse:
+    require_form_csrf(request, None)
+    try:
+        saved = _runtime_settings(request).stage_anki_connect_port(
+            update.port,
+            actor=_runtime_actor(request),
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    message = (
+        "AnkiConnect port staged. Restart Study Hub to apply it."
+        if saved.restart_required
+        else "AnkiConnect port is already active."
+    )
+    return _runtime_response(saved, message)
+
+
+@router.delete("/runtime/anki-connect-port")
+def clear_anki_connect_port(request: Request) -> JSONResponse:
+    require_form_csrf(request, None)
+    saved = _runtime_settings(request).clear_anki_connect_port(
+        actor=_runtime_actor(request),
+    )
+    message = (
+        "AnkiConnect port reset to the deployment value. Restart Study Hub to apply it."
+        if saved.restart_required
+        else "Using the deployment value; no restart is required."
+    )
+    return _runtime_response(saved, message)
+
+
+def _runtime_response(status: RuntimeSettingStatus, message: str) -> JSONResponse:
+    return _no_store(
+        {
+            "anki_connect_port": status.anki_connect_port,
+            "source": status.source,
+            "revision": status.revision,
+            "restart_required": status.restart_required,
+            "message": message,
+        }
+    )
+
+
+def _runtime_actor(request: Request) -> str:
+    identity = getattr(request.state, "access_identity", None)
+    email = getattr(identity, "email", None)
+    return str(email).strip() if email else "local"
 
 
 def _voyage_configured(request: Request) -> bool:
@@ -575,6 +661,10 @@ def _llm_settings(request: Request) -> LLMSettingsRepository:
         LLMSettingsRepository,
         request.app.state.llm_settings,
     )
+
+
+def _runtime_settings(request: Request) -> RuntimeSettingsRepository:
+    return cast(RuntimeSettingsRepository, request.app.state.runtime_settings)
 
 
 def _no_store(payload: dict[str, object]) -> JSONResponse:

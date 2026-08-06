@@ -283,6 +283,15 @@ const makeQuizStorage = () => {
   };
 };
 
+const findByClass = (node, className) => {
+  if (node?.className?.split(" ").includes(className)) return node;
+  for (const child of node?.children || []) {
+    const found = findByClass(child, className);
+    if (found) return found;
+  }
+  return null;
+};
+
 test("initialize renders the could-not-load state when the fetch rejects", async () => {
   const { documentRef, app } = buildQuizApp();
   const fetchImpl = async () => {
@@ -292,6 +301,40 @@ test("initialize renders the could-not-load state when the fetch rejects", async
   await quiz.initialize(documentRef, fetchImpl);
 
   assert.equal(app.textContent, "This quiz could not be loaded.");
+});
+
+test("player puts navigation above the shell and question metadata in a disclosure", async () => {
+  const { documentRef, app } = buildQuizApp();
+  const rendered = {
+    token: "tok",
+    version: 1,
+    course: "Heme/Lymph",
+    exam_number: 2,
+    lecture_number: 12,
+    topic: "Platelet Disorders",
+    questions: [{
+      id: "q1",
+      stem: "Question?",
+      area: "Hematology",
+      learning_objective: "Identify the mechanism",
+      topic: "Thrombocytopenia",
+      choices: [{ id: "c1", text: "Answer" }],
+    }],
+  };
+
+  await quiz.initialize(documentRef, async () => ({
+    ok: true,
+    async json() { return rendered; },
+  }));
+
+  assert.equal(app.children[0].className, "quiz-navigation quiz-navigation-card");
+  assert.equal(app.children[1].className, "quiz-shell");
+  assert.match(app.textContent, /Heme\/Lymph · Exam 2 · Lecture 12 · Platelet Disorders/);
+  const information = findByClass(app, "quiz-information");
+  assert.ok(information, "expected a Question Information disclosure");
+  assert.equal(information.tagName, "details");
+  assert.match(information.textContent, /Question Information/);
+  assert.match(information.textContent, /Area: Hematology/);
 });
 
 test("initialize renders the could-not-load state when the response body is not valid JSON", async () => {

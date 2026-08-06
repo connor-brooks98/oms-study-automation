@@ -10,274 +10,266 @@
     </div>
   </div>
 
-  <section class="settings-section" aria-labelledby="ai-provider-heading">
-    <div class="settings-section-heading">
-      <div>
-        <p class="mono-label">Transcript cleaning</p>
-        <h2 id="ai-provider-heading">AI providers</h2>
-        <p>Store multiple credentials securely and choose which service cleans new transcripts.</p>
+  <details class="settings-disclosure" open>
+    <summary>
+      <span class="settings-disclosure-summary">
+        <span class="mono-label">Credentials and connections</span>
+        <span class="settings-disclosure-title">AI Providers</span>
+        <span class="settings-disclosure-description">Secure credentials, embedding access, and the Gemini Notebook connection.</span>
+      </span>
+    </summary>
+    <section class="settings-section settings-disclosure-content" aria-labelledby="ai-provider-heading">
+      <div class="settings-section-heading">
+        <div>
+          <p class="mono-label">Transcript cleaning</p>
+          <h2 id="ai-provider-heading">AI providers</h2>
+          <p>Store multiple credentials securely and choose which service cleans new transcripts.</p>
+        </div>
       </div>
-    </div>
 
-    <div class="provider-grid">
-      {% for provider in providers %}
-      {% set test_state = provider.last_test_state or "neutral" %}
-      <article class="card provider-card" data-provider-card data-provider="{{ provider.name }}">
+      <div class="provider-grid">
+        {% for provider in providers %}
+        {% set test_state = provider.last_test_state or "neutral" %}
+        <article class="card provider-card" data-provider-card data-provider="{{ provider.name }}">
+          <div class="provider-card-heading">
+            <div>
+              <p class="provider-kicker">
+                {% if provider.used_by_count == 0 %}Not assigned{% elif provider.used_by_count == 1 %}Used by 1 task{% else %}Used by {{ provider.used_by_count }} tasks{% endif %}
+              </p>
+              <h3>{{ provider.label }}</h3>
+            </div>
+            <span class="credential-state {{ 'is-configured' if provider.configured else '' }}" data-configured-state>
+              {{ "Configured" if provider.configured else "Not configured" }}
+            </span>
+          </div>
+
+          <div class="provider-field">
+            <label for="model-{{ provider.name }}">Model</label>
+            <div class="provider-action-row">
+              <select id="model-{{ provider.name }}" data-model-select>
+                <option value="{{ provider.model }}">{{ provider.model }}</option>
+              </select>
+              <button class="button secondary compact-button" type="button" data-save-model>Save model</button>
+            </div>
+            <input type="text" maxlength="200" autocomplete="off" placeholder="provider/model-id" value="" data-model-custom hidden>
+          </div>
+
+          <div class="provider-field">
+            <label for="credential-{{ provider.name }}">API credential</label>
+            <div class="password-control">
+              <input id="credential-{{ provider.name }}" type="password" maxlength="8192" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="{{ 'Replace stored credential' if provider.configured else 'Paste credential' }}" data-credential-input>
+              <button class="password-toggle" type="button" aria-label="Show {{ provider.label }} credential" data-toggle-password>Show</button>
+            </div>
+            <p class="field-help">Stored in Windows Credential Manager. Leave blank to keep the current credential.</p>
+          </div>
+
+          <div class="provider-buttons">
+            <button class="button primary" type="button" data-save-credential>Save credential</button>
+            <button class="button connection-button {% if test_state == 'connected' %}is-connected{% elif test_state == 'failed' %}is-failed{% endif %}" type="button" data-test-connection>
+              {% if test_state == "connected" %}Connected{% elif test_state == "failed" %}Connection failed{% else %}Test connection{% endif %}
+            </button>
+          </div>
+
+          <p class="field-message" data-provider-message aria-live="polite"></p>
+          <div class="provider-diagnostic" data-diagnostic aria-live="polite" {% if not provider.diagnostic_message %}hidden{% endif %}>
+            {% if provider.diagnostic_message %}
+            <p>{{ provider.diagnostic_message }}</p>
+            {% if provider.http_status %}<p>HTTP {{ provider.http_status }}</p>{% endif %}
+            {% if provider.provider_request_id %}<p>Provider request: {{ provider.provider_request_id }}</p>{% endif %}
+            {% endif %}
+          </div>
+          {% if provider.last_tested_at %}<p class="last-tested">Last tested {{ provider.last_tested_at }}</p>{% endif %}
+        </article>
+        {% endfor %}
+      </div>
+
+      <article class="card provider-card" data-voyage-card>
         <div class="provider-card-heading">
           <div>
-            <p class="provider-kicker">
-              {% if provider.used_by_count == 0 %}Not assigned{% elif provider.used_by_count == 1 %}Used by 1 task{% else %}Used by {{ provider.used_by_count }} tasks{% endif %}
-            </p>
-            <h3>{{ provider.label }}</h3>
+            <p class="provider-kicker">Anki semantic indexing</p>
+            <h2 id="voyage-heading">Voyage AI embeddings</h2>
           </div>
-          <span class="credential-state {{ 'is-configured' if provider.configured else '' }}" data-configured-state>
-            {{ "Configured" if provider.configured else "Not configured" }}
+          <span class="credential-state {{ 'is-configured' if voyage_configured else '' }}" data-voyage-configured>
+            {{ "Configured" if voyage_configured else "Not configured" }}
           </span>
         </div>
-
         <div class="provider-field">
-          <label for="model-{{ provider.name }}">Model</label>
-          <div class="provider-action-row">
-            <select id="model-{{ provider.name }}" data-model-select>
-              <option value="{{ provider.model }}">{{ provider.model }}</option>
-            </select>
-            <button class="button secondary compact-button" type="button" data-save-model>Save model</button>
-          </div>
-          <input
-            type="text"
-            maxlength="200"
-            autocomplete="off"
-            placeholder="provider/model-id"
-            value=""
-            data-model-custom
-            hidden
-          >
-        </div>
-
-        <div class="provider-field">
-          <label for="credential-{{ provider.name }}">API credential</label>
+          <label for="voyage-credential">Voyage AI API key</label>
           <div class="password-control">
-            <input
-              id="credential-{{ provider.name }}"
-              type="password"
-              maxlength="8192"
-              autocomplete="new-password"
-              autocapitalize="off"
-              spellcheck="false"
-              placeholder="{{ 'Replace stored credential' if provider.configured else 'Paste credential' }}"
-              data-credential-input>
-            <button
-              class="password-toggle"
-              type="button"
-              aria-label="Show {{ provider.label }} credential"
-              data-toggle-password>Show</button>
+            <input id="voyage-credential" type="password" maxlength="8192" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="{{ 'Replace stored credential' if voyage_configured else 'Paste credential' }}" data-voyage-credential>
+            <button class="password-toggle" type="button" aria-label="Show Voyage AI credential" data-voyage-toggle>Show</button>
           </div>
-          <p class="field-help">Stored in Windows Credential Manager. Leave blank to keep the current credential.</p>
+          <p class="field-help">Supports Anki semantic indexing and is stored in Windows Credential Manager. Leave blank to keep the current credential.</p>
         </div>
-
-        <div class="provider-buttons">
-          <button class="button primary" type="button" data-save-credential>Save credential</button>
-          <button
-            class="button connection-button {% if test_state == 'connected' %}is-connected{% elif test_state == 'failed' %}is-failed{% endif %}"
-            type="button"
-            data-test-connection>
-            {% if test_state == "connected" %}Connected{% elif test_state == "failed" %}Connection failed{% else %}Test connection{% endif %}
-          </button>
-        </div>
-
-        <p class="field-message" data-provider-message aria-live="polite"></p>
-        <div class="provider-diagnostic" data-diagnostic aria-live="polite" {% if not provider.diagnostic_message %}hidden{% endif %}>
-          {% if provider.diagnostic_message %}
-          <p>{{ provider.diagnostic_message }}</p>
-          {% if provider.http_status %}<p>HTTP {{ provider.http_status }}</p>{% endif %}
-          {% if provider.provider_request_id %}<p>Provider request: {{ provider.provider_request_id }}</p>{% endif %}
-          {% endif %}
-        </div>
-        {% if provider.last_tested_at %}
-        <p class="last-tested">Last tested {{ provider.last_tested_at }}</p>
-        {% endif %}
+        <div class="provider-buttons"><button class="button primary" type="button" data-save-voyage>Save credential</button></div>
+        <p class="field-message" data-voyage-message aria-live="polite"></p>
       </article>
-      {% endfor %}
-    </div>
-  </section>
 
-  <section class="settings-section" aria-labelledby="voyage-heading">
-    <article class="card provider-card" data-voyage-card>
-      <div class="provider-card-heading">
-        <div>
-          <p class="provider-kicker">Anki semantic indexing</p>
-          <h2 id="voyage-heading">Voyage AI embeddings</h2>
-        </div>
-        <span class="credential-state {{ 'is-configured' if voyage_configured else '' }}" data-voyage-configured>
-          {{ "Configured" if voyage_configured else "Not configured" }}
-        </span>
-      </div>
-      <div class="provider-field">
-        <label for="voyage-credential">Voyage AI API key</label>
-        <div class="password-control">
-          <input id="voyage-credential" type="password" maxlength="8192" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="{{ 'Replace stored credential' if voyage_configured else 'Paste credential' }}" data-voyage-credential>
-          <button class="password-toggle" type="button" aria-label="Show Voyage AI credential" data-voyage-toggle>Show</button>
-        </div>
-        <p class="field-help">Supports Anki semantic indexing and is stored in Windows Credential Manager. Leave blank to keep the current credential.</p>
-      </div>
-      <div class="provider-buttons"><button class="button primary" type="button" data-save-voyage>Save credential</button></div>
-      <p class="field-message" data-voyage-message aria-live="polite"></p>
-    </article>
-  </section>
-
-  <section class="settings-section" aria-labelledby="assignments-heading">
-    <div class="settings-section-heading">
-      <div>
-        <p class="mono-label">Per-task routing</p>
-        <h2 id="assignments-heading">Task assignments</h2>
-        <p>Choose which configured provider and model handles each part of the pipeline.</p>
-      </div>
-    </div>
-    <div class="provider-grid">
-      {% set task_labels = {
-        "transcripts": "Transcript cleaning",
-        "anki_curation": "Anki curation",
-        "accuracy_review": "Accuracy review",
-        "quiz_extraction": "Quiz question extraction",
-        "quiz_answer_generation": "Missing-answer generation"
-      } %}
-      {% for row in assignments %}
-      <article class="card provider-card" data-assignment-row data-task="{{ row.task }}">
+      <article class="card provider-card" data-notebook-card>
         <div class="provider-card-heading">
           <div>
-            <p class="provider-kicker">Task</p>
-            <h3>{{ task_labels.get(row.task, row.task) }}</h3>
+            <p class="provider-kicker">Gemini Notebook</p>
+            <h3>Notebook account</h3>
           </div>
-          <span class="credential-state {{ 'is-configured' if row.key_configured else '' }}" data-assignment-key>
-            {{ "Key configured" if row.key_configured else "Key not configured" }}
+          <span class="credential-state" data-notebook-badge>Not connected</span>
+        </div>
+        <p class="field-help">Connect opens a browser window on the Study Hub device. Sign in once with the Google account you use at notebook.google.com.</p>
+        <div class="provider-buttons">
+          <button class="button primary" type="button" data-notebook-connect>Connect Notebook</button>
+          <button class="button secondary" type="button" data-notebook-test>Test connection</button>
+        </div>
+        <p class="field-message" data-notebook-status aria-live="polite">Connect your account to enable Gemini Notebook generation.</p>
+      </article>
+    </section>
+  </details>
+
+  <details class="settings-disclosure">
+    <summary>
+      <span class="settings-disclosure-summary">
+        <span class="mono-label">Per-task routing</span>
+        <span class="settings-disclosure-title">Task Assignments</span>
+        <span class="settings-disclosure-description">Choose the configured provider and model for each part of the pipeline.</span>
+      </span>
+    </summary>
+    <section class="settings-section settings-disclosure-content" aria-labelledby="assignments-heading">
+      <div class="settings-section-heading">
+        <div>
+          <p class="mono-label">Per-task routing</p>
+          <h2 id="assignments-heading">Task assignments</h2>
+          <p>Choose which configured provider and model handles each part of the pipeline.</p>
+        </div>
+      </div>
+      <div class="provider-grid">
+        {% set task_labels = {"transcripts": "Transcript cleaning", "anki_curation": "Anki curation", "accuracy_review": "Accuracy review", "quiz_extraction": "Quiz question extraction", "quiz_answer_generation": "Missing-answer generation"} %}
+        {% for row in assignments %}
+        <article class="card provider-card" data-assignment-row data-task="{{ row.task }}">
+          <div class="provider-card-heading">
+            <div><p class="provider-kicker">Task</p><h3>{{ task_labels.get(row.task, row.task) }}</h3></div>
+            <span class="credential-state {{ 'is-configured' if row.key_configured else '' }}" data-assignment-key>{{ "Key configured" if row.key_configured else "Key not configured" }}</span>
+          </div>
+          <div class="provider-field">
+            <label for="assignment-provider-{{ row.task }}">Provider</label>
+            <select id="assignment-provider-{{ row.task }}" data-assignment-provider>
+              {% for provider in providers %}<option value="{{ provider.name }}" {% if provider.name == row.provider %}selected{% endif %}>{{ provider.label }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="provider-field">
+            <label for="assignment-model-{{ row.task }}">Model</label>
+            <div class="provider-action-row"><select id="assignment-model-{{ row.task }}" data-assignment-model><option value="{{ row.model }}">{{ row.model }}</option></select><button class="button secondary compact-button" type="button" data-save-assignment>Save assignment</button></div>
+            <input type="text" maxlength="200" autocomplete="off" placeholder="provider/model-id" value="" data-assignment-custom hidden>
+          </div>
+          {% if row.task == "accuracy_review" %}<label class="checkbox-inline"><input type="checkbox" data-openrouter-gate {% if openrouter.accuracy_gate_enabled %}checked{% endif %}> Block publication unless every question passes review</label>{% endif %}
+          <p class="field-message" data-assignment-message aria-live="polite"></p>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+  </details>
+
+  <details class="settings-disclosure">
+    <summary>
+      <span class="settings-disclosure-summary">
+        <span class="mono-label">Prompt configuration</span>
+        <span class="settings-disclosure-title">Prompt Files</span>
+        <span class="settings-disclosure-description">Manage the Obsidian prompt files and the Anki AI prompt directory.</span>
+      </span>
+    </summary>
+    <section class="settings-section settings-disclosure-content" aria-labelledby="prompt-files-heading">
+      <div class="settings-section-heading">
+        <div><p class="mono-label">Prompt configuration</p><h2 id="prompt-files-heading">Prompt files</h2><p>Link the transcript cleaning, outline, and quiz prompts you maintain in Obsidian.</p></div>
+      </div>
+      <div class="provider-grid">
+        {% for prompt in prompt_settings %}
+        <article class="card provider-card" data-prompt-card data-prompt="{{ prompt.kind }}">
+          <div class="provider-card-heading"><div><p class="provider-kicker">Obsidian file</p><h3>{{ prompt.label }}</h3></div></div>
+          <div class="provider-field"><label for="prompt-{{ prompt.kind }}">File path</label><input id="prompt-{{ prompt.kind }}" type="text" maxlength="2048" value="{{ prompt.path }}" data-prompt-path></div>
+          <div class="provider-buttons"><button class="button primary" type="button" data-save-prompt>{{ "Save Path" if prompt.path else "Select Path" }}</button><button class="button secondary" type="button" data-test-prompt>Test file</button></div>
+          <p class="field-message" data-prompt-message aria-live="polite"></p>
+        </article>
+        {% endfor %}
+      </div>
+
+      <section class="settings-subsection" aria-labelledby="anki-prompts-heading">
+        <div class="settings-section-heading"><div><p class="mono-label">Anki curation</p><h2 id="anki-prompts-heading">Anki AI prompts</h2><p>Choose the folder containing your versioned LCL, coverage, and card-generation Markdown files.</p></div></div>
+        <article class="card provider-card" data-anki-prompt-directory>
+          <div class="provider-field"><label for="anki-prompt-directory">Directory path</label><input id="anki-prompt-directory" type="text" maxlength="2048" value="{{ anki_prompt_directory }}" data-anki-prompt-directory-path></div>
+          <div class="provider-buttons"><button class="button primary" type="button" data-save-anki-prompt-directory>{{ "Save Path" if anki_prompt_directory else "Select Folder" }}</button><button class="button secondary" type="button" data-test-anki-prompt-directory>Test / Refresh</button></div>
+          <p class="field-message" data-anki-prompt-directory-message aria-live="polite"></p>
+        </article>
+      </section>
+    </section>
+  </details>
+
+  <details class="settings-disclosure">
+    <summary>
+      <span class="settings-disclosure-summary">
+        <span class="mono-label">Course structure</span>
+        <span class="settings-disclosure-title">Lecture Exam Tracker</span>
+        <span class="settings-disclosure-description">Preview course, exam, and lecture changes before applying a tracker workbook.</span>
+      </span>
+    </summary>
+    <section class="settings-disclosure-content" aria-labelledby="tracker-heading">
+      <section class="card settings-card tracker-settings">
+        <p class="mono-label">Course structure</p>
+        <h2 id="tracker-heading">Lecture exam tracker</h2>
+        <p>Upload an Excel tracker to preview courses, exams, and lecture changes before applying them.</p>
+        <form action="/settings/tracker/preview" method="post" enctype="multipart/form-data">
+          <label>Tracker workbook <input type="file" name="workbook" accept=".xlsx" required></label>
+          <button class="button primary" type="submit">Preview tracker</button>
+        </form>
+      </section>
+    </section>
+  </details>
+
+  <details class="settings-disclosure settings-runtime-disclosure">
+    <summary>
+      <span class="settings-disclosure-summary">
+        <span class="mono-label">Recommended safety/status</span>
+        <span class="settings-disclosure-title">Runtime &amp; Remote Access</span>
+        <span class="settings-disclosure-description">Stage the local AnkiConnect port; recovery and access settings remain read-only.</span>
+      </span>
+    </summary>
+    <section class="settings-disclosure-content runtime-status" aria-labelledby="runtime-heading">
+      <div class="settings-section-heading">
+        <div>
+          <p class="mono-label">Read-only recovery boundary</p>
+          <h2 id="runtime-heading">Runtime &amp; remote access</h2>
+          <p>Only the local AnkiConnect port is remotely editable. It is staged for the next Study Hub restart; recovery and access settings stay outside this browser surface.</p>
+        </div>
+      </div>
+      <article class="card runtime-setting-card" data-runtime-anki-port>
+        <div class="provider-card-heading">
+          <div>
+            <p class="provider-kicker">Audited runtime setting</p>
+            <h3>Local AnkiConnect port</h3>
+          </div>
+          <span class="credential-state {{ 'is-configured' if runtime.source != 'environment' else '' }}" data-runtime-port-source>
+            {% if runtime.source == "staged_override" %}Staged override{% elif runtime.source == "active_override" %}Active override{% else %}Deployment value{% endif %}
           </span>
         </div>
         <div class="provider-field">
-          <label for="assignment-provider-{{ row.task }}">Provider</label>
-          <select id="assignment-provider-{{ row.task }}" data-assignment-provider>
-            {% for provider in providers %}
-            <option value="{{ provider.name }}" {% if provider.name == row.provider %}selected{% endif %}>{{ provider.label }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="provider-field">
-          <label for="assignment-model-{{ row.task }}">Model</label>
-          <div class="provider-action-row">
-            <select id="assignment-model-{{ row.task }}" data-assignment-model>
-              <option value="{{ row.model }}">{{ row.model }}</option>
-            </select>
-            <button class="button secondary compact-button" type="button" data-save-assignment>Save assignment</button>
-          </div>
-          <input
-            type="text"
-            maxlength="200"
-            autocomplete="off"
-            placeholder="provider/model-id"
-            value=""
-            data-assignment-custom
-            hidden
-          >
-        </div>
-        {% if row.task == "accuracy_review" %}
-        <label class="checkbox-inline"><input type="checkbox" data-openrouter-gate {% if openrouter.accuracy_gate_enabled %}checked{% endif %}> Block publication unless every question passes review</label>
-        {% endif %}
-        <p class="field-message" data-assignment-message aria-live="polite"></p>
-      </article>
-      {% endfor %}
-    </div>
-  </section>
-
-  <section class="settings-section" aria-labelledby="google-heading">
-    <div class="settings-section-heading">
-      <div>
-        <p class="mono-label">Account connection</p>
-        <h2 id="google-heading">Gemini Notebook</h2>
-        <p>Connect the Google account used to generate lecture outlines and quizzes.</p>
-      </div>
-    </div>
-
-    <article class="card provider-card" data-notebook-card>
-      <div class="provider-card-heading">
-        <div>
-          <p class="provider-kicker">Gemini Notebook</p>
-          <h3>Notebook account</h3>
-        </div>
-        <span class="credential-state" data-notebook-badge>Not connected</span>
-      </div>
-      <p class="field-help">Connect opens a browser window on the Study Hub device. Sign in once with the Google account you use at notebook.google.com.</p>
-      <div class="provider-buttons">
-        <button class="button primary" type="button" data-notebook-connect>Connect Notebook</button>
-        <button class="button secondary" type="button" data-notebook-test>Test connection</button>
-      </div>
-      <p class="field-message" data-notebook-status aria-live="polite">
-        Connect your account to enable Gemini Notebook generation.
-      </p>
-    </article>
-  </section>
-
-  <section class="settings-section" aria-labelledby="prompt-files-heading">
-    <div class="settings-section-heading">
-      <div>
-        <p class="mono-label">Prompt configuration</p>
-        <h2 id="prompt-files-heading">Prompt files</h2>
-        <p>Link the transcript cleaning, outline, and quiz prompts you maintain in Obsidian.</p>
-      </div>
-    </div>
-    <div class="provider-grid">
-      {% for prompt in prompt_settings %}
-      <article class="card provider-card" data-prompt-card data-prompt="{{ prompt.kind }}">
-        <div class="provider-card-heading">
-          <div>
-            <p class="provider-kicker">Obsidian file</p>
-            <h3>{{ prompt.label }}</h3>
-          </div>
-        </div>
-        <div class="provider-field">
-          <label for="prompt-{{ prompt.kind }}">File path</label>
-          <input id="prompt-{{ prompt.kind }}" type="text" maxlength="2048" value="{{ prompt.path }}" data-prompt-path>
+          <label for="anki-connect-port">Port</label>
+          <input id="anki-connect-port" type="number" min="1024" max="65535" step="1" value="{{ runtime.anki_connect_port }}" inputmode="numeric" data-runtime-port-input>
+          <p class="field-help">Loopback only: <code>http://127.0.0.1:&lt;port&gt;</code>. It cannot use the Study Hub dashboard port.</p>
         </div>
         <div class="provider-buttons">
-          <button class="button primary" type="button" data-save-prompt>{{ "Save Path" if prompt.path else "Select Path" }}</button>
-          <button class="button secondary" type="button" data-test-prompt>Test file</button>
+          <button class="button primary" type="button" data-runtime-save>Stage port change</button>
+          <button class="button secondary" type="button" data-runtime-clear {% if runtime.source == "environment" %}disabled{% endif %}>Use deployment value</button>
         </div>
-        <p class="field-message" data-prompt-message aria-live="polite"></p>
+        <p class="field-message" data-runtime-message aria-live="polite">{% if runtime.source == "active_override" %}The audited AnkiConnect override is active; no restart is required.{% elif runtime.restart_required and runtime.source == "environment" %}The deployment value will take effect after Study Hub restarts.{% elif runtime.restart_required %}A restart is required before the staged override takes effect.{% else %}Using the managed deployment value.{% endif %}</p>
       </article>
-      {% endfor %}
-    </div>
-  </section>
-
-  <section class="settings-section" aria-labelledby="anki-prompts-heading">
-    <div class="settings-section-heading">
-      <div>
-        <p class="mono-label">Anki curation</p>
-        <h2 id="anki-prompts-heading">Anki AI prompts</h2>
-        <p>Choose the folder containing your versioned LCL, coverage, and card-generation Markdown files.</p>
-      </div>
-    </div>
-    <article class="card provider-card" data-anki-prompt-directory>
-      <div class="provider-field">
-        <label for="anki-prompt-directory">Directory path</label>
-        <input id="anki-prompt-directory" type="text" maxlength="2048" value="{{ anki_prompt_directory }}" data-anki-prompt-directory-path>
-      </div>
-      <div class="provider-buttons">
-        <button class="button primary" type="button" data-save-anki-prompt-directory>{{ "Save Path" if anki_prompt_directory else "Select Folder" }}</button>
-        <button class="button secondary" type="button" data-test-anki-prompt-directory>Test / Refresh</button>
-      </div>
-      <p class="field-message" data-anki-prompt-directory-message aria-live="polite"></p>
-    </article>
-  </section>
-
-  <section class="card settings-card tracker-settings">
-    <p class="mono-label">Course structure</p>
-    <h2>Lecture exam tracker</h2>
-    <p>Upload an Excel tracker to preview courses, exams, and lecture changes before applying them.</p>
-    <form action="/settings/tracker/preview" method="post" enctype="multipart/form-data">
-      <label>Tracker workbook <input type="file" name="workbook" accept=".xlsx" required></label>
-      <button class="button primary" type="submit">Preview tracker</button>
-    </form>
-  </section>
+      <dl class="runtime-status-grid">
+        <div><dt>Study Hub listener</dt><dd>{{ runtime.dashboard_status }}</dd></div>
+        <div><dt>AnkiConnect endpoint</dt><dd>Local loopback only</dd></div>
+        <div><dt>Remote Access</dt><dd>{{ runtime.cloudflare_status }}</dd></div>
+        <div><dt>Public hostname</dt><dd>{{ runtime.public_hostname_status }}</dd></div>
+        <div><dt>Anki companion agent</dt><dd>{{ runtime.anki_agent_status }}</dd></div>
+      </dl>
+      <p class="field-help">The dashboard bind, Cloudflare issuer/audience/allowed email, public hostname, tunnel configuration, agent token, data paths, database location, and raw credentials are intentionally not displayed or editable here.</p>
+    </section>
+  </details>
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/settings.js?v=20260804.1" defer></script>
+<script src="/static/settings.js?v=20260806.3" defer></script>
 {% endblock %}

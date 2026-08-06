@@ -32,6 +32,18 @@ _ImageId = Annotated[
 ]
 
 
+def _player_asset_version() -> str:
+    """Content-address public player assets so a new player is visible immediately.
+
+    The page itself is deliberately no-store.  Giving the two long-lived static
+    assets a content-derived query value means a browser never reuses the
+    previous player for up to its one-hour asset cache lifetime after a rollout.
+    """
+    javascript = sha256_file(_STATIC_ROOT / "public_quiz.js")[:12]
+    stylesheet = sha256_file(_STATIC_ROOT / "public_quiz.css")[:12]
+    return f"{javascript}-{stylesheet}"
+
+
 class AnswerSubmission(BaseModel):
     question_id: _PublicId
     choice_id: _PublicId
@@ -260,6 +272,7 @@ def quiz_page(request: Request, token: str) -> HTMLResponse:
                 if is_practice_questions
                 else "Back to quizzes"
             ),
+            "player_asset_version": _player_asset_version(),
         },
         headers={"Cache-Control": "no-store"},
     )

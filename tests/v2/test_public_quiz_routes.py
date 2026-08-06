@@ -204,6 +204,9 @@ def test_public_quiz_page_and_content_do_not_expose_answer_key(tmp_path):
 
     assert page.status_code == 200
     assert "Lecture 1 Practice Quiz" in page.text
+    assert 'class="quiz-library-button"' in page.text
+    assert "/public/quizzes/assets/player.css?v=" in page.text
+    assert "/public/quizzes/assets/player.js?v=" in page.text
     assert page.headers["content-security-policy"].startswith(
         "default-src 'self'"
     )
@@ -237,6 +240,19 @@ def test_public_quiz_assets_are_served_inside_the_bypass_path(tmp_path):
     assert library_styles.status_code == 200
     assert tokens.status_code == 200
     assert tokens.headers["content-type"].startswith("text/css")
+
+
+def test_public_quiz_player_markup_uses_content_versioned_assets(tmp_path):
+    app, published = _published_app(tmp_path)
+
+    with TestClient(app) as client:
+        first = client.get(f"/public/quizzes/{published.token}")
+        second = client.get(f"/public/quizzes/{published.token}")
+
+    assert first.status_code == 200
+    assert first.headers["cache-control"] == "no-store"
+    assert "?v=" in first.text
+    assert first.text == second.text
 
 
 def test_answer_feedback_is_limited_to_the_requested_question(tmp_path):

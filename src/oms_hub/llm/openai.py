@@ -44,7 +44,7 @@ def _normalize_schema_value(value: object) -> object:
     normalized = {
         str(key): _normalize_schema_value(item)
         for key, item in value.items()
-        if key != "prefixItems"
+        if key not in {"prefixItems", "default"}
     }
     if (
         "items" not in normalized
@@ -59,6 +59,15 @@ def _normalize_schema_value(value: object) -> object:
             if all(item == candidates[0] for item in candidates[1:])
             else {"anyOf": candidates}
         )
+    properties = normalized.get("properties")
+    if isinstance(properties, dict):
+        # OpenAI strict Structured Outputs requires every property to be
+        # listed as required and every object to prohibit undeclared keys.
+        # Pydantic represents optional fields with defaults by omitting them
+        # from ``required``; their generated ``anyOf[..., null]`` remains the
+        # nullable representation after we make the key required.
+        normalized["required"] = list(properties)
+        normalized["additionalProperties"] = False
     return normalized
 
 

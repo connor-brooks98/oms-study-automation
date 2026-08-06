@@ -424,6 +424,8 @@ class StudioRepository:
         destination_exam_number: int,
         content_kind: QuizContentKind,
         sources: Sequence[ImportSourceSelection],
+        *,
+        supersedes_run_id: str | None = None,
     ) -> StudioRun:
         if not sources:
             raise ValueError("select at least one import source")
@@ -492,7 +494,9 @@ class StudioRepository:
                     PublishedQuizModel.active.is_(True),
                 )
             )
-            if active_run is not None or published is not None:
+            if active_run is not None or (
+                published is not None and published.studio_run_id != supersedes_run_id
+            ):
                 raise ValueError("this quiz label is already in use for the destination exam")
             model = StudioRunModel(
                 id=str(uuid4()),
@@ -507,6 +511,7 @@ class StudioRepository:
                 prompt="",
                 workflow_kind=QuizWorkflowKind.DIRECT_IMPORT.value,
                 content_kind=content_kind.value,
+                supersedes_run_id=supersedes_run_id,
             )
             session.add(model)
             try:
@@ -717,7 +722,7 @@ class StudioRepository:
         with self.database.session() as session:
             statement = select(StudioRunModel).order_by(
                 StudioRunModel.created_at.desc(), StudioRunModel.id.desc()
-            )
+            ).where(StudioRunModel.history_hidden_at.is_(None))
             if subject_key is not None:
                 statement = statement.where(
                     StudioRunModel.subject_key == normalize_subject(subject_key)
@@ -1133,6 +1138,32 @@ class StudioRepository:
 
     def rerun(self, run_id: str) -> StudioRun:
         previous = self.get_run(run_id)
+        if previous.state not in {
+            StudioRunState.AWAITING_IMAGES,
+            StudioRunState.AWAITING_REVIEW,
+            StudioRunState.COMPLETE,
+            StudioRunState.FAILED,
+        }:
+            raise ValueError("only finished or review-ready Studio runs can be re-run")
+        if previous.workflow_kind == QuizWorkflowKind.DIRECT_IMPORT:
+            bindings = self.import_sources(previous.id)
+            return self.queue_import_run(
+                previous.subject,
+                previous.exam_number,
+                previous.label,
+                previous.destination_subject,
+                previous.destination_exam_number,
+                previous.content_kind,
+                tuple(
+                    ImportSourceSelection(
+                        binding.source_id,
+                        binding.role,
+                        binding.attach_to_notebook,
+                    )
+                    for binding in bindings
+                ),
+                supersedes_run_id=previous.id,
+            )
         return self.queue_run(
             previous.subject,
             previous.exam_number,
@@ -1143,6 +1174,26 @@ class StudioRepository:
             previous.destination_exam_number,
             supersedes_run_id=previous.id,
         )
+
+    def hide_run(self, run_id: str) -> None:
+        """Remove a terminal run from the Studio history without deleting its data.
+
+        Artifacts and the ``PublishedQuizModel`` relationship stay in place so
+        an already-published quiz remains reachable and a future successor can
+        still replace it through ``supersedes_run_id``.
+        """
+        with self.database.session() as session:
+            model = session.get(StudioRunModel, run_id)
+            if model is None:
+                raise KeyError(run_id)
+            if model.state not in {
+                StudioRunState.AWAITING_IMAGES.value,
+                StudioRunState.AWAITING_REVIEW.value,
+                StudioRunState.COMPLETE.value,
+                StudioRunState.FAILED.value,
+            }:
+                raise ValueError("only finished or review-ready Studio runs can be removed")
+            model.history_hidden_at = datetime.now(UTC).isoformat()
 
     def mark_source_deleted(self, source_id: str) -> StudioSource:
         with self.database.session() as session:

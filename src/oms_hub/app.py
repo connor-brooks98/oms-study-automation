@@ -64,6 +64,7 @@ from oms_hub.llm.service import LLMService
 from oms_hub.llm.structured import StructuredTextService
 from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import expanded_path
+from oms_hub.runtime_settings import RuntimeSettingsRepository
 from oms_hub.security.access import (
     AccessIdentityForbidden,
     AccessTokenInvalid,
@@ -197,8 +198,15 @@ async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    resolved = settings or get_settings()
-    resolved.data_dir.mkdir(parents=True, exist_ok=True)
+    # Bootstrap from the immutable deployment configuration exactly once.  The
+    # runtime repository may then apply its single allowlisted, staged value
+    # before middleware and Anki clients observe Settings.
+    base_settings = settings or get_settings()
+    base_settings.data_dir.mkdir(parents=True, exist_ok=True)
+    database = Database(base_settings.database_url)
+    database.migrate()
+    runtime_settings = RuntimeSettingsRepository(database, base_settings)
+    resolved = runtime_settings.effective_settings()
     app = FastAPI(
         title="OMS II Study Automation Hub",
         version=__version__,
@@ -436,10 +444,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return harden(response)
 
+    app.state.base_settings = base_settings
     app.state.settings = resolved
-    database = Database(resolved.database_url)
-    database.migrate()
     app.state.database = database
+    app.state.runtime_settings = runtime_settings
     app.state.anki_runtime = (
         AnkiRuntime(
             AnkiConnectClient(resolved.anki_connect_url),
@@ -766,6 +774,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "service": "oms-study-automation",
             "status": "ok",
             "version": __version__,
+            "deployment_root": (
+                str(resolved.deployment_root)
+                if resolved.deployment_root is not None
+                else "unreported"
+            ),
+            "build_revision": resolved.build_revision or "unreported",
         }
 
     return app
