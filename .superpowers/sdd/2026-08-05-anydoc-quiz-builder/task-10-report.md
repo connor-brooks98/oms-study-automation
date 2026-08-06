@@ -59,6 +59,42 @@ Success: no issues found in 2 source files
 All checks passed!
 ```
 
+## Third follow-up media-boundary correction
+
+`fix: keep imported quiz media private` makes selected direct-import image keys
+opaque (`img-` plus a truncated SHA-256 digest) and separates private candidate
+identity from the public `QuizImageRef`. Sanitized requirement rows, native quiz
+image refs, preview JSON, published media alts, and public URLs now use only
+`Imported question` / `Question image` metadata. The private review artifact
+retains the selected opaque candidate ID for the review UI without making it a
+public attribution field.
+
+Direct preview now resolves active image keys only after the current imported
+review is blocker-free. It reads the bound sanitized requirement through a
+direct-import/awaiting-review repository guard, verifies the copied file hash,
+and maps the generic image URL, alt text, and dimensions into preview content.
+The preview media endpoint applies the same active-key and hash checks; the
+Notebook image-preview path remains unchanged.
+
+Third-correction verification:
+
+```text
+./.venv/bin/pytest -q tests/study_generation/test_practice_review.py tests/study_generation/test_studio_repository.py tests/study_generation/test_studio_worker.py tests/v2/test_quiz_builder_routes.py tests/v2/test_public_quiz_routes.py
+passed
+
+./.venv/bin/pytest -q tests/study_generation tests/v2
+passed
+
+node --test tests/js/studio_quiz_review.test.js tests/js/studio_quiz_images.test.js tests/js/notebook_studio.test.js tests/js/public_quiz.test.js
+21 passed
+
+./.venv/bin/mypy src/oms_hub/study_generation/practice_review.py src/oms_hub/study_generation/studio_repository.py src/oms_hub/web/studio_routes.py
+Success: no issues found in 3 source files
+
+./.venv/bin/ruff check src/oms_hub/study_generation/practice_review.py src/oms_hub/study_generation/studio_repository.py src/oms_hub/web/studio_routes.py tests/study_generation/test_practice_review.py tests/v2/test_quiz_builder_routes.py
+All checks passed!
+```
+
 ## Second follow-up contract correction
 
 `fix: preserve quiz review edits and public ids` assigns `q1`, `q2`, and so on

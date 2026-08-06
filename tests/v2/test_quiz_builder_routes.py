@@ -340,3 +340,123 @@ def test_imported_private_question_ids_are_replaced_for_preview_and_public_gradi
     assert public_page.status_code == 200
     assert public_answer.status_code == 200
     assert public_answer.json()["correct"] is True
+
+
+def test_selected_import_image_preview_and_public_media_keep_private_metadata_hidden(
+    tmp_path,
+) -> None:
+    client = _client(tmp_path)
+    run_id = _direct_review_run(client, run_id="secret-run")
+    private_question_id = "question-1-private"
+    private_source_title = "Professor Secret Packet"
+    private_asset_key = "figure-secret"
+    client.app.state.practice_review.store(
+        run_id,
+        (
+            QuestionDraft(
+                private_question_id,
+                "1",
+                "Which answer is correct?",
+                ("A", "B"),
+                0,
+                "Because.",
+                None,
+                (QuestionSourceRef(private_source_title, "segment", "page 1"),),
+                AnswerProvenance.GENERATED_BY_AI,
+                0.8,
+                (),
+                True,
+                None,
+            ),
+        ),
+    )
+    image_path = tmp_path / "secret-candidate.png"
+    Image.new("RGB", (3, 2), "red").save(image_path, format="PNG")
+    document = ParsedDocument(
+        private_source_title,
+        "a" * 64,
+        "pdf",
+        "test",
+        "1",
+        (
+            ParsedSegment(
+                "segment",
+                SegmentKind.PARAGRAPH,
+                "source",
+                DocumentLocator("page 1", page_number=1),
+                (private_asset_key,),
+            ),
+        ),
+        (
+            ParsedAsset(
+                private_asset_key,
+                image_path,
+                "image/png",
+                sha256_file(image_path),
+                DocumentLocator("page 1 image", page_number=1),
+                3,
+                2,
+                "embedded-pdf-image",
+            ),
+        ),
+        (),
+    )
+    client.app.state.studio_repository.save_run_artifact(
+        run_id,
+        f"parse:{private_source_title}",
+        "b" * 64,
+        _document_json(document),
+    )
+    candidate = client.get(f"/studio/runs/{run_id}/review/data").json()["questions"][0][
+        "candidates"
+    ][0]
+    selected = client.post(
+        f"/studio/runs/{run_id}/questions/{private_question_id}/image-selection",
+        json={"image_candidate_id": candidate["candidate_id"]},
+        headers=_csrf_headers(client),
+    )
+    verified = client.post(
+        f"/studio/runs/{run_id}/questions/{private_question_id}/verify-answer",
+        headers=_csrf_headers(client),
+    )
+    preview_content = client.get(f"/studio/runs/{run_id}/preview/content")
+    preview_question = preview_content.json()["questions"][0]
+    image_key = preview_question["image_url"].rsplit("/", 1)[-1]
+    preview_media = client.get(preview_question["image_url"])
+    unknown_media = client.get(f"/studio/runs/{run_id}/preview/media/img-unknown")
+    bound = client.app.state.studio_repository.import_review_image(run_id, image_key)
+    original = bound.path.read_bytes()
+    bound.path.write_bytes(b"tampered")
+    tampered = client.get(preview_question["image_url"])
+    bound.path.write_bytes(original)
+    published = client.post(
+        f"/studio/runs/{run_id}/publication",
+        headers=_csrf_headers(client),
+    )
+    token = published.json()["token"]
+    public_content = client.get(f"/public/quizzes/{token}/content")
+    public_question = public_content.json()["questions"][0]
+    public_media = client.get(public_question["image_url"])
+    native = client.app.state.generation_repository.published_quiz(token)
+    private_values = (private_question_id, private_source_title, private_asset_key, str(bound.path))
+
+    assert selected.status_code == 200
+    assert verified.status_code == 200
+    assert preview_content.status_code == 200
+    assert image_key.startswith("img-") and len(image_key) <= 64
+    assert all(value not in image_key for value in private_values[:3])
+    assert preview_question["image_alt"] == "Question image"
+    assert preview_question["image_width"] == 3
+    assert preview_question["image_height"] == 2
+    assert preview_media.status_code == 200
+    assert unknown_media.status_code == 404
+    assert tampered.status_code == 404
+    assert published.status_code == 200
+    assert public_content.status_code == 200
+    assert public_question["image_alt"] == "Question image"
+    assert public_media.status_code == 200
+    assert native is not None
+    for value in private_values:
+        assert value not in preview_content.text
+        assert value not in public_content.text
+        assert value not in serialize_native_quiz(native.quiz)

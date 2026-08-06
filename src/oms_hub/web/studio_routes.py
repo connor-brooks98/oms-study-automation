@@ -594,6 +594,29 @@ def _direct_preview_quiz(request: Request, run_id: str) -> tuple[StudioRun, Nati
     return run, quiz
 
 
+def _direct_preview_image_urls(
+    request: Request,
+    run: StudioRun,
+    quiz: NativeQuiz,
+) -> dict[str, tuple[str, str, int | None, int | None]]:
+    repository = cast(StudioRepository, request.app.state.studio_repository)
+    urls: dict[str, tuple[str, str, int | None, int | None]] = {}
+    for image_key in {
+        question.image_ref.key for question in quiz.questions if question.image_ref is not None
+    }:
+        try:
+            image = repository.import_review_image(run.id, image_key)
+        except KeyError as error:
+            raise HTTPException(404, "quiz image was not found") from error
+        urls[image_key] = (
+            f"/studio/runs/{run.id}/preview/media/{image_key}",
+            "Question image",
+            image.width,
+            image.height,
+        )
+    return urls
+
+
 def _preview_image_urls(
     review: StudioQuizReview,
 ) -> dict[str, tuple[str, str, int | None, int | None]]:
@@ -674,7 +697,7 @@ def preview_quiz_content(request: Request, run_id: str) -> JSONResponse:
                 "version": 1,
                 "course": direct_run.destination_subject,
                 "exam_number": direct_run.destination_exam_number,
-                **public_quiz_content(quiz),
+                **public_quiz_content(quiz, _direct_preview_image_urls(request, direct_run, quiz)),
             },
             headers={"Cache-Control": "no-store"},
         )
@@ -698,6 +721,29 @@ def preview_quiz_media(
     run_id: str,
     image_key: str,
 ) -> FileResponse:
+    try:
+        run = cast(StudioRepository, request.app.state.studio_repository).get_run(run_id)
+    except KeyError as error:
+        raise HTTPException(404, "Studio run was not found") from error
+    if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
+        direct_run, quiz = _direct_preview_quiz(request, run_id)
+        active_keys = {
+            question.image_ref.key for question in quiz.questions if question.image_ref is not None
+        }
+        if image_key not in active_keys:
+            raise HTTPException(404, "quiz image was not found")
+        try:
+            image = cast(StudioRepository, request.app.state.studio_repository).import_review_image(
+                direct_run.id,
+                image_key,
+            )
+        except KeyError as error:
+            raise HTTPException(404, "quiz image was not found") from error
+        return FileResponse(
+            image.path,
+            media_type=image.media_type,
+            headers={"Cache-Control": "no-store"},
+        )
     review = _resolved_review(request, run_id)
     urls = _preview_image_urls(review)
     requirement = next(

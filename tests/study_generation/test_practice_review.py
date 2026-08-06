@@ -333,7 +333,8 @@ def test_import_candidates_hide_paths_and_selecting_one_publishes_media(tmp_path
     assert "path" not in asdict(candidate)
     updated = service.select_image_candidate("run-1", "q1", candidate.candidate_id)
     assert updated.chosen_image is not None
-    assert updated.chosen_image.key == "manual-image"
+    assert updated.chosen_image.key.startswith("img-")
+    assert updated.chosen_image.source_title == "Imported question"
 
     publisher = GenerationRepository(service.repository.database, practice_review=service)
     published = publisher.publish_reviewed_studio_quiz("run-1")
@@ -381,7 +382,7 @@ def test_extraction_candidate_citation_creates_a_stable_image_requirement(tmp_pa
     reviewed = service.review("run-1")[0]
 
     assert reviewed.draft.image_ref is not None
-    assert reviewed.draft.image_ref.key.startswith("import-")
+    assert reviewed.draft.image_ref.key.startswith("img-")
     assert len(reviewed.draft.image_ref.key) <= 64
     assert service.blockers("run-1") == ("q1: required image is unresolved",)
 

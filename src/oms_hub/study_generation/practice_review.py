@@ -42,6 +42,7 @@ class ReviewQuestion:
     area: str | None = None
     learning_objective: str | None = None
     chosen_image: QuizImageRef | None = None
+    selected_candidate_id: str | None = None
 
     @property
     def answer_provenance(self) -> AnswerProvenance | None:
@@ -175,33 +176,28 @@ class PracticeReviewService:
         if binding is None:
             raise ValueError("image candidate is not available for this question")
         candidate = binding.candidate
-        image_key = (
-            current.draft.image_ref.key
-            if current.draft.image_ref is not None
-            else _image_key(question_id)
-        )
-        if len(image_key) > 64:
-            raise ValueError("image requirement key is invalid")
+        image_key = _image_key(question_id)
         self.image_service.copy_import_candidate(
             run_id,
             image_key,
-            candidate.source_title,
-            candidate.locator,
-            _candidate_description(candidate),
+            "Imported question",
+            "Question image",
+            "Question image",
             binding.path,
             binding.sha256,
             candidate.asset_key,
         )
         chosen = QuizImageRef(
             image_key,
-            candidate.source_title,
-            candidate.locator,
-            _candidate_description(candidate),
+            "Imported question",
+            "Question image",
+            "Question image",
         )
         updated = replace(
             current,
             chosen_image=chosen,
             draft=replace(current.draft, image_ref=chosen),
+            selected_candidate_id=candidate.candidate_id,
         )
         self._save(
             run_id,
@@ -213,17 +209,7 @@ class PracticeReviewService:
         return updated
 
     def selected_candidate_id(self, run_id: str, question_id: str) -> str | None:
-        question = self.question(run_id, question_id)
-        if question.chosen_image is None:
-            return None
-        for candidate in self.candidates(run_id, question_id):
-            if (
-                candidate.source_title == question.chosen_image.source_title
-                and candidate.locator == question.chosen_image.locator
-                and question.chosen_image.description == _candidate_description(candidate)
-            ):
-                return candidate.candidate_id
-        return None
+        return self.question(run_id, question_id).selected_candidate_id
 
     def candidate_preview(
         self, run_id: str, question_id: str, candidate_id: str
@@ -408,6 +394,7 @@ class PracticeReviewService:
                 else _optional_text(values["learning_objective"])
             ),
             current.chosen_image,
+            current.selected_candidate_id,
         )
         questions = tuple(
             updated if item.draft.question_id == question_id else item for item in self.review(run_id)  # noqa: E501
@@ -508,7 +495,7 @@ def _native_quiz(questions: tuple[ReviewQuestion, ...], title: str) -> NativeQui
                 tuple(QuizChoice(f"c{number}", choice) for number, choice in enumerate(item.draft.choices, 1)),  # noqa: E501
                 f"c{(item.draft.correct_index or 0) + 1}",
                 item.draft.rationale or "",
-                item.chosen_image,
+                _public_image_ref(item.chosen_image),
                 item.area,
                 item.learning_objective,
                 item.topic,
@@ -593,13 +580,13 @@ def _origin(value: str | None) -> str:
 
 
 def _image_key(question_id: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", question_id.casefold()).strip("-") or "question"
-    digest = hashlib.sha256(question_id.encode("utf-8")).hexdigest()[:12]
-    return f"import-{slug[:40]}-{digest}"[:64]
+    return "img-" + hashlib.sha256(question_id.encode()).hexdigest()[:60]
 
 
-def _candidate_description(candidate: ImageCandidate) -> str:
-    return f"Imported image from {candidate.source_title} ({candidate.asset_key})"
+def _public_image_ref(image: QuizImageRef | None) -> QuizImageRef | None:
+    if image is None:
+        return None
+    return QuizImageRef(image.key, "Imported question", "Question image", "Question image")
 
 
 def _questions_json(questions: tuple[ReviewQuestion, ...]) -> str:
@@ -620,6 +607,7 @@ def _questions_json(questions: tuple[ReviewQuestion, ...]) -> str:
                     if question.chosen_image
                     else None
                 ),
+                "selected_candidate_id": question.selected_candidate_id,
             }
             for question in questions
         ],
@@ -636,6 +624,7 @@ def _questions_from_json(payload: str) -> tuple[ReviewQuestion, ...]:
             item["area"],
             item["learning_objective"],
             _image_ref(item["chosen_image"]),
+            item.get("selected_candidate_id"),
         )
         for item in json.loads(payload)
     )

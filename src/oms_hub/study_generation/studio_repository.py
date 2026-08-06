@@ -1006,6 +1006,47 @@ class StudioRepository:
             requirement.height = image.height
             requirement.original_filename = image.original_filename
 
+    def import_review_image(self, run_id: str, image_key: str) -> StudioStoredImage:
+        """Return one verified, sanitized direct-import image for private preview."""
+        with self.database.session() as session:
+            run = session.get(StudioRunModel, run_id)
+            if (
+                run is None
+                or run.workflow_kind != QuizWorkflowKind.DIRECT_IMPORT.value
+                or run.state != StudioRunState.AWAITING_REVIEW.value
+            ):
+                raise KeyError(run_id)
+            requirement = session.scalar(
+                select(StudioQuizImageRequirementModel).where(
+                    StudioQuizImageRequirementModel.run_id == run_id,
+                    StudioQuizImageRequirementModel.image_key == image_key,
+                )
+            )
+            if not (
+                requirement is not None
+                and requirement.asset_path
+                and requirement.asset_sha256
+                and requirement.media_type
+                and requirement.width is not None
+                and requirement.height is not None
+                and requirement.original_filename
+            ):
+                raise KeyError(image_key)
+            path = Path(requirement.asset_path)
+            try:
+                if not path.is_file() or sha256_file(path) != requirement.asset_sha256:
+                    raise KeyError(image_key)
+            except OSError as error:
+                raise KeyError(image_key) from error
+            return StudioStoredImage(
+                path,
+                requirement.asset_sha256,
+                requirement.media_type,
+                requirement.width,
+                requirement.height,
+                requirement.original_filename,
+            )
+
     def set_image_override(
         self,
         run_id: str,
