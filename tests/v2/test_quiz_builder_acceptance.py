@@ -111,13 +111,27 @@ class FailIfCalledNotebook:
 
 
 class NoSupportNotebook:
+    def __init__(self) -> None:
+        self.attach_calls = 0
+        self.answer_calls = 0
+        self.no_support_results = 0
+
     def attach_studio_source(self, *args: object, **kwargs: object) -> tuple[str, str]:
         del args, kwargs
+        self.attach_calls += 1
         return "notebook-1", "support-1"
 
     def answer_studio_question(self, *args: object) -> NotebookQuestionResult:
         del args
+        self.answer_calls += 1
+        self.no_support_results += 1
         return NotebookQuestionResult(NotebookQuestionStatus.NO_SUPPORT, None, "No support.", ())
+
+
+class FailIfCalledFallback:
+    def generate_text_for_task(self, *args: object, **kwargs: object) -> GeneratedText:
+        del args, kwargs
+        raise AssertionError("supplied answers must not call the AI fallback")
 
 
 class GeneratedFallback:
@@ -152,6 +166,7 @@ def acceptance_app(
     tmp_path: Path,
     *,
     notebook: FailIfCalledNotebook | NoSupportNotebook,
+    fallback: FailIfCalledFallback | GeneratedFallback,
     supplied_answer: bool,
 ) -> object:
     app = create_app(
@@ -166,7 +181,7 @@ def acceptance_app(
         app.state.studio_repository,
         FixtureParser(),
         FixtureExtractor(supplied_answer=supplied_answer),
-        PracticeAnswerResolver(notebook, GeneratedFallback()),
+        PracticeAnswerResolver(notebook, fallback),
         notebook,
         tmp_path / "import-assets",
     )
@@ -239,6 +254,7 @@ def test_direct_import_with_supplied_answers_never_calls_notebook(tmp_path: Path
     app = acceptance_app(
         tmp_path,
         notebook=FailIfCalledNotebook(),
+        fallback=FailIfCalledFallback(),
         supplied_answer=True,
     )
     client = TestClient(app)
@@ -248,16 +264,17 @@ def test_direct_import_with_supplied_answers_never_calls_notebook(tmp_path: Path
 
     review = app.state.practice_review.review(run_id)
     assert app.state.practice_review.blockers(run_id) == ()
-    assert all(
-        question.answer_provenance is AnswerProvenance.PROVIDED_BY_SOURCE
-        for question in review
-    )
+    assert len(review) == 1
+    assert review[0].draft.stem == "Which answer is correct?"
+    assert review[0].answer_provenance is AnswerProvenance.PROVIDED_BY_SOURCE
 
 
 def test_generated_answer_cannot_publish_before_question_verification(tmp_path: Path) -> None:
+    notebook = NoSupportNotebook()
     app = acceptance_app(
         tmp_path,
-        notebook=NoSupportNotebook(),
+        notebook=notebook,
+        fallback=GeneratedFallback(),
         supplied_answer=False,
     )
     client = TestClient(app)
@@ -277,3 +294,6 @@ def test_generated_answer_cannot_publish_before_question_verification(tmp_path: 
     assert blocked.status_code == 409
     assert verified.status_code == 200
     assert published.status_code == 200
+    assert notebook.attach_calls == 1
+    assert notebook.answer_calls == 1
+    assert notebook.no_support_results == 1

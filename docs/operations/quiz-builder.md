@@ -56,12 +56,16 @@ credentials.
   degraded fallback.
 - `legacy` disables candidate parsing and uses only the existing baseline.
 
-To roll back parser activation, set the local `.env` value and restart the
-service:
+To roll back parser activation for the current PowerShell session, set the
+environment variable and restart the service:
 
 ```powershell
-OMS_HUB_DOCUMENT_PARSER_MODE=legacy
+$env:OMS_HUB_DOCUMENT_PARSER_MODE = "legacy"
 ```
+
+For a durable local setting, instead set
+`OMS_HUB_DOCUMENT_PARSER_MODE=legacy` in the untracked `.env` file and restart
+the service.
 
 No source data needs to be deleted or recopied for this rollback. Preserve the
 existing comparison reports for diagnosis; they contain metrics and stable
@@ -119,6 +123,8 @@ reset, flags, summaries, and media. Record the tested Anydoc, PDF-Inspector,
 Python, provider, and model versions in the release notes.
 
 Windows CI installs and imports the document processors with Python 3.12 but
-does not validate desktop Office automation. Those tests remain marked
-`windows_office`; run them only on a controlled Windows machine with Microsoft
-Office installed and record that native evidence separately.
+does not run desktop Office automation. The real PPTX-to-PDF smoke test remains
+marked `windows_office`; run
+`.\.venv\Scripts\python.exe -m pytest -m windows_office` only on a controlled
+Windows machine with Microsoft Office installed and record that native evidence
+separately.
