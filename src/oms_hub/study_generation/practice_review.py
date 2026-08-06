@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from oms_hub.files.atomic import sha256_file
 from oms_hub.models import StudioRunArtifactModel
 from oms_hub.study_generation.domain import NativeQuiz, QuizChoice, QuizImageRef, QuizQuestion
 from oms_hub.study_generation.practice_domain import (
@@ -186,7 +187,7 @@ class PracticeReviewService:
             image_key,
             candidate.source_title,
             candidate.locator,
-            f"Imported image from {candidate.source_title}",
+            _candidate_description(candidate),
             binding.path,
             binding.sha256,
             candidate.asset_key,
@@ -195,7 +196,7 @@ class PracticeReviewService:
             image_key,
             candidate.source_title,
             candidate.locator,
-            f"Imported image from {candidate.source_title}",
+            _candidate_description(candidate),
         )
         updated = replace(
             current,
@@ -210,6 +211,41 @@ class PracticeReviewService:
             ),
         )
         return updated
+
+    def selected_candidate_id(self, run_id: str, question_id: str) -> str | None:
+        question = self.question(run_id, question_id)
+        if question.chosen_image is None:
+            return None
+        for candidate in self.candidates(run_id, question_id):
+            if (
+                candidate.source_title == question.chosen_image.source_title
+                and candidate.locator == question.chosen_image.locator
+                and question.chosen_image.description == _candidate_description(candidate)
+            ):
+                return candidate.candidate_id
+        return None
+
+    def candidate_preview(
+        self, run_id: str, question_id: str, candidate_id: str
+    ) -> tuple[Path, str]:
+        """Return a verified candidate file for a question-scoped preview only."""
+        current = self.question(run_id, question_id)
+        binding = next(
+            (
+                item
+                for item in self._candidate_bindings(run_id, current)
+                if item.candidate.candidate_id == candidate_id
+            ),
+            None,
+        )
+        if binding is None:
+            raise KeyError(candidate_id)
+        try:
+            if not binding.path.is_file() or sha256_file(binding.path) != binding.sha256:
+                raise KeyError(candidate_id)
+        except OSError as error:
+            raise KeyError(candidate_id) from error
+        return binding.path, binding.candidate.media_type
 
     def store(self, run_id: str, drafts: tuple[QuestionDraft, ...]) -> None:
         self._save(run_id, tuple(ReviewQuestion(draft) for draft in drafts))
@@ -543,6 +579,10 @@ def _image_key(question_id: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", question_id.casefold()).strip("-") or "question"
     digest = hashlib.sha256(question_id.encode("utf-8")).hexdigest()[:12]
     return f"import-{slug[:40]}-{digest}"[:64]
+
+
+def _candidate_description(candidate: ImageCandidate) -> str:
+    return f"Imported image from {candidate.source_title} ({candidate.asset_key})"
 
 
 def _questions_json(questions: tuple[ReviewQuestion, ...]) -> str:
