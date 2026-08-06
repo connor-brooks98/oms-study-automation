@@ -7,7 +7,7 @@ import json
 from dataclasses import asdict, replace
 from datetime import timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypedDict
 
 from oms_hub.db import is_sqlite_busy
 from oms_hub.document_processing.domain import (
@@ -82,6 +82,12 @@ class NotebookAttacher(Protocol):
     ) -> tuple[str, str]: ...
 
 
+class AttachmentArguments(TypedDict, total=False):
+    path: Path
+    text: str
+    url: str
+
+
 def stage_signature(
     stage: str,
     *,
@@ -91,6 +97,7 @@ def stage_signature(
     prompt_version: str,
     artifact_hashes: tuple[str, ...] = (),
     roles: tuple[str, ...] = (),
+    binding_identities: tuple[str, ...] = (),
 ) -> str:
     """Hash a canonical stage input, retaining source order and role assignments."""
     payload = {
@@ -104,6 +111,8 @@ def stage_signature(
         payload["artifact_hashes"] = list(artifact_hashes)
     if roles:
         payload["roles"] = list(roles)
+    if binding_identities:
+        payload["binding_identities"] = list(binding_identities)
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -151,11 +160,22 @@ class QuizImportWorker:
             resolved = self._resolve_answers(run, drafts, sources, roles)
             self._review(run, resolved, sources, roles)
         except ExtractionError as error:
+            metadata = error.provider_metadata
+            provider = metadata[-1] if metadata else None
+            self.repository.save_run_artifact(
+                run.id,
+                "failure:extract",
+                _failure_signature(run.id, error.raw_responses, metadata),
+                _extraction_failure_json(error),
+                provider=provider.provider.value if provider else None,
+                model=provider.model if provider else None,
+                request_id=provider.request_id if provider else None,
+            )
             self._record_failure(
                 run,
                 DiagnosticSource.CONTRACT.value,
                 str(error),
-                retry=run.attempts < 2,
+                retry=False,
                 raw_response="\n".join(error.raw_responses),
             )
         except NotebookGatewayError as error:
@@ -339,14 +359,16 @@ class QuizImportWorker:
             return drafts
         self.repository.set_run_stage(run.id, StudioRunStage.ANSWER_NOTEBOOK)
         remote_ids = self._supporting_remote_ids(run, sources, roles)
+        binding_identities = self._supporting_binding_identities(run.id)
         signature = stage_signature(
             "answer",
             source_hashes=tuple(source.snapshot_sha256 or "" for source in sources),
             parser_versions=(),
-            provider_model="notebooklm+configured-fallback",
+            provider_model=f"notebooklm+{self._answer_model()}",
             prompt_version="practice-answer-resolution-v1",
             artifact_hashes=(_artifact_hash(self.repository, run.id, "pair"),),
             roles=tuple(role.value for role in roles),
+            binding_identities=binding_identities,
         )
         cached = self.repository.run_artifact(run.id, "answered")
         if cached is not None and cached.signature_sha256 == signature:
@@ -381,23 +403,19 @@ class QuizImportWorker:
                 continue
             if role not in {ImportSourceRole.SUPPORTING_REFERENCE, ImportSourceRole.COMBINED}:
                 raise ValueError("question and answer-key sources must not attach to NotebookLM")
+            if bool(binding.remote_notebook_id) != bool(binding.remote_source_id):
+                raise ValueError("NotebookLM supporting source binding is incomplete")
             if binding.remote_notebook_id and binding.remote_source_id:
                 remote_ids.append(binding.remote_source_id)
                 continue
             assert source.payload_path is not None
-            text = (
-                source.payload_path.read_text(encoding="utf-8")
-                if source.source_type.value == "text"
-                else None
-            )
+            arguments = _attachment_arguments(source)
             notebook_id, remote_id = self.notebook.attach_studio_source(
                 run.subject,
                 run.exam_number,
                 source.source_type.value,
                 source.title,
-                path=source.payload_path if text is None else None,
-                text=text,
-                url=source.final_url if source.source_type.value == "url" else None,
+                **arguments,
             )
             self.repository.save_import_source_binding(run.id, source.id, notebook_id, remote_id)
             remote_ids.append(remote_id)
@@ -406,6 +424,24 @@ class QuizImportWorker:
         if len(remote_ids) != len(set(remote_ids)):
             raise ValueError("NotebookLM supporting source bindings are not distinct")
         return tuple(remote_ids)
+
+    def _supporting_binding_identities(self, run_id: str) -> tuple[str, ...]:
+        bindings = self.repository.import_sources(run_id)
+        support_bindings = tuple(
+            binding
+            for binding in bindings
+            if binding.attach_to_notebook
+            and binding.role in {ImportSourceRole.SUPPORTING_REFERENCE, ImportSourceRole.COMBINED}
+        )
+        if any(
+            not binding.remote_notebook_id or not binding.remote_source_id
+            for binding in support_bindings
+        ):
+            raise ValueError("NotebookLM supporting source binding is incomplete")
+        return tuple(
+            f"{binding.position}:{binding.source_id}:{binding.remote_notebook_id}:{binding.remote_source_id}"
+            for binding in support_bindings
+        )
 
     def _review(
         self,
@@ -471,12 +507,65 @@ class QuizImportWorker:
             return f"{assignment.provider.value}:{assignment.model}"
         return "configured-extractor"
 
+    def _answer_model(self) -> str:
+        fallback = getattr(self.answers, "fallback", None)
+        settings = getattr(fallback, "settings", None)
+        if settings is not None:
+            assignment = settings.assignment(LLMTask.QUIZ_ANSWER_GENERATION)
+            return f"{assignment.provider.value}:{assignment.model}"
+        return "configured-answer-fallback"
+
 
 def _artifact_hash(repository: StudioRepository, run_id: str, key: str) -> str:
     artifact = repository.run_artifact(run_id, key)
     if artifact is None:
         raise ValueError(f"required import artifact is missing: {key}")
     return hashlib.sha256(artifact.payload_json.encode("utf-8")).hexdigest()
+
+
+def _failure_signature(
+    run_id: str,
+    raw_responses: tuple[str, ...],
+    metadata: tuple[ExtractionProviderMetadata, ...],
+) -> str:
+    payload = {
+        "run_id": run_id,
+        "raw_responses": list(raw_responses),
+        "provider_metadata": [
+            {**asdict(item), "provider": item.provider.value} for item in metadata
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _extraction_failure_json(error: ExtractionError) -> str:
+    return json.dumps(
+        {
+            "raw_responses": list(error.raw_responses),
+            "provider_metadata": [
+                {**asdict(item), "provider": item.provider.value}
+                for item in error.provider_metadata
+            ],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _attachment_arguments(source: StudioSource) -> AttachmentArguments:
+    """Build one and only one NotebookLM payload argument from an immutable snapshot."""
+    assert source.payload_path is not None
+    if source.source_type.value == "file":
+        return {"path": source.payload_path}
+    if source.source_type.value == "text":
+        return {"text": source.payload_path.read_text(encoding="utf-8")}
+    if source.source_type.value == "url":
+        if not source.final_url:
+            raise ValueError("URL import source is missing its final URL snapshot")
+        return {"url": source.final_url}
+    raise ValueError("unsupported Studio source type for NotebookLM attachment")
 
 
 def _requires_review_before_resolution(draft: QuestionDraft) -> bool:
