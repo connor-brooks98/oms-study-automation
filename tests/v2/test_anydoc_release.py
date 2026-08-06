@@ -61,6 +61,11 @@ _TASK_1_13_OMS_HUB_INVENTORY = {
     "src/oms_hub/web/templates/studio_quiz_review.html",
 }
 
+_QUIZ_BUILDER_OPERATIONS = {
+    "docs/operations/quiz-builder.md",
+    "scripts/evaluate_anydoc_corpus.py",
+}
+
 
 def _release_builder() -> ModuleType:
     path = ROOT / "scripts" / "build-v2-release.py"
@@ -115,4 +120,6 @@ def test_both_release_archives_include_the_complete_task_1_13_inventory(tmp_path
 
     for archive_path in (hotfix, source):
         with zipfile.ZipFile(archive_path) as archive:
-            assert _TASK_1_13_OMS_HUB_INVENTORY <= set(archive.namelist())
+            names = set(archive.namelist())
+            assert _TASK_1_13_OMS_HUB_INVENTORY <= names
+            assert _QUIZ_BUILDER_OPERATIONS <= names

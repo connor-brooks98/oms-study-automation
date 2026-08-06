@@ -14,8 +14,10 @@ controlled Windows host.
 - Added release-package contracts for Python `>=3.12,<3.14`, the exact
   `firecrawl-anydoc==0.1.3` pin, the retained pinned PDF-Inspector extra, the
   complete Task 1-13 OMS Hub runtime/template/static inventory in both release
-  archives, retained Hatch wheel packages, and the `oms-anki-agent` entry
-  point.
+  archives, the corpus evaluator and linked operations runbook in both archives,
+  retained Hatch wheel packages, and the `oms-anki-agent` entry point. The
+  hotfix explicitly includes the evaluator and runbook so its documented parser
+  promotion procedure remains executable after a hotfix-only installation.
 - Added a Windows Python 3.12 CI job that creates a virtual environment,
   installs the `dev`, `document-processing`, and `pdf-inspection` extras,
   imports `anydoc` and `pdf_inspector`, and exercises document-processing,
@@ -50,6 +52,9 @@ All checks passed
 
 ./.venv/bin/python -m mypy src
 Success: no issues found in 163 source files
+
+./.venv/bin/mypy src scripts/build-v2-release.py
+Success: no issues found in 164 source files
 
 ./.venv/bin/pytest -q tests/document_processing
 66 passed

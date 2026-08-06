@@ -6,7 +6,9 @@ from pathlib import Path
 HOTFIX_FILES = (
     ".env.example",
     "README.md",
+    "docs/operations/quiz-builder.md",
     "pyproject.toml",
+    "scripts/evaluate_anydoc_corpus.py",
 )
 
 
