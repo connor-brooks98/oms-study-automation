@@ -107,6 +107,7 @@ CARD_CENTRIC_SYSTEM_TOKENS = (
     "resp",
 )
 _UNTAGGED_SAFE_RATE = 0.03
+CARD_CENTRIC_UNCONDITIONAL_RESIDUAL_RATE = 0.15
 _SYSTEM_ALIASES = {
     "cardio": frozenset({"cardio", "cardiology", "cardiovascular"}),
     "endo": frozenset({"endo", "endocrine", "endocrinology"}),
@@ -272,8 +273,12 @@ def build_snapshot_census(
                 else (
                     "no deck-eligible notes are available for tag-scope trust"
                     if denominator == 0
-                    else "untagged rate exceeds the card_centric_v1 tag-scope threshold; "
-                    "residual sweep is not implemented"
+                    else (
+                        "untagged rate requires an unconditional whole-deck residual sweep"
+                        if rate >= CARD_CENTRIC_UNCONDITIONAL_RESIDUAL_RATE
+                        else "untagged rate exceeds the card_centric_v1 tag-scope threshold; "
+                        "the whole-deck residual safety net is required"
+                    )
                 )
             ),
             untagged_rate=rate,

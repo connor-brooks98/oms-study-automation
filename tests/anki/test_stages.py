@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import oms_hub.anki.stages as stages_module
 from oms_hub.anki.audit import AuditBatchV2, AuditCacheRecord
+from oms_hub.anki.card_centric import build_snapshot_census
+from oms_hub.anki.card_centric_contracts import CardConcept, CardConceptLedger, CardRecord
 from oms_hub.anki.domain import (
     Candidate,
     CurationStage,
@@ -18,7 +20,11 @@ from oms_hub.anki.normalize import NormalizedNote
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
 from oms_hub.anki.prompts import StaticPromptSynchronizer
 from oms_hub.anki.sources import SourcePassage
-from oms_hub.anki.stages import CurationServicesRunner, _priority_candidate_groups
+from oms_hub.anki.stages import (
+    CurationServicesRunner,
+    _card_residual_targets,
+    _priority_candidate_groups,
+)
 from oms_hub.anki.v2_contracts import (
     AuditVerdictV2,
     CoverageJudgmentV2,
@@ -41,6 +47,103 @@ class ReadyRuntime:
             sync_available=True,
             blocking_reason=None,
         )
+
+
+def _card_record(note_id: int, tags: tuple[str, ...]) -> CardRecord:
+    return CardRecord(
+        note_id=note_id,
+        content_sha256=f"{note_id:064x}",
+        text=f"Card {note_id}",
+        extra="",
+        tags=tags,
+        deck_names=("AnKing",),
+    )
+
+
+def _tag_scope_product(cards: tuple[CardRecord, ...]):
+    census = build_snapshot_census(
+        cards,
+        deck_allowlist=("AnKing",),
+        scope_tokens=("heme",),
+        snapshot_id="snapshot-1",
+    )
+    runner = CurationServicesRunner.__new__(CurationServicesRunner)
+    context = SimpleNamespace(
+        job=SimpleNamespace(tag_allowlist=("heme",)),
+        prior_payloads={
+            CurationStage.SOURCE_INDEX: {
+                "cards": [card.model_dump(mode="json") for card in cards],
+                "census": census.model_dump(mode="json"),
+            }
+        },
+    )
+    return asyncio.run(runner._card_tag_scope(context))
+
+
+def test_card_tag_scope_continues_with_gaps_only_residual_at_warning_threshold() -> None:
+    cards = tuple(
+        _card_record(note_id, ("#AK_Step::Heme",) if note_id <= 97 else ())
+        for note_id in range(1, 101)
+    )
+
+    product = _tag_scope_product(cards)
+
+    assert product.blocking_error is None
+    assert product.payload["residual_mode"] == "gaps_only"
+
+
+def test_card_tag_scope_uses_unconditional_residual_at_fifteen_percent() -> None:
+    cards = tuple(
+        _card_record(note_id, ("#AK_Step::Heme",) if note_id <= 17 else ())
+        for note_id in range(1, 21)
+    )
+    census = build_snapshot_census(
+        cards,
+        deck_allowlist=("AnKing",),
+        scope_tokens=("heme",),
+        snapshot_id="snapshot-1",
+    )
+    product = _tag_scope_product(cards)
+
+    assert product.blocking_error is None
+    assert census.trust.untagged_rate == 0.15
+    assert product.payload["scope"]["scoped_note_ids"] == list(range(1, 18))
+    assert product.payload["residual_mode"] == "all_concepts"
+
+
+def test_card_residual_targets_every_concept_only_for_unconditional_mode() -> None:
+    ledger = CardConceptLedger(
+        lecture_entity_count=2,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="Covered concept",
+                primary_entity="Covered",
+                depth="surface",
+                emphasis_flag=False,
+                importance="low",
+            ),
+            CardConcept(
+                concept_id="C02",
+                canonical_statement="Missing concept",
+                primary_entity="Missing",
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+            ),
+        ),
+    )
+    coverage = {
+        "C01": {"status": "covered", "evidence": [{"note_id": 1}]},
+        "C02": {"status": "uncovered", "evidence": []},
+    }
+
+    assert [item.concept_id for item in _card_residual_targets(ledger, coverage, "gaps_only")] == [
+        "C02"
+    ]
+    assert [
+        item.concept_id for item in _card_residual_targets(ledger, coverage, "all_concepts")
+    ] == ["C01", "C02"]
 
 
 def test_priority_candidate_groups_preserve_deck_order() -> None:

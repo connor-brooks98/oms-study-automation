@@ -8,6 +8,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from oms_hub.anki.audit import AuditRunResult, CardAuditService
 from oms_hub.anki.card_centric import (
+    CARD_CENTRIC_UNCONDITIONAL_RESIDUAL_RATE,
     CardCentricClassifier,
     CardCentricLedgerService,
     build_snapshot_census,
@@ -19,6 +20,7 @@ from oms_hub.anki.card_centric import (
 from oms_hub.anki.card_centric_contracts import (
     CardCentricSourceIndex,
     CardClassification,
+    CardConcept,
     CardConceptLedger,
     CardGapBatch,
     CardRecord,
@@ -473,7 +475,7 @@ class CurationServicesRunner:
         source_payload = _payload(context, CurationStage.SOURCE_INDEX)
         cards = _card_records(source_payload)
         census = _card_census(source_payload)
-        if census.trust.decision != "trusted":
+        if census.denominator_count == 0:
             return StageProduct(
                 kind="card_centric_tag_scope_failure",
                 payload={
@@ -483,6 +485,11 @@ class CurationServicesRunner:
                 },
                 blocking_error=("card_centric_v1 tag scope blocked: " + census.trust.reason),
             )
+        residual_mode = (
+            "all_concepts"
+            if census.trust.untagged_rate >= CARD_CENTRIC_UNCONDITIONAL_RESIDUAL_RATE
+            else "gaps_only"
+        )
         scope = scope_cards(
             cards,
             census=census,
@@ -493,6 +500,7 @@ class CurationServicesRunner:
             payload={
                 "scope": scope.model_dump(mode="json"),
                 "census": census.model_dump(mode="json"),
+                "residual_mode": residual_mode,
             },
         )
 
@@ -574,27 +582,32 @@ class CurationServicesRunner:
         )
 
     async def _card_residual(self, context: StageContext) -> StageProduct:
-        """S6: whole-deck semantic recall only for still-uncovered concepts."""
+        """S6: whole-deck recall for gaps, or every concept when census requires it."""
         ledger = _card_ledger(context)
         coverage = _card_coverage_payload(context)
-        uncovered = tuple(
-            concept
-            for concept in ledger.concepts
-            if coverage[concept.concept_id]["status"] == "uncovered"
+        scope_payload = _payload(context, CurationStage.CARD_TAG_SCOPE)
+        residual_mode = scope_payload.get("residual_mode", "gaps_only")
+        targets = _card_residual_targets(
+            ledger,
+            coverage,
+            residual_mode,
         )
         source_payload = _payload(context, CurationStage.SOURCE_INDEX)
         cards = {card.note_id: card for card in _card_records(source_payload)}
-        scoped = TagScopeResult.model_validate(
-            _payload(context, CurationStage.CARD_TAG_SCOPE)["scope"]
-        )
-        if not uncovered:
+        scoped = TagScopeResult.model_validate(scope_payload["scope"])
+        if not targets:
             return StageProduct(
                 kind="card_centric_residual",
-                payload={"audits": [], "classifier": None, "uncovered_concept_ids": []},
+                payload={
+                    "audits": [],
+                    "classifier": None,
+                    "uncovered_concept_ids": [],
+                    "residual_mode": residual_mode,
+                },
             )
         queries = tuple(
             f"{concept.primary_entity} {alias}"
-            for concept in uncovered
+            for concept in targets
             for alias in (concept.aliases or (concept.primary_entity,))
         )
         hits = await self.semantic.search(queries, eligible_note_ids=set(cards), limit=12)
@@ -626,7 +639,8 @@ class CurationServicesRunner:
             payload={
                 "audits": audit,
                 "classifier": classified.model_dump(mode="json"),
-                "uncovered_concept_ids": [concept.concept_id for concept in uncovered],
+                "uncovered_concept_ids": [concept.concept_id for concept in targets],
+                "residual_mode": residual_mode,
             },
             usage=_card_classifier_usage(classified),
         )
@@ -2155,6 +2169,22 @@ def _card_record(note: Any) -> CardRecord:
         extra=note.extra,
         tags=tuple(note.tags),
         deck_names=tuple(note.deck_names),
+    )
+
+
+def _card_residual_targets(
+    ledger: CardConceptLedger,
+    coverage: Mapping[str, dict[str, Any]],
+    residual_mode: str,
+) -> tuple[CardConcept, ...]:
+    if residual_mode == "all_concepts":
+        return ledger.concepts
+    if residual_mode != "gaps_only":
+        raise PinnedInputChanged("card-centric residual mode is invalid")
+    return tuple(
+        concept
+        for concept in ledger.concepts
+        if coverage[concept.concept_id]["status"] == "uncovered"
     )
 
 

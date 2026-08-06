@@ -357,6 +357,31 @@ class QuizImportWorker:
         missing = tuple(draft for draft in drafts if draft.correct_index is None)
         if not missing:
             return drafts
+        if not any(
+            binding.attach_to_notebook
+            and binding.role
+            in {ImportSourceRole.SUPPORTING_REFERENCE, ImportSourceRole.COMBINED}
+            for binding in self.repository.import_sources(run.id)
+        ):
+            return tuple(
+                replace(
+                    draft,
+                    diagnostics=(
+                        *draft.diagnostics,
+                        DraftDiagnostic(
+                            "notebook-support-not-selected",
+                            (
+                                "answer remains unresolved because no supporting reference "
+                                "was selected for NotebookLM"
+                            ),
+                            DiagnosticSeverity.BLOCKER,
+                        ),
+                    ),
+                )
+                if draft.correct_index is None
+                else draft
+                for draft in drafts
+            )
         self.repository.set_run_stage(run.id, StudioRunStage.ANSWER_NOTEBOOK)
         remote_ids = self._supporting_remote_ids(run, sources, roles)
         binding_identities = self._supporting_binding_identities(run.id)

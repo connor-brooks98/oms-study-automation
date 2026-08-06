@@ -279,6 +279,50 @@ def test_blocked_pairing_finishes_awaiting_review_without_notebook_attachment(
     assert notebook.calls == []
 
 
+def test_missing_answer_without_selected_notebook_source_finishes_awaiting_review(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    questions = _ready_source(repository, tmp_path, "Questions URL")
+    answer_key = _ready_source(repository, tmp_path, "Answer key URL")
+    run = repository.queue_import_run(
+        "Neuro",
+        1,
+        "Imported practice",
+        "Neuro",
+        1,
+        QuizContentKind.PRACTICE_QUESTIONS,
+        (
+            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
+            ImportSourceSelection(answer_key.id, ImportSourceRole.ANSWER_KEY),
+        ),
+    )
+    notebook = _AttachingNotebook()
+    worker = QuizImportWorker(
+        repository,
+        _Parser(),
+        _QuestionExtractor(),
+        _UnusedAnswers(),
+        notebook,
+        tmp_path / "assets",
+    )
+
+    worker.run(repository.claim_next_run())
+
+    stored = repository.get_run(run.id)
+    assert stored.state is StudioRunState.AWAITING_REVIEW
+    assert stored.error is None
+    assert repository.list_run_attempts(run.id) == ()
+    assert notebook.calls == []
+    normalized = repository.run_artifact(run.id, "normalized")
+    assert normalized is not None
+    drafts = _drafts_from_json(normalized.payload_json)
+    expected = (
+        "answer remains unresolved because no supporting reference was selected for NotebookLM"
+    )
+    assert expected in drafts[0].blocking_diagnostics
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
