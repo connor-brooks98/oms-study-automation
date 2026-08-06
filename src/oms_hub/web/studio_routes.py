@@ -172,8 +172,9 @@ def runs(
                     "attempts": item.attempts,
                     "next_attempt_at": item.next_attempt_at,
                     "error": item.error,
-                    "raw_response": item.raw_response,
                     "source_ids": [source.source_id for source in item.sources],
+                    "workflow_kind": item.workflow_kind.value,
+                    "content_kind": item.content_kind.value,
                     "destination_subject": item.destination_subject,
                     "destination_exam_number": item.destination_exam_number,
                     "published_url": (
@@ -184,11 +185,16 @@ def runs(
                         if item.state.value == "awaiting_images"
                         else None
                     ),
+                    "review_url": (
+                        f"/studio/runs/{item.id}/review"
+                        if item.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT
+                        and item.state.value == "awaiting_review"
+                        else None
+                    ),
                     "attempt_history": [
                         {
                             "attempt_number": attempt.attempt_number,
                             "diagnostic_source": attempt.diagnostic_source,
-                            "raw_response": attempt.raw_response,
                             "error": attempt.error,
                             "created_at": attempt.created_at,
                         }

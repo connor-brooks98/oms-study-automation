@@ -1526,11 +1526,22 @@ code { overflow-wrap: anywhere; }
   gap: .8rem;
 }
 .studio-source-grid label,
-.studio-runner label { display: grid; gap: .35rem; margin-bottom: .8rem; }
+.studio-runner label,
+.studio-import-intake label { display: grid; gap: .35rem; margin-bottom: .8rem; }
 .studio-source-grid input,
 .studio-source-grid select,
 .studio-runner input,
-.studio-runner select { width: 100%; }
+.studio-runner select,
+.studio-import-intake input,
+.studio-import-intake select { width: 100%; }
+.studio-workflow-switch { display: flex; flex-wrap: wrap; gap: .65rem; margin: 0 0 1rem; }
+.studio-import-intake [data-import-source-form] { padding: 1.1rem 1.25rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); }
+.studio-import-intake [data-import-source-list] { display: grid; gap: .7rem; padding-left: 1.2rem; }
+.studio-import-intake [data-import-source-row] { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem; }
+.studio-import-intake [data-import-source-row] > span { min-width: 12rem; font-weight: 600; }
+.studio-import-intake [data-import-source-row] select { width: auto; min-width: 12rem; }
+.studio-import-intake [data-import-source-row] label { display: inline-flex; align-items: center; gap: .35rem; margin: 0; }
+.studio-import-intake [data-import-source-row] label input { width: auto; }
 .studio-source-picker {
   display: grid;
   gap: .45rem;

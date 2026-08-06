@@ -56,6 +56,32 @@ def _ready_import_source(client: TestClient, title: str, filename: str) -> str:
     return response.json()["id"]
 
 
+def test_quiz_builder_keeps_generate_and_import_workflows(tmp_path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/studio")
+
+    assert response.status_code == 200
+    assert "Quiz Builder" in response.text
+    assert "Generate Quiz" in response.text
+    assert "Import Practice Questions" in response.text
+    assert "NotebookLM Studio" not in response.text
+
+
+def test_run_history_exposes_safe_direct_import_review_metadata(tmp_path) -> None:
+    client = _client(tmp_path)
+    run_id = _direct_review_run(client)
+
+    response = client.get("/studio/runs", params={"subject_key": "neuro", "exam_number": 1})
+
+    assert response.status_code == 200
+    run = response.json()["runs"][0]
+    assert run["workflow_kind"] == "direct_import"
+    assert run["content_kind"] == "practice_questions"
+    assert run["review_url"] == f"/studio/runs/{run_id}/review"
+    assert "raw_response" not in run
+
+
 def _direct_review_run(client: TestClient, *, run_id: str = "direct-run") -> str:
     with client.app.state.database.session() as session:
         session.add(
@@ -71,6 +97,7 @@ def _direct_review_run(client: TestClient, *, run_id: str = "direct-run") -> str
                 label_key=f"imported practice {run_id}",
                 prompt="",
                 workflow_kind="direct_import",
+                content_kind="practice_questions",
                 state="awaiting_review",
                 stage="review",
             )
