@@ -2,8 +2,8 @@
 
 ## Status
 
-Complete, with native Windows/Office execution explicitly deferred to a
-controlled Windows host.
+Locally complete, with native Windows/Office execution explicitly deferred to a
+controlled Windows host and the remote CI rerun pending.
 
 ## Delivered
 
@@ -68,6 +68,18 @@ Success: no issues found in 164 source files
 git diff --check
 passed
 ```
+
+## Remote CI correction
+
+Pushed run `31068660627` failed during the Linux full-pytest job. The affected
+renderer test replaced the private `tempfile._shutil.rmtree`; on Python 3.12,
+`TemporaryDirectory`'s `PermissionError` recovery re-entered that replacement
+until it raised `RecursionError`. The test now wraps the
+`presentation_render.TemporaryDirectory` boundary, delegates cleanup to the
+real context manager, and asserts the renderer requests the
+`oms-slide-render-` prefix with `ignore_cleanup_errors=True` while preserving
+the unavailable-renderer warning. This report does not claim a successful
+remote CI rerun yet.
 
 ## Deferred native evidence
 

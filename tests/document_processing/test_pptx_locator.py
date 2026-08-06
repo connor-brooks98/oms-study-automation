@@ -1,6 +1,4 @@
-import os
 import sys
-import tempfile
 from io import BytesIO
 from pathlib import Path
 
@@ -8,6 +6,7 @@ from PIL import Image
 from pptx import Presentation
 from pptx.util import Inches
 
+from oms_hub.document_processing import presentation_render
 from oms_hub.document_processing.anydoc_adapter import AnydocProcessor
 from oms_hub.document_processing.domain import (
     DocumentLocator,
@@ -248,22 +247,32 @@ def test_renderer_preserves_unavailable_warning_when_temp_pdf_is_locked(
     assert rendered.warnings == ("slide renderer unavailable: Office is unavailable",)
 
 
-def test_renderer_preserves_warning_when_temporary_directory_cleanup_hits_locked_pdf(
+def test_renderer_configures_temporary_directory_cleanup_while_preserving_unavailable_warning(
     tmp_path: Path, monkeypatch
 ) -> None:
     source = build_pptx(
         tmp_path / "questions.pptx",
         slides=(SlideFixture("Question", "Which structure?"),),
     )
+    temporary_directories: list[tuple[str, bool]] = []
+    original_temporary_directory = presentation_render.TemporaryDirectory
 
-    def locked_rmtree(name: str, *, onexc) -> None:
-        onexc(os.unlink, name, PermissionError("locked PDF"))
+    def tracking_temporary_directory(
+        *, prefix: str, ignore_cleanup_errors: bool
+    ):
+        temporary_directories.append((prefix, ignore_cleanup_errors))
+        return original_temporary_directory(
+            prefix=prefix, ignore_cleanup_errors=ignore_cleanup_errors
+        )
 
-    monkeypatch.setattr(tempfile._shutil, "rmtree", locked_rmtree)
+    monkeypatch.setattr(
+        presentation_render, "TemporaryDirectory", tracking_temporary_directory
+    )
     rendered = PresentationRenderer(_UnavailableConverter()).render(
         snapshot_for(source), tmp_path / "assets"
     )
 
+    assert temporary_directories == [("oms-slide-render-", True)]
     assert rendered.assets == ()
     assert rendered.warnings == ("slide renderer unavailable: Office is unavailable",)
 
