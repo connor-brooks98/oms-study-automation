@@ -25,6 +25,7 @@ from oms_hub.study_generation.practice_domain import (
     AnswerProvenance,
     QuestionDraft,
     QuestionSourceRef,
+    QuizContentKind,
 )
 from oms_hub.study_generation.practice_extraction import ExtractionResult
 from oms_hub.study_generation.practice_review import PracticeReviewService
@@ -283,7 +284,7 @@ def test_direct_publication_uses_current_review_state_in_the_same_gate(tmp_path:
     publisher = GenerationRepository(service.repository.database, practice_review=service)
     with pytest.raises(ValueError, match="requires verification"):
         publisher.publish_reviewed_studio_quiz("run-1")
-    assert publisher.published_quizzes() == ()
+    assert publisher.published_quizzes(frozenset(QuizContentKind)) == ()
     assert service.repository.get_run("run-1").published_token is None
 
 
@@ -300,7 +301,7 @@ def test_rationale_edit_blocks_stale_publication_without_mutating_run(tmp_path: 
     with pytest.raises(ValueError, match="requires verification"):
         publisher.publish_reviewed_studio_quiz("run-1")
 
-    assert publisher.published_quizzes() == ()
+    assert publisher.published_quizzes(frozenset(QuizContentKind)) == ()
     run = service.repository.get_run("run-1")
     assert run.published_token is None
     assert run.state.value == "awaiting_review"

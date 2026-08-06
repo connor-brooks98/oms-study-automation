@@ -220,6 +220,9 @@ def practice_question_library(request: Request) -> HTMLResponse:
 @router.get("/quizzes/{token}", response_class=HTMLResponse)
 def quiz_page(request: Request, token: str) -> HTMLResponse:
     published = _published(request, token)
+    is_practice_questions = (
+        published.content_kind == QuizContentKind.PRACTICE_QUESTIONS
+    )
     lecture = (
         request.app.state.catalog_repository.get_lecture(published.lecture_id)
         if published.lecture_id is not None
@@ -247,6 +250,16 @@ def quiz_page(request: Request, token: str) -> HTMLResponse:
             },
             "content_url": f"/public/quizzes/{token}/content",
             "answer_url": f"/public/quizzes/{token}/answer",
+            "library_url": (
+                "/public/practice-questions"
+                if is_practice_questions
+                else "/public/quizzes"
+            ),
+            "library_label": (
+                "Back to practice questions"
+                if is_practice_questions
+                else "Back to quizzes"
+            ),
         },
         headers={"Cache-Control": "no-store"},
     )

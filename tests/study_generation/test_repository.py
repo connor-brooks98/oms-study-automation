@@ -189,6 +189,63 @@ def test_studio_publication_preserves_the_run_content_kind(tmp_path):
         repository.database.engine.dispose()
 
 
+def test_replacement_studio_publication_uses_the_successor_content_kind(tmp_path):
+    repository, _ = prepared_repository(tmp_path)
+    with repository.database.session() as session:
+        session.add_all(
+            [
+                StudioRunModel(
+                    id="exam-review-run",
+                    subject="Neuro",
+                    subject_key="neuro",
+                    exam_number=1,
+                    destination_subject="Neuro",
+                    destination_subject_key="neuro",
+                    destination_exam_number=1,
+                    label="Review Set",
+                    label_key="review set",
+                    prompt="",
+                    content_kind=QuizContentKind.EXAM_REVIEW.value,
+                    state="awaiting_images",
+                    stage="image_review",
+                ),
+                StudioRunModel(
+                    id="practice-successor-run",
+                    subject="Neuro",
+                    subject_key="neuro",
+                    exam_number=1,
+                    destination_subject="Neuro",
+                    destination_subject_key="neuro",
+                    destination_exam_number=1,
+                    label="Review Set",
+                    label_key="review set",
+                    prompt="",
+                    workflow_kind="direct_import",
+                    content_kind=QuizContentKind.PRACTICE_QUESTIONS.value,
+                    state="awaiting_review",
+                    stage="review",
+                    supersedes_run_id="exam-review-run",
+                ),
+            ]
+        )
+
+    try:
+        original = repository.publish_studio_quiz("exam-review-run", _quiz("Review Set"))
+        replacement = repository.publish_studio_quiz(
+            "practice-successor-run",
+            _quiz("Practice Questions"),
+        )
+
+        assert replacement.token == original.token
+        assert replacement.version == original.version + 1
+        assert replacement.content_kind == QuizContentKind.PRACTICE_QUESTIONS
+        assert repository.published_quizzes(
+            frozenset({QuizContentKind.PRACTICE_QUESTIONS})
+        ) == (replacement,)
+    finally:
+        repository.database.engine.dispose()
+
+
 def test_unknown_public_quiz_token_returns_none(tmp_path):
     repository, _ = prepared_repository(tmp_path)
 

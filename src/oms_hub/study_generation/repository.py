@@ -675,7 +675,7 @@ class GenerationRepository:
 
     def published_quizzes(
         self,
-        content_kinds: frozenset[QuizContentKind] | None = None,
+        content_kinds: frozenset[QuizContentKind],
     ) -> tuple[PublishedQuizRecord, ...]:
         with self.database.session() as session:
             statement = (
@@ -686,13 +686,12 @@ class GenerationRepository:
                     PublishedQuizModel.title,
                 )
                 .where(PublishedQuizModel.active.is_(True))
-            )
-            if content_kinds is not None:
-                statement = statement.where(
+                .where(
                     PublishedQuizModel.content_kind.in_(
                         [content_kind.value for content_kind in content_kinds]
                     )
                 )
+            )
             models = session.scalars(statement).all()
             return tuple(self._published_quiz(model) for model in models)
 

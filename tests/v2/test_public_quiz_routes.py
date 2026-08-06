@@ -123,6 +123,16 @@ def test_practice_questions_are_not_listed_as_lecture_quizzes(tmp_path):
     assert 'href="/public/quizzes"' in practice_page.text
 
 
+def test_practice_player_returns_to_the_practice_question_library(tmp_path):
+    app, _, practice = _published_mixed_app(tmp_path)
+
+    response = TestClient(app).get(f"/public/quizzes/{practice.token}")
+
+    assert response.status_code == 200
+    assert 'href="/public/practice-questions"' in response.text
+    assert 'aria-label="Back to practice questions"' in response.text
+
+
 def test_public_library_root_uses_same_access_boundary_as_quiz_pages(tmp_path):
     app, _ = _published_app(tmp_path, public=True)
 
