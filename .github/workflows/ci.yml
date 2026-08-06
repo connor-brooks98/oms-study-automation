@@ -46,3 +46,25 @@ jobs:
 
       - name: Run tests
         run: node --test "tests/js/*.test.js"
+
+  windows-document-processing:
+    name: Windows Python 3.12 document processors
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install and test document processors
+        shell: powershell
+        env:
+          PYTEST_ADDOPTS: -m "not windows_office"
+        run: |
+          py -3.12 -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -e ".[dev,document-processing,pdf-inspection]"
+          .\.venv\Scripts\python.exe -c "import anydoc, pdf_inspector; print('document processors ready')"
+          .\.venv\Scripts\python.exe -m pytest tests\document_processing tests\study_generation tests\v2 -q

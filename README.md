@@ -103,6 +103,9 @@ The branch setup, Google Cloud setup, Cloudflare quiz-sharing rule, acceptance
 test, and rollback procedure are in
 [docs/native-quizzes-nuc-rollout.md](docs/native-quizzes-nuc-rollout.md).
 
+For Quiz Builder installation, parser rollout, answer-verification recovery,
+and the required corpus gate, see [docs/operations/quiz-builder.md](docs/operations/quiz-builder.md).
+
 ### Integrated Anki curation
 
 The V4 workflow is one Study Hub package on the NUC. It reads local Anki through
