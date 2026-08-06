@@ -370,7 +370,11 @@ class PracticeReviewService:
         if not 0 <= correct_index < len(choices):
             raise ValueError("correct index is outside the available choices")
         rationale = _required_text(values.get("rationale", draft.rationale), "rationale")
-        answer_changed = choices != draft.choices or correct_index != draft.correct_index
+        answer_changed = (
+            choices != draft.choices
+            or correct_index != draft.correct_index
+            or rationale != draft.rationale
+        )
         requires_verification = (
             draft.verification_required
             or draft.answer_provenance is AnswerProvenance.GENERATED_BY_AI

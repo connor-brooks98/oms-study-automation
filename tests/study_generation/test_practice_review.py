@@ -160,6 +160,45 @@ def test_editing_answer_clears_verification_and_marks_manual(tmp_path: Path) -> 
     assert updated.verified_at is None
 
 
+def test_rationale_edit_reopens_generated_answer_verification(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.store("run-1", (_draft("q1", generated=True),))
+    service.verify_generated_answer("run-1", "q1")
+
+    updated = service.update_question("run-1", "q1", {"rationale": "Updated rationale."})
+
+    assert updated.answer_provenance is AnswerProvenance.MANUALLY_CORRECTED
+    assert updated.verification_required is True
+    assert updated.verified_at is None
+    assert service.blockers("run-1") == ("q1: AI-generated answer requires verification",)
+    service.verify_generated_answer("run-1", "q1")
+    assert service.blockers("run-1") == ()
+
+
+def test_non_answer_metadata_edit_preserves_existing_verification(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.store("run-1", (_draft("q1", generated=True),))
+    verified = service.verify_generated_answer("run-1", "q1")
+
+    updated = service.update_question("run-1", "q1", {"topic": "Neuro"})
+
+    assert updated.answer_provenance is AnswerProvenance.GENERATED_BY_AI
+    assert updated.verified_at == verified.verified_at
+
+
+def test_rationale_edit_marks_supplied_answer_manual_without_new_verification(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    service.store("run-1", (_draft("q1", generated=False),))
+
+    updated = service.update_question("run-1", "q1", {"rationale": "Clarified rationale."})
+
+    assert updated.answer_provenance is AnswerProvenance.MANUALLY_CORRECTED
+    assert updated.verification_required is False
+    assert updated.verified_at is None
+
+
 def test_verifying_one_answer_does_not_verify_another_and_later_edit_reopens_it(
     tmp_path: Path,
 ) -> None:
@@ -187,6 +226,25 @@ def test_direct_publication_uses_current_review_state_in_the_same_gate(tmp_path:
         publisher.publish_reviewed_studio_quiz("run-1")
     assert publisher.published_quizzes() == ()
     assert service.repository.get_run("run-1").published_token is None
+
+
+def test_rationale_edit_blocks_stale_publication_without_mutating_run(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.store("run-1", (_draft("q1", generated=True),))
+    service.verify_generated_answer("run-1", "q1")
+    assert service.blockers("run-1") == ()
+
+    # The stale client observed no blockers before a reviewer corrected only
+    # the rationale. Publication must re-read the artifact in its transaction.
+    service.update_question("run-1", "q1", {"rationale": "Corrected rationale."})
+    publisher = GenerationRepository(service.repository.database, practice_review=service)
+    with pytest.raises(ValueError, match="requires verification"):
+        publisher.publish_reviewed_studio_quiz("run-1")
+
+    assert publisher.published_quizzes() == ()
+    run = service.repository.get_run("run-1")
+    assert run.published_token is None
+    assert run.state.value == "awaiting_review"
 
 
 def test_blocker_free_direct_review_publishes_without_private_review_fields(tmp_path: Path) -> None:
