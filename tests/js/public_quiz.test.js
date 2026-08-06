@@ -351,6 +351,24 @@ test("initialize renders the could-not-load state when the response body is not 
   assert.equal(app.textContent, "This quiz could not be loaded.");
 });
 
+test("private previews can advance before an answer is submitted", async () => {
+  const { documentRef, app } = buildQuizApp();
+  app.dataset.allowUnansweredNavigation = "true";
+
+  await quiz.initialize(documentRef, async () => ({
+    ok: true,
+    async json() { return content; },
+  }));
+
+  const forward = app.querySelector('[data-focus-key="forward"]');
+  assert.ok(forward, "expected a forward button");
+  assert.equal(forward.disabled, false);
+
+  forward._listeners.click[0]();
+
+  assert.match(app.textContent, /Which finding is expected\?/);
+});
+
 test("restoreFocus falls back to the container when the equivalent control renders disabled", async () => {
   const { documentRef, app } = buildQuizApp();
   const content = {

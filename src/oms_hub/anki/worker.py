@@ -70,10 +70,17 @@ class AnkiCurationWorker:
             self._renew_lease(job.id, renewal_stop)
         )
         try:
-            await self.pipeline.run_stage(
+            result = await self.pipeline.run_stage(
                 job.id,
                 lease_owner=self.worker_id,
             )
+            if result is not None and result.state is CurationState.FAILED:
+                current = self.repository.require_job(job.id)
+                logger.error(
+                    "Anki curation job %s stopped: %s",
+                    job.id,
+                    current.error,
+                )
         except Exception as exc:  # noqa: BLE001 - durable worker boundary
             await self._handle_failure(job.id, job.state, exc)
         finally:

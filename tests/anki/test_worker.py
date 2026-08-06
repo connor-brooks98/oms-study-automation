@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
@@ -38,6 +39,7 @@ class ControlledRunner:
     def __init__(self) -> None:
         self.calls: list[CurationStage] = []
         self.error: Exception | None = None
+        self.blocking_error: str | None = None
         self.entered: asyncio.Event | None = None
         self.release: asyncio.Event | None = None
 
@@ -53,6 +55,7 @@ class ControlledRunner:
         return StageProduct(
             kind="test",
             payload={"stage": context.stage.value},
+            blocking_error=self.blocking_error,
         )
 
 
@@ -313,6 +316,33 @@ def test_changed_pinned_input_blocks_job_with_actionable_error(
         blocked = repository.require_job(job.id)
         assert blocked.state is CurationState.FAILED
         assert blocked.error == message
+
+    asyncio.run(scenario())
+
+
+def test_returned_terminal_failure_logs_persisted_error_once(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def scenario() -> None:
+        job = _create_job(repository)
+        runner = ControlledRunner()
+        runner.blocking_error = (
+            "Card-centric reconciliation failed: A6: selected card count is too low"
+        )
+        worker = _worker(repository, tmp_path, runner)
+
+        with caplog.at_level(logging.ERROR, logger="oms_hub.anki.worker"):
+            assert await worker.run_once()
+
+        current = repository.require_job(job.id)
+        assert current.state is CurationState.FAILED
+        assert current.error == runner.blocking_error
+        messages = [record.getMessage() for record in caplog.records]
+        assert messages == [
+            f"Anki curation job {job.id} stopped: {runner.blocking_error}"
+        ]
 
     asyncio.run(scenario())
 

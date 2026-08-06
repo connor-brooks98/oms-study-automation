@@ -121,6 +121,7 @@ from oms_hub.web.generation_routes import (
     router as generation_router,
 )
 from oms_hub.web.public_quiz_routes import router as public_quiz_router
+from oms_hub.web.published_quiz_routes import router as published_quiz_router
 from oms_hub.web.quarantine_routes import router as quarantine_router
 from oms_hub.web.routes import router
 from oms_hub.web.settings_routes import api_router as settings_api_router
@@ -766,6 +767,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(notebook_router)
     app.include_router(lecture_router)
     app.include_router(studio_router)
+    app.include_router(published_quiz_router)
     app.include_router(public_quiz_router)
 
     @app.get("/health")

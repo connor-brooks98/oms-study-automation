@@ -19,6 +19,7 @@ from oms_hub.anki.judgment import JudgmentCacheRecord
 from oms_hub.anki.normalize import NormalizedNote
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
 from oms_hub.anki.prompts import StaticPromptSynchronizer
+from oms_hub.anki.reconciliation import AssertionFinding, ReconciliationReport
 from oms_hub.anki.sources import SourcePassage
 from oms_hub.anki.stages import (
     CurationServicesRunner,
@@ -1360,3 +1361,37 @@ def test_reconciliation_stage_blocks_missing_fact_partition() -> None:
         "A4",
     }
     assert product.blocking_error == "Reconciliation failed: A1, A2, A4"
+
+
+def test_card_reconciliation_error_includes_every_failed_finding() -> None:
+    failed = ReconciliationReport(
+        passed=(),
+        failed=(
+            AssertionFinding(
+                assertion_id="A6",
+                message="YES plus generated cards must total at least 10",
+            ),
+            AssertionFinding(
+                assertion_id="selection_conservation",
+                message=(
+                    "Selected cards must be drawn from eligible existing or generated output"
+                ),
+            ),
+        ),
+        warned=(),
+        can_render_envelope=False,
+    )
+    passed = ReconciliationReport(
+        passed=("A1",),
+        failed=(),
+        warned=(),
+        can_render_envelope=True,
+    )
+
+    assert stages_module._card_reconciliation_error(failed) == (
+        "Card-centric reconciliation failed: "
+        "A6: YES plus generated cards must total at least 10 | "
+        "selection_conservation: Selected cards must be drawn from eligible existing "
+        "or generated output"
+    )
+    assert stages_module._card_reconciliation_error(passed) is None

@@ -39,7 +39,7 @@ h1 { margin: 0; color: var(--brand); font-size: clamp(1.8rem, 4vw, 2.6rem); }
 }
 [aria-expanded="true"] > .chevron { transform: rotate(90deg); }
 .lecture-list { display: grid; gap: .6rem; padding-bottom: .5rem; }
-.lecture-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .6rem; align-items: stretch; }
+.lecture-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: .6rem; align-items: stretch; }
 .quiz-link { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 1rem; padding: .8rem .9rem; border: 1px solid var(--border); border-radius: .55rem; color: var(--text); background: var(--surface); text-decoration: none; }
 .quiz-link:hover, .outline-button:hover { border-color: var(--brand-mid); }
 .quiz-link strong, .quiz-link small { display: block; }
@@ -47,11 +47,14 @@ h1 { margin: 0; color: var(--brand); font-size: clamp(1.8rem, 4vw, 2.6rem); }
 .progress-pill { flex: none; color: var(--brand-mid); font: 600 .69rem/1.3 "IBM Plex Mono", monospace; }
 .outline-button { white-space: nowrap; }
 .reset-quiz-button { white-space: nowrap; color: var(--muted); }
+.remove-quiz-button { border-color: #b42318; color: #b42318; }
+.remove-quiz-button:hover { background: #fff1f0; }
+.remove-quiz-button:disabled { cursor: wait; opacity: .65; }
 .empty-state { padding: 2rem; text-align: center; }
 .reset-message { min-height: 1.4rem; color: var(--muted); text-align: right; }
 @media (max-width: 640px) {
   .library-heading { align-items: stretch; flex-direction: column; }
   .lecture-row { grid-template-columns: 1fr; }
-  .outline-button, .reset-quiz-button { width: 100%; }
+  .outline-button, .reset-quiz-button, .remove-quiz-button { width: 100%; }
   .quiz-link { align-items: flex-start; flex-direction: column; }
 }

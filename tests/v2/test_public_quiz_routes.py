@@ -325,6 +325,68 @@ def test_public_answer_submission_still_requires_csrf(tmp_path):
     assert accepted.json()["correct"] is True
 
 
+def test_published_quiz_management_unpublishes_lecture_and_studio_tokens(tmp_path):
+    app, lecture, studio = _published_mixed_app(tmp_path)
+
+    with TestClient(app) as client:
+        client.get("/public/quizzes")
+        csrf = client.cookies.get("study_hub_csrf")
+        lecture_response = client.delete(
+            f"/api/published-quizzes/{lecture.token}",
+            headers={"X-CSRF-Token": csrf},
+        )
+        studio_response = client.delete(
+            f"/api/published-quizzes/{studio.token}",
+            headers={"X-CSRF-Token": csrf},
+        )
+        already_inactive = client.delete(
+            f"/api/published-quizzes/{studio.token}",
+            headers={"X-CSRF-Token": csrf},
+        )
+
+    assert lecture_response.status_code == 200
+    assert lecture_response.json() == {"token": lecture.token, "state": "unpublished"}
+    assert studio_response.status_code == 200
+    assert studio_response.json() == {"token": studio.token, "state": "unpublished"}
+    assert already_inactive.status_code == 404
+    assert app.state.generation_repository.published_quiz(lecture.token) is None
+    assert app.state.generation_repository.published_quiz(studio.token) is None
+
+
+def test_published_quiz_management_requires_csrf_and_active_token(tmp_path):
+    app, published = _published_app(tmp_path)
+
+    with TestClient(app) as client:
+        missing_csrf = client.delete(f"/api/published-quizzes/{published.token}")
+        client.get("/public/quizzes")
+        csrf = client.cookies.get("study_hub_csrf")
+        unknown = client.delete(
+            f"/api/published-quizzes/{'f' * 64}",
+            headers={"X-CSRF-Token": csrf},
+        )
+
+    assert missing_csrf.status_code == 403
+    assert unknown.status_code == 404
+
+
+def test_published_quiz_management_is_not_in_public_access_bypass(tmp_path):
+    app, published = _published_app(tmp_path, public=True)
+    headers = {"host": "study.example.com"}
+
+    with TestClient(app, base_url="https://study.example.com") as client:
+        page = client.get("/public/quizzes", headers=headers)
+        csrf = client.cookies.get("study_hub_csrf")
+        response = client.delete(
+            f"/api/published-quizzes/{published.token}",
+            headers={**headers, "X-CSRF-Token": csrf},
+        )
+
+    assert page.status_code == 200
+    assert csrf is not None
+    assert response.status_code == 503
+    assert app.state.generation_repository.published_quiz(published.token) is not None
+
+
 def test_public_library_and_content_include_studio_quizzes(tmp_path):
     settings = Settings(
         _env_file=None,
@@ -349,11 +411,25 @@ def test_public_library_and_content_include_studio_quizzes(tmp_path):
     page = client.get(f"/public/quizzes/{published.token}")
 
     assert library.status_code == 200
-    assert "Studio quiz" in library.text
     assert "Professor Review Quiz" in library.text
+    assert "Studio quiz" not in library.text
     assert content.status_code == 200
     assert content.json()["course"] == "Professor Review"
     assert content.json()["exam_number"] == 2
     assert "lecture_number" not in content.json()
     assert page.status_code == 200
     assert "Exam 2" in page.text
+
+
+def test_mixed_library_uses_studio_label_and_lecture_number(tmp_path):
+    app, lecture, practice = _published_mixed_app(tmp_path)
+
+    library = TestClient(app).get("/public/practice-questions")
+    quiz_library = TestClient(app).get("/public/quizzes")
+
+    assert practice.token in library.text
+    assert "Practice Questions" in library.text
+    assert "Studio quiz" not in library.text
+    assert lecture.token in quiz_library.text
+    assert "Lecture 1" in quiz_library.text
+    assert "General CNS Pathology" in quiz_library.text

@@ -434,6 +434,9 @@
   ) => {
     const app = documentRef.querySelector("[data-quiz-token]");
     if (!app) return;
+    const allowUnansweredNavigation = (
+      app.dataset.allowUnansweredNavigation === "true"
+    );
     try {
       const response = await fetchImpl(app.dataset.contentUrl, {
         cache: "no-store",
@@ -883,9 +886,9 @@
           "forward",
         );
         forward.type = "button";
-        forward.disabled = !questionProgress.submitted;
+        forward.disabled = !(allowUnansweredNavigation || questionProgress.submitted);
         forward.addEventListener("click", () => {
-          if (!questionProgress.submitted) return;
+          if (!(allowUnansweredNavigation || questionProgress.submitted)) return;
           state = navigateQuestion(state, state.currentIndex + 1, content.questions.length);
           persist();
           render();

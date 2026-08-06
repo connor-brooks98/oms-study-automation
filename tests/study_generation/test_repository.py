@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 from oms_hub.db import Database
 from oms_hub.models import (
+    PublishedQuizModel,
     StudioRunModel,
     StudyRevisionModel,
     UploadBatchModel,
@@ -251,6 +252,71 @@ def test_unknown_public_quiz_token_returns_none(tmp_path):
 
     try:
         assert repository.published_quiz("f" * 64) is None
+    finally:
+        repository.database.engine.dispose()
+
+
+def test_unpublish_lecture_preserves_publication_history_and_can_republish(tmp_path):
+    repository, lecture_id = prepared_repository(tmp_path)
+    try:
+        job = repository.queue(lecture_id, GenerationKind.QUIZ)
+        published = repository.publish_quiz(lecture_id, job.id, _quiz())
+
+        assert repository.unpublish_quiz(published.token) == published.token
+        assert repository.published_quiz(published.token) is None
+        with repository.database.session() as session:
+            inactive = session.get(PublishedQuizModel, published.token)
+            assert inactive is not None
+            assert inactive.active is False
+
+        later_job = repository.queue(lecture_id, GenerationKind.QUIZ)
+        republished = repository.publish_quiz(lecture_id, later_job.id, _quiz())
+
+        assert repository.published_quiz(republished.token) == republished
+        with repository.database.session() as session:
+            assert session.get(PublishedQuizModel, published.token) is not None
+    finally:
+        repository.database.engine.dispose()
+
+
+def test_unpublish_studio_preserves_run_and_clears_matching_token(tmp_path):
+    repository, _ = prepared_repository(tmp_path)
+    run_id = "unpublish-studio-run"
+    with repository.database.session() as session:
+        session.add(
+            StudioRunModel(
+                id=run_id,
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Review Set",
+                label_key="review set",
+                prompt="",
+                state="awaiting_images",
+                stage="image_review",
+            )
+        )
+    try:
+        published = repository.publish_studio_quiz(run_id, _quiz("Review Set"))
+        with repository.database.session() as session:
+            session.get(StudioRunModel, run_id).published_token = published.token
+
+        assert repository.unpublish_quiz(published.token) == published.token
+        assert repository.published_quiz(published.token) is None
+        with repository.database.session() as session:
+            inactive = session.get(PublishedQuizModel, published.token)
+            run = session.get(StudioRunModel, run_id)
+            assert inactive is not None
+            assert inactive.active is False
+            assert run is not None
+            assert run.published_token is None
+
+        republished = repository.publish_studio_quiz(run_id, _quiz("Review Set"))
+
+        assert repository.published_quiz(republished.token) == republished
     finally:
         repository.database.engine.dispose()
 

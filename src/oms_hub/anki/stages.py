@@ -88,6 +88,7 @@ from oms_hub.anki.reconciliation import (
     ConceptResolution,
     GeneratedResolution,
     ReconciliationInput,
+    ReconciliationReport,
     reconcile,
     reconcile_card_centric,
 )
@@ -1991,9 +1992,7 @@ class CurationServicesRunner:
                 "selection": selection,
                 "snapshot": snapshot.model_dump(mode="json"),
             },
-            blocking_error=None
-            if report.can_render_envelope
-            else "card-centric reconciliation failed",
+            blocking_error=_card_reconciliation_error(report),
         )
 
     async def _reconciliation(
@@ -3095,6 +3094,15 @@ def _reconciliation_metrics(
         "uncited_passage_ids": sorted(set(snapshot.source_passage_ids) - cited),
         "prompt_sync_stale": snapshot.prompt_sync_stale,
     }
+
+
+def _card_reconciliation_error(report: ReconciliationReport) -> str | None:
+    if report.can_render_envelope:
+        return None
+    findings = " | ".join(
+        f"{finding.assertion_id}: {finding.message}" for finding in report.failed
+    )
+    return "Card-centric reconciliation failed: " + findings
 
 
 def _proposal_payload(proposal: GapCardProposal) -> dict[str, Any]:

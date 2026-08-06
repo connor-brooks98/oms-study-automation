@@ -61,6 +61,7 @@ class FakeLibraryElement {
     this.dataset = {};
     this.textContent = "";
     this._listeners = {};
+    this.disabled = false;
   }
 
   addEventListener(type, handler) {
@@ -78,17 +79,45 @@ class FakeQuizRow {
   constructor(token, version) {
     this.dataset = { quizToken: token, quizVersion: String(version) };
     this.progress = new FakeLibraryElement();
+    this.removed = false;
   }
 
   querySelector(selector) {
     return selector === "[data-quiz-progress]" ? this.progress : null;
   }
+
+  remove() {
+    this.removed = true;
+  }
+}
+
+class FakeRemoveButton extends FakeLibraryElement {
+  constructor(token, version, row) {
+    super();
+    this.dataset = {
+      quizToken: token,
+      quizVersion: String(version),
+      removeUrl: `/api/published-quizzes/${token}`,
+    };
+    this.row = row;
+  }
+
+  closest(selector) {
+    return selector === ".lecture-row" ? this.row : null;
+  }
 }
 
 class FakeLibraryDocument {
-  constructor({ rows = [], resetButtons = [], resetMessage, resetProgressButton }) {
+  constructor({
+    rows = [],
+    resetButtons = [],
+    removeButtons = [],
+    resetMessage,
+    resetProgressButton,
+  }) {
     this.rows = rows;
     this.resetButtons = resetButtons;
+    this.removeButtons = removeButtons;
     this.resetMessage = resetMessage || new FakeLibraryElement();
     this.resetProgressButton = resetProgressButton || null;
   }
@@ -97,6 +126,7 @@ class FakeLibraryDocument {
     if (selector === ".disclosure") return [];
     if (selector === "[data-quiz-row]") return this.rows;
     if (selector === "[data-reset-quiz]") return this.resetButtons;
+    if (selector === "[data-remove-quiz]") return this.removeButtons;
     return [];
   }
 
@@ -208,4 +238,84 @@ test("global reset-all clears every quiz's progress once confirmed", () => {
   assert.equal(storage.getItem("oms-study-hub-quiz:tok1:v1"), null);
   assert.equal(storage.getItem("oms-study-hub-quiz:tok2:v1"), null);
   assert.equal(storage.getItem("unrelated-key"), "keep me");
+});
+
+test("remove leaves a released quiz alone when confirmation is cancelled", async () => {
+  const storage = makeMemoryStorage();
+  const row = new FakeQuizRow("tok1", 1);
+  const removeButton = new FakeRemoveButton("tok1", 1, row);
+  const documentRef = new FakeLibraryDocument({ rows: [row], removeButtons: [removeButton] });
+  const originalConfirm = global.confirm;
+  const originalFetch = global.fetch;
+  let called = false;
+  global.confirm = () => false;
+  global.fetch = async () => { called = true; };
+  try {
+    library.initialize(documentRef, storage);
+    await removeButton._listeners.click[0]();
+  } finally {
+    global.confirm = originalConfirm;
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(called, false);
+  assert.equal(row.removed, false);
+  assert.equal(removeButton.disabled, false);
+});
+
+test("remove clears local progress and removes a row only after successful unpublish", async () => {
+  const storage = makeMemoryStorage();
+  const row = new FakeQuizRow("tok1", 1);
+  const removeButton = new FakeRemoveButton("tok1", 1, row);
+  const documentRef = new FakeLibraryDocument({ rows: [row], removeButtons: [removeButton] });
+  documentRef.cookie = "study_hub_csrf=csrf-token";
+  storage.setItem(library.progressKey("tok1", 1), "{}");
+  const originalConfirm = global.confirm;
+  const originalFetch = global.fetch;
+  let request;
+  global.confirm = () => true;
+  global.fetch = async (url, options) => {
+    request = { url, options };
+    return { ok: true, async json() { return { state: "unpublished" }; } };
+  };
+  try {
+    library.initialize(documentRef, storage);
+    await removeButton._listeners.click[0]();
+  } finally {
+    global.confirm = originalConfirm;
+    global.fetch = originalFetch;
+  }
+
+  assert.deepEqual(request, {
+    url: "/api/published-quizzes/tok1",
+    options: { method: "DELETE", headers: { "X-CSRF-Token": "csrf-token" } },
+  });
+  assert.equal(storage.getItem(library.progressKey("tok1", 1)), null);
+  assert.equal(row.removed, true);
+});
+
+test("failed remove keeps the row and reports the server detail", async () => {
+  const storage = makeMemoryStorage();
+  const row = new FakeQuizRow("tok1", 1);
+  const removeButton = new FakeRemoveButton("tok1", 1, row);
+  const documentRef = new FakeLibraryDocument({ rows: [row], removeButtons: [removeButton] });
+  documentRef.cookie = "study_hub_csrf=csrf-token";
+  const originalConfirm = global.confirm;
+  const originalFetch = global.fetch;
+  global.confirm = () => true;
+  global.fetch = async () => ({
+    ok: false,
+    async json() { return { detail: "Cloudflare Access identity is required" }; },
+  });
+  try {
+    library.initialize(documentRef, storage);
+    await removeButton._listeners.click[0]();
+  } finally {
+    global.confirm = originalConfirm;
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(row.removed, false);
+  assert.equal(removeButton.disabled, false);
+  assert.equal(documentRef.resetMessage.textContent, "Cloudflare Access identity is required");
 });

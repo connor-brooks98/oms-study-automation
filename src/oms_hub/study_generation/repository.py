@@ -1074,6 +1074,10 @@ class GenerationRepository:
             )
             return None if model is None else self._published_quiz_media(model)
 
+    def unpublish_quiz(self, token: str) -> str:
+        with self.database.session() as session:
+            return self._unpublish_quiz_in_session(session, token)
+
     def unpublish_studio_quiz(self, run_id: str) -> str:
         with self.database.session() as session:
             model = session.scalar(
@@ -1084,11 +1088,19 @@ class GenerationRepository:
             )
             if model is None:
                 raise KeyError(run_id)
-            model.active = False
-            run = session.get(StudioRunModel, run_id)
-            if run is not None:
+            return self._unpublish_quiz_in_session(session, model.token)
+
+    @staticmethod
+    def _unpublish_quiz_in_session(session: Session, token: str) -> str:
+        model = session.get(PublishedQuizModel, token)
+        if model is None or not model.active:
+            raise KeyError(token)
+        model.active = False
+        if model.studio_run_id is not None:
+            run = session.get(StudioRunModel, model.studio_run_id)
+            if run is not None and run.published_token == token:
                 run.published_token = None
-            return model.token
+        return model.token
 
     def course_document(self, subject_key: str) -> CourseQuizDocumentModel | None:
         with self.database.session() as session:

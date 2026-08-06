@@ -45,6 +45,13 @@
     storage.removeItem(progressKey(token, version));
   };
 
+  const cookieValue = (cookie, name) => {
+    const prefix = `${name}=`;
+    const value = String(cookie || "").split(";").map((part) => part.trim())
+      .find((part) => part.startsWith(prefix));
+    return value ? decodeURIComponent(value.slice(prefix.length)) : null;
+  };
+
   const setExpanded = (button, expanded) => {
     button.setAttribute("aria-expanded", String(expanded));
     const panel = button.ownerDocument.getElementById(
@@ -91,6 +98,48 @@
         }
       });
     });
+    documentRef.querySelectorAll("[data-remove-quiz]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        if (
+          typeof root.confirm === "function"
+          && !root.confirm(
+            "Remove this released quiz? Its source and run history will be preserved.",
+          )
+        ) {
+          return;
+        }
+        button.disabled = true;
+        try {
+          const response = await root.fetch(button.dataset.removeUrl, {
+            method: "DELETE",
+            headers: {
+              "X-CSRF-Token": cookieValue(documentRef.cookie, "study_hub_csrf") || "",
+            },
+          });
+          let payload = {};
+          try {
+            payload = await response.json();
+          } catch (_error) {
+            // The status fallback below is clearer than a JSON parsing error.
+          }
+          if (!response.ok) {
+            throw new Error(payload.detail || "Quiz could not be unpublished.");
+          }
+          resetProgress(
+            storage,
+            button.dataset.quizToken,
+            button.dataset.quizVersion,
+          );
+          button.closest(".lecture-row")?.remove();
+          documentRef.querySelector("[data-reset-message]").textContent =
+            "The released quiz was removed.";
+        } catch (error) {
+          button.disabled = false;
+          documentRef.querySelector("[data-reset-message]").textContent =
+            error instanceof Error ? error.message : "Quiz could not be unpublished.";
+        }
+      });
+    });
     refresh();
     const reset = documentRef.querySelector("[data-reset-progress]");
     if (reset) {
@@ -125,6 +174,7 @@
     progressLabel,
     readProgress,
     resetProgress,
+    cookieValue,
     setExpanded,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

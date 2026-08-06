@@ -153,11 +153,12 @@ def _quiz_library(
                     lecture.lecture_number if lecture is not None else None
                 ),
                 "is_studio": lecture is None,
-                "topic": (
-                    lecture.topic
+                "primary_label": (
+                    f"Lecture {lecture.lecture_number}"
                     if lecture is not None
                     else (published.label or published.title)
                 ),
+                "secondary_label": lecture.topic if lecture is not None else None,
                 "url": f"/public/quizzes/{published.token}",
                 "outline_url": (
                     f"/public/quizzes/{published.token}/outline"

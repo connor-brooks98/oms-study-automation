@@ -46,8 +46,8 @@
               <article class="lecture-row">
                 <a class="quiz-link" href="{{ row.url }}" data-quiz-row data-quiz-token="{{ row.token }}" data-quiz-version="{{ row.version }}">
                   <span>
-                    <strong>{% if row.is_studio %}Studio quiz{% else %}Lecture {{ row.lecture_number }}{% endif %}</strong>
-                    <small>{{ row.topic }}</small>
+                    <strong>{{ row.primary_label }}</strong>
+                    {% if row.secondary_label %}<small>{{ row.secondary_label }}</small>{% endif %}
                   </span>
                   <span class="progress-pill" data-quiz-progress>Not started</span>
                 </a>
@@ -61,6 +61,14 @@
                   data-quiz-token="{{ row.token }}"
                   data-quiz-version="{{ row.version }}"
                 >Reset</button>
+                <button
+                  class="button remove-quiz-button"
+                  type="button"
+                  data-remove-quiz
+                  data-quiz-token="{{ row.token }}"
+                  data-quiz-version="{{ row.version }}"
+                  data-remove-url="/api/published-quizzes/{{ row.token }}"
+                >Remove</button>
               </article>
               {% endfor %}
             </div>
