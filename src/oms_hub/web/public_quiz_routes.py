@@ -12,10 +12,11 @@ from oms_hub.study_generation.native_quiz import (
     grade_answer,
     public_quiz_content,
 )
+from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.web.artifact_routes import outline_pdf_response
 
-router = APIRouter(prefix="/public/quizzes")
+router = APIRouter(prefix="/public")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 _STATIC_ROOT = Path(__file__).parent / "static"
 _PublicId = Annotated[
@@ -40,7 +41,7 @@ def _lecture_number(row: dict[str, object]) -> int:
     return cast(int, row["lecture_number"] or 0)
 
 
-@router.get("/assets/player.js", include_in_schema=False)
+@router.get("/quizzes/assets/player.js", include_in_schema=False)
 def player_javascript() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "public_quiz.js",
@@ -49,7 +50,7 @@ def player_javascript() -> FileResponse:
     )
 
 
-@router.get("/assets/player.css", include_in_schema=False)
+@router.get("/quizzes/assets/player.css", include_in_schema=False)
 def player_styles() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "public_quiz.css",
@@ -58,7 +59,7 @@ def player_styles() -> FileResponse:
     )
 
 
-@router.get("/assets/library.js", include_in_schema=False)
+@router.get("/quizzes/assets/library.js", include_in_schema=False)
 def library_javascript() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "public_quiz_library.js",
@@ -67,7 +68,7 @@ def library_javascript() -> FileResponse:
     )
 
 
-@router.get("/assets/library.css", include_in_schema=False)
+@router.get("/quizzes/assets/library.css", include_in_schema=False)
 def library_styles() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "public_quiz_library.css",
@@ -76,7 +77,7 @@ def library_styles() -> FileResponse:
     )
 
 
-@router.get("/assets/tokens.css", include_in_schema=False)
+@router.get("/quizzes/assets/tokens.css", include_in_schema=False)
 def design_tokens() -> FileResponse:
     return FileResponse(
         _STATIC_ROOT / "tokens.css",
@@ -99,11 +100,19 @@ def _published(request: Request, token: str) -> PublishedQuizRecord:
     return published
 
 
-@router.get("", response_class=HTMLResponse)
-def quiz_library(request: Request) -> HTMLResponse:
+def _quiz_library(
+    request: Request,
+    content_kinds: frozenset[QuizContentKind],
+    *,
+    title: str,
+    summary: str,
+    empty_title: str,
+    empty_summary: str,
+    library_path: str,
+) -> HTMLResponse:
     courses: dict[str, dict[int, list[dict[str, object]]]] = {}
     repository = _repository(request)
-    for published in repository.published_quizzes():
+    for published in repository.published_quizzes(content_kinds):
         lecture = (
             request.app.state.catalog_repository.get_lecture(published.lecture_id)
             if published.lecture_id is not None
@@ -170,12 +179,45 @@ def quiz_library(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request=request,
         name="public_quiz_library.html",
-        context={"courses": grouped},
+        context={
+            "courses": grouped,
+            "library_title": title,
+            "library_summary": summary,
+            "empty_title": empty_title,
+            "empty_summary": empty_summary,
+            "library_path": library_path,
+        },
         headers={"Cache-Control": "no-store"},
     )
 
 
-@router.get("/{token}", response_class=HTMLResponse)
+@router.get("/quizzes", response_class=HTMLResponse)
+def quiz_library(request: Request) -> HTMLResponse:
+    return _quiz_library(
+        request,
+        frozenset({QuizContentKind.LECTURE_QUIZ, QuizContentKind.EXAM_REVIEW}),
+        title="Course quiz library",
+        summary="Choose a course, exam, and quiz.",
+        empty_title="No quizzes are published yet",
+        empty_summary="Published lecture and exam-review quizzes will appear here automatically.",
+        library_path="/public/quizzes",
+    )
+
+
+@router.get("/practice-questions", response_class=HTMLResponse)
+def practice_question_library(request: Request) -> HTMLResponse:
+    return _quiz_library(
+        request,
+        frozenset({QuizContentKind.PRACTICE_QUESTIONS}),
+        title="Practice questions library",
+        summary="Choose a course and exam to review imported practice questions.",
+        empty_title="No practice questions are published yet",
+        empty_summary="Published practice questions will appear here automatically.",
+        library_path="/public/practice-questions",
+    )
+
+
+@router.get("/quizzes/{token}", response_class=HTMLResponse)
 def quiz_page(request: Request, token: str) -> HTMLResponse:
     published = _published(request, token)
     lecture = (
@@ -210,7 +252,7 @@ def quiz_page(request: Request, token: str) -> HTMLResponse:
     )
 
 
-@router.get("/{token}/content")
+@router.get("/quizzes/{token}/content")
 def quiz_content(request: Request, token: str) -> JSONResponse:
     published = _published(request, token)
     lecture = (
@@ -255,7 +297,7 @@ def quiz_content(request: Request, token: str) -> JSONResponse:
     )
 
 
-@router.get("/{token}/media/{image_key}")
+@router.get("/quizzes/{token}/media/{image_key}")
 def public_quiz_media(
     request: Request,
     token: str,
@@ -278,7 +320,7 @@ def public_quiz_media(
     )
 
 
-@router.get("/{token}/outline")
+@router.get("/quizzes/{token}/outline")
 def public_outline(request: Request, token: str) -> FileResponse:
     published = _published(request, token)
     if published.lecture_id is None:
@@ -289,7 +331,7 @@ def public_outline(request: Request, token: str) -> FileResponse:
     return outline_pdf_response(request, record)
 
 
-@router.post("/{token}/answer")
+@router.post("/quizzes/{token}/answer")
 def answer_question(
     request: Request,
     token: str,

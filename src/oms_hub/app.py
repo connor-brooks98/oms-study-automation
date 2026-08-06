@@ -242,9 +242,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         is_public = bool(resolved.public_hostname and host == resolved.public_hostname)
         is_agent_host = bool(resolved.anki_agent_hostname and host == resolved.anki_agent_hostname)
         is_agent_path = request.url.path.startswith("/agent/v1/")
-        is_public_quiz = request.url.path == "/public/quizzes" or request.url.path.startswith(
-            "/public/quizzes/"
-        )
+        is_public_quiz = request.url.path in {
+            "/public/quizzes",
+            "/public/practice-questions",
+        } or request.url.path.startswith("/public/quizzes/")
 
         def harden(response: Response) -> Response:
             response.headers["Content-Security-Policy"] = (

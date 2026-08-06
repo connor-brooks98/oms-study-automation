@@ -50,7 +50,7 @@ from oms_hub.study_generation.native_quiz import (
     parse_native_quiz,
     serialize_native_quiz,
 )
-from oms_hub.study_generation.practice_domain import QuizWorkflowKind
+from oms_hub.study_generation.practice_domain import QuizContentKind, QuizWorkflowKind
 from oms_hub.study_generation.studio_domain import StudioRunStage, StudioRunState
 
 _ACTIVE_STATES = {
@@ -649,6 +649,7 @@ class GenerationRepository:
                     label_key=_normalize(quiz.title),
                     title=quiz.title,
                     payload_json=serialize_native_quiz(quiz),
+                    content_kind=QuizContentKind.LECTURE_QUIZ.value,
                     version=1,
                     active=True,
                 )
@@ -663,6 +664,7 @@ class GenerationRepository:
                 model.title = quiz.title
                 model.payload_json = serialize_native_quiz(quiz)
                 model.version += 1
+            model.content_kind = QuizContentKind.LECTURE_QUIZ.value
             session.flush()
             return self._published_quiz(model)
 
@@ -671,9 +673,12 @@ class GenerationRepository:
             model = session.get(PublishedQuizModel, token)
             return self._published_quiz(model) if model is not None and model.active else None
 
-    def published_quizzes(self) -> tuple[PublishedQuizRecord, ...]:
+    def published_quizzes(
+        self,
+        content_kinds: frozenset[QuizContentKind] | None = None,
+    ) -> tuple[PublishedQuizRecord, ...]:
         with self.database.session() as session:
-            models = session.scalars(
+            statement = (
                 select(PublishedQuizModel)
                 .order_by(
                     PublishedQuizModel.destination_subject_key,
@@ -681,7 +686,14 @@ class GenerationRepository:
                     PublishedQuizModel.title,
                 )
                 .where(PublishedQuizModel.active.is_(True))
-            ).all()
+            )
+            if content_kinds is not None:
+                statement = statement.where(
+                    PublishedQuizModel.content_kind.in_(
+                        [content_kind.value for content_kind in content_kinds]
+                    )
+                )
+            models = session.scalars(statement).all()
             return tuple(self._published_quiz(model) for model in models)
 
     def publish_studio_quiz(
@@ -727,6 +739,7 @@ class GenerationRepository:
                     label_key=run.label_key,
                     title=quiz.title,
                     payload_json=serialize_native_quiz(quiz),
+                    content_kind=run.content_kind,
                     version=1,
                     active=True,
                 )
@@ -743,6 +756,7 @@ class GenerationRepository:
                 model.label_key = run.label_key
                 model.title = quiz.title
                 model.payload_json = serialize_native_quiz(quiz)
+                model.content_kind = run.content_kind
                 model.version += 1
                 model.active = True
             session.flush()
@@ -863,6 +877,7 @@ class GenerationRepository:
                     label_key=run.label_key,
                     title=quiz.title,
                     payload_json=serialize_native_quiz(quiz),
+                    content_kind=run.content_kind,
                     version=1,
                     active=True,
                 )
@@ -880,6 +895,7 @@ class GenerationRepository:
                 model.label_key = run.label_key
                 model.title = quiz.title
                 model.payload_json = serialize_native_quiz(quiz)
+                model.content_kind = run.content_kind
                 model.version += 1
                 model.active = True
 
@@ -974,6 +990,7 @@ class GenerationRepository:
                 label_key=run.label_key,
                 title=quiz.title,
                 payload_json=serialize_native_quiz(quiz),
+                content_kind=run.content_kind,
                 version=1,
                 active=True,
             )
@@ -990,6 +1007,7 @@ class GenerationRepository:
             model.label_key = run.label_key
             model.title = quiz.title
             model.payload_json = serialize_native_quiz(quiz)
+            model.content_kind = run.content_kind
             model.version += 1
             model.active = True
         session.flush()
@@ -1232,6 +1250,7 @@ class GenerationRepository:
             quiz,
             model.version,
             model.active,
+            model.content_kind,
         )
 
     @staticmethod

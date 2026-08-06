@@ -5,17 +5,18 @@ from fastapi.testclient import TestClient
 
 from oms_hub.app import create_app
 from oms_hub.config import Settings
+from oms_hub.models import StudioRunModel
 from oms_hub.repositories import LectureInput
 from oms_hub.study_generation.domain import GenerationKind
 from oms_hub.study_generation.native_quiz import parse_native_quiz
 from oms_hub.study_generation.outline import OutlinePdfRenderer
 
 
-def _quiz():
+def _quiz(title: str = "Lecture 1 Practice Quiz"):
     return parse_native_quiz(
         json.dumps(
             {
-                "title": "Lecture 1 Practice Quiz",
+                "title": title,
                 "questions": [
                     {
                         "stem": "Which mechanism causes an aplastic crisis?",
@@ -60,6 +61,34 @@ def _published_app(tmp_path, *, public=False):
     return app, published
 
 
+def _published_mixed_app(tmp_path, *, public=False):
+    app, lecture_quiz = _published_app(tmp_path, public=public)
+    with app.state.database.session() as session:
+        session.add(
+            StudioRunModel(
+                id="practice-library-run",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Practice Questions",
+                label_key="practice questions",
+                prompt="",
+                workflow_kind="direct_import",
+                content_kind="practice_questions",
+                state="awaiting_review",
+                stage="review",
+            )
+        )
+    practice = app.state.generation_repository.publish_studio_quiz(
+        "practice-library-run",
+        _quiz("Practice Questions"),
+    )
+    return app, lecture_quiz, practice
+
+
 def test_public_library_groups_only_published_quizzes(tmp_path):
     app, published = _published_app(tmp_path)
     app.state.catalog_repository.upsert_lecture(
@@ -77,6 +106,23 @@ def test_public_library_groups_only_published_quizzes(tmp_path):
     assert "Unpublished lecture" not in response.text
 
 
+def test_practice_questions_are_not_listed_as_lecture_quizzes(tmp_path):
+    app, lecture_quiz, practice = _published_mixed_app(tmp_path)
+    client = TestClient(app)
+
+    quizzes = client.get("/public/quizzes")
+    practice_page = client.get("/public/practice-questions")
+
+    assert quizzes.status_code == 200
+    assert lecture_quiz.token in quizzes.text
+    assert practice.token not in quizzes.text
+    assert practice_page.status_code == 200
+    assert practice.token in practice_page.text
+    assert lecture_quiz.token not in practice_page.text
+    assert 'href="/public/practice-questions"' in quizzes.text
+    assert 'href="/public/quizzes"' in practice_page.text
+
+
 def test_public_library_root_uses_same_access_boundary_as_quiz_pages(tmp_path):
     app, _ = _published_app(tmp_path, public=True)
 
@@ -86,6 +132,19 @@ def test_public_library_root_uses_same_access_boundary_as_quiz_pages(tmp_path):
     ).get("/public/quizzes", headers={"host": "study.example.com"})
 
     assert response.status_code == 200
+
+
+def test_practice_library_is_public_while_private_routes_remain_blocked(tmp_path):
+    app, _, practice = _published_mixed_app(tmp_path, public=True)
+    headers = {"host": "study.example.com"}
+
+    with TestClient(app, base_url="https://study.example.com") as client:
+        library = client.get("/public/practice-questions", headers=headers)
+        private_dashboard = client.get("/", headers=headers)
+
+    assert library.status_code == 200
+    assert practice.token in library.text
+    assert private_dashboard.status_code == 503
 
 
 def test_public_outline_uses_quiz_token_and_returns_current_pdf(tmp_path):

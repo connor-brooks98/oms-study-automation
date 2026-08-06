@@ -2,7 +2,12 @@ import json
 from datetime import UTC, datetime
 
 from oms_hub.db import Database
-from oms_hub.models import StudyRevisionModel, UploadBatchModel, UploadItemModel
+from oms_hub.models import (
+    StudioRunModel,
+    StudyRevisionModel,
+    UploadBatchModel,
+    UploadItemModel,
+)
 from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.study_generation.domain import (
     GenerationKind,
@@ -11,6 +16,7 @@ from oms_hub.study_generation.domain import (
     SourceKind,
 )
 from oms_hub.study_generation.native_quiz import parse_native_quiz
+from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.study_generation.repository import GenerationRepository
 
 
@@ -146,6 +152,39 @@ def test_publish_keeps_token_and_increments_version_for_new_job(tmp_path):
         assert regenerated.version == 2
         assert regenerated.title == "Seizures Review"
         assert repository.published_quiz(first.token) == regenerated
+    finally:
+        repository.database.engine.dispose()
+
+
+def test_studio_publication_preserves_the_run_content_kind(tmp_path):
+    repository, _ = prepared_repository(tmp_path)
+    with repository.database.session() as session:
+        session.add(
+            StudioRunModel(
+                id="practice-publication-run",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Practice Questions",
+                label_key="practice questions",
+                prompt="",
+                workflow_kind="direct_import",
+                content_kind=QuizContentKind.PRACTICE_QUESTIONS.value,
+                state="awaiting_review",
+                stage="review",
+            )
+        )
+
+    try:
+        published = repository.publish_studio_quiz(
+            "practice-publication-run",
+            _quiz("Practice Questions"),
+        )
+
+        assert published.content_kind == QuizContentKind.PRACTICE_QUESTIONS
     finally:
         repository.database.engine.dispose()
 

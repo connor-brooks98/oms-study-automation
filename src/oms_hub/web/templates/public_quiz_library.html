@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#273958">
-  <title>Course Quiz Library · Study Hub</title>
+  <title>{{ library_title }} · Study Hub</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -15,10 +15,14 @@
     <header class="library-heading">
       <div>
         <p class="eyebrow">Study Hub</p>
-        <h1>Course quiz library</h1>
-        <p>Choose a course, exam, and lecture quiz.</p>
+        <h1>{{ library_title }}</h1>
+        <p>{{ library_summary }}</p>
       </div>
-      <button class="button secondary" type="button" data-reset-progress>Reset quiz progress</button>
+      <div>
+        <a class="button secondary" href="/public/quizzes" {% if library_path == '/public/quizzes' %}aria-current="page"{% endif %}>Quizzes</a>
+        <a class="button secondary" href="/public/practice-questions" {% if library_path == '/public/practice-questions' %}aria-current="page"{% endif %}>Practice Questions</a>
+        <button class="button secondary" type="button" data-reset-progress>Reset quiz progress</button>
+      </div>
     </header>
 
     {% if courses %}
@@ -68,8 +72,8 @@
     </div>
     {% else %}
     <section class="empty-state">
-      <h2>No quizzes are published yet</h2>
-      <p>Published lecture quizzes will appear here automatically.</p>
+      <h2>{{ empty_title }}</h2>
+      <p>{{ empty_summary }}</p>
     </section>
     {% endif %}
     <p class="reset-message" data-reset-message aria-live="polite"></p>
