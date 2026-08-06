@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 from urllib.parse import urljoin, urlparse
 
 from selectolax.parser import HTMLParser, Node
@@ -201,10 +202,16 @@ def _unique_nodes(nodes: list[Node]) -> list[Node]:
     seen: set[int] = set()
     unique: list[Node] = []
     for node in nodes:
-        if node.mem_id not in seen:
-            seen.add(node.mem_id)
+        node_id = _node_mem_id(node)
+        if node_id not in seen:
+            seen.add(node_id)
             unique.append(node)
     return unique
+
+
+def _node_mem_id(node: Node) -> int:
+    """Return selectolax's integer node identity despite its incorrect stub."""
+    return cast(int, node.mem_id)
 
 
 def _node_depth(node: Node) -> int:
@@ -246,7 +253,7 @@ _LOOSE_TEXT_BOUNDARY_TAGS = {
 
 def _starts_loose_text_run(node: Node, content_root: Node) -> bool:
     parent = node.parent
-    if parent is None or parent.mem_id != content_root.mem_id:
+    if parent is None or _node_mem_id(parent) != _node_mem_id(content_root):
         return False
     tag = (node.tag or "").casefold()
     if tag == "br" or tag in _LOOSE_TEXT_BOUNDARY_TAGS or not _visible_text(node):
@@ -288,7 +295,7 @@ def _loose_text_run(start: Node) -> str:
     return " ".join(parts)
 
 
-def _nodes_in_document_order(root: Node, *, include_root: bool = True):
+def _nodes_in_document_order(root: Node, *, include_root: bool = True) -> Iterator[Node]:
     """Yield only ``root`` and its descendants.
 
     ``selectolax.Node.traverse`` continues with a node's following siblings,
