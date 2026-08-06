@@ -426,7 +426,11 @@ class CurationPipeline:
         )
         try:
             self.input_validator.validate(job_id)
-            prior_artifacts = tuple(self.repository.list_stage_artifacts(job_id))
+            prior_artifacts = tuple(
+                artifact
+                for artifact in self.repository.list_stage_artifacts(job_id)
+                if artifact.stage is not definition.stage
+            )
             prior_payloads = {
                 artifact.stage: self.artifacts.read(artifact, job=job)
                 for artifact in prior_artifacts

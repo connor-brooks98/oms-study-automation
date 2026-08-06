@@ -318,6 +318,21 @@ def test_blocking_stage_commits_report_and_fails_job(
         assert retried.state is CurationState.RECONCILING
         assert retried.error is None
 
+        rerun = await pipeline.run_stage(job.id)
+
+        assert rerun is not None
+        assert rerun.stage is CurationStage.RECONCILIATION
+        assert rerun.state is CurationState.FAILED
+        reconciliation_artifacts = [
+            item
+            for item in repository.list_stage_artifacts(job.id)
+            if item.stage is CurationStage.RECONCILIATION
+        ]
+        assert len(reconciliation_artifacts) == 1
+        retried_stage = repository.get_stage(job.id, CurationStage.RECONCILIATION)
+        assert retried_stage is not None
+        assert retried_stage.attempt_count == 2
+
     asyncio.run(scenario())
 
 
