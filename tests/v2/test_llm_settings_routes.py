@@ -95,6 +95,28 @@ def test_credentials_are_saved_independently_and_blank_retains_existing(tmp_path
     assert openai.headers["cache-control"] == "no-store"
 
 
+def test_voyage_credential_is_saved_separately_and_blank_retains_existing(tmp_path):
+    client, app, secrets = prepared_client(tmp_path)
+    client.get("/settings")
+    csrf = client.cookies.get(app.state.csrf.cookie_name)
+
+    saved = client.post(
+        "/settings/anki/voyage/credential",
+        json={"credential": " voyage-secret "},
+        headers={app.state.csrf.header_name: csrf},
+    )
+    retained = client.post(
+        "/settings/anki/voyage/credential",
+        json={"credential": "   "},
+        headers={app.state.csrf.header_name: csrf},
+    )
+
+    assert saved.json() == {"configured": True}
+    assert retained.json() == {"configured": True}
+    assert saved.headers["cache-control"] == "no-store"
+    assert secrets.values == {"voyage-api-key": "voyage-secret"}
+
+
 def test_model_can_change_without_restart(tmp_path):
     client, app, secrets = prepared_client(tmp_path)
     secrets.set("gemini-api-key", "secret")

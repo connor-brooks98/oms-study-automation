@@ -29,6 +29,43 @@ def test_url_snapshot_rechecks_redirect_destination(tmp_path: Path, monkeypatch)
         service.fetch("source-1", "Questions", "https://professor.example/questions")
 
 
+def test_url_snapshot_sanitizes_a_malformed_port(tmp_path: Path) -> None:
+    with pytest.raises(ValueError) as error:
+        URLSnapshotService(tmp_path, max_bytes=1024).fetch(
+            "source-1",
+            "Questions",
+            "https://professor.example:sentinel-secret/questions",
+        )
+
+    assert str(error.value) == "URL must be HTTP or HTTPS"
+    assert "sentinel-secret" not in str(error.value)
+    assert error.value.__cause__ is None
+
+
+def test_url_snapshot_sanitizes_a_malformed_redirect_target(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+    service = URLSnapshotService(
+        tmp_path,
+        max_bytes=1024,
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                302,
+                headers={"location": "https://second.example:sentinel-secret/final"},
+            )
+        ),
+    )
+
+    with pytest.raises(ValueError) as error:
+        service.fetch("source-1", "Questions", "https://professor.example/questions")
+
+    assert str(error.value) in {
+        "URL redirect target is invalid",
+        "URL could not be downloaded",
+    }
+    assert "sentinel-secret" not in str(error.value)
+    assert error.value.__cause__ is None
+
+
 def test_url_snapshot_writes_immutable_typed_snapshot_and_final_url(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -112,6 +149,54 @@ def test_snapshot_binds_connection_to_the_single_validated_address_and_keeps_hos
     assert str(requests[0].url.host) == "8.8.8.8"
     assert requests[0].headers["host"] == "professor.example"
     assert requests[0].extensions["sni_hostname"] == "professor.example"
+
+
+def test_snapshot_fails_over_only_after_a_transport_failure(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.1.1.1", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0)),
+        ],
+    )
+    attempted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempted.append(str(request.url.host))
+        if request.url.host == "1.1.1.1":
+            raise httpx.ConnectError("connection refused", request=request)
+        return httpx.Response(200, content=b"Question", headers={"content-type": "text/plain"})
+
+    snapshot = URLSnapshotService(
+        tmp_path, max_bytes=1024, transport=httpx.MockTransport(handler)
+    ).fetch("source-1", "Questions", "https://professor.example/questions")
+
+    assert snapshot.path.read_bytes() == b"Question"
+    assert attempted == ["1.1.1.1", "8.8.8.8"]
+
+
+def test_snapshot_never_fails_over_after_an_http_response(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.1.1.1", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0)),
+        ],
+    )
+    attempted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempted.append(str(request.url.host))
+        return httpx.Response(503, content=b"unavailable")
+
+    with pytest.raises(ValueError, match="could not be downloaded"):
+        URLSnapshotService(
+            tmp_path, max_bytes=1024, transport=httpx.MockTransport(handler)
+        ).fetch("source-1", "Questions", "https://professor.example/questions")
+
+    assert attempted == ["1.1.1.1"]
 
 
 def test_snapshot_binds_each_redirect_hop_without_proxy_environment(

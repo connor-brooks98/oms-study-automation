@@ -13,6 +13,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import Field
 
 from oms_hub.anki.apply import ApplyCoordinator, ApplyGateway, ApplyResult
+from oms_hub.anki.card_centric import CardCentricValidationError, resolve_card_centric_scope
 from oms_hub.anki.card_centric_contracts import CardConceptLedger
 from oms_hub.anki.card_centric_fixture import FixtureUnavailable
 from oms_hub.anki.card_centric_fixture_service import fixture_for, validate_fixture
@@ -377,8 +378,29 @@ def create_anki_job(
     resolved_model = (
         payload.model if payload.model else llm_settings.assignment(LLMTask.ANKI_CURATION).model
     )
+    resolved_tag_allowlist = payload.tag_allowlist
+    if (
+        payload.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V1.value
+        and not resolved_tag_allowlist
+    ):
+        lecture = CatalogRepository(request.app.state.database).get_lecture(payload.lecture_id)
+        if lecture is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Lecture was not found",
+            )
+        try:
+            resolved_tag_allowlist = resolve_card_centric_scope(
+                tag_allowlist=(), subject=lecture.subject, topic=lecture.topic
+            )
+        except CardCentricValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
     domain = replace(
         payload.to_domain(model=resolved_model),
+        tag_allowlist=resolved_tag_allowlist,
         source_revision_hashes=hashes,
         semantic_generation=str(semantic.manifest.generation),
         companion_generation=snapshot_id,

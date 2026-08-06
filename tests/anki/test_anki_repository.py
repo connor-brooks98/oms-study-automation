@@ -37,7 +37,12 @@ from oms_hub.anki.domain import (
 )
 from oms_hub.anki.envelope import EnvelopeBuilder
 from oms_hub.anki.judgment import JudgmentCacheRecord
-from oms_hub.anki.models import AnkiEnvelopeModel, AnkiEnvelopeOperationModel
+from oms_hub.anki.models import (
+    AnkiCurationJobModel,
+    AnkiEnvelopeModel,
+    AnkiEnvelopeOperationModel,
+    AnkiReviewedReconciliationModel,
+)
 from oms_hub.anki.repository import (
     AnkiCurationRepository,
     InvalidCurationTransition,
@@ -377,6 +382,262 @@ def test_failed_job_can_retry_its_failed_stage_without_losing_artifacts(
     )
     assert claimed_again is not None
     assert claimed_again.id == job.id
+
+
+def test_known_blank_scope_card_centric_failure_repairs_and_rewinds_from_source_index(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            tag_allowlist=(),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        )
+    )
+    assert job.tag_allowlist == ("heme",)
+    expected_configuration_sha256 = job.configuration_sha256
+    with repository.database.session() as session:
+        stored = session.get(AnkiCurationJobModel, str(job.id))
+        assert stored is not None
+        stored.tag_allowlist_json = "[]"
+        stored.configuration_sha256 = "0" * 64
+    source_artifact = StageArtifact(
+        artifact_id=f"source_index:{'a' * 64}",
+        stage=CurationStage.SOURCE_INDEX,
+        kind="card_centric_source_index",
+        relative_path=f"{job.id}/source_index/{'a' * 64}.json",
+        input_sha256="b" * 64,
+        content_sha256="a" * 64,
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        model_config_sha256=job.model_config_sha256,
+    )
+    repository.save_stage_artifact(job.id, source_artifact)
+    other_job = repository.create_job(
+        replace(
+            _job_request(lecture_id, snapshot="other-snapshot"),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        )
+    )
+    other_artifact = StageArtifact(
+        artifact_id=f"source_index:{'c' * 64}",
+        stage=CurationStage.SOURCE_INDEX,
+        kind="card_centric_source_index",
+        relative_path=f"{other_job.id}/source_index/{'c' * 64}.json",
+        input_sha256="d" * 64,
+        content_sha256="c" * 64,
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        model_config_sha256=other_job.model_config_sha256,
+    )
+    repository.save_stage_artifact(other_job.id, other_artifact)
+    reference = SourceReference(
+        source_kind=SourceKind.SLIDE,
+        revision_id=101,
+        locator="slide:1",
+        content_hash="c" * 64,
+    )
+    repository.replace_candidates(
+        job.id,
+        (
+            Candidate(
+                note_id=7,
+                content_hash="d" * 64,
+                best_concept_id="iron",
+                provenance={"card_centric": {}},
+                scores={},
+                predicted_band="YES",
+                verdict="yes",
+                confidence=1.0,
+                reason="stale",
+                context_trap=False,
+                recall_direction="card_centric",
+                mnemonic_classification="none",
+                dedupe_disposition="eligible",
+                selected=True,
+                retrieval_pass=RetrievalPass.PASS_1,
+            ),
+        ),
+    )
+    repository.save_gap_cards(
+        job.id,
+        (
+            GapCard(
+                concept_id="iron",
+                text="{{c1::Iron}}",
+                extra="stale",
+                source_refs=(reference,),
+                evidence_ids=("slide-1",),
+                provenance={"card_centric": {}},
+                content_hash="e" * 64,
+                card_id="11111111-1111-1111-1111-111111111111",
+            ),
+        ),
+    )
+    repository.replace_source_evidence(
+        job.id,
+        (
+            SourceEvidence(
+                evidence_id="slide-1",
+                concept_id="iron",
+                support=EvidenceSupport.SUPPORTED,
+                statement="Iron is present.",
+                source_refs=(reference,),
+                content_hash="f" * 64,
+            ),
+        ),
+    )
+    with repository.database.session() as session:
+        session.add(
+            AnkiReviewedReconciliationModel(
+                job_id=str(job.id),
+                review_revision=1,
+                payload_json="{}",
+            )
+        )
+    repository.transition(job.id, CurationState.QUEUED, CurationState.PREFLIGHT)
+    repository.transition(job.id, CurationState.PREFLIGHT, CurationState.BUILDING_SOURCE_INDEX)
+    repository.transition(
+        job.id,
+        CurationState.BUILDING_SOURCE_INDEX,
+        CurationState.CARD_BUILDING_LEDGER,
+    )
+    repository.transition(
+        job.id,
+        CurationState.CARD_BUILDING_LEDGER,
+        CurationState.CARD_SCOPING_TAGS,
+    )
+    repository.start_stage(job.id, CurationStage.CARD_TAG_SCOPE)
+    repository.fail_stage(job.id, CurationStage.CARD_TAG_SCOPE, "tag scope has no resolved tokens")
+    repository.transition(
+        job.id,
+        CurationState.CARD_SCOPING_TAGS,
+        CurationState.FAILED,
+        "tag scope has no resolved tokens",
+    )
+
+    repaired = repository.retry_job(job.id)
+
+    assert repaired.state is CurationState.BUILDING_SOURCE_INDEX
+    assert repaired.tag_allowlist == ("heme",)
+    assert repaired.configuration_sha256 == expected_configuration_sha256
+    assert repaired.error is None
+    assert repository.list_stage_artifacts(job.id) == []
+    assert repository.list_stage_artifacts(other_job.id) == [other_artifact]
+    assert repository.require_job(other_job.id).state is CurationState.QUEUED
+    assert repository.get_stage(job.id, CurationStage.CARD_TAG_SCOPE) is None
+    assert repository.list_candidates(job.id) == []
+    assert repository.list_gap_cards(job.id) == []
+    assert repository.list_source_evidence(job.id) == []
+    with repository.database.session() as session:
+        assert session.scalar(
+            select(func.count()).select_from(AnkiReviewedReconciliationModel).where(
+                AnkiReviewedReconciliationModel.job_id == str(job.id)
+            )
+        ) == 0
+
+
+@pytest.mark.parametrize(
+    ("subject", "topic"),
+    [
+        ("Unknown", "Unknown"),
+        ("Heme Neuro", "Anemia I"),
+    ],
+)
+def test_blank_scope_repair_rejects_unresolved_metadata_without_mutation(
+    tmp_path: Path,
+    subject: str,
+    topic: str,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            tag_allowlist=(),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        )
+    )
+    artifact = StageArtifact(
+        artifact_id=f"source_index:{'a' * 64}",
+        stage=CurationStage.SOURCE_INDEX,
+        kind="card_centric_source_index",
+        relative_path=f"{job.id}/source_index/{'a' * 64}.json",
+        input_sha256="b" * 64,
+        content_sha256="a" * 64,
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        model_config_sha256=job.model_config_sha256,
+    )
+    repository.save_stage_artifact(job.id, artifact)
+    with repository.database.session() as session:
+        stored = session.get(AnkiCurationJobModel, str(job.id))
+        lecture = session.get(LectureModel, lecture_id)
+        assert stored is not None and lecture is not None
+        stored.tag_allowlist_json = "[]"
+        stored.state = CurationState.FAILED.value
+        stored.error = "tag scope has no resolved tokens"
+        lecture.subject = subject
+        lecture.topic = topic
+        session.add(
+            AnkiReviewedReconciliationModel(
+                job_id=str(job.id),
+                review_revision=1,
+                payload_json="{}",
+            )
+        )
+    repository.start_stage(job.id, CurationStage.CARD_TAG_SCOPE)
+    repository.fail_stage(job.id, CurationStage.CARD_TAG_SCOPE, "tag scope has no resolved tokens")
+
+    with pytest.raises(ValueError, match="Could not resolve exactly one"):
+        repository.retry_job(job.id)
+
+    unchanged = repository.require_job(job.id)
+    assert unchanged.state is CurationState.FAILED
+    assert unchanged.tag_allowlist == ()
+    assert unchanged.error == "tag scope has no resolved tokens"
+    assert repository.list_stage_artifacts(job.id) == [artifact]
+    assert repository.get_stage(job.id, CurationStage.CARD_TAG_SCOPE) is not None
+    with repository.database.session() as session:
+        assert session.scalar(
+            select(func.count()).select_from(AnkiReviewedReconciliationModel).where(
+                AnkiReviewedReconciliationModel.job_id == str(job.id)
+            )
+        ) == 1
+
+
+def test_nonblank_card_scope_is_not_rewound_by_a_matching_legacy_error(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        )
+    )
+    artifact = StageArtifact(
+        artifact_id=f"source_index:{'a' * 64}",
+        stage=CurationStage.SOURCE_INDEX,
+        kind="card_centric_source_index",
+        relative_path=f"{job.id}/source_index/{'a' * 64}.json",
+        input_sha256="b" * 64,
+        content_sha256="a" * 64,
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        model_config_sha256=job.model_config_sha256,
+    )
+    repository.save_stage_artifact(job.id, artifact)
+    repository.start_stage(job.id, CurationStage.CARD_TAG_SCOPE)
+    repository.fail_stage(job.id, CurationStage.CARD_TAG_SCOPE, "tag scope has no resolved tokens")
+    with repository.database.session() as session:
+        stored = session.get(AnkiCurationJobModel, str(job.id))
+        assert stored is not None
+        stored.state = CurationState.FAILED.value
+        stored.error = "tag scope has no resolved tokens"
+
+    retried = repository.retry_job(job.id)
+
+    assert retried.state is CurationState.CARD_SCOPING_TAGS
+    assert retried.tag_allowlist == ("#AK_Step2_v12::Hematology",)
+    assert repository.list_stage_artifacts(job.id) == [artifact]
+    assert repository.get_stage(job.id, CurationStage.CARD_TAG_SCOPE) is not None
 
 
 def test_failed_job_can_be_removed_from_the_run_list(tmp_path: Path) -> None:

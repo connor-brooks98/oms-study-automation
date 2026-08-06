@@ -320,6 +320,38 @@
       });
     });
 
+    const voyageCard = documentRef.querySelector("[data-voyage-card]");
+    if (voyageCard) {
+      const credential = voyageCard.querySelector("[data-voyage-credential]");
+      const toggle = voyageCard.querySelector("[data-voyage-toggle]");
+      const configured = voyageCard.querySelector("[data-voyage-configured]");
+      const message = voyageCard.querySelector("[data-voyage-message]");
+      toggle.addEventListener("click", () => togglePassword(credential, toggle, "Voyage AI"));
+      voyageCard.querySelector("[data-save-voyage]").addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        message.textContent = "Saving credential…";
+        try {
+          const result = await postJson(
+            fetchImpl,
+            "/settings/anki/voyage/credential",
+            { credential: credential.value },
+            token(),
+          );
+          credential.value = "";
+          credential.type = "password";
+          toggle.textContent = "Show";
+          configured.textContent = result.configured ? "Configured" : "Not configured";
+          configured.classList.toggle("is-configured", result.configured);
+          message.textContent = result.configured ? "Credential saved securely." : "No credential is configured.";
+        } catch (error) {
+          message.textContent = error.message;
+        } finally {
+          button.disabled = false;
+        }
+      });
+    }
+
     documentRef.querySelectorAll("[data-assignment-row]").forEach((row) => {
       const task = row.dataset.task;
       const providerSelect = row.querySelector("[data-assignment-provider]");

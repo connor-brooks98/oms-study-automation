@@ -9,6 +9,7 @@ from oms_hub.anki.card_centric import (
     CardCentricValidationError,
     build_snapshot_census,
     build_source_index,
+    resolve_card_centric_scope,
     scope_cards,
     select_high_yield,
     selection_eligible,
@@ -88,6 +89,21 @@ def test_source_index_orders_summary_transcript_slides_and_hashes_stably() -> No
         passage.passage_id.startswith(("SLD:", "TRX:", "SUM:")) for passage in first.passages
     )
     assert 'id="SUM:12:CORE:01:P:' in first.prefix
+
+
+def test_card_centric_scope_uses_one_bounded_subject_alias_before_title_fallback() -> None:
+    assert resolve_card_centric_scope(
+        tag_allowlist=(),
+        subject="Hematology",
+        topic="Cardiology overview",
+    ) == ("heme",)
+
+
+def test_card_centric_scope_rejects_ambiguous_or_unknown_metadata() -> None:
+    with pytest.raises(CardCentricValidationError, match="Existing-card tag scope"):
+        resolve_card_centric_scope(tag_allowlist=(), subject="Heme Cardio", topic="")
+    with pytest.raises(CardCentricValidationError, match="Existing-card tag scope"):
+        resolve_card_centric_scope(tag_allowlist=(), subject="Foundations", topic="Research")
 
 
 def test_census_accounts_for_every_note_and_refuses_unsafe_untagged_rate() -> None:

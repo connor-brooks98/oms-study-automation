@@ -107,6 +107,48 @@ CARD_CENTRIC_SYSTEM_TOKENS = (
     "resp",
 )
 _UNTAGGED_SAFE_RATE = 0.03
+_SYSTEM_ALIASES = {
+    "cardio": frozenset({"cardio", "cardiology", "cardiovascular"}),
+    "endo": frozenset({"endo", "endocrine", "endocrinology"}),
+    "gi": frozenset({"gi", "gastrointestinal", "gastroenterology"}),
+    "heme": frozenset({"heme", "hematology", "haematology", "heme lymph", "hematology lymph"}),
+    "msk": frozenset({"msk", "musculoskeletal", "orthopedics", "orthopaedics"}),
+    "neuro": frozenset({"neuro", "neurology", "neuroscience"}),
+    "onc": frozenset({"onc", "oncology"}),
+    "psych": frozenset({"psych", "psychiatry", "behavioral science"}),
+    "renal": frozenset({"renal", "nephrology"}),
+    "resp": frozenset({"resp", "respiratory", "pulmonology", "pulmonary"}),
+}
+
+
+def resolve_card_centric_scope(
+    *, tag_allowlist: tuple[str, ...], subject: str, topic: str
+) -> tuple[str, ...]:
+    """Pin an explicit scope or one unambiguous system token from lecture metadata."""
+    explicit = tuple(token.strip() for token in tag_allowlist if token.strip())
+    if explicit:
+        return explicit
+    subject_matches = _recognized_system_tokens(subject)
+    matches = subject_matches or _recognized_system_tokens(topic)
+    if len(matches) != 1:
+        raise CardCentricValidationError(
+            "Could not resolve exactly one card-centric system from this lecture. "
+            "Enter Existing-card tag scope before queueing."
+        )
+    return matches
+
+
+def _recognized_system_tokens(value: str) -> tuple[str, ...]:
+    normalized = " ".join(value.casefold().replace("/", " ").replace("-", " ").split())
+    if not normalized:
+        return ()
+    padded = f" {normalized} "
+    matches = tuple(
+        token
+        for token in CARD_CENTRIC_SYSTEM_TOKENS
+        if any(f" {alias} " in padded for alias in _SYSTEM_ALIASES[token])
+    )
+    return matches
 
 
 @dataclass(frozen=True, slots=True)

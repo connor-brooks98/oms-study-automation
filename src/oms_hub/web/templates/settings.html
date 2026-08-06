@@ -101,6 +101,30 @@
     </div>
   </section>
 
+  <section class="settings-section" aria-labelledby="voyage-heading">
+    <article class="card provider-card" data-voyage-card>
+      <div class="provider-card-heading">
+        <div>
+          <p class="provider-kicker">Anki semantic indexing</p>
+          <h2 id="voyage-heading">Voyage AI embeddings</h2>
+        </div>
+        <span class="credential-state {{ 'is-configured' if voyage_configured else '' }}" data-voyage-configured>
+          {{ "Configured" if voyage_configured else "Not configured" }}
+        </span>
+      </div>
+      <div class="provider-field">
+        <label for="voyage-credential">Voyage AI API key</label>
+        <div class="password-control">
+          <input id="voyage-credential" type="password" maxlength="8192" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="{{ 'Replace stored credential' if voyage_configured else 'Paste credential' }}" data-voyage-credential>
+          <button class="password-toggle" type="button" aria-label="Show Voyage AI credential" data-voyage-toggle>Show</button>
+        </div>
+        <p class="field-help">Supports Anki semantic indexing and is stored in Windows Credential Manager. Leave blank to keep the current credential.</p>
+      </div>
+      <div class="provider-buttons"><button class="button primary" type="button" data-save-voyage>Save credential</button></div>
+      <p class="field-message" data-voyage-message aria-live="polite"></p>
+    </article>
+  </section>
+
   <section class="settings-section" aria-labelledby="assignments-heading">
     <div class="settings-section-heading">
       <div>

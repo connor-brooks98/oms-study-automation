@@ -83,7 +83,7 @@ class URLSnapshotService:
         *,
         max_bytes: int | None = None,
     ) -> ParsedAsset:
-        resolved_url = urljoin(base_url, asset_url)
+        resolved_url = _safe_urljoin(base_url, asset_url, "URL asset target is invalid")
         asset_limit = self.max_bytes if max_bytes is None else max_bytes
         deadline = self.clock() + self.deadline_seconds
         payload, media_type, final_url = self._download(
@@ -121,29 +121,51 @@ class URLSnapshotService:
         try:
             for redirect_count in range(_MAX_REDIRECTS + 1):
                 remaining = _remaining(deadline, self.clock)
-                bound_url, hostname, host_header = self._bound_public_url(
+                bound_urls, hostname, host_header = self._bound_public_urls(
                     current_url, deadline, self.clock
                 )
-                remaining = _remaining(deadline, self.clock)
-                client = self._client(remaining)
                 response: httpx.Response | None = None
-                try:
+                client: httpx.Client | None = None
+                transport_error: httpx.TransportError | None = None
+                for bound_url in bound_urls:
+                    remaining = _remaining(deadline, self.clock)
+                    client = self._client(remaining)
                     request = client.build_request(
                         "GET",
                         bound_url,
                         headers={"Host": host_header, "User-Agent": "Study Hub source snapshotter"},
                     )
                     request.extensions["sni_hostname"] = hostname
-                    response = _bounded_call(
-                        _send_streaming_request(client, request), deadline, self.clock
-                    )
+                    try:
+                        response = _bounded_call(
+                            _send_streaming_request(client, request), deadline, self.clock
+                        )
+                    except httpx.TransportError as error:
+                        transport_error = error
+                        _close_without_waiting(client.close)
+                        client = None
+                        continue
+                    except Exception:
+                        _close_without_waiting(client.close)
+                        client = None
+                        raise
+                    break
+                if response is None:
+                    if transport_error is not None:
+                        raise transport_error
+                    raise ValueError("URL could not be downloaded")
+                try:
                     if response.is_redirect:
                         if redirect_count >= _MAX_REDIRECTS:
                             raise ValueError("URL redirected too many times")
                         location = response.headers.get("location")
                         if not location:
                             raise ValueError("URL redirect is missing its target")
-                        current_url = str(httpx.URL(current_url).join(location))
+                        current_url = _safe_urljoin(
+                            current_url,
+                            location,
+                            "URL redirect target is invalid",
+                        )
                         continue
                     _remaining(deadline, self.clock)
                     response.raise_for_status()
@@ -160,11 +182,14 @@ class URLSnapshotService:
                 finally:
                     if response is not None:
                         _close_without_waiting(response.close)
-                    _close_without_waiting(client.close)
+                    if client is not None:
+                        _close_without_waiting(client.close)
         except ValueError:
             raise
-        except (httpx.HTTPError, OSError) as error:
-            raise ValueError("URL could not be downloaded") from error
+        except httpx.InvalidURL:
+            raise ValueError("URL must be HTTP or HTTPS") from None
+        except (httpx.HTTPError, OSError):
+            raise ValueError("URL could not be downloaded") from None
         raise ValueError("URL redirected too many times")
 
     def _client(self, remaining: float) -> httpx.Client:
@@ -177,13 +202,19 @@ class URLSnapshotService:
         )
 
     @staticmethod
-    def _bound_public_url(
+    def _bound_public_urls(
         url: str, deadline: float, clock: Callable[[], float]
-    ) -> tuple[httpx.URL, str, str]:
-        parsed = urlparse(url)
+    ) -> tuple[tuple[httpx.URL, ...], str, str]:
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname
+            port = parsed.port
+            parsed_url = httpx.URL(url)
+        except (httpx.InvalidURL, TypeError, ValueError):
+            raise ValueError("URL must be HTTP or HTTPS") from None
         if (
             parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
+            or not hostname
             or parsed.username
             or parsed.password
         ):
@@ -192,16 +223,34 @@ class URLSnapshotService:
             addresses = {
                 ip_address(result[4][0])
                 for result in _bounded_call(
-                    lambda: socket.getaddrinfo(parsed.hostname, None), deadline, clock
+                    lambda: socket.getaddrinfo(hostname, None), deadline, clock
                 )
             }
         except OSError as error:
             raise ValueError("URL host could not be resolved") from error
         if not addresses or any(not address.is_global for address in addresses):
             raise ValueError("URL must point to a public address")
-        chosen = sorted(addresses, key=str)[0]
-        host_header = parsed.netloc
-        return httpx.URL(url).copy_with(host=str(chosen)), parsed.hostname, host_header
+        host_header = hostname if port is None else f"{hostname}:{port}"
+        return (
+            tuple(
+                parsed_url.copy_with(host=str(address))
+                for address in sorted(
+                    addresses,
+                    key=lambda address: (address.version, int(address)),
+                )
+            ),
+            hostname,
+            host_header,
+        )
+
+
+def _safe_urljoin(base_url: str, target: str, message: str) -> str:
+    """Join a remote URL without surfacing malformed URL components to callers."""
+    try:
+        joined = urljoin(base_url, target)
+        return str(httpx.URL(joined))
+    except (httpx.InvalidURL, TypeError, ValueError):
+        raise ValueError(message) from None
 
 
 def _content_length_exceeds(value: str, byte_limit: int) -> bool:

@@ -60,6 +60,27 @@ test("postJson sends CSRF protection and never puts a credential in the URL", as
   assert.equal(captured.options.body.includes("sentinel-secret"), true);
 });
 
+test("Voyage credential is sent only in a CSRF-protected JSON body", async () => {
+  let captured;
+  const fakeFetch = async (url, options) => {
+    captured = { url, options };
+    return { ok: true, json: async () => ({ configured: true }) };
+  };
+
+  await settings.postJson(
+    fakeFetch,
+    "/settings/anki/voyage/credential",
+    { credential: "voyage-secret" },
+    "csrf-token",
+  );
+
+  assert.equal(captured.url, "/settings/anki/voyage/credential");
+  assert.equal(captured.url.includes("voyage-secret"), false);
+  assert.equal(captured.options.headers["X-CSRF-Token"], "csrf-token");
+  assert.equal(captured.options.headers["Content-Type"], "application/json");
+  assert.equal(captured.options.body, '{"credential":"voyage-secret"}');
+});
+
 test("diagnostics return safe text fields without HTML", () => {
   const lines = settings.diagnosticLines({
     source: "provider_authentication",

@@ -29,6 +29,20 @@ def test_settings_renders_four_secret_safe_provider_cards(tmp_path):
     assert response.text.count('data-diagnostic aria-live="polite"') == 4
 
 
+def test_settings_renders_a_secret_safe_voyage_embedding_card(tmp_path):
+    client, _, secrets = prepared_client(tmp_path)
+    secrets.set("voyage-api-key", "sentinel-voyage-secret")
+
+    response = client.get("/settings")
+
+    assert response.status_code == 200
+    assert "Voyage AI embeddings" in response.text
+    assert "Anki semantic indexing" in response.text
+    assert "data-voyage-card" in response.text
+    assert "data-voyage-credential" in response.text
+    assert "sentinel-voyage-secret" not in response.text
+
+
 def test_settings_provider_kicker_reflects_task_assignment_counts(tmp_path):
     client, app, _ = prepared_client(tmp_path)
     # Bind two existing assignments to Gemini and the third to Anthropic.

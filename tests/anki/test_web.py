@@ -22,6 +22,7 @@ from oms_hub.anki.domain import (
     CurationState,
     EvidenceSupport,
     GapCard,
+    PipelineContractVersion,
     RetrievalPass,
     SourceEvidence,
     SourceKind,
@@ -888,6 +889,52 @@ def test_failed_curation_job_can_be_retried_through_api(
 
     assert response.status_code == 200
     assert response.json()["state"] == "preflight"
+    assert response.json()["error"] is None
+
+
+def test_blank_card_scope_retry_repairs_legacy_job_through_api(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, lecture_id, revision_id, _ = prepared_app
+    repository: AnkiCurationRepository = app.state.anki_repository
+    created = repository.create_job(
+        CreateCurationJob(
+            lecture_id=lecture_id,
+            block_id="heme-block-1",
+            source_revision_ids=(revision_id,),
+            deck_allowlist=("AnKing Step Deck",),
+            tag_allowlist=(),
+            instruction_text="",
+            target_deck="OMS::Heme::Lecture 4",
+            target_tag=TARGET_TAG,
+            index_snapshot_id="snapshot-test",
+            lcl_prompt_version="lcl-v1",
+            judgment_rubric_version="judgment-v1",
+            gap_prompt_version="gap-v1",
+            provider="anthropic",
+            model="claude-sonnet-5",
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        )
+    )
+    assert created.tag_allowlist == ("heme",)
+    repository.start_stage(created.id, CurationStage.CARD_TAG_SCOPE)
+    repository.fail_stage(
+        created.id,
+        CurationStage.CARD_TAG_SCOPE,
+        "tag scope has no resolved tokens",
+    )
+    with app.state.database.session() as session:
+        stored = session.get(AnkiCurationJobModel, str(created.id))
+        assert stored is not None
+        stored.state = CurationState.FAILED.value
+        stored.error = "tag scope has no resolved tokens"
+        stored.tag_allowlist_json = "[]"
+
+    response = client.post(f"/api/anki/jobs/{created.id}/retry")
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "building_source_index"
+    assert response.json()["tag_allowlist"] == ["heme"]
     assert response.json()["error"] is None
 
 

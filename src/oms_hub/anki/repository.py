@@ -1,6 +1,7 @@
 import hashlib
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from oms_hub.anki.apply import ApplyOperationRecord
 from oms_hub.anki.audit import AuditCacheRecord
+from oms_hub.anki.card_centric import resolve_card_centric_scope
 from oms_hub.anki.card_centric_review import (
     OverflowAcknowledgement,
     issue_acknowledgement,
@@ -311,6 +313,23 @@ _RETRY_STATE_BY_STAGE = {
 }
 
 
+_CARD_CENTRIC_REWIND_STAGES = frozenset(
+    {
+        CurationStage.SOURCE_INDEX,
+        CurationStage.CARD_LEDGER,
+        CurationStage.CARD_TAG_SCOPE,
+        CurationStage.CARD_CLASSIFY,
+        CurationStage.CARD_COVERAGE,
+        CurationStage.CARD_RESIDUAL,
+        CurationStage.CARD_GAP_FILL,
+        CurationStage.DEDUPE,
+        CurationStage.CARD_SELECTION,
+        CurationStage.RECONCILIATION,
+    }
+)
+_BLANK_CARD_CENTRIC_SCOPE_ERROR = "tag scope has no resolved tokens"
+
+
 class InvalidCurationTransition(ValueError):
     """A curation job did not match the required state transition."""
 
@@ -321,6 +340,56 @@ def _canonical_json(value: Any) -> str:
 
 def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _configuration_document(
+    *,
+    block_id: str | None,
+    source_revision_ids: Sequence[int],
+    source_revision_hashes: dict[int, str],
+    summary_outline_id: int | None,
+    summary_outline_sha256: str | None,
+    deck_allowlist: Sequence[str],
+    tag_allowlist: Sequence[str],
+    target_deck: str,
+    target_tag: str,
+    index_snapshot_id: str,
+    lcl_prompt_version: str,
+    judgment_rubric_version: str,
+    gap_prompt_version: str,
+    provider: str,
+    model: str,
+    pipeline_contract_version: PipelineContractVersion,
+    model_config_sha256: str,
+    semantic_generation: str | None,
+    companion_generation: str | None,
+) -> dict[str, Any]:
+    """Return the complete canonical job configuration used for provenance."""
+    return {
+        "block_id": block_id,
+        "source_revision_ids": tuple(source_revision_ids),
+        "source_revision_hashes": source_revision_hashes,
+        "summary_outline_id": summary_outline_id,
+        "summary_outline_sha256": summary_outline_sha256,
+        "deck_allowlist": tuple(deck_allowlist),
+        "tag_allowlist": tuple(tag_allowlist),
+        "target_deck": target_deck,
+        "target_tag": target_tag,
+        "index_snapshot_id": index_snapshot_id,
+        "lcl_prompt_version": lcl_prompt_version,
+        "judgment_rubric_version": judgment_rubric_version,
+        "gap_prompt_version": gap_prompt_version,
+        "provider": provider,
+        "model": model,
+        "pipeline_contract_version": pipeline_contract_version.value,
+        "model_config_sha256": model_config_sha256,
+        "semantic_generation": semantic_generation,
+        "companion_generation": companion_generation,
+    }
+
+
+def _configuration_sha256(configuration: dict[str, Any]) -> str:
+    return _sha256_text(_canonical_json(configuration))
 
 
 def _aware_utc(value: datetime) -> datetime:
@@ -334,6 +403,20 @@ class AnkiCurationRepository:
         self.database = database
 
     def create_job(self, request: CreateCurationJob) -> CurationJob:
+        if (
+            request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1
+            and not request.tag_allowlist
+        ):
+            with self.database.session() as session:
+                lecture = session.get(LectureModel, request.lecture_id)
+                if lecture is None:
+                    raise KeyError(request.lecture_id)
+                request = replace(
+                    request,
+                    tag_allowlist=resolve_card_centric_scope(
+                        tag_allowlist=(), subject=lecture.subject, topic=lecture.topic
+                    ),
+                )
         model_config = request.resolved_model_config or (
             ResolvedModelConfiguration.card_centric_default(
                 request.provider,
@@ -349,27 +432,27 @@ class AnkiCurationRepository:
             raise ValueError("card-centric S4/S6 thinking must be disabled")
         model_config_json = _canonical_json(model_config.canonical_document())
         model_config_sha256 = _sha256_text(model_config_json)
-        configuration = {
-            "block_id": request.block_id,
-            "source_revision_ids": request.source_revision_ids,
-            "source_revision_hashes": request.source_revision_hashes,
-            "summary_outline_id": request.summary_outline_id,
-            "summary_outline_sha256": request.summary_outline_sha256,
-            "deck_allowlist": request.deck_allowlist,
-            "tag_allowlist": request.tag_allowlist,
-            "target_deck": request.target_deck,
-            "target_tag": request.target_tag,
-            "index_snapshot_id": request.index_snapshot_id,
-            "lcl_prompt_version": request.lcl_prompt_version,
-            "judgment_rubric_version": request.judgment_rubric_version,
-            "gap_prompt_version": request.gap_prompt_version,
-            "provider": request.provider,
-            "model": request.model,
-            "pipeline_contract_version": request.pipeline_contract_version.value,
-            "model_config_sha256": model_config_sha256,
-            "semantic_generation": request.semantic_generation,
-            "companion_generation": request.companion_generation,
-        }
+        configuration = _configuration_document(
+            block_id=request.block_id,
+            source_revision_ids=request.source_revision_ids,
+            source_revision_hashes=request.source_revision_hashes,
+            summary_outline_id=request.summary_outline_id,
+            summary_outline_sha256=request.summary_outline_sha256,
+            deck_allowlist=request.deck_allowlist,
+            tag_allowlist=request.tag_allowlist,
+            target_deck=request.target_deck,
+            target_tag=request.target_tag,
+            index_snapshot_id=request.index_snapshot_id,
+            lcl_prompt_version=request.lcl_prompt_version,
+            judgment_rubric_version=request.judgment_rubric_version,
+            gap_prompt_version=request.gap_prompt_version,
+            provider=request.provider,
+            model=request.model,
+            pipeline_contract_version=request.pipeline_contract_version,
+            model_config_sha256=model_config_sha256,
+            semantic_generation=request.semantic_generation,
+            companion_generation=request.companion_generation,
+        )
         with self.database.session() as session:
             if session.get(LectureModel, request.lecture_id) is None:
                 raise KeyError(request.lecture_id)
@@ -396,7 +479,7 @@ class AnkiCurationRepository:
                 model_config_sha256=model_config_sha256,
                 semantic_generation=request.semantic_generation,
                 companion_generation=request.companion_generation,
-                configuration_sha256=_sha256_text(_canonical_json(configuration)),
+                configuration_sha256=_configuration_sha256(configuration),
                 apply_state=ApplyState.PENDING.value,
                 instruction_text=request.instruction_text,
                 instruction_sha256=_sha256_text(request.instruction_text),
@@ -855,6 +938,23 @@ class AnkiCurationRepository:
                 raise ValueError("failed curation job has no resumable stage")
             stage = CurationStage(failed_stage.stage)
             card = stored.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V1.value
+            if self._is_legacy_blank_card_scope_failure(stored, failed_stage):
+                lecture = session.get(LectureModel, stored.lecture_id)
+                if lecture is None:
+                    raise KeyError(stored.lecture_id)
+                resolved_scope = resolve_card_centric_scope(
+                    tag_allowlist=(),
+                    subject=lecture.subject,
+                    topic=lecture.topic,
+                )
+                self._rewind_legacy_blank_card_scope_failure(
+                    session,
+                    job_id,
+                    stored,
+                    resolved_scope,
+                )
+                session.flush()
+                return self._job(stored)
             target_state = (
                 CurationState.CARD_DEDUPING
                 if card and stage is CurationStage.DEDUPE
@@ -875,6 +975,98 @@ class AnkiCurationRepository:
             stored.lease_expires_at = None
             session.flush()
             return self._job(stored)
+
+    @staticmethod
+    def _is_legacy_blank_card_scope_failure(
+        job: AnkiCurationJobModel,
+        failed_stage: AnkiJobStageModel,
+    ) -> bool:
+        try:
+            tag_allowlist = json.loads(job.tag_allowlist_json)
+        except (TypeError, ValueError):
+            return False
+        return (
+            job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V1.value
+            and failed_stage.stage == CurationStage.CARD_TAG_SCOPE.value
+            and failed_stage.error == _BLANK_CARD_CENTRIC_SCOPE_ERROR
+            and isinstance(tag_allowlist, list)
+            and not any(str(value).strip() for value in tag_allowlist)
+        )
+
+    @staticmethod
+    def _rewind_legacy_blank_card_scope_failure(
+        session: Session,
+        job_id: UUID,
+        job: AnkiCurationJobModel,
+        resolved_scope: tuple[str, ...],
+    ) -> None:
+        """Reset only artifacts derived from a legacy empty card-centric scope.
+
+        Scope resolution occurs before this helper mutates anything, so an ambiguous
+        or unmatched lecture remains a failed job with all of its diagnostics intact.
+        The surrounding database session makes the scope pin and cleanup atomic.
+        """
+        job_key = str(job_id)
+        stages = [stage.value for stage in _CARD_CENTRIC_REWIND_STAGES]
+        session.execute(
+            delete(AnkiStageArtifactModel).where(
+                AnkiStageArtifactModel.job_id == job_key,
+                AnkiStageArtifactModel.stage.in_(stages),
+            )
+        )
+        session.execute(
+            delete(AnkiJobStageModel).where(
+                AnkiJobStageModel.job_id == job_key,
+                AnkiJobStageModel.stage.in_(stages),
+            )
+        )
+        for model in (
+            AnkiCandidateModel,
+            AnkiGapCardModel,
+            AnkiSourceEvidenceModel,
+            AnkiReviewedReconciliationModel,
+            AnkiReviewChangeSetModel,
+            AnkiTagPatchModel,
+        ):
+            session.execute(delete(model).where(model.job_id == job_key))
+        job.tag_allowlist_json = _canonical_json(resolved_scope)
+        job.configuration_sha256 = _configuration_sha256(
+            _configuration_document(
+                block_id=job.block_id,
+                source_revision_ids=tuple(json.loads(job.source_revision_ids_json)),
+                source_revision_hashes={
+                    int(key): str(value)
+                    for key, value in cast(
+                        dict[str, Any], json.loads(job.source_revision_hashes_json)
+                    ).items()
+                },
+                summary_outline_id=job.summary_outline_id,
+                summary_outline_sha256=job.summary_outline_sha256,
+                deck_allowlist=tuple(json.loads(job.deck_allowlist_json)),
+                tag_allowlist=resolved_scope,
+                target_deck=job.target_deck,
+                target_tag=job.target_tag,
+                index_snapshot_id=job.index_snapshot_id,
+                lcl_prompt_version=job.lcl_prompt_version,
+                judgment_rubric_version=job.judgment_rubric_version,
+                gap_prompt_version=job.gap_prompt_version,
+                provider=job.provider,
+                model=job.model,
+                pipeline_contract_version=PipelineContractVersion(job.pipeline_contract_version),
+                model_config_sha256=job.model_config_sha256,
+                semantic_generation=job.semantic_generation,
+                companion_generation=job.companion_generation,
+            )
+        )
+        job.source_index_generation = None
+        job.counts_json = "{}"
+        job.review_revision = 0
+        job.ready_at = None
+        job.state = CurationState.BUILDING_SOURCE_INDEX.value
+        job.error = None
+        job.available_at = None
+        job.lease_owner = None
+        job.lease_expires_at = None
 
     def remove_failed_job(self, job_id: UUID) -> CurationJob:
         with self.database.session() as session:

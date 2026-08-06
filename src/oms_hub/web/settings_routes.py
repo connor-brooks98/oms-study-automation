@@ -28,11 +28,12 @@ from oms_hub.llm.openrouter import (
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.llm.service import SECRET_KEYS, LLMService
 from oms_hub.repositories import CatalogRepository
-from oms_hub.security.secret_store import SecretStore
+from oms_hub.security.secret_store import VOYAGE_API_KEY_SECRET, SecretStore
 from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
 from oms_hub.study_generation.domain import PromptKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.tracker_preview import TrackerPreview, TrackerPreviewService
+from oms_hub.web.csrf import require_form_csrf
 from oms_hub.web.llm_schemas import CredentialUpdate, ModelUpdate, TaskAssignmentUpdate
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -166,8 +167,19 @@ def settings_page(request: Request) -> HTMLResponse:
                 ).anki_prompt_directory()
                 or str(request.app.state.settings.anki_prompt_directory or "")
             ),
+            "voyage_configured": _voyage_configured(request),
         },
     )
+
+
+def _voyage_configured(request: Request) -> bool:
+    try:
+        value = cast(SecretStore, request.app.state.secrets).get(
+            VOYAGE_API_KEY_SECRET
+        )
+        return bool((value or "").strip())
+    except Exception:
+        return False
 
 
 def _assignment_rows(request: Request) -> tuple[dict[str, object], ...]:
@@ -226,6 +238,16 @@ def save_openrouter_credential(
             )
         }
     )
+
+
+@router.post("/anki/voyage/credential")
+def save_voyage_credential(request: Request, update: CredentialUpdate) -> JSONResponse:
+    require_form_csrf(request, None)
+    credential = update.credential.strip()
+    secrets = cast(SecretStore, request.app.state.secrets)
+    if credential:
+        secrets.set(VOYAGE_API_KEY_SECRET, credential)
+    return _no_store({"configured": _voyage_configured(request)})
 
 
 @router.post("/ai/openrouter/model")
