@@ -26,7 +26,8 @@ function Assert-TaskActionTargetsProjectRoot {
     [string]$ExpectedProjectRoot,
     [string]$ExpectedStartScript
   )
-  $Actions = @(Get-ScheduledTask -TaskName $Name -ErrorAction Stop).Actions
+  $Task = Get-ScheduledTask -TaskName $Name -ErrorAction Stop
+  $Actions = @($Task.Actions)
   if ($Actions.Count -ne 1) {
     throw "Scheduled task $Name must have exactly one action; found $($Actions.Count)."
   }

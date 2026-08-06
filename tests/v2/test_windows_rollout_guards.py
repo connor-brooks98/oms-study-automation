@@ -17,6 +17,9 @@ def test_windows_installer_replaces_old_root_task_action_and_verifies_it() -> No
     assert '"C:\\Services\\oms-study-automation-v2"' in script
     assert "-WorkingDirectory $ProjectRoot" in script
     assert "Assert-TaskActionTargetsProjectRoot" in script
+    assert "$Task = Get-ScheduledTask -TaskName $Name -ErrorAction Stop" in script
+    assert "$Actions = @($Task.Actions)" in script
+    assert "@(Get-ScheduledTask -TaskName $Name -ErrorAction Stop).Actions" not in script
     assert "does not target $ExpectedProjectRoot" in script
 
 
