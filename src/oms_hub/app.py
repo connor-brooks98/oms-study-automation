@@ -43,6 +43,7 @@ from oms_hub.document_processing.anydoc_adapter import AnydocProcessor
 from oms_hub.document_processing.pdf_adapter import PdfProcessor
 from oms_hub.document_processing.pptx_locator import PptxLocatorEnricher
 from oms_hub.document_processing.router import DocumentProcessorRouter, ParserMode
+from oms_hub.document_processing.shadow import DocumentShadowEvaluator, LegacyPptxProcessor
 from oms_hub.document_processing.text_adapter import TextProcessor
 from oms_hub.document_processing.web_adapter import WebProcessor
 from oms_hub.files.office import SerialOfficeConverter
@@ -529,6 +530,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         database,
         resolved,
         SerialOfficeConverter(resolved.office_timeout_seconds),
+        DocumentShadowEvaluator(
+            AnydocProcessor(PptxLocatorEnricher()),
+            LegacyPptxProcessor(),
+        ),
     )
     saved_transcript_prompt = app.state.generation_repository.prompt_path(PromptKind.TRANSCRIPT)
     transcript_prompt_path = (

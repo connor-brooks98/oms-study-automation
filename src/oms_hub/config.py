@@ -1,7 +1,7 @@
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     study_root: Path = Path(r"%USERPROFILE%\Documents\OMS II")
     icloud_staging_root: Path | None = None
     office_timeout_seconds: int = Field(default=180, ge=30, le=600)
+    document_parser_mode: Literal["legacy", "shadow", "anydoc"] = "shadow"
     max_upload_file_bytes: int = Field(
         default=100 * 1024 * 1024,
         ge=1,

@@ -3,6 +3,9 @@ from pathlib import Path
 
 from oms_hub.config import Settings
 from oms_hub.db import Database
+from oms_hub.document_processing.domain import ParsedDocument, SourceSnapshot
+from oms_hub.document_processing.router import ParserMode
+from oms_hub.document_processing.shadow import DocumentShadowEvaluator
 from oms_hub.domain import LectureKey, StepStatus, V2StepName
 from oms_hub.files.atomic import sha256_file, verified_atomic_copy
 from oms_hub.files.office import OfficeConverter
@@ -24,11 +27,14 @@ class SlidePipeline:
         database: Database,
         settings: Settings,
         converter: OfficeConverter,
+        document_evaluator: DocumentShadowEvaluator | None = None,
     ):
         self.settings = settings
         self.converter = converter
         self.repository = IngestionRepository(database)
         self.catalog = CatalogRepository(database)
+        self.document_evaluator = document_evaluator
+        self.last_document: ParsedDocument | None = None
 
     def process(self, item_id: str) -> StudyRevision:
         item = self.repository.require_item(item_id)
@@ -61,6 +67,7 @@ class SlidePipeline:
                 revision.immutable_source_path,
                 revision.source_sha256,
             )
+            self._evaluate_document(item.original_filename, revision)
             self.catalog.set_step_status(
                 revision.lecture_id,
                 V2StepName.SLIDES_VALIDATED,
@@ -149,6 +156,46 @@ class SlidePipeline:
                 error=str(error),
             )
             raise
+
+    def _evaluate_document(self, title: str, revision: StudyRevision) -> None:
+        if self.document_evaluator is None:
+            return
+        snapshot = SourceSnapshot(
+            id=f"slide-revision-{revision.id}",
+            title=title,
+            path=revision.immutable_source_path,
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            sha256=revision.source_sha256,
+        )
+        destination = (
+            expanded_path(self.settings.data_dir)
+            / "document-processing"
+            / "shadow"
+            / f"{revision.id}-{revision.source_sha256}.json"
+        )
+        try:
+            result = self.document_evaluator.parse(
+                snapshot,
+                expanded_path(self.settings.data_dir)
+                / "document-processing"
+                / "assets"
+                / str(revision.id),
+                ParserMode(self.settings.document_parser_mode),
+            )
+            self.last_document = result.document
+            self.document_evaluator.write_report(result.report, destination)
+        except Exception as error:  # noqa: BLE001 - document analysis must not block filing
+            self.document_evaluator.write_report(
+                {
+                    "source_sha256": revision.source_sha256,
+                    "mode": self.settings.document_parser_mode,
+                    "candidate_error": "document evaluation failed",
+                    "fallback_used": False,
+                    "promotion_blockers": ("document evaluation failed",),
+                    "error_type": type(error).__name__,
+                },
+                destination,
+            )
 
     def _preserve_source(
         self,
