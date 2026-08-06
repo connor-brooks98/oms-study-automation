@@ -130,7 +130,7 @@ function Get-ProjectBuildRevision {
   $Git = Get-Command git.exe -ErrorAction SilentlyContinue
   if (-not $Git) { $Git = Get-Command git -ErrorAction SilentlyContinue }
   if (-not $Git) { return "unreported" }
-  $Revision = & $Git.Source -C $ExpectedProjectRoot rev-parse HEAD 2>$null
+  $Revision = @(& $Git.Source -C $ExpectedProjectRoot rev-parse HEAD 2>$null)
   if ($LASTEXITCODE -ne 0 -or -not $Revision) { return "unreported" }
   return ([string]$Revision[0]).Trim()
 }

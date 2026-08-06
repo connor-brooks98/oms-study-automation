@@ -11,6 +11,20 @@ def test_windows_launcher_exports_runtime_provenance() -> None:
     assert "rev-parse HEAD" in script
 
 
+def test_windows_revision_capture_preserves_the_complete_git_hash() -> None:
+    for relative_path in (
+        "scripts/start-hub.ps1",
+        "scripts/install-windows.ps1",
+    ):
+        script = (ROOT / relative_path).read_text(encoding="utf-8")
+
+        # PowerShell unwraps one line of native-command output to a scalar
+        # string. Indexing that scalar returns its first character, so the
+        # command result must be forced to an array before selecting line 0.
+        assert "$Revision = @(& $Git.Source" in script
+        assert "([string]$Revision[0]).Trim()" in script
+
+
 def test_windows_installer_replaces_old_root_task_action_and_verifies_it() -> None:
     script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
 

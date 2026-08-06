@@ -10,7 +10,7 @@ $Git = Get-Command git.exe -ErrorAction SilentlyContinue
 if (-not $Git) { $Git = Get-Command git -ErrorAction SilentlyContinue }
 $BuildRevision = "unreported"
 if ($Git) {
-  $Revision = & $Git.Source -C $ProjectRoot rev-parse HEAD 2>$null
+  $Revision = @(& $Git.Source -C $ProjectRoot rev-parse HEAD 2>$null)
   if ($LASTEXITCODE -eq 0 -and $Revision) {
     $BuildRevision = ([string]$Revision[0]).Trim()
   }
