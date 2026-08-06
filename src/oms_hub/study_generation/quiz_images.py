@@ -10,7 +10,7 @@ from zipfile import ZipFile
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from oms_hub.files.atomic import verified_atomic_write
+from oms_hub.files.atomic import sha256_file, verified_atomic_write
 from oms_hub.study_generation.studio_domain import (
     StudioQuizImageRequirement,
     StudioSource,
@@ -125,6 +125,35 @@ class StudioQuizImageService:
             safe_name,
         )
         self.repository.bind_image(run_id, image_key, image)
+        return image
+
+    def copy_import_candidate(
+        self,
+        run_id: str,
+        image_key: str,
+        source_title: str,
+        locator: str,
+        description: str,
+        source_path: Path,
+        expected_sha256: str,
+        original_filename: str,
+    ) -> StudioStoredImage:
+        if not source_path.is_file() or sha256_file(source_path) != expected_sha256:
+            raise QuizImageError("selected source image could not be verified")
+        sanitized = sanitize_quiz_image(source_path.read_bytes())
+        path = self.media_root / run_id / f"{image_key}-{sanitized.sha256}.png"
+        verified_atomic_write(sanitized.payload, path)
+        image = StudioStoredImage(
+            path,
+            sanitized.sha256,
+            sanitized.media_type,
+            sanitized.width,
+            sanitized.height,
+            PurePosixPath(original_filename.replace("\\", "/")).name[:500] or "source-image",
+        )
+        self.repository.bind_import_review_image(
+            run_id, image_key, source_title, locator, description, image
+        )
         return image
 
     def auto_bind_from_sources(

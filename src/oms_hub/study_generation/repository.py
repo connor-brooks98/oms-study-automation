@@ -921,6 +921,28 @@ class GenerationRepository:
         run: StudioRunModel,
         quiz: NativeQuiz,
     ) -> PublishedQuizRecord:
+        requirements_by_key = {
+            item.image_key: item
+            for item in session.scalars(
+                select(StudioQuizImageRequirementModel).where(
+                    StudioQuizImageRequirementModel.run_id == run.id
+                )
+            ).all()
+        }
+        active_image_keys = tuple(
+            dict.fromkeys(
+                question.image_ref.key
+                for question in quiz.questions
+                if question.image_ref is not None
+            )
+        )
+        unresolved = [
+            key
+            for key in active_image_keys
+            if not self._stored_image_is_complete(requirements_by_key.get(key))
+        ]
+        if unresolved:
+            raise ValueError("quiz images are still required: " + ", ".join(unresolved))
         model = None
         if run.supersedes_run_id:
             model = session.scalar(
@@ -970,6 +992,31 @@ class GenerationRepository:
             model.payload_json = serialize_native_quiz(quiz)
             model.version += 1
             model.active = True
+        session.flush()
+        session.execute(
+            delete(PublishedQuizMediaModel).where(
+                PublishedQuizMediaModel.quiz_token == model.token
+            )
+        )
+        for image_key in active_image_keys:
+            requirement = requirements_by_key[image_key]
+            assert requirement.asset_path is not None
+            assert requirement.asset_sha256 is not None
+            assert requirement.media_type is not None
+            assert requirement.width is not None
+            assert requirement.height is not None
+            session.add(
+                PublishedQuizMediaModel(
+                    quiz_token=model.token,
+                    image_key=image_key,
+                    path=requirement.asset_path,
+                    sha256=requirement.asset_sha256,
+                    media_type=requirement.media_type,
+                    width=requirement.width,
+                    height=requirement.height,
+                    alt_text=requirement.description,
+                )
+            )
         run.state = StudioRunState.COMPLETE.value
         run.stage = StudioRunStage.COMPLETE.value
         run.published_token = model.token

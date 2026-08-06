@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,8 +20,16 @@ from oms_hub.study_generation.practice_domain import (
     DiagnosticSeverity,
     QuestionDraft,
 )
-from oms_hub.study_generation.quiz_import_worker import _drafts_from_json, _drafts_json
+from oms_hub.study_generation.quiz_import_worker import (
+    _document_from_json,
+    _drafts_from_json,
+    _drafts_json,
+    _extraction_from_json,
+)
 from oms_hub.study_generation.studio_repository import StudioRepository
+
+if TYPE_CHECKING:
+    from oms_hub.study_generation.quiz_images import StudioQuizImageService
 
 _ARTIFACT_KEY = "review:questions"
 
@@ -44,11 +55,161 @@ class ReviewQuestion:
         return self.draft.verified_at
 
 
+@dataclass(frozen=True, slots=True)
+class ImageCandidate:
+    candidate_id: str
+    question_id: str
+    source_id: str
+    source_title: str
+    asset_key: str
+    locator: str
+    origin: str
+    media_type: str
+    width: int | None
+    height: int | None
+    score: int
+    exact_match: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _ImageCandidateBinding:
+    """Server-only resolution metadata; this type is never serialized."""
+
+    candidate: ImageCandidate
+    path: Path
+    sha256: str
+
+
 class PracticeReviewService:
     """One server-owned review model used by API, preview, and publication gates."""
 
-    def __init__(self, repository: StudioRepository) -> None:
+    def __init__(
+        self,
+        repository: StudioRepository,
+        image_service: StudioQuizImageService | None = None,
+    ) -> None:
         self.repository = repository
+        self.image_service = image_service
+
+    def set_image_service(self, image_service: StudioQuizImageService) -> None:
+        self.image_service = image_service
+
+    def candidates(self, run_id: str, question_id: str) -> tuple[ImageCandidate, ...]:
+        question = self.question(run_id, question_id)
+        return tuple(item.candidate for item in self._candidate_bindings(run_id, question))
+
+    def _candidate_bindings(
+        self, run_id: str, question: ReviewQuestion
+    ) -> tuple[_ImageCandidateBinding, ...]:
+        """Resolve media solely from immutable ``parse:{source_id}`` artifacts."""
+        references = question.draft.source_refs
+        explicit = self._candidate_asset_keys(run_id, question.draft)
+        bindings: dict[tuple[str, str], _ImageCandidateBinding] = {}
+        for reference in references:
+            artifact = self.repository.run_artifact(run_id, f"parse:{reference.source_id}")
+            if artifact is None:
+                continue
+            document = _document_from_json(artifact.payload_json)
+            source = self.repository.get(reference.source_id)
+            source_title = source.title if source is not None else reference.source_id
+            exact_locator = _locator_key(reference.locator)
+            adjacent_asset_keys = _adjacent_asset_keys(document, reference.segment_key)
+            for asset in document.assets:
+                if asset.path is None or not asset.path.is_file():
+                    continue
+                asset_locator = _locator_key(asset.locator)
+                exact = bool(exact_locator and asset_locator and exact_locator == asset_locator)
+                explicit_citation = (reference.source_id, asset.key) in explicit
+                adjacent = asset.key in adjacent_asset_keys
+                if not (exact or explicit_citation or adjacent):
+                    continue
+                score = 3 if exact else 2 if explicit_citation else 1
+                candidate_id = "candidate-" + hashlib.sha256(
+                    f"{question.draft.question_id}:{reference.source_id}:{asset.key}".encode()
+                ).hexdigest()[:32]
+                candidate = ImageCandidate(
+                    candidate_id,
+                    question.draft.question_id,
+                    reference.source_id,
+                    source_title,
+                    asset.key,
+                    asset.locator.label,
+                    _origin(asset.origin),
+                    asset.media_type,
+                    asset.width,
+                    asset.height,
+                    score,
+                    exact,
+                )
+                binding = _ImageCandidateBinding(candidate, asset.path, asset.sha256)
+                prior = bindings.get((reference.source_id, asset.key))
+                if prior is None or binding.candidate.score > prior.candidate.score:
+                    bindings[(reference.source_id, asset.key)] = binding
+        return tuple(
+            sorted(
+                bindings.values(),
+                key=lambda item: (
+                    -item.candidate.score,
+                    item.candidate.source_title.casefold(),
+                    item.candidate.locator.casefold(),
+                    item.candidate.asset_key,
+                ),
+            )
+        )
+
+    def select_image_candidate(
+        self, run_id: str, question_id: str, candidate_id: str
+    ) -> ReviewQuestion:
+        if self.image_service is None:
+            raise ValueError("imported image review is not configured")
+        current = self.question(run_id, question_id)
+        binding = next(
+            (
+                item
+                for item in self._candidate_bindings(run_id, current)
+                if item.candidate.candidate_id == candidate_id
+            ),
+            None,
+        )
+        if binding is None:
+            raise ValueError("image candidate is not available for this question")
+        candidate = binding.candidate
+        image_key = (
+            current.draft.image_ref.key
+            if current.draft.image_ref is not None
+            else _image_key(question_id)
+        )
+        if len(image_key) > 64:
+            raise ValueError("image requirement key is invalid")
+        self.image_service.copy_import_candidate(
+            run_id,
+            image_key,
+            candidate.source_title,
+            candidate.locator,
+            f"Imported image from {candidate.source_title}",
+            binding.path,
+            binding.sha256,
+            candidate.asset_key,
+        )
+        chosen = QuizImageRef(
+            image_key,
+            candidate.source_title,
+            candidate.locator,
+            f"Imported image from {candidate.source_title}",
+        )
+        updated = replace(
+            current,
+            chosen_image=chosen,
+            draft=replace(current.draft, image_ref=chosen),
+        )
+        self._save(
+            run_id,
+            tuple(
+                updated if item.draft.question_id == question_id else item
+                for item in self.review(run_id)
+            ),
+        )
+        return updated
 
     def store(self, run_id: str, drafts: tuple[QuestionDraft, ...]) -> None:
         self._save(run_id, tuple(ReviewQuestion(draft) for draft in drafts))
@@ -60,9 +221,90 @@ class PracticeReviewService:
         normalized = self.repository.run_artifact(run_id, "normalized")
         if normalized is None:
             raise KeyError(run_id)
-        questions = tuple(ReviewQuestion(draft) for draft in _drafts_from_json(normalized.payload_json))  # noqa: E501
+        questions = self._initialize_image_requirements(
+            run_id,
+            _drafts_from_json(normalized.payload_json),
+        )
         self._save(run_id, questions)
-        return questions
+        self._auto_select_unique_exact_candidate(run_id, questions)
+        stored = self.repository.run_artifact(run_id, _ARTIFACT_KEY)
+        assert stored is not None
+        return _questions_from_json(stored.payload_json)
+
+    def _initialize_image_requirements(
+        self, run_id: str, drafts: tuple[QuestionDraft, ...]
+    ) -> tuple[ReviewQuestion, ...]:
+        """Turn extraction-level image citations into stable review requirements."""
+        initialized: list[ReviewQuestion] = []
+        for draft in drafts:
+            explicit = self._candidate_asset_keys(run_id, draft)
+            if draft.image_ref is not None or not explicit:
+                initialized.append(ReviewQuestion(draft))
+                continue
+            source_id, asset_key = sorted(explicit)[0]
+            source = self.repository.get(source_id)
+            source_ref = next(
+                (item for item in draft.source_refs if item.source_id == source_id),
+                None,
+            )
+            initialized.append(
+                ReviewQuestion(
+                    replace(
+                        draft,
+                        image_ref=QuizImageRef(
+                            _image_key(draft.question_id),
+                            source.title if source is not None else source_id,
+                            source_ref.locator if source_ref is not None else asset_key,
+                            "Imported candidate image",
+                        ),
+                    )
+                )
+            )
+        return tuple(initialized)
+
+    def _auto_select_unique_exact_candidate(
+        self, run_id: str, questions: tuple[ReviewQuestion, ...]
+    ) -> None:
+        """A unique exact source/page match is the only safe automatic selection."""
+        if self.image_service is None:
+            return
+        for question in questions:
+            if question.draft.image_ref is None or question.chosen_image is not None:
+                continue
+            exact = tuple(
+                item
+                for item in self._candidate_bindings(run_id, question)
+                if item.candidate.exact_match
+            )
+            if len(exact) == 1:
+                self.select_image_candidate(
+                    run_id,
+                    question.draft.question_id,
+                    exact[0].candidate.candidate_id,
+                )
+
+    def _candidate_asset_keys(
+        self, run_id: str, draft: QuestionDraft
+    ) -> frozenset[tuple[str, str]]:
+        artifact = self.repository.run_artifact(run_id, "extract")
+        if artifact is None:
+            return frozenset()
+        extraction = _extraction_from_json(artifact.payload_json)
+        matches = [
+            index
+            for index, question in enumerate(extraction.questions)
+            if extraction.question_source_refs[index] == draft.source_refs
+            and (
+                question.original_identifier == draft.original_identifier
+                or question.stem == draft.stem
+            )
+        ]
+        if len(matches) != 1:
+            return frozenset()
+        return frozenset(
+            (citation.source_id, citation.asset_key)
+            for citation in extraction.questions[matches[0]].candidate_assets
+        )
 
     def question(self, run_id: str, question_id: str) -> ReviewQuestion:
         return self._find(self.review(run_id), question_id)
@@ -80,7 +322,6 @@ class PracticeReviewService:
             "topic",
             "area",
             "learning_objective",
-            "chosen_image",
         }
         unknown = set(values) - allowed
         if unknown:
@@ -113,7 +354,7 @@ class PracticeReviewService:
             _optional_text(values.get("topic", current.topic)),
             _optional_text(values.get("area", current.area)),
             _optional_text(values.get("learning_objective", current.learning_objective)),
-            _image_ref(values.get("chosen_image", current.chosen_image)),
+            current.chosen_image,
         )
         questions = tuple(
             updated if item.draft.question_id == question_id else item for item in self.review(run_id)  # noqa: E501
@@ -261,6 +502,47 @@ def _image_ref(value: object) -> QuizImageRef | None:
         )
     except KeyError as error:
         raise ValueError("chosen image is invalid") from error
+
+
+def _locator_key(value: object) -> tuple[str, int] | None:
+    """Normalize page/slide references without treating arbitrary labels as equal."""
+    page_number = getattr(value, "page_number", None)
+    slide_number = getattr(value, "slide_number", None)
+    if isinstance(page_number, int):
+        return ("page", page_number)
+    if isinstance(slide_number, int):
+        return ("slide", slide_number)
+    if not isinstance(value, str):
+        return None
+    match = re.search(r"\b(page|p|slide|s)\s*(\d+)\b", value.casefold())
+    if match is None:
+        return None
+    kind = "slide" if match.group(1) in {"slide", "s"} else "page"
+    return (kind, int(match.group(2)))
+
+
+def _adjacent_asset_keys(document: object, segment_key: str) -> frozenset[str]:
+    segments = tuple(getattr(document, "segments", ()))
+    segment = next((item for item in segments if item.key == segment_key), None)
+    if segment is None:
+        return frozenset()
+    keys = set(segment.asset_keys)
+    neighbor_keys = {segment.previous_key, segment.next_key}
+    for neighbor in segments:
+        if neighbor.key in neighbor_keys:
+            keys.update(neighbor.asset_keys)
+    return frozenset(keys)
+
+
+def _origin(value: str | None) -> str:
+    """Keep parser provenance labels intact while making omitted provenance explicit."""
+    return value or "embedded"
+
+
+def _image_key(question_id: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", question_id.casefold()).strip("-") or "question"
+    digest = hashlib.sha256(question_id.encode("utf-8")).hexdigest()[:12]
+    return f"import-{slug[:40]}-{digest}"[:64]
 
 
 def _questions_json(questions: tuple[ReviewQuestion, ...]) -> str:

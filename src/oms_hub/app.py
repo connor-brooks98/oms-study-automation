@@ -588,6 +588,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.studio_repository,
         resolved.data_dir / "studio-quiz-media",
     )
+    app.state.practice_review.set_image_service(app.state.studio_quiz_image_service)
     # Direct import deliberately parses immutable local snapshots.  The URL
     # snapshotter is shared with StudioService only for safe web-image assets;
     # acquisition itself has already completed before a run is queued.

@@ -965,6 +965,47 @@ class StudioRepository:
             session.flush()
             return self._review_domain(session, run)
 
+    def bind_import_review_image(
+        self,
+        run_id: str,
+        image_key: str,
+        source_title: str,
+        locator: str,
+        description: str,
+        image: StudioStoredImage,
+    ) -> None:
+        """Persist sanitized candidate media for a direct-import review run."""
+        with self.database.session() as session:
+            run = session.get(StudioRunModel, run_id)
+            if run is None:
+                raise KeyError(run_id)
+            if (
+                run.workflow_kind != QuizWorkflowKind.DIRECT_IMPORT.value
+                or run.state != StudioRunState.AWAITING_REVIEW.value
+            ):
+                raise ValueError("imported quiz is not awaiting question review")
+            requirement = session.scalar(
+                select(StudioQuizImageRequirementModel).where(
+                    StudioQuizImageRequirementModel.run_id == run_id,
+                    StudioQuizImageRequirementModel.image_key == image_key,
+                )
+            )
+            if requirement is None:
+                requirement = StudioQuizImageRequirementModel(
+                    run_id=run_id,
+                    image_key=image_key,
+                    source_title=source_title,
+                    locator=locator,
+                    description=description,
+                )
+                session.add(requirement)
+            requirement.asset_path = str(image.path)
+            requirement.asset_sha256 = image.sha256
+            requirement.media_type = image.media_type
+            requirement.width = image.width
+            requirement.height = image.height
+            requirement.original_filename = image.original_filename
+
     def set_image_override(
         self,
         run_id: str,

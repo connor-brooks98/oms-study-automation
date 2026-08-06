@@ -1,15 +1,39 @@
+from dataclasses import asdict, replace
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from oms_hub.db import Database
+from oms_hub.document_processing.domain import (
+    DocumentLocator,
+    ParsedAsset,
+    ParsedDocument,
+    ParsedSegment,
+    SegmentKind,
+)
+from oms_hub.files.atomic import sha256_file
 from oms_hub.models import StudioRunModel
+from oms_hub.study_generation.domain import QuizImageRef
+from oms_hub.study_generation.practice_contracts import (
+    AssetCitation,
+    ExtractedQuestion,
+    SegmentCitation,
+)
 from oms_hub.study_generation.practice_domain import (
     AnswerProvenance,
     QuestionDraft,
     QuestionSourceRef,
 )
+from oms_hub.study_generation.practice_extraction import ExtractionResult
 from oms_hub.study_generation.practice_review import PracticeReviewService
+from oms_hub.study_generation.quiz_images import StudioQuizImageService
+from oms_hub.study_generation.quiz_import_worker import (
+    _document_json,
+    _drafts_json,
+    _extraction_json,
+)
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.studio_repository import StudioRepository
 
@@ -54,6 +78,61 @@ def _draft(question_id: str, *, generated: bool) -> QuestionDraft:
         generated,
         None,
     )
+
+
+def _candidate_asset(tmp_path: Path) -> tuple[Path, ParsedDocument]:
+    payload = BytesIO()
+    Image.new("RGB", (2, 3), "red").save(payload, format="PNG")
+    path = tmp_path / "candidate.png"
+    path.write_bytes(payload.getvalue())
+    asset = ParsedAsset(
+        "asset-1",
+        path,
+        "image/png",
+        sha256_file(path),
+        DocumentLocator("page 1 image", page_number=1),
+        2,
+        3,
+        "full-slide-render",
+    )
+    return path, ParsedDocument(
+        "source",
+        "a" * 64,
+        "pdf",
+        "test",
+        "1",
+        (
+            ParsedSegment(
+                "segment",
+                SegmentKind.PARAGRAPH,
+                "question source",
+                DocumentLocator("page 1", page_number=1),
+                (asset.key,),
+            ),
+        ),
+        (asset,),
+        (),
+    )
+
+
+def _image_review_service(tmp_path: Path) -> tuple[PracticeReviewService, Path]:
+    service = _service(tmp_path)
+    path, document = _candidate_asset(tmp_path)
+    service.repository.save_run_artifact(
+        "run-1",
+        "parse:source",
+        "b" * 64,
+        _document_json(document),
+    )
+    service.set_image_service(StudioQuizImageService(service.repository, tmp_path / "quiz-media"))
+    draft = _draft("q1", generated=False)
+    service.store(
+        "run-1",
+        (
+            replace(draft, image_ref=QuizImageRef("manual-image", "source", "page 1", "image")),
+        ),
+    )
+    return service, path
 
 
 def test_generated_answer_blocks_until_same_question_is_verified(tmp_path: Path) -> None:
@@ -123,6 +202,103 @@ def test_blocker_free_direct_review_publishes_without_private_review_fields(tmp_
         payload = session.get(StudioRunModel, "run-1")
         assert payload is not None
         assert payload.published_token == published.token
+
+
+def test_import_candidates_hide_paths_and_selecting_one_publishes_media(tmp_path: Path) -> None:
+    service, _ = _image_review_service(tmp_path)
+
+    candidates = service.candidates("run-1", "q1")
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.exact_match is True
+    assert candidate.origin == "full-slide-render"
+    assert "path" not in asdict(candidate)
+    updated = service.select_image_candidate("run-1", "q1", candidate.candidate_id)
+    assert updated.chosen_image is not None
+    assert updated.chosen_image.key == "manual-image"
+
+    publisher = GenerationRepository(service.repository.database, practice_review=service)
+    published = publisher.publish_reviewed_studio_quiz("run-1")
+    media = publisher.published_quiz_media(published.token)
+    assert len(media) == 1
+    assert media[0].image_key == updated.chosen_image.key
+    assert media[0].path.is_file()
+
+
+def test_import_candidate_selection_rejects_changed_source_file(tmp_path: Path) -> None:
+    service, path = _image_review_service(tmp_path)
+    candidate = service.candidates("run-1", "q1")[0]
+    path.write_bytes(b"not the parsed image")
+
+    with pytest.raises(ValueError, match="could not be verified"):
+        service.select_image_candidate("run-1", "q1", candidate.candidate_id)
+    assert service.question("run-1", "q1").chosen_image is None
+
+
+def test_extraction_candidate_citation_creates_a_stable_image_requirement(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    _, document = _candidate_asset(tmp_path)
+    draft = _draft("q1", generated=False)
+    extracted = ExtractedQuestion(
+        original_identifier="q1",
+        stem=draft.stem,
+        choices=draft.choices,
+        supplied_correct_index=0,
+        rationale=draft.rationale,
+        source_segments=(SegmentCitation(source_id="source", segment_key="segment"),),
+        candidate_assets=(AssetCitation(source_id="source", asset_key="asset-1"),),
+        confidence=0.8,
+    )
+    service.repository.save_run_artifact(
+        "run-1", "parse:source", "b" * 64, _document_json(document)
+    )
+    service.repository.save_run_artifact(
+        "run-1",
+        "extract",
+        "c" * 64,
+        _extraction_json(ExtractionResult((extracted,), (), (draft.source_refs,), (), ())),
+    )
+    service.repository.save_run_artifact("run-1", "normalized", "d" * 64, _drafts_json((draft,)))
+
+    reviewed = service.review("run-1")[0]
+
+    assert reviewed.draft.image_ref is not None
+    assert reviewed.draft.image_ref.key.startswith("import-")
+    assert len(reviewed.draft.image_ref.key) <= 64
+    assert service.blockers("run-1") == ("q1: required image is unresolved",)
+
+
+def test_review_auto_selects_only_a_unique_exact_candidate(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    _, document = _candidate_asset(tmp_path)
+    draft = _draft("q1", generated=False)
+    extracted = ExtractedQuestion(
+        original_identifier="q1",
+        stem=draft.stem,
+        choices=draft.choices,
+        supplied_correct_index=0,
+        rationale=draft.rationale,
+        source_segments=(SegmentCitation(source_id="source", segment_key="segment"),),
+        candidate_assets=(AssetCitation(source_id="source", asset_key="asset-1"),),
+        confidence=0.8,
+    )
+    service.repository.save_run_artifact(
+        "run-1", "parse:source", "b" * 64, _document_json(document)
+    )
+    service.repository.save_run_artifact(
+        "run-1",
+        "extract",
+        "c" * 64,
+        _extraction_json(ExtractionResult((extracted,), (), (draft.source_refs,), (), ())),
+    )
+    service.repository.save_run_artifact("run-1", "normalized", "d" * 64, _drafts_json((draft,)))
+    service.set_image_service(StudioQuizImageService(service.repository, tmp_path / "quiz-media"))
+
+    reviewed = service.review("run-1")[0]
+
+    assert reviewed.chosen_image is not None
+    assert service.blockers("run-1") == ()
 
 
 @pytest.mark.parametrize(
