@@ -148,6 +148,23 @@ def test_generated_answer_blocks_until_same_question_is_verified(tmp_path: Path)
     assert service.blockers(run_id) == ()
 
 
+def test_missing_answer_is_not_mislabeled_as_ai_generated(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    draft = replace(
+        _draft("q1", generated=False),
+        correct_index=None,
+        rationale=None,
+        answer_provenance=None,
+        verification_required=True,
+    )
+    service.store("run-1", (draft,))
+
+    blockers = service.blockers("run-1")
+
+    assert "q1: answer is missing" in blockers
+    assert "q1: AI-generated answer requires verification" not in blockers
+
+
 def test_editing_answer_clears_verification_and_marks_manual(tmp_path: Path) -> None:
     service = _service(tmp_path)
     run_id = "run-1"

@@ -366,7 +366,7 @@ class GeneratedCardResolution(CardCentricContract):
     card_id: str = Field(min_length=1)
     concept_id: str = Field(pattern=r"^C[0-9]{2,4}$")
     fact_id: str = Field(pattern=r"^C[0-9]{2,4}-M[0-9]{1,4}$")
-    text: str = Field(min_length=1)
+    text: str = ""
     extra: str = ""
     source_passage_ids: tuple[str, ...] = Field(min_length=1)
     evidence_ids: tuple[str, ...] = ()
@@ -378,6 +378,8 @@ class GeneratedCardResolution(CardCentricContract):
 
     @model_validator(mode="after")
     def generated_resolution_integrity(self) -> "GeneratedCardResolution":
+        if self.status == "generated" and not self.text.strip():
+            raise ValueError("generated card text must not be blank")
         if self.status == "duplicate_of_existing" and (
             self.duplicate_of_existing_note_id is None
             and self.duplicate_of_generated_card_id is None

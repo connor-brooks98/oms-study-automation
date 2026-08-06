@@ -131,6 +131,33 @@ def test_web_processor_keeps_all_16_numbered_blogger_question_blocks(tmp_path: P
     assert all("Popular posts" not in segment.text for segment in parsed.segments)
 
 
+def test_web_processor_keeps_blogger_answer_text_separated_by_breaks(tmp_path: Path) -> None:
+    source = tmp_path / "blogger-answers.html"
+    source.write_text(
+        "<html><body><div class='post-body entry-content'>"
+        "1. E. First rationale with <a href='/one'>linked evidence</a>.<br>\n<br>"
+        "2. B. Second rationale.<br>\n<br>"
+        "<div>7. D. Seventh rationale.</div>\n<br>\n"
+        "8. E. Eighth rationale.<br>\n<br>"
+        "16. C. See discussions for questions 14 and 15.<br>\n<br>"
+        "<a href='/questions'>Back to questions</a>"
+        "</div></body></html>",
+        encoding="utf-8",
+    )
+
+    parsed = WebProcessor(_FailingAssetService()).parse(_snapshot(source), tmp_path / "assets")
+
+    assert parsed.parser_version == "2"
+    assert tuple(segment.text for segment in parsed.segments) == (
+        "1. E. First rationale with linked evidence .",
+        "2. B. Second rationale.",
+        "7. D. Seventh rationale.",
+        "8. E. Eighth rationale.",
+        "16. C. See discussions for questions 14 and 15.",
+        "Back to questions",
+    )
+
+
 def test_web_processor_prefers_nested_post_body_over_outer_main_chrome(tmp_path: Path) -> None:
     source = tmp_path / "nested-content-root.html"
     source.write_text(

@@ -21,6 +21,7 @@ from oms_hub.anki.card_centric_contracts import (
     CardConceptLedger,
     CardRecord,
     CensusTrust,
+    GeneratedCardResolution,
     SnapshotCensus,
 )
 from oms_hub.anki.domain import SourceKind
@@ -205,6 +206,21 @@ def test_census_blocks_exactly_at_the_three_percent_boundary() -> None:
 
     assert census.trust.untagged_rate == 0.03
     assert census.trust.decision == "blocked"
+
+
+def test_unresolved_generated_card_resolution_allows_empty_card_text() -> None:
+    resolution = GeneratedCardResolution(
+        card_id="CC-unresolved",
+        concept_id="C01",
+        fact_id="C01-M1",
+        text="",
+        source_passage_ids=("UNRESOLVED",),
+        status="unresolved",
+        reason="source evidence is insufficient",
+    )
+
+    assert resolution.status == "unresolved"
+    assert resolution.text == ""
 
 
 def test_tag_scope_is_a_complete_deterministic_partition() -> None:

@@ -30,7 +30,7 @@ class WebProcessor:
     """Normalize a saved HTML response; it never fetches or executes the page itself."""
 
     name = "web"
-    version = "1"
+    version = "2"
 
     def __init__(self, snapshot_service: AssetSnapshotter) -> None:
         self.snapshot_service = snapshot_service
@@ -84,7 +84,20 @@ class WebProcessor:
         remaining_bytes = max(self.snapshot_service.max_bytes - snapshot.path.stat().st_size, 0)
         for node in _nodes_in_document_order(content_root):
             tag = (node.tag or "").casefold()
-            if tag in {"h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "table"}:
+            if _starts_loose_text_run(node, content_root):
+                text = _loose_text_run(node)
+                if text:
+                    segments.append(
+                        ParsedSegment(
+                            key=f"block-{len(segments) + 1}",
+                            kind=SegmentKind.PARAGRAPH,
+                            text=text,
+                            locator=DocumentLocator(
+                                f"block {len(segments) + 1}", block_index=len(segments) + 1
+                            ),
+                        )
+                    )
+            elif tag in {"h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "table"}:
                 text = _visible_text(node) if tag != "table" else _table_text(node)
                 if text:
                     segments.append(
@@ -210,6 +223,69 @@ def _is_leaf_text_div(node: Node) -> bool:
         in {"h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "table", "div"}
         for child in _nodes_in_document_order(node, include_root=False)
     )
+
+
+_LOOSE_TEXT_BOUNDARY_TAGS = {
+    "article",
+    "div",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "img",
+    "li",
+    "ol",
+    "p",
+    "section",
+    "table",
+    "ul",
+}
+
+
+def _starts_loose_text_run(node: Node, content_root: Node) -> bool:
+    parent = node.parent
+    if parent is None or parent.mem_id != content_root.mem_id:
+        return False
+    tag = (node.tag or "").casefold()
+    if tag == "br" or tag in _LOOSE_TEXT_BOUNDARY_TAGS or not _visible_text(node):
+        return False
+    previous = node.prev
+    break_count = 0
+    while previous is not None:
+        previous_tag = (previous.tag or "").casefold()
+        if previous_tag == "br":
+            break_count += 1
+        elif _visible_text(previous):
+            break
+        previous = previous.prev
+    return (
+        previous is None
+        or break_count >= 2
+        or (previous.tag or "").casefold() in _LOOSE_TEXT_BOUNDARY_TAGS
+    )
+
+
+def _loose_text_run(start: Node) -> str:
+    parts: list[str] = []
+    break_count = 0
+    node: Node | None = start
+    while node is not None:
+        tag = (node.tag or "").casefold()
+        if tag in _LOOSE_TEXT_BOUNDARY_TAGS:
+            break
+        if tag == "br":
+            break_count += 1
+            if break_count >= 2:
+                break
+        else:
+            text = _visible_text(node)
+            if text:
+                parts.append(text)
+                break_count = 0
+        node = node.next
+    return " ".join(parts)
 
 
 def _nodes_in_document_order(root: Node, *, include_root: bool = True):

@@ -475,7 +475,11 @@ def _blockers(questions: tuple[ReviewQuestion, ...]) -> tuple[str, ...]:
         for diagnostic in draft.diagnostics:
             if diagnostic.severity is DiagnosticSeverity.BLOCKER:
                 blockers.append(prefix + diagnostic.message)
-        if draft.verification_required and not draft.verified_at:
+        if (
+            draft.correct_index is not None
+            and draft.verification_required
+            and not draft.verified_at
+        ):
             blockers.append(prefix + "AI-generated answer requires verification")
         if draft.image_ref is not None and question.chosen_image is None:
             blockers.append(prefix + "required image is unresolved")
