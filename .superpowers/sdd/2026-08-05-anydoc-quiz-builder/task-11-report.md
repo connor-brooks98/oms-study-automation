@@ -30,13 +30,42 @@ failures.
 
 ## Judgment calls
 
-- The UI sends `workflow_kind: direct_import` as explicit client intent even
-  though the established import endpoint already selects that workflow. This
-  remains forward-compatible with its current request model while making the
-  browser contract unambiguous.
+- The import payload deliberately omits `workflow_kind`: the existing
+  `/studio/import/runs` contract derives direct-import handling and its request
+  model does not accept that field. A regression test asserts the exact payload
+  key set.
 - Imported snapshot rows are removable from the pending run locally. This does
   not delete the saved server snapshot, avoiding accidental loss before a user
   queues the run.
+
+## Final correction
+
+Both review pages now return to **Quiz Builder** rather than the obsolete
+NotebookLM Studio name. Dynamically added source-role selects receive unique
+IDs and visible `Role` labels associated through `for`, with a JavaScript
+regression test covering that relationship.
+
+Final-correction verification:
+
+```text
+./.venv/bin/pytest -q tests/v2/test_quiz_builder_routes.py
+9 passed
+
+./.venv/bin/pytest -q tests/study_generation tests/v2
+passed
+
+node --test tests/js/notebook_studio.test.js tests/js/studio_quiz_review.test.js tests/js/studio_quiz_images.test.js tests/js/public_quiz.test.js
+26 passed
+
+./.venv/bin/mypy src/oms_hub/web/studio_routes.py
+Success: no issues found in 1 source file
+
+./.venv/bin/ruff check src/oms_hub/web/studio_routes.py tests/v2/test_quiz_builder_routes.py
+All checks passed!
+
+git diff --check
+passed
+```
 
 ## Verification
 

@@ -229,7 +229,6 @@
     destination_subject: destinationCourse.value,
     destination_exam_number: Number(destinationExam.value),
     content_kind: "practice_questions",
-    workflow_kind: "direct_import",
     sources: Array.from(rows, (row) => ({
       source_id: row.dataset.sourceId,
       role: row.querySelector("[data-import-row-role]")?.value || row.dataset.role,
@@ -246,7 +245,11 @@
     const title = documentRef.createElement("span");
     title.textContent = source.title || source.id;
     const select = documentRef.createElement("select");
+    select.id = `import-source-role-${source.id}`;
     select.dataset.importRowRole = "true";
+    const roleLabel = documentRef.createElement("label");
+    roleLabel.htmlFor = select.id;
+    roleLabel.textContent = "Role";
     [
       ["questions", "Questions"], ["answer_key", "Answer key"],
       ["supporting_reference", "Supporting reference"],
@@ -269,7 +272,7 @@
       notebook.disabled = !importRoleAllowsNotebook(select.value);
       if (notebook.disabled) notebook.checked = false;
     });
-    row.append(title, select, notebookLabel, remove);
+    row.append(title, roleLabel, select, notebookLabel, remove);
     list.append(row);
   };
 
@@ -692,6 +695,7 @@
   };
 
   const api = {
+    appendImportSource,
     buildRunPayload,
     buildImportRunPayload,
     applyImportRoleState,

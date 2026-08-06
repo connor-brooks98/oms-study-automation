@@ -14,13 +14,19 @@ class Element {
     this.checked = false;
     this.type = "";
     this.href = "";
+    this.id = "";
+    this.htmlFor = "";
   }
 
   append(...items) { this.children.push(...items); }
   replaceChildren(...items) { this.children = items; }
+  addEventListener() {}
 }
 
-const documentRef = { createElement: (tag) => new Element(tag) };
+const documentRef = {
+  createElement: (tag) => new Element(tag),
+  createTextNode: (text) => ({ textContent: text }),
+};
 
 test("import payload preserves explicit question and answer roles", () => {
   const rows = [
@@ -33,12 +39,30 @@ test("import payload preserves explicit question and answer roles", () => {
     { value: "Neuro" }, { value: "1" }, { value: "Neuro" }, { value: "1" }, rows,
   );
 
-  assert.equal(payload.workflow_kind, "direct_import");
+  assert.deepEqual(Object.keys(payload).sort(), [
+    "content_kind", "destination_exam_number", "destination_subject", "exam_number",
+    "label", "sources", "subject",
+  ]);
   assert.equal(payload.content_kind, "practice_questions");
   assert.deepEqual(payload.sources, [
     { source_id: "questions-id", role: "questions", attach_to_notebook: false },
     { source_id: "answers-id", role: "answer_key", attach_to_notebook: false },
   ]);
+});
+
+test("dynamic imported-source role select has a visible associated label", () => {
+  const list = new Element("ul");
+  list.querySelector = () => null;
+
+  studio.appendImportSource(documentRef, list, { id: "source-42", title: "Exam PDF" }, "questions", false);
+
+  const row = list.children[0];
+  const roleLabel = row.children[1];
+  const roleSelect = row.children[2];
+  assert.equal(roleLabel.tagName, "label");
+  assert.equal(roleLabel.textContent, "Role");
+  assert.equal(roleLabel.htmlFor, roleSelect.id);
+  assert.equal(roleSelect.id, "import-source-role-source-42");
 });
 
 test("role changes clear and disable NotebookLM use for question and answer-key sources", () => {

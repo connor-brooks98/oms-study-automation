@@ -201,6 +201,7 @@ def test_direct_review_data_is_safe_and_edits_and_verification_require_csrf(tmp_
 
     assert page.status_code == 200
     assert "Review imported questions" in page.text
+    assert "Back to Quiz Builder" in page.text
     assert data.status_code == 200
     question = data.json()["questions"][0]
     assert question["source_refs"] == [
@@ -262,6 +263,7 @@ def test_direct_review_rejects_wrong_state_and_notebook_review_stays_compatible(
     assert redirected.headers["location"] == "/studio/runs/notebook-run/review"
     assert notebook.status_code == 200
     assert "data-image-review-page" in notebook.text
+    assert "Back to Quiz Builder" in notebook.text
 
 
 def test_candidate_preview_is_question_scoped_and_selection_is_csrf_protected(tmp_path) -> None:
