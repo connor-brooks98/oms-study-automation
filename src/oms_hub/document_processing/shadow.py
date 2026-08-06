@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,13 +117,12 @@ class DocumentShadowEvaluator:
     def compare(self, snapshot: SourceSnapshot, asset_root: Path) -> ShadowComparison:
         started = perf_counter()
         legacy_document, legacy_error, legacy_duration = self._parse(
-            self.legacy, snapshot, asset_root / "legacy"
+            self.legacy, snapshot, asset_root / "legacy", "legacy"
         )
         candidate_document, candidate_error, candidate_duration = self._parse(
-            self.candidate, snapshot, asset_root / "candidate"
+            self.candidate, snapshot, asset_root / "candidate", "candidate"
         )
-        blockers = list(_document_blockers(legacy_document, "legacy"))
-        blockers.extend(_document_blockers(candidate_document, "candidate"))
+        blockers = list(_comparison_blockers(legacy_document, candidate_document))
         if legacy_error:
             blockers.append("legacy parser failed")
         if candidate_error:
@@ -141,6 +139,7 @@ class DocumentShadowEvaluator:
             ),
             "candidate_error": candidate_error,
             "fallback_used": False,
+            "degraded": False,
             "promotion_blockers": tuple(sorted(set(blockers))),
         }
         return ShadowComparison(legacy_document, candidate_document, report)
@@ -149,10 +148,14 @@ class DocumentShadowEvaluator:
         comparison = self.compare(snapshot, asset_root)
         report = dict(comparison.report)
         report["mode"] = ParserMode.ANYDOC.value
-        if comparison.candidate_document is not None:
+        if (
+            comparison.candidate_document is not None
+            and not report["promotion_blockers"]
+        ):
             return ShadowParseResult(comparison.candidate_document, report, False)
         if comparison.legacy_document is not None:
             report["fallback_used"] = True
+            report["degraded"] = True
             return ShadowParseResult(comparison.legacy_document, report, True)
         raise ValueError("both candidate and legacy document parsers failed")
 
@@ -164,12 +167,78 @@ class DocumentShadowEvaluator:
     ) -> ShadowParseResult:
         if mode is ParserMode.ANYDOC:
             return self.parse_primary(snapshot, asset_root)
+        if mode is ParserMode.LEGACY:
+            legacy_document, legacy_error, legacy_duration = self._parse(
+                self.legacy, snapshot, asset_root / "legacy", "legacy"
+            )
+            if legacy_document is None:
+                raise ValueError("legacy document parser failed")
+            report = self._report(
+                snapshot,
+                ParserMode.LEGACY,
+                legacy_document,
+                legacy_error,
+                legacy_duration,
+                None,
+                None,
+                0.0,
+                (),
+            )
+            return ShadowParseResult(legacy_document, report, False)
         comparison = self.compare(snapshot, asset_root)
         if comparison.legacy_document is None:
             raise ValueError("legacy document parser failed")
         report = dict(comparison.report)
         report["mode"] = mode.value
         return ShadowParseResult(comparison.legacy_document, report, False)
+
+    def _report(
+        self,
+        snapshot: SourceSnapshot,
+        mode: ParserMode,
+        legacy_document: ParsedDocument | None,
+        legacy_error: str | None,
+        legacy_duration: float,
+        candidate_document: ParsedDocument | None,
+        candidate_error: str | None,
+        candidate_duration: float,
+        blockers: tuple[str, ...],
+    ) -> dict[str, object]:
+        return {
+            "source_sha256": snapshot.sha256,
+            "mode": mode.value,
+            "duration_ms": round(legacy_duration + candidate_duration, 3),
+            "legacy": _document_report(
+                legacy_document, self.legacy, legacy_duration, legacy_error
+            ),
+            "candidate": _document_report(
+                candidate_document, self.candidate, candidate_duration, candidate_error
+            ),
+            "candidate_error": candidate_error,
+            "fallback_used": False,
+            "degraded": False,
+            "promotion_blockers": tuple(sorted(set(blockers))),
+        }
+
+    def exceptional_report(
+        self,
+        source_sha256: str,
+        mode: ParserMode,
+        diagnostic_code: str,
+    ) -> dict[str, object]:
+        return {
+            "source_sha256": source_sha256,
+            "mode": mode.value,
+            "duration_ms": 0.0,
+            "legacy": _document_report(None, self.legacy, 0.0, "legacy_not_available"),
+            "candidate": _document_report(
+                None, self.candidate, 0.0, diagnostic_code
+            ),
+            "candidate_error": diagnostic_code,
+            "fallback_used": False,
+            "degraded": mode is ParserMode.ANYDOC,
+            "promotion_blockers": ("document evaluation failed",),
+        }
 
     @staticmethod
     def write_report(report: dict[str, object], destination: Path) -> None:
@@ -190,16 +259,17 @@ class DocumentShadowEvaluator:
         processor: DocumentProcessor,
         snapshot: SourceSnapshot,
         asset_root: Path,
+        role: str,
     ) -> tuple[ParsedDocument | None, str | None, float]:
         started = perf_counter()
         if not processor.supports(snapshot):
-            return None, "parser does not support this source", 0.0
+            return None, f"{role}_unsupported", 0.0
         try:
             return processor.parse(snapshot, asset_root), None, round(
                 (perf_counter() - started) * 1000, 3
             )
-        except Exception as error:  # noqa: BLE001 - parser failures become safe diagnostics
-            return None, _safe_message(str(error)), round((perf_counter() - started) * 1000, 3)
+        except Exception:  # noqa: BLE001 - parser failures become safe diagnostics
+            return None, f"{role}_parse_failed", round((perf_counter() - started) * 1000, 3)
 
 
 def _document_report(
@@ -251,30 +321,62 @@ def _document_report(
         "notes": counts[SegmentKind.NOTE.value],
         "tables": counts[SegmentKind.TABLE.value],
         "assets": len(document.assets),
-        "warnings": tuple(_safe_message(warning) for warning in document.warnings),
+        "warnings": tuple(
+            hashlib.sha256(warning.encode("utf-8")).hexdigest()
+            for warning in document.warnings
+        ),
         "normalized_text_sha256": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
         "error": None,
     }
 
 
-def _document_blockers(document: ParsedDocument | None, parser: str) -> tuple[str, ...]:
-    if document is None:
-        return ()
-    return tuple(
-        f"{parser} warning requires review"
-        for warning in document.warnings
-        if warning.casefold().startswith("blocker:")
-    )
+def _comparison_blockers(
+    legacy: ParsedDocument | None,
+    candidate: ParsedDocument | None,
+) -> tuple[str, ...]:
+    if candidate is None:
+        return ("candidate parser failed",)
+    blockers: list[str] = []
+    if not candidate.segments:
+        blockers.append("candidate has no segments")
+    if candidate.warnings:
+        blockers.append("candidate emitted warnings")
+    if legacy is None:
+        blockers.append("legacy parser failed")
+        return tuple(blockers)
+    if _normalized_document_hash(legacy) != _normalized_document_hash(candidate):
+        blockers.append("normalized text differs")
+    if not _coverage(legacy, "page_number").issubset(_coverage(candidate, "page_number")):
+        blockers.append("candidate reduced legacy page coverage")
+    if not _coverage(legacy, "slide_number").issubset(_coverage(candidate, "slide_number")):
+        blockers.append("candidate reduced legacy slide coverage")
+    for kind, label in (
+        (SegmentKind.NOTE, "notes"),
+        (SegmentKind.TABLE, "tables"),
+    ):
+        if _count_kind(candidate, kind) < _count_kind(legacy, kind):
+            blockers.append(f"candidate has fewer {label}")
+    if len(candidate.assets) < len(legacy.assets):
+        blockers.append("candidate has fewer assets")
+    return tuple(blockers)
 
 
 def _normalize_text(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
-def _safe_message(value: str) -> str:
-    compact = " ".join(value.split())[:500]
-    return re.sub(
-        r"(?i)\b(api[ _-]?key|token|password|secret)\b\s*[:=]\s*\S+",
-        r"\1=[redacted]",
-        compact,
-    )
+def _normalized_document_hash(document: ParsedDocument) -> str:
+    normalized = "\n".join(_normalize_text(segment.text) for segment in document.segments)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _coverage(document: ParsedDocument, field: str) -> set[int]:
+    return {
+        value
+        for segment in document.segments
+        if (value := getattr(segment.locator, field)) is not None
+    }
+
+
+def _count_kind(document: ParsedDocument, kind: SegmentKind) -> int:
+    return sum(segment.kind is kind for segment in document.segments)

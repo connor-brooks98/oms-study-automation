@@ -64,7 +64,10 @@ class RaisingProcessor(LegacyProcessor):
         raise RuntimeError("bad deck")
 
 
-def _slide_pipeline(tmp_path: Path) -> tuple[SlidePipeline, str]:
+def _slide_pipeline(
+    tmp_path: Path,
+    evaluator: DocumentShadowEvaluator | None = None,
+) -> tuple[SlidePipeline, str]:
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()
     lecture_id = CatalogRepository(database).upsert_lecture(
@@ -100,7 +103,7 @@ def _slide_pipeline(tmp_path: Path) -> tuple[SlidePipeline, str]:
             database,
             settings,
             PdfFixtureConverter(),
-            DocumentShadowEvaluator(RaisingProcessor(), LegacyProcessor()),
+            evaluator or DocumentShadowEvaluator(RaisingProcessor(), LegacyProcessor()),
         ),
         "slide-item",
     )
@@ -114,4 +117,21 @@ def test_shadow_failure_does_not_fail_slide_filing(tmp_path: Path) -> None:
     assert revision.current is True
     report_path = next((tmp_path / "document-processing" / "shadow").glob("*.json"))
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["candidate_error"] == "bad deck"
+    assert report["candidate_error"] == "candidate_parse_failed"
+
+
+def test_shadow_report_write_failure_does_not_fail_slide_filing(tmp_path: Path) -> None:
+    class RaisingWriterEvaluator(DocumentShadowEvaluator):
+        @staticmethod
+        def write_report(report: dict[str, object], destination: Path) -> None:
+            del report, destination
+            raise OSError("report path unavailable")
+
+    pipeline, item_id = _slide_pipeline(
+        tmp_path,
+        RaisingWriterEvaluator(RaisingProcessor(), LegacyProcessor()),
+    )
+
+    revision = pipeline.process(item_id)
+
+    assert revision.current is True

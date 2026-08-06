@@ -183,19 +183,20 @@ class SlidePipeline:
                 ParserMode(self.settings.document_parser_mode),
             )
             self.last_document = result.document
-            self.document_evaluator.write_report(result.report, destination)
-        except Exception as error:  # noqa: BLE001 - document analysis must not block filing
-            self.document_evaluator.write_report(
-                {
-                    "source_sha256": revision.source_sha256,
-                    "mode": self.settings.document_parser_mode,
-                    "candidate_error": "document evaluation failed",
-                    "fallback_used": False,
-                    "promotion_blockers": ("document evaluation failed",),
-                    "error_type": type(error).__name__,
-                },
-                destination,
+        except Exception:  # noqa: BLE001 - document analysis must not block filing
+            result = None
+        if result is None:
+            report = self.document_evaluator.exceptional_report(
+                revision.source_sha256,
+                ParserMode(self.settings.document_parser_mode),
+                "document_evaluation_failed",
             )
+        else:
+            report = result.report
+        try:
+            self.document_evaluator.write_report(report, destination)
+        except Exception:
+            return
 
     def _preserve_source(
         self,

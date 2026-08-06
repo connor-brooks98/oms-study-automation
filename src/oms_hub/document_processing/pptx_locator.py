@@ -27,13 +27,99 @@ class PptxLocatorEnricher:
         presentation = Presentation(str(snapshot.path))
         image_locations = _image_locations(presentation)
         assets, asset_keys_by_location, warnings = _locate_assets(parsed.assets, image_locations)
-        segments = _slide_segments(presentation, asset_keys_by_location)
+        segments = _enrich_segments(
+            parsed.segments,
+            tuple(_slide_segments(presentation, asset_keys_by_location)),
+            assets,
+        )
         return replace(
             parsed,
-            segments=tuple(segments),
+            segments=segments,
             assets=assets,
             warnings=(*parsed.warnings, *warnings),
         )
+
+
+def _enrich_segments(
+    parsed_segments: tuple[ParsedSegment, ...],
+    source_segments: tuple[ParsedSegment, ...],
+    assets: tuple[ParsedAsset, ...],
+) -> tuple[ParsedSegment, ...]:
+    """Restore only unambiguous provenance; preserve Anydoc semantics verbatim."""
+    asset_slides = {
+        asset.key: asset.locator.slide_number
+        for asset in assets
+        if asset.locator.slide_number is not None
+    }
+    locations: dict[str, DocumentLocator] = {}
+    for kind in SegmentKind:
+        candidates = tuple(segment for segment in parsed_segments if segment.kind is kind)
+        references = tuple(segment for segment in source_segments if segment.kind is kind)
+        for candidate in candidates:
+            if not candidate.text.strip():
+                continue
+            matching_locations = {
+                reference.locator
+                for reference in source_segments
+                if _normalize_text(reference.text) == _normalize_text(candidate.text)
+            }
+            if len(matching_locations) == 1:
+                locations[candidate.key] = matching_locations.pop()
+        if any(candidate.key in locations for candidate in candidates):
+            continue
+        if len(candidates) == len(references):
+            locations.update(
+                {
+                    candidate.key: reference.locator
+                    for candidate, reference in zip(candidates, references, strict=True)
+                }
+            )
+            continue
+        reference_slides = tuple(
+            dict.fromkeys(
+                reference.locator.slide_number
+                for reference in references
+                if reference.locator.slide_number is not None
+            )
+        )
+        if len(candidates) == len(reference_slides):
+            locations.update(
+                {
+                    candidate.key: DocumentLocator(
+                        label=f"slide {slide_number}", slide_number=slide_number
+                    )
+                    for candidate, slide_number in zip(
+                        candidates, reference_slides, strict=True
+                    )
+                }
+            )
+    enriched: list[ParsedSegment] = []
+    for segment in parsed_segments:
+        if segment.key in locations:
+            enriched.append(replace(segment, locator=locations[segment.key]))
+            continue
+        slides = {asset_slides[key] for key in segment.asset_keys if key in asset_slides}
+        if len(slides) == 1:
+            slide_number = next(iter(slides))
+            enriched.append(
+                replace(
+                    segment,
+                    locator=DocumentLocator(
+                        label=f"slide {slide_number}", slide_number=slide_number
+                    ),
+                )
+            )
+            continue
+        enriched.append(segment)
+    # Some Anydoc PPTX outputs omit speaker notes.  Retain the candidate sequence
+    # verbatim and append only the missing, source-proven note records.
+    if not any(segment.kind is SegmentKind.NOTE for segment in parsed_segments):
+        enriched.extend(
+            segment
+            for segment in source_segments
+            if segment.kind is SegmentKind.NOTE
+        )
+    return tuple(enriched)
 
 
 def _locate_assets(
@@ -183,3 +269,7 @@ def _normalize_part_name(origin: str | None) -> str:
         return ""
     normalized = origin.replace("\\", "/").lstrip("/")
     return str(PurePosixPath(normalized))
+
+
+def _normalize_text(value: str) -> str:
+    return " ".join(value.casefold().split())

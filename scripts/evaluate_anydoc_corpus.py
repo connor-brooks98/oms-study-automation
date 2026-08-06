@@ -15,17 +15,7 @@ from oms_hub.document_processing.pptx_locator import PptxLocatorEnricher
 from oms_hub.document_processing.shadow import DocumentShadowEvaluator, LegacyPptxProcessor
 
 _MEDIA_TYPES = {
-    ".csv": "text/csv",
-    ".doc": "application/msword",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".epub": "application/epub+zip",
-    ".odp": "application/vnd.oasis.opendocument.presentation",
-    ".ods": "application/vnd.oasis.opendocument.spreadsheet",
-    ".odt": "application/vnd.oasis.opendocument.text",
-    ".ppt": "application/vnd.ms-powerpoint",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ".rtf": "application/rtf",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
 
 
@@ -40,7 +30,10 @@ def evaluate_corpus(root: Path, output: Path) -> int:
         asset_root = Path(temporary_directory)
         for path in sorted(
             (candidate for candidate in root.rglob("*") if candidate.is_file()),
-            key=lambda candidate: candidate.relative_to(root).as_posix().casefold(),
+            key=lambda candidate: (
+                candidate.relative_to(root).as_posix().casefold(),
+                candidate.relative_to(root).as_posix(),
+            ),
         ):
             media_type = _MEDIA_TYPES.get(path.suffix.casefold())
             if media_type is None:

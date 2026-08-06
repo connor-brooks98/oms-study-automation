@@ -13,6 +13,7 @@ from oms_hub.document_processing.domain import (
     DocumentLocator,
     ParsedAsset,
     ParsedDocument,
+    ParsedSegment,
     SegmentKind,
 )
 from oms_hub.document_processing.pptx_locator import PptxLocatorEnricher
@@ -76,6 +77,51 @@ def test_enricher_retains_unmatched_anydoc_asset_without_auto_binding(tmp_path: 
     assert all(segment.kind is not SegmentKind.IMAGE for segment in enriched.segments)
 
 
+def test_enricher_preserves_candidate_semantic_text_and_order_while_restoring_slides(
+    tmp_path: Path,
+) -> None:
+    source = build_pptx(
+        tmp_path / "questions.pptx",
+        slides=(
+            SlideFixture("Question 1", "Original first slide"),
+            SlideFixture("Question 2", "Original second slide"),
+        ),
+    )
+    snapshot = snapshot_for(source)
+    parsed = ParsedDocument(
+        source_id=snapshot.id,
+        source_sha256=snapshot.sha256,
+        source_format="pptx",
+        parser_name="anydoc",
+        parser_version="1",
+        segments=(
+            ParsedSegment(
+                "semantic-a",
+                SegmentKind.PARAGRAPH,
+                "Semantic first",
+                DocumentLocator("block 1"),
+            ),
+            ParsedSegment(
+                "semantic-b",
+                SegmentKind.PARAGRAPH,
+                "Semantic second",
+                DocumentLocator("block 2"),
+            ),
+        ),
+        assets=(),
+        warnings=(),
+    )
+
+    enriched = PptxLocatorEnricher().enrich(snapshot, parsed)
+
+    assert tuple(segment.key for segment in enriched.segments) == ("semantic-a", "semantic-b")
+    assert tuple(segment.text for segment in enriched.segments) == (
+        "Semantic first",
+        "Semantic second",
+    )
+    assert tuple(segment.locator.slide_number for segment in enriched.segments) == (1, 2)
+
+
 def test_enricher_binds_repeated_media_on_one_slide_to_every_picture_occurrence(
     tmp_path: Path,
 ) -> None:
@@ -96,7 +142,8 @@ def test_enricher_binds_repeated_media_on_one_slide_to_every_picture_occurrence(
     images = tuple(segment for segment in parsed.segments if segment.kind is SegmentKind.IMAGE)
     assert parsed.warnings == ()
     assert parsed.assets[0].locator.slide_number == 1
-    assert tuple(segment.key for segment in images) == ("slide-1-image-1", "slide-1-image-2")
+    assert len(images) == 2
+    assert all(segment.locator.slide_number == 1 for segment in images)
     assert all(segment.asset_keys == (parsed.assets[0].key,) for segment in images)
 
 
@@ -117,7 +164,9 @@ def test_enricher_leaves_media_reused_across_slides_unbound(tmp_path: Path) -> N
     assert parsed.warnings == (
         "asset 'asset-0' occurs on multiple slides and was not automatically bound",
     )
-    assert all(segment.kind is not SegmentKind.IMAGE for segment in parsed.segments)
+    images = tuple(segment for segment in parsed.segments if segment.kind is SegmentKind.IMAGE)
+    assert len(images) == 2
+    assert all(segment.locator.slide_number is None for segment in images)
 
 
 def test_renderer_persists_bounded_full_slide_candidates_with_slide_locators(
