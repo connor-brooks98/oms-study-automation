@@ -3,11 +3,12 @@ import secrets
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
 from oms_hub.files.atomic import sha256_file
@@ -49,6 +50,7 @@ from oms_hub.study_generation.native_quiz import (
     parse_native_quiz,
     serialize_native_quiz,
 )
+from oms_hub.study_generation.practice_domain import QuizWorkflowKind
 from oms_hub.study_generation.studio_domain import StudioRunStage, StudioRunState
 
 _ACTIVE_STATES = {
@@ -59,14 +61,26 @@ _ACTIVE_STATES = {
 _ANKI_PROMPT_DIRECTORY_KEY = "anki_curation_prompt_directory"
 
 
+class DirectImportReviewer(Protocol):
+    def to_native_quiz_in_session(
+        self, session: Session, run_id: str, *, title: str
+    ) -> NativeQuiz: ...
+
+
 def _normalize(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
 class GenerationRepository:
-    def __init__(self, database: Database, accuracy_gate: object | None = None):
+    def __init__(
+        self,
+        database: Database,
+        accuracy_gate: object | None = None,
+        practice_review: DirectImportReviewer | None = None,
+    ):
         self.database = database
         self.accuracy_gate = accuracy_gate
+        self.practice_review = practice_review
 
     def queue(self, lecture_id: int, kind: GenerationKind) -> GenerationJob:
         with self.database.session() as session:
@@ -750,6 +764,18 @@ class GenerationRepository:
                     and existing.studio_run_id == run_id
                 ):
                     return self._published_quiz(existing)
+            if run.workflow_kind == QuizWorkflowKind.DIRECT_IMPORT.value:
+                if run.state != StudioRunState.AWAITING_REVIEW.value:
+                    raise ValueError("imported quiz is not awaiting question review")
+                if self.practice_review is None:
+                    raise ValueError("imported question review is not configured")
+                quiz = self.practice_review.to_native_quiz_in_session(
+                    session,
+                    run.id,
+                    title=run.label,
+                )
+                self._validate_accuracy(quiz)
+                return self._publish_direct_import_in_session(session, run, quiz)
             if run.state != StudioRunState.AWAITING_IMAGES.value:
                 raise ValueError("Studio run is not awaiting image publication")
             if not run.draft_payload_json:
@@ -888,6 +914,69 @@ class GenerationRepository:
             run.next_attempt_at = None
             session.flush()
             return self._published_quiz(model)
+
+    def _publish_direct_import_in_session(
+        self,
+        session: Session,
+        run: StudioRunModel,
+        quiz: NativeQuiz,
+    ) -> PublishedQuizRecord:
+        model = None
+        if run.supersedes_run_id:
+            model = session.scalar(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id == run.supersedes_run_id
+                )
+            )
+        if model is None:
+            duplicate = session.scalar(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id.is_not(None),
+                    PublishedQuizModel.destination_subject_key == run.destination_subject_key,
+                    PublishedQuizModel.destination_exam_number == run.destination_exam_number,
+                    PublishedQuizModel.label_key == run.label_key,
+                    PublishedQuizModel.active.is_(True),
+                )
+            )
+            if duplicate is not None:
+                raise ValueError("a published Studio quiz already uses this label for that exam")
+            model = PublishedQuizModel(
+                token=secrets.token_hex(32),
+                lecture_id=None,
+                job_id=None,
+                studio_run_id=run.id,
+                destination_subject=run.destination_subject,
+                destination_subject_key=run.destination_subject_key,
+                destination_exam_number=run.destination_exam_number,
+                label=run.label,
+                label_key=run.label_key,
+                title=quiz.title,
+                payload_json=serialize_native_quiz(quiz),
+                version=1,
+                active=True,
+            )
+            session.add(model)
+        else:
+            previous = session.get(StudioRunModel, run.supersedes_run_id)
+            if previous is not None:
+                previous.published_token = None
+            model.studio_run_id = run.id
+            model.destination_subject = run.destination_subject
+            model.destination_subject_key = run.destination_subject_key
+            model.destination_exam_number = run.destination_exam_number
+            model.label = run.label
+            model.label_key = run.label_key
+            model.title = quiz.title
+            model.payload_json = serialize_native_quiz(quiz)
+            model.version += 1
+            model.active = True
+        run.state = StudioRunState.COMPLETE.value
+        run.stage = StudioRunStage.COMPLETE.value
+        run.published_token = model.token
+        run.error = None
+        run.next_attempt_at = None
+        session.flush()
+        return self._published_quiz(model)
 
     def published_quiz_media(
         self,

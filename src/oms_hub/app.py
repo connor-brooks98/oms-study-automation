@@ -93,6 +93,7 @@ from oms_hub.study_generation.path_picker import (
 )
 from oms_hub.study_generation.practice_answers import PracticeAnswerResolver
 from oms_hub.study_generation.practice_extraction import PracticeQuestionExtractor
+from oms_hub.study_generation.practice_review import PracticeReviewService
 from oms_hub.study_generation.prompts import PromptFileService
 from oms_hub.study_generation.quiz_images import StudioQuizImageService
 from oms_hub.study_generation.quiz_import_worker import QuizImportWorker
@@ -576,6 +577,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.notebook_connection,
     )
     app.state.studio_repository = StudioRepository(database)
+    app.state.practice_review = PracticeReviewService(app.state.studio_repository)
+    app.state.generation_repository.practice_review = app.state.practice_review
     app.state.studio_service = StudioService(
         app.state.studio_repository,
         resolved.data_dir / "studio-sources",
