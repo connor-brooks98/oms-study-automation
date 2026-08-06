@@ -55,3 +55,5 @@ def test_windows_installer_polls_local_health_for_expected_root_and_revision() -
     assert "deployment_root" in script
     assert "build_revision" in script
     assert "Study Hub did not start from the expected root/build" in script
+    assert "port ${Port}: $LastFailure" in script
+    assert "port $Port: $LastFailure" not in script

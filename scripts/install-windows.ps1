@@ -154,7 +154,7 @@ function Assert-StartedHubProvenance {
     }
     Start-Sleep -Seconds 1
   }
-  throw "Study Hub did not start from the expected root/build on port $Port: $LastFailure"
+  throw "Study Hub did not start from the expected root/build on port ${Port}: $LastFailure"
 }
 
 function Stop-ConflictingHubProcesses {
