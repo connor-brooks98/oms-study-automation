@@ -6,16 +6,20 @@ import hashlib
 import json
 import os
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
+from typing import Any
 from uuid import uuid4
 
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from oms_hub.document_processing.domain import (
     DocumentLocator,
     DocumentProcessor,
+    ParsedAsset,
     ParsedDocument,
     ParsedSegment,
     SegmentKind,
@@ -102,9 +106,56 @@ class LegacyPptxProcessor:
             parser_name=self.name,
             parser_version=self.version,
             segments=tuple(segments),
-            assets=(),
+            assets=_pptx_image_assets(presentation),
             warnings=(),
         )
+
+
+def _pptx_image_assets(presentation: Any) -> tuple[ParsedAsset, ...]:
+    """Describe unique embedded images without copying their source bytes."""
+    discovered: dict[str, tuple[str, list[DocumentLocator]]] = {}
+    for slide_number, slide in enumerate(presentation.slides, start=1):
+        image_number = 0
+        for shape in _walk_shapes(slide.shapes):
+            if shape.shape_type is not MSO_SHAPE_TYPE.PICTURE:
+                continue
+            image_number += 1
+            image = shape.image
+            digest = hashlib.sha256(image.blob).hexdigest()
+            media_type = str(image.content_type)
+            occurrence = DocumentLocator(
+                label=f"slide {slide_number} image {image_number}",
+                slide_number=slide_number,
+            )
+            if digest not in discovered:
+                discovered[digest] = (media_type, [])
+            discovered[digest][1].append(occurrence)
+    assets: list[ParsedAsset] = []
+    for digest, (media_type, occurrences) in discovered.items():
+        slide_numbers = {occurrence.slide_number for occurrence in occurrences}
+        locator = (
+            occurrences[0]
+            if len(slide_numbers) == 1
+            else DocumentLocator(label="embedded image")
+        )
+        assets.append(
+            ParsedAsset(
+                key=f"image-{digest}",
+                path=None,
+                media_type=media_type,
+                sha256=digest,
+                locator=locator,
+            )
+        )
+    return tuple(assets)
+
+
+def _walk_shapes(shapes: Iterable[Any]) -> Iterable[Any]:
+    for shape in shapes:
+        if shape.shape_type is MSO_SHAPE_TYPE.GROUP:
+            yield from _walk_shapes(shape.shapes)
+        else:
+            yield shape
 
 
 class DocumentShadowEvaluator:

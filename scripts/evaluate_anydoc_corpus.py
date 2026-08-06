@@ -54,6 +54,8 @@ def evaluate_corpus(root: Path, output: Path) -> int:
                 f"{report['source']}: {blocker}"
                 for blocker in cast(tuple[str, ...], report["promotion_blockers"])
             )
+    if not reports:
+        blockers.append("no comparable PPTX files")
     aggregate: dict[str, object] = {
         "files": reports,
         "promotion_blockers": tuple(sorted(blockers)),

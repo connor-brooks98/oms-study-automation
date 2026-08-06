@@ -22,6 +22,11 @@ blockers but do not block shadow-mode slide filing. Anydoc-primary mode returns
 the candidate semantic document only when the comparison has no blockers; it
 otherwise uses the legacy result with `degraded` and `fallback_used` reporting.
 
+The legacy baseline derives its asset count directly from embedded PPTX picture
+blobs, keeping only SHA-256-addressed metadata. Duplicate image bytes are
+counted once; their slide locator is retained only when all occurrences are on
+the same slide. No baseline image bytes are persisted or copied.
+
 PPTX enrichment retains Anydoc segment keys, text, and ordering while restoring
 only unambiguous slide and asset locations. Missing speaker notes are appended as
 source-proven note records rather than replacing candidate semantic text.
@@ -29,8 +34,9 @@ source-proven note records rather than replacing candidate semantic text.
 `scripts/evaluate_anydoc_corpus.py` recursively reads only PPTX sources in a
 casefolded, case-sensitive tie-broken order, uses temporary asset storage,
 atomically replaces only its aggregate report, and exits nonzero when a
-promotion blocker is found. It does not consult or change the configured parser
-mode.
+promotion blocker is found. An empty or unsupported-only root is itself a
+stable `no comparable PPTX files` promotion blocker, so corpus approval cannot
+be vacuous. It does not consult or change the configured parser mode.
 
 ## Design judgments
 
@@ -53,7 +59,7 @@ mode.
 
 ```text
 ./.venv/bin/pytest -q tests/document_processing/test_shadow.py tests/v2/test_slide_pipeline_document_shadow.py tests/document_processing/test_pptx_locator.py tests/document_processing/test_anydoc_adapter.py
-27 passed
+30 passed
 
 ./.venv/bin/pytest -q tests/document_processing tests/v2
 passed

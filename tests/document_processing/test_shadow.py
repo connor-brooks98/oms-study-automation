@@ -1,9 +1,11 @@
 import hashlib
 import importlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
 from pytest import MonkeyPatch
 
 from oms_hub.document_processing.domain import (
@@ -15,8 +17,8 @@ from oms_hub.document_processing.domain import (
     SourceSnapshot,
 )
 from oms_hub.document_processing.router import ParserMode
-from oms_hub.document_processing.shadow import DocumentShadowEvaluator
-from tests.document_processing.pptx_factory import SlideFixture, build_pptx
+from oms_hub.document_processing.shadow import DocumentShadowEvaluator, LegacyPptxProcessor
+from tests.document_processing.pptx_factory import SlideFixture, build_pptx, snapshot_for
 
 
 class FixtureProcessor:
@@ -236,6 +238,29 @@ def test_shadow_comparison_blocks_reduced_coverage_and_content_types(tmp_path: P
     } <= blockers
 
 
+def test_anydoc_primary_falls_back_when_candidate_drops_embedded_pptx_image(
+    tmp_path: Path,
+) -> None:
+    source = build_pptx(
+        tmp_path / "lecture.pptx",
+        slides=(SlideFixture("Question", "Which structure?", image=True),),
+    )
+    snapshot = snapshot_for(source)
+    legacy = LegacyPptxProcessor()
+    baseline = legacy.parse(snapshot, tmp_path / "assets" / "legacy")
+    candidate = FixedProcessor("anydoc", baseline.segments)
+
+    result = DocumentShadowEvaluator(candidate, legacy).parse_primary(
+        snapshot, tmp_path / "assets"
+    )
+
+    report = _typed_report(result.report)
+    assert len(baseline.assets) == 1
+    assert result.document.parser_name == LegacyPptxProcessor.name
+    assert result.degraded is True
+    assert "candidate has fewer assets" in report["promotion_blockers"]
+
+
 def test_exceptional_report_has_full_metrics_and_degraded_anydoc_state(tmp_path: Path) -> None:
     report = _typed_report(
         DocumentShadowEvaluator(FixtureProcessor(), FixtureProcessor()).exceptional_report(
@@ -306,3 +331,21 @@ def test_corpus_exits_one_for_blockers_and_ignores_non_pptx_sources(
     report = output.read_text(encoding="utf-8")
     assert "Deck.pptx" in report
     assert "notes.docx" not in report
+
+
+@pytest.mark.parametrize("unsupported_name", (None, "notes.docx"))
+def test_corpus_blocks_vacuous_promotion_when_no_pptx_is_comparable(
+    tmp_path: Path, unsupported_name: str | None
+) -> None:
+    corpus = importlib.import_module("scripts.evaluate_anydoc_corpus")
+    root = tmp_path / "corpus"
+    root.mkdir()
+    if unsupported_name is not None:
+        (root / unsupported_name).write_bytes(b"unsupported")
+    output = tmp_path / "report.json"
+
+    assert corpus.evaluate_corpus(root, output) == 1
+
+    report = _typed_report(json.loads(output.read_text(encoding="utf-8")))
+    assert report["root_file_count"] == 0
+    assert report["promotion_blockers"] == ["no comparable PPTX files"]
