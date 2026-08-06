@@ -42,16 +42,18 @@ node --test tests/js/anki.test.js
 ./.venv/bin/python -m ruff check src tests
 All checks passed
 
+./.venv/bin/python -m mypy src
+Success: no issues found in 163 source files
+
+./.venv/bin/pytest -q tests/document_processing
+66 passed
+
 ./.venv/bin/python -m pytest tests/v2/test_release_package.py tests/v2/test_notebooklm_release_package.py tests/v2/test_anydoc_release.py -q
 5 passed
 
 git diff --check
 passed
 ```
-
-`./.venv/bin/python -m mypy src` was also run. It reports one pre-existing,
-out-of-scope error: `src/oms_hub/files/pdf.py:36` has an unused type-ignore
-comment. No Task 14 production file was changed to suppress or work around it.
 
 ## Deferred native evidence
 

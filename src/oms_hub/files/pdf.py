@@ -33,7 +33,7 @@ def validate_pdf(path: Path) -> PdfValidation:
 def inspect_pdf(path: Path) -> PdfInspection:
     validation = validate_pdf(path)
     try:
-        import pdf_inspector  # type: ignore[import-not-found]
+        import pdf_inspector
 
         result = pdf_inspector.detect_pdf(str(path))
         return PdfInspection(
