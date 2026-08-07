@@ -237,6 +237,17 @@ class PublishedQuizRecord:
     version: int
     active: bool
     content_kind: str = "lecture_quiz"
+    display_order: int = 0
+
+
+class PublishedQuizLibrarySection(StrEnum):
+    QUIZZES = "quizzes"
+    PRACTICE_QUESTIONS = "practice_questions"
+
+
+class PublishedQuizOrderDirection(StrEnum):
+    UP = "up"
+    DOWN = "down"
 
 
 @dataclass(frozen=True, slots=True)

@@ -60,6 +60,34 @@
     if (panel) panel.hidden = !expanded;
   };
 
+  const managementRequest = async (documentRef, button, url, body) => {
+    button.disabled = true;
+    try {
+      const response = await root.fetch(url, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": cookieValue(documentRef.cookie, "study_hub_csrf") || "",
+        },
+        body: JSON.stringify(body),
+      });
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch (_error) {
+        // The status fallback below is clearer than a JSON parsing error.
+      }
+      if (!response.ok) {
+        throw new Error(payload.detail || "Quiz management update failed.");
+      }
+      root.location?.reload?.();
+    } catch (error) {
+      button.disabled = false;
+      documentRef.querySelector("[data-reset-message]").textContent =
+        error instanceof Error ? error.message : "Quiz management update failed.";
+    }
+  };
+
   const initialize = (documentRef, storage) => {
     documentRef.querySelectorAll(".disclosure").forEach((button) => {
       button.addEventListener("click", () => {
@@ -140,6 +168,36 @@
         }
       });
     });
+    documentRef.querySelectorAll("[data-edit-quiz-title]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        if (typeof root.prompt !== "function") return;
+        const title = root.prompt("Edit quiz title", button.dataset.title || "");
+        if (title === null) return;
+        const cleanedTitle = title.trim();
+        if (!cleanedTitle) {
+          documentRef.querySelector("[data-reset-message]").textContent =
+            "Quiz title cannot be blank.";
+          return;
+        }
+        await managementRequest(documentRef, button, button.dataset.titleUrl, {
+          title: cleanedTitle,
+        });
+      });
+    });
+    documentRef.querySelectorAll("[data-move-quiz-library]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        await managementRequest(documentRef, button, button.dataset.libraryUrl, {
+          section: button.dataset.targetSection,
+        });
+      });
+    });
+    documentRef.querySelectorAll("[data-move-quiz-order]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        await managementRequest(documentRef, button, button.dataset.orderUrl, {
+          direction: button.dataset.direction,
+        });
+      });
+    });
     refresh();
     const reset = documentRef.querySelector("[data-reset-progress]");
     if (reset) {
@@ -175,6 +233,7 @@
     readProgress,
     resetProgress,
     cookieValue,
+    managementRequest,
     setExpanded,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

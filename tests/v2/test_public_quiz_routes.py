@@ -7,9 +7,10 @@ from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.models import StudioRunModel
 from oms_hub.repositories import LectureInput
-from oms_hub.study_generation.domain import GenerationKind
+from oms_hub.study_generation.domain import GenerationKind, PublishedQuizOrderDirection
 from oms_hub.study_generation.native_quiz import parse_native_quiz
 from oms_hub.study_generation.outline import OutlinePdfRenderer
+from oms_hub.web import public_quiz_routes
 
 
 def _quiz(title: str = "Lecture 1 Practice Quiz"):
@@ -104,6 +105,34 @@ def test_public_library_groups_only_published_quizzes(tmp_path):
     assert "Lecture 1" in response.text
     assert published.token in response.text
     assert "Unpublished lecture" not in response.text
+
+
+def test_public_library_uses_current_lecture_scope_and_repository_order(tmp_path):
+    app, published = _published_app(tmp_path)
+    app.state.catalog_repository.update_lecture(
+        published.lecture_id,
+        LectureInput("Cardio", 2, 1, "Arrhythmias", "", None),
+    )
+    peer_lecture_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Cardio", 2, 2, "Heart failure", "", None)
+    )
+    peer = app.state.generation_repository.publish_quiz(
+        peer_lecture_id,
+        app.state.generation_repository.queue(peer_lecture_id, GenerationKind.QUIZ).id,
+        _quiz("Peer quiz"),
+    )
+    app.state.generation_repository.reorder_published_quiz(
+        published.token,
+        PublishedQuizOrderDirection.DOWN,
+    )
+
+    library = TestClient(app).get("/public/quizzes")
+
+    assert "Cardio" in library.text
+    assert "Exam 2" in library.text
+    assert published.token in library.text
+    assert peer.token in library.text
+    assert library.text.index(peer.token) < library.text.index(published.token)
 
 
 def test_practice_questions_are_not_listed_as_lecture_quizzes(tmp_path):
@@ -255,6 +284,34 @@ def test_public_quiz_player_markup_uses_content_versioned_assets(tmp_path):
     assert first.text == second.text
 
 
+def test_public_quiz_library_markup_uses_content_versioned_assets(
+    tmp_path,
+    monkeypatch,
+):
+    app, _, _ = _published_mixed_app(tmp_path)
+    current_version = public_quiz_routes._library_asset_version()
+
+    with TestClient(app) as client:
+        quizzes = client.get("/public/quizzes")
+        practice = client.get("/public/practice-questions")
+
+        assert f"/library.css?v={current_version}" in quizzes.text
+        assert f"/library.js?v={current_version}" in quizzes.text
+        assert f"/library.css?v={current_version}" in practice.text
+        assert f"/library.js?v={current_version}" in practice.text
+
+        def changed_digest(path):
+            return "a" * 64 if path.suffix == ".js" else "b" * 64
+
+        monkeypatch.setattr(public_quiz_routes, "sha256_file", changed_digest)
+        changed_version = public_quiz_routes._library_asset_version()
+        changed = client.get("/public/quizzes")
+
+    assert changed_version != current_version
+    assert f"/library.css?v={changed_version}" in changed.text
+    assert f"/library.js?v={changed_version}" in changed.text
+
+
 def test_answer_feedback_is_limited_to_the_requested_question(tmp_path):
     app, published = _published_app(tmp_path)
 
@@ -369,6 +426,116 @@ def test_published_quiz_management_requires_csrf_and_active_token(tmp_path):
     assert unknown.status_code == 404
 
 
+def test_published_quiz_management_edits_title_and_moves_library_section(tmp_path):
+    app, published = _published_app(tmp_path)
+
+    with TestClient(app) as client:
+        client.get("/public/quizzes")
+        csrf = client.cookies.get("study_hub_csrf")
+        renamed = client.patch(
+            f"/api/published-quizzes/{published.token}/title",
+            json={"title": "  Revised quiz title  "},
+            headers={"X-CSRF-Token": csrf},
+        )
+        moved = client.patch(
+            f"/api/published-quizzes/{published.token}/library",
+            json={"section": "practice_questions"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        content = client.get(f"/public/quizzes/{published.token}/content")
+        quizzes = client.get("/public/quizzes")
+        practice = client.get("/public/practice-questions")
+
+    assert renamed.json() == {"token": published.token, "title": "Revised quiz title"}
+    assert moved.json()["content_kind"] == "practice_questions"
+    assert content.json()["title"] == "Revised quiz title"
+    assert published.token not in quizzes.text
+    assert published.token in practice.text
+
+
+def test_published_quiz_patch_management_validates_csrf_payload_and_token(tmp_path):
+    app, published = _published_app(tmp_path)
+    title_path = f"/api/published-quizzes/{published.token}/title"
+    library_path = f"/api/published-quizzes/{published.token}/library"
+    order_path = f"/api/published-quizzes/{published.token}/order"
+
+    with TestClient(app) as client:
+        csrf_rejections = [
+            client.patch(title_path, json={"title": "Edited"}),
+            client.patch(library_path, json={"section": "practice_questions"}),
+            client.patch(order_path, json={"direction": "up"}),
+        ]
+        client.get("/public/quizzes")
+        csrf = client.cookies.get("study_hub_csrf")
+        blank_title = client.patch(
+            title_path,
+            json={"title": "   "},
+            headers={"X-CSRF-Token": csrf},
+        )
+        long_title = client.patch(
+            title_path,
+            json={"title": "x" * 301},
+            headers={"X-CSRF-Token": csrf},
+        )
+        invalid_section = client.patch(
+            library_path,
+            json={"section": "other"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        invalid_direction = client.patch(
+            order_path,
+            json={"direction": "sideways"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        unknown = client.patch(
+            f"/api/published-quizzes/{'f' * 64}/title",
+            json={"title": "Edited"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        app.state.generation_repository.unpublish_quiz(published.token)
+        inactive = client.patch(
+            order_path,
+            json={"direction": "up"},
+            headers={"X-CSRF-Token": csrf},
+        )
+
+    assert all(response.status_code == 403 for response in csrf_rejections)
+    assert blank_title.status_code == 422
+    assert long_title.status_code == 422
+    assert invalid_section.status_code == 422
+    assert invalid_direction.status_code == 422
+    assert unknown.status_code == 404
+    assert inactive.status_code == 404
+
+
+def test_published_quiz_patch_management_is_not_in_public_access_bypass(tmp_path):
+    app, published = _published_app(tmp_path, public=True)
+    headers = {"host": "study.example.com"}
+
+    with TestClient(app, base_url="https://study.example.com") as client:
+        client.get("/public/quizzes", headers=headers)
+        csrf = client.cookies.get("study_hub_csrf")
+        responses = [
+            client.patch(
+                f"/api/published-quizzes/{published.token}/title",
+                json={"title": "Edited"},
+                headers={**headers, "X-CSRF-Token": csrf},
+            ),
+            client.patch(
+                f"/api/published-quizzes/{published.token}/library",
+                json={"section": "practice_questions"},
+                headers={**headers, "X-CSRF-Token": csrf},
+            ),
+            client.patch(
+                f"/api/published-quizzes/{published.token}/order",
+                json={"direction": "up"},
+                headers={**headers, "X-CSRF-Token": csrf},
+            ),
+        ]
+
+    assert all(response.status_code == 503 for response in responses)
+
+
 def test_published_quiz_management_is_not_in_public_access_bypass(tmp_path):
     app, published = _published_app(tmp_path, public=True)
     headers = {"host": "study.example.com"}
@@ -411,7 +578,7 @@ def test_public_library_and_content_include_studio_quizzes(tmp_path):
     page = client.get(f"/public/quizzes/{published.token}")
 
     assert library.status_code == 200
-    assert "Professor Review Quiz" in library.text
+    assert "Lecture 1 Practice Quiz" in library.text
     assert "Studio quiz" not in library.text
     assert content.status_code == 200
     assert content.json()["course"] == "Professor Review"

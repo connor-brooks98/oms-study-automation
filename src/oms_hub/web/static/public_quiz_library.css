@@ -47,6 +47,9 @@ h1 { margin: 0; color: var(--brand); font-size: clamp(1.8rem, 4vw, 2.6rem); }
 .progress-pill { flex: none; color: var(--brand-mid); font: 600 .69rem/1.3 "IBM Plex Mono", monospace; }
 .outline-button { white-space: nowrap; }
 .reset-quiz-button { white-space: nowrap; color: var(--muted); }
+.quiz-management-controls { display: flex; flex-wrap: wrap; gap: .4rem; }
+.management-button { min-height: 2.15rem; padding: .45rem .6rem; font-size: .82rem; white-space: nowrap; }
+.management-button:disabled { cursor: wait; opacity: .65; }
 .remove-quiz-button { border-color: #b42318; color: #b42318; }
 .remove-quiz-button:hover { background: #fff1f0; }
 .remove-quiz-button:disabled { cursor: wait; opacity: .65; }
@@ -55,6 +58,7 @@ h1 { margin: 0; color: var(--brand); font-size: clamp(1.8rem, 4vw, 2.6rem); }
 @media (max-width: 640px) {
   .library-heading { align-items: stretch; flex-direction: column; }
   .lecture-row { grid-template-columns: 1fr; }
-  .outline-button, .reset-quiz-button, .remove-quiz-button { width: 100%; }
+  .outline-button, .reset-quiz-button, .remove-quiz-button, .quiz-management-controls { width: 100%; }
+  .quiz-management-controls .management-button { flex: 1 1 9rem; }
   .quiz-link { align-items: flex-start; flex-direction: column; }
 }

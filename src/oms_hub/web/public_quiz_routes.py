@@ -44,13 +44,16 @@ def _player_asset_version() -> str:
     return f"{javascript}-{stylesheet}"
 
 
+def _library_asset_version() -> str:
+    """Content-address the cached public quiz-library assets."""
+    javascript = sha256_file(_STATIC_ROOT / "public_quiz_library.js")[:12]
+    stylesheet = sha256_file(_STATIC_ROOT / "public_quiz_library.css")[:12]
+    return f"{javascript}-{stylesheet}"
+
+
 class AnswerSubmission(BaseModel):
     question_id: _PublicId
     choice_id: _PublicId
-
-
-def _lecture_number(row: dict[str, object]) -> int:
-    return cast(int, row["lecture_number"] or 0)
 
 
 @router.get("/quizzes/assets/player.js", include_in_schema=False)
@@ -112,6 +115,10 @@ def _published(request: Request, token: str) -> PublishedQuizRecord:
     return published
 
 
+def _normalized_subject(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
 def _quiz_library(
     request: Request,
     content_kinds: frozenset[QuizContentKind],
@@ -123,6 +130,7 @@ def _quiz_library(
     library_path: str,
 ) -> HTMLResponse:
     courses: dict[str, dict[int, list[dict[str, object]]]] = {}
+    course_names: dict[str, str] = {}
     repository = _repository(request)
     for published in repository.published_quizzes(content_kinds):
         lecture = (
@@ -131,6 +139,9 @@ def _quiz_library(
             else None
         )
         subject = lecture.subject if lecture is not None else published.destination_subject
+        subject_key = _normalized_subject(
+            lecture.subject if lecture is not None else published.destination_subject_key
+        )
         exam_number = (
             lecture.exam_number
             if lecture is not None
@@ -141,7 +152,8 @@ def _quiz_library(
             if published.lecture_id is not None
             else None
         )
-        courses.setdefault(subject, {}).setdefault(
+        course_names.setdefault(subject_key, subject)
+        courses.setdefault(subject_key, {}).setdefault(
             exam_number,
             [],
         ).append(
@@ -149,6 +161,7 @@ def _quiz_library(
                 "token": published.token,
                 "version": published.version,
                 "title": published.title,
+                "display_order": published.display_order,
                 "lecture_number": (
                     lecture.lecture_number if lecture is not None else None
                 ),
@@ -156,7 +169,7 @@ def _quiz_library(
                 "primary_label": (
                     f"Lecture {lecture.lecture_number}"
                     if lecture is not None
-                    else (published.label or published.title)
+                    else published.title
                 ),
                 "secondary_label": lecture.topic if lecture is not None else None,
                 "url": f"/public/quizzes/{published.token}",
@@ -169,24 +182,19 @@ def _quiz_library(
         )
     grouped = tuple(
         {
-            "name": subject,
+            "name": course_names[subject_key],
             "quiz_count": sum(len(rows) for rows in exams.values()),
             "exams": tuple(
                 {
                     "number": number,
-                    "quizzes": tuple(
-                        sorted(
-                            exams[number],
-                            key=_lecture_number,
-                        )
-                    ),
+                    "quizzes": tuple(exams[number]),
                 }
                 for number in sorted(exams)
             ),
         }
-        for subject, exams in sorted(
+        for subject_key, exams in sorted(
             courses.items(),
-            key=lambda item: item[0].casefold(),
+            key=lambda item: item[0],
         )
     )
     return templates.TemplateResponse(
@@ -199,6 +207,7 @@ def _quiz_library(
             "empty_title": empty_title,
             "empty_summary": empty_summary,
             "library_path": library_path,
+            "library_asset_version": _library_asset_version(),
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -312,7 +321,7 @@ def quiz_content(request: Request, token: str) -> JSONResponse:
         "topic": (
             lecture.topic
             if lecture is not None
-            else (published.label or published.title)
+            else published.title
         ),
         **public_quiz_content(published.quiz, image_urls),
     }

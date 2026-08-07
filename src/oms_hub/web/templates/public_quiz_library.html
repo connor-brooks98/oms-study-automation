@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/public/quizzes/assets/library.css">
+  <link rel="stylesheet" href="/public/quizzes/assets/library.css?v={{ library_asset_version }}">
 </head>
 <body>
   <main class="public-library" data-quiz-library>
@@ -46,7 +46,7 @@
               <article class="lecture-row">
                 <a class="quiz-link" href="{{ row.url }}" data-quiz-row data-quiz-token="{{ row.token }}" data-quiz-version="{{ row.version }}">
                   <span>
-                    <strong>{{ row.primary_label }}</strong>
+                    <strong>{{ row.primary_label }}{% if not row.is_studio %} · {{ row.title }}{% endif %}</strong>
                     {% if row.secondary_label %}<small>{{ row.secondary_label }}</small>{% endif %}
                   </span>
                   <span class="progress-pill" data-quiz-progress>Not started</span>
@@ -61,6 +61,44 @@
                   data-quiz-token="{{ row.token }}"
                   data-quiz-version="{{ row.version }}"
                 >Reset</button>
+                <div class="quiz-management-controls">
+                  <button
+                    class="button management-button"
+                    type="button"
+                    data-edit-quiz-title
+                    data-quiz-token="{{ row.token }}"
+                    data-title="{{ row.title }}"
+                    data-title-url="/api/published-quizzes/{{ row.token }}/title"
+                  >Edit title</button>
+                  <button
+                    class="button management-button"
+                    type="button"
+                    data-move-quiz-library
+                    data-quiz-token="{{ row.token }}"
+                    data-library-url="/api/published-quizzes/{{ row.token }}/library"
+                    data-target-section="{{ 'practice_questions' if library_path == '/public/quizzes' else 'quizzes' }}"
+                  >Move to {{ 'Practice Questions' if library_path == '/public/quizzes' else 'Quizzes' }}</button>
+                  <button
+                    class="button management-button"
+                    type="button"
+                    data-move-quiz-order
+                    data-quiz-token="{{ row.token }}"
+                    data-order-url="/api/published-quizzes/{{ row.token }}/order"
+                    data-direction="up"
+                    aria-label="Move quiz up"
+                    title="Move quiz up"
+                  >Move up</button>
+                  <button
+                    class="button management-button"
+                    type="button"
+                    data-move-quiz-order
+                    data-quiz-token="{{ row.token }}"
+                    data-order-url="/api/published-quizzes/{{ row.token }}/order"
+                    data-direction="down"
+                    aria-label="Move quiz down"
+                    title="Move quiz down"
+                  >Move down</button>
+                </div>
                 <button
                   class="button remove-quiz-button"
                   type="button"
@@ -86,6 +124,6 @@
     {% endif %}
     <p class="reset-message" data-reset-message aria-live="polite"></p>
   </main>
-  <script src="/public/quizzes/assets/library.js" defer></script>
+  <script src="/public/quizzes/assets/library.js?v={{ library_asset_version }}" defer></script>
 </body>
 </html>

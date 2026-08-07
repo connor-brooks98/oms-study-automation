@@ -40,7 +40,9 @@ from oms_hub.study_generation.domain import (
     NotebookSourceBinding,
     OutlineRecord,
     PromptKind,
+    PublishedQuizLibrarySection,
     PublishedQuizMediaRecord,
+    PublishedQuizOrderDirection,
     PublishedQuizRecord,
     QuizRecord,
     SourceKind,
@@ -653,6 +655,7 @@ class GenerationRepository:
                     version=1,
                     active=True,
                 )
+                model.display_order = self._next_display_order(session, model)
                 session.add(model)
             elif model.job_id != job_id:
                 model.job_id = job_id
@@ -680,11 +683,6 @@ class GenerationRepository:
         with self.database.session() as session:
             statement = (
                 select(PublishedQuizModel)
-                .order_by(
-                    PublishedQuizModel.destination_subject_key,
-                    PublishedQuizModel.destination_exam_number,
-                    PublishedQuizModel.title,
-                )
                 .where(PublishedQuizModel.active.is_(True))
                 .where(
                     PublishedQuizModel.content_kind.in_(
@@ -692,8 +690,84 @@ class GenerationRepository:
                     )
                 )
             )
-            models = session.scalars(statement).all()
+            models = sorted(
+                session.scalars(statement).all(),
+                key=lambda model: self._published_quiz_order_key(session, model),
+            )
             return tuple(self._published_quiz(model) for model in models)
+
+    def rename_published_quiz(self, token: str, title: str) -> PublishedQuizRecord:
+        """Update only a released quiz's display title and native payload title."""
+        cleaned_title = title.strip()
+        if not cleaned_title or len(cleaned_title) > 300:
+            raise ValueError("title must contain between 1 and 300 characters")
+        with self.database.session() as session:
+            model = self._active_published_quiz_in_session(session, token)
+            model.title = cleaned_title
+            model.payload_json = serialize_native_quiz(
+                replace(parse_native_quiz(model.payload_json), title=cleaned_title)
+            )
+            session.flush()
+            return self._published_quiz(model)
+
+    def move_published_quiz(
+        self,
+        token: str,
+        section: PublishedQuizLibrarySection,
+    ) -> PublishedQuizRecord:
+        """Move a released quiz between the two public library sections."""
+        with self.database.session() as session:
+            model = self._active_published_quiz_in_session(session, token)
+            source_scope = self._published_quiz_scope(session, model)
+            source_section = self._library_section(model)
+            self._normalize_scope_order(session, source_scope, source_section)
+
+            if section is source_section:
+                session.flush()
+                return self._published_quiz(model)
+
+            target_kind = self._content_kind_for_section(model, section)
+            model.content_kind = target_kind
+            self._normalize_scope_order(
+                session,
+                source_scope,
+                source_section,
+                exclude_token=model.token,
+            )
+            target_scope = self._published_quiz_scope(session, model)
+            destination = self._normalize_scope_order(
+                session,
+                target_scope,
+                section,
+                exclude_token=model.token,
+            )
+            model.display_order = len(destination) + 1
+            session.flush()
+            return self._published_quiz(model)
+
+    def reorder_published_quiz(
+        self,
+        token: str,
+        direction: PublishedQuizOrderDirection,
+    ) -> PublishedQuizRecord:
+        """Move a released quiz one position inside its canonical library scope."""
+        with self.database.session() as session:
+            model = self._active_published_quiz_in_session(session, token)
+            ordered = self._normalize_scope_order(
+                session,
+                self._published_quiz_scope(session, model),
+                self._library_section(model),
+            )
+            index = next(index for index, row in enumerate(ordered) if row.token == token)
+            adjacent = index - 1 if direction is PublishedQuizOrderDirection.UP else index + 1
+            if 0 <= adjacent < len(ordered):
+                other = ordered[adjacent]
+                model.display_order, other.display_order = (
+                    other.display_order,
+                    model.display_order,
+                )
+            session.flush()
+            return self._published_quiz(model)
 
     def publish_studio_quiz(
         self,
@@ -742,6 +816,7 @@ class GenerationRepository:
                     version=1,
                     active=True,
                 )
+                model.display_order = self._next_display_order(session, model)
                 session.add(model)
             else:
                 previous = session.get(StudioRunModel, run.supersedes_run_id)
@@ -880,6 +955,7 @@ class GenerationRepository:
                     version=1,
                     active=True,
                 )
+                model.display_order = self._next_display_order(session, model)
                 session.add(model)
                 session.flush()
             else:
@@ -993,6 +1069,7 @@ class GenerationRepository:
                 version=1,
                 active=True,
             )
+            model.display_order = self._next_display_order(session, model)
             session.add(model)
         else:
             previous = session.get(StudioRunModel, run.supersedes_run_id)
@@ -1101,6 +1178,113 @@ class GenerationRepository:
             if run is not None and run.published_token == token:
                 run.published_token = None
         return model.token
+
+    @staticmethod
+    def _active_published_quiz_in_session(
+        session: Session,
+        token: str,
+    ) -> PublishedQuizModel:
+        model = session.get(PublishedQuizModel, token)
+        if model is None or not model.active:
+            raise KeyError(token)
+        return model
+
+    @staticmethod
+    def _library_section(
+        model: PublishedQuizModel,
+    ) -> PublishedQuizLibrarySection:
+        if model.content_kind == QuizContentKind.PRACTICE_QUESTIONS.value:
+            return PublishedQuizLibrarySection.PRACTICE_QUESTIONS
+        return PublishedQuizLibrarySection.QUIZZES
+
+    @staticmethod
+    def _content_kind_for_section(
+        model: PublishedQuizModel,
+        section: PublishedQuizLibrarySection,
+    ) -> str:
+        if section is PublishedQuizLibrarySection.PRACTICE_QUESTIONS:
+            return QuizContentKind.PRACTICE_QUESTIONS.value
+        if model.lecture_id is not None:
+            return QuizContentKind.LECTURE_QUIZ.value
+        return QuizContentKind.EXAM_REVIEW.value
+
+    @staticmethod
+    def _published_quiz_scope(
+        session: Session,
+        model: PublishedQuizModel,
+    ) -> tuple[str, int]:
+        if model.lecture_id is not None:
+            lecture = session.get(LectureModel, model.lecture_id)
+            if lecture is not None:
+                return (_normalize(lecture.subject), lecture.exam_number)
+        return (
+            _normalize(model.destination_subject_key or model.destination_subject),
+            model.destination_exam_number,
+        )
+
+    @classmethod
+    def _published_quiz_order_key(
+        cls,
+        session: Session,
+        model: PublishedQuizModel,
+    ) -> tuple[str, int, int, int, int, str, str]:
+        scope = cls._published_quiz_scope(session, model)
+        lecture = (
+            session.get(LectureModel, model.lecture_id)
+            if model.lecture_id is not None
+            else None
+        )
+        return (
+            scope[0],
+            scope[1],
+            model.display_order,
+            0 if lecture is not None else 1,
+            lecture.lecture_number if lecture is not None else 0,
+            model.title.casefold(),
+            model.token,
+        )
+
+    @classmethod
+    def _normalize_scope_order(
+        cls,
+        session: Session,
+        scope: tuple[str, int],
+        section: PublishedQuizLibrarySection,
+        *,
+        exclude_token: str | None = None,
+    ) -> list[PublishedQuizModel]:
+        models = session.scalars(
+            select(PublishedQuizModel).where(PublishedQuizModel.active.is_(True))
+        ).all()
+        scoped = [
+            model
+            for model in models
+            if model.token != exclude_token
+            and cls._published_quiz_scope(session, model) == scope
+            and cls._library_section(model) is section
+        ]
+        scoped.sort(key=lambda model: cls._published_quiz_order_key(session, model))
+        for index, model in enumerate(scoped, start=1):
+            model.display_order = index
+        return scoped
+
+    @classmethod
+    def _next_display_order(
+        cls,
+        session: Session,
+        model: PublishedQuizModel,
+    ) -> int:
+        scope = cls._published_quiz_scope(session, model)
+        section = cls._library_section(model)
+        existing = [
+            row.display_order
+            for row in session.scalars(
+                select(PublishedQuizModel).where(PublishedQuizModel.active.is_(True))
+            ).all()
+            if cls._published_quiz_scope(session, row) == scope
+            and cls._library_section(row) is section
+        ]
+        return max(existing, default=0) + 1
 
     def course_document(self, subject_key: str) -> CourseQuizDocumentModel | None:
         with self.database.session() as session:
@@ -1262,6 +1446,7 @@ class GenerationRepository:
             model.version,
             model.active,
             model.content_kind,
+            model.display_order,
         )
 
     @staticmethod

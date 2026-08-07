@@ -690,6 +690,7 @@ class PublishedQuizModel(Base):
     title: Mapped[str] = mapped_column(String(300))
     payload_json: Mapped[str] = mapped_column(Text)
     content_kind: Mapped[str] = mapped_column(String(30), default="lecture_quiz")
+    display_order: Mapped[int] = mapped_column(default=0)
     version: Mapped[int] = mapped_column(default=1)
     active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)

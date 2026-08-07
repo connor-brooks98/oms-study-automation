@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 from oms_hub.db import Database
 from oms_hub.models import (
+    PublishedQuizMediaModel,
     PublishedQuizModel,
     StudioRunModel,
     StudyRevisionModel,
@@ -14,6 +15,8 @@ from oms_hub.study_generation.domain import (
     GenerationKind,
     GenerationStage,
     GenerationState,
+    PublishedQuizLibrarySection,
+    PublishedQuizOrderDirection,
     SourceKind,
 )
 from oms_hub.study_generation.native_quiz import parse_native_quiz
@@ -252,6 +255,226 @@ def test_unknown_public_quiz_token_returns_none(tmp_path):
 
     try:
         assert repository.published_quiz("f" * 64) is None
+    finally:
+        repository.database.engine.dispose()
+
+
+def test_published_quiz_management_preserves_content_and_orders_canonical_scope(tmp_path):
+    repository, lecture_id = prepared_repository(tmp_path)
+    catalog = CatalogRepository(repository.database)
+    second_lecture_id = catalog.upsert_lecture(
+        LectureInput("Neuro", 1, 2, "Cerebrovascular disease", "", None)
+    )
+    try:
+        first = repository.publish_quiz(
+            lecture_id,
+            repository.queue(lecture_id, GenerationKind.QUIZ).id,
+            _quiz("First title"),
+        )
+        second = repository.publish_quiz(
+            second_lecture_id,
+            repository.queue(second_lecture_id, GenerationKind.QUIZ).id,
+            _quiz("Second title"),
+        )
+
+        renamed = repository.rename_published_quiz(first.token, "Renamed title")
+        reordered = repository.reorder_published_quiz(
+            first.token,
+            PublishedQuizOrderDirection.DOWN,
+        )
+        moved = repository.move_published_quiz(
+            first.token,
+            PublishedQuizLibrarySection.PRACTICE_QUESTIONS,
+        )
+
+        assert renamed.token == first.token
+        assert renamed.version == first.version
+        assert renamed.quiz.title == "Renamed title"
+        assert reordered.display_order == 2
+        assert moved.content_kind == QuizContentKind.PRACTICE_QUESTIONS
+        assert moved.display_order == 1
+        assert tuple(
+            row.token
+            for row in repository.published_quizzes(
+                frozenset({QuizContentKind.LECTURE_QUIZ})
+            )
+        ) == (second.token,)
+        assert tuple(
+            row.token
+            for row in repository.published_quizzes(
+                frozenset({QuizContentKind.PRACTICE_QUESTIONS})
+            )
+        ) == (moved.token,)
+        with repository.database.session() as session:
+            model = session.get(PublishedQuizModel, first.token)
+            assert model is not None
+            assert parse_native_quiz(model.payload_json).title == "Renamed title"
+    finally:
+        repository.database.engine.dispose()
+
+
+def test_moving_middle_quiz_compacts_the_source_section_order(tmp_path):
+    repository, first_lecture_id = prepared_repository(tmp_path)
+    catalog = CatalogRepository(repository.database)
+    second_lecture_id = catalog.upsert_lecture(
+        LectureInput("Neuro", 1, 2, "Stroke", "", None)
+    )
+    third_lecture_id = catalog.upsert_lecture(
+        LectureInput("Neuro", 1, 3, "Tumors", "", None)
+    )
+    try:
+        first = repository.publish_quiz(
+            first_lecture_id,
+            repository.queue(first_lecture_id, GenerationKind.QUIZ).id,
+            _quiz("First"),
+        )
+        middle = repository.publish_quiz(
+            second_lecture_id,
+            repository.queue(second_lecture_id, GenerationKind.QUIZ).id,
+            _quiz("Middle"),
+        )
+        third = repository.publish_quiz(
+            third_lecture_id,
+            repository.queue(third_lecture_id, GenerationKind.QUIZ).id,
+            _quiz("Third"),
+        )
+
+        repository.move_published_quiz(
+            middle.token,
+            PublishedQuizLibrarySection.PRACTICE_QUESTIONS,
+        )
+
+        with repository.database.session() as session:
+            remaining = [
+                session.get(PublishedQuizModel, token)
+                for token in (first.token, third.token)
+            ]
+            assert [row.display_order for row in remaining if row is not None] == [1, 2]
+    finally:
+        repository.database.engine.dispose()
+
+
+def test_quiz_management_preserves_media_and_restores_source_content_kinds(tmp_path):
+    repository, lecture_id = prepared_repository(tmp_path)
+    try:
+        lecture = repository.publish_quiz(
+            lecture_id,
+            repository.queue(lecture_id, GenerationKind.QUIZ).id,
+            _quiz("Lecture title"),
+        )
+        with repository.database.session() as session:
+            session.add(
+                PublishedQuizMediaModel(
+                    quiz_token=lecture.token,
+                    image_key="lecture-image",
+                    path="/tmp/lecture-image.png",
+                    sha256="a" * 64,
+                    media_type="image/png",
+                    width=100,
+                    height=50,
+                    alt_text="Lecture image",
+                )
+            )
+        original_lecture_token = lecture.token
+        original_lecture_version = lecture.version
+        original_questions = lecture.quiz.questions
+        lecture = repository.rename_published_quiz(lecture.token, "Edited lecture")
+        repository.reorder_published_quiz(
+            lecture.token,
+            PublishedQuizOrderDirection.UP,
+        )
+        lecture = repository.move_published_quiz(
+            lecture.token,
+            PublishedQuizLibrarySection.PRACTICE_QUESTIONS,
+        )
+        lecture = repository.move_published_quiz(
+            lecture.token,
+            PublishedQuizLibrarySection.QUIZZES,
+        )
+        stored_lecture = repository.published_quiz(lecture.token)
+
+        assert lecture.content_kind == QuizContentKind.LECTURE_QUIZ
+        assert stored_lecture is not None
+        assert lecture.token == original_lecture_token
+        assert lecture.version == original_lecture_version
+        assert lecture.quiz.questions == original_questions
+        assert repository.published_quiz_media(lecture.token)[0].image_key == "lecture-image"
+
+        run_id = "management-studio-run"
+        with repository.database.session() as session:
+            session.add(
+                StudioRunModel(
+                    id=run_id,
+                    subject="Neuro",
+                    subject_key="neuro",
+                    exam_number=1,
+                    destination_subject="Neuro",
+                    destination_subject_key="neuro",
+                    destination_exam_number=1,
+                    label="Immutable run label",
+                    label_key="immutable run label",
+                    prompt="",
+                    state="awaiting_images",
+                    stage="image_review",
+                )
+            )
+        studio = repository.publish_studio_quiz(run_id, _quiz("Studio title"))
+        original_studio_token = studio.token
+        original_studio_version = studio.version
+        original_studio_questions = studio.quiz.questions
+        studio = repository.move_published_quiz(
+            studio.token,
+            PublishedQuizLibrarySection.PRACTICE_QUESTIONS,
+        )
+        studio = repository.move_published_quiz(
+            studio.token,
+            PublishedQuizLibrarySection.QUIZZES,
+        )
+
+        assert studio.content_kind == QuizContentKind.EXAM_REVIEW
+        assert studio.token == original_studio_token
+        assert studio.version == original_studio_version
+        assert studio.quiz.questions == original_studio_questions
+    finally:
+        repository.database.engine.dispose()
+
+
+def test_reordering_uses_current_lecture_subject_and_exam_scope(tmp_path):
+    repository, lecture_id = prepared_repository(tmp_path)
+    catalog = CatalogRepository(repository.database)
+    try:
+        moved = repository.publish_quiz(
+            lecture_id,
+            repository.queue(lecture_id, GenerationKind.QUIZ).id,
+            _quiz("Moved lecture"),
+        )
+        catalog.update_lecture(
+            lecture_id,
+            LectureInput("Cardio", 2, 1, "Arrhythmias", "", None),
+        )
+        peer_lecture_id = catalog.upsert_lecture(
+            LectureInput("Cardio", 2, 2, "Heart failure", "", None)
+        )
+        peer = repository.publish_quiz(
+            peer_lecture_id,
+            repository.queue(peer_lecture_id, GenerationKind.QUIZ).id,
+            _quiz("Peer lecture"),
+        )
+
+        reordered = repository.reorder_published_quiz(
+            moved.token,
+            PublishedQuizOrderDirection.DOWN,
+        )
+        stored_peer = repository.published_quiz(peer.token)
+
+        assert reordered.display_order == 2
+        assert stored_peer is not None
+        assert stored_peer.display_order == 1
+        with repository.database.session() as session:
+            stale = session.get(PublishedQuizModel, moved.token)
+            assert stale is not None
+            assert stale.destination_subject == "Neuro"
+            assert stale.destination_exam_number == 1
     finally:
         repository.database.engine.dispose()
 

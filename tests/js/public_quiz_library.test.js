@@ -112,12 +112,18 @@ class FakeLibraryDocument {
     rows = [],
     resetButtons = [],
     removeButtons = [],
+    titleButtons = [],
+    libraryMoveButtons = [],
+    orderMoveButtons = [],
     resetMessage,
     resetProgressButton,
   }) {
     this.rows = rows;
     this.resetButtons = resetButtons;
     this.removeButtons = removeButtons;
+    this.titleButtons = titleButtons;
+    this.libraryMoveButtons = libraryMoveButtons;
+    this.orderMoveButtons = orderMoveButtons;
     this.resetMessage = resetMessage || new FakeLibraryElement();
     this.resetProgressButton = resetProgressButton || null;
   }
@@ -127,6 +133,9 @@ class FakeLibraryDocument {
     if (selector === "[data-quiz-row]") return this.rows;
     if (selector === "[data-reset-quiz]") return this.resetButtons;
     if (selector === "[data-remove-quiz]") return this.removeButtons;
+    if (selector === "[data-edit-quiz-title]") return this.titleButtons;
+    if (selector === "[data-move-quiz-library]") return this.libraryMoveButtons;
+    if (selector === "[data-move-quiz-order]") return this.orderMoveButtons;
     return [];
   }
 
@@ -318,4 +327,129 @@ test("failed remove keeps the row and reports the server detail", async () => {
   assert.equal(row.removed, false);
   assert.equal(removeButton.disabled, false);
   assert.equal(documentRef.resetMessage.textContent, "Cloudflare Access identity is required");
+});
+
+test("title edit sends a trimmed PATCH and reloads only after success", async () => {
+  const titleButton = new FakeLibraryElement();
+  titleButton.dataset = {
+    title: "Old title",
+    titleUrl: "/api/published-quizzes/tok1/title",
+  };
+  const documentRef = new FakeLibraryDocument({ titleButtons: [titleButton] });
+  documentRef.cookie = "study_hub_csrf=csrf-token";
+  const originalFetch = global.fetch;
+  const originalPrompt = global.prompt;
+  const originalLocation = global.location;
+  let request;
+  let reloads = 0;
+  global.prompt = () => "  Revised title  ";
+  global.location = { reload: () => { reloads += 1; } };
+  global.fetch = async (url, options) => {
+    request = { url, options };
+    return { ok: true, async json() { return { title: "Revised title" }; } };
+  };
+  try {
+    library.initialize(documentRef, makeMemoryStorage());
+    await titleButton._listeners.click[0]();
+  } finally {
+    global.fetch = originalFetch;
+    global.prompt = originalPrompt;
+    global.location = originalLocation;
+  }
+
+  assert.deepEqual(request, {
+    url: "/api/published-quizzes/tok1/title",
+    options: {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": "csrf-token",
+      },
+      body: JSON.stringify({ title: "Revised title" }),
+    },
+  });
+  assert.equal(reloads, 1);
+});
+
+test("library and order controls send their PATCH payloads", async () => {
+  const libraryButton = new FakeLibraryElement();
+  libraryButton.dataset = {
+    libraryUrl: "/api/published-quizzes/tok1/library",
+    targetSection: "practice_questions",
+  };
+  const upButton = new FakeLibraryElement();
+  upButton.dataset = {
+    orderUrl: "/api/published-quizzes/tok1/order",
+    direction: "up",
+  };
+  const downButton = new FakeLibraryElement();
+  downButton.dataset = {
+    orderUrl: "/api/published-quizzes/tok1/order",
+    direction: "down",
+  };
+  const documentRef = new FakeLibraryDocument({
+    libraryMoveButtons: [libraryButton],
+    orderMoveButtons: [upButton, downButton],
+  });
+  documentRef.cookie = "study_hub_csrf=csrf-token";
+  const originalFetch = global.fetch;
+  const originalLocation = global.location;
+  const requests = [];
+  global.location = { reload() {} };
+  global.fetch = async (url, options) => {
+    requests.push({ url, body: options.body });
+    return { ok: true, async json() { return {}; } };
+  };
+  try {
+    library.initialize(documentRef, makeMemoryStorage());
+    await libraryButton._listeners.click[0]();
+    await upButton._listeners.click[0]();
+    await downButton._listeners.click[0]();
+  } finally {
+    global.fetch = originalFetch;
+    global.location = originalLocation;
+  }
+
+  assert.deepEqual(requests, [
+    {
+      url: "/api/published-quizzes/tok1/library",
+      body: JSON.stringify({ section: "practice_questions" }),
+    },
+    {
+      url: "/api/published-quizzes/tok1/order",
+      body: JSON.stringify({ direction: "up" }),
+    },
+    {
+      url: "/api/published-quizzes/tok1/order",
+      body: JSON.stringify({ direction: "down" }),
+    },
+  ]);
+});
+
+test("failed management updates keep the button enabled and do not reload", async () => {
+  const button = new FakeLibraryElement();
+  button.dataset = {
+    libraryUrl: "/api/published-quizzes/tok1/library",
+    targetSection: "practice_questions",
+  };
+  const documentRef = new FakeLibraryDocument({ libraryMoveButtons: [button] });
+  const originalFetch = global.fetch;
+  const originalLocation = global.location;
+  let reloads = 0;
+  global.location = { reload: () => { reloads += 1; } };
+  global.fetch = async () => ({
+    ok: false,
+    async json() { return { detail: "Quiz was not found" }; },
+  });
+  try {
+    library.initialize(documentRef, makeMemoryStorage());
+    await button._listeners.click[0]();
+  } finally {
+    global.fetch = originalFetch;
+    global.location = originalLocation;
+  }
+
+  assert.equal(reloads, 0);
+  assert.equal(button.disabled, false);
+  assert.equal(documentRef.resetMessage.textContent, "Quiz was not found");
 });

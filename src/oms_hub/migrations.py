@@ -23,7 +23,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 17
+LATEST_SCHEMA_VERSION = 18
 
 
 def _ensure_column(
@@ -283,6 +283,22 @@ def _upgrade_runtime_settings_v17(database: "Database") -> None:
         database.create_schema()
 
 
+def _upgrade_published_quiz_display_order_v18(database: "Database") -> None:
+    """Add durable, additive ordering for the public quiz libraries.
+
+    Older rows deliberately start tied at zero.  The repository resolves those
+    ties deterministically and assigns a contiguous order before the first
+    manual move, which keeps upgrades idempotent and makes every old row
+    reorderable.
+    """
+    _ensure_column(
+        database,
+        "published_quizzes",
+        "display_order",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+
+
 def _upgrade_gap_card_identity(database: "Database") -> None:
     if database.engine.dialect.name != "sqlite":
         return
@@ -421,6 +437,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_quiz_import_v15(database)
     _upgrade_studio_history_v16(database)
     _upgrade_runtime_settings_v17(database)
+    _upgrade_published_quiz_display_order_v18(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

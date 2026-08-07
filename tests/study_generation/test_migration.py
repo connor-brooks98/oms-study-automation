@@ -239,6 +239,8 @@ def test_v15_migration_backfills_existing_quiz_and_studio_rows_idempotently(
         assert studio_quiz is not None
         assert lecture_quiz.content_kind == "lecture_quiz"
         assert studio_quiz.content_kind == "exam_review"
+        assert lecture_quiz.display_order == 0
+        assert studio_quiz.display_order == 0
     names = set(inspect(database.engine).get_table_names())
     assert {
         "studio_import_run_sources",

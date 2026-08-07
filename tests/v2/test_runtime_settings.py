@@ -31,7 +31,7 @@ def test_runtime_settings_fresh_database_and_repeat_migration_are_additive(tmp_p
     tables = set(inspect(database.engine).get_table_names())
     assert {"runtime_settings", "runtime_setting_audit"} <= tables
     with database.session() as session:
-        assert session.get(SchemaVersionModel, 1).version == 17
+        assert session.get(SchemaVersionModel, 1).version == 18
     database.close()
 
 
