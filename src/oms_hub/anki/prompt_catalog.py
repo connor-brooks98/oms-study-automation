@@ -26,6 +26,14 @@ _SCHEMA_ROLES: dict[str, PromptRole] = {
     "gap_cards_v2": PromptRole.GAP_CARDS,
 }
 _SYSTEM_PROMPT_IDS = ("card-relevance-audit", "paraphrase-expansion")
+_CARD_CENTRIC_INTERNAL_PROMPT_IDS = (
+    "card-centric-ledger-v1",
+    "card-centric-ledger-v2",
+    "card-centric-classifier",
+    "card-centric-fast-classifier",
+    "card-centric-gap-v1",
+    "card-centric-gap-v2",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,9 +112,7 @@ class AnkiPromptCatalogService:
 
     def catalog(self) -> PromptCatalog:
         root = self.active_directory()
-        choices: dict[PromptRole, list[PromptChoice]] = {
-            role: [] for role in PromptRole
-        }
+        choices: dict[PromptRole, list[PromptChoice]] = {role: [] for role in PromptRole}
         issues: list[PromptCatalogIssue] = []
         if not root.is_dir():
             issues.append(PromptCatalogIssue(root, "Prompt directory is unavailable"))
@@ -123,7 +129,10 @@ class AnkiPromptCatalogService:
             except AnkiPromptConfigurationError as error:
                 issues.append(PromptCatalogIssue(path, str(error)))
                 continue
-            if prompt.metadata.shared or prompt.metadata.id in _SYSTEM_PROMPT_IDS:
+            if prompt.metadata.shared or prompt.metadata.id in (
+                *_SYSTEM_PROMPT_IDS,
+                *_CARD_CENTRIC_INTERNAL_PROMPT_IDS,
+            ):
                 continue
             prompt_id = prompt.metadata.id.casefold()
             if prompt_id in seen:
@@ -134,9 +143,7 @@ class AnkiPromptCatalogService:
             role = _SCHEMA_ROLES.get(schema)
             if role is None:
                 issues.append(
-                    PromptCatalogIssue(
-                        path, f"Unsupported prompt schema {schema or '(missing)'}"
-                    )
+                    PromptCatalogIssue(path, f"Unsupported prompt schema {schema or '(missing)'}")
                 )
                 continue
             choices[role].append(_choice(prompt))
@@ -168,9 +175,7 @@ class AnkiPromptCatalogService:
                 raise AnkiPromptConfigurationError(
                     f"Selected {expected.name} prompt has an unsupported role"
                 )
-        system = AnkiPromptLibrary(self.bundled_directory).load_many(
-            _SYSTEM_PROMPT_IDS
-        )
+        system = AnkiPromptLibrary(self.bundled_directory).load_many(_SYSTEM_PROMPT_IDS)
         prompts = (
             selected[0][1],
             selected[1][1],

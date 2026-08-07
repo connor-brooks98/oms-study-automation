@@ -380,7 +380,11 @@ def create_anki_job(
     )
     resolved_tag_allowlist = payload.tag_allowlist
     if (
-        payload.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V1.value
+        payload.pipeline_contract_version
+        in {
+            PipelineContractVersion.CARD_CENTRIC_V1.value,
+            PipelineContractVersion.CARD_CENTRIC_V2.value,
+        }
         and not resolved_tag_allowlist
     ):
         lecture = CatalogRepository(request.app.state.database).get_lecture(payload.lecture_id)
@@ -398,17 +402,26 @@ def create_anki_job(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
-    domain = replace(
-        payload.to_domain(model=resolved_model),
-        tag_allowlist=resolved_tag_allowlist,
-        source_revision_hashes=hashes,
-        semantic_generation=str(semantic.manifest.generation),
-        companion_generation=snapshot_id,
-        summary_outline_id=outline.id,
-        summary_outline_sha256=outline.sha256,
-    )
+    try:
+        domain = replace(
+            payload.to_domain(model=resolved_model),
+            tag_allowlist=resolved_tag_allowlist,
+            source_revision_hashes=hashes,
+            semantic_generation=str(semantic.manifest.generation),
+            companion_generation=snapshot_id,
+            summary_outline_id=outline.id,
+            summary_outline_sha256=outline.sha256,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     assert domain.resolved_model_config is not None
-    if domain.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1 and (
+    if domain.pipeline_contract_version in {
+        PipelineContractVersion.CARD_CENTRIC_V1,
+        PipelineContractVersion.CARD_CENTRIC_V2,
+    } and (
         domain.resolved_model_config.classify_s4.provider,
         domain.resolved_model_config.classify_s4.model,
     ) != (
@@ -439,7 +452,10 @@ def create_anki_job(
             )
     try:
         job = _repository(request).create_job(domain)
-        if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1:
+        if job.pipeline_contract_version in {
+            PipelineContractVersion.CARD_CENTRIC_V1,
+            PipelineContractVersion.CARD_CENTRIC_V2,
+        }:
             _repository(request).save_card_centric_profile(job.resolved_model_config)
     except KeyError as exc:
         raise HTTPException(
@@ -610,7 +626,10 @@ async def save_anki_review(
             detail="This review is already frozen or is not ready",
         )
     change_set = payload.to_domain()
-    if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1:
+    if job.pipeline_contract_version in {
+        PipelineContractVersion.CARD_CENTRIC_V1,
+        PipelineContractVersion.CARD_CENTRIC_V2,
+    }:
         committed = _reconciliation_summary(request, job_id) or {}
     for edit in change_set.gap_edits:
         try:
@@ -640,7 +659,8 @@ async def save_anki_review(
     try:
         snapshot = (
             committed.get("snapshot")
-            if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1
+            if job.pipeline_contract_version
+            in {PipelineContractVersion.CARD_CENTRIC_V1, PipelineContractVersion.CARD_CENTRIC_V2}
             else None
         )
         saved = repository.save_review(
@@ -672,21 +692,42 @@ def issue_anki_overflow_acknowledgement(
     """Issue the one-time review document; clients never supply its signature."""
     repository = _repository(request)
     job = _require_job(repository, job_id)
-    if job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V1:
+    if job.pipeline_contract_version not in {
+        PipelineContractVersion.CARD_CENTRIC_V1,
+        PipelineContractVersion.CARD_CENTRIC_V2,
+    }:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="not a card-centric job")
     committed = _reconciliation_summary(request, job_id) or {}
     selection = cast(dict[str, Any], committed.get("selection", {}))
     cap = int(selection.get("cap", 70))
+    mandatory_notes = tuple(selection.get("mandatory_note_ids", []))
+    mandatory_generated = tuple(selection.get("mandatory_generated_card_ids", []))
+    selected_notes = tuple(selection.get("selected_existing_note_ids", []))
+    selected_generated = tuple(selection.get("selected_generated_card_ids", []))
+    requires_exact_generated_mandatory = (
+        job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V2
+    )
+    if (
+        set(selected_notes) != set(mandatory_notes)
+        or (
+            requires_exact_generated_mandatory
+            and set(selected_generated) != set(mandatory_generated)
+        )
+        or set(payload.selected_existing_note_ids) != set(selected_notes)
+        or set(payload.selected_generated_card_ids) != set(selected_generated)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="overflow acknowledgement must bind the exact mandatory overflow set",
+        )
     try:
         document = repository.issue_card_centric_overflow_acknowledgement(
             job_id,
             review_revision=payload.review_revision,
             selected_note_ids=payload.selected_existing_note_ids,
             selected_generated_ids=payload.selected_generated_card_ids,
-            mandatory_note_ids=tuple(selection.get("mandatory_note_ids", [])),
-            # S7 cards represent required uncovered facts; only the initial required
-            # generated set may participate in the overflow exception.
-            mandatory_generated_ids=tuple(selection.get("selected_generated_card_ids", [])),
+            mandatory_note_ids=mandatory_notes,
+            mandatory_generated_ids=mandatory_generated,
             cap=cap,
         )
         repository.persist_card_centric_overflow_acknowledgement(
@@ -765,10 +806,10 @@ async def build_anki_envelope(
         )
     gap_cards = repository.list_gap_cards(job_id)
     reconciliation = _reconciliation_summary(request, job_id)
-    if (
-        reconciliation is not None
-        and job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1
-    ):
+    if reconciliation is not None and job.pipeline_contract_version in {
+        PipelineContractVersion.CARD_CENTRIC_V1,
+        PipelineContractVersion.CARD_CENTRIC_V2,
+    }:
         selection = cast(dict[str, Any], reconciliation.get("selection", {}))
         selected_notes = tuple(
             candidate.note_id
@@ -777,13 +818,20 @@ async def build_anki_envelope(
         )
         selected_generated = tuple(card.card_id for card in gap_cards if card.selected)
         cap = int(selection.get("cap", 70))
+        mandatory_notes = tuple(selection.get("mandatory_note_ids", []))
+        mandatory_generated = tuple(selection.get("mandatory_generated_card_ids", []))
+        acknowledgement_generated = (
+            mandatory_generated
+            if job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V2
+            else selected_generated
+        )
         if len(selected_notes) + len(selected_generated) > cap and not (
             payload.overflow_acknowledgement
             and repository.validate_card_centric_overflow_acknowledgement(
                 job_id,
                 review_revision=job.review_revision,
-                selected_note_ids=selected_notes,
-                selected_generated_ids=selected_generated,
+                selected_note_ids=mandatory_notes,
+                selected_generated_ids=acknowledgement_generated,
                 cap=cap,
                 document=payload.overflow_acknowledgement,
             )
@@ -792,10 +840,10 @@ async def build_anki_envelope(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="selection overflow acknowledgement is missing, stale, or forged",
             )
-    if (
-        reconciliation is not None
-        and job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V1
-    ):
+    if reconciliation is not None and job.pipeline_contract_version not in {
+        PipelineContractVersion.CARD_CENTRIC_V1,
+        PipelineContractVersion.CARD_CENTRIC_V2,
+    }:
         reconciliation = _review_reconciliation_summary(
             reconciliation,
             gap_cards,
@@ -843,6 +891,7 @@ async def build_anki_envelope(
                 target_tag=job.target_tag,
                 generated_cards=proposals,
                 job_id=job.id,
+                pipeline_contract_version=job.pipeline_contract_version.value,
                 model_config_sha256=job.model_config_sha256,
                 resolved_model_config=job.resolved_model_config.canonical_document(),
                 reconciliation_contract_version=str(
@@ -858,7 +907,8 @@ async def build_anki_envelope(
                 if reconciliation
                 else {"required": False},
             )
-            if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1
+            if job.pipeline_contract_version
+            in {PipelineContractVersion.CARD_CENTRIC_V1, PipelineContractVersion.CARD_CENTRIC_V2}
             else builder.build(
                 changeset,
                 current,
@@ -1408,7 +1458,10 @@ def _reconciliation_summary(
 ) -> dict[str, Any] | None:
     repository = _repository(request)
     job = repository.require_job(job_id) if hasattr(repository, "require_job") else None
-    if job is not None and job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1:
+    if job is not None and job.pipeline_contract_version in {
+        PipelineContractVersion.CARD_CENTRIC_V1,
+        PipelineContractVersion.CARD_CENTRIC_V2,
+    }:
         reviewed = repository.reviewed_reconciliation(job_id, job.review_revision)
         if reviewed is not None:
             return reviewed

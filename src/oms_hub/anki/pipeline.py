@@ -175,6 +175,66 @@ CARD_CENTRIC_V1_STAGES = (
         CurationState.READY_FOR_REVIEW,
     ),
 )
+CARD_CENTRIC_V2_STAGES = (
+    PipelineStageDefinition(
+        CurationState.PREFLIGHT, CurationStage.PREFLIGHT, CurationState.BUILDING_SOURCE_INDEX
+    ),
+    PipelineStageDefinition(
+        CurationState.BUILDING_SOURCE_INDEX,
+        CurationStage.SOURCE_INDEX,
+        CurationState.CARD_BUILDING_LEDGER,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_BUILDING_LEDGER,
+        CurationStage.CARD_LEDGER,
+        CurationState.CARD_AUDITING_EVIDENCE,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_AUDITING_EVIDENCE,
+        CurationStage.CARD_EVIDENCE_AUDIT,
+        CurationState.CARD_SCOPING_TAGS,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_SCOPING_TAGS,
+        CurationStage.CARD_TAG_SCOPE,
+        CurationState.CARD_PREFILTERING,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_PREFILTERING,
+        CurationStage.CARD_PREFILTER,
+        CurationState.CARD_FAST_CLASSIFYING,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_FAST_CLASSIFYING,
+        CurationStage.CARD_FAST_CLASSIFY,
+        CurationState.CARD_CLASSIFYING,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_CLASSIFYING, CurationStage.CARD_CLASSIFY, CurationState.CARD_COVERAGE
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_COVERAGE,
+        CurationStage.CARD_COVERAGE,
+        CurationState.CARD_SWEEPING_RESIDUAL,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_SWEEPING_RESIDUAL,
+        CurationStage.CARD_RESIDUAL,
+        CurationState.CARD_GENERATING_GAPS,
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_GENERATING_GAPS, CurationStage.CARD_GAP_FILL, CurationState.CARD_DEDUPING
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_DEDUPING, CurationStage.DEDUPE, CurationState.CARD_SELECTING
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_SELECTING, CurationStage.CARD_SELECTION, CurationState.CARD_RECONCILING
+    ),
+    PipelineStageDefinition(
+        CurationState.CARD_RECONCILING, CurationStage.RECONCILIATION, CurationState.READY_FOR_REVIEW
+    ),
+)
 _STAGE_BY_STATE = {definition.state: definition for definition in PIPELINE_STAGES}
 
 
@@ -187,6 +247,8 @@ def pipeline_stages(version: PipelineContractVersion) -> tuple[PipelineStageDefi
         return PIPELINE_STAGES
     if version is PipelineContractVersion.CARD_CENTRIC_V1:
         return CARD_CENTRIC_V1_STAGES
+    if version is PipelineContractVersion.CARD_CENTRIC_V2:
+        return CARD_CENTRIC_V2_STAGES
     raise UnsupportedPipelineContract(
         f"pipeline contract {version.value} is unsupported; upgrade required; no mutation performed"
     )

@@ -24,6 +24,7 @@ from oms_hub.anki.domain import (
     EvidenceSupport,
     GapCard,
     PipelineContractVersion,
+    ResolvedModelConfiguration,
     RetrievalPass,
     SourceEvidence,
     SourceKind,
@@ -881,6 +882,50 @@ def test_create_job_rejects_oversized_model(
     response = client.post("/api/anki/jobs", json=payload)
 
     assert response.status_code == 422
+
+
+def test_create_v2_job_rejects_a_redirected_fast_classifier_destination(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, _, lecture_id, revision_id, _ = prepared_app
+    payload = _create_payload(lecture_id, revision_id)
+    config = ResolvedModelConfiguration.card_centric_v2_default(
+        "anthropic", "claude-sonnet-5"
+    ).canonical_document()
+    config["fast_classify_s4b"] = {
+        **config["fast_classify_s4b"],
+        "provider": "openrouter",
+        "model": "openai/gpt-4o-mini",
+    }
+
+    response = client.post(
+        "/api/anki/jobs",
+        json={
+            **payload,
+            "pipeline_contract_version": "card_centric_v2",
+            "resolved_model_config": config,
+        },
+    )
+
+    assert response.status_code == 422
+    assert "S4b must use openai gpt-4o-mini" in response.json()["detail"]
+
+
+def test_create_v2_job_accepts_the_fixed_default_fast_classifier_destination(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, _, lecture_id, revision_id, _ = prepared_app
+
+    response = client.post(
+        "/api/anki/jobs",
+        json={
+            **_create_payload(lecture_id, revision_id),
+            "pipeline_contract_version": "card_centric_v2",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["state"] == "queued"
 
 
 def test_create_job_requires_complete_three_source_bundle(

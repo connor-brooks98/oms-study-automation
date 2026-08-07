@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 
 import pytest
@@ -12,7 +13,9 @@ from oms_hub.anki.card_centric import (
     resolve_card_centric_scope,
     scope_cards,
     select_high_yield,
+    select_high_yield_v2,
     selection_eligible,
+    selection_eligible_v2,
 )
 from oms_hub.anki.card_centric_contracts import (
     CardClassification,
@@ -21,8 +24,10 @@ from oms_hub.anki.card_centric_contracts import (
     CardConceptLedger,
     CardRecord,
     CensusTrust,
+    FastCardClassification,
     GeneratedCardResolution,
     SnapshotCensus,
+    serialize_card_centric_ledger,
 )
 from oms_hub.anki.domain import SourceKind
 from oms_hub.anki.sources import SourcePassage
@@ -237,6 +242,53 @@ def test_tag_scope_is_a_complete_deterministic_partition() -> None:
     assert set(scoped.scoped_note_ids) | set(scoped.unscoped_note_ids) == {1, 2, 3}
 
 
+def test_v1_ledger_serialization_matches_pinned_base_document_and_hash() -> None:
+    # This literal is the card_centric_v1 shape at e1b44653880751e24ce0309ca8af39a1e201f2fb.
+    ledger = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="Iron deficiency causes low ferritin.",
+                primary_entity="iron deficiency",
+                aliases=("low ferritin",),
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+            ),
+        ),
+        forbidden_cloze_targets=("iron deficiency",),
+    )
+    document = serialize_card_centric_ledger(
+        ledger,
+        pipeline_contract_version="card_centric_v1",
+    )
+
+    assert document == {
+        "contract_version": 1,
+        "concepts": [
+            {
+                "contract_version": 1,
+                "concept_id": "C01",
+                "canonical_statement": "Iron deficiency causes low ferritin.",
+                "primary_entity": "iron deficiency",
+                "aliases": ["low ferritin"],
+                "depth": "deep",
+                "emphasis_flag": False,
+                "importance": "high",
+            }
+        ],
+        "lecture_entity_count": 1,
+        "forbidden_cloze_targets": ["iron deficiency"],
+    }
+    assert (
+        hashlib.sha256(
+            json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        ).hexdigest()
+        == "9dcc821768f5fbb6c600d69be3740ca4e357523f741ab8bc67b1fca6ef8a5747"
+    )
+
+
 def test_high_yield_selection_is_stable_protects_mandatory_and_never_pads() -> None:
     source = build_source_index(
         [_passage(SourceKind.SLIDE, "slide:1", "evidence")],
@@ -287,6 +339,267 @@ def test_high_yield_selection_is_stable_protects_mandatory_and_never_pads() -> N
     assert selected == (2, 3)
     assert excluded == ()
     assert generated == ()
+
+
+def test_v2_selection_uses_grounded_fast_coverage_and_t6_only_below_minimum() -> None:
+    source = build_source_index(
+        [_passage(SourceKind.SUMMARY, "summary:1", "summary evidence")],
+        snapshot_id="snapshot-1",
+        source_revision_hashes={7: "a" * 64},
+    )
+    ledger = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="fact",
+                primary_entity="Disease",
+                depth="deep",
+                emphasis_flag=True,
+                importance="high",
+            ),
+        ),
+    )
+    maybe = CardClassification(
+        note_id=2, verdict="MAYBE", primary_subject="fixture", reason="uncertain"
+    )
+    fast = FastCardClassification(
+        note_id=1,
+        verdict="LIKELY_YES",
+        grounded_concept_ids=("C01",),
+        supporting_passage_ids=(source.passages[0].passage_id,),
+        reason="grounded",
+    )
+
+    assert selection_eligible_v2(
+        CardClassification(
+            note_id=4,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="summary",
+            supporting_passage_ids=(source.passages[0].passage_id,),
+        ),
+        source,
+    )
+    selected, excluded, generated = select_high_yield_v2(
+        (maybe,),
+        fast_classifications=(fast,),
+        fast_fallback_note_ids=(3,),
+        ledger=ledger,
+        source_index=source,
+        generated_cards=(),
+        target=65,
+        cap=70,
+        minimum=60,
+    )
+
+    assert selected == (1, 2, 3)
+    assert excluded == ()
+    assert generated == ()
+
+
+def test_v2_selection_keeps_all_mandatory_high_existing_cards_above_soft_cap() -> None:
+    source = build_source_index(
+        [_passage(SourceKind.SLIDE, "slide:1", "evidence")],
+        snapshot_id="snapshot-1",
+        source_revision_hashes={7: "a" * 64},
+    )
+    ledger = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="critical",
+                primary_entity="Disease",
+                depth="deep",
+                emphasis_flag=True,
+                importance="high",
+            ),
+        ),
+    )
+    classifications = tuple(
+        CardClassification(
+            note_id=note_id,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="grounded",
+            covered_concept_ids=("C01",),
+            supporting_passage_ids=(source.passages[0].passage_id,),
+        )
+        for note_id in range(1, 72)
+    )
+
+    selected, _, _ = select_high_yield_v2(
+        classifications,
+        fast_classifications=(),
+        ledger=ledger,
+        source_index=source,
+        generated_cards=(),
+        target=65,
+        cap=70,
+        minimum=60,
+    )
+
+    assert selected == tuple(range(1, 72))
+
+
+def test_v2_selection_stops_ordinary_cards_at_target_of_65() -> None:
+    source = build_source_index(
+        [_passage(SourceKind.SLIDE, "slide:1", "evidence")],
+        snapshot_id="snapshot-1",
+        source_revision_hashes={7: "a" * 64},
+    )
+    ledger = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="routine",
+                primary_entity="Disease",
+                depth="medium",
+                emphasis_flag=False,
+                importance="medium",
+            ),
+        ),
+    )
+    classifications = tuple(
+        CardClassification(
+            note_id=note_id,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="grounded",
+            covered_concept_ids=("C01",),
+            supporting_passage_ids=(source.passages[0].passage_id,),
+        )
+        for note_id in range(1, 81)
+    )
+
+    selected, excluded, generated = select_high_yield_v2(
+        classifications,
+        fast_classifications=(),
+        ledger=ledger,
+        source_index=source,
+        generated_cards=(),
+        target=65,
+        cap=70,
+        minimum=60,
+    )
+
+    assert selected == tuple(range(1, 66))
+    assert excluded == tuple(range(66, 81))
+    assert generated == ()
+
+
+def test_v2_selection_allows_mandatory_high_cards_through_70_without_overflow() -> None:
+    source = build_source_index(
+        [_passage(SourceKind.SLIDE, "slide:1", "evidence")],
+        snapshot_id="snapshot-1",
+        source_revision_hashes={7: "a" * 64},
+    )
+    ledger = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="critical",
+                primary_entity="Disease",
+                depth="deep",
+                emphasis_flag=True,
+                importance="high",
+            ),
+        ),
+    )
+    classifications = tuple(
+        CardClassification(
+            note_id=note_id,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="grounded",
+            covered_concept_ids=("C01",),
+            supporting_passage_ids=(source.passages[0].passage_id,),
+        )
+        for note_id in range(1, 71)
+    )
+
+    selected, _, _ = select_high_yield_v2(
+        classifications,
+        fast_classifications=(),
+        ledger=ledger,
+        source_index=source,
+        generated_cards=(),
+        target=65,
+        cap=70,
+        minimum=60,
+    )
+
+    assert selected == tuple(range(1, 71))
+
+
+def test_v2_selection_places_mandatory_existing_before_medium_generated_rows() -> None:
+    source = build_source_index(
+        [_passage(SourceKind.SLIDE, "slide:1", "evidence")],
+        snapshot_id="snapshot-1",
+        source_revision_hashes={7: "a" * 64},
+    )
+    ledger = CardConceptLedger(
+        lecture_entity_count=2,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="critical",
+                primary_entity="Critical",
+                depth="deep",
+                emphasis_flag=True,
+                importance="high",
+            ),
+            CardConcept(
+                concept_id="C02",
+                canonical_statement="ordinary",
+                primary_entity="Ordinary",
+                depth="medium",
+                emphasis_flag=False,
+                importance="medium",
+            ),
+        ),
+    )
+    mandatory = tuple(
+        CardClassification(
+            note_id=note_id,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="grounded",
+            covered_concept_ids=("C01",),
+            supporting_passage_ids=(source.passages[0].passage_id,),
+        )
+        for note_id in range(1, 11)
+    )
+    ordinary = tuple(
+        GeneratedCardResolution(
+            card_id=f"G{index:02d}",
+            concept_id="C02",
+            fact_id=f"C02-M{index}",
+            text=f"Ordinary {{c1::fact {index}}}.",
+            extra="",
+            source_passage_ids=(source.passages[0].passage_id,),
+            evidence_ids=(f"E{index}",),
+        )
+        for index in range(1, 65)
+    )
+
+    selected, _, generated = select_high_yield_v2(
+        mandatory,
+        fast_classifications=(),
+        ledger=ledger,
+        source_index=source,
+        generated_cards=ordinary,
+        target=65,
+        cap=70,
+        minimum=60,
+    )
+
+    assert selected == tuple(range(1, 11))
+    assert generated == tuple(f"G{index:02d}" for index in range(1, 56))
+    assert len(selected) + len(generated) == 65
 
 
 def test_classifier_rejects_invented_ids_ungrounded_yes_and_partial_batch() -> None:
@@ -465,8 +778,13 @@ class _LedgerGenerator:
                 lecture_entity_count=1,
                 concepts=(
                     CardConcept(
-                        concept_id="C01", canonical_statement="fact", primary_entity="fact",
-                        aliases=(), depth="deep", emphasis_flag=False, importance="high",
+                        concept_id="C01",
+                        canonical_statement="fact",
+                        primary_entity="fact",
+                        aliases=(),
+                        depth="deep",
+                        emphasis_flag=False,
+                        importance="high",
                     ),
                 ),
             ).model_dump_json(),

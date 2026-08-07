@@ -11,7 +11,10 @@ class CurationState(StrEnum):
     BUILDING_COMPANION_INDEX = "building_companion_index"
     BUILDING_SOURCE_INDEX = "building_source_index"
     CARD_BUILDING_LEDGER = "card_building_ledger"
+    CARD_AUDITING_EVIDENCE = "card_auditing_evidence"
     CARD_SCOPING_TAGS = "card_scoping_tags"
+    CARD_PREFILTERING = "card_prefiltering"
+    CARD_FAST_CLASSIFYING = "card_fast_classifying"
     CARD_CLASSIFYING = "card_classifying"
     CARD_COVERAGE = "card_coverage"
     CARD_SWEEPING_RESIDUAL = "card_sweeping_residual"
@@ -68,7 +71,10 @@ class CurationStage(StrEnum):
     SYNC = "sync"
     VERIFY = "verify"
     CARD_LEDGER = "card_ledger"
+    CARD_EVIDENCE_AUDIT = "card_evidence_audit"
     CARD_TAG_SCOPE = "card_tag_scope"
+    CARD_PREFILTER = "card_prefilter"
+    CARD_FAST_CLASSIFY = "card_fast_classify"
     CARD_CLASSIFY = "card_classify"
     CARD_COVERAGE = "card_coverage"
     CARD_RESIDUAL = "card_residual"
@@ -79,6 +85,7 @@ class CurationStage(StrEnum):
 class PipelineContractVersion(StrEnum):
     RETRIEVAL_V4 = "retrieval_v4"
     CARD_CENTRIC_V1 = "card_centric_v1"
+    CARD_CENTRIC_V2 = "card_centric_v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +112,8 @@ class ResolvedModelConfiguration:
     residual_s6: ResolvedStageModel
     gap_fill_s7: ResolvedStageModel
     residual_unlocked: bool = False
+    # None deliberately preserves old v1/legacy persisted canonical documents.
+    fast_classify_s4b: ResolvedStageModel | None = None
 
     def __post_init__(self) -> None:
         if not self.profile.strip():
@@ -142,6 +151,19 @@ class ResolvedModelConfiguration:
             standard,
         )
 
+    @classmethod
+    def card_centric_v2_default(cls, provider: str, model: str) -> "ResolvedModelConfiguration":
+        base = cls.card_centric_default(provider, model)
+        return cls(
+            base.profile,
+            base.ledger_s2,
+            base.classify_s4,
+            base.residual_s6,
+            base.gap_fill_s7,
+            base.residual_unlocked,
+            ResolvedStageModel("openai", "gpt-4o-mini", thinking_mode="disabled"),
+        )
+
     def canonical_document(self) -> dict[str, Any]:
         def stage(value: ResolvedStageModel) -> dict[str, Any]:
             return {
@@ -151,7 +173,7 @@ class ResolvedModelConfiguration:
                 "fixture_validation_signature": value.fixture_validation_signature,
             }
 
-        return {
+        document = {
             "profile": self.profile,
             "ledger_s2": stage(self.ledger_s2),
             "classify_s4": stage(self.classify_s4),
@@ -159,6 +181,24 @@ class ResolvedModelConfiguration:
             "gap_fill_s7": stage(self.gap_fill_s7),
             "residual_unlocked": self.residual_unlocked,
         }
+        if self.fast_classify_s4b is not None:
+            document["fast_classify_s4b"] = stage(self.fast_classify_s4b)
+        return document
+
+    def require_card_centric_v2_fast_classifier(self) -> None:
+        """Enforce the fixed, reviewed S4b destination for v2 jobs only."""
+        stage = self.fast_classify_s4b
+        if stage is None:
+            raise ValueError("card-centric v2 requires a fast S4b model")
+        if (
+            stage.provider != "openai"
+            or stage.model != "gpt-4o-mini"
+            or stage.thinking_mode != "disabled"
+            or stage.fixture_validation_signature is not None
+        ):
+            raise ValueError(
+                "card-centric v2 S4b must use openai gpt-4o-mini with disabled thinking"
+            )
 
 
 class RetrievalPass(StrEnum):

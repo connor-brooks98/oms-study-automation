@@ -18,6 +18,8 @@ from oms_hub.anki.card_centric_contracts import (
     ClassifierBatchAudit,
     ClassifierResult,
     ClassifierTelemetry,
+    FastCardClassification,
+    GeneratedCardResolution,
     SnapshotCensus,
     TagScopeResult,
 )
@@ -480,6 +482,158 @@ def selection_eligible(
     )
 
 
+def selection_eligible_v2(
+    result: CardClassification,
+    source_index: CardCentricSourceIndex,
+) -> bool:
+    """V2 admits grounded summary evidence; v1 keeps its stricter rule."""
+    passages = {passage.passage_id for passage in source_index.passages}
+    return (
+        result.verdict == "YES"
+        and not result.flags
+        and any(passage_id in passages for passage_id in result.supporting_passage_ids)
+    )
+
+
+def fast_selection_eligible_v2(
+    result: FastCardClassification,
+    source_index: CardCentricSourceIndex,
+) -> bool:
+    """Fast-pass YES rows are grounded enough for v2 coverage and selection."""
+    passages = {passage.passage_id for passage in source_index.passages}
+    return (
+        result.verdict == "LIKELY_YES"
+        and not result.flags
+        and bool(result.grounded_concept_ids)
+        and any(passage_id in passages for passage_id in result.supporting_passage_ids)
+    )
+
+
+def select_high_yield_v2(
+    classifications: Sequence[CardClassification],
+    *,
+    fast_classifications: Sequence[FastCardClassification],
+    ledger: CardConceptLedger,
+    source_index: CardCentricSourceIndex,
+    generated_cards: Sequence[GeneratedCardResolution],
+    fast_fallback_note_ids: Sequence[int] = (),
+    target: int = 65,
+    cap: int = 70,
+    minimum: int = 60,
+) -> tuple[tuple[int, ...], tuple[int, ...], tuple[str, ...]]:
+    """Deterministic v2 tiers. T6 never creates coverage and only fills a short deck."""
+    if not minimum <= target <= cap:
+        raise CardCentricValidationError("selection target/cap is invalid")
+    concepts = {concept.concept_id: concept for concept in ledger.concepts}
+
+    def priority(concept_id: str) -> tuple[int, str]:
+        concept = concepts[concept_id]
+        return (
+            0
+            if concept.emphasis_flag or concept.importance == "high"
+            else 1
+            if concept.importance == "medium"
+            else 2,
+            concept_id,
+        )
+
+    generated = [
+        item
+        for item in generated_cards
+        if item.status == "generated" and item.concept_id in concepts
+    ]
+    generated.sort(key=lambda item: (*priority(item.concept_id), item.card_id))
+    clean = [item for item in classifications if selection_eligible_v2(item, source_index)]
+    clean.sort(
+        key=lambda item: (
+            min(
+                (priority(cid) for cid in item.covered_concept_ids if cid in concepts),
+                default=(3, ""),
+            ),
+            item.note_id,
+        )
+    )
+    maybe = [item for item in classifications if item.verdict == "MAYBE"]
+    maybe.sort(key=lambda item: item.note_id)
+    fast = [item for item in fast_classifications if fast_selection_eligible_v2(item, source_index)]
+    fast.sort(key=lambda item: item.note_id)
+    selected_notes: list[int] = []
+    selected_generated: list[str] = []
+
+    def add_generated(rows: Sequence[GeneratedCardResolution], *, force: bool = False) -> None:
+        for row in rows:
+            if row.card_id not in selected_generated and (
+                force or len(selected_notes) + len(selected_generated) < target
+            ):
+                selected_generated.append(row.card_id)
+
+    def add_notes(
+        rows: Sequence[CardClassification | FastCardClassification], *, force: bool = False
+    ) -> None:
+        for row in rows:
+            if row.note_id not in selected_notes and (
+                force or len(selected_notes) + len(selected_generated) < target
+            ):
+                selected_notes.append(row.note_id)
+
+    # Select every mandatory identity before any ordinary tier.  Otherwise a
+    # medium generated row could consume the target slot that a mandatory high
+    # existing row needs, yielding an unactionable mixed overflow.
+    mandatory_generated = [row for row in generated if priority(row.concept_id)[0] == 0]
+    mandatory_clean = [
+        row
+        for row in clean
+        if min(
+            (priority(cid)[0] for cid in row.covered_concept_ids if cid in concepts),
+            default=3,
+        )
+        == 0
+    ]
+    mandatory_fast = [
+        row
+        for row in fast
+        if min(
+            (priority(cid)[0] for cid in row.grounded_concept_ids if cid in concepts),
+            default=3,
+        )
+        == 0
+    ]
+    add_generated(mandatory_generated, force=True)
+    add_notes(mandatory_clean, force=True)
+    add_notes(mandatory_fast, force=True)
+
+    # T2 medium generated gaps, T4 low generated gaps, and T5 grounded
+    # remainder fill only to the 65-card target. Fast YES has the same
+    # coverage standing as thorough YES, so it is never demoted to T6.
+    add_generated([row for row in generated if priority(row.concept_id)[0] == 1])
+    add_generated([row for row in generated if priority(row.concept_id)[0] == 2])
+    add_notes([row for row in clean if row.note_id not in selected_notes])
+    add_notes([row for row in fast if row.note_id not in selected_notes])
+    # T6 may include a thorough MAYBE and the documented prefilter fallback
+    # only below the warning floor.  Fast YES rows establish coverage in S5 and
+    # therefore belong to T3/T5 instead of this non-coverage tier.
+    if len(selected_notes) + len(selected_generated) < minimum:
+        add_notes(maybe)
+    if len(selected_notes) + len(selected_generated) < minimum:
+        add_notes(
+            [
+                FastCardClassification(
+                    note_id=note_id,
+                    verdict="NEEDS_REVIEW",
+                    reason="documented semantic prefilter fallback",
+                )
+                for note_id in sorted(set(fast_fallback_note_ids))
+            ]
+        )
+    selected = tuple(sorted(selected_notes))
+    selected_gen = tuple(selected_generated)
+    return (
+        selected,
+        tuple(sorted(item.note_id for item in clean if item.note_id not in set(selected))),
+        selected_gen,
+    )
+
+
 def select_high_yield(
     classifications: Sequence[CardClassification],
     *,
@@ -499,11 +653,7 @@ def select_high_yield(
     if not 1 <= target <= cap:
         raise CardCentricValidationError("selection target/cap is invalid")
     concepts = {concept.concept_id: concept for concept in ledger.concepts}
-    eligible = [
-        item
-        for item in classifications
-        if selection_eligible(item, source_index)
-    ]
+    eligible = [item for item in classifications if selection_eligible(item, source_index)]
     if len({item.note_id for item in eligible}) != len(eligible):
         raise CardCentricValidationError("eligible selection note IDs are not unique")
 

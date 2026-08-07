@@ -13,9 +13,12 @@ from oms_hub.anki.card_centric import (
     CardCentricLedgerService,
     build_snapshot_census,
     build_source_index,
+    fast_selection_eligible_v2,
     scope_cards,
     select_high_yield,
+    select_high_yield_v2,
     selection_eligible,
+    selection_eligible_v2,
 )
 from oms_hub.anki.card_centric_contracts import (
     CardCentricSourceIndex,
@@ -25,9 +28,12 @@ from oms_hub.anki.card_centric_contracts import (
     CardGapBatch,
     CardRecord,
     ClassifierResult,
+    FastClassificationResult,
     GeneratedCardResolution,
+    SemanticPreFilterResult,
     SnapshotCensus,
     TagScopeResult,
+    serialize_card_centric_ledger,
 )
 from oms_hub.anki.convergence import (
     ConvergenceState,
@@ -41,6 +47,7 @@ from oms_hub.anki.domain import (
     CurationStage,
     EvidenceSupport,
     GapCard,
+    PipelineContractVersion,
     RetrievalPass,
     SourceEvidence,
     SourceKind,
@@ -71,6 +78,7 @@ from oms_hub.anki.lcl import (
     LectureConceptLedger,
     runtime_ledger_from_v2,
 )
+from oms_hub.anki.normalize import NormalizedNote
 from oms_hub.anki.pipeline import (
     PinnedInputChanged,
     StageContext,
@@ -79,6 +87,7 @@ from oms_hub.anki.pipeline import (
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
 from oms_hub.anki.prompts import (
     AnkiPromptLibrary,
+    PromptMetadata,
     PromptSynchronizer,
     StaticPromptSynchronizer,
 )
@@ -91,6 +100,7 @@ from oms_hub.anki.reconciliation import (
     ReconciliationReport,
     reconcile,
     reconcile_card_centric,
+    selected_card_centric_coverage,
 )
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.anki.rescue import (
@@ -210,7 +220,7 @@ class PinnedCurationInputValidator:
             raise PinnedInputChanged(
                 f"Pinned companion generation {job.companion_generation} is no longer active"
             )
-        if job.pipeline_contract_version.value == "retrieval_v4":
+        if job.pipeline_contract_version.value in {"retrieval_v4", "card_centric_v2"}:
             semantic = self.semantic_store.load(
                 expected_model=self.semantic_model,
                 expected_dimensions=self.semantic_dimensions,
@@ -296,7 +306,10 @@ class CurationServicesRunner:
             CurationStage.GAPS: self._generate_gaps,
             CurationStage.RECONCILIATION: self._reconciliation_stage,
             CurationStage.CARD_LEDGER: self._card_ledger,
+            CurationStage.CARD_EVIDENCE_AUDIT: self._card_evidence_audit,
             CurationStage.CARD_TAG_SCOPE: self._card_tag_scope,
+            CurationStage.CARD_PREFILTER: self._card_prefilter,
+            CurationStage.CARD_FAST_CLASSIFY: self._card_fast_classify,
             CurationStage.CARD_CLASSIFY: self._card_classify,
             CurationStage.CARD_COVERAGE: self._card_coverage,
             CurationStage.CARD_RESIDUAL: self._card_residual,
@@ -316,6 +329,23 @@ class CurationServicesRunner:
             coverage_id=context.job.judgment_rubric_version,
             gap_id=context.job.gap_prompt_version,
         )
+        snapshot_prompts = prompt_snapshot.prompts
+        if (
+            getattr(context.job, "pipeline_contract_version", None)
+            is PipelineContractVersion.CARD_CENTRIC_V2
+        ):
+            snapshot_prompts = (
+                *snapshot_prompts,
+                *AnkiPromptLibrary(self.prompts.bundled_directory)
+                .load_many(
+                    (
+                        "card-centric-ledger-v2",
+                        "card-centric-fast-classifier",
+                        "card-centric-gap-v2",
+                    )
+                )
+                .prompts,
+            )
         product = StageProduct(
             kind="anki_preflight",
             payload={
@@ -337,16 +367,18 @@ class CurationServicesRunner:
                             by_alias=True,
                         ),
                     }
-                    for prompt in prompt_snapshot.prompts
+                    for prompt in snapshot_prompts
                 ],
                 "prompt_sync_stale": sync_result.stale,
                 "prompt_sync_detail": sync_result.detail,
             },
         )
-        if (
-            getattr(context.job, "pipeline_contract_version", None) is None
-            or context.job.pipeline_contract_version.value != "card_centric_v1"
-        ):
+        if getattr(
+            context.job, "pipeline_contract_version", None
+        ) is None or context.job.pipeline_contract_version.value not in {
+            "card_centric_v1",
+            "card_centric_v2",
+        }:
             return product
         try:
             passages = await asyncio.to_thread(
@@ -355,18 +387,20 @@ class CurationServicesRunner:
                 summary_outline_id=context.job.summary_outline_id,
             )
         except Exception as exc:  # source errors become an actionable S0 artifact
+            contract = context.job.pipeline_contract_version.value
             return StageProduct(
                 kind="card_centric_preflight_failure",
                 payload={
                     "failure_code": "source_preflight_failed",
                     "detail": str(exc),
                 },
-                blocking_error="card_centric_v1 preflight failed: source_preflight_failed",
+                blocking_error=f"{contract} preflight failed: source_preflight_failed",
             )
         kinds = {passage.source_kind for passage in passages}
         required = {SourceKind.SLIDE, SourceKind.TRANSCRIPT, SourceKind.SUMMARY}
         if not required <= kinds:
             missing = sorted(kind.value for kind in required - kinds)
+            contract = context.job.pipeline_contract_version.value
             return StageProduct(
                 kind="card_centric_preflight_failure",
                 payload={
@@ -374,8 +408,7 @@ class CurationServicesRunner:
                     "missing_source_kinds": missing,
                 },
                 blocking_error=(
-                    "card_centric_v1 preflight failed: required_sources_missing "
-                    + ", ".join(missing)
+                    f"{contract} preflight failed: required_sources_missing " + ", ".join(missing)
                 ),
             )
         return StageProduct(
@@ -398,7 +431,7 @@ class CurationServicesRunner:
         )
         if any(passage.lecture_id != context.job.lecture_id for passage in passages):
             raise ValueError("selected source revisions contain another lecture")
-        if context.job.pipeline_contract_version.value == "card_centric_v1":
+        if context.job.pipeline_contract_version.value in {"card_centric_v1", "card_centric_v2"}:
             usable = [
                 passage
                 for passage in passages
@@ -446,10 +479,16 @@ class CurationServicesRunner:
     async def _card_ledger(self, context: StageContext) -> StageProduct:
         source = _card_source_index(context)
         stage_model = context.job.resolved_model_config.ledger_s2
+        version = context.job.pipeline_contract_version
+        instruction = (
+            _pinned_card_v2_prompt(context, "card-centric-ledger-v2")
+            if version is PipelineContractVersion.CARD_CENTRIC_V2
+            else _card_ledger_prompt(self.prompts, version)
+        )
         result = await asyncio.to_thread(
             CardCentricLedgerService(
                 self.structured,
-                _card_ledger_prompt(self.prompts),
+                instruction,
             ).generate,
             source_index=source,
             provider=ProviderName(stage_model.provider),
@@ -458,7 +497,10 @@ class CurationServicesRunner:
         return StageProduct(
             kind="card_centric_ledger",
             payload={
-                "ledger": result.ledger.model_dump(mode="json"),
+                "ledger": serialize_card_centric_ledger(
+                    result.ledger,
+                    pipeline_contract_version=version.value,
+                ),
                 "source_sha256": source.source_sha256,
                 "provenance": {
                     "provider": stage_model.provider,
@@ -472,11 +514,43 @@ class CurationServicesRunner:
             ),
         )
 
+    async def _card_evidence_audit(self, context: StageContext) -> StageProduct:
+        """S2b is deterministic and carries concept-specific slide evidence."""
+        source = _card_source_index(context)
+        ledger = _card_ledger(context)
+        matched: dict[str, list[str]] = {}
+        counts: dict[str, int] = {}
+        for concept in ledger.concepts:
+            terms = {
+                concept.primary_entity.casefold(),
+                *(alias.casefold() for alias in concept.aliases),
+            }
+            passages = [
+                passage
+                for passage in source.passages
+                if passage.authority == "slide"
+                and any(term in passage.text.casefold() for term in terms)
+            ]
+            matched[concept.concept_id] = [passage.passage_id for passage in passages]
+            counts[concept.concept_id] = sum(len(passage.text.strip()) for passage in passages)
+        return StageProduct(
+            kind="card_centric_evidence_audit",
+            payload={
+                "evidence_poor_concept_ids": sorted(
+                    key for key, value in counts.items() if value < 50
+                ),
+                "matched_slide_passage_ids": matched,
+                "matched_slide_char_counts": counts,
+                "threshold_chars": 50,
+            },
+        )
+
     async def _card_tag_scope(self, context: StageContext) -> StageProduct:
         source_payload = _payload(context, CurationStage.SOURCE_INDEX)
         cards = _card_records(source_payload)
         census = _card_census(source_payload)
         if census.denominator_count == 0:
+            contract = context.job.pipeline_contract_version.value
             return StageProduct(
                 kind="card_centric_tag_scope_failure",
                 payload={
@@ -484,7 +558,7 @@ class CurationServicesRunner:
                     "census": census.model_dump(mode="json"),
                     "detail": census.trust.reason,
                 },
-                blocking_error=("card_centric_v1 tag scope blocked: " + census.trust.reason),
+                blocking_error=(f"{contract} tag scope blocked: " + census.trust.reason),
             )
         residual_mode = (
             "all_concepts"
@@ -505,6 +579,179 @@ class CurationServicesRunner:
             },
         )
 
+    async def _card_prefilter(self, context: StageContext) -> StageProduct:
+        """S4a: score scoped notes using pinned card vectors and concept queries."""
+        source_payload = _payload(context, CurationStage.SOURCE_INDEX)
+        cards_by_id = {card.note_id: card for card in _card_records(source_payload)}
+        scope = TagScopeResult.model_validate(
+            _payload(context, CurationStage.CARD_TAG_SCOPE)["scope"]
+        )
+        scoped_note_ids = tuple(sorted(scope.scoped_note_ids))
+        if not scoped_note_ids:
+            result = SemanticPreFilterResult(
+                pre_filtered_note_ids=(),
+                pre_excluded_note_ids=(),
+                threshold=0.55,
+                similarity_stats={"min": 0.0, "max": 0.0, "mean": 0.0, "median": 0.0},
+            )
+            return StageProduct(
+                kind="card_centric_prefilter",
+                payload=result.model_dump(mode="json"),
+            )
+        if set(scoped_note_ids) - set(cards_by_id):
+            raise PinnedInputChanged("card-centric semantic scope contains unknown notes")
+        if context.job.semantic_generation is None:
+            raise PinnedInputChanged("card-centric v2 job has no pinned semantic generation")
+        ledger = _card_ledger(context)
+        concept_queries = tuple(
+            " ".join((concept.primary_entity, *concept.aliases)).strip()
+            for concept in ledger.concepts
+        )
+        scores = await self.semantic.pinned_similarity(
+            concept_queries,
+            note_ids=scoped_note_ids,
+            expected_generation=context.job.semantic_generation,
+        )
+        if set(scores) != set(scoped_note_ids):
+            raise PinnedInputChanged("pinned semantic scores do not cover scoped notes")
+        threshold = 0.55
+        pre_filtered = tuple(
+            sorted(note_id for note_id, score in scores.items() if score >= threshold)
+        )
+        pre_excluded = tuple(sorted(set(scoped_note_ids) - set(pre_filtered)))
+        ordered_scores = sorted(scores.values())
+        midpoint = len(ordered_scores) // 2
+        median = (
+            ordered_scores[midpoint]
+            if len(ordered_scores) % 2
+            else (ordered_scores[midpoint - 1] + ordered_scores[midpoint]) / 2
+        )
+        result = SemanticPreFilterResult(
+            pre_filtered_note_ids=pre_filtered,
+            pre_excluded_note_ids=pre_excluded,
+            threshold=threshold,
+            similarity_stats={
+                "min": min(ordered_scores),
+                "max": max(ordered_scores),
+                "mean": sum(ordered_scores) / len(ordered_scores),
+                "median": median,
+            },
+        )
+        return StageProduct(
+            kind="card_centric_prefilter",
+            payload=result.model_dump(mode="json"),
+        )
+
+    async def _card_fast_classify(self, context: StageContext) -> StageProduct:
+        """S4b: authorized fast triage of semantically relevant scoped cards."""
+        source = _card_source_index(context)
+        cards_by_id = {
+            card.note_id: card
+            for card in _card_records(_payload(context, CurationStage.SOURCE_INDEX))
+        }
+        try:
+            prefilter = SemanticPreFilterResult.model_validate(
+                _payload(context, CurationStage.CARD_PREFILTER)
+            )
+        except (TypeError, ValueError) as exc:
+            raise PinnedInputChanged("card-centric prefilter artifact is malformed") from exc
+        scope = TagScopeResult.model_validate(
+            _payload(context, CurationStage.CARD_TAG_SCOPE)["scope"]
+        )
+        if set(prefilter.pre_filtered_note_ids) | set(prefilter.pre_excluded_note_ids) != set(
+            scope.scoped_note_ids
+        ):
+            raise PinnedInputChanged("card-centric prefilter does not partition scoped notes")
+        selected = tuple(
+            cards_by_id[note_id]
+            for note_id in sorted(prefilter.pre_filtered_note_ids)
+            if note_id in cards_by_id
+        )
+        if {card.note_id for card in selected} != set(prefilter.pre_filtered_note_ids):
+            raise PinnedInputChanged("card-centric prefilter contains unknown notes")
+        stage_model = context.job.resolved_model_config.fast_classify_s4b
+        if stage_model is None:
+            raise PinnedInputChanged("card-centric v2 job has no fast-classifier model")
+        ledger = _card_ledger(context)
+        instruction = _pinned_card_v2_prompt(context, "card-centric-fast-classifier")
+        concept_definitions = [
+            {
+                "concept_id": concept.concept_id,
+                "canonical_statement": concept.canonical_statement,
+                "primary_entity": concept.primary_entity,
+                "aliases": list(concept.aliases),
+            }
+            for concept in sorted(ledger.concepts, key=lambda item: item.concept_id)
+        ]
+        allowed_concepts = {definition["concept_id"] for definition in concept_definitions}
+        allowed_passages = {passage.passage_id for passage in source.passages}
+        results = []
+        usages: list[StageUsage] = []
+        for start in range(0, len(selected), 60):
+            batch = selected[start : start + 60]
+            generated = await asyncio.to_thread(
+                self.structured.generate_json,
+                instruction,
+                json.dumps(
+                    {
+                        "cards": [card.model_dump(mode="json") for card in batch],
+                        "concept_definitions": concept_definitions,
+                        "allowed_concept_ids": sorted(allowed_concepts),
+                        "allowed_supporting_passage_ids": sorted(allowed_passages),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                output_model=FastClassificationResult,
+                provider=ProviderName(stage_model.provider),
+                model=stage_model.model,
+                options=GenerationOptions(cacheable_source_prefix=source.prefix),
+            )
+            expected = {card.note_id for card in batch}
+            observed = {item.note_id for item in generated.value.results}
+            if observed != expected or len(observed) != len(generated.value.results):
+                raise PinnedInputChanged(
+                    "fast classifier output must exactly partition its input batch"
+                )
+            for item in generated.value.results:
+                if not item.reason.strip():
+                    raise PinnedInputChanged("fast classifier reasons must be nonblank")
+                if not set(item.grounded_concept_ids) <= allowed_concepts:
+                    raise PinnedInputChanged("fast classifier invented a concept ID")
+                if not set(item.supporting_passage_ids) <= allowed_passages:
+                    raise PinnedInputChanged("fast classifier invented a passage ID")
+                if item.verdict == "LIKELY_YES" and (
+                    not item.grounded_concept_ids or not item.supporting_passage_ids
+                ):
+                    raise PinnedInputChanged("LIKELY_YES fast results must be grounded")
+            results.extend(generated.value.results)
+            usages.append(
+                StageUsage(
+                    generated.request_id,
+                    generated.input_tokens,
+                    generated.output_tokens,
+                    generated.cost_microusd,
+                )
+            )
+        fast = FastClassificationResult(
+            results=tuple(sorted(results, key=lambda item: item.note_id))
+        )
+        return StageProduct(
+            kind="card_centric_fast_classification",
+            payload={
+                "fast_classifier": fast.model_dump(mode="json"),
+                "source_sha256": source.source_sha256,
+                "model_config": context.job.resolved_model_config.canonical_document(),
+                "fast_count": len(fast.results),
+                # These notes were deliberately not sent to S4b.  Keep their
+                # identity in the S4b artifact so S4c/selection can prove the
+                # scoped universe was conserved without treating them as
+                # coverage evidence.
+                "fallback_note_ids": list(prefilter.pre_excluded_note_ids),
+            },
+            usage=_combined_usage("card_fast_classify", usages),
+        )
+
     async def _card_classify(self, context: StageContext) -> StageProduct:
         source_payload = _payload(context, CurationStage.SOURCE_INDEX)
         source = _card_source_index(context)
@@ -517,8 +764,25 @@ class CurationServicesRunner:
         cards_by_id = {card.note_id: card for card in _card_records(source_payload)}
         if set(scope.scoped_note_ids) | set(scope.unscoped_note_ids) != set(cards_by_id):
             raise PinnedInputChanged("card-centric scope does not partition census cards")
-        selected = tuple(cards_by_id[note_id] for note_id in scope.scoped_note_ids)
         stage_model = context.job.resolved_model_config.classify_s4
+        is_v2 = context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
+        if is_v2:
+            fast, fallback_ids = _card_fast_classifier(context)
+            fast_ids = {item.note_id for item in fast.results}
+            if fast_ids & set(fallback_ids) or fast_ids | set(fallback_ids) != set(
+                scope.scoped_note_ids
+            ):
+                raise PinnedInputChanged(
+                    "v2 fast and fallback artifacts do not conserve scoped notes"
+                )
+            selected = tuple(
+                cards_by_id[note_id]
+                for note_id in sorted(
+                    item.note_id for item in fast.results if item.verdict == "NEEDS_REVIEW"
+                )
+            )
+        else:
+            selected = tuple(cards_by_id[note_id] for note_id in scope.scoped_note_ids)
         capabilities = _structured_capabilities(
             self.structured,
             ProviderName(stage_model.provider),
@@ -543,6 +807,7 @@ class CurationServicesRunner:
                 "model_config": context.job.resolved_model_config.canonical_document(),
                 "source_sha256": source.source_sha256,
                 "scoped_note_count": len(selected),
+                "thorough_count": len(selected),
             },
             usage=_card_classifier_usage(classified),
             cache_hits=sum(
@@ -554,11 +819,16 @@ class CurationServicesRunner:
         source = _card_source_index(context)
         ledger = _card_ledger(context)
         classified = _card_classifier(context, CurationStage.CARD_CLASSIFY)
+        is_v2 = context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
+        fast = _card_fast_classifier(context)[0] if is_v2 else None
         coverage: dict[str, list[dict[str, Any]]] = {
             concept.concept_id: [] for concept in ledger.concepts
         }
         for item in classified.results:
-            if not selection_eligible(item, source):
+            eligible = (
+                selection_eligible_v2(item, source) if is_v2 else selection_eligible(item, source)
+            )
+            if not eligible:
                 continue
             for concept_id in item.covered_concept_ids:
                 if concept_id in coverage:
@@ -568,6 +838,19 @@ class CurationServicesRunner:
                             "supporting_passage_ids": list(item.supporting_passage_ids),
                         }
                     )
+        if fast is not None:
+            for item in fast.results:
+                if not fast_selection_eligible_v2(item, source):
+                    continue
+                for concept_id in item.grounded_concept_ids:
+                    if concept_id in coverage:
+                        coverage[concept_id].append(
+                            {
+                                "note_id": item.note_id,
+                                "supporting_passage_ids": list(item.supporting_passage_ids),
+                                "evidence_quality": "fast_pass",
+                            }
+                        )
         return StageProduct(
             kind="card_centric_coverage",
             payload={
@@ -596,6 +879,7 @@ class CurationServicesRunner:
         source_payload = _payload(context, CurationStage.SOURCE_INDEX)
         cards = {card.note_id: card for card in _card_records(source_payload)}
         scoped = TagScopeResult.model_validate(scope_payload["scope"])
+        is_v2 = context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
         if not targets:
             return StageProduct(
                 kind="card_centric_residual",
@@ -606,20 +890,59 @@ class CurationServicesRunner:
                     "residual_mode": residual_mode,
                 },
             )
-        queries = tuple(
-            f"{concept.primary_entity} {alias}"
+        query_specs = tuple(
+            (concept.concept_id, f"{concept.primary_entity} {alias}")
             for concept in targets
             for alias in (concept.aliases or (concept.primary_entity,))
         )
+        queries = tuple(query for _, query in query_specs)
         hits = await self.semantic.search(queries, eligible_note_ids=set(cards), limit=12)
         audit: list[dict[str, Any]] = []
         hit_ids: set[int] = set()
-        for query, found in zip(queries, hits, strict=True):
-            ids = tuple(sorted({item.note_id for item in found} - set(scoped.scoped_note_ids)))
+        # Terminal v2 fast rows are classification decisions, as are actual
+        # S4c rows.  NEEDS_REVIEW is deliberately absent here: it is replaced
+        # by S4c.  S4a fallback notes remain eligible for residual recall.
+        classified_ids = (
+            {
+                item.note_id
+                for item in _card_classifier(context, CurationStage.CARD_CLASSIFY).results
+            }
+            | {
+                item.note_id
+                for item in _terminal_fast_classifications(
+                    _card_fast_classifier(context)[0].results
+                )
+            }
+            if is_v2
+            else set(scoped.scoped_note_ids)
+        )
+        for (concept_id, query), found in zip(query_specs, hits, strict=True):
+            usable = [item for item in found if item.note_id not in classified_ids]
+            ids = tuple(sorted({item.note_id for item in usable}))
+            row: dict[str, Any] = {
+                "concept_id": concept_id,
+                "query": query,
+                "hit_note_ids": list(ids),
+            }
+            if is_v2:
+                top = max((item.score for item in usable), default=None)
+                row["semantic_scores"] = {
+                    str(item.note_id): item.score
+                    for item in sorted(usable, key=lambda item: item.note_id)
+                }
+                if top is None or top < 0.40:
+                    row.update({"classified_note_ids": [], "semantic_skip": True})
+                    audit.append(row)
+                    continue
+                gated = tuple(sorted(item.note_id for item in usable if item.score >= 0.50))
+                row["classified_note_ids"] = list(gated)
+                row["semantic_skip"] = False
+                hit_ids.update(gated)
+                audit.append(row)
+                continue
             hit_ids.update(ids)
-            audit.append(
-                {"query": query, "hit_note_ids": list(ids), "classified_note_ids": list(ids)}
-            )
+            row["classified_note_ids"] = list(ids)
+            audit.append(row)
         selected = tuple(cards[note_id] for note_id in sorted(hit_ids) if note_id in cards)
         stage_model = context.job.resolved_model_config.residual_s6
         classified = await CardCentricClassifier(
@@ -650,7 +973,14 @@ class CurationServicesRunner:
         ledger = _card_ledger(context)
         coverage = _merged_card_coverage(context)
         source = _card_source_index(context)
+        version = context.job.pipeline_contract_version
+        is_v2 = version is PipelineContractVersion.CARD_CENTRIC_V2
         stage_model = context.job.resolved_model_config.gap_fill_s7
+        instruction = (
+            _pinned_card_v2_prompt(context, "card-centric-gap-v2")
+            if is_v2
+            else _card_gap_prompt(self.prompts, version)
+        )
         output: list[GeneratedCardResolution] = []
         evidence_records: list[SourceEvidence] = []
         passages_by_id = {passage.passage_id: passage for passage in source.passages}
@@ -658,18 +988,28 @@ class CurationServicesRunner:
         for concept in ledger.concepts:
             if coverage[concept.concept_id]["status"] == "covered":
                 continue
+            fact_count = concept.suggested_fact_count if is_v2 else 1
+            missing_facts = [
+                {
+                    "fact_id": f"{concept.concept_id}-M{index + 1}",
+                    "statement": (
+                        concept.fact_descriptions[index] if is_v2 else concept.canonical_statement
+                    ),
+                    "forbidden_cloze_targets": (
+                        list(concept.forbidden_cloze_targets_by_fact[index])
+                        if is_v2 and index < len(concept.forbidden_cloze_targets_by_fact)
+                        else []
+                    ),
+                }
+                for index in range(fact_count)
+            ]
             result = await asyncio.to_thread(
                 self.structured.generate_json,
-                _card_gap_prompt(self.prompts),
+                instruction,
                 json.dumps(
                     {
                         "concept": concept.model_dump(mode="json"),
-                        "missing_facts": [
-                            {
-                                "fact_id": f"{concept.concept_id}-M1",
-                                "statement": concept.canonical_statement,
-                            }
-                        ],
+                        "missing_facts": missing_facts,
                         "evidence_passages": [
                             {
                                 "passage_id": passage.passage_id,
@@ -677,11 +1017,16 @@ class CurationServicesRunner:
                                 "text": passage.text,
                             }
                             for passage in source.passages
-                            if passage.authority != "summary"
+                            if is_v2 or passage.authority != "summary"
                         ],
                         "lecture_title": self.repository.lecture_title(context.job.lecture_id),
                         "lecture_entity_count": ledger.lecture_entity_count,
-                        "forbidden_cloze_targets": list(ledger.forbidden_cloze_targets),
+                        "forbidden_cloze_targets": list(
+                            ledger.all_forbidden_targets
+                            if is_v2
+                            else ledger.forbidden_cloze_targets
+                        ),
+                        "is_mechanism": concept.is_mechanism if is_v2 else False,
                         "existing_supports": [],
                     },
                     sort_keys=True,
@@ -692,18 +1037,36 @@ class CurationServicesRunner:
                 model=stage_model.model,
                 options=GenerationOptions(cacheable_source_prefix=source.prefix),
             )
-            expected = f"{concept.concept_id}-M1"
-            if {item.fact_id for item in result.value.resolutions} != {expected}:
+            expected = {fact["fact_id"] for fact in missing_facts}
+            returned = {item.fact_id for item in result.value.resolutions}
+            if returned != expected:
                 raise PinnedInputChanged(
-                    "card-centric gap output must resolve every missing fact exactly once"
+                    "card-centric gap output must resolve every requested fact"
                 )
+            for fact_id in expected:
+                matching = [item for item in result.value.resolutions if item.fact_id == fact_id]
+                unresolved = [item for item in matching if item.status == "unresolved"]
+                generated_rows = [item for item in matching if item.status == "generated"]
+                if unresolved and (len(unresolved) != 1 or generated_rows):
+                    raise PinnedInputChanged(
+                        f"Fact {fact_id}: unresolved output must be one exclusive row"
+                    )
+                if not unresolved and not generated_rows:
+                    raise PinnedInputChanged(f"Fact {fact_id}: resolution is missing")
+                if len(generated_rows) > 1 and not all(item.split for item in generated_rows):
+                    raise PinnedInputChanged(
+                        f"Fact {fact_id}: repeated generated rows must all be split"
+                    )
             for item in result.value.resolutions:
                 if item.status == "generated" and (
                     not set(item.source_passage_ids)
                     <= {passage.passage_id for passage in source.passages}
-                    or all(value.startswith("SUM:") for value in item.source_passage_ids)
+                    or (
+                        not is_v2
+                        and all(value.startswith("SUM:") for value in item.source_passage_ids)
+                    )
                 ):
-                    raise PinnedInputChanged("generated card must cite primary lecture evidence")
+                    raise PinnedInputChanged("generated card must cite admissible lecture evidence")
                 card_id = hashlib.sha256(
                     f"{concept.concept_id}\0{item.fact_id}\0{item.text}\0{item.extra}".encode()
                 ).hexdigest()[:32]
@@ -765,9 +1128,7 @@ class CurationServicesRunner:
             # Two split cards may cite one passage. They intentionally share
             # its evidence identity; persist one durable record referenced by
             # both cards rather than inserting duplicate primary keys.
-            source_evidence=tuple(
-                {item.evidence_id: item for item in evidence_records}.values()
-            ),
+            source_evidence=tuple({item.evidence_id: item for item in evidence_records}.values()),
         )
 
     async def _card_selection(self, context: StageContext) -> StageProduct:
@@ -775,57 +1136,95 @@ class CurationServicesRunner:
         ledger = _card_ledger(context)
         classifications = _all_card_classifications(context)
         generated = _card_deduped(context)
-        selected, excluded, generated_ids = select_high_yield(
+        is_v2 = context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
+        fast, fallback_ids = _card_fast_classifier(context) if is_v2 else (None, ())
+        if is_v2:
+            assert fast is not None
+            fallback_ids = _effective_v2_fallback_note_ids(fallback_ids, classifications)
+            selected, excluded, generated_ids = select_high_yield_v2(
+                classifications,
+                fast_classifications=fast.results,
+                fast_fallback_note_ids=fallback_ids,
+                ledger=ledger,
+                source_index=source,
+                generated_cards=generated,
+                target=65,
+                cap=70,
+                minimum=60,
+            )
+        else:
+            selected, excluded, generated_ids = select_high_yield(
+                classifications,
+                ledger=ledger,
+                source_index=source,
+                generated_card_ids=[
+                    item.card_id for item in generated if item.status == "generated"
+                ],
+            )
+        mandatory_note_ids = _mandatory_card_note_ids(
             classifications,
-            ledger=ledger,
-            source_index=source,
-            generated_card_ids=[item.card_id for item in generated if item.status == "generated"],
+            fast.results if fast is not None else (),
+            ledger,
+            source,
+            v2=is_v2,
         )
-        mandatory_note_ids = tuple(
-            item.note_id
-            for item in classifications
-            if selection_eligible(item, source)
+        mandatory_generated_card_ids = tuple(
+            item.card_id
+            for item in generated
+            if is_v2
+            and item.status == "generated"
             and any(
-                concept.importance == "high" or concept.emphasis_flag
+                concept.concept_id == item.concept_id
+                and (concept.importance == "high" or concept.emphasis_flag)
                 for concept in ledger.concepts
-                if concept.concept_id in item.covered_concept_ids
             )
         )
         selected_set = set(selected)
         source_by_id = {passage.passage_id: passage for passage in source.passages}
-        candidate_rows = tuple(
-            Candidate(
-                note_id=item.note_id,
-                content_hash=next(
-                    card.content_sha256
-                    for card in _card_records(_payload(context, CurationStage.SOURCE_INDEX))
-                    if card.note_id == item.note_id
-                ),
-                best_concept_id=(
-                    item.covered_concept_ids[0] if item.covered_concept_ids else "unmapped"
-                ),
-                provenance={
-                    "card_centric": {
-                        "verdict": item.verdict,
-                        "primary_subject": item.primary_subject,
-                        "covered_concept_ids": list(item.covered_concept_ids),
-                        "supporting_passage_ids": list(item.supporting_passage_ids),
-                        "flags": list(item.flags),
-                        "selection_eligible": selection_eligible(item, source),
-                    }
-                },
-                scores={},
-                predicted_band=item.verdict,
-                verdict=item.verdict.lower(),
-                confidence=1.0 if item.verdict == "YES" else 0.5,
-                reason=item.reason,
-                context_trap="context_trap" in item.flags,
-                recall_direction="card_centric",
-                mnemonic_classification="none",
-                dedupe_disposition="eligible" if item.note_id in selected_set else "excluded",
-                selected=item.note_id in selected_set and selection_eligible(item, source),
+        candidate_rows = (
+            _v2_card_candidates(
+                context,
+                classifications,
+                fast.results,
+                fallback_ids,
+                selected_set,
+                source,
             )
-            for item in classifications
+            if fast is not None
+            else tuple(
+                Candidate(
+                    note_id=item.note_id,
+                    content_hash=next(
+                        card.content_sha256
+                        for card in _card_records(_payload(context, CurationStage.SOURCE_INDEX))
+                        if card.note_id == item.note_id
+                    ),
+                    best_concept_id=(
+                        item.covered_concept_ids[0] if item.covered_concept_ids else "unmapped"
+                    ),
+                    provenance={
+                        "card_centric": {
+                            "verdict": item.verdict,
+                            "primary_subject": item.primary_subject,
+                            "covered_concept_ids": list(item.covered_concept_ids),
+                            "supporting_passage_ids": list(item.supporting_passage_ids),
+                            "flags": list(item.flags),
+                            "selection_eligible": selection_eligible(item, source),
+                        }
+                    },
+                    scores={},
+                    predicted_band=item.verdict,
+                    verdict=item.verdict.lower(),
+                    confidence=1.0 if item.verdict == "YES" else 0.5,
+                    reason=item.reason,
+                    context_trap="context_trap" in item.flags,
+                    recall_direction="card_centric",
+                    mnemonic_classification="none",
+                    dedupe_disposition="eligible" if item.note_id in selected_set else "excluded",
+                    selected=item.note_id in selected_set and selection_eligible(item, source),
+                )
+                for item in classifications
+            )
         )
         gap_cards = tuple(
             GapCard(
@@ -870,6 +1269,7 @@ class CurationServicesRunner:
                 "cap": 70,
                 "minimum_target": 60,
                 "mandatory_note_ids": list(mandatory_note_ids),
+                "mandatory_generated_card_ids": list(mandatory_generated_card_ids),
                 # Review acknowledgements are issued only after the reviewer has
                 # saved the exact selection at a concrete review revision.
                 "overflow_acknowledgement": None,
@@ -1436,12 +1836,12 @@ class CurationServicesRunner:
         self,
         context: StageContext,
     ) -> StageProduct:
-        if context.job.pipeline_contract_version.value == "card_centric_v1":
+        if context.job.pipeline_contract_version.value in {"card_centric_v1", "card_centric_v2"}:
             return await self._card_dedupe(context)
         return await self._finalize_outcomes(context)
 
     async def _card_dedupe(self, context: StageContext) -> StageProduct:
-        """S8 deterministic lexical duplicate check inside each concept cluster."""
+        """S8 uses v2 semantic duplicate policy while retaining the v1 path."""
         cards = {
             card.note_id: card
             for card in _card_records(_payload(context, CurationStage.SOURCE_INDEX))
@@ -1452,6 +1852,8 @@ class CurationServicesRunner:
             if selection_eligible(item, _card_source_index(context))
         )
         generated = _card_generated(context)
+        if context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2:
+            return await self._card_dedupe_v2(context, cards, generated)
         resolved: list[GeneratedCardResolution] = []
         accepted_generated: list[GeneratedCardResolution] = []
         for item in generated:
@@ -1499,6 +1901,72 @@ class CurationServicesRunner:
                         }
                     )
                 )
+        return StageProduct(
+            kind="card_centric_dedupe",
+            payload={"resolutions": [item.model_dump(mode="json") for item in resolved]},
+        )
+
+    async def _card_dedupe_v2(
+        self,
+        context: StageContext,
+        cards: Mapping[int, CardRecord],
+        generated: Sequence[GeneratedCardResolution],
+    ) -> StageProduct:
+        """Adapt immutable card artifacts to the existing semantic deduper."""
+        source = _card_source_index(context)
+        existing_ids = {
+            item.note_id
+            for item in _all_card_classifications(context)
+            if selection_eligible_v2(item, source)
+        }
+        fast, _ = _card_fast_classifier(context)
+        existing_ids.update(
+            item.note_id for item in fast.results if fast_selection_eligible_v2(item, source)
+        )
+        existing_notes = tuple(
+            _normalized_card_note(cards[note_id])
+            for note_id in sorted(existing_ids)
+            if note_id in cards
+        )
+        deduper = DeduplicationService(
+            self.embedder,
+            duplicate_threshold=0.88,
+            overlap_threshold=0.80,
+            nearest_limit=5,
+        )
+        resolved: list[GeneratedCardResolution] = []
+        accepted: list[GapCardProposal] = []
+        accepted_ids: dict[str, str] = {}
+        for item in generated:
+            if item.status != "generated":
+                resolved.append(item)
+                continue
+            proposal = _dedupe_gap_proposal(item, context)
+            outcome = await deduper.classify(proposal, existing_notes, accepted)
+            if outcome.disposition == "unique":
+                resolved.append(item)
+                accepted.append(proposal)
+                accepted_ids[f"proposal:{proposal.concept_id}"] = item.card_id
+                continue
+            nearest = outcome.nearest_matches[0].identifier if outcome.nearest_matches else None
+            update: dict[str, Any] = {
+                "status": "duplicate_of_existing",
+                "reason": f"semantic dedup {outcome.disposition}: nearest={nearest or 'none'}",
+                "duplicate_of_existing_note_id": None,
+                "duplicate_of_generated_card_id": None,
+            }
+            if nearest is not None and nearest.startswith("note:"):
+                try:
+                    update["duplicate_of_existing_note_id"] = int(nearest.removeprefix("note:"))
+                except ValueError as exc:
+                    raise PinnedInputChanged(
+                        "semantic dedupe returned an invalid note identity"
+                    ) from exc
+            elif nearest is not None and nearest in accepted_ids:
+                update["duplicate_of_generated_card_id"] = accepted_ids[nearest]
+            else:
+                raise PinnedInputChanged("semantic dedupe returned an unknown identity")
+            resolved.append(item.model_copy(update=update))
         return StageProduct(
             kind="card_centric_dedupe",
             payload={"resolutions": [item.model_dump(mode="json") for item in resolved]},
@@ -1890,7 +2358,7 @@ class CurationServicesRunner:
         self,
         context: StageContext,
     ) -> StageProduct:
-        if context.job.pipeline_contract_version.value == "card_centric_v1":
+        if context.job.pipeline_contract_version.value in {"card_centric_v1", "card_centric_v2"}:
             return await self._card_reconciliation(context)
         return await self._reconciliation(context)
 
@@ -1904,20 +2372,41 @@ class CurationServicesRunner:
             _payload(context, CurationStage.CARD_TAG_SCOPE)["scope"]
         )
         census = _card_census(_payload(context, CurationStage.SOURCE_INDEX))
+        is_v2 = context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
+        fast, fallback_ids = _card_fast_classifier(context) if is_v2 else (None, ())
         required_fact_ids = tuple(
-            f"{concept_id}-M1"
-            for concept_id, value in coverage.items()
-            if value["status"] == "uncovered"
+            f"{concept.concept_id}-M{index + 1}"
+            for concept in ledger.concepts
+            if coverage[concept.concept_id]["status"] == "uncovered"
+            for index in range(
+                concept.suggested_fact_count
+                if context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
+                else 1
+            )
         )
-        final_coverage = {concept_id: value["status"] for concept_id, value in coverage.items()}
-        for item in generated:
-            if item.status == "generated":
-                final_coverage[item.concept_id] = "covered"
-            elif item.status in {"unresolved", "duplicate_of_existing"}:
-                final_coverage[item.concept_id] = "intentional_gap"
-        snapshot = CardCentricReconciliationInput(
+        selected_nids = tuple(selection["selected_existing_note_ids"])
+        selected_generated_card_ids = tuple(selection["selected_generated_card_ids"])
+        existing_coverage_by_nid = {
+            item.note_id: item.covered_concept_ids
+            for item in classifications
+            if (
+                selection_eligible_v2(item, _card_source_index(context))
+                if is_v2
+                else selection_eligible(item, _card_source_index(context))
+            )
+        }
+        if fast is not None:
+            existing_coverage_by_nid.update(
+                {
+                    item.note_id: item.grounded_concept_ids
+                    for item in fast.results
+                    if fast_selection_eligible_v2(item, _card_source_index(context))
+                }
+            )
+        initial_snapshot = CardCentricReconciliationInput(
+            pipeline_contract_version=context.job.pipeline_contract_version.value,
             concept_ids=tuple(concept.concept_id for concept in ledger.concepts),
-            coverage=final_coverage,
+            coverage={concept.concept_id: "uncovered" for concept in ledger.concepts},
             required_fact_ids=required_fact_ids,
             uncovered_after_s5=tuple(
                 concept_id
@@ -1928,13 +2417,26 @@ class CurationServicesRunner:
                 _payload(context, CurationStage.CARD_RESIDUAL).get("uncovered_concept_ids", [])
             ),
             generated_cards=tuple(
-                GeneratedResolution(card_id=item.card_id, fact_id=item.fact_id, text=item.text)
+                GeneratedResolution(
+                    card_id=item.card_id,
+                    fact_id=item.fact_id,
+                    text=item.text,
+                    extra=item.extra,
+                    split=item.split,
+                )
                 for item in generated
-                if item.status == "generated"
+                if item.status == "generated" and item.card_id in set(selected_generated_card_ids)
             ),
             canonical_generated_cards=tuple(
-                GeneratedResolution(card_id=item.card_id, fact_id=item.fact_id, text=item.text)
-                for item in generated if item.status == "generated"
+                GeneratedResolution(
+                    card_id=item.card_id,
+                    fact_id=item.fact_id,
+                    text=item.text,
+                    extra=item.extra,
+                    split=item.split,
+                )
+                for item in generated
+                if item.status == "generated"
             ),
             canonical_unresolved_fact_ids=tuple(
                 item.fact_id for item in generated if item.status != "generated"
@@ -1943,31 +2445,54 @@ class CurationServicesRunner:
                 item.fact_id for item in generated if item.status != "generated"
             ),
             expected_scoped_nids=scope.scoped_note_ids,
-            classifications=tuple(
-                AuditResolution(
-                    nid=item.note_id,
-                    verdict=cast(
-                        Literal["keep", "drop", "uncertain"],
-                        {"YES": "keep", "NO": "drop", "MAYBE": "uncertain"}[item.verdict],
-                    ),
+            classifications=(
+                _v2_reconciliation_classifications(
+                    classifications, fast.results, fallback_ids, scope
                 )
-                for item in classifications
-                if item.note_id in set(scope.scoped_note_ids)
+                if fast is not None
+                else tuple(
+                    AuditResolution(
+                        nid=item.note_id,
+                        verdict=cast(
+                            Literal["keep", "drop", "uncertain"],
+                            {"YES": "keep", "NO": "drop", "MAYBE": "uncertain"}[item.verdict],
+                        ),
+                    )
+                    for item in classifications
+                    if item.note_id in set(scope.scoped_note_ids)
+                )
             ),
             eligible_yes_nids=tuple(
-                item.note_id
-                for item in classifications
-                if selection_eligible(item, _card_source_index(context))
+                sorted(
+                    {
+                        *(
+                            item.note_id
+                            for item in classifications
+                            if (
+                                selection_eligible_v2(item, _card_source_index(context))
+                                if is_v2
+                                else selection_eligible(item, _card_source_index(context))
+                            )
+                        ),
+                        *(
+                            item.note_id
+                            for item in (fast.results if fast is not None else ())
+                            if fast_selection_eligible_v2(item, _card_source_index(context))
+                        ),
+                    }
+                )
             ),
-            selected_nids=tuple(selection["selected_existing_note_ids"]),
-            selected_generated_card_ids=tuple(selection["selected_generated_card_ids"]),
+            selected_nids=selected_nids,
+            selected_generated_card_ids=selected_generated_card_ids,
             generated_card_ids=tuple(
                 item.card_id for item in generated if item.status == "generated"
             ),
             source_passage_ids=tuple(
                 passage.passage_id for passage in _card_source_index(context).passages
             ),
-            forbidden_cloze_targets=ledger.forbidden_cloze_targets,
+            forbidden_cloze_targets=ledger.all_forbidden_targets
+            if context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
+            else ledger.forbidden_cloze_targets,
             prompt_sync_stale=bool(
                 _payload(context, CurationStage.PREFLIGHT).get("prompt_sync_stale", False)
             ),
@@ -1975,13 +2500,36 @@ class CurationServicesRunner:
             target=int(selection["target"]),
             cap=int(selection["cap"]),
             mandatory_nids=tuple(selection["mandatory_note_ids"]),
-            covered_concept_ids_by_nid={
-                item.note_id: item.covered_concept_ids for item in classifications
-            },
+            mandatory_generated_card_ids=tuple(selection.get("mandatory_generated_card_ids", [])),
+            covered_concept_ids_by_nid=existing_coverage_by_nid,
             generated_concept_id_by_card_id={
                 item.card_id: item.concept_id for item in generated if item.status == "generated"
             },
             overflow_acknowledgement=selection.get("overflow_acknowledgement"),
+            historical_yes_rates=(
+                tuple(self.repository.card_centric_yes_rate_history(context.job.id))
+                if is_v2 and hasattr(self.repository, "card_centric_yes_rate_history")
+                else ()
+            ),
+            t6_selected_nids=tuple(
+                note_id
+                for note_id in selection["selected_existing_note_ids"]
+                if note_id
+                not in {
+                    item.note_id
+                    for item in classifications
+                    if selection_eligible_v2(item, _card_source_index(context))
+                }
+                and note_id
+                not in {
+                    item.note_id
+                    for item in (fast.results if fast is not None else ())
+                    if fast_selection_eligible_v2(item, _card_source_index(context))
+                }
+            ),
+        )
+        snapshot = initial_snapshot.model_copy(
+            update={"coverage": selected_card_centric_coverage(initial_snapshot)}
         )
         report = reconcile_card_centric(snapshot)
         return StageProduct(
@@ -2245,6 +2793,38 @@ def _card_classifier(context: StageContext, stage: CurationStage) -> ClassifierR
         raise PinnedInputChanged("card-centric classifier artifact is malformed") from exc
 
 
+def _card_fast_classifier(
+    context: StageContext,
+) -> tuple[FastClassificationResult, tuple[int, ...]]:
+    try:
+        payload = _payload(context, CurationStage.CARD_FAST_CLASSIFY)
+        classifier = FastClassificationResult.model_validate(payload["fast_classifier"])
+        fallback = tuple(sorted({int(value) for value in payload.get("fallback_note_ids", [])}))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PinnedInputChanged("card-centric fast classifier artifact is malformed") from exc
+    if any(note_id <= 0 for note_id in fallback):
+        raise PinnedInputChanged("card-centric fast fallback contains invalid note IDs")
+    return classifier, fallback
+
+
+def _terminal_fast_classifications(
+    classifications: Sequence[Any],
+) -> tuple[Any, ...]:
+    """S4b NEEDS_REVIEW is routing metadata, not a terminal judgment."""
+    return tuple(item for item in classifications if item.verdict != "NEEDS_REVIEW")
+
+
+def _effective_v2_fallback_note_ids(
+    fallback_note_ids: Sequence[int],
+    classifications: Sequence[CardClassification],
+) -> tuple[int, ...]:
+    """A thorough S4c/S6 result replaces an unresolved S4a fallback row."""
+    classified_ids = {item.note_id for item in classifications}
+    return tuple(
+        note_id for note_id in sorted(set(fallback_note_ids)) if note_id not in classified_ids
+    )
+
+
 def _all_card_classifications(context: StageContext) -> tuple[CardClassification, ...]:
     primary = _card_classifier(context, CurationStage.CARD_CLASSIFY).results
     residual_raw = _payload(context, CurationStage.CARD_RESIDUAL).get("classifier")
@@ -2273,8 +2853,12 @@ def _merged_card_coverage(context: StageContext) -> dict[str, dict[str, Any]]:
         for key, value in _card_coverage_payload(context).items()
     }
     source = _card_source_index(context)
+    is_v2 = context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
     for item in _all_card_classifications(context):
-        if selection_eligible(item, source):
+        eligible = (
+            selection_eligible_v2(item, source) if is_v2 else selection_eligible(item, source)
+        )
+        if eligible:
             for concept_id in item.covered_concept_ids:
                 if concept_id in coverage:
                     coverage[concept_id]["status"] = "covered"
@@ -2282,6 +2866,21 @@ def _merged_card_coverage(context: StageContext) -> dict[str, dict[str, Any]]:
                         {
                             "note_id": item.note_id,
                             "supporting_passage_ids": list(item.supporting_passage_ids),
+                        }
+                    )
+    if is_v2:
+        fast, _ = _card_fast_classifier(context)
+        for item in fast.results:
+            if not fast_selection_eligible_v2(item, source):
+                continue
+            for concept_id in item.grounded_concept_ids:
+                if concept_id in coverage:
+                    coverage[concept_id]["status"] = "covered"
+                    coverage[concept_id]["evidence"].append(
+                        {
+                            "note_id": item.note_id,
+                            "supporting_passage_ids": list(item.supporting_passage_ids),
+                            "evidence_quality": "fast_pass",
                         }
                     )
     return coverage
@@ -2323,16 +2922,294 @@ def _card_tokens(value: str) -> set[str]:
     }
 
 
+def _normalized_card_note(card: CardRecord) -> NormalizedNote:
+    """Minimal complete adapter; its note identity remains the Anki note ID."""
+    return NormalizedNote(
+        note_id=card.note_id,
+        model_name="Cloze",
+        text=card.text,
+        extra=card.extra,
+        raw_fields={"Text": card.text, "Extra": card.extra},
+        tags=card.tags,
+        card_ids=(),
+        media=(),
+        token_signature=hashlib.sha256(f"{card.text}\0{card.extra}".encode()).hexdigest(),
+        content_sha256=card.content_sha256,
+        deck_names=card.deck_names,
+    )
+
+
+def _dedupe_gap_proposal(
+    item: GeneratedCardResolution,
+    context: StageContext,
+) -> GapCardProposal:
+    """Give every generated row a unique dedupe identity without changing it."""
+    stage_model = context.job.resolved_model_config.gap_fill_s7
+    return GapCardProposal(
+        # DeduplicationService uses this field for its in-batch identifier.  A
+        # card ID suffix avoids collisions for two split facts in one concept.
+        concept_id=f"{item.concept_id}::{item.card_id}",
+        note_type="Cloze",
+        fields={"Text": item.text, "Extra": item.extra},
+        source_refs=(),
+        evidence_ids=item.evidence_ids,
+        initial_tags=(),
+        provider=ProviderName(stage_model.provider),
+        model=stage_model.model,
+        prompt_version=context.job.gap_prompt_version,
+        confidence=1.0,
+        content_hash=hashlib.sha256(f"{item.text}\0{item.extra}".encode()).hexdigest(),
+        provenance={"card_centric_generated_card_id": item.card_id},
+        fact_id=item.fact_id,
+        split=item.split,
+    )
+
+
+def _mandatory_card_note_ids(
+    classifications: Sequence[CardClassification],
+    fast_classifications: Sequence[Any],
+    ledger: CardConceptLedger,
+    source: CardCentricSourceIndex,
+    *,
+    v2: bool,
+) -> tuple[int, ...]:
+    priorities = {
+        concept.concept_id
+        for concept in ledger.concepts
+        if concept.importance == "high" or concept.emphasis_flag
+    }
+    note_ids = {
+        item.note_id
+        for item in classifications
+        if (selection_eligible_v2(item, source) if v2 else selection_eligible(item, source))
+        and priorities & set(item.covered_concept_ids)
+    }
+    if v2:
+        note_ids.update(
+            item.note_id
+            for item in fast_classifications
+            if fast_selection_eligible_v2(item, source)
+            and priorities & set(item.grounded_concept_ids)
+        )
+    return tuple(sorted(note_ids))
+
+
+def _v2_card_candidates(
+    context: StageContext,
+    classifications: Sequence[CardClassification],
+    fast_classifications: Sequence[Any],
+    fallback_note_ids: Sequence[int],
+    selected_note_ids: set[int],
+    source: CardCentricSourceIndex,
+) -> tuple[Candidate, ...]:
+    """Materialize scoped S4 terminals plus legitimate unscoped residuals."""
+    cards = {
+        card.note_id: card for card in _card_records(_payload(context, CurationStage.SOURCE_INDEX))
+    }
+    scope = TagScopeResult.model_validate(_payload(context, CurationStage.CARD_TAG_SCOPE)["scope"])
+    all_thorough = {item.note_id: item for item in classifications}
+    scoped_ids = set(scope.scoped_note_ids)
+    thorough = {note_id: item for note_id, item in all_thorough.items() if note_id in scoped_ids}
+    residual = {
+        note_id: item for note_id, item in all_thorough.items() if note_id not in scoped_ids
+    }
+    fast = {item.note_id: item for item in _terminal_fast_classifications(fast_classifications)}
+    needs_review_ids = {
+        item.note_id for item in fast_classifications if item.verdict == "NEEDS_REVIEW"
+    }
+    fallback = set(fallback_note_ids)
+    if needs_review_ids - set(thorough):
+        raise PinnedInputChanged("v2 S4b NEEDS_REVIEW rows lack S4c terminal results")
+    if set(thorough) & (set(fast) | fallback) or set(fast) & fallback:
+        raise PinnedInputChanged("v2 classification artifacts contain duplicate note identities")
+    if set(thorough) | set(fast) | fallback != scoped_ids:
+        raise PinnedInputChanged("v2 classification artifacts do not conserve scoped notes")
+    candidates: list[Candidate] = []
+    for note_id in sorted(scoped_ids | set(residual)):
+        card = cards.get(note_id)
+        if card is None:
+            raise PinnedInputChanged("v2 classification artifact references an unknown card")
+        if note_id in residual:
+            item = residual[note_id]
+            concept_ids = item.covered_concept_ids
+            verdict = item.verdict.lower()
+            predicted_band = item.verdict
+            eligible = selection_eligible_v2(item, source)
+            flags = item.flags
+            reason = item.reason
+            provenance_kind = "residual"
+        elif note_id in thorough:
+            item = thorough[note_id]
+            concept_ids = item.covered_concept_ids
+            verdict = item.verdict.lower()
+            predicted_band = item.verdict
+            eligible = selection_eligible_v2(item, source)
+            flags = item.flags
+            reason = item.reason
+            provenance_kind = "thorough"
+        elif note_id in fast:
+            item = fast[note_id]
+            concept_ids = item.grounded_concept_ids
+            verdict = {
+                "LIKELY_YES": "keep",
+                "LIKELY_NO": "drop",
+                "NEEDS_REVIEW": "uncertain",
+            }[item.verdict]
+            predicted_band = item.verdict
+            eligible = fast_selection_eligible_v2(item, source)
+            flags = item.flags
+            reason = item.reason
+            provenance_kind = "fast"
+        elif note_id in fallback:
+            concept_ids = ()
+            verdict = "uncertain"
+            predicted_band = "PREFILTER_FALLBACK"
+            eligible = False
+            flags = ()
+            reason = "documented semantic prefilter fallback"
+            provenance_kind = "prefilter_fallback"
+        else:
+            raise PinnedInputChanged("v2 classification terminal is unavailable")
+        candidates.append(
+            Candidate(
+                note_id=note_id,
+                content_hash=card.content_sha256,
+                best_concept_id=concept_ids[0] if concept_ids else "unmapped",
+                provenance={
+                    "card_centric_v2": {
+                        "classification_kind": provenance_kind,
+                        "covered_concept_ids": list(concept_ids),
+                        "flags": list(flags),
+                        "selection_eligible": eligible,
+                    }
+                },
+                scores={},
+                predicted_band=predicted_band,
+                verdict=verdict,
+                confidence=1.0 if eligible else 0.5,
+                reason=reason,
+                context_trap="context_trap" in flags,
+                recall_direction="card_centric_v2",
+                mnemonic_classification="none",
+                dedupe_disposition="eligible" if note_id in selected_note_ids else "excluded",
+                selected=note_id in selected_note_ids,
+            )
+        )
+    return tuple(candidates)
+
+
+def _v2_reconciliation_classifications(
+    thorough: Sequence[CardClassification],
+    fast: Sequence[Any],
+    fallback_note_ids: Sequence[int],
+    scope: TagScopeResult,
+) -> tuple[AuditResolution, ...]:
+    """Project only the scoped S4 terminal universe into A3's audit view."""
+    scoped_ids = set(scope.scoped_note_ids)
+    thorough_by_id = {item.note_id: item for item in thorough if item.note_id in scoped_ids}
+    fast_by_id = {item.note_id: item for item in _terminal_fast_classifications(fast)}
+    needs_review_ids = {item.note_id for item in fast if item.verdict == "NEEDS_REVIEW"}
+    fallback = set(_effective_v2_fallback_note_ids(fallback_note_ids, thorough_by_id.values()))
+    if needs_review_ids - set(thorough_by_id):
+        raise PinnedInputChanged("v2 reconciliation has unresolved S4b NEEDS_REVIEW rows")
+    if set(thorough_by_id) & (set(fast_by_id) | fallback) or set(fast_by_id) & fallback:
+        raise PinnedInputChanged("v2 reconciliation has duplicate scoped classifications")
+    if set(thorough_by_id) | set(fast_by_id) | fallback != scoped_ids:
+        raise PinnedInputChanged("v2 reconciliation cannot account for every scoped card")
+    rows: list[AuditResolution] = []
+    for note_id in sorted(scope.scoped_note_ids):
+        if note_id in thorough_by_id:
+            verdict = cast(
+                Literal["keep", "drop", "uncertain"],
+                {"YES": "keep", "NO": "drop", "MAYBE": "uncertain"}[
+                    thorough_by_id[note_id].verdict
+                ],
+            )
+        elif note_id in fast_by_id:
+            verdict = cast(
+                Literal["keep", "drop", "uncertain"],
+                {
+                    "LIKELY_YES": "keep",
+                    "LIKELY_NO": "drop",
+                    "NEEDS_REVIEW": "uncertain",
+                }[fast_by_id[note_id].verdict],
+            )
+        else:
+            verdict = "uncertain"
+        rows.append(AuditResolution(nid=note_id, verdict=verdict))
+    return tuple(rows)
+
+
 def _token_overlap(left: set[str], right: set[str]) -> float:
     return len(left & right) / len(left | right) if left or right else 0.0
 
 
-def _card_ledger_prompt(catalog: AnkiPromptCatalogService) -> str:
-    return AnkiPromptLibrary(catalog.bundled_directory).load("card-centric-ledger-v1").content
+def _card_ledger_prompt(
+    catalog: AnkiPromptCatalogService,
+    version: PipelineContractVersion,
+) -> str:
+    asset = (
+        "card-centric-ledger-v2"
+        if version is PipelineContractVersion.CARD_CENTRIC_V2
+        else "card-centric-ledger-v1"
+    )
+    return AnkiPromptLibrary(catalog.bundled_directory).load(asset).content
 
 
-def _card_gap_prompt(catalog: AnkiPromptCatalogService) -> str:
-    return AnkiPromptLibrary(catalog.bundled_directory).load("card-centric-gap-v1").content
+def _card_gap_prompt(
+    catalog: AnkiPromptCatalogService,
+    version: PipelineContractVersion,
+) -> str:
+    asset = (
+        "card-centric-gap-v2"
+        if version is PipelineContractVersion.CARD_CENTRIC_V2
+        else "card-centric-gap-v1"
+    )
+    return AnkiPromptLibrary(catalog.bundled_directory).load(asset).content
+
+
+def _card_fast_classifier_prompt(catalog: AnkiPromptCatalogService) -> str:
+    return AnkiPromptLibrary(catalog.bundled_directory).load("card-centric-fast-classifier").content
+
+
+_CARD_V2_PINNED_PROMPT_SCHEMAS = {
+    "card-centric-ledger-v2": "lcl_v2",
+    "card-centric-fast-classifier": "card_centric_fast_classify_v2",
+    "card-centric-gap-v2": "gap_cards_v2",
+}
+
+
+def _pinned_card_v2_prompt(context: StageContext, prompt_id: str) -> str:
+    """Read an immutable v2 internal prompt from S0, never a live catalog file."""
+    expected_schema = _CARD_V2_PINNED_PROMPT_SCHEMAS[prompt_id]
+    raw_snapshot = _payload(context, CurationStage.PREFLIGHT).get("prompt_snapshot", [])
+    if not isinstance(raw_snapshot, list):
+        raise PinnedInputChanged("Pinned prompt snapshot is malformed")
+    entries = [
+        value for value in raw_snapshot if isinstance(value, dict) and value.get("id") == prompt_id
+    ]
+    if len(entries) != 1:
+        raise PinnedInputChanged(f"Pinned v2 prompt {prompt_id} is unavailable or duplicated")
+    entry = entries[0]
+    content = entry.get("content")
+    prompt_hash = entry.get("prompt_hash")
+    raw_metadata = entry.get("metadata")
+    try:
+        metadata = PromptMetadata.model_validate(raw_metadata)
+    except (TypeError, ValueError):
+        metadata = None
+    if (
+        not isinstance(content, str)
+        or not content.strip()
+        or not isinstance(prompt_hash, str)
+        or hashlib.sha256(content.encode("utf-8")).hexdigest()[:12] != prompt_hash
+        or metadata is None
+        or metadata.id != prompt_id
+        or metadata.schema_name != expected_schema
+        or metadata.response_format != "json"
+    ):
+        raise PinnedInputChanged("Pinned v2 prompt snapshot is malformed")
+    return content
 
 
 def _resolved_prompt(
@@ -3099,9 +3976,7 @@ def _reconciliation_metrics(
 def _card_reconciliation_error(report: ReconciliationReport) -> str | None:
     if report.can_render_envelope:
         return None
-    findings = " | ".join(
-        f"{finding.assertion_id}: {finding.message}" for finding in report.failed
-    )
+    findings = " | ".join(f"{finding.assertion_id}: {finding.message}" for finding in report.failed)
     return "Card-centric reconciliation failed: " + findings
 
 

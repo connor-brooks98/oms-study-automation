@@ -65,7 +65,9 @@ class CreateCurationJobRequest(ContractModel):
     gap_prompt_version: Annotated[str, Field(min_length=1, max_length=100)]
     provider: Literal["openai", "gemini", "anthropic", "openrouter"]
     model: Annotated[str, Field(max_length=200)] | None = None
-    pipeline_contract_version: Literal["retrieval_v4", "card_centric_v1"] = "retrieval_v4"
+    pipeline_contract_version: Literal["retrieval_v4", "card_centric_v1", "card_centric_v2"] = (
+        "retrieval_v4"
+    )
     resolved_model_config: dict[str, Any] | None = None
     source_revision_hashes: dict[
         Annotated[int, Field(gt=0)],
@@ -197,6 +199,8 @@ def _resolved_model_config(
     if value is None:
         if version is PipelineContractVersion.CARD_CENTRIC_V1:
             return ResolvedModelConfiguration.card_centric_default(provider, model)
+        if version is PipelineContractVersion.CARD_CENTRIC_V2:
+            return ResolvedModelConfiguration.card_centric_v2_default(provider, model)
         return ResolvedModelConfiguration.legacy(provider, model)
     try:
 
@@ -222,15 +226,23 @@ def _resolved_model_config(
             residual_s6=stage("residual_s6"),
             gap_fill_s7=stage("gap_fill_s7"),
             residual_unlocked=bool(value.get("residual_unlocked", False)),
+            fast_classify_s4b=(
+                stage("fast_classify_s4b") if value.get("fast_classify_s4b") is not None else None
+            ),
         )
-        if version is PipelineContractVersion.CARD_CENTRIC_V1 and (
+        if version in {
+            PipelineContractVersion.CARD_CENTRIC_V1,
+            PipelineContractVersion.CARD_CENTRIC_V2,
+        } and (
             resolved.classify_s4.thinking_mode != "disabled"
             or resolved.residual_s6.thinking_mode != "disabled"
         ):
             raise ValueError("card-centric S4/S6 thinking must be disabled")
+        if version is PipelineContractVersion.CARD_CENTRIC_V2:
+            resolved.require_card_centric_v2_fast_classifier()
         return resolved
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("resolved model configuration is invalid") from exc
+        raise ValueError(f"resolved model configuration is invalid: {exc}") from exc
 
 
 class TagPatchContract(ContractModel):
@@ -500,7 +512,7 @@ ActionEnvelope = ActionEnvelopeV1
 class ActionEnvelopeV2(_ActionEnvelopeBase):
     contract_version: Literal[2] = 2
     job_id: UUID
-    pipeline_contract_version: Literal["card_centric_v1"] = "card_centric_v1"
+    pipeline_contract_version: Literal["card_centric_v1", "card_centric_v2"] = "card_centric_v1"
     model_config_sha256: Sha256
     # The digest is an integrity check; the canonical document makes the frozen
     # plan independently auditable and reproducible.

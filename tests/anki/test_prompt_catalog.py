@@ -68,3 +68,17 @@ def test_job_snapshot_rejects_prompt_from_the_wrong_role(tmp_path: Path) -> None
             coverage_id="coverage",
             gap_id="gap",
         )
+
+
+def test_bundled_card_centric_v2_prompts_are_internal_not_catalog_errors() -> None:
+    catalog = AnkiPromptCatalogService(bundled_directory=_bundled_root()).catalog()
+
+    assert not any(
+        issue.path.name
+        in {
+            "card-centric-ledger-v2.md",
+            "card-centric-fast-classifier.md",
+            "card-centric-gap-v2.md",
+        }
+        for issue in catalog.issues
+    )

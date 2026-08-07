@@ -73,7 +73,11 @@ from oms_hub.anki.models import (
     AnkiStageSettingModel,
     AnkiTagPatchModel,
 )
-from oms_hub.anki.reconciliation import CardCentricReconciliationInput, reconcile_card_centric
+from oms_hub.anki.reconciliation import (
+    CardCentricReconciliationInput,
+    reconcile_card_centric,
+    selected_card_centric_coverage,
+)
 from oms_hub.db import Database
 from oms_hub.llm.domain import ProviderName
 from oms_hub.models import LectureModel, utc_now
@@ -102,9 +106,23 @@ ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
     },
     CurationState.CARD_BUILDING_LEDGER: {
         CurationState.CARD_SCOPING_TAGS,
+        CurationState.CARD_AUDITING_EVIDENCE,
+        CurationState.FAILED,
+    },
+    CurationState.CARD_AUDITING_EVIDENCE: {
+        CurationState.CARD_SCOPING_TAGS,
         CurationState.FAILED,
     },
     CurationState.CARD_SCOPING_TAGS: {
+        CurationState.CARD_CLASSIFYING,
+        CurationState.CARD_PREFILTERING,
+        CurationState.FAILED,
+    },
+    CurationState.CARD_PREFILTERING: {
+        CurationState.CARD_FAST_CLASSIFYING,
+        CurationState.FAILED,
+    },
+    CurationState.CARD_FAST_CLASSIFYING: {
         CurationState.CARD_CLASSIFYING,
         CurationState.FAILED,
     },
@@ -202,7 +220,10 @@ ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
         CurationState.BUILDING_SOURCE_INDEX,
         CurationState.BUILDING_LCL,
         CurationState.CARD_BUILDING_LEDGER,
+        CurationState.CARD_AUDITING_EVIDENCE,
         CurationState.CARD_SCOPING_TAGS,
+        CurationState.CARD_PREFILTERING,
+        CurationState.CARD_FAST_CLASSIFYING,
         CurationState.CARD_CLASSIFYING,
         CurationState.CARD_COVERAGE,
         CurationState.CARD_SWEEPING_RESIDUAL,
@@ -234,7 +255,10 @@ _INTERRUPTED_PRE_REVIEW_STATES = {
     CurationState.BUILDING_SOURCE_INDEX,
     CurationState.BUILDING_LCL,
     CurationState.CARD_BUILDING_LEDGER,
+    CurationState.CARD_AUDITING_EVIDENCE,
     CurationState.CARD_SCOPING_TAGS,
+    CurationState.CARD_PREFILTERING,
+    CurationState.CARD_FAST_CLASSIFYING,
     CurationState.CARD_CLASSIFYING,
     CurationState.CARD_COVERAGE,
     CurationState.CARD_SWEEPING_RESIDUAL,
@@ -263,7 +287,10 @@ _CLAIMABLE_STATES = {
     CurationState.BUILDING_SOURCE_INDEX,
     CurationState.BUILDING_LCL,
     CurationState.CARD_BUILDING_LEDGER,
+    CurationState.CARD_AUDITING_EVIDENCE,
     CurationState.CARD_SCOPING_TAGS,
+    CurationState.CARD_PREFILTERING,
+    CurationState.CARD_FAST_CLASSIFYING,
     CurationState.CARD_CLASSIFYING,
     CurationState.CARD_COVERAGE,
     CurationState.CARD_SWEEPING_RESIDUAL,
@@ -291,7 +318,10 @@ _RETRY_STATE_BY_STAGE = {
     CurationStage.SOURCE_INDEX: CurationState.BUILDING_SOURCE_INDEX,
     CurationStage.LCL: CurationState.BUILDING_LCL,
     CurationStage.CARD_LEDGER: CurationState.CARD_BUILDING_LEDGER,
+    CurationStage.CARD_EVIDENCE_AUDIT: CurationState.CARD_AUDITING_EVIDENCE,
     CurationStage.CARD_TAG_SCOPE: CurationState.CARD_SCOPING_TAGS,
+    CurationStage.CARD_PREFILTER: CurationState.CARD_PREFILTERING,
+    CurationStage.CARD_FAST_CLASSIFY: CurationState.CARD_FAST_CLASSIFYING,
     CurationStage.CARD_CLASSIFY: CurationState.CARD_CLASSIFYING,
     CurationStage.CARD_COVERAGE: CurationState.CARD_COVERAGE,
     CurationStage.CARD_RESIDUAL: CurationState.CARD_SWEEPING_RESIDUAL,
@@ -317,7 +347,10 @@ _CARD_CENTRIC_REWIND_STAGES = frozenset(
     {
         CurationStage.SOURCE_INDEX,
         CurationStage.CARD_LEDGER,
+        CurationStage.CARD_EVIDENCE_AUDIT,
         CurationStage.CARD_TAG_SCOPE,
+        CurationStage.CARD_PREFILTER,
+        CurationStage.CARD_FAST_CLASSIFY,
         CurationStage.CARD_CLASSIFY,
         CurationStage.CARD_COVERAGE,
         CurationStage.CARD_RESIDUAL,
@@ -404,7 +437,8 @@ class AnkiCurationRepository:
 
     def create_job(self, request: CreateCurationJob) -> CurationJob:
         if (
-            request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1
+            request.pipeline_contract_version
+            in {PipelineContractVersion.CARD_CENTRIC_V1, PipelineContractVersion.CARD_CENTRIC_V2}
             and not request.tag_allowlist
         ):
             with self.database.session() as session:
@@ -423,13 +457,20 @@ class AnkiCurationRepository:
                 request.model,
             )
             if request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1
+            else ResolvedModelConfiguration.card_centric_v2_default(request.provider, request.model)
+            if request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
             else ResolvedModelConfiguration.legacy(request.provider, request.model)
         )
-        if request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V1 and (
+        if request.pipeline_contract_version in {
+            PipelineContractVersion.CARD_CENTRIC_V1,
+            PipelineContractVersion.CARD_CENTRIC_V2,
+        } and (
             model_config.classify_s4.thinking_mode != "disabled"
             or model_config.residual_s6.thinking_mode != "disabled"
         ):
             raise ValueError("card-centric S4/S6 thinking must be disabled")
+        if request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2:
+            model_config.require_card_centric_v2_fast_classifier()
         model_config_json = _canonical_json(model_config.canonical_document())
         model_config_sha256 = _sha256_text(model_config_json)
         configuration = _configuration_document(
@@ -569,10 +610,15 @@ class AnkiCurationRepository:
             job = self._require_job_model(session, job_id)
             if job.review_revision != review_revision:
                 raise ValueError("review revision is stale")
-            if not set(selected_note_ids) <= set(mandatory_note_ids) or not set(
-                selected_generated_ids
-            ) <= set(mandatory_generated_ids):
-                raise ValueError("only an all-mandatory selection can exceed the cap")
+            exact_generated_mandatory = (
+                set(selected_generated_ids) == set(mandatory_generated_ids)
+                if job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V2.value
+                else True
+            )
+            if set(selected_note_ids) != set(mandatory_note_ids) or not exact_generated_mandatory:
+                raise ValueError(
+                    "overflow acknowledgement must bind the exact mandatory overflow set"
+                )
             secret_setting = session.get(AnkiStageSettingModel, "card_centric_review_secret")
             if secret_setting is None:
                 secret_setting = AnkiStageSettingModel(
@@ -662,11 +708,50 @@ class AnkiCurationRepository:
 
     def reviewed_reconciliation(self, job_id: UUID, review_revision: int) -> dict[str, Any] | None:
         with self.database.session() as session:
-            stored = session.scalar(select(AnkiReviewedReconciliationModel).where(
-                AnkiReviewedReconciliationModel.job_id == str(job_id),
-                AnkiReviewedReconciliationModel.review_revision == review_revision,
-            ))
+            stored = session.scalar(
+                select(AnkiReviewedReconciliationModel).where(
+                    AnkiReviewedReconciliationModel.job_id == str(job_id),
+                    AnkiReviewedReconciliationModel.review_revision == review_revision,
+                )
+            )
             return None if stored is None else cast(dict[str, Any], json.loads(stored.payload_json))
+
+    def card_centric_yes_rate_history(self, job_id: UUID, *, limit: int = 12) -> tuple[float, ...]:
+        """Return a bounded same-lecture v2 history for A11, newest first."""
+        if limit < 1:
+            raise ValueError("history limit must be positive")
+        with self.database.session() as session:
+            job = self._require_job_model(session, job_id)
+            rows = session.scalars(
+                select(AnkiReviewedReconciliationModel)
+                .join(
+                    AnkiCurationJobModel,
+                    AnkiCurationJobModel.id == AnkiReviewedReconciliationModel.job_id,
+                )
+                .where(
+                    AnkiCurationJobModel.lecture_id == job.lecture_id,
+                    AnkiCurationJobModel.pipeline_contract_version
+                    == PipelineContractVersion.CARD_CENTRIC_V2.value,
+                    AnkiReviewedReconciliationModel.job_id != str(job_id),
+                )
+                .order_by(AnkiReviewedReconciliationModel.id.desc())
+                .limit(limit)
+            ).all()
+        rates: list[float] = []
+        for row in rows:
+            try:
+                snapshot = cast(dict[str, Any], json.loads(row.payload_json))["snapshot"]
+                classifications = cast(list[dict[str, Any]], snapshot["classifications"])
+                if not classifications:
+                    continue
+                rate = sum(item.get("verdict") == "keep" for item in classifications) / len(
+                    classifications
+                )
+                if 0 <= rate <= 1:
+                    rates.append(rate)
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+        return tuple(rates)
 
     def persist_card_centric_overflow_acknowledgement(
         self, job_id: UUID, *, review_revision: int, document: dict[str, Any]
@@ -676,19 +761,28 @@ class AnkiCurationRepository:
             job = self._require_job_model(session, job_id)
             if job.review_revision != review_revision:
                 raise ValueError("review revision is stale")
-            stored = session.scalar(select(AnkiReviewedReconciliationModel).where(
-                AnkiReviewedReconciliationModel.job_id == str(job_id),
-                AnkiReviewedReconciliationModel.review_revision == review_revision,
-            ))
+            stored = session.scalar(
+                select(AnkiReviewedReconciliationModel).where(
+                    AnkiReviewedReconciliationModel.job_id == str(job_id),
+                    AnkiReviewedReconciliationModel.review_revision == review_revision,
+                )
+            )
             if stored is None:
                 raise ValueError("current reviewed reconciliation is unavailable")
             payload = cast(dict[str, Any], json.loads(stored.payload_json))
             snapshot = CardCentricReconciliationInput.model_validate(payload["snapshot"])
+            selected_generated_ids = (
+                snapshot.mandatory_generated_card_ids
+                if snapshot.pipeline_contract_version == "card_centric_v2"
+                else snapshot.selected_generated_card_ids
+            )
             if not self.validate_card_centric_overflow_acknowledgement(
-                job_id, review_revision=review_revision,
-                selected_note_ids=snapshot.selected_nids,
-                selected_generated_ids=snapshot.selected_generated_card_ids,
-                cap=snapshot.cap, document=document,
+                job_id,
+                review_revision=review_revision,
+                selected_note_ids=snapshot.mandatory_nids,
+                selected_generated_ids=selected_generated_ids,
+                cap=snapshot.cap,
+                document=document,
             ):
                 raise ValueError("selection overflow acknowledgement is missing, stale, or forged")
             reviewed = snapshot.model_copy(update={"overflow_acknowledgement": document})
@@ -716,10 +810,12 @@ class AnkiCurationRepository:
             job = self._require_job_model(session, UUID(row.job_id))
             if envelope.review_revision != job.review_revision:
                 return False
-            reviewed = session.scalar(select(AnkiReviewedReconciliationModel).where(
-                AnkiReviewedReconciliationModel.job_id == row.job_id,
-                AnkiReviewedReconciliationModel.review_revision == envelope.review_revision,
-            ))
+            reviewed = session.scalar(
+                select(AnkiReviewedReconciliationModel).where(
+                    AnkiReviewedReconciliationModel.job_id == row.job_id,
+                    AnkiReviewedReconciliationModel.review_revision == envelope.review_revision,
+                )
+            )
             if reviewed is None:
                 return False
             try:
@@ -732,14 +828,19 @@ class AnkiCurationRepository:
             if total <= snapshot.cap:
                 return envelope.overflow_acknowledgement_provenance == {"required": False}
             document = snapshot.overflow_acknowledgement
+            selected_generated_ids = (
+                snapshot.mandatory_generated_card_ids
+                if snapshot.pipeline_contract_version == "card_centric_v2"
+                else snapshot.selected_generated_card_ids
+            )
             return bool(
                 document
                 and document == envelope.overflow_acknowledgement_provenance
                 and self.validate_card_centric_overflow_acknowledgement(
-                UUID(row.job_id),
+                    UUID(row.job_id),
                     review_revision=envelope.review_revision,
-                    selected_note_ids=snapshot.selected_nids,
-                    selected_generated_ids=snapshot.selected_generated_card_ids,
+                    selected_note_ids=snapshot.mandatory_nids,
+                    selected_generated_ids=selected_generated_ids,
                     cap=snapshot.cap,
                     document=document,
                 )
@@ -937,7 +1038,10 @@ class AnkiCurationRepository:
             if failed_stage is None:
                 raise ValueError("failed curation job has no resumable stage")
             stage = CurationStage(failed_stage.stage)
-            card = stored.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V1.value
+            card = stored.pipeline_contract_version in {
+                PipelineContractVersion.CARD_CENTRIC_V1.value,
+                PipelineContractVersion.CARD_CENTRIC_V2.value,
+            }
             if self._is_legacy_blank_card_scope_failure(stored, failed_stage):
                 lecture = session.get(LectureModel, stored.lecture_id)
                 if lecture is None:
@@ -986,7 +1090,11 @@ class AnkiCurationRepository:
         except (TypeError, ValueError):
             return False
         return (
-            job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V1.value
+            job.pipeline_contract_version
+            in {
+                PipelineContractVersion.CARD_CENTRIC_V1.value,
+                PipelineContractVersion.CARD_CENTRIC_V2.value,
+            }
             and failed_stage.stage == CurationStage.CARD_TAG_SCOPE.value
             and failed_stage.error == _BLANK_CARD_CENTRIC_SCOPE_ERROR
             and isinstance(tag_allowlist, list)
@@ -1475,6 +1583,13 @@ class AnkiCurationRepository:
             reviewer = change_set.reviewer.strip()
             if not reviewer or len(reviewer) > 200:
                 raise ValueError("reviewer is invalid")
+            documented_t6_nids: set[int] = set()
+            if card_centric_snapshot is not None:
+                documented_t6_nids = set(
+                    CardCentricReconciliationInput.model_validate(
+                        card_centric_snapshot
+                    ).t6_selected_nids
+                )
             if len({patch.note_id for patch in change_set.tag_patches}) != len(
                 change_set.tag_patches
             ):
@@ -1488,14 +1603,18 @@ class AnkiCurationRepository:
                 )
                 if candidate is None:
                     raise KeyError(note_id)
-                card_centric = cast(dict[str, Any], json.loads(candidate.provenance_json)).get(
-                    "card_centric", {}
-                )
-                if selected and isinstance(card_centric, dict) and (
-                    "selection_eligible" in card_centric
-                    and not bool(card_centric["selection_eligible"])
+                provenance = cast(dict[str, Any], json.loads(candidate.provenance_json))
+                card_centric = provenance.get("card_centric_v2", provenance.get("card_centric", {}))
+                if (
+                    selected
+                    and isinstance(card_centric, dict)
+                    and (
+                        "selection_eligible" in card_centric
+                        and not bool(card_centric["selection_eligible"])
+                    )
+                    and note_id not in documented_t6_nids
                 ):
-                    raise ValueError("review cannot select an ineligible card")
+                    raise ValueError("review cannot select an undocumented ineligible card")
                 candidate.selected = selected
             for edit in change_set.gap_edits:
                 conditions = [AnkiGapCardModel.job_id == str(job_id)]
@@ -1571,7 +1690,9 @@ class AnkiCurationRepository:
             job.review_revision += 1
             if card_centric_snapshot is not None:
                 self._persist_reviewed_card_centric_snapshot(
-                    session, job_id, revision=job.review_revision,
+                    session,
+                    job_id,
+                    revision=job.review_revision,
                     snapshot_payload=card_centric_snapshot,
                 )
             session.flush()
@@ -1587,37 +1708,42 @@ class AnkiCurationRepository:
     ) -> None:
         """Materialize selected-only S9 in the review transaction."""
         snapshot = CardCentricReconciliationInput.model_validate(snapshot_payload)
-        candidates = session.scalars(select(AnkiCandidateModel).where(
-            AnkiCandidateModel.job_id == str(job_id)
-        )).all()
-        cards = session.scalars(select(AnkiGapCardModel).where(
-            AnkiGapCardModel.job_id == str(job_id)
-        )).all()
+        candidates = session.scalars(
+            select(AnkiCandidateModel).where(AnkiCandidateModel.job_id == str(job_id))
+        ).all()
+        cards = session.scalars(
+            select(AnkiGapCardModel).where(AnkiGapCardModel.job_id == str(job_id))
+        ).all()
         selected_nids = tuple(item.note_id for item in candidates if item.selected)
         selected_cards = tuple(item.id for item in cards if item.selected)
-        selected_coverage = {
-            concept_id for note_id in selected_nids
-            for concept_id in snapshot.covered_concept_ids_by_nid.get(note_id, ())
-        } | {
-            snapshot.generated_concept_id_by_card_id[card_id] for card_id in selected_cards
-            if card_id in snapshot.generated_concept_id_by_card_id
-        }
-        coverage = {
-            concept_id: "covered" if concept_id in selected_coverage else "intentional_gap"
-            if state == "intentional_gap" else "uncovered"
-            for concept_id, state in snapshot.coverage.items()
-        }
-        reviewed = snapshot.model_copy(update={
-            "coverage": coverage,
-            "selected_nids": selected_nids,
-            "selected_generated_card_ids": selected_cards,
-            "generated_cards": tuple(
-                item
-                for item in (snapshot.canonical_generated_cards or snapshot.generated_cards)
-                if item.card_id in set(selected_cards)
-            ),
-            "overflow_acknowledgement": None,
-        })
+        canonical_generated = snapshot.canonical_generated_cards or snapshot.generated_cards
+        canonical_by_card_id = {item.card_id: item for item in canonical_generated}
+        unknown_selected_cards = set(selected_cards) - set(canonical_by_card_id)
+        if unknown_selected_cards:
+            raise ValueError("selected generated card is not in the pinned S9 output")
+        stored_by_card_id = {item.id: item for item in cards}
+        reviewed_generated_cards = tuple(
+            canonical_by_card_id[card_id].model_copy(
+                update={
+                    "text": stored_by_card_id[card_id].text,
+                    "extra": stored_by_card_id[card_id].extra,
+                }
+            )
+            for card_id in selected_cards
+        )
+        reviewed = snapshot.model_copy(
+            update={
+                "selected_nids": selected_nids,
+                "selected_generated_card_ids": selected_cards,
+                # Current review text is validated, while fact/split identity
+                # remains pinned to the original S7/S8 card resolution.
+                "generated_cards": reviewed_generated_cards,
+                "overflow_acknowledgement": None,
+            }
+        )
+        reviewed = reviewed.model_copy(
+            update={"coverage": selected_card_centric_coverage(reviewed)}
+        )
         report = reconcile_card_centric(reviewed)
         payload = {
             "contract_version": "card_centric_s9_v1",
@@ -1628,13 +1754,16 @@ class AnkiCurationRepository:
                 "cap": reviewed.cap,
                 "target": reviewed.target,
                 "mandatory_note_ids": list(reviewed.mandatory_nids),
+                "mandatory_generated_card_ids": list(reviewed.mandatory_generated_card_ids),
                 "overflow_acknowledgement": None,
             },
             "snapshot": reviewed.model_dump(mode="json"),
         }
-        session.add(AnkiReviewedReconciliationModel(
-            job_id=str(job_id), review_revision=revision, payload_json=_canonical_json(payload)
-        ))
+        session.add(
+            AnkiReviewedReconciliationModel(
+                job_id=str(job_id), review_revision=revision, payload_json=_canonical_json(payload)
+            )
+        )
 
     def list_tag_patches(self, job_id: UUID) -> list[TagPatch]:
         with self.database.session() as session:
@@ -2359,6 +2488,9 @@ class AnkiCurationRepository:
         config = AnkiCurationRepository._resolved_model_config(
             stored.resolved_model_config_json, stored.provider, stored.model
         )
+        pipeline_contract_version = PipelineContractVersion(stored.pipeline_contract_version)
+        if pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2:
+            config.require_card_centric_v2_fast_classifier()
         expected_model_config_sha256 = _sha256_text(_canonical_json(config.canonical_document()))
         if stored.resolved_model_config_json not in {"", "{}"} and (
             stored.model_config_sha256 != expected_model_config_sha256
@@ -2384,7 +2516,7 @@ class AnkiCurationRepository:
             tag_allowlist=tuple(str(value) for value in json.loads(stored.tag_allowlist_json)),
             provider=stored.provider,
             model=stored.model,
-            pipeline_contract_version=PipelineContractVersion(stored.pipeline_contract_version),
+            pipeline_contract_version=pipeline_contract_version,
             resolved_model_config=config,
             model_config_sha256=expected_model_config_sha256,
             instruction_text=stored.instruction_text,
@@ -2542,6 +2674,7 @@ class AnkiCurationRepository:
                 stage("residual_s6"),
                 stage("gap_fill_s7"),
                 bool(raw.get("residual_unlocked", False)),
+                stage("fast_classify_s4b") if raw.get("fast_classify_s4b") is not None else None,
             )
             if _canonical_json(resolved.canonical_document()) != value:
                 raise ValueError("stored resolved model configuration is not canonical")

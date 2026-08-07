@@ -43,6 +43,12 @@ from oms_hub.anki.models import (
     AnkiEnvelopeOperationModel,
     AnkiReviewedReconciliationModel,
 )
+from oms_hub.anki.pipeline import pipeline_stages
+from oms_hub.anki.reconciliation import (
+    AuditResolution,
+    CardCentricReconciliationInput,
+    GeneratedResolution,
+)
 from oms_hub.anki.repository import (
     AnkiCurationRepository,
     InvalidCurationTransition,
@@ -116,6 +122,224 @@ def test_card_centric_profile_persists_for_the_local_study_hub_user(tmp_path: Pa
     assert repository.card_centric_profile() == profile
 
 
+def test_repository_rejects_a_redirected_v2_fast_classifier(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    approved = ResolvedModelConfiguration.card_centric_v2_default("anthropic", "claude-sonnet-5")
+    redirected = replace(
+        approved,
+        fast_classify_s4b=ResolvedStageModel(
+            "openrouter", "openai/gpt-4o-mini", thinking_mode="disabled"
+        ),
+    )
+
+    with pytest.raises(ValueError, match="S4b must use openai gpt-4o-mini"):
+        repository.create_job(
+            replace(
+                _job_request(lecture_id),
+                pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+                resolved_model_config=redirected,
+            )
+        )
+
+
+def test_review_deselection_removes_the_sole_selected_covering_card(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+    )
+    note_ids = tuple(range(1, 11))
+    repository.replace_candidates(
+        job.id,
+        tuple(
+            Candidate(
+                note_id=note_id,
+                content_hash=f"{note_id:064x}",
+                best_concept_id="C01",
+                provenance={"card_centric_v2": {"selection_eligible": True}},
+                scores={},
+                predicted_band="LIKELY_YES",
+                verdict="keep",
+                confidence=1.0,
+                reason="fixture",
+                context_trap=False,
+                recall_direction="card_centric_v2",
+                mnemonic_classification="none",
+                dedupe_disposition="eligible",
+                selected=True,
+                retrieval_pass=RetrievalPass.PASS_1,
+            )
+            for note_id in note_ids
+        ),
+    )
+    snapshot = CardCentricReconciliationInput(
+        concept_ids=("C01",),
+        coverage={"C01": "covered"},
+        required_fact_ids=(),
+        uncovered_after_s5=(),
+        residual_ran_for=(),
+        generated_cards=(),
+        unresolved_fact_ids=(),
+        expected_scoped_nids=note_ids,
+        classifications=tuple(AuditResolution(nid=note_id, verdict="keep") for note_id in note_ids),
+        eligible_yes_nids=note_ids,
+        selected_nids=note_ids,
+        selected_generated_card_ids=(),
+        generated_card_ids=(),
+        source_passage_ids=(),
+        forbidden_cloze_targets=(),
+        prompt_sync_stale=False,
+        untagged_rate=0,
+        covered_concept_ids_by_nid={1: ("C01",)},
+    )
+
+    saved = repository.save_review(
+        job.id,
+        ReviewChangeSet(expected_revision=0, candidate_selections={1: False}),
+        card_centric_snapshot=snapshot.model_dump(mode="json"),
+    )
+    reviewed = repository.reviewed_reconciliation(job.id, saved.revision)
+
+    assert reviewed is not None
+    assert reviewed["snapshot"]["coverage"] == {"C01": "uncovered"}
+    assert "A4" in {item["assertion_id"] for item in reviewed["failed"]}
+    assert reviewed["can_render_envelope"] is False
+
+
+def test_card_centric_review_uses_current_generated_text(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+    )
+    note_ids = tuple(range(1, 11))
+    repository.replace_candidates(
+        job.id,
+        tuple(
+            Candidate(
+                note_id=note_id,
+                content_hash=f"{note_id:064x}",
+                best_concept_id="C01",
+                provenance={"card_centric_v2": {"selection_eligible": True}},
+                scores={},
+                predicted_band="LIKELY_YES",
+                verdict="keep",
+                confidence=1.0,
+                reason="fixture",
+                context_trap=False,
+                recall_direction="card_centric_v2",
+                mnemonic_classification="none",
+                dedupe_disposition="eligible",
+                selected=True,
+                retrieval_pass=RetrievalPass.PASS_1,
+            )
+            for note_id in note_ids
+        ),
+    )
+    repository.save_gap_cards(
+        job.id,
+        (
+            GapCard(
+                card_id="G1",
+                concept_id="C01",
+                text="The safe answer is {{c1::ferritin}}.",
+                extra="Original explanation.",
+                selected=True,
+            ),
+        ),
+    )
+    canonical = GeneratedResolution(
+        card_id="G1",
+        fact_id="C01-M1",
+        text="The safe answer is {{c1::ferritin}}.",
+        extra="Original explanation.",
+        split=True,
+    )
+    snapshot = CardCentricReconciliationInput(
+        pipeline_contract_version="card_centric_v2",
+        concept_ids=("C01",),
+        coverage={"C01": "covered"},
+        required_fact_ids=("C01-M1",),
+        uncovered_after_s5=("C01",),
+        residual_ran_for=("C01",),
+        generated_cards=(canonical,),
+        canonical_generated_cards=(canonical,),
+        unresolved_fact_ids=(),
+        expected_scoped_nids=note_ids,
+        classifications=tuple(AuditResolution(nid=note_id, verdict="keep") for note_id in note_ids),
+        eligible_yes_nids=note_ids,
+        selected_nids=note_ids,
+        selected_generated_card_ids=("G1",),
+        generated_card_ids=("G1",),
+        source_passage_ids=(),
+        forbidden_cloze_targets=("iron deficiency",),
+        prompt_sync_stale=False,
+        untagged_rate=0,
+        generated_concept_id_by_card_id={"G1": "C01"},
+    )
+
+    safe = repository.save_review(
+        job.id,
+        ReviewChangeSet(
+            expected_revision=0,
+            gap_edits=(
+                GapCardEdit(
+                    card_id="G1",
+                    concept_id="C01",
+                    text="The safe answer is {{c1::transferrin saturation}}.",
+                    extra="Current safe explanation.",
+                    selected=True,
+                ),
+            ),
+        ),
+        card_centric_snapshot=snapshot.model_dump(mode="json"),
+    )
+    safe_reviewed = repository.reviewed_reconciliation(job.id, safe.revision)
+
+    assert safe_reviewed is not None
+    assert safe_reviewed["can_render_envelope"] is True
+    assert safe_reviewed["snapshot"]["generated_cards"] == [
+        {
+            "card_id": "G1",
+            "fact_id": "C01-M1",
+            "text": "The safe answer is {{c1::transferrin saturation}}.",
+            "extra": "Current safe explanation.",
+            "split": True,
+        }
+    ]
+    assert safe_reviewed["snapshot"]["canonical_generated_cards"][0]["text"] == canonical.text
+
+    forbidden = repository.save_review(
+        job.id,
+        ReviewChangeSet(
+            expected_revision=safe.revision,
+            gap_edits=(
+                GapCardEdit(
+                    card_id="G1",
+                    concept_id="C01",
+                    text="The diagnosis is {{c1::iron deficiency}}.",
+                    extra="Forbidden current explanation.",
+                    selected=True,
+                ),
+            ),
+        ),
+        card_centric_snapshot=snapshot.model_dump(mode="json"),
+    )
+    forbidden_reviewed = repository.reviewed_reconciliation(job.id, forbidden.revision)
+
+    assert forbidden_reviewed is not None
+    assert forbidden_reviewed["snapshot"]["generated_cards"][0]["text"] == (
+        "The diagnosis is {{c1::iron deficiency}}."
+    )
+    assert forbidden_reviewed["snapshot"]["canonical_generated_cards"][0]["text"] == canonical.text
+    assert "A5" in {item["assertion_id"] for item in forbidden_reviewed["failed"]}
+    assert forbidden_reviewed["can_render_envelope"] is False
+
+
 def test_card_centric_overflow_acknowledgement_is_exact_and_server_signed(tmp_path: Path) -> None:
     repository, lecture_id = _prepared_repository(tmp_path)
     job = repository.create_job(
@@ -129,7 +353,7 @@ def test_card_centric_overflow_acknowledgement_is_exact_and_server_signed(tmp_pa
         job.id,
         review_revision=job.review_revision,
         selected_note_ids=selected,
-        selected_generated_ids=(),
+        selected_generated_ids=("G1",),
         mandatory_note_ids=selected,
         mandatory_generated_ids=(),
         cap=70,
@@ -139,7 +363,7 @@ def test_card_centric_overflow_acknowledgement_is_exact_and_server_signed(tmp_pa
         job.id,
         review_revision=job.review_revision,
         selected_note_ids=selected,
-        selected_generated_ids=(),
+        selected_generated_ids=("G1",),
         cap=70,
         document=acknowledgement,
     )
@@ -147,10 +371,112 @@ def test_card_centric_overflow_acknowledgement_is_exact_and_server_signed(tmp_pa
         job.id,
         review_revision=job.review_revision,
         selected_note_ids=selected[:-1],
-        selected_generated_ids=(),
+        selected_generated_ids=("G1",),
         cap=70,
         document=acknowledgement,
     )
+    with pytest.raises(ValueError, match="exact mandatory overflow set"):
+        repository.issue_card_centric_overflow_acknowledgement(
+            job.id,
+            review_revision=job.review_revision,
+            selected_note_ids=selected[:-1],
+            selected_generated_ids=("G1",),
+            mandatory_note_ids=selected,
+            mandatory_generated_ids=(),
+            cap=70,
+        )
+
+
+def test_v2_overflow_acknowledgement_rejects_nonmandatory_generated_cards(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+    )
+    selected = tuple(range(1, 72))
+
+    with pytest.raises(ValueError, match="exact mandatory overflow set"):
+        repository.issue_card_centric_overflow_acknowledgement(
+            job.id,
+            review_revision=job.review_revision,
+            selected_note_ids=selected,
+            selected_generated_ids=("G1",),
+            mandatory_note_ids=selected,
+            mandatory_generated_ids=(),
+            cap=70,
+        )
+
+
+def test_review_preserves_only_s9_documented_t6_selection(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+    )
+    note_ids = tuple(range(1, 11))
+    repository.replace_candidates(
+        job.id,
+        tuple(
+            Candidate(
+                note_id=note_id,
+                content_hash=f"{note_id:064x}",
+                best_concept_id="C01",
+                provenance={"card_centric_v2": {"selection_eligible": note_id not in {1, 2}}},
+                scores={},
+                predicted_band="LIKELY_YES",
+                verdict="keep",
+                confidence=1.0,
+                reason="fixture",
+                context_trap=False,
+                recall_direction="card_centric_v2",
+                mnemonic_classification="none",
+                dedupe_disposition="eligible",
+                selected=True,
+                retrieval_pass=RetrievalPass.PASS_1,
+            )
+            for note_id in note_ids
+        ),
+    )
+    snapshot = CardCentricReconciliationInput(
+        pipeline_contract_version="card_centric_v2",
+        concept_ids=("C01",),
+        coverage={"C01": "covered"},
+        required_fact_ids=(),
+        uncovered_after_s5=(),
+        residual_ran_for=(),
+        generated_cards=(),
+        unresolved_fact_ids=(),
+        expected_scoped_nids=note_ids,
+        classifications=tuple(AuditResolution(nid=note_id, verdict="keep") for note_id in note_ids),
+        eligible_yes_nids=tuple(note_id for note_id in note_ids if note_id not in {1, 2}),
+        selected_nids=note_ids,
+        selected_generated_card_ids=(),
+        generated_card_ids=(),
+        source_passage_ids=(),
+        forbidden_cloze_targets=(),
+        prompt_sync_stale=False,
+        untagged_rate=0,
+        covered_concept_ids_by_nid={1: ("C01",)},
+        t6_selected_nids=(1,),
+    )
+
+    saved = repository.save_review(
+        job.id,
+        ReviewChangeSet(expected_revision=0, candidate_selections={1: True}),
+        card_centric_snapshot=snapshot.model_dump(mode="json"),
+    )
+
+    assert repository.list_candidates(job.id)[0].selected is True
+    with pytest.raises(ValueError, match="undocumented ineligible"):
+        repository.save_review(
+            job.id,
+            ReviewChangeSet(expected_revision=saved.revision, candidate_selections={2: True}),
+            card_centric_snapshot=snapshot.model_dump(mode="json"),
+        )
 
 
 def _v2_envelope(
@@ -307,6 +633,43 @@ def test_recovery_releases_interrupted_pre_review_jobs_in_place(tmp_path) -> Non
     assert recovered.lease_owner is None
     assert recovered.lease_expires_at is None
     assert repository.require_job(envelope_pending.id).state is CurationState.ENVELOPE_PENDING
+
+
+@pytest.mark.parametrize(
+    "interrupted_state",
+    (
+        CurationState.CARD_AUDITING_EVIDENCE,
+        CurationState.CARD_PREFILTERING,
+        CurationState.CARD_FAST_CLASSIFYING,
+    ),
+)
+def test_v2_new_lifecycle_states_are_claimable_and_recoverable(
+    tmp_path: Path,
+    interrupted_state: CurationState,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+    )
+    current = CurationState.QUEUED
+    for definition in pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V2):
+        if current is not definition.state:
+            repository.transition(job.id, current, definition.state)
+            current = definition.state
+        if current is interrupted_state:
+            break
+
+    claimed = repository.claim_next_job(datetime.now(UTC), worker_id="interrupted-worker")
+    assert claimed is not None
+    assert claimed.state is interrupted_state
+    assert repository.recover_interrupted_jobs() == 1
+    recovered = repository.require_job(job.id)
+    assert recovered.state is interrupted_state
+    assert recovered.lease_owner is None
+    assert recovered.lease_expires_at is None
 
 
 def test_stage_lifecycle_records_usage_and_safe_failure(tmp_path) -> None:
@@ -529,11 +892,14 @@ def test_known_blank_scope_card_centric_failure_repairs_and_rewinds_from_source_
     assert repository.list_gap_cards(job.id) == []
     assert repository.list_source_evidence(job.id) == []
     with repository.database.session() as session:
-        assert session.scalar(
-            select(func.count()).select_from(AnkiReviewedReconciliationModel).where(
-                AnkiReviewedReconciliationModel.job_id == str(job.id)
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(AnkiReviewedReconciliationModel)
+                .where(AnkiReviewedReconciliationModel.job_id == str(job.id))
             )
-        ) == 0
+            == 0
+        )
 
 
 @pytest.mark.parametrize(
@@ -596,11 +962,14 @@ def test_blank_scope_repair_rejects_unresolved_metadata_without_mutation(
     assert repository.list_stage_artifacts(job.id) == [artifact]
     assert repository.get_stage(job.id, CurationStage.CARD_TAG_SCOPE) is not None
     with repository.database.session() as session:
-        assert session.scalar(
-            select(func.count()).select_from(AnkiReviewedReconciliationModel).where(
-                AnkiReviewedReconciliationModel.job_id == str(job.id)
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(AnkiReviewedReconciliationModel)
+                .where(AnkiReviewedReconciliationModel.job_id == str(job.id))
             )
-        ) == 1
+            == 1
+        )
 
 
 def test_nonblank_card_scope_is_not_rewound_by_a_matching_legacy_error(
@@ -1165,6 +1534,35 @@ def test_v2_envelope_creation_persists_when_agent_advertises_capability(
     envelope = _v2_envelope(
         job_id=job.id,
         pipeline_contract_version=job.pipeline_contract_version.value,
+        model_config_sha256=job.model_config_sha256,
+        review_revision=job.review_revision,
+    )
+
+    stored = repository.create_action_envelope(job.id, envelope)
+
+    assert stored.payload_sha256 == canonical_payload_sha256(envelope)
+    assert repository.get_envelope(envelope.envelope_id) == envelope
+    assert _envelope_row_counts(repository) == (1, len(envelope.operations))
+
+
+def test_v2_envelope_persists_against_a_v2_job(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+    )
+    repository.record_agent_heartbeat(
+        agent_id="anki-agent",
+        heartbeat_at="2026-08-05T18:00:00+00:00",
+        versions={"supported_envelope_contract_versions": (1, 2)},
+        active_snapshot_id="snapshot-1",
+        health={"status": "ok"},
+    )
+    envelope = _v2_envelope(
+        job_id=job.id,
+        pipeline_contract_version="card_centric_v2",
         model_config_sha256=job.model_config_sha256,
         review_revision=job.review_revision,
     )

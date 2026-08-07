@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from oms_hub.anki.gaps import GapValidationError, validate_gap_card_fields
+
 _CLOZE = re.compile(
     r"\{\{c\d+::(?P<answer>.*?)(?:::[^{}]*?)?\}\}",
     re.IGNORECASE,
@@ -28,6 +30,8 @@ class GeneratedResolution(BaseModel):
     card_id: str = Field(min_length=1)
     fact_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
+    extra: str = ""
+    split: bool = False
 
 
 class AuditResolution(BaseModel):
@@ -71,6 +75,7 @@ class CardCentricReconciliationInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    pipeline_contract_version: Literal["card_centric_v1", "card_centric_v2"] = "card_centric_v1"
     concept_ids: tuple[str, ...]
     coverage: dict[str, Literal["covered", "uncovered", "intentional_gap"]]
     required_fact_ids: tuple[str, ...]
@@ -96,12 +101,53 @@ class CardCentricReconciliationInput(BaseModel):
     target: int = Field(default=65, ge=1)
     cap: int = Field(default=70, ge=1)
     mandatory_nids: tuple[int, ...] = ()
+    mandatory_generated_card_ids: tuple[str, ...] = ()
     # These immutable S9 mappings let review-time reconciliation prove that
     # coverage comes from a currently selected card, never an unselected row.
     covered_concept_ids_by_nid: dict[int, tuple[str, ...]] = Field(default_factory=dict)
     generated_concept_id_by_card_id: dict[str, str] = Field(default_factory=dict)
     overflow_acknowledgement: dict[str, object] | None = None
     ledger_provenance_ok: bool = True
+    historical_yes_rates: tuple[float, ...] = ()
+    t6_selected_nids: tuple[int, ...] = ()
+
+
+def selected_card_centric_coverage(
+    snapshot: CardCentricReconciliationInput,
+) -> dict[str, Literal["covered", "uncovered", "intentional_gap"]]:
+    """Derive S9 coverage solely from the current selected identities.
+
+    An intentional gap is durable only when every generated fact requested for
+    that concept is represented by a canonical unresolved resolution.  This
+    intentionally does not trust the pre-selection S5 coverage value.
+    """
+    selected_concepts = {
+        concept_id
+        for note_id in snapshot.selected_nids
+        for concept_id in snapshot.covered_concept_ids_by_nid.get(note_id, ())
+    } | {
+        snapshot.generated_concept_id_by_card_id[card_id]
+        for card_id in snapshot.selected_generated_card_ids
+        if card_id in snapshot.generated_concept_id_by_card_id
+    }
+    required_by_concept: dict[str, set[str]] = {
+        concept_id: set() for concept_id in snapshot.concept_ids
+    }
+    for fact_id in snapshot.required_fact_ids:
+        concept_id, separator, _ = fact_id.rpartition("-M")
+        if separator and concept_id in required_by_concept:
+            required_by_concept[concept_id].add(fact_id)
+    unresolved = set(snapshot.canonical_unresolved_fact_ids)
+    return {
+        concept_id: (
+            "covered"
+            if concept_id in selected_concepts
+            else "intentional_gap"
+            if required_by_concept[concept_id] and required_by_concept[concept_id] <= unresolved
+            else "uncovered"
+        )
+        for concept_id in snapshot.concept_ids
+    }
 
 
 def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> ReconciliationReport:
@@ -109,7 +155,8 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
     passed: list[str] = []
     failed: list[AssertionFinding] = []
     warned: list[AssertionFinding] = []
-    generated_by_fact = {item.fact_id for item in snapshot.generated_cards if item.text.strip()}
+    generated_rows = tuple(item for item in snapshot.generated_cards if item.text.strip())
+    generated_by_fact = {item.fact_id for item in generated_rows}
     unresolved = set(snapshot.unresolved_fact_ids)
     # A1/A2: all unresolved-after-S6 facts are represented; the caller provides
     # one generated resolution per required fact and never silently omits one.
@@ -123,13 +170,20 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
         passed,
         failed,
     )
+    duplicates = {
+        fact_id
+        for fact_id in generated_by_fact
+        if sum(item.fact_id == fact_id for item in generated_rows) > 1
+        and not all(item.split for item in generated_rows if item.fact_id == fact_id)
+    }
     _record(
         "A2",
-        len(snapshot.required_fact_ids)
-        == len(snapshot.generated_cards) + len(snapshot.unresolved_fact_ids)
-        and len(snapshot.generated_cards) == len(generated_by_fact)
-        and len(snapshot.unresolved_fact_ids) == len(unresolved),
-        "Missing facts must reconcile exactly to generated or unresolved output",
+        required == generated_by_fact | unresolved
+        and not generated_by_fact & unresolved
+        and len(snapshot.required_fact_ids) == len(required)
+        and len(snapshot.unresolved_fact_ids) == len(unresolved)
+        and not duplicates,
+        "Missing facts must reconcile exactly; repeated generated facts require split rows",
         passed,
         failed,
     )
@@ -145,8 +199,9 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
     _record(
         "A4",
         set(snapshot.coverage) == set(snapshot.concept_ids)
+        and snapshot.coverage == selected_card_centric_coverage(snapshot)
         and all(value in {"covered", "intentional_gap"} for value in snapshot.coverage.values()),
-        "Every checklist concept must be covered or intentionally unresolved",
+        "Every checklist concept must be selected-covered or intentionally unresolved",
         passed,
         failed,
     )
@@ -168,6 +223,15 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
         "Generated cards cannot blank a forbidden cloze target",
         passed,
         failed,
+    )
+    malformed: list[str] = []
+    for item in generated_rows:
+        try:
+            validate_gap_card_fields(item.text, item.extra)
+        except GapValidationError as exc:
+            malformed.append(f"{item.card_id}: {exc}")
+    _record(
+        "A5b", not malformed, "Generated cards fail structural cloze validation", passed, failed
     )
     _record(
         "A6",
@@ -207,9 +271,35 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
         passed,
         warned,
     )
+    yes_rate = (
+        sum(item.verdict == "keep" for item in snapshot.classifications)
+        / len(snapshot.classifications)
+        if snapshot.classifications
+        else 0.0
+    )
+    history = tuple(rate for rate in snapshot.historical_yes_rates if 0 <= rate <= 1)
+    if history:
+        baseline = sum(history) / len(history)
+        a11_ok = abs(yes_rate - baseline) <= 0.15
+        message = "Classification YES rate shifts more than 15 points from rolling artifact history"
+    else:
+        a11_ok = 0.15 <= yes_rate <= 0.70
+        message = "Classification YES rate is outside bootstrap bounds [15%, 70%]"
+    _warn("A11", a11_ok, message, passed, warned)
     total = len(snapshot.selected_nids) + len(snapshot.selected_generated_card_ids)
+    mandatory_selected = set(snapshot.mandatory_nids) <= set(snapshot.selected_nids) and set(
+        snapshot.mandatory_generated_card_ids
+    ) <= set(snapshot.selected_generated_card_ids)
+    overflow_is_exactly_mandatory = set(snapshot.selected_nids) == set(
+        snapshot.mandatory_nids
+    ) and (
+        set(snapshot.selected_generated_card_ids) == set(snapshot.mandatory_generated_card_ids)
+        if snapshot.pipeline_contract_version == "card_centric_v2"
+        else True
+    )
     overflow_ok = total <= snapshot.cap or (
-        set(snapshot.mandatory_nids) <= set(snapshot.selected_nids)
+        mandatory_selected
+        and overflow_is_exactly_mandatory
         and snapshot.overflow_acknowledgement is not None
         and {"token", "selection_digest", "signature"} <= set(snapshot.overflow_acknowledgement)
     )
@@ -222,24 +312,35 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
     )
     _record(
         "selection_conservation",
-        set(snapshot.selected_nids) <= set(snapshot.eligible_yes_nids)
+        set(snapshot.selected_nids)
+        <= set(snapshot.eligible_yes_nids) | set(snapshot.t6_selected_nids)
+        and set(snapshot.t6_selected_nids) <= set(snapshot.selected_nids)
         and set(snapshot.selected_generated_card_ids) <= set(snapshot.generated_card_ids),
-        "Selected cards must be drawn from eligible existing or generated output",
+        "Selected cards must be eligible, documented T6 fallback, or generated output",
         passed,
         failed,
     )
     _record(
         "selection_mandatory",
-        set(snapshot.mandatory_nids) <= set(snapshot.selected_nids),
+        mandatory_selected,
         "Mandatory evidence-backed cards cannot be removed during review",
         passed,
         failed,
+    )
+    pending_mandatory_overflow = (
+        total > snapshot.cap
+        and mandatory_selected
+        and overflow_is_exactly_mandatory
+        and snapshot.overflow_acknowledgement is None
+        and {finding.assertion_id for finding in failed} == {"selection_cap"}
     )
     return ReconciliationReport(
         passed=tuple(passed),
         failed=tuple(failed),
         warned=tuple(warned),
-        can_render_envelope=not failed,
+        # Review must be reachable to obtain a server-issued acknowledgement;
+        # envelope creation and apply independently require that document.
+        can_render_envelope=not failed or pending_mandatory_overflow,
     )
 
 

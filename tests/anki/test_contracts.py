@@ -2,6 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from oms_hub.anki.contracts import CreateCurationJobRequest, TagPatchContract
+from oms_hub.anki.domain import ResolvedModelConfiguration
 
 
 def _job_payload() -> dict[str, object]:
@@ -121,6 +122,38 @@ def test_to_domain_uses_the_resolved_model_override() -> None:
     domain = request.to_domain(model="resolved-default-model")
 
     assert domain.model == "resolved-default-model"
+
+
+def test_v2_job_requires_the_approved_fast_classifier_destination() -> None:
+    payload = _job_payload()
+    payload["pipeline_contract_version"] = "card_centric_v2"
+    config = ResolvedModelConfiguration.card_centric_v2_default(
+        "anthropic", "claude-sonnet-5"
+    ).canonical_document()
+    config["fast_classify_s4b"] = {
+        **config["fast_classify_s4b"],
+        "provider": "anthropic",
+        "model": "claude-haiku-5",
+    }
+    payload["resolved_model_config"] = config
+
+    request = CreateCurationJobRequest.model_validate(payload)
+
+    with pytest.raises(ValueError, match="S4b must use openai gpt-4o-mini"):
+        request.to_domain(model="claude-sonnet-5")
+
+
+def test_v2_job_accepts_the_default_approved_fast_classifier_destination() -> None:
+    payload = _job_payload()
+    payload["pipeline_contract_version"] = "card_centric_v2"
+
+    request = CreateCurationJobRequest.model_validate(payload)
+    domain = request.to_domain(model="claude-sonnet-5")
+
+    assert domain.resolved_model_config is not None
+    assert domain.resolved_model_config.fast_classify_s4b is not None
+    assert domain.resolved_model_config.fast_classify_s4b.provider == "openai"
+    assert domain.resolved_model_config.fast_classify_s4b.model == "gpt-4o-mini"
 
 
 def test_tag_patch_round_trips_exact_diff() -> None:

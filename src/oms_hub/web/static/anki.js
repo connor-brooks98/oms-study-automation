@@ -815,7 +815,7 @@
         ).trim(),
         provider: String(values.get("provider") || "").trim(),
         model: String(values.get("model") || "").trim(),
-        pipeline_contract_version: "card_centric_v1",
+        pipeline_contract_version: "card_centric_v2",
       };
       const selectedProfile = String(values.get("curation_profile") || "balanced");
       const selectedProvider = body.provider;
@@ -826,6 +826,7 @@
         classify_s4: { provider: selectedProvider, model: String(values.get("s4_model") || selectedModel), thinking_mode: "disabled" },
         residual_s6: { provider: selectedProvider, model: String(values.get("s6_model") || selectedModel), thinking_mode: "disabled" },
         gap_fill_s7: { provider: selectedProvider, model: String(values.get("s7_model") || selectedModel), thinking_mode: "default" },
+        fast_classify_s4b: { provider: "openai", model: "gpt-4o-mini", thinking_mode: "disabled" },
         residual_unlocked: false,
       };
       submit.disabled = true;

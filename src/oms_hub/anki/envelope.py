@@ -3,7 +3,7 @@ import json
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid5
 
 from oms_hub.anki.contracts import (
@@ -248,6 +248,9 @@ class EnvelopeBuilder:
         self,
         *args: Any,
         job_id: UUID,
+        pipeline_contract_version: Literal[
+            "card_centric_v1", "card_centric_v2"
+        ] = "card_centric_v1",
         model_config_sha256: str,
         resolved_model_config: dict[str, Any] | None = None,
         reconciliation_contract_version: str,
@@ -264,6 +267,7 @@ class EnvelopeBuilder:
             {
                 "contract_version": 2,
                 "job_id": job_id,
+                "pipeline_contract_version": pipeline_contract_version,
                 "model_config_sha256": model_config_sha256,
                 "resolved_model_config": resolved_model_config or {},
                 "reconciliation_contract_version": reconciliation_contract_version,

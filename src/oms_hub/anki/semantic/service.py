@@ -55,26 +55,15 @@ class SemanticIndexService:
     ) -> SemanticRefreshResult:
         validated = self._validated_records(records)
         target_ids = {record.note_id for record in validated}
-        expected = (
-            set(target_ids)
-            if expected_note_ids is None
-            else set(expected_note_ids)
-        )
+        expected = set(target_ids) if expected_note_ids is None else set(expected_note_ids)
         if any(note_id <= 0 for note_id in expected):
             raise ValueError("expected note IDs must be positive")
         if not target_ids <= expected:
-            raise ValueError(
-                "semantic records contain notes outside the expected universe"
-            )
-        coverage = (
-            len(target_ids) / len(expected)
-            if expected
-            else 1.0
-        )
+            raise ValueError("semantic records contain notes outside the expected universe")
+        coverage = len(target_ids) / len(expected) if expected else 1.0
         if coverage < self.min_coverage:
             raise SemanticCoverageError(
-                f"semantic coverage {coverage:.1%} is below required "
-                f"{self.min_coverage:.1%}"
+                f"semantic coverage {coverage:.1%} is below required {self.min_coverage:.1%}"
             )
 
         current = (
@@ -102,14 +91,8 @@ class SemanticIndexService:
         reused_count = 0
         for row, record in enumerate(validated):
             existing = current_rows.get(record.note_id)
-            if (
-                existing is not None
-                and existing[1] == record.content_hash
-                and current is not None
-            ):
-                matrix[row] = current.matrix[existing[0]].astype(
-                    np.float32
-                )
+            if existing is not None and existing[1] == record.content_hash and current is not None:
+                matrix[row] = current.matrix[existing[0]].astype(np.float32)
                 reused_count += 1
             else:
                 changed_rows.append(row)
@@ -153,9 +136,7 @@ class SemanticIndexService:
     ) -> list[list[SemanticHit]]:
         if limit < 1:
             raise ValueError("limit must be positive")
-        normalized_queries = [
-            normalize_semantic_text(query) for query in queries
-        ]
+        normalized_queries = [normalize_semantic_text(query) for query in queries]
         if any(not query for query in normalized_queries):
             raise ValueError("semantic queries cannot be blank")
         if not normalized_queries:
@@ -164,11 +145,7 @@ class SemanticIndexService:
             expected_model=self.model,
             expected_dimensions=self.dimensions,
         )
-        eligible = (
-            None
-            if eligible_note_ids is None
-            else set(eligible_note_ids)
-        )
+        eligible = None if eligible_note_ids is None else set(eligible_note_ids)
         selected_rows = [
             row
             for row, note_id in enumerate(snapshot.manifest.note_ids)
@@ -179,10 +156,7 @@ class SemanticIndexService:
         query_vectors = await self._query_vectors(normalized_queries)
         matrix = snapshot.matrix[selected_rows].astype(np.float32)
         selected_note_ids = np.asarray(
-            [
-                snapshot.manifest.note_ids[row]
-                for row in selected_rows
-            ],
+            [snapshot.manifest.note_ids[row] for row in selected_rows],
             dtype=np.int64,
         )
         results: list[list[SemanticHit]] = []
@@ -194,14 +168,43 @@ class SemanticIndexService:
                     SemanticHit(
                         note_id=int(selected_note_ids[index]),
                         score=float(scores[index]),
-                        content_hash=snapshot.manifest.content_hashes[
-                            selected_rows[index]
-                        ],
+                        content_hash=snapshot.manifest.content_hashes[selected_rows[index]],
                     )
                     for index in order
                 ]
             )
         return results
+
+    async def pinned_similarity(
+        self,
+        queries: Sequence[str],
+        *,
+        note_ids: Collection[int],
+        expected_generation: str,
+    ) -> dict[int, float]:
+        """Score notes from the pinned snapshot only; never re-embed note text."""
+        snapshot = self.store.load(
+            expected_model=self.model,
+            expected_dimensions=self.dimensions,
+        )
+        if str(snapshot.manifest.generation) != expected_generation:
+            raise ValueError("pinned semantic generation is no longer active")
+        normalized = [normalize_semantic_text(query) for query in queries]
+        if not normalized or any(not query for query in normalized):
+            raise ValueError("semantic queries cannot be blank")
+        vectors = await self._query_vectors(normalized)
+        rows = {
+            note_id: row
+            for row, note_id in enumerate(snapshot.manifest.note_ids)
+            if note_id in set(note_ids)
+        }
+        missing = set(note_ids) - set(rows)
+        if missing:
+            raise SemanticCoverageError("pinned semantic snapshot lacks scoped notes")
+        matrix = snapshot.matrix[list(rows.values())].astype(np.float32)
+        query_matrix = np.asarray(vectors, dtype=np.float32)
+        scores = matrix @ query_matrix.T
+        return {note_id: float(scores[index].max()) for index, note_id in enumerate(rows)}
 
     async def _query_vectors(
         self,
@@ -247,9 +250,7 @@ class SemanticIndexService:
         return vectors
 
     def _query_key(self, query: str) -> str:
-        payload = (
-            f"{self.model}\0{self.dimensions}\0query\0{query}"
-        )
+        payload = f"{self.model}\0{self.dimensions}\0query\0{query}"
         return hashlib.sha256(payload.encode()).hexdigest()
 
     @staticmethod
@@ -263,9 +264,7 @@ class SemanticIndexService:
             if record.note_id <= 0 or not record.text.strip():
                 raise ValueError("semantic records are invalid")
             if record.content_hash != content_hash(record.text):
-                raise ValueError(
-                    f"semantic content hash is invalid for note {record.note_id}"
-                )
+                raise ValueError(f"semantic content hash is invalid for note {record.note_id}")
         return ordered
 
 
@@ -286,13 +285,8 @@ def _normalized_rows(
     dimensions: int,
 ) -> FloatMatrix:
     matrix = np.asarray(value, dtype=np.float32)
-    if (
-        matrix.shape != (expected_rows, dimensions)
-        or not np.isfinite(matrix).all()
-    ):
-        raise ValueError(
-            "embedding rows have invalid dimensions or values"
-        )
+    if matrix.shape != (expected_rows, dimensions) or not np.isfinite(matrix).all():
+        raise ValueError("embedding rows have invalid dimensions or values")
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
     if np.any(norms == 0):
         raise ValueError("embedding rows cannot contain zero vectors")

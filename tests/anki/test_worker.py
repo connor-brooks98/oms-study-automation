@@ -11,6 +11,7 @@ from oms_hub.anki.domain import (
     CreateCurationJob,
     CurationStage,
     CurationState,
+    PipelineContractVersion,
 )
 from oms_hub.anki.pipeline import (
     CurationPipeline,
@@ -18,6 +19,7 @@ from oms_hub.anki.pipeline import (
     StageArtifactStore,
     StageContext,
     StageProduct,
+    pipeline_stages,
 )
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.anki.semantic.store import SemanticSnapshotError
@@ -90,7 +92,11 @@ def repository(tmp_path: Path) -> AnkiCurationRepository:
     database.close()
 
 
-def _create_job(repository: AnkiCurationRepository):
+def _create_job(
+    repository: AnkiCurationRepository,
+    *,
+    pipeline_contract_version: PipelineContractVersion = PipelineContractVersion.RETRIEVAL_V4,
+):
     lecture_id = repository._test_lecture_id  # type: ignore[attr-defined]
     return repository.create_job(
         CreateCurationJob(
@@ -108,6 +114,7 @@ def _create_job(repository: AnkiCurationRepository):
             gap_prompt_version="gap-v1",
             provider="anthropic",
             model="claude-sonnet",
+            pipeline_contract_version=pipeline_contract_version,
         )
     )
 
@@ -120,6 +127,7 @@ def _worker(
     validator: ControlledValidator | None = None,
     worker_id: str = "worker-1",
     now: datetime | None = None,
+    max_stage_attempts: int = 3,
 ) -> AnkiCurationWorker:
     pipeline = CurationPipeline(
         repository,
@@ -134,6 +142,7 @@ def _worker(
         worker_id=worker_id,
         lease_seconds=30,
         poll_seconds=0.01,
+        max_stage_attempts=max_stage_attempts,
         now=lambda: current,
     )
 
@@ -179,10 +188,7 @@ def test_expired_lease_is_reclaimed_without_resetting_completed_work(
         )
 
         assert await worker.run_once()
-        assert (
-            repository.require_job(job.id).state
-            is CurationState.BUILDING_SOURCE_INDEX
-        )
+        assert repository.require_job(job.id).state is CurationState.BUILDING_SOURCE_INDEX
 
     asyncio.run(scenario())
 
@@ -240,19 +246,62 @@ def test_transient_stage_failure_retries_from_the_same_stage(
         assert failed_once.state is CurationState.PREFLIGHT
         assert failed_once.available_at is not None
 
-        later = datetime.fromisoformat(failed_once.available_at) + timedelta(
-            seconds=1
-        )
+        later = datetime.fromisoformat(failed_once.available_at) + timedelta(seconds=1)
         retry = _worker(repository, tmp_path, runner, now=later)
         assert await retry.run_once()
-        assert (
-            repository.require_job(job.id).state
-            is CurationState.BUILDING_SOURCE_INDEX
-        )
+        assert repository.require_job(job.id).state is CurationState.BUILDING_SOURCE_INDEX
         assert runner.calls == [
             CurationStage.PREFLIGHT,
             CurationStage.PREFLIGHT,
         ]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("stage", "state"),
+    [
+        (CurationStage.CARD_EVIDENCE_AUDIT, CurationState.CARD_AUDITING_EVIDENCE),
+        (CurationStage.CARD_PREFILTER, CurationState.CARD_PREFILTERING),
+        (CurationStage.CARD_FAST_CLASSIFY, CurationState.CARD_FAST_CLASSIFYING),
+    ],
+)
+def test_v2_worker_claims_advances_and_retries_each_new_lifecycle_stage(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+    stage: CurationStage,
+    state: CurationState,
+) -> None:
+    async def scenario() -> None:
+        job = _create_job(
+            repository,
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+        runner = ControlledRunner()
+        worker = _worker(repository, tmp_path, runner, max_stage_attempts=1)
+        definitions = pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V2)
+        definition = next(item for item in definitions if item.stage is stage)
+
+        for prior in definitions:
+            if prior.state is state:
+                break
+            assert await worker.run_once()
+            assert runner.calls[-1] is prior.stage
+
+        assert repository.require_job(job.id).state is state
+        runner.error = LLMRequestError(
+            "provider temporarily unavailable",
+            source=DiagnosticSource.SERVICE,
+        )
+        assert await worker.run_once()
+        assert runner.calls[-1] is stage
+        assert repository.require_job(job.id).state is CurationState.FAILED
+
+        retried = repository.retry_job(job.id)
+        assert retried.state is state
+        assert await worker.run_once()
+        assert runner.calls[-1] is stage
+        assert repository.require_job(job.id).state is definition.next_state
 
     asyncio.run(scenario())
 
@@ -340,9 +389,7 @@ def test_returned_terminal_failure_logs_persisted_error_once(
         assert current.state is CurationState.FAILED
         assert current.error == runner.blocking_error
         messages = [record.getMessage() for record in caplog.records]
-        assert messages == [
-            f"Anki curation job {job.id} stopped: {runner.blocking_error}"
-        ]
+        assert messages == [f"Anki curation job {job.id} stopped: {runner.blocking_error}"]
 
     asyncio.run(scenario())
 

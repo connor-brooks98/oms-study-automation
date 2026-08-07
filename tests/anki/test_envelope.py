@@ -173,6 +173,26 @@ def test_v2_envelope_binds_card_centric_job_and_reconciliation() -> None:
     assert envelope.payload_sha256 != "0" * 64
 
 
+def test_v2_envelope_preserves_the_v2_pipeline_contract() -> None:
+    note = _current_note()
+    envelope = EnvelopeBuilder(_policy()).build_v2(
+        _changeset(note),
+        {note.note_id: note},
+        envelope_id=ENVELOPE_ID,
+        snapshot_id="snapshot-1",
+        target_deck="OMS::Heme::Lecture 3",
+        target_tag=TARGET_TAG,
+        job_id=UUID("924ab797-23ac-4f14-a622-ded77fe8d701"),
+        pipeline_contract_version="card_centric_v2",
+        model_config_sha256="b" * 64,
+        reconciliation_contract_version="card_centric_s9_v1",
+        review_revision=3,
+        overflow_acknowledgement_provenance={"required": False},
+    )
+
+    assert envelope.pipeline_contract_version == "card_centric_v2"
+
+
 def test_operation_ids_change_when_the_canonical_payload_changes() -> None:
     note = _current_note()
     first = _build(note, proposal=_proposal())

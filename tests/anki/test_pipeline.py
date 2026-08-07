@@ -560,6 +560,16 @@ def test_contract_version_controls_graph_and_stage_hash(
         replace(job, model_config_sha256="f" * 64), CurationStage.PREFLIGHT, ()
     )
     assert original != _stage_input_hash(card_job, CurationStage.PREFLIGHT, ())
+    v2_stages = pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V2)
+    assert len(v2_stages) == 14
+    assert [stage.stage for stage in v2_stages[2:7]] == [
+        CurationStage.CARD_LEDGER,
+        CurationStage.CARD_EVIDENCE_AUDIT,
+        CurationStage.CARD_TAG_SCOPE,
+        CurationStage.CARD_PREFILTER,
+        CurationStage.CARD_FAST_CLASSIFY,
+    ]
+    assert v2_stages[-1].next_state is CurationState.READY_FOR_REVIEW
 
 
 def test_card_centric_graph_is_version_isolated_and_reaches_review(

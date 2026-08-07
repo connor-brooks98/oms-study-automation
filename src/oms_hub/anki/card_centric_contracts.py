@@ -278,6 +278,10 @@ class CardConcept(CardCentricContract):
     depth: Literal["deep", "medium", "surface"]
     emphasis_flag: bool
     importance: Literal["high", "medium", "low"]
+    suggested_fact_count: int = Field(default=1, ge=1, le=5)
+    fact_descriptions: tuple[str, ...] = ()
+    forbidden_cloze_targets_by_fact: tuple[tuple[str, ...], ...] = ()
+    is_mechanism: bool = False
 
     @field_validator("canonical_statement", "primary_entity")
     @classmethod
@@ -308,6 +312,25 @@ class CardConcept(CardCentricContract):
         )
         if self.importance != expected:
             raise ValueError("concept importance conflicts with depth/emphasis")
+        # v1 ledgers have no fact fields.  Their canonical statement is exactly
+        # the single v2 fact, so old prompt output remains loadable.
+        descriptions = tuple(value.strip() for value in self.fact_descriptions)
+        if not descriptions and self.suggested_fact_count == 1:
+            descriptions = (self.canonical_statement,)
+            object.__setattr__(self, "fact_descriptions", descriptions)
+        if len(descriptions) != self.suggested_fact_count or any(
+            not value for value in descriptions
+        ):
+            raise ValueError("fact_descriptions length must equal suggested_fact_count")
+        by_fact = tuple(
+            tuple(value.strip() for value in targets)
+            for targets in self.forbidden_cloze_targets_by_fact
+        )
+        if by_fact and len(by_fact) != self.suggested_fact_count:
+            raise ValueError("forbidden_cloze_targets_by_fact must have one tuple per fact")
+        if any(not value for targets in by_fact for value in targets):
+            raise ValueError("per-fact forbidden cloze targets cannot be blank")
+        object.__setattr__(self, "forbidden_cloze_targets_by_fact", by_fact)
         return self
 
 
@@ -327,6 +350,80 @@ class CardConceptLedger(CardCentricContract):
         ) != len(targets):
             raise ValueError("forbidden cloze targets must be nonblank and unique")
         object.__setattr__(self, "forbidden_cloze_targets", targets)
+        return self
+
+    @property
+    def all_forbidden_targets(self) -> tuple[str, ...]:
+        values = set(self.forbidden_cloze_targets)
+        for concept in self.concepts:
+            for targets in concept.forbidden_cloze_targets_by_fact:
+                values.update(targets)
+        return tuple(sorted(values, key=str.casefold))
+
+
+def serialize_card_centric_ledger(
+    ledger: CardConceptLedger,
+    *,
+    pipeline_contract_version: str,
+) -> dict[str, object]:
+    """Emit the immutable artifact shape for the requested card contract.
+
+    v1 ledger artifacts are content-addressed pinned inputs. The v2-only fact
+    fields must stay out of their serialized document even though the shared
+    reader supplies defaults so legacy output remains consumable.
+    """
+    if pipeline_contract_version == "card_centric_v1":
+        return {
+            "contract_version": ledger.contract_version,
+            "concepts": [
+                {
+                    "contract_version": concept.contract_version,
+                    "concept_id": concept.concept_id,
+                    "canonical_statement": concept.canonical_statement,
+                    "primary_entity": concept.primary_entity,
+                    "aliases": list(concept.aliases),
+                    "depth": concept.depth,
+                    "emphasis_flag": concept.emphasis_flag,
+                    "importance": concept.importance,
+                }
+                for concept in ledger.concepts
+            ],
+            "lecture_entity_count": ledger.lecture_entity_count,
+            "forbidden_cloze_targets": list(ledger.forbidden_cloze_targets),
+        }
+    return ledger.model_dump(mode="json")
+
+
+class SemanticPreFilterResult(CardCentricContract):
+    pre_filtered_note_ids: tuple[int, ...]
+    pre_excluded_note_ids: tuple[int, ...]
+    threshold: float = Field(ge=0, le=1)
+    similarity_stats: dict[str, float]
+
+    @model_validator(mode="after")
+    def partitions_notes(self) -> "SemanticPreFilterResult":
+        if set(self.pre_filtered_note_ids) & set(self.pre_excluded_note_ids):
+            raise ValueError("semantic prefilter note IDs must be disjoint")
+        return self
+
+
+class FastCardClassification(CardCentricContract):
+    note_id: int = Field(gt=0)
+    verdict: Literal["LIKELY_YES", "NEEDS_REVIEW", "LIKELY_NO"]
+    grounded_concept_ids: tuple[str, ...] = ()
+    supporting_passage_ids: tuple[str, ...] = ()
+    flags: tuple[str, ...] = ()
+    reason: str = ""
+
+
+class FastClassificationResult(CardCentricContract):
+    results: tuple[FastCardClassification, ...]
+
+    @model_validator(mode="after")
+    def unique_note_ids(self) -> "FastClassificationResult":
+        note_ids = [item.note_id for item in self.results]
+        if len(note_ids) != len(set(note_ids)):
+            raise ValueError("fast classification contains duplicate note IDs")
         return self
 
 
@@ -385,6 +482,11 @@ class GeneratedCardResolution(CardCentricContract):
             and self.duplicate_of_generated_card_id is None
         ):
             raise ValueError("duplicate generated card must identify its duplicate")
+        if self.status == "duplicate_of_existing" and (
+            self.duplicate_of_existing_note_id is not None
+            and self.duplicate_of_generated_card_id is not None
+        ):
+            raise ValueError("duplicate generated card must identify exactly one duplicate")
         if self.status != "generated" and not self.reason.strip():
             raise ValueError("unresolved generation needs a reason")
         if self.status == "generated" and not self.evidence_ids:
