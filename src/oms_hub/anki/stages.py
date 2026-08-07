@@ -28,6 +28,7 @@ from oms_hub.anki.card_centric_contracts import (
     CardGapBatch,
     CardRecord,
     ClassifierResult,
+    FastCardClassification,
     FastClassificationResult,
     GeneratedCardResolution,
     SemanticPreFilterResult,
@@ -136,7 +137,7 @@ from oms_hub.ingestion.domain import StudyRevision
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.llm.domain import GenerationOptions, ProviderCapabilities, ProviderName
 from oms_hub.llm.repository import LLMSettingsRepository
-from oms_hub.llm.structured import StructuredTextService
+from oms_hub.llm.structured import StructuredOutputError, StructuredTextService
 
 SourceIndexFactory = Callable[[UUID], LectureSourceIndex]
 
@@ -683,56 +684,77 @@ class CurationServicesRunner:
             }
             for concept in sorted(ledger.concepts, key=lambda item: item.concept_id)
         ]
-        allowed_concepts = {definition["concept_id"] for definition in concept_definitions}
+        allowed_concepts = {concept.concept_id for concept in ledger.concepts}
         allowed_passages = {passage.passage_id for passage in source.passages}
-        results = []
+        results: list[FastCardClassification] = []
         usages: list[StageUsage] = []
-        for start in range(0, len(selected), 60):
+        degraded_batches: list[dict[str, Any]] = []
+        for batch_index, start in enumerate(range(0, len(selected), 60)):
             batch = selected[start : start + 60]
-            generated = await asyncio.to_thread(
-                self.structured.generate_json,
-                instruction,
-                json.dumps(
+            expected_note_ids = tuple(card.note_id for card in batch)
+            reason_code: str | None = None
+            try:
+                generated = await asyncio.to_thread(
+                    self.structured.generate_json,
+                    instruction,
+                    json.dumps(
+                        {
+                            "cards": [card.model_dump(mode="json") for card in batch],
+                            "concept_definitions": concept_definitions,
+                            "allowed_concept_ids": sorted(allowed_concepts),
+                            "allowed_supporting_passage_ids": sorted(allowed_passages),
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    output_model=FastClassificationResult,
+                    provider=ProviderName(stage_model.provider),
+                    model=stage_model.model,
+                    options=GenerationOptions(cacheable_source_prefix=source.prefix),
+                )
+            except StructuredOutputError as exc:
+                reason_code = "structured_output_invalid"
+                usages.append(
+                    StageUsage(
+                        exc.generation.request_id,
+                        exc.generation.input_tokens,
+                        exc.generation.output_tokens,
+                        exc.generation.cost_microusd,
+                    )
+                )
+            else:
+                usages.append(
+                    StageUsage(
+                        generated.request_id,
+                        generated.input_tokens,
+                        generated.output_tokens,
+                        generated.cost_microusd,
+                    )
+                )
+                reason_code = _fast_batch_degradation_reason(
+                    generated.value.results,
+                    expected_note_ids=expected_note_ids,
+                    allowed_concepts=allowed_concepts,
+                    allowed_passages=allowed_passages,
+                )
+                if reason_code is None:
+                    results.extend(generated.value.results)
+            if reason_code is not None:
+                results.extend(
+                    FastCardClassification(
+                        note_id=note_id,
+                        verdict="NEEDS_REVIEW",
+                        reason=f"S4b degraded batch: {reason_code}",
+                    )
+                    for note_id in expected_note_ids
+                )
+                degraded_batches.append(
                     {
-                        "cards": [card.model_dump(mode="json") for card in batch],
-                        "concept_definitions": concept_definitions,
-                        "allowed_concept_ids": sorted(allowed_concepts),
-                        "allowed_supporting_passage_ids": sorted(allowed_passages),
-                    },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ),
-                output_model=FastClassificationResult,
-                provider=ProviderName(stage_model.provider),
-                model=stage_model.model,
-                options=GenerationOptions(cacheable_source_prefix=source.prefix),
-            )
-            expected = {card.note_id for card in batch}
-            observed = {item.note_id for item in generated.value.results}
-            if observed != expected or len(observed) != len(generated.value.results):
-                raise PinnedInputChanged(
-                    "fast classifier output must exactly partition its input batch"
+                        "batch_index": batch_index,
+                        "note_ids": list(expected_note_ids),
+                        "reason_code": reason_code,
+                    }
                 )
-            for item in generated.value.results:
-                if not item.reason.strip():
-                    raise PinnedInputChanged("fast classifier reasons must be nonblank")
-                if not set(item.grounded_concept_ids) <= allowed_concepts:
-                    raise PinnedInputChanged("fast classifier invented a concept ID")
-                if not set(item.supporting_passage_ids) <= allowed_passages:
-                    raise PinnedInputChanged("fast classifier invented a passage ID")
-                if item.verdict == "LIKELY_YES" and (
-                    not item.grounded_concept_ids or not item.supporting_passage_ids
-                ):
-                    raise PinnedInputChanged("LIKELY_YES fast results must be grounded")
-            results.extend(generated.value.results)
-            usages.append(
-                StageUsage(
-                    generated.request_id,
-                    generated.input_tokens,
-                    generated.output_tokens,
-                    generated.cost_microusd,
-                )
-            )
         fast = FastClassificationResult(
             results=tuple(sorted(results, key=lambda item: item.note_id))
         )
@@ -743,6 +765,8 @@ class CurationServicesRunner:
                 "source_sha256": source.source_sha256,
                 "model_config": context.job.resolved_model_config.canonical_document(),
                 "fast_count": len(fast.results),
+                "degraded_batches": degraded_batches,
+                "degraded_note_count": sum(len(batch["note_ids"]) for batch in degraded_batches),
                 # These notes were deliberately not sent to S4b.  Keep their
                 # identity in the S4b artifact so S4c/selection can prove the
                 # scoped universe was conserved without treating them as
@@ -839,15 +863,15 @@ class CurationServicesRunner:
                         }
                     )
         if fast is not None:
-            for item in fast.results:
-                if not fast_selection_eligible_v2(item, source):
+            for fast_item in fast.results:
+                if not fast_selection_eligible_v2(fast_item, source):
                     continue
-                for concept_id in item.grounded_concept_ids:
+                for concept_id in fast_item.grounded_concept_ids:
                     if concept_id in coverage:
                         coverage[concept_id].append(
                             {
-                                "note_id": item.note_id,
-                                "supporting_passage_ids": list(item.supporting_passage_ids),
+                                "note_id": fast_item.note_id,
+                                "supporting_passage_ids": list(fast_item.supporting_passage_ids),
                                 "evidence_quality": "fast_pass",
                             }
                         )
@@ -2404,7 +2428,10 @@ class CurationServicesRunner:
                 }
             )
         initial_snapshot = CardCentricReconciliationInput(
-            pipeline_contract_version=context.job.pipeline_contract_version.value,
+            pipeline_contract_version=cast(
+                Literal["card_centric_v1", "card_centric_v2"],
+                context.job.pipeline_contract_version.value,
+            ),
             concept_ids=tuple(concept.concept_id for concept in ledger.concepts),
             coverage={concept.concept_id: "uncovered" for concept in ledger.concepts},
             required_fact_ids=required_fact_ids,
@@ -2807,9 +2834,36 @@ def _card_fast_classifier(
     return classifier, fallback
 
 
+def _fast_batch_degradation_reason(
+    results: Sequence[FastCardClassification],
+    *,
+    expected_note_ids: Sequence[int],
+    allowed_concepts: set[str],
+    allowed_passages: set[str],
+) -> str | None:
+    """Return a safe reason code; no partial S4b batch is ever accepted."""
+    observed_note_ids = tuple(item.note_id for item in results)
+    if len(observed_note_ids) != len(set(observed_note_ids)) or set(observed_note_ids) != set(
+        expected_note_ids
+    ):
+        return "partition_mismatch"
+    for item in results:
+        if not item.reason.strip():
+            return "blank_reason"
+        if not set(item.grounded_concept_ids) <= allowed_concepts:
+            return "invented_concept_id"
+        if not set(item.supporting_passage_ids) <= allowed_passages:
+            return "invented_passage_id"
+        if item.verdict == "LIKELY_YES" and (
+            not item.grounded_concept_ids or not item.supporting_passage_ids
+        ):
+            return "ungrounded_likely_yes"
+    return None
+
+
 def _terminal_fast_classifications(
-    classifications: Sequence[Any],
-) -> tuple[Any, ...]:
+    classifications: Sequence[FastCardClassification],
+) -> tuple[FastCardClassification, ...]:
     """S4b NEEDS_REVIEW is routing metadata, not a terminal judgment."""
     return tuple(item for item in classifications if item.verdict != "NEEDS_REVIEW")
 
@@ -2870,16 +2924,16 @@ def _merged_card_coverage(context: StageContext) -> dict[str, dict[str, Any]]:
                     )
     if is_v2:
         fast, _ = _card_fast_classifier(context)
-        for item in fast.results:
-            if not fast_selection_eligible_v2(item, source):
+        for fast_item in fast.results:
+            if not fast_selection_eligible_v2(fast_item, source):
                 continue
-            for concept_id in item.grounded_concept_ids:
+            for concept_id in fast_item.grounded_concept_ids:
                 if concept_id in coverage:
                     coverage[concept_id]["status"] = "covered"
                     coverage[concept_id]["evidence"].append(
                         {
-                            "note_id": item.note_id,
-                            "supporting_passage_ids": list(item.supporting_passage_ids),
+                            "note_id": fast_item.note_id,
+                            "supporting_passage_ids": list(fast_item.supporting_passage_ids),
                             "evidence_quality": "fast_pass",
                         }
                     )
@@ -2967,7 +3021,7 @@ def _dedupe_gap_proposal(
 
 def _mandatory_card_note_ids(
     classifications: Sequence[CardClassification],
-    fast_classifications: Sequence[Any],
+    fast_classifications: Sequence[FastCardClassification],
     ledger: CardConceptLedger,
     source: CardCentricSourceIndex,
     *,
@@ -2997,7 +3051,7 @@ def _mandatory_card_note_ids(
 def _v2_card_candidates(
     context: StageContext,
     classifications: Sequence[CardClassification],
-    fast_classifications: Sequence[Any],
+    fast_classifications: Sequence[FastCardClassification],
     fallback_note_ids: Sequence[int],
     selected_note_ids: set[int],
     source: CardCentricSourceIndex,
@@ -3029,36 +3083,43 @@ def _v2_card_candidates(
         card = cards.get(note_id)
         if card is None:
             raise PinnedInputChanged("v2 classification artifact references an unknown card")
+        concept_ids: tuple[str, ...]
+        verdict: str
+        predicted_band: str
+        eligible: bool
+        flags: tuple[str, ...]
+        reason: str
+        provenance_kind: str
         if note_id in residual:
-            item = residual[note_id]
-            concept_ids = item.covered_concept_ids
-            verdict = item.verdict.lower()
-            predicted_band = item.verdict
-            eligible = selection_eligible_v2(item, source)
-            flags = item.flags
-            reason = item.reason
+            thorough_item = residual[note_id]
+            concept_ids = thorough_item.covered_concept_ids
+            verdict = thorough_item.verdict.lower()
+            predicted_band = thorough_item.verdict
+            eligible = selection_eligible_v2(thorough_item, source)
+            flags = thorough_item.flags
+            reason = thorough_item.reason
             provenance_kind = "residual"
         elif note_id in thorough:
-            item = thorough[note_id]
-            concept_ids = item.covered_concept_ids
-            verdict = item.verdict.lower()
-            predicted_band = item.verdict
-            eligible = selection_eligible_v2(item, source)
-            flags = item.flags
-            reason = item.reason
+            thorough_item = thorough[note_id]
+            concept_ids = thorough_item.covered_concept_ids
+            verdict = thorough_item.verdict.lower()
+            predicted_band = thorough_item.verdict
+            eligible = selection_eligible_v2(thorough_item, source)
+            flags = thorough_item.flags
+            reason = thorough_item.reason
             provenance_kind = "thorough"
         elif note_id in fast:
-            item = fast[note_id]
-            concept_ids = item.grounded_concept_ids
+            fast_item = fast[note_id]
+            concept_ids = fast_item.grounded_concept_ids
             verdict = {
                 "LIKELY_YES": "keep",
                 "LIKELY_NO": "drop",
                 "NEEDS_REVIEW": "uncertain",
-            }[item.verdict]
-            predicted_band = item.verdict
-            eligible = fast_selection_eligible_v2(item, source)
-            flags = item.flags
-            reason = item.reason
+            }[fast_item.verdict]
+            predicted_band = fast_item.verdict
+            eligible = fast_selection_eligible_v2(fast_item, source)
+            flags = fast_item.flags
+            reason = fast_item.reason
             provenance_kind = "fast"
         elif note_id in fallback:
             concept_ids = ()
@@ -3100,7 +3161,7 @@ def _v2_card_candidates(
 
 def _v2_reconciliation_classifications(
     thorough: Sequence[CardClassification],
-    fast: Sequence[Any],
+    fast: Sequence[FastCardClassification],
     fallback_note_ids: Sequence[int],
     scope: TagScopeResult,
 ) -> tuple[AuditResolution, ...]:
@@ -3109,7 +3170,9 @@ def _v2_reconciliation_classifications(
     thorough_by_id = {item.note_id: item for item in thorough if item.note_id in scoped_ids}
     fast_by_id = {item.note_id: item for item in _terminal_fast_classifications(fast)}
     needs_review_ids = {item.note_id for item in fast if item.verdict == "NEEDS_REVIEW"}
-    fallback = set(_effective_v2_fallback_note_ids(fallback_note_ids, thorough_by_id.values()))
+    fallback = set(
+        _effective_v2_fallback_note_ids(fallback_note_ids, tuple(thorough_by_id.values()))
+    )
     if needs_review_ids - set(thorough_by_id):
         raise PinnedInputChanged("v2 reconciliation has unresolved S4b NEEDS_REVIEW rows")
     if set(thorough_by_id) & (set(fast_by_id) | fallback) or set(fast_by_id) & fallback:

@@ -55,8 +55,8 @@ from oms_hub.anki.v2_contracts import (
     LectureConceptV2,
     MissingFactV2,
 )
-from oms_hub.llm.domain import ProviderName
-from oms_hub.llm.structured import StructuredJSONResult
+from oms_hub.llm.domain import DiagnosticSource, GeneratedText, LLMRequestError, ProviderName
+from oms_hub.llm.structured import StructuredJSONResult, StructuredOutputError
 
 
 class ReadyRuntime:
@@ -390,8 +390,230 @@ def test_v2_fast_classifier_receives_ledger_definitions_for_multi_concept_ground
         "C02",
     ]
     structured.invalid_concept_id = True
-    with pytest.raises(stages_module.PinnedInputChanged, match="invented a concept ID"):
+    degraded = asyncio.run(runner._card_fast_classify(context))
+    assert degraded.payload["fast_classifier"]["results"] == [
+        {
+            "contract_version": 1,
+            "note_id": 1,
+            "verdict": "NEEDS_REVIEW",
+            "grounded_concept_ids": [],
+            "supporting_passage_ids": [],
+            "flags": [],
+            "reason": "S4b degraded batch: invented_concept_id",
+        }
+    ]
+
+
+def _fast_failure_harness(tmp_path: Path, mode: str):
+    passage = SourcePassage.create(
+        revision_id=7,
+        lecture_id=12,
+        artifact_id="slides-7",
+        source_kind=SourceKind.SLIDE,
+        locator="slide:1",
+        text="Factor deficiency prolongs the assay.",
+        slide_number=1,
+    )
+    source = build_source_index(
+        (passage,), snapshot_id="snapshot-1", source_revision_hashes={7: "a" * 64}
+    )
+    cards = tuple(_card_record(note_id, ("#AK_Step::Heme",)) for note_id in (1, 2))
+    ledger = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="Factor deficiency prolongs the assay.",
+                primary_entity="factor deficiency",
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+            ),
+        ),
+    )
+    prefilter = SemanticPreFilterResult(
+        pre_filtered_note_ids=(1, 2),
+        pre_excluded_note_ids=(),
+        threshold=0.42,
+        similarity_stats={"min": 0.8, "max": 0.9, "mean": 0.85, "median": 0.85},
+    )
+    scope = TagScopeResult(
+        snapshot_id="snapshot-1",
+        filters_sha256="b" * 64,
+        scoped_note_ids=(1, 2),
+        unscoped_note_ids=(),
+    )
+
+    class FaultInjectingStructuredService:
+        def generate_json(self, _instruction, _input_text, **kwargs):
+            generation = GeneratedText(
+                text="invalid fast output",
+                provider=kwargs["provider"],
+                model=kwargs["model"],
+                request_id=f"fast-{mode}",
+                input_tokens=30,
+                output_tokens=15,
+                cost_microusd=8,
+            )
+            if mode in {"malformed", "duplicate"}:
+                raise StructuredOutputError(
+                    f"fast {mode} output",
+                    raw_text=generation.text,
+                    generation=generation,
+                )
+            if mode == "network":
+                raise LLMRequestError("temporary network failure", source=DiagnosticSource.NETWORK)
+            rows = [
+                FastCardClassification(
+                    note_id=note_id,
+                    verdict="LIKELY_YES",
+                    grounded_concept_ids=("C01",),
+                    supporting_passage_ids=(source.passages[0].passage_id,),
+                    reason="grounded",
+                )
+                for note_id in (1, 2)
+            ]
+            if mode == "missing":
+                rows.pop()
+            elif mode == "extra":
+                rows.append(FastCardClassification(note_id=99, verdict="LIKELY_NO", reason="extra"))
+            elif mode == "invented_concept":
+                rows[0] = rows[0].model_copy(update={"grounded_concept_ids": ("C99",)})
+            elif mode == "invented_passage":
+                rows[0] = rows[0].model_copy(update={"supporting_passage_ids": ("missing",)})
+            elif mode == "blank_reason":
+                rows[0] = rows[0].model_copy(update={"reason": ""})
+            elif mode == "ungrounded_yes":
+                rows[0] = rows[0].model_copy(
+                    update={"grounded_concept_ids": (), "supporting_passage_ids": ()}
+                )
+            value = FastClassificationResult(results=tuple(rows))
+            return StructuredJSONResult(
+                value=value,
+                raw_text=value.model_dump_json(),
+                provider=generation.provider,
+                model=generation.model,
+                request_id=generation.request_id,
+                input_tokens=generation.input_tokens,
+                output_tokens=generation.output_tokens,
+                cost_microusd=generation.cost_microusd,
+            )
+
+    prompts = AnkiPromptCatalogService()
+    fast_prompt = AnkiPromptLibrary(prompts.bundled_directory).load("card-centric-fast-classifier")
+    runner = CurationServicesRunner.__new__(CurationServicesRunner)
+    runner.structured = FaultInjectingStructuredService()
+    runner.prompts = AnkiPromptCatalogService(bundled_directory=tmp_path)
+    context = SimpleNamespace(
+        job=SimpleNamespace(
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+            resolved_model_config=SimpleNamespace(
+                fast_classify_s4b=SimpleNamespace(provider="openai", model="gpt-4o-mini"),
+                canonical_document=lambda: {"fast_classify_s4b": "gpt-4o-mini"},
+            ),
+        ),
+        prior_payloads={
+            CurationStage.PREFLIGHT: {
+                "prompt_snapshot": [
+                    {
+                        "id": fast_prompt.metadata.id,
+                        "version": fast_prompt.metadata.version,
+                        "prompt_hash": fast_prompt.prompt_hash,
+                        "content": fast_prompt.content,
+                        "metadata": fast_prompt.metadata.model_dump(mode="json", by_alias=True),
+                    }
+                ]
+            },
+            CurationStage.SOURCE_INDEX: {
+                "source_index": source.model_dump(mode="json"),
+                "cards": [card.model_dump(mode="json") for card in cards],
+            },
+            CurationStage.CARD_LEDGER: {"ledger": ledger.model_dump(mode="json")},
+            CurationStage.CARD_PREFILTER: prefilter.model_dump(mode="json"),
+            CurationStage.CARD_TAG_SCOPE: {"scope": scope.model_dump(mode="json")},
+        },
+    )
+    return runner, context
+
+
+@pytest.mark.parametrize(
+    ("mode", "reason_code"),
+    [
+        ("missing", "partition_mismatch"),
+        ("extra", "partition_mismatch"),
+        ("malformed", "structured_output_invalid"),
+        ("duplicate", "structured_output_invalid"),
+        ("invented_concept", "invented_concept_id"),
+        ("invented_passage", "invented_passage_id"),
+        ("blank_reason", "blank_reason"),
+        ("ungrounded_yes", "ungrounded_likely_yes"),
+    ],
+)
+def test_v2_fast_classifier_degrades_invalid_batches_to_thorough_review(
+    tmp_path: Path, mode: str, reason_code: str
+) -> None:
+    runner, context = _fast_failure_harness(tmp_path, mode)
+
+    product = asyncio.run(runner._card_fast_classify(context))
+
+    assert [
+        (row["note_id"], row["verdict"]) for row in product.payload["fast_classifier"]["results"]
+    ] == [(1, "NEEDS_REVIEW"), (2, "NEEDS_REVIEW")]
+    assert product.payload["degraded_batches"] == [
+        {"batch_index": 0, "note_ids": [1, 2], "reason_code": reason_code}
+    ]
+    assert product.payload["degraded_note_count"] == 2
+    assert product.usage is not None
+
+
+def test_v2_fast_classifier_preserves_retryable_provider_failures(tmp_path: Path) -> None:
+    runner, context = _fast_failure_harness(tmp_path, "network")
+
+    with pytest.raises(LLMRequestError, match="temporary network failure"):
         asyncio.run(runner._card_fast_classify(context))
+
+
+def test_v2_degraded_fast_batch_is_sent_wholly_to_s4c(tmp_path: Path, monkeypatch) -> None:
+    runner, context = _fast_failure_harness(tmp_path, "missing")
+    fast_product = asyncio.run(runner._card_fast_classify(context))
+    context.prior_payloads[CurationStage.CARD_FAST_CLASSIFY] = fast_product.payload
+    context.job.resolved_model_config.classify_s4 = SimpleNamespace(
+        provider="openai", model="gpt-4o-mini"
+    )
+    runner.structured = SimpleNamespace(generator=SimpleNamespace())
+    runner.prompts = AnkiPromptCatalogService()
+    seen: list[int] = []
+
+    async def fake_classify(_self, cards, **_kwargs):
+        seen.extend(card.note_id for card in cards)
+        return ClassifierResult(
+            results=tuple(
+                CardClassification(
+                    note_id=card.note_id,
+                    verdict="MAYBE",
+                    primary_subject="fixture",
+                    reason="thorough fallback review",
+                )
+                for card in cards
+            ),
+            telemetry=ClassifierTelemetry(
+                batch_count=0,
+                cache_prefix_sha256="c" * 64,
+                cache_mode="ordinary_prefix",
+                provider="openai",
+                model="gpt-4o-mini",
+                request_ids=(),
+                batches=(),
+            ),
+        )
+
+    monkeypatch.setattr(stages_module.CardCentricClassifier, "classify", fake_classify)
+
+    thorough_product = asyncio.run(runner._card_classify(context))
+
+    assert seen == [1, 2]
+    assert thorough_product.payload["thorough_count"] == 2
+    assert [row["note_id"] for row in thorough_product.payload["classifier"]["results"]] == [1, 2]
 
 
 def test_v2_internal_prompts_are_read_only_from_the_pinned_preflight_snapshot() -> None:

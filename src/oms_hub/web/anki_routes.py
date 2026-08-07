@@ -891,7 +891,10 @@ async def build_anki_envelope(
                 target_tag=job.target_tag,
                 generated_cards=proposals,
                 job_id=job.id,
-                pipeline_contract_version=job.pipeline_contract_version.value,
+                pipeline_contract_version=cast(
+                    Literal["card_centric_v1", "card_centric_v2"],
+                    job.pipeline_contract_version.value,
+                ),
                 model_config_sha256=job.model_config_sha256,
                 resolved_model_config=job.resolved_model_config.canonical_document(),
                 reconciliation_contract_version=str(
