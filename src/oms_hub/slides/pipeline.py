@@ -1,12 +1,15 @@
+import os
 from pathlib import Path
 
 from oms_hub.config import Settings
 from oms_hub.db import Database
+from oms_hub.document_processing.domain import ParsedDocument, SourceSnapshot
+from oms_hub.document_processing.router import ParserMode
+from oms_hub.document_processing.shadow import DocumentShadowEvaluator
 from oms_hub.domain import LectureKey, StepStatus, V2StepName
 from oms_hub.files.atomic import sha256_file, verified_atomic_copy
 from oms_hub.files.office import OfficeConverter
 from oms_hub.files.pdf import validate_pdf
-from oms_hub.files.promotion import PromotionCoordinator
 from oms_hub.ingestion.domain import (
     StudyRevision,
     UploadKind,
@@ -24,12 +27,14 @@ class SlidePipeline:
         database: Database,
         settings: Settings,
         converter: OfficeConverter,
+        document_evaluator: DocumentShadowEvaluator | None = None,
     ):
         self.settings = settings
         self.converter = converter
-        self.promotion = PromotionCoordinator()
         self.repository = IngestionRepository(database)
         self.catalog = CatalogRepository(database)
+        self.document_evaluator = document_evaluator
+        self.last_document: ParsedDocument | None = None
 
     def process(self, item_id: str) -> StudyRevision:
         item = self.repository.require_item(item_id)
@@ -62,6 +67,7 @@ class SlidePipeline:
                 revision.immutable_source_path,
                 revision.source_sha256,
             )
+            self._evaluate_document(item.original_filename, revision)
             self.catalog.set_step_status(
                 revision.lecture_id,
                 V2StepName.SLIDES_VALIDATED,
@@ -114,13 +120,13 @@ class SlidePipeline:
                     error="lecture replacement awaits approval",
                 )
 
-            revision = self._promote_revision(
-                revision,
+            self._promote_group(
                 [
                     (revision.immutable_source_path, destinations.source),
                     (derived, destinations.pdf),
                     (derived, destinations.icloud_pdf),
                 ],
+                revision.id,
             )
             self.catalog.set_step_status(
                 revision.lecture_id,
@@ -134,7 +140,12 @@ class SlidePipeline:
                 StepStatus.COMPLETE,
                 "PDF staged in iCloud",
             )
-            return revision
+            return self.repository.finish_revision(
+                item_id,
+                revision.id,
+                UploadState.COMPLETE,
+                current=True,
+            )
         except Exception as error:
             self._mark_failed(revision.lecture_id, str(error))
             self.repository.finish_revision(
@@ -145,6 +156,47 @@ class SlidePipeline:
                 error=str(error),
             )
             raise
+
+    def _evaluate_document(self, title: str, revision: StudyRevision) -> None:
+        if self.document_evaluator is None:
+            return
+        snapshot = SourceSnapshot(
+            id=f"slide-revision-{revision.id}",
+            title=title,
+            path=revision.immutable_source_path,
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            sha256=revision.source_sha256,
+        )
+        destination = (
+            expanded_path(self.settings.data_dir)
+            / "document-processing"
+            / "shadow"
+            / f"{revision.id}-{revision.source_sha256}.json"
+        )
+        try:
+            result = self.document_evaluator.parse(
+                snapshot,
+                expanded_path(self.settings.data_dir)
+                / "document-processing"
+                / "assets"
+                / str(revision.id),
+                ParserMode(self.settings.document_parser_mode),
+            )
+            self.last_document = result.document
+        except Exception:  # noqa: BLE001 - document analysis must not block filing
+            result = None
+        if result is None:
+            report = self.document_evaluator.exceptional_report(
+                revision.source_sha256,
+                ParserMode(self.settings.document_parser_mode),
+                "document_evaluation_failed",
+            )
+        else:
+            report = result.report
+        try:
+            self.document_evaluator.write_report(report, destination)
+        except Exception:
+            return
 
     def _preserve_source(
         self,
@@ -180,31 +232,35 @@ class SlidePipeline:
         validate_pdf(destination)
         return sha256_file(destination)
 
-    def _promote_revision(
-        self,
-        revision: StudyRevision,
+    @staticmethod
+    def _promote_group(
         pairs: list[tuple[Path, Path]],
-    ) -> StudyRevision:
-        if revision.state == "promoting":
-            recovered = self.promotion.recover(
-                pairs,
-                revision.id,
-                lambda: self.repository.promote_study_revision(revision.id),
-                lambda: self.repository.reset_study_promotion(revision.id),
-            )
-            if recovered is not None:
-                return recovered
-            revision = self.repository.get_study_revision(revision.id)
-        self.repository.begin_study_promotion(revision.id)
+        revision_id: int,
+    ) -> None:
+        backups: dict[Path, Path | None] = {}
         try:
-            return self.promotion.promote(
-                pairs,
-                revision.id,
-                lambda: self.repository.promote_study_revision(revision.id),
-            )
+            for _, destination in pairs:
+                if destination.exists():
+                    existing_backup = destination.with_name(
+                        f".{destination.name}.oms-backup-{revision_id}"
+                    )
+                    verified_atomic_copy(destination, existing_backup)
+                    backups[destination] = existing_backup
+                else:
+                    backups[destination] = None
+            for source, destination in pairs:
+                verified_atomic_copy(source, destination)
         except Exception:
-            self.repository.reset_study_promotion(revision.id)
+            for destination, saved_path in backups.items():
+                if saved_path is not None and saved_path.exists():
+                    os.replace(saved_path, destination)
+                elif saved_path is None:
+                    destination.unlink(missing_ok=True)
             raise
+        finally:
+            for saved_path in backups.values():
+                if saved_path is not None:
+                    saved_path.unlink(missing_ok=True)
 
     def _set_slide_steps(
         self,

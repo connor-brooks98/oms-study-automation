@@ -64,18 +64,6 @@ test("decision request posts with CSRF and keeps item data out of URL", async ()
   assert.equal(captured.url.includes("?"), false);
 });
 
-test("decision request reports a friendly message for an HTML error body", async () => {
-  const fakeFetch = async () => ({
-    ok: false,
-    json: async () => { throw new SyntaxError("HTML"); },
-  });
-
-  await assert.rejects(
-    uploads.postDecision(fakeFetch, "item", "confirm", "csrf"),
-    /Study Hub rejected the decision/,
-  );
-});
-
 test("large lecture uploads retain their selected lecture at finalize", () => {
   assert.equal(
     uploads.chunkFinalizeUrl("session-1", "42"),
@@ -85,10 +73,4 @@ test("large lecture uploads retain their selected lecture at finalize", () => {
     uploads.chunkFinalizeUrl("session-1", ""),
     "/api/upload-chunks/session-1/finalize",
   );
-});
-
-test("mixed upload files are partitioned by extension", () => {
-  assert.equal(uploads.fileKind("lecture.PPTX"), "slides");
-  assert.equal(uploads.fileKind("lecture.txt"), "transcripts");
-  assert.equal(uploads.fileKind("lecture.pdf"), null);
 });

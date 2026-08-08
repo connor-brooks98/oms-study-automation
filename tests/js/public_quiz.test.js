@@ -3,19 +3,6 @@ const assert = require("node:assert/strict");
 
 const quiz = require("../../src/oms_hub/web/static/public_quiz.js");
 
-const fakeDocument = () => ({
-  createElement(tagName) {
-    return {
-      tagName,
-      className: "",
-      children: [],
-      attributes: {},
-      append(...children) { this.children.push(...children); },
-      setAttribute(name, value) { this.attributes[name] = value; },
-    };
-  },
-});
-
 const content = {
   token: "a".repeat(64),
   version: 3,
@@ -77,40 +64,6 @@ test("submitted feedback locks the question and changes score only once", () => 
   assert.equal(state.score, 1);
   assert.equal(repeated.score, 1);
   assert.equal(changed.questions.q1.selectedChoiceId, "c1");
-});
-
-test("submission state blocks double-submit and answer changes", () => {
-  let state = quiz.selectChoice(quiz.createQuizState(content), "q1", "c1");
-
-  state = quiz.beginSubmission(state, "q1");
-  const repeated = quiz.beginSubmission(state, "q1");
-  const changed = quiz.selectChoice(repeated, "q1", "c2");
-
-  assert.equal(state.questions.q1.submitting, true);
-  assert.equal(repeated, state);
-  assert.equal(changed, state);
-  assert.equal(changed.questions.q1.selectedChoiceId, "c1");
-});
-
-test("feedback is pinned to the choice that was graded", () => {
-  let state = quiz.selectChoice(quiz.createQuizState(content), "q1", "c1");
-  state = quiz.beginSubmission(state, "q1");
-  state = {
-    ...state,
-    questions: {
-      ...state.questions,
-      q1: { ...state.questions.q1, selectedChoiceId: "c2" },
-    },
-  };
-
-  state = quiz.recordFeedback(state, "q1", {
-    correct: true,
-    correct_choice_id: "c1",
-    rationale: "First is correct.",
-  }, "c1");
-
-  assert.equal(state.questions.q1.selectedChoiceId, "c1");
-  assert.equal(state.questions.q1.submitting, false);
 });
 
 test("highlight ranges merge and can be cleared", () => {
@@ -190,92 +143,363 @@ test("answer request sends CSRF protection and keeps answers out of URL", async 
   assert.equal(feedback.correct, false);
 });
 
-test("answer request gives a friendly error for an HTML error body", async () => {
-  const fakeFetch = async () => ({
-    ok: false,
-    json: async () => { throw new SyntaxError("HTML is not JSON"); },
-  });
+test("question navigation and flags persist in quiz state", () => {
+  let state = quiz.createQuizState({ ...content, questions: content.questions });
 
-  await assert.rejects(
-    quiz.answerRequest(fakeFetch, "/answer", "q1", "c1", "csrf"),
-    /Your answer could not be submitted/,
+  state = quiz.setFlagReason(state, "q1", "inaccurate_question");
+  state = quiz.navigateQuestion(state, 1, content.questions.length);
+
+  assert.equal(state.currentIndex, 1);
+  assert.equal(state.questions.q1.flagReason, "inaccurate_question");
+  assert.throws(
+    () => quiz.setFlagReason(state, "q1", "not-a-reason"),
+    /Unknown flag reason/,
   );
 });
 
-test("quiz loading rejects network failures and invalid response bodies", async () => {
-  await assert.rejects(
-    quiz.loadQuizContent(
-      async () => { throw new Error("offline"); },
-      "/content",
-    ),
-    /offline/,
-  );
-  await assert.rejects(
-    quiz.loadQuizContent(
-      async () => ({
-        ok: true,
-        json: async () => { throw new SyntaxError("HTML"); },
-      }),
-      "/content",
-    ),
-    /This quiz could not be loaded/,
-  );
-});
+// -- Minimal fake DOM sufficient to drive initialize()/render() --
 
-test("blocked and quota-limited browser storage never break quiz state", () => {
-  const view = {};
-  Object.defineProperty(view, "localStorage", {
-    get() { throw new Error("blocked"); },
-  });
-  const quotaStorage = {
-    setItem() { throw new Error("quota exceeded"); },
+class FakeQuizNode {
+  constructor(tag, documentRef) {
+    this.tagName = tag;
+    this.documentRef = documentRef;
+    this.children = [];
+    this.parent = null;
+    this.dataset = {};
+    this.style = {};
+    this.className = "";
+    this._classSet = new Set();
+    this.classList = {
+      add: (name) => this._classSet.add(name),
+      contains: (name) => this._classSet.has(name),
+    };
+    this._text = "";
+    this._listeners = {};
+    this.disabled = false;
+    this.type = "";
+    this.value = "";
+  }
+
+  set textContent(value) {
+    this._text = value;
+    this.children = [];
+  }
+
+  get textContent() {
+    if (this.children.length === 0) return this._text;
+    return this.children.map((child) => child.textContent || "").join("");
+  }
+
+  append(...nodes) {
+    nodes.forEach((node) => {
+      if (node && typeof node === "object") node.parent = this;
+      this.children.push(node);
+    });
+  }
+
+  replaceChildren() {
+    this.children = [];
+  }
+
+  addEventListener(type, handler) {
+    (this._listeners[type] ||= []).push(handler);
+  }
+
+  setAttribute(name, value) {
+    this[name] = value;
+  }
+
+  focus() {
+    // Mirrors real <button>/<select> behavior: focusing a disabled control
+    // is a silent no-op, it does not become the active element.
+    if (this.disabled) return;
+    this.documentRef.activeElement = this;
+  }
+
+  contains(node) {
+    let current = node;
+    while (current) {
+      if (current === this) return true;
+      current = current.parent;
+    }
+    return false;
+  }
+
+  querySelector(selector) {
+    const match = /^\[data-focus-key="([^"]+)"\]$/.exec(selector);
+    if (!match) return null;
+    const [, key] = match;
+    const stack = [...this.children];
+    while (stack.length) {
+      const node = stack.shift();
+      if (node?.dataset?.focusKey === key) return node;
+      if (node?.children) stack.push(...node.children);
+    }
+    return null;
+  }
+}
+
+class FakeQuizDocument {
+  constructor() {
+    this.activeElement = null;
+    this.defaultView = undefined;
+    this.cookie = "";
+  }
+
+  createElement(tag) {
+    return new FakeQuizNode(tag, this);
+  }
+
+  createTextNode(text) {
+    return { tagName: "#text", textContent: text };
+  }
+
+  querySelector(selector) {
+    if (selector === "[data-quiz-token]") return this.app;
+    return null;
+  }
+}
+
+const buildQuizApp = () => {
+  const documentRef = new FakeQuizDocument();
+  const app = documentRef.createElement("main");
+  app.dataset.contentUrl = "/mock/content";
+  app.dataset.answerUrl = "/mock/answer";
+  documentRef.app = app;
+  return { documentRef, app };
+};
+
+const makeQuizStorage = () => {
+  const map = new Map();
+  const removed = [];
+  return {
+    getItem: (key) => (map.has(key) ? map.get(key) : null),
+    setItem: (key, value) => map.set(key, value),
+    removeItem: (key) => {
+      map.delete(key);
+      removed.push(key);
+    },
+    removed,
+  };
+};
+
+const findByClass = (node, className) => {
+  if (node?.className?.split(" ").includes(className)) return node;
+  for (const child of node?.children || []) {
+    const found = findByClass(child, className);
+    if (found) return found;
+  }
+  return null;
+};
+
+test("initialize renders the could-not-load state when the fetch rejects", async () => {
+  const { documentRef, app } = buildQuizApp();
+  const fetchImpl = async () => {
+    throw new Error("network down");
   };
 
-  assert.equal(quiz.acquireStorage(view), null);
-  assert.equal(
-    quiz.persistProgress(
-      quotaStorage,
-      "quiz-key",
-      quiz.createQuizState(content),
-    ),
-    false,
-  );
+  await quiz.initialize(documentRef, fetchImpl);
+
+  assert.equal(app.textContent, "This quiz could not be loaded.");
 });
 
-test("graded choices have visible correctness labels", () => {
-  assert.equal(quiz.choiceResultLabel(true, false), "✓ Correct");
-  assert.equal(quiz.choiceResultLabel(false, true), "✗ Your answer");
-  assert.equal(quiz.choiceResultLabel(false, false), "");
+test("player puts navigation above the shell and question metadata in a disclosure", async () => {
+  const { documentRef, app } = buildQuizApp();
+  const rendered = {
+    token: "tok",
+    version: 1,
+    course: "Heme/Lymph",
+    exam_number: 2,
+    lecture_number: 12,
+    topic: "Platelet Disorders",
+    questions: [{
+      id: "q1",
+      stem: "Question?",
+      area: "Hematology",
+      learning_objective: "Identify the mechanism",
+      topic: "Thrombocytopenia",
+      choices: [{ id: "c1", text: "Answer" }],
+    }],
+  };
+
+  await quiz.initialize(documentRef, async () => ({
+    ok: true,
+    async json() { return rendered; },
+  }));
+
+  assert.equal(app.children[0].className, "quiz-navigation quiz-navigation-card");
+  assert.equal(app.children[1].className, "quiz-shell");
+  assert.match(app.textContent, /Heme\/Lymph · Exam 2 · Lecture 12 · Platelet Disorders/);
+  const information = findByClass(app, "quiz-information");
+  assert.ok(information, "expected a Question Information disclosure");
+  assert.equal(information.tagName, "details");
+  assert.match(information.textContent, /Question Information/);
+  assert.match(information.textContent, /Area: Hematology/);
 });
 
-test("question image is rendered above the stem with safe enlargement", () => {
-  const media = quiz.renderQuestionImage(fakeDocument(), {
-    image_url: "/public/quizzes/token/media/image-1",
-    image_alt: "Reference image used for questions 4-7",
+test("initialize renders the could-not-load state when the response body is not valid JSON", async () => {
+  const { documentRef, app } = buildQuizApp();
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      throw new SyntaxError("Unexpected token");
+    },
   });
 
-  const link = media.children[0];
-  const image = link.children[0];
-  assert.equal(media.tagName, "figure");
-  assert.equal(link.tagName, "a");
-  assert.equal(link.href, "/public/quizzes/token/media/image-1");
-  assert.equal(image.src, "/public/quizzes/token/media/image-1");
-  assert.equal(image.alt, "Reference image used for questions 4-7");
-  assert.equal(image.loading, "eager");
-  assert.equal(image.decoding, "async");
+  await quiz.initialize(documentRef, fetchImpl);
+
+  assert.equal(app.textContent, "This quiz could not be loaded.");
 });
 
-test("quiz metadata omits missing lecture numbers", () => {
+test("private previews can advance before an answer is submitted", async () => {
+  const { documentRef, app } = buildQuizApp();
+  app.dataset.allowUnansweredNavigation = "true";
+
+  await quiz.initialize(documentRef, async () => ({
+    ok: true,
+    async json() { return content; },
+  }));
+
+  const forward = app.querySelector('[data-focus-key="forward"]');
+  assert.ok(forward, "expected a forward button");
+  assert.equal(forward.disabled, false);
+
+  forward._listeners.click[0]();
+
+  assert.match(app.textContent, /Which finding is expected\?/);
+});
+
+test("restoreFocus falls back to the container when the equivalent control renders disabled", async () => {
+  const { documentRef, app } = buildQuizApp();
+  const content = {
+    token: "tok",
+    version: 1,
+    questions: [
+      {
+        id: "q1",
+        stem: "Q1?",
+        choices: [{ id: "c1", text: "A" }, { id: "c2", text: "B" }],
+      },
+      {
+        id: "q2",
+        stem: "Q2?",
+        choices: [{ id: "c1", text: "A" }, { id: "c2", text: "B" }],
+      },
+    ],
+  };
+  const fetchImpl = async (url) => {
+    if (url === "/mock/content") {
+      return { ok: true, async json() { return content; } };
+    }
+    if (url === "/mock/answer") {
+      return {
+        ok: true,
+        async json() {
+          return { correct: true, correct_choice_id: "c1", rationale: "Because." };
+        },
+      };
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+
+  await quiz.initialize(documentRef, fetchImpl);
+
+  // Select and submit an answer on q1 so "Next →" becomes enabled.
+  const answerButton = app.querySelector('[data-focus-key="answer-c1"]');
+  assert.ok(answerButton, "expected an answer choice button");
+  answerButton._listeners.click[0]();
+
+  const submitButton = app.querySelector('[data-focus-key="submit"]');
+  assert.ok(submitButton, "expected a submit button once an answer is selected");
+  await submitButton._listeners.click[0]();
+
+  const forwardButton = app.querySelector('[data-focus-key="forward"]');
+  assert.ok(forwardButton, "expected a forward/next button");
+  assert.equal(forwardButton.disabled, false, "forward should be enabled once submitted");
+  forwardButton.focus();
+  assert.equal(documentRef.activeElement, forwardButton);
+
+  // Advance to q2 - the freshly rendered "forward" button starts out
+  // disabled again (q2 has not been submitted yet). restoreFocus must not
+  // silently no-op by calling .focus() on that disabled control; it should
+  // fall back to the tabindex="-1" player container instead.
+  forwardButton._listeners.click[0]();
+
+  const nextForwardButton = app.querySelector('[data-focus-key="forward"]');
+  assert.ok(nextForwardButton);
   assert.equal(
-    quiz.quizMetadata({ course: "Cardiology", exam_number: 2 }),
-    "Cardiology · Exam 2",
+    nextForwardButton.disabled,
+    true,
+    "the new question's forward button should start disabled",
   );
   assert.equal(
-    quiz.quizMetadata({
-      course: "Cardiology",
-      exam_number: 2,
-      lecture_number: 7,
-    }),
-    "Cardiology · Exam 2 · Lecture 7",
+    documentRef.activeElement,
+    app,
+    "focus should fall back to the tabindex=-1 container, not silently stay put",
   );
+});
+
+test("captureFocusKey only restores focus when a tracked control already had it", () => {
+  const documentRef = new FakeQuizDocument();
+  const container = documentRef.createElement("main");
+  const button = documentRef.createElement("button");
+  button.dataset.focusKey = "submit";
+  container.append(button);
+
+  assert.equal(quiz.captureFocusKey(documentRef, container), undefined);
+
+  documentRef.activeElement = button;
+  assert.equal(quiz.captureFocusKey(documentRef, container), "submit");
+});
+
+test("restoreFocus prefers the matching control and falls back to the container", () => {
+  const documentRef = new FakeQuizDocument();
+  const container = documentRef.createElement("main");
+  const back = documentRef.createElement("button");
+  back.dataset.focusKey = "back";
+  container.append(back);
+
+  quiz.restoreFocus(container, "back");
+  assert.equal(documentRef.activeElement, back);
+
+  quiz.restoreFocus(container, "does-not-exist");
+  assert.equal(documentRef.activeElement, container);
+});
+
+test("performance summary groups right and need-review counts", () => {
+  const tagged = {
+    ...content,
+    topic: "Course topic",
+    questions: [
+      { ...content.questions[0], area: "Neuro", learning_objective: "Recognize", topic: "Stroke" },
+      { ...content.questions[1], area: "Neuro", learning_objective: "Recognize", topic: "Seizure" },
+    ],
+  };
+  let state = quiz.createQuizState(tagged);
+  state = quiz.selectChoice(state, "q1", "c1");
+  state = quiz.recordFeedback(state, "q1", {
+    correct: true,
+    correct_choice_id: "c1",
+    rationale: "Correct.",
+  });
+  state = quiz.selectChoice(state, "q2", "c1");
+  state = quiz.recordFeedback(state, "q2", {
+    correct: false,
+    correct_choice_id: "c2",
+    rationale: "Review.",
+  });
+
+  const summary = quiz.performanceSummary(tagged, state);
+  assert.equal(summary.correct, 1);
+  assert.equal(summary.percentage, 50);
+  assert.deepEqual(summary.areas[0], {
+    label: "Neuro",
+    total: 2,
+    answered: 2,
+    correct: 1,
+    incorrect: 1,
+    unanswered: 0,
+    needReview: 1,
+    flagged: 0,
+  });
 });

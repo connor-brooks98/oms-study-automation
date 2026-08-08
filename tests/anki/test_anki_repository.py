@@ -1,0 +1,1712 @@
+from dataclasses import replace
+from datetime import UTC, datetime
+from pathlib import Path
+from uuid import UUID
+
+import pytest
+from sqlalchemy import func, select
+
+from oms_hub.anki.audit import AuditCacheRecord
+from oms_hub.anki.contracts import (
+    ActionEnvelopeV2,
+    SyncOperation,
+    canonical_payload_sha256,
+)
+from oms_hub.anki.domain import (
+    ApplyState,
+    Candidate,
+    CreateCurationJob,
+    CurationStage,
+    CurationState,
+    EnvelopeDraft,
+    EnvelopeOperationDraft,
+    EvidenceSupport,
+    GapCard,
+    GapCardEdit,
+    PipelineContractVersion,
+    ResolvedModelConfiguration,
+    ResolvedStageModel,
+    RetrievalPass,
+    ReviewChangeSet,
+    SourceEvidence,
+    SourceKind,
+    SourceReference,
+    StageArtifact,
+    StageUsage,
+    TagPatch,
+)
+from oms_hub.anki.envelope import EnvelopeBuilder
+from oms_hub.anki.judgment import JudgmentCacheRecord
+from oms_hub.anki.models import (
+    AnkiCurationJobModel,
+    AnkiEnvelopeModel,
+    AnkiEnvelopeOperationModel,
+    AnkiReviewedReconciliationModel,
+)
+from oms_hub.anki.pipeline import pipeline_stages
+from oms_hub.anki.reconciliation import (
+    AuditResolution,
+    CardCentricReconciliationInput,
+    GeneratedResolution,
+)
+from oms_hub.anki.repository import (
+    AnkiCurationRepository,
+    InvalidCurationTransition,
+)
+from oms_hub.anki.tag_policy import TagPolicy
+from oms_hub.db import Database
+from oms_hub.llm.domain import ProviderName
+from oms_hub.models import LectureModel
+
+_OPEN_DATABASES: list[Database] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_databases() -> None:
+    yield
+    while _OPEN_DATABASES:
+        _OPEN_DATABASES.pop().close()
+
+
+def _prepared_repository(tmp_path: Path) -> tuple[AnkiCurationRepository, int]:
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    _OPEN_DATABASES.append(database)
+    database.migrate()
+    with database.session() as session:
+        lecture = LectureModel(
+            subject="Heme Lymph",
+            exam_number=1,
+            lecture_number=4,
+            topic="Anemia I",
+            lecturer="Professor",
+        )
+        session.add(lecture)
+        session.flush()
+        lecture_id = lecture.id
+    return AnkiCurationRepository(database), lecture_id
+
+
+def _job_request(lecture_id: int, *, snapshot: str = "snapshot-1") -> CreateCurationJob:
+    return CreateCurationJob(
+        lecture_id=lecture_id,
+        block_id="heme-block-1",
+        source_revision_ids=(101, 102),
+        deck_allowlist=("AnKing Step Deck",),
+        tag_allowlist=("#AK_Step2_v12::Hematology",),
+        instruction_text="Focus on red-highlighted material.",
+        target_deck="OMS-II_Custom_Cards::Heme_Lymph::Exam_1::Lec4_Anemia_I",
+        target_tag=("AnkiHub_Optional::LMU_OMS_II::HemeLymph::Block1::Lec4_Anemia_I"),
+        index_snapshot_id=snapshot,
+        lcl_prompt_version="lcl-v1",
+        judgment_rubric_version="judgment-v1",
+        gap_prompt_version="gap-v1",
+        provider="anthropic",
+        model="claude-sonnet-5",
+        summary_outline_id=91,
+        summary_outline_sha256="b" * 64,
+    )
+
+
+def test_card_centric_profile_persists_for_the_local_study_hub_user(tmp_path: Path) -> None:
+    repository, _ = _prepared_repository(tmp_path)
+    profile = ResolvedModelConfiguration(
+        profile="custom",
+        ledger_s2=ResolvedStageModel("anthropic", "sonnet"),
+        classify_s4=ResolvedStageModel("anthropic", "haiku", "disabled", "fixture-v1"),
+        residual_s6=ResolvedStageModel("anthropic", "haiku", "disabled", "fixture-v1"),
+        gap_fill_s7=ResolvedStageModel("anthropic", "sonnet"),
+    )
+
+    repository.save_card_centric_profile(profile)
+
+    assert repository.card_centric_profile() == profile
+
+
+def test_repository_rejects_a_redirected_v2_fast_classifier(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    approved = ResolvedModelConfiguration.card_centric_v2_default("anthropic", "claude-sonnet-5")
+    redirected = replace(
+        approved,
+        fast_classify_s4b=ResolvedStageModel(
+            "openrouter", "openai/gpt-4o-mini", thinking_mode="disabled"
+        ),
+    )
+
+    with pytest.raises(ValueError, match="S4b must use openai gpt-4o-mini"):
+        repository.create_job(
+            replace(
+                _job_request(lecture_id),
+                pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+                resolved_model_config=redirected,
+            )
+        )
+
+
+def test_review_deselection_removes_the_sole_selected_covering_card(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+    )
+    note_ids = tuple(range(1, 11))
+    repository.replace_candidates(
+        job.id,
+        tuple(
+            Candidate(
+                note_id=note_id,
+                content_hash=f"{note_id:064x}",
+                best_concept_id="C01",
+                provenance={"card_centric_v2": {"selection_eligible": True}},
+                scores={},
+                predicted_band="LIKELY_YES",
+                verdict="keep",
+                confidence=1.0,
+                reason="fixture",
+                context_trap=False,
+                recall_direction="card_centric_v2",
+                mnemonic_classification="none",
+                dedupe_disposition="eligible",
+                selected=True,
+                retrieval_pass=RetrievalPass.PASS_1,
+            )
+            for note_id in note_ids
+        ),
+    )
+    snapshot = CardCentricReconciliationInput(
+        concept_ids=("C01",),
+        coverage={"C01": "covered"},
+        required_fact_ids=(),
+        uncovered_after_s5=(),
+        residual_ran_for=(),
+        generated_cards=(),
+        unresolved_fact_ids=(),
+        expected_scoped_nids=note_ids,
+        classifications=tuple(AuditResolution(nid=note_id, verdict="keep") for note_id in note_ids),
+        eligible_yes_nids=note_ids,
+        selected_nids=note_ids,
+        selected_generated_card_ids=(),
+        generated_card_ids=(),
+        source_passage_ids=(),
+        forbidden_cloze_targets=(),
+        prompt_sync_stale=False,
+        untagged_rate=0,
+        covered_concept_ids_by_nid={1: ("C01",)},
+    )
+
+    saved = repository.save_review(
+        job.id,
+        ReviewChangeSet(expected_revision=0, candidate_selections={1: False}),
+        card_centric_snapshot=snapshot.model_dump(mode="json"),
+    )
+    reviewed = repository.reviewed_reconciliation(job.id, saved.revision)
+
+    assert reviewed is not None
+    assert reviewed["snapshot"]["coverage"] == {"C01": "uncovered"}
+    assert "A4" in {item["assertion_id"] for item in reviewed["failed"]}
+    assert reviewed["can_render_envelope"] is False
+
+
+def test_card_centric_review_uses_current_generated_text(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+    )
+    note_ids = tuple(range(1, 11))
+    repository.replace_candidates(
+        job.id,
+        tuple(
+            Candidate(
+                note_id=note_id,
+                content_hash=f"{note_id:064x}",
+                best_concept_id="C01",
+                provenance={"card_centric_v2": {"selection_eligible": True}},
+                scores={},
+                predicted_band="LIKELY_YES",
+                verdict="keep",
+                confidence=1.0,
+                reason="fixture",
+                context_trap=False,
+                recall_direction="card_centric_v2",
+                mnemonic_classification="none",
+                dedupe_disposition="eligible",
+                selected=True,
+                retrieval_pass=RetrievalPass.PASS_1,
+            )
+            for note_id in note_ids
+        ),
+    )
+    repository.save_gap_cards(
+        job.id,
+        (
+            GapCard(
+                card_id="G1",
+                concept_id="C01",
+                text="The safe answer is {{c1::ferritin}}.",
+                extra="Original explanation.",
+                selected=True,
+            ),
+        ),
+    )
+    canonical = GeneratedResolution(
+        card_id="G1",
+        fact_id="C01-M1",
+        text="The safe answer is {{c1::ferritin}}.",
+        extra="Original explanation.",
+        split=True,
+    )
+    snapshot = CardCentricReconciliationInput(
+        pipeline_contract_version="card_centric_v2",
+        concept_ids=("C01",),
+        coverage={"C01": "covered"},
+        required_fact_ids=("C01-M1",),
+        uncovered_after_s5=("C01",),
+        residual_ran_for=("C01",),
+        generated_cards=(canonical,),
+        canonical_generated_cards=(canonical,),
+        unresolved_fact_ids=(),
+        expected_scoped_nids=note_ids,
+        classifications=tuple(AuditResolution(nid=note_id, verdict="keep") for note_id in note_ids),
+        eligible_yes_nids=note_ids,
+        selected_nids=note_ids,
+        selected_generated_card_ids=("G1",),
+        generated_card_ids=("G1",),
+        source_passage_ids=(),
+        forbidden_cloze_targets=("iron deficiency",),
+        prompt_sync_stale=False,
+        untagged_rate=0,
+        generated_concept_id_by_card_id={"G1": "C01"},
+    )
+
+    safe = repository.save_review(
+        job.id,
+        ReviewChangeSet(
+            expected_revision=0,
+            gap_edits=(
+                GapCardEdit(
+                    card_id="G1",
+                    concept_id="C01",
+                    text="The safe answer is {{c1::transferrin saturation}}.",
+                    extra="Current safe explanation.",
+                    selected=True,
+                ),
+            ),
+        ),
+        card_centric_snapshot=snapshot.model_dump(mode="json"),
+    )
+    safe_reviewed = repository.reviewed_reconciliation(job.id, safe.revision)
+
+    assert safe_reviewed is not None
+    assert safe_reviewed["can_render_envelope"] is True
+    assert safe_reviewed["snapshot"]["generated_cards"] == [
+        {
+            "card_id": "G1",
+            "fact_id": "C01-M1",
+            "text": "The safe answer is {{c1::transferrin saturation}}.",
+            "extra": "Current safe explanation.",
+            "split": True,
+        }
+    ]
+    assert safe_reviewed["snapshot"]["canonical_generated_cards"][0]["text"] == canonical.text
+
+    forbidden = repository.save_review(
+        job.id,
+        ReviewChangeSet(
+            expected_revision=safe.revision,
+            gap_edits=(
+                GapCardEdit(
+                    card_id="G1",
+                    concept_id="C01",
+                    text="The diagnosis is {{c1::iron deficiency}}.",
+                    extra="Forbidden current explanation.",
+                    selected=True,
+                ),
+            ),
+        ),
+        card_centric_snapshot=snapshot.model_dump(mode="json"),
+    )
+    forbidden_reviewed = repository.reviewed_reconciliation(job.id, forbidden.revision)
+
+    assert forbidden_reviewed is not None
+    assert forbidden_reviewed["snapshot"]["generated_cards"][0]["text"] == (
+        "The diagnosis is {{c1::iron deficiency}}."
+    )
+    assert forbidden_reviewed["snapshot"]["canonical_generated_cards"][0]["text"] == canonical.text
+    assert "A5" in {item["assertion_id"] for item in forbidden_reviewed["failed"]}
+    assert forbidden_reviewed["can_render_envelope"] is False
+
+
+def test_card_centric_overflow_acknowledgement_is_exact_and_server_signed(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        )
+    )
+    selected = tuple(range(1, 72))
+    acknowledgement = repository.issue_card_centric_overflow_acknowledgement(
+        job.id,
+        review_revision=job.review_revision,
+        selected_note_ids=selected,
+        selected_generated_ids=("G1",),
+        mandatory_note_ids=selected,
+        mandatory_generated_ids=(),
+        cap=70,
+    )
+
+    assert repository.validate_card_centric_overflow_acknowledgement(
+        job.id,
+        review_revision=job.review_revision,
+        selected_note_ids=selected,
+        selected_generated_ids=("G1",),
+        cap=70,
+        document=acknowledgement,
+    )
+    assert not repository.validate_card_centric_overflow_acknowledgement(
+        job.id,
+        review_revision=job.review_revision,
+        selected_note_ids=selected[:-1],
+        selected_generated_ids=("G1",),
+        cap=70,
+        document=acknowledgement,
+    )
+    with pytest.raises(ValueError, match="exact mandatory overflow set"):
+        repository.issue_card_centric_overflow_acknowledgement(
+            job.id,
+            review_revision=job.review_revision,
+            selected_note_ids=selected[:-1],
+            selected_generated_ids=("G1",),
+            mandatory_note_ids=selected,
+            mandatory_generated_ids=(),
+            cap=70,
+        )
+
+
+def test_v2_overflow_acknowledgement_rejects_nonmandatory_generated_cards(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+    )
+    selected = tuple(range(1, 72))
+
+    with pytest.raises(ValueError, match="exact mandatory overflow set"):
+        repository.issue_card_centric_overflow_acknowledgement(
+            job.id,
+            review_revision=job.review_revision,
+            selected_note_ids=selected,
+            selected_generated_ids=("G1",),
+            mandatory_note_ids=selected,
+            mandatory_generated_ids=(),
+            cap=70,
+        )
+
+
+def test_review_preserves_only_s9_documented_t6_selection(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+    )
+    note_ids = tuple(range(1, 11))
+    repository.replace_candidates(
+        job.id,
+        tuple(
+            Candidate(
+                note_id=note_id,
+                content_hash=f"{note_id:064x}",
+                best_concept_id="C01",
+                provenance={"card_centric_v2": {"selection_eligible": note_id not in {1, 2}}},
+                scores={},
+                predicted_band="LIKELY_YES",
+                verdict="keep",
+                confidence=1.0,
+                reason="fixture",
+                context_trap=False,
+                recall_direction="card_centric_v2",
+                mnemonic_classification="none",
+                dedupe_disposition="eligible",
+                selected=True,
+                retrieval_pass=RetrievalPass.PASS_1,
+            )
+            for note_id in note_ids
+        ),
+    )
+    snapshot = CardCentricReconciliationInput(
+        pipeline_contract_version="card_centric_v2",
+        concept_ids=("C01",),
+        coverage={"C01": "covered"},
+        required_fact_ids=(),
+        uncovered_after_s5=(),
+        residual_ran_for=(),
+        generated_cards=(),
+        unresolved_fact_ids=(),
+        expected_scoped_nids=note_ids,
+        classifications=tuple(AuditResolution(nid=note_id, verdict="keep") for note_id in note_ids),
+        eligible_yes_nids=tuple(note_id for note_id in note_ids if note_id not in {1, 2}),
+        selected_nids=note_ids,
+        selected_generated_card_ids=(),
+        generated_card_ids=(),
+        source_passage_ids=(),
+        forbidden_cloze_targets=(),
+        prompt_sync_stale=False,
+        untagged_rate=0,
+        covered_concept_ids_by_nid={1: ("C01",)},
+        t6_selected_nids=(1,),
+    )
+
+    saved = repository.save_review(
+        job.id,
+        ReviewChangeSet(expected_revision=0, candidate_selections={1: True}),
+        card_centric_snapshot=snapshot.model_dump(mode="json"),
+    )
+
+    assert repository.list_candidates(job.id)[0].selected is True
+    with pytest.raises(ValueError, match="undocumented ineligible"):
+        repository.save_review(
+            job.id,
+            ReviewChangeSet(expected_revision=saved.revision, candidate_selections={2: True}),
+            card_centric_snapshot=snapshot.model_dump(mode="json"),
+        )
+
+
+def _v2_envelope(
+    *,
+    job_id: UUID,
+    pipeline_contract_version: str = "card_centric_v1",
+    model_config_sha256: str = "a" * 64,
+    review_revision: int = 0,
+) -> ActionEnvelopeV2:
+    v1 = EnvelopeBuilder(
+        TagPolicy(
+            pipeline_owned_roots=("OMS",),
+            approved_optional_roots=("AnkiHub_Optional::LMU_OMS_II",),
+            source_managed_roots=("#Pathoma",),
+            version="tags-v1",
+        )
+    ).build(
+        ReviewChangeSet(expected_revision=0),
+        {},
+        envelope_id=UUID("5dc4f15e-df92-4a32-964e-026b5d518a80"),
+        snapshot_id="snapshot-1",
+        target_deck="OMS::Heme::Lecture 3",
+        target_tag="AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_3",
+    )
+    payload = v1.model_dump(mode="json")
+    payload.update(
+        {
+            "contract_version": 2,
+            "job_id": str(job_id),
+            "pipeline_contract_version": pipeline_contract_version,
+            "model_config_sha256": model_config_sha256,
+            "reconciliation_contract_version": "reconciliation-v1",
+            "review_revision": review_revision,
+            "overflow_acknowledgement_provenance": {"reviewer": "local"},
+        }
+    )
+    v2 = ActionEnvelopeV2.model_validate(payload)
+    return v2.model_copy(update={"payload_sha256": canonical_payload_sha256(v2)})
+
+
+def _envelope_row_counts(repository: AnkiCurationRepository) -> tuple[int, int]:
+    with repository.database.session() as session:
+        return (
+            session.scalar(select(func.count()).select_from(AnkiEnvelopeModel)) or 0,
+            session.scalar(select(func.count()).select_from(AnkiEnvelopeOperationModel)) or 0,
+        )
+
+
+def test_create_job_snapshots_all_mutable_inputs(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+
+    job = repository.create_job(_job_request(lecture_id))
+
+    assert job.lecture_id == lecture_id
+    assert job.state is CurationState.QUEUED
+    assert job.instruction_text == "Focus on red-highlighted material."
+    assert len(job.instruction_sha256) == 64
+    assert job.block_id == "heme-block-1"
+    assert job.source_revision_ids == (101, 102)
+    assert job.summary_outline_id == 91
+    assert job.summary_outline_sha256 == "b" * 64
+    assert job.deck_allowlist == ("AnKing Step Deck",)
+    assert job.tag_allowlist == ("#AK_Step2_v12::Hematology",)
+    assert job.apply_state is ApplyState.PENDING
+    assert job.target_deck.endswith("::Lec4_Anemia_I")
+    assert job.target_tag.endswith("::Lec4_Anemia_I")
+    assert job.index_snapshot_id == "snapshot-1"
+    assert job.lcl_prompt_version == "lcl-v1"
+    assert job.judgment_rubric_version == "judgment-v1"
+    assert job.gap_prompt_version == "gap-v1"
+
+
+def test_claim_next_job_claims_oldest_queued_job_once(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    first = repository.create_job(_job_request(lecture_id, snapshot="snapshot-1"))
+    second = repository.create_job(_job_request(lecture_id, snapshot="snapshot-2"))
+    now = datetime(2026, 7, 27, 15, 0, tzinfo=UTC)
+
+    claimed_first = repository.claim_next_job(now)
+    claimed_second = repository.claim_next_job(now)
+
+    assert claimed_first is not None
+    assert claimed_first.id == first.id
+    assert claimed_first.state is CurationState.PREFLIGHT
+    assert claimed_first.attempts == 1
+    assert claimed_second is not None
+    assert claimed_second.id == second.id
+    assert repository.claim_next_job(now) is None
+
+
+def test_transition_requires_expected_state_and_allowed_edge(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+
+    with pytest.raises(InvalidCurationTransition):
+        repository.transition(
+            job.id,
+            CurationState.QUEUED,
+            CurationState.JUDGING_PASS_1,
+        )
+
+    claimed = repository.claim_next_job(datetime.now(UTC))
+    assert claimed is not None
+    retrieved = repository.transition(
+        claimed.id,
+        CurationState.PREFLIGHT,
+        CurationState.BUILDING_LCL,
+    )
+    assert retrieved.state is CurationState.BUILDING_LCL
+
+    with pytest.raises(InvalidCurationTransition):
+        repository.transition(
+            claimed.id,
+            CurationState.PREFLIGHT,
+            CurationState.BUILDING_LCL,
+        )
+
+
+def test_recovery_releases_interrupted_pre_review_jobs_in_place(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    interrupted = repository.create_job(_job_request(lecture_id, snapshot="snapshot-1"))
+    envelope_pending = repository.create_job(_job_request(lecture_id, snapshot="snapshot-2"))
+    claimed = repository.claim_next_job(datetime.now(UTC))
+    assert claimed is not None
+    repository.transition(
+        envelope_pending.id,
+        CurationState.QUEUED,
+        CurationState.PREFLIGHT,
+    )
+    for current, target in [
+        (CurationState.PREFLIGHT, CurationState.BUILDING_LCL),
+        (CurationState.BUILDING_LCL, CurationState.RETRIEVING_PASS_1),
+        (CurationState.RETRIEVING_PASS_1, CurationState.JUDGING_PASS_1),
+        (
+            CurationState.JUDGING_PASS_1,
+            CurationState.LOCALIZING_MISSED_CONCEPTS,
+        ),
+        (
+            CurationState.LOCALIZING_MISSED_CONCEPTS,
+            CurationState.RETRIEVING_PASS_2,
+        ),
+        (CurationState.RETRIEVING_PASS_2, CurationState.JUDGING_PASS_2),
+        (CurationState.JUDGING_PASS_2, CurationState.DEDUPING),
+        (CurationState.DEDUPING, CurationState.GENERATING_GAPS),
+        (CurationState.GENERATING_GAPS, CurationState.RECONCILING),
+        (CurationState.RECONCILING, CurationState.READY_FOR_REVIEW),
+        (CurationState.READY_FOR_REVIEW, CurationState.ENVELOPE_PENDING),
+    ]:
+        repository.transition(envelope_pending.id, current, target)
+
+    assert repository.recover_interrupted_jobs() == 1
+    recovered = repository.require_job(interrupted.id)
+    assert recovered.state is CurationState.PREFLIGHT
+    assert recovered.lease_owner is None
+    assert recovered.lease_expires_at is None
+    assert repository.require_job(envelope_pending.id).state is CurationState.ENVELOPE_PENDING
+
+
+@pytest.mark.parametrize(
+    "interrupted_state",
+    (
+        CurationState.CARD_AUDITING_EVIDENCE,
+        CurationState.CARD_PREFILTERING,
+        CurationState.CARD_FAST_CLASSIFYING,
+    ),
+)
+def test_v2_new_lifecycle_states_are_claimable_and_recoverable(
+    tmp_path: Path,
+    interrupted_state: CurationState,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+    )
+    current = CurationState.QUEUED
+    for definition in pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V2):
+        if current is not definition.state:
+            repository.transition(job.id, current, definition.state)
+            current = definition.state
+        if current is interrupted_state:
+            break
+
+    claimed = repository.claim_next_job(datetime.now(UTC), worker_id="interrupted-worker")
+    assert claimed is not None
+    assert claimed.state is interrupted_state
+    assert repository.recover_interrupted_jobs() == 1
+    recovered = repository.require_job(job.id)
+    assert recovered.state is interrupted_state
+    assert recovered.lease_owner is None
+    assert recovered.lease_expires_at is None
+
+
+def test_stage_lifecycle_records_usage_and_safe_failure(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+
+    running = repository.start_stage(
+        job.id,
+        CurationStage.LCL,
+        provider="gemini",
+        model="gemini-model",
+    )
+    completed = repository.finish_stage(
+        job.id,
+        CurationStage.LCL,
+        StageUsage(
+            request_id="request-1",
+            input_tokens=100,
+            output_tokens=20,
+            cost_microusd=42,
+        ),
+        cache_hits=3,
+    )
+    failed = repository.start_stage(job.id, CurationStage.RETRIEVAL_PASS_1)
+    failed = repository.fail_stage(
+        job.id,
+        CurationStage.RETRIEVAL_PASS_1,
+        "index is unavailable",
+    )
+
+    assert running.attempt_count == 1
+    assert completed.state == "complete"
+    assert completed.request_id == "request-1"
+    assert completed.input_tokens == 100
+    assert completed.cache_hits == 3
+    assert failed.state == "failed"
+    assert failed.error == "index is unavailable"
+
+
+def test_failed_job_can_retry_its_failed_stage_without_losing_artifacts(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    now = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
+    claimed = repository.claim_next_job(
+        now,
+        worker_id="worker-1",
+        lease_seconds=30,
+    )
+    assert claimed is not None
+    repository.start_stage(job.id, CurationStage.PREFLIGHT)
+    repository.fail_stage(
+        job.id,
+        CurationStage.PREFLIGHT,
+        "provider returned malformed output",
+    )
+    repository.fail_job(
+        job.id,
+        "worker-1",
+        "provider returned malformed output",
+    )
+
+    retried = repository.retry_job(job.id)
+
+    assert retried.state is CurationState.PREFLIGHT
+    assert retried.error is None
+    assert retried.available_at is None
+    claimed_again = repository.claim_next_job(
+        now,
+        worker_id="worker-2",
+        lease_seconds=30,
+    )
+    assert claimed_again is not None
+    assert claimed_again.id == job.id
+
+
+def test_known_blank_scope_card_centric_failure_repairs_and_rewinds_from_source_index(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            tag_allowlist=(),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        )
+    )
+    assert job.tag_allowlist == ("heme",)
+    expected_configuration_sha256 = job.configuration_sha256
+    with repository.database.session() as session:
+        stored = session.get(AnkiCurationJobModel, str(job.id))
+        assert stored is not None
+        stored.tag_allowlist_json = "[]"
+        stored.configuration_sha256 = "0" * 64
+    source_artifact = StageArtifact(
+        artifact_id=f"source_index:{'a' * 64}",
+        stage=CurationStage.SOURCE_INDEX,
+        kind="card_centric_source_index",
+        relative_path=f"{job.id}/source_index/{'a' * 64}.json",
+        input_sha256="b" * 64,
+        content_sha256="a" * 64,
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        model_config_sha256=job.model_config_sha256,
+    )
+    repository.save_stage_artifact(job.id, source_artifact)
+    other_job = repository.create_job(
+        replace(
+            _job_request(lecture_id, snapshot="other-snapshot"),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        )
+    )
+    other_artifact = StageArtifact(
+        artifact_id=f"source_index:{'c' * 64}",
+        stage=CurationStage.SOURCE_INDEX,
+        kind="card_centric_source_index",
+        relative_path=f"{other_job.id}/source_index/{'c' * 64}.json",
+        input_sha256="d" * 64,
+        content_sha256="c" * 64,
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        model_config_sha256=other_job.model_config_sha256,
+    )
+    repository.save_stage_artifact(other_job.id, other_artifact)
+    reference = SourceReference(
+        source_kind=SourceKind.SLIDE,
+        revision_id=101,
+        locator="slide:1",
+        content_hash="c" * 64,
+    )
+    repository.replace_candidates(
+        job.id,
+        (
+            Candidate(
+                note_id=7,
+                content_hash="d" * 64,
+                best_concept_id="iron",
+                provenance={"card_centric": {}},
+                scores={},
+                predicted_band="YES",
+                verdict="yes",
+                confidence=1.0,
+                reason="stale",
+                context_trap=False,
+                recall_direction="card_centric",
+                mnemonic_classification="none",
+                dedupe_disposition="eligible",
+                selected=True,
+                retrieval_pass=RetrievalPass.PASS_1,
+            ),
+        ),
+    )
+    repository.save_gap_cards(
+        job.id,
+        (
+            GapCard(
+                concept_id="iron",
+                text="{{c1::Iron}}",
+                extra="stale",
+                source_refs=(reference,),
+                evidence_ids=("slide-1",),
+                provenance={"card_centric": {}},
+                content_hash="e" * 64,
+                card_id="11111111-1111-1111-1111-111111111111",
+            ),
+        ),
+    )
+    repository.replace_source_evidence(
+        job.id,
+        (
+            SourceEvidence(
+                evidence_id="slide-1",
+                concept_id="iron",
+                support=EvidenceSupport.SUPPORTED,
+                statement="Iron is present.",
+                source_refs=(reference,),
+                content_hash="f" * 64,
+            ),
+        ),
+    )
+    with repository.database.session() as session:
+        session.add(
+            AnkiReviewedReconciliationModel(
+                job_id=str(job.id),
+                review_revision=1,
+                payload_json="{}",
+            )
+        )
+    repository.transition(job.id, CurationState.QUEUED, CurationState.PREFLIGHT)
+    repository.transition(job.id, CurationState.PREFLIGHT, CurationState.BUILDING_SOURCE_INDEX)
+    repository.transition(
+        job.id,
+        CurationState.BUILDING_SOURCE_INDEX,
+        CurationState.CARD_BUILDING_LEDGER,
+    )
+    repository.transition(
+        job.id,
+        CurationState.CARD_BUILDING_LEDGER,
+        CurationState.CARD_SCOPING_TAGS,
+    )
+    repository.start_stage(job.id, CurationStage.CARD_TAG_SCOPE)
+    repository.fail_stage(job.id, CurationStage.CARD_TAG_SCOPE, "tag scope has no resolved tokens")
+    repository.transition(
+        job.id,
+        CurationState.CARD_SCOPING_TAGS,
+        CurationState.FAILED,
+        "tag scope has no resolved tokens",
+    )
+
+    repaired = repository.retry_job(job.id)
+
+    assert repaired.state is CurationState.BUILDING_SOURCE_INDEX
+    assert repaired.tag_allowlist == ("heme",)
+    assert repaired.configuration_sha256 == expected_configuration_sha256
+    assert repaired.error is None
+    assert repository.list_stage_artifacts(job.id) == []
+    assert repository.list_stage_artifacts(other_job.id) == [other_artifact]
+    assert repository.require_job(other_job.id).state is CurationState.QUEUED
+    assert repository.get_stage(job.id, CurationStage.CARD_TAG_SCOPE) is None
+    assert repository.list_candidates(job.id) == []
+    assert repository.list_gap_cards(job.id) == []
+    assert repository.list_source_evidence(job.id) == []
+    with repository.database.session() as session:
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(AnkiReviewedReconciliationModel)
+                .where(AnkiReviewedReconciliationModel.job_id == str(job.id))
+            )
+            == 0
+        )
+
+
+@pytest.mark.parametrize(
+    ("subject", "topic"),
+    [
+        ("Unknown", "Unknown"),
+        ("Heme Neuro", "Anemia I"),
+    ],
+)
+def test_blank_scope_repair_rejects_unresolved_metadata_without_mutation(
+    tmp_path: Path,
+    subject: str,
+    topic: str,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            tag_allowlist=(),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        )
+    )
+    artifact = StageArtifact(
+        artifact_id=f"source_index:{'a' * 64}",
+        stage=CurationStage.SOURCE_INDEX,
+        kind="card_centric_source_index",
+        relative_path=f"{job.id}/source_index/{'a' * 64}.json",
+        input_sha256="b" * 64,
+        content_sha256="a" * 64,
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        model_config_sha256=job.model_config_sha256,
+    )
+    repository.save_stage_artifact(job.id, artifact)
+    with repository.database.session() as session:
+        stored = session.get(AnkiCurationJobModel, str(job.id))
+        lecture = session.get(LectureModel, lecture_id)
+        assert stored is not None and lecture is not None
+        stored.tag_allowlist_json = "[]"
+        stored.state = CurationState.FAILED.value
+        stored.error = "tag scope has no resolved tokens"
+        lecture.subject = subject
+        lecture.topic = topic
+        session.add(
+            AnkiReviewedReconciliationModel(
+                job_id=str(job.id),
+                review_revision=1,
+                payload_json="{}",
+            )
+        )
+    repository.start_stage(job.id, CurationStage.CARD_TAG_SCOPE)
+    repository.fail_stage(job.id, CurationStage.CARD_TAG_SCOPE, "tag scope has no resolved tokens")
+
+    with pytest.raises(ValueError, match="Could not resolve exactly one"):
+        repository.retry_job(job.id)
+
+    unchanged = repository.require_job(job.id)
+    assert unchanged.state is CurationState.FAILED
+    assert unchanged.tag_allowlist == ()
+    assert unchanged.error == "tag scope has no resolved tokens"
+    assert repository.list_stage_artifacts(job.id) == [artifact]
+    assert repository.get_stage(job.id, CurationStage.CARD_TAG_SCOPE) is not None
+    with repository.database.session() as session:
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(AnkiReviewedReconciliationModel)
+                .where(AnkiReviewedReconciliationModel.job_id == str(job.id))
+            )
+            == 1
+        )
+
+
+def test_nonblank_card_scope_is_not_rewound_by_a_matching_legacy_error(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        )
+    )
+    artifact = StageArtifact(
+        artifact_id=f"source_index:{'a' * 64}",
+        stage=CurationStage.SOURCE_INDEX,
+        kind="card_centric_source_index",
+        relative_path=f"{job.id}/source_index/{'a' * 64}.json",
+        input_sha256="b" * 64,
+        content_sha256="a" * 64,
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        model_config_sha256=job.model_config_sha256,
+    )
+    repository.save_stage_artifact(job.id, artifact)
+    repository.start_stage(job.id, CurationStage.CARD_TAG_SCOPE)
+    repository.fail_stage(job.id, CurationStage.CARD_TAG_SCOPE, "tag scope has no resolved tokens")
+    with repository.database.session() as session:
+        stored = session.get(AnkiCurationJobModel, str(job.id))
+        assert stored is not None
+        stored.state = CurationState.FAILED.value
+        stored.error = "tag scope has no resolved tokens"
+
+    retried = repository.retry_job(job.id)
+
+    assert retried.state is CurationState.CARD_SCOPING_TAGS
+    assert retried.tag_allowlist == ("#AK_Step2_v12::Hematology",)
+    assert repository.list_stage_artifacts(job.id) == [artifact]
+    assert repository.get_stage(job.id, CurationStage.CARD_TAG_SCOPE) is not None
+
+
+def test_failed_job_can_be_removed_from_the_run_list(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    now = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
+    claimed = repository.claim_next_job(
+        now,
+        worker_id="worker-1",
+        lease_seconds=30,
+    )
+    assert claimed is not None
+    repository.start_stage(job.id, CurationStage.PREFLIGHT)
+    repository.fail_stage(job.id, CurationStage.PREFLIGHT, "malformed output")
+    repository.fail_job(job.id, "worker-1", "malformed output")
+
+    removed = repository.remove_failed_job(job.id)
+
+    assert removed.state.value == "removed"
+    assert repository.list_jobs() == []
+
+
+def test_nonfailed_job_cannot_be_removed_from_the_run_list(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+
+    with pytest.raises(ValueError, match="failed"):
+        repository.remove_failed_job(job.id)
+
+    assert [listed.id for listed in repository.list_jobs()] == [job.id]
+
+
+def test_source_evidence_and_stage_artifacts_round_trip(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    source_ref = SourceReference(
+        source_kind=SourceKind.SLIDE,
+        revision_id=101,
+        locator="slide:7",
+        content_hash="b" * 64,
+    )
+    evidence = SourceEvidence(
+        evidence_id="evidence-1",
+        concept_id="concept-anemia",
+        support=EvidenceSupport.SUPPORTED,
+        statement="Iron deficiency causes microcytic anemia.",
+        source_refs=(source_ref,),
+        content_hash="c" * 64,
+    )
+    artifact = StageArtifact(
+        artifact_id=f"source_index:{'e' * 64}",
+        stage=CurationStage.SOURCE_INDEX,
+        kind="source-index-manifest",
+        relative_path=f"{job.id}/source_index/{'e' * 64}.json",
+        input_sha256="d" * 64,
+        content_sha256="e" * 64,
+        model_config_sha256=job.model_config_sha256,
+        metadata={"passages": 12},
+    )
+
+    repository.replace_source_evidence(job.id, (evidence,))
+    repository.save_stage_artifact(job.id, artifact)
+
+    assert repository.list_source_evidence(job.id) == [evidence]
+    assert repository.list_stage_artifacts(job.id) == [artifact]
+
+
+@pytest.mark.parametrize(
+    ("pipeline_contract_version", "model_config_sha256", "message"),
+    [
+        (PipelineContractVersion.CARD_CENTRIC_V1, None, "pipeline contract"),
+        (PipelineContractVersion.RETRIEVAL_V4, "f" * 64, "model configuration"),
+    ],
+)
+def test_stage_commit_rejects_artifact_provenance_mismatch_without_mutation(
+    tmp_path: Path,
+    pipeline_contract_version: PipelineContractVersion,
+    model_config_sha256: str | None,
+    message: str,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    repository.start_stage(job.id, CurationStage.PREFLIGHT)
+    artifact = StageArtifact(
+        artifact_id=f"preflight:{'c' * 64}",
+        stage=CurationStage.PREFLIGHT,
+        kind="preflight_report",
+        relative_path=f"{job.id}/preflight/{'c' * 64}.json",
+        input_sha256="a" * 64,
+        content_sha256="c" * 64,
+        pipeline_contract_version=pipeline_contract_version,
+        model_config_sha256=model_config_sha256 or job.model_config_sha256,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        repository.commit_stage(
+            job.id,
+            expected_state=CurationState.QUEUED,
+            target_state=CurationState.PREFLIGHT,
+            stage=CurationStage.PREFLIGHT,
+            artifact=artifact,
+        )
+
+    assert repository.list_stage_artifacts(job.id) == []
+    assert repository.require_job(job.id).state is CurationState.QUEUED
+    stage = repository.get_stage(job.id, CurationStage.PREFLIGHT)
+    assert stage is not None and stage.state == "running"
+
+
+def test_candidates_gaps_and_review_revision_are_persisted(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    repository.replace_candidates(
+        job.id,
+        [
+            Candidate(
+                note_id=1479430487028,
+                content_hash="a" * 64,
+                best_concept_id="concept-anemia",
+                provenance={"lecture_tag": True},
+                scores={"semantic": 0.91},
+                predicted_band="auto_include",
+                verdict="include",
+                confidence=0.98,
+                reason="Directly tests the lecture objective.",
+                context_trap=False,
+                recall_direction="forward",
+                mnemonic_classification="none",
+                dedupe_disposition="survivor",
+                selected=True,
+                retrieval_pass=RetrievalPass.PASS_1,
+            )
+        ],
+    )
+    repository.save_gap_cards(
+        job.id,
+        [
+            GapCard(
+                concept_id="concept-retic",
+                text="{{c1::Reticulocytes}} rise after treatment.",
+                extra="Tracks marrow response.",
+            )
+        ],
+    )
+
+    saved = repository.save_review(
+        job.id,
+        ReviewChangeSet(
+            expected_revision=0,
+            candidate_selections={1479430487028: False},
+            gap_edits=(
+                GapCardEdit(
+                    concept_id="concept-retic",
+                    text="{{c1::Reticulocyte count}} rises after treatment.",
+                    extra="Tracks marrow response after iron replacement.",
+                    selected=True,
+                ),
+            ),
+        ),
+    )
+
+    assert saved.revision == 1
+    assert repository.list_candidates(job.id)[0].selected is False
+    stored_gap = repository.list_gap_cards(job.id)[0]
+    assert stored_gap.revision == 2
+    assert stored_gap.text.startswith("{{c1::Reticulocyte count}}")
+
+    with pytest.raises(ValueError, match="review revision"):
+        repository.save_review(
+            job.id,
+            ReviewChangeSet(expected_revision=0),
+        )
+
+
+def test_split_gap_cards_share_a_concept_and_are_edited_by_card_id(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    first_id = "00000000-0000-0000-0000-000000000101"
+    second_id = "00000000-0000-0000-0000-000000000102"
+    repository.save_gap_cards(
+        job.id,
+        (
+            GapCard(
+                concept_id="C01",
+                text="Mechanism starts with {{c1::step one}}.",
+                extra="First atomic card.",
+                card_id=first_id,
+                provenance={"fact_id": "C01-M1", "split": True},
+            ),
+            GapCard(
+                concept_id="C01",
+                text="Mechanism ends with {{c1::step two}}.",
+                extra="Second atomic card.",
+                card_id=second_id,
+                provenance={"fact_id": "C01-M1", "split": True},
+            ),
+        ),
+    )
+
+    repository.save_review(
+        job.id,
+        ReviewChangeSet(
+            expected_revision=0,
+            gap_edits=(
+                GapCardEdit(
+                    concept_id="C01",
+                    card_id=second_id,
+                    text="Mechanism ends with {{c1::the second step}}.",
+                    extra="Edited second atomic card.",
+                    selected=True,
+                ),
+            ),
+        ),
+    )
+
+    stored = {card.card_id: card for card in repository.list_gap_cards(job.id)}
+    assert set(stored) == {first_id, second_id}
+    assert stored[first_id].revision == 1
+    assert stored[second_id].revision == 2
+    assert "the second step" in stored[second_id].text
+
+
+def test_blank_card_id_edit_is_rejected_when_concept_has_multiple_cards(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    repository.save_gap_cards(
+        job.id,
+        (
+            GapCard(
+                concept_id="C01",
+                text="Mechanism starts with {{c1::step one}}.",
+                extra="First atomic card.",
+                card_id="00000000-0000-0000-0000-000000000201",
+                provenance={"fact_id": "C01-M1", "split": True},
+            ),
+            GapCard(
+                concept_id="C01",
+                text="Mechanism ends with {{c1::step two}}.",
+                extra="Second atomic card.",
+                card_id="00000000-0000-0000-0000-000000000202",
+                provenance={"fact_id": "C01-M1", "split": True},
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="gap card edit requires card_id when a concept has multiple cards",
+    ):
+        repository.save_review(
+            job.id,
+            ReviewChangeSet(
+                expected_revision=0,
+                gap_edits=(
+                    GapCardEdit(
+                        concept_id="C01",
+                        card_id="",
+                        text="Ambiguous edit without a card id.",
+                        extra="Should be rejected.",
+                        selected=True,
+                    ),
+                ),
+            ),
+        )
+
+
+def test_blank_card_id_edit_still_works_for_a_single_gap_card(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    repository.save_gap_cards(
+        job.id,
+        [
+            GapCard(
+                concept_id="concept-solo",
+                text="{{c1::Solo fact}} stands alone.",
+                extra="Only one card for this concept.",
+            )
+        ],
+    )
+
+    saved = repository.save_review(
+        job.id,
+        ReviewChangeSet(
+            expected_revision=0,
+            gap_edits=(
+                GapCardEdit(
+                    concept_id="concept-solo",
+                    card_id="",
+                    text="{{c1::Solo fact}} stands alone, edited.",
+                    extra="Only one card for this concept, edited.",
+                    selected=True,
+                ),
+            ),
+        ),
+    )
+
+    assert saved.revision == 1
+    stored_gap = repository.list_gap_cards(job.id)[0]
+    assert stored_gap.revision == 2
+    assert stored_gap.text.endswith("edited.")
+
+
+def test_coverage_judgment_cache_round_trips_immutable_record(
+    tmp_path,
+) -> None:
+    repository, _ = _prepared_repository(tmp_path)
+    record = JudgmentCacheRecord(
+        cache_key="a" * 64,
+        concept_content_hash="b" * 64,
+        candidate_digest="c" * 64,
+        prompt_version="judgment-v1",
+        provider=ProviderName.OPENAI,
+        model="gpt-5.2",
+        result={
+            "status": "missing",
+            "supporting_note_ids": [],
+            "missing_facts": ["Treatment response is absent."],
+            "rationale": "No candidate covers treatment response.",
+        },
+        input_tokens=20,
+        output_tokens=10,
+        cost_microusd=5,
+        created_at="2026-07-30T12:00:00+00:00",
+    )
+
+    repository.save_judgment_cache(record)
+    repository.save_judgment_cache(record)
+
+    assert repository.get_judgment_cache(record.cache_key) == record
+
+
+def test_card_audit_cache_round_trips_immutable_record(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    record = AuditCacheRecord(
+        cache_key="d" * 64,
+        note_id=123,
+        lecture_id=lecture_id,
+        note_content_hash="a" * 64,
+        source_digest="b" * 64,
+        prompt_hash="123456789abc",
+        provider=ProviderName.OPENAI,
+        model="gpt-5.2",
+        result={
+            "nid": 123,
+            "verdict": "keep",
+            "primary_subject": "iron deficiency",
+            "support": "both",
+            "reason": "Supported by slides and transcript",
+            "structure_issue": [],
+        },
+        input_tokens=100,
+        output_tokens=20,
+        cost_microusd=30,
+        created_at="2026-07-31T12:00:00+00:00",
+    )
+
+    repository.save_audit_cache(record)
+    repository.save_audit_cache(record)
+
+    assert repository.get_audit_cache(record.cache_key) == record
+
+
+def test_lecture_title_is_available_for_blind_audit_context(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+
+    assert repository.lecture_title(lecture_id) == ("Heme Lymph Exam 1 Lecture 4: Anemia I")
+
+
+def test_review_changes_and_tag_patches_are_append_only(
+    tmp_path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    first_patch = TagPatch(
+        note_id=42,
+        before=("OMS::Old",),
+        after=("OMS::New",),
+        add_tags=("OMS::New",),
+        remove_tags=("OMS::Old",),
+        expected_tag_hash="a" * 64,
+        tag_policy_version="tags-v1",
+    )
+    second_patch = TagPatch(
+        note_id=42,
+        before=("OMS::New",),
+        after=("OMS::Final",),
+        add_tags=("OMS::Final",),
+        remove_tags=("OMS::New",),
+        expected_tag_hash="b" * 64,
+        tag_policy_version="tags-v1",
+    )
+
+    repository.save_review(
+        job.id,
+        ReviewChangeSet(
+            expected_revision=0,
+            reviewer="connor",
+            tag_patches=(first_patch,),
+        ),
+    )
+    repository.save_review(
+        job.id,
+        ReviewChangeSet(
+            expected_revision=1,
+            reviewer="connor",
+            tag_patches=(second_patch,),
+        ),
+    )
+
+    assert repository.list_tag_patches(job.id) == [
+        first_patch,
+        second_patch,
+    ]
+    changes = repository.list_review_changes(job.id)
+    assert [change.revision for change in changes] == [1, 2]
+    assert [change.prior_revision for change in changes] == [0, 1]
+    assert all(change.reviewer == "connor" for change in changes)
+
+
+def test_envelope_is_immutable_and_receipt_updates_delivery_state(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    draft = EnvelopeDraft(
+        envelope_id="5dc4f15e-df92-4a32-964e-026b5d518a80",
+        snapshot_id="snapshot-1",
+        payload={"target_tag": "AnkiHub_Optional::LMU_OMS_II::HemeLymph"},
+        operations=(
+            EnvelopeOperationDraft(
+                operation_id="3b9d1dbb-b57b-46f4-8346-fd45e0105042",
+                operation_type="add_tags",
+                payload={"note_ids": [1479430487028]},
+            ),
+        ),
+    )
+
+    stored = repository.create_envelope(job.id, draft)
+    delivered = repository.record_receipt(
+        stored.id,
+        {"sync_status": "complete", "verified": True},
+    )
+
+    assert len(stored.payload_sha256) == 64
+    assert stored.state == "pending"
+    assert delivered.state == "complete"
+    assert delivered.receipt_summary == {
+        "sync_status": "complete",
+        "verified": True,
+    }
+    with pytest.raises(ValueError, match="already has an envelope"):
+        repository.create_envelope(job.id, draft)
+
+
+@pytest.mark.parametrize(
+    ("versions", "case"),
+    [
+        (None, "missing heartbeat"),
+        ({}, "old heartbeat without the capability field"),
+        (
+            {"supported_envelope_contract_versions": (1,)},
+            "explicit V1-only heartbeat",
+        ),
+    ],
+)
+def test_v2_envelope_creation_requires_persisted_agent_capability(
+    tmp_path: Path,
+    versions: dict[str, object] | None,
+    case: str,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    before = repository.require_job(job.id)
+    if versions is not None:
+        repository.record_agent_heartbeat(
+            agent_id="anki-agent",
+            heartbeat_at="2026-08-05T18:00:00+00:00",
+            versions=versions,
+            active_snapshot_id="snapshot-1",
+            health={"status": "ok"},
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="envelope contract v2 unsupported; upgrade required; no mutation performed",
+    ):
+        repository.create_action_envelope(
+            job.id,
+            _v2_envelope(job_id=job.id),
+            expected_review_revision=before.review_revision,
+        )
+
+    after = repository.require_job(job.id)
+    assert _envelope_row_counts(repository) == (0, 0), case
+    assert (after.state, after.review_revision, after.apply_state) == (
+        before.state,
+        before.review_revision,
+        before.apply_state,
+    )
+
+
+def test_v2_envelope_creation_persists_when_agent_advertises_capability(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        )
+    )
+    repository.record_agent_heartbeat(
+        agent_id="anki-agent",
+        heartbeat_at="2026-08-05T18:00:00+00:00",
+        versions={"supported_envelope_contract_versions": (1, 2)},
+        active_snapshot_id="snapshot-1",
+        health={"status": "ok"},
+    )
+    envelope = _v2_envelope(
+        job_id=job.id,
+        pipeline_contract_version=job.pipeline_contract_version.value,
+        model_config_sha256=job.model_config_sha256,
+        review_revision=job.review_revision,
+    )
+
+    stored = repository.create_action_envelope(job.id, envelope)
+
+    assert stored.payload_sha256 == canonical_payload_sha256(envelope)
+    assert repository.get_envelope(envelope.envelope_id) == envelope
+    assert _envelope_row_counts(repository) == (1, len(envelope.operations))
+
+
+def test_v2_envelope_persists_against_a_v2_job(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+    )
+    repository.record_agent_heartbeat(
+        agent_id="anki-agent",
+        heartbeat_at="2026-08-05T18:00:00+00:00",
+        versions={"supported_envelope_contract_versions": (1, 2)},
+        active_snapshot_id="snapshot-1",
+        health={"status": "ok"},
+    )
+    envelope = _v2_envelope(
+        job_id=job.id,
+        pipeline_contract_version="card_centric_v2",
+        model_config_sha256=job.model_config_sha256,
+        review_revision=job.review_revision,
+    )
+
+    stored = repository.create_action_envelope(job.id, envelope)
+
+    assert stored.payload_sha256 == canonical_payload_sha256(envelope)
+    assert repository.get_envelope(envelope.envelope_id) == envelope
+    assert _envelope_row_counts(repository) == (1, len(envelope.operations))
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("pipeline_contract_version", "retrieval_v4", "pipeline contract"),
+        ("model_config_sha256", "f" * 64, "model configuration"),
+        ("review_revision", 1, "review revision"),
+    ],
+)
+def test_v2_envelope_rejects_provenance_mismatches_without_mutation(
+    tmp_path: Path,
+    field: str,
+    value: str | int,
+    message: str,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=(
+                PipelineContractVersion.RETRIEVAL_V4
+                if field == "pipeline_contract_version"
+                else PipelineContractVersion.CARD_CENTRIC_V1
+            ),
+        )
+    )
+    repository.record_agent_heartbeat(
+        agent_id="anki-agent",
+        heartbeat_at="2026-08-05T18:00:00+00:00",
+        versions={"supported_envelope_contract_versions": (1, 2)},
+        active_snapshot_id="snapshot-1",
+        health={"status": "ok"},
+    )
+    envelope = _v2_envelope(
+        job_id=job.id,
+        pipeline_contract_version=(PipelineContractVersion.CARD_CENTRIC_V1.value),
+        model_config_sha256=(
+            str(value) if field == "model_config_sha256" else job.model_config_sha256
+        ),
+        review_revision=int(value) if field == "review_revision" else job.review_revision,
+    )
+    before = repository.require_job(job.id)
+
+    with pytest.raises(ValueError, match=message):
+        repository.create_action_envelope(job.id, envelope)
+
+    after = repository.require_job(job.id)
+    assert _envelope_row_counts(repository) == (0, 0)
+    assert (after.state, after.review_revision, after.apply_state) == (
+        before.state,
+        before.review_revision,
+        before.apply_state,
+    )
+
+
+def test_v2_envelope_cannot_be_replayed_to_another_matching_job(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    request = replace(
+        _job_request(lecture_id),
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+    )
+    job_a = repository.create_job(request)
+    job_b = repository.create_job(request)
+    repository.record_agent_heartbeat(
+        agent_id="anki-agent",
+        heartbeat_at="2026-08-05T18:00:00+00:00",
+        versions={"supported_envelope_contract_versions": (1, 2)},
+        active_snapshot_id="snapshot-1",
+        health={"status": "ok"},
+    )
+    envelope = _v2_envelope(
+        job_id=job_a.id,
+        pipeline_contract_version=job_a.pipeline_contract_version.value,
+        model_config_sha256=job_a.model_config_sha256,
+        review_revision=job_a.review_revision,
+    )
+    before = repository.require_job(job_b.id)
+
+    with pytest.raises(ValueError, match="job ID"):
+        repository.create_action_envelope(job_b.id, envelope)
+
+    after = repository.require_job(job_b.id)
+    assert _envelope_row_counts(repository) == (0, 0)
+    assert (after.state, after.review_revision, after.apply_state) == (
+        before.state,
+        before.review_revision,
+        before.apply_state,
+    )
+
+
+def test_action_envelope_operation_journal_is_durable(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    envelope = EnvelopeBuilder(
+        TagPolicy(
+            pipeline_owned_roots=("OMS",),
+            approved_optional_roots=("AnkiHub_Optional::LMU_OMS_II",),
+            source_managed_roots=("#Pathoma",),
+            version="tags-v1",
+        )
+    ).build(
+        ReviewChangeSet(expected_revision=0),
+        {},
+        envelope_id=UUID("5dc4f15e-df92-4a32-964e-026b5d518a80"),
+        snapshot_id="snapshot-1",
+        target_deck="OMS::Heme::Lecture 3",
+        target_tag="AnkiHub_Optional::LMU_OMS_II::Heme::Lecture_3",
+    )
+    sync = next(
+        operation for operation in envelope.operations if isinstance(operation, SyncOperation)
+    )
+
+    stored = repository.create_action_envelope(job.id, envelope)
+    repository.begin_operation(envelope.envelope_id, sync.operation_id)
+    repository.complete_operation(
+        envelope.envelope_id,
+        sync.operation_id,
+        {"sync_status": "complete"},
+    )
+    repository.set_apply_state(
+        envelope.envelope_id,
+        ApplyState.APPLIED_LOCAL_SYNC_RETRYABLE,
+        {"safe_error": "network unavailable"},
+    )
+
+    assert stored.payload_sha256 == envelope.payload_sha256
+    assert repository.get_envelope(envelope.envelope_id) == envelope
+    operation = repository.operation_record(
+        envelope.envelope_id,
+        sync.operation_id,
+    )
+    assert operation.state == "complete"
+    assert operation.attempts == 1
+    assert operation.result == {"sync_status": "complete"}
+    assert repository.require_job(job.id).apply_state is ApplyState.APPLIED_LOCAL_SYNC_RETRYABLE

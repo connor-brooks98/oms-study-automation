@@ -2,6 +2,8 @@ from typing import Protocol
 
 import keyring
 
+VOYAGE_API_KEY_SECRET = "voyage-api-key"
+
 
 class SecretStore(Protocol):
     def get(self, key: str) -> str | None: ...

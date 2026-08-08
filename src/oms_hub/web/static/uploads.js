@@ -26,13 +26,6 @@
     }`
   );
 
-  const fileKind = (name) => {
-    const extension = String(name).toLowerCase().split(".").pop();
-    if (extension === "pptx") return "slides";
-    if (extension === "txt") return "transcripts";
-    return null;
-  };
-
   const postDecision = async (
     fetchImpl,
     itemId,
@@ -47,7 +40,7 @@
         cache: "no-store",
       },
     );
-    const payload = await response.json().catch(() => ({}));
+    const payload = await response.json();
     if (!response.ok) {
       throw new Error(payload.detail || "Study Hub rejected the decision.");
     }
@@ -67,6 +60,7 @@
     const progressWrap = documentRef.querySelector("[data-progress-wrap]");
     const progressBar = documentRef.querySelector("[data-progress-bar]");
     const submit = form.querySelector(".upload-submit");
+    const kind = form.dataset.kind;
     const lectureId = form.dataset.lectureId || "";
     const dialog = documentRef.querySelector("[data-duplicate-dialog]");
     const dialogLecture = dialog?.querySelector("[data-duplicate-lecture]");
@@ -79,7 +73,6 @@
     let pausedItem = null;
     let pausedBatchId = null;
     let resumeDecision = null;
-    const batchItems = new Map();
 
     const csrfHeaders = (headers = {}) => ({
       ...headers,
@@ -130,9 +123,8 @@
     };
 
     const renderBatch = (batch) => {
-      batchItems.set(batch.id, batch.items);
       items.replaceChildren();
-      Array.from(batchItems.values()).flat().forEach((item) => {
+      batch.items.forEach((item) => {
         const row = documentRef.createElement("li");
         const name = documentRef.createElement("span");
         const state = documentRef.createElement("span");
@@ -171,10 +163,8 @@
           headers: { Accept: "application/json" },
           cache: "no-store",
         });
-        const batch = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(batch.detail || "Could not read upload status.");
-        }
+        if (!response.ok) throw new Error("Could not read upload status.");
+        const batch = await response.json();
         renderBatch(batch);
         if (showConfirmation(batch, batchId)) {
           await new Promise((resolve) => {
@@ -191,7 +181,7 @@
       return null;
     };
 
-    const multipartUpload = (files, kind) => new Promise((resolve, reject) => {
+    const multipartUpload = (files) => new Promise((resolve, reject) => {
       const body = new FormData();
       files.forEach((file) => body.append("files", file));
       if (lectureId) body.append("lecture_id", lectureId);
@@ -235,7 +225,7 @@
         .join("");
     };
 
-    const chunkUpload = async (file, kind) => {
+    const chunkUpload = async (file) => {
       const created = await fetchImpl("/api/upload-chunks", {
         method: "POST",
         headers: csrfHeaders({ "Content-Type": "application/json" }),
@@ -246,15 +236,12 @@
           sha256: await sha256(file),
         }),
       });
-      const session = await created.json().catch(() => ({}));
       if (!created.ok) {
         throw new Error(
-          session.detail || "Upload could not start.",
+          (await created.json()).detail || "Upload could not start.",
         );
       }
-      if (typeof session.session_id !== "string") {
-        throw new Error("Upload could not start.");
-      }
+      const session = await created.json();
       let offset = 0;
       while (offset < file.size) {
         const chunk = file.slice(offset, offset + chunkSize);
@@ -262,35 +249,24 @@
           `/api/upload-chunks/${session.session_id}?offset=${offset}`,
           { method: "PUT", headers: csrfHeaders(), body: chunk },
         );
-        const chunkResult = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(
-            chunkResult.detail || "A file chunk failed.",
+            (await response.json()).detail || "A file chunk failed.",
           );
         }
-        if (
-          !Number.isInteger(chunkResult.received)
-          || chunkResult.received <= offset
-        ) {
-          throw new Error("A file chunk failed.");
-        }
-        offset = chunkResult.received;
+        offset = (await response.json()).received;
         setProgress((offset / file.size) * 100);
       }
       const finalized = await fetchImpl(
         chunkFinalizeUrl(session.session_id, lectureId),
         { method: "POST", headers: csrfHeaders() },
       );
-      const result = await finalized.json().catch(() => ({}));
       if (!finalized.ok) {
         throw new Error(
-          result.detail || "Upload could not finish.",
+          (await finalized.json()).detail || "Upload could not finish.",
         );
       }
-      if (typeof result.batch_id !== "string") {
-        throw new Error("Upload could not finish.");
-      }
-      return result;
+      return finalized.json();
     };
 
     browse.addEventListener("click", () => input.click());
@@ -368,28 +344,17 @@
       submit.disabled = true;
       status.textContent = "Uploading to the NUC…";
       items.replaceChildren();
-      batchItems.clear();
       try {
-        const unsupported = chosenFiles.find((file) => !fileKind(file.name));
-        if (unsupported) {
-          throw new Error(`${unsupported.name} is not a PPTX or TXT file.`);
-        }
-        const groups = ["slides", "transcripts"].map((kind) => ({
-          kind,
-          files: chosenFiles.filter((file) => fileKind(file.name) === kind),
-        })).filter((group) => group.files.length);
-        for (const group of groups) {
-          if (group.files.some((file) => file.size > chunkThreshold)) {
-            for (const file of group.files) {
-              status.textContent = `Uploading ${file.name}…`;
-              const result = await chunkUpload(file, group.kind);
-              await pollBatch(result.batch_id);
-            }
-          } else {
-            const result = await multipartUpload(group.files, group.kind);
-            setProgress(100);
+        if (chosenFiles.some((file) => file.size > chunkThreshold)) {
+          for (let index = 0; index < chosenFiles.length; index += 1) {
+            status.textContent = `Uploading ${chosenFiles[index].name}…`;
+            const result = await chunkUpload(chosenFiles[index]);
             await pollBatch(result.batch_id);
           }
+        } else {
+          const result = await multipartUpload(chosenFiles);
+          setProgress(100);
+          await pollBatch(result.batch_id);
         }
       } catch (error) {
         status.textContent = error instanceof Error
@@ -405,7 +370,6 @@
     chunkFinalizeUrl,
     csrfToken,
     formatLecture,
-    fileKind,
     initialize,
     nextConfirmation,
     postDecision,

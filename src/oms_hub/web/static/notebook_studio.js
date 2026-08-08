@@ -19,6 +19,52 @@
     (run) => ["queued", "running", "retrying"].includes(run.state),
   );
 
+  const importRoleAllowsNotebook = (role) => (
+    role === "supporting_reference" || role === "combined_questions_answers"
+  );
+
+  const applyImportRoleState = (form) => {
+    const role = form.querySelector("[data-import-role]")?.value || "questions";
+    const checkbox = form.querySelector("[data-import-notebook]");
+    if (checkbox) {
+      checkbox.disabled = !importRoleAllowsNotebook(role);
+      if (checkbox.disabled) checkbox.checked = false;
+    }
+    return { role, attach_to_notebook: Boolean(checkbox?.checked) };
+  };
+
+  const workflowPanelState = (workflow) => ({
+    generate: workflow === "generate",
+    import: workflow === "import",
+  });
+
+  const toggleClass = (element, className, enabled) => {
+    if (element.classList) {
+      element.classList.toggle(className, enabled);
+      return;
+    }
+    const classes = new Set(String(element.className || "").split(/\s+/).filter(Boolean));
+    if (enabled) classes.add(className);
+    else classes.delete(className);
+    element.className = [...classes].join(" ");
+  };
+
+  const setWorkflowState = (page, workflow) => {
+    const state = workflowPanelState(workflow);
+    page.querySelectorAll("[data-workflow-panel]").forEach((panel) => {
+      panel.hidden = !state[panel.dataset.workflowPanel];
+    });
+    page.querySelectorAll("[data-workflow-tab]").forEach((tab) => {
+      const active = tab.dataset.workflowTab === workflow;
+      tab.setAttribute("aria-pressed", String(active));
+      toggleClass(tab, "primary", active);
+      toggleClass(tab, "secondary", !active);
+      toggleClass(tab, "sh-seg__btn--active", active);
+      toggleClass(tab, "sh-btn--primary", active);
+      toggleClass(tab, "sh-btn--secondary", !active);
+    });
+  };
+
   const renderSources = (documentRef, list, sources) => {
     list.replaceChildren();
     if (!sources.length) {
@@ -35,7 +81,7 @@
       if (source.state !== "deleted") {
         const remove = documentRef.createElement("button");
         remove.type = "button";
-        remove.className = "button secondary compact";
+        remove.className = "button secondary compact sh-btn sh-btn--secondary";
         remove.dataset.deleteSource = source.id;
         remove.textContent = "Delete source";
         row.append(remove);
@@ -59,6 +105,7 @@
     }
     attached.forEach((source) => {
       const label = documentRef.createElement("label");
+      label.className = "sh-check";
       const checkbox = documentRef.createElement("input");
       checkbox.type = "checkbox";
       checkbox.value = source.id;
@@ -69,6 +116,26 @@
       label.append(text);
       picker.append(label);
     });
+  };
+
+  const selectAllAttachedSources = (picker) => {
+    picker.querySelectorAll("input[type=checkbox]").forEach((input) => {
+      input.checked = true;
+    });
+  };
+
+  const imageUrlFromDrop = (documentRef, dataTransfer) => {
+    const html = dataTransfer?.getData("text/html") || "";
+    if (html) {
+      const Parser = documentRef.defaultView?.DOMParser || root.DOMParser;
+      const parsed = Parser ? new Parser().parseFromString(html, "text/html") : null;
+      const image = parsed?.querySelector("img[src]");
+      if (image?.src) return image.src;
+    }
+    const uriList = dataTransfer?.getData("text/uri-list") || "";
+    const uri = uriList.split("\n").map((value) => value.trim()).find(Boolean);
+    if (uri) return uri;
+    return dataTransfer?.getData("text/plain")?.trim() || "";
   };
 
   const filterSourcePicker = (picker, query) => {
@@ -94,7 +161,7 @@
     }
     runs.forEach((run) => {
       const card = documentRef.createElement("article");
-      card.className = "studio-run";
+      card.className = "sh-card studio-run";
       card.dataset.runId = run.id;
       const heading = documentRef.createElement("h3");
       heading.textContent = run.label;
@@ -102,45 +169,75 @@
       const status = documentRef.createElement("p");
       const error = run.error ? ` · ${run.error}` : "";
       const state = run.state === "awaiting_images" ? "Images needed" : retryStatus(run);
-      status.textContent = `${state} · ${run.stage} · attempt ${run.attempts}${error}`;
+      const directStages = {
+        acquire: "acquiring snapshots", parse: "parsing", extract: "extracting questions",
+        pair: "pairing answers", answer_notebook: "resolving answers with NotebookLM",
+        answer_fallback: "resolving answers", normalize: "preparing review", review: "review ready",
+      };
+      const stage = run.workflow_kind === "direct_import"
+        ? (directStages[run.stage] || run.stage)
+        : run.stage;
+      status.textContent = `${state} · ${stage} · attempt ${run.attempts}${error}`;
       card.append(status);
       if (run.image_review_url) {
         const images = documentRef.createElement("a");
-        images.className = "button primary compact";
+        images.className = "button primary compact sh-btn sh-btn--primary";
         images.href = run.image_review_url;
         images.textContent = "Add images";
         card.append(images);
       }
+      if (run.review_url) {
+        const review = documentRef.createElement("a");
+        review.className = "button primary compact sh-btn sh-btn--primary";
+        review.href = run.review_url;
+        review.textContent = "Review questions";
+        card.append(review);
+      }
       if (run.published_url) {
         const link = documentRef.createElement("a");
-        link.className = "button secondary compact";
+        link.className = "button secondary compact sh-btn sh-btn--secondary";
         link.href = run.published_url;
         link.textContent = "Open published quiz";
         card.append(link);
         const unpublish = documentRef.createElement("button");
         unpublish.type = "button";
-        unpublish.className = "button secondary compact";
+        unpublish.className = "button secondary compact sh-btn sh-btn--secondary";
         unpublish.dataset.unpublishRun = run.id;
         unpublish.textContent = "Unpublish";
         card.append(unpublish);
       }
-      if (run.state === "complete" || run.state === "failed") {
+      if (["awaiting_images", "awaiting_review", "complete", "failed"].includes(run.state)) {
+        const actions = documentRef.createElement("div");
+        actions.className = "studio-run-actions";
         const rerun = documentRef.createElement("button");
         rerun.type = "button";
-        rerun.className = "button secondary compact";
+        rerun.className = "button secondary compact sh-btn sh-btn--secondary";
         rerun.dataset.rerun = run.id;
-        rerun.textContent = "Re-run";
-        card.append(rerun);
+        rerun.textContent = "↻";
+        rerun.ariaLabel = "Re-run this quiz";
+        rerun.title = "Re-run";
+        rerun.setAttribute?.("aria-label", "Re-run this quiz");
+        actions.append(rerun);
+        const remove = documentRef.createElement("button");
+        remove.type = "button";
+        remove.className = "button danger compact sh-btn sh-btn--danger";
+        remove.dataset.removeRun = run.id;
+        remove.textContent = "×";
+        remove.ariaLabel = "Remove run from history";
+        remove.title = "Remove from history";
+        remove.setAttribute?.("aria-label", "Remove run from history");
+        actions.append(remove);
+        card.append(actions);
       }
       const attempts = run.attempt_history || [];
       attempts.forEach((attempt) => {
-        if (!attempt.raw_response && !attempt.error) return;
+        if (!attempt.error) return;
         const details = documentRef.createElement("details");
         const summary = documentRef.createElement("summary");
         summary.textContent = `Attempt ${attempt.attempt_number} · ${attempt.diagnostic_source}`;
-        const response = documentRef.createElement("pre");
-        response.textContent = attempt.raw_response || attempt.error;
-        details.append(summary, response);
+        const error = documentRef.createElement("p");
+        error.textContent = attempt.error;
+        details.append(summary, error);
         card.append(details);
       });
       container.append(card);
@@ -160,6 +257,71 @@
     destination_subject: destinationCourse.value,
     destination_exam_number: Number(destinationExam.value),
   });
+
+  const buildImportRunPayload = (
+    form,
+    course,
+    exam,
+    destinationCourse,
+    destinationExam,
+    rows = form.ownerDocument.querySelectorAll("[data-import-source-row]"),
+  ) => ({
+    subject: course.value,
+    exam_number: Number(exam.value),
+    label: form.elements.label.value,
+    destination_subject: destinationCourse.value,
+    destination_exam_number: Number(destinationExam.value),
+    content_kind: "practice_questions",
+    sources: Array.from(rows, (row) => ({
+      source_id: row.dataset.sourceId,
+      role: row.querySelector("[data-import-row-role]")?.value || row.dataset.role,
+      attach_to_notebook: Boolean(row.querySelector("[data-import-row-notebook]")?.checked),
+    })),
+  });
+
+  const appendImportSource = (documentRef, list, source, role, attachToNotebook) => {
+    list.querySelector("[data-import-empty]")?.remove();
+    const row = documentRef.createElement("li");
+    row.dataset.importSourceRow = "true";
+    row.dataset.sourceId = source.id;
+    row.dataset.role = role;
+    const title = documentRef.createElement("span");
+    title.textContent = source.title || source.id;
+    const select = documentRef.createElement("select");
+    select.id = `import-source-role-${source.id}`;
+    select.dataset.importRowRole = "true";
+    select.className = "sh-select";
+    const roleLabel = documentRef.createElement("label");
+    roleLabel.htmlFor = select.id;
+    roleLabel.textContent = "Role";
+    roleLabel.className = "sh-field-label";
+    [
+      ["questions", "Questions"], ["answer_key", "Answer key"],
+      ["supporting_reference", "Supporting reference"],
+      ["combined_questions_answers", "Combined questions and answers"],
+    ].forEach(([value, label]) => {
+      const option = documentRef.createElement("option");
+      option.value = value; option.textContent = label; option.selected = value === role;
+      select.append(option);
+    });
+    const notebook = documentRef.createElement("input");
+    notebook.type = "checkbox";
+    notebook.dataset.importRowNotebook = "true";
+    notebook.checked = attachToNotebook && importRoleAllowsNotebook(role);
+    notebook.disabled = !importRoleAllowsNotebook(role);
+    const notebookLabel = documentRef.createElement("label");
+    notebookLabel.className = "sh-check";
+    notebookLabel.append(notebook, documentRef.createTextNode(" Use in NotebookLM for missing answers"));
+    const remove = documentRef.createElement("button");
+    remove.type = "button"; remove.dataset.removeImportSource = "true"; remove.textContent = "Remove";
+    remove.className = "sh-btn sh-btn--danger";
+    select.addEventListener("change", () => {
+      notebook.disabled = !importRoleAllowsNotebook(select.value);
+      if (notebook.disabled) notebook.checked = false;
+    });
+    row.append(title, roleLabel, select, notebookLabel, remove);
+    list.append(row);
+  };
 
   const populateExams = (documentRef, course, exam) => {
     exam.replaceChildren();
@@ -186,23 +348,40 @@
     const course = page.querySelector("[data-studio-course]");
     const exam = page.querySelector("[data-studio-exam]");
     const list = page.querySelector("[data-source-list]");
+    const sourceStatus = page.querySelector("[data-source-status]");
     const picker = page.querySelector("[data-source-picker]");
     const sourceFilter = page.querySelector("[data-source-filter]");
+    const selectAllButton = page.querySelector("[data-select-all-sources]");
+    const imageDropzone = page.querySelector("[data-image-dropzone]");
+    const imageDropMessage = page.querySelector("[data-image-drop-message]");
     const runList = page.querySelector("[data-run-list]");
     const runForm = page.querySelector("[data-run-form]");
     const destinationCourse = page.querySelector("[data-destination-course]");
     const destinationExam = page.querySelector("[data-destination-exam]");
+    const importRunForm = page.querySelector("[data-import-run-form]");
+    const importDestinationCourse = page.querySelector("[data-import-destination-course]");
+    const importDestinationExam = page.querySelector("[data-import-destination-exam]");
+    const importSourceList = page.querySelector("[data-import-source-list]");
+    const pollStatus = page.querySelector("[data-poll-status]");
     let pollHandle = null;
+    const basePollDelayMs = 2000;
+    const maxPollDelayMs = 30000;
+    let pollDelayMs = basePollDelayMs;
 
-    const scheduleRefresh = () => {
+    page.querySelectorAll("[data-workflow-tab]").forEach((tab) => {
+      tab.addEventListener("click", () => setWorkflowState(page, tab.dataset.workflowTab));
+    });
+    setWorkflowState(page, "generate");
+
+    const scheduleRefresh = (delay = basePollDelayMs) => {
       if (pollHandle !== null) root.clearTimeout(pollHandle);
-      pollHandle = root.setTimeout(refresh, 2000);
+      pollHandle = root.setTimeout(refresh, delay);
     };
 
     const loadJson = async (url) => {
       const response = await fetchImpl(url, { cache: "no-store" });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.detail || "Studio status could not be loaded.");
+      if (!response.ok) throw new Error(payload.detail || "Quiz Builder status could not be loaded.");
       return payload;
     };
 
@@ -215,15 +394,21 @@
           loadJson(`/studio/sources?${query}`),
           loadJson(`/studio/runs?${query}`),
         ]);
+        if (pollStatus) pollStatus.textContent = "";
+        if (sourceStatus) sourceStatus.textContent = "";
+        pollDelayMs = basePollDelayMs;
         const activeSources = renderSources(documentRef, list, sourcePayload.sources || []);
         renderSourcePicker(documentRef, picker, sourcePayload.sources || []);
         filterSourcePicker(picker, sourceFilter.value);
         const activeRuns = renderRuns(documentRef, runList, runPayload.runs || []);
-        if (activeSources || activeRuns) scheduleRefresh();
+        if (activeSources || activeRuns) scheduleRefresh(pollDelayMs);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Studio status could not be loaded.";
-        list.textContent = message;
-        runList.textContent = message;
+        // Keep the previously rendered lists in place; surface the failure
+        // in the dedicated status region and keep polling with backoff.
+        const message = error instanceof Error ? error.message : "Quiz Builder status could not be loaded.";
+        if (pollStatus) pollStatus.textContent = `${message} Retrying…`;
+        pollDelayMs = Math.min(pollDelayMs * 2, maxPollDelayMs);
+        scheduleRefresh(pollDelayMs);
       }
     };
 
@@ -235,18 +420,142 @@
       picker.textContent = "Select a source course and exam first.";
       runList.textContent = "Select a source course and exam to view runs.";
     });
-    exam.addEventListener("change", refresh);
+    exam.addEventListener("change", () => {
+      if (exam.value) {
+        list.textContent = "";
+        const loading = documentRef.createElement("li");
+        loading.textContent = "Loading sources…";
+        list.append(loading);
+        if (sourceStatus) sourceStatus.textContent = "Loading sources…";
+      }
+      refresh();
+    });
     destinationCourse.addEventListener("change", () => {
       populateExams(documentRef, destinationCourse, destinationExam);
+    });
+    importDestinationCourse?.addEventListener("change", () => {
+      populateExams(documentRef, importDestinationCourse, importDestinationExam);
     });
     sourceFilter.addEventListener("input", () => {
       filterSourcePicker(picker, sourceFilter.value);
     });
+    selectAllButton?.addEventListener("click", () => {
+      selectAllAttachedSources(picker);
+    });
+
+    const uploadDroppedImage = async (file) => {
+      if (!course.value || !exam.value) {
+        imageDropMessage.textContent = "Select a course and exam before dropping an image.";
+        return;
+      }
+      const token = csrf(documentRef);
+      const body = new FormData();
+      body.append("title", file.name.replace(/\.[^.]+$/, "") || "Dropped image");
+      body.append("file", file, file.name || "dropped-image.png");
+      body.append("subject", course.value);
+      body.append("exam_number", exam.value);
+      body.append("csrf_token", token);
+      imageDropMessage.textContent = "Uploading image source…";
+      try {
+        const response = await fetchImpl("/studio/sources/file", {
+          method: "POST",
+          headers: { "X-CSRF-Token": token },
+          body,
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.detail || "Image source could not be queued.");
+        imageDropMessage.textContent = "Image source queued for NotebookLM.";
+        await refresh();
+      } catch (error) {
+        imageDropMessage.textContent = error instanceof Error
+          ? error.message
+          : "Image source could not be queued.";
+      }
+    };
+
+    const uploadDroppedImageUrl = async (url) => {
+      if (!course.value || !exam.value) {
+        imageDropMessage.textContent = "Select a course and exam before dropping an image.";
+        return;
+      }
+      const token = csrf(documentRef);
+      const body = new FormData();
+      body.append("title", "Dropped Google image");
+      body.append("url", url);
+      body.append("subject", course.value);
+      body.append("exam_number", exam.value);
+      body.append("csrf_token", token);
+      imageDropMessage.textContent = "Downloading image source…";
+      try {
+        const response = await fetchImpl("/studio/sources/image-url", {
+          method: "POST",
+          headers: { "X-CSRF-Token": token },
+          body,
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.detail || "Image source could not be queued.");
+        imageDropMessage.textContent = "Image source queued for NotebookLM.";
+        await refresh();
+      } catch (error) {
+        imageDropMessage.textContent = error instanceof Error
+          ? error.message
+          : "Image source could not be queued.";
+      }
+    };
+
+    imageDropzone?.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      imageDropzone.classList.add("is-dragging");
+    });
+    imageDropzone?.addEventListener("dragleave", () => {
+      imageDropzone.classList.remove("is-dragging");
+    });
+    imageDropzone?.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      imageDropzone.classList.remove("is-dragging");
+      const images = Array.from(event.dataTransfer?.files || [])
+        .filter((file) => file.type.startsWith("image/"));
+      if (!images.length) {
+        const imageUrl = imageUrlFromDrop(documentRef, event.dataTransfer);
+        if (/^https?:\/\//i.test(imageUrl)) {
+          await uploadDroppedImageUrl(imageUrl);
+        } else {
+          imageDropMessage.textContent = "Drop a PNG, JPEG, WebP image, or an image URL.";
+        }
+        return;
+      }
+      for (const image of images) await uploadDroppedImage(image);
+    });
+    imageDropzone?.addEventListener("paste", async (event) => {
+      const images = Array.from(event.clipboardData?.files || [])
+        .filter((file) => file.type.startsWith("image/"));
+      if (!images.length) return;
+      event.preventDefault();
+      for (const image of images) await uploadDroppedImage(image);
+    });
+    imageDropzone?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        page.querySelector("[data-source-type=file] input[type=file]")?.click();
+      }
+    });
     page.addEventListener("click", async (event) => {
       const deleteButton = event.target.closest?.("[data-delete-source]");
       const rerunButton = event.target.closest?.("[data-rerun]");
+      const removeRunButton = event.target.closest?.("[data-remove-run]");
       const unpublishButton = event.target.closest?.("[data-unpublish-run]");
-      const target = deleteButton || rerunButton || unpublishButton;
+      const removeImportSource = event.target.closest?.("[data-remove-import-source]");
+      if (removeImportSource) {
+        removeImportSource.closest("[data-import-source-row]")?.remove();
+        if (!importSourceList.children.length) {
+          const empty = documentRef.createElement("li");
+          empty.dataset.importEmpty = "true";
+          empty.textContent = "Add at least one local source.";
+          importSourceList.append(empty);
+        }
+        return;
+      }
+      const target = deleteButton || rerunButton || removeRunButton || unpublishButton;
       if (!target) return;
       const token = csrf(documentRef);
       let url;
@@ -258,6 +567,10 @@
       } else if (rerunButton) {
         url = `/studio/runs/${encodeURIComponent(rerunButton.dataset.rerun)}/rerun`;
         method = "POST";
+      } else if (removeRunButton) {
+        if (!root.confirm("Remove this run from history? A published quiz will remain available.")) return;
+        url = `/studio/runs/${encodeURIComponent(removeRunButton.dataset.removeRun)}`;
+        method = "DELETE";
       } else {
         if (!root.confirm("Unpublish this quiz? Private run history will be retained.")) return;
         url = `/studio/runs/${encodeURIComponent(unpublishButton.dataset.unpublishRun)}/publication`;
@@ -270,10 +583,15 @@
           headers: { "X-CSRF-Token": token },
         });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.detail || "Studio action could not be completed.");
+        if (!response.ok) throw new Error(payload.detail || "Quiz Builder action could not be completed.");
         await refresh();
       } catch (error) {
-        runList.textContent = error instanceof Error ? error.message : "Studio action could not be completed.";
+        const detail = error instanceof Error ? error.message : "Quiz Builder action could not be completed.";
+        if (deleteButton) {
+          if (sourceStatus) sourceStatus.textContent = detail;
+        } else {
+          runList.textContent = detail;
+        }
       } finally {
         target.disabled = false;
       }
@@ -292,6 +610,8 @@
         body.append("subject", course.value);
         body.append("exam_number", exam.value);
         body.append("csrf_token", token);
+        const submitButton = form.querySelector('button[type="submit"]');
+        if (submitButton) submitButton.disabled = true;
         try {
           const response = await fetchImpl(`/studio/sources/${form.dataset.sourceType}`, {
             method: "POST",
@@ -305,6 +625,50 @@
           await refresh();
         } catch (error) {
           message.textContent = error instanceof Error ? error.message : "Source could not be queued.";
+        } finally {
+          if (submitButton) submitButton.disabled = false;
+        }
+      });
+    });
+
+    page.querySelectorAll("[data-import-source-form]").forEach((form) => {
+      applyImportRoleState(form);
+      form.querySelector("[data-import-role]")?.addEventListener("change", () => {
+        applyImportRoleState(form);
+      });
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const message = form.querySelector("[data-form-message]");
+        if (!course.value || !exam.value) {
+          message.textContent = "Select a course and exam first.";
+          return;
+        }
+        const roleState = applyImportRoleState(form);
+        const token = csrf(documentRef);
+        const body = new FormData(form);
+        body.append("subject", course.value);
+        body.append("exam_number", exam.value);
+        body.append("csrf_token", token);
+        const submitButton = form.querySelector('button[type="submit"]');
+        if (submitButton) submitButton.disabled = true;
+        try {
+          const response = await fetchImpl(`/studio/import/sources/${form.dataset.importSourceType}`, {
+            method: "POST", headers: { "X-CSRF-Token": token }, body,
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(payload.detail || "Import source could not be queued.");
+          appendImportSource(documentRef, importSourceList, {
+            id: payload.id,
+            title: form.elements.title.value,
+          }, roleState.role, roleState.attach_to_notebook);
+          message.textContent = "Local import source added.";
+          form.reset();
+          applyImportRoleState(form);
+          await refresh();
+        } catch (error) {
+          message.textContent = error instanceof Error ? error.message : "Import source could not be queued.";
+        } finally {
+          if (submitButton) submitButton.disabled = false;
         }
       });
     });
@@ -317,6 +681,8 @@
         return;
       }
       const token = csrf(documentRef);
+      const submitButton = runForm.querySelector('button[type="submit"]');
+      if (submitButton) submitButton.disabled = true;
       try {
         const response = await fetchImpl("/studio/runs", {
           method: "POST",
@@ -332,20 +698,59 @@
         await refresh();
       } catch (error) {
         message.textContent = error instanceof Error ? error.message : "Prompt run could not be queued.";
+      } finally {
+        if (submitButton) submitButton.disabled = false;
+      }
+    });
+
+    importRunForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const message = importRunForm.querySelector("[data-import-run-message]");
+      const rows = importSourceList.querySelectorAll("[data-import-source-row]");
+      if (!course.value || !exam.value || !importDestinationCourse.value || !importDestinationExam.value || !rows.length) {
+        message.textContent = "Select source and publication course/exam, then add at least one source.";
+        return;
+      }
+      const token = csrf(documentRef);
+      const submitButton = importRunForm.querySelector('button[type="submit"]');
+      if (submitButton) submitButton.disabled = true;
+      try {
+        const response = await fetchImpl("/studio/import/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": token },
+          body: JSON.stringify(buildImportRunPayload(
+            importRunForm, course, exam, importDestinationCourse, importDestinationExam, rows,
+          )),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.detail || "Practice-question review could not be queued.");
+        message.textContent = "Practice questions queued for local review.";
+        await refresh();
+      } catch (error) {
+        message.textContent = error instanceof Error ? error.message : "Practice-question review could not be queued.";
+      } finally {
+        if (submitButton) submitButton.disabled = false;
       }
     });
   };
 
   const api = {
+    appendImportSource,
     buildRunPayload,
+    buildImportRunPayload,
+    applyImportRoleState,
     filterSourcePicker,
     hasActiveRuns,
     hasActiveSources,
     initialize,
+    imageUrlFromDrop,
     normalizeSubject,
     renderRuns,
     renderSources,
     retryStatus,
+    selectAllAttachedSources,
+    setWorkflowState,
+    workflowPanelState,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) {

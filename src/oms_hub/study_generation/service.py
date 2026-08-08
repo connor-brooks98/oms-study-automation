@@ -50,9 +50,20 @@ class GenerationService:
         }
         pdf = revisions.get(UploadKind.SLIDES)
         transcript = revisions.get(UploadKind.TRANSCRIPTS)
-        if not _ready_revision(pdf) or not _ready_revision(transcript):
+        problems = [
+            f"lecture PDF {problem}"
+            for problem in [revision_readiness_problem(pdf)]
+            if problem is not None
+        ]
+        problems.extend(
+            f"cleaned transcript {problem}"
+            for problem in [revision_readiness_problem(transcript)]
+            if problem is not None
+        )
+        if problems:
             raise GenerationPrerequisiteError(
-                "Current lecture PDF and cleaned transcript are required"
+                "Current lecture PDF and cleaned transcript are required: "
+                + "; ".join(problems)
             )
         live_check = getattr(
             self.notebook_connection,
@@ -115,18 +126,23 @@ class GenerationService:
         return queued
 
 
-def _ready_revision(revision: Any | None) -> bool:
-    if (
-        revision is None
-        or not revision.current
-        or revision.canonical_derived_path is None
-        or revision.derived_sha256 is None
-        or not revision.canonical_derived_path.is_file()
-    ):
-        return False
-    return bool(
-        sha256_file(revision.canonical_derived_path) == revision.derived_sha256
-    )
+def revision_readiness_problem(revision: Any | None) -> str | None:
+    if revision is None:
+        return "is not uploaded"
+    if not revision.current:
+        return "is not current"
+    if revision.canonical_derived_path is None:
+        return "has no filed artifact"
+    if revision.derived_sha256 is None:
+        return "has no recorded checksum"
+    try:
+        if not revision.canonical_derived_path.is_file():
+            return "file is missing"
+        if sha256_file(revision.canonical_derived_path) != revision.derived_sha256:
+            return "file checksum does not match"
+    except OSError:
+        return "file is not readable"
+    return None
 
 
 def _progress_step(kind: GenerationKind) -> V2StepName:

@@ -3,23 +3,11 @@ import os
 import subprocess
 import sys
 from collections.abc import Callable
-from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
-
-from oms_hub.study_generation.notebook_storage import PlaintextNotebookStorage
 
 MAX_AUTH_OUTPUT_BYTES = 64 * 1024
 Runner = Callable[..., subprocess.CompletedProcess[str]]
-
-
-class NotebookStorage(Protocol):
-    def plaintext(
-        self,
-        *,
-        writable: bool = False,
-    ) -> AbstractContextManager[Path]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,17 +19,13 @@ class NotebookAuthCheck:
 class NotebookCLIAuth:
     def __init__(
         self,
-        storage_path: Path | NotebookStorage,
+        storage_path: Path,
         *,
         executable: Path | None = None,
         python_executable: Path | None = None,
         runner: Runner = subprocess.run,
     ) -> None:
-        self.storage = (
-            PlaintextNotebookStorage(storage_path)
-            if isinstance(storage_path, Path)
-            else storage_path
-        )
+        self.storage_path = storage_path.resolve()
         self.executable = executable or _default_executable()
         self.python_executable = Path(
             python_executable or sys.executable
@@ -49,54 +33,51 @@ class NotebookCLIAuth:
         self.runner = runner
 
     def login(self) -> None:
-        with self.storage.plaintext(writable=True) as storage_path:
-            storage_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                result = self._run(
-                    "-m",
-                    "oms_hub.study_generation.notebook_login_compat",
-                    "login",
-                    "--storage",
-                    str(storage_path),
-                    "--browser",
-                    "chrome",
-                    "--fresh",
-                    executable=self.python_executable,
-                    include_root_storage=False,
-                    timeout=330,
-                )
-            except subprocess.TimeoutExpired as error:
-                raise RuntimeError(
-                    "Gemini Notebook login timed out. Connect Notebook again."
-                ) from error
-            except FileNotFoundError as error:
-                raise RuntimeError(
-                    "NotebookLM login is unavailable. Reinstall Study Hub."
-                ) from error
-            if result.returncode != 0:
-                raise RuntimeError("NotebookLM login did not complete.")
+        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            result = self._run(
+                "-m",
+                "oms_hub.study_generation.notebook_login_compat",
+                "login",
+                "--storage",
+                str(self.storage_path),
+                "--browser",
+                "chrome",
+                "--fresh",
+                executable=self.python_executable,
+                include_root_storage=False,
+                timeout=330,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(
+                "Gemini Notebook login timed out. Connect Notebook again."
+            ) from error
+        except FileNotFoundError as error:
+            raise RuntimeError(
+                "NotebookLM login is unavailable. Reinstall Study Hub."
+            ) from error
+        if result.returncode != 0:
+            raise RuntimeError("NotebookLM login did not complete.")
 
     def check(self) -> NotebookAuthCheck:
-        with self.storage.plaintext() as storage_path:
-            try:
-                result = self._run(
-                    "auth",
-                    "check",
-                    "--test",
-                    "--json",
-                    storage_path=storage_path,
-                    timeout=60,
-                )
-            except subprocess.TimeoutExpired:
-                return NotebookAuthCheck(
-                    False,
-                    "NotebookLM authentication check timed out.",
-                )
-            except FileNotFoundError:
-                return NotebookAuthCheck(
-                    False,
-                    "NotebookLM authentication is unavailable. Reinstall Study Hub.",
-                )
+        try:
+            result = self._run(
+                "auth",
+                "check",
+                "--test",
+                "--json",
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            return NotebookAuthCheck(
+                False,
+                "NotebookLM authentication check timed out.",
+            )
+        except FileNotFoundError:
+            return NotebookAuthCheck(
+                False,
+                "NotebookLM authentication is unavailable. Reinstall Study Hub.",
+            )
         if result.returncode != 0:
             return NotebookAuthCheck(False, "NotebookLM login is required.")
         if len(result.stdout.encode("utf-8")) > MAX_AUTH_OUTPUT_BYTES:
@@ -124,13 +105,12 @@ class NotebookCLIAuth:
         *arguments: str,
         executable: Path | None = None,
         include_root_storage: bool = True,
-        storage_path: Path | None = None,
         timeout: int,
     ) -> subprocess.CompletedProcess[str]:
         command = [str(executable or self.executable)]
         if include_root_storage:
             command.extend(
-                ["--storage", str(storage_path)]
+                ["--storage", str(self.storage_path)]
             )
         command.extend(arguments)
         return self.runner(

@@ -38,19 +38,6 @@ def test_release_builder_creates_secret_safe_hotfix_and_source_archives(tmp_path
     assert "pyproject.toml" in source_names
     assert "src/oms_hub/app.py" in source_names
     assert "tests/v2/test_llm_settings_routes.py" in source_names
-    image_review_files = {
-        "src/oms_hub/study_generation/quiz_images.py",
-        "src/oms_hub/web/templates/studio_quiz_images.html",
-        "src/oms_hub/web/static/studio_quiz_images.js",
-    }
-    assert image_review_files <= hotfix_names
-    assert image_review_files <= source_names
-    preview_files = {
-        "src/oms_hub/web/templates/studio_quiz_preview.html",
-        "src/oms_hub/web/static/studio_quiz_preview.js",
-    }
-    assert preview_files <= hotfix_names
-    assert preview_files <= source_names
     for names in (hotfix_names, source_names):
         lowered = {name.casefold() for name in names}
         assert ".env" not in lowered

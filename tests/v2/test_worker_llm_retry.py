@@ -25,6 +25,7 @@ def test_transient_llm_failures_are_retried(source):
     [
         DiagnosticSource.AUTHENTICATION,
         DiagnosticSource.MODEL,
+        DiagnosticSource.REQUEST,
         DiagnosticSource.STUDY_HUB,
     ],
 )
@@ -33,10 +34,9 @@ def test_permanent_llm_failures_are_not_retried(source):
     assert IngestionWorker._is_transient(error) is False
 
 
-def test_ingestion_retries_typed_sqlite_busy_error():
-    busy = sqlite3.OperationalError("localized message")
-    busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
+def test_sqlite_busy_errors_are_retried():
+    orig = sqlite3.OperationalError("database is locked")
+    orig.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    error = OperationalError("stmt", {}, orig)
 
-    assert IngestionWorker._is_transient(
-        OperationalError("statement", {}, busy)
-    ) is True
+    assert IngestionWorker._is_transient(error) is True

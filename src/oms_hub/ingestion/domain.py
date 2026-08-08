@@ -152,12 +152,6 @@ class StudyRevision:
 
 
 @dataclass(frozen=True, slots=True)
-class FailedRevision:
-    revision: StudyRevision
-    error: str
-
-
-@dataclass(frozen=True, slots=True)
 class IngestionJob:
     id: int
     upload_item_id: str

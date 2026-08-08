@@ -1,10 +1,9 @@
-import asyncio
 from io import BytesIO
 from pathlib import Path
 from typing import Annotated, cast
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
@@ -13,7 +12,6 @@ from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.ingestion.service import IngestionService
 from oms_hub.ingestion.staging import StagingService, UploadRejected
 from oms_hub.repositories import CatalogRepository
-from oms_hub.web.csrf import require_form_csrf
 
 router = APIRouter()
 templates = Jinja2Templates(
@@ -21,8 +19,9 @@ templates = Jinja2Templates(
 )
 
 
-@router.get("/uploads", response_class=HTMLResponse)
+@router.get("/uploads/{kind}", response_class=HTMLResponse)
 def upload_page(
+    kind: UploadKind,
     request: Request,
     lecture_id: int | None = None,
 ) -> HTMLResponse:
@@ -35,20 +34,15 @@ def upload_page(
         request=request,
         name="uploads.html",
         context={
+            "kind": kind,
+            "accept": (
+                ".pptx"
+                if kind is UploadKind.SLIDES
+                else ".txt"
+            ),
             "selected_lecture": selected_lecture,
         },
     )
-
-
-@router.get("/uploads/{kind}")
-def legacy_upload_page(
-    kind: UploadKind,
-    lecture_id: int | None = None,
-) -> RedirectResponse:
-    destination = "/uploads"
-    if lecture_id is not None:
-        destination += f"?lecture_id={lecture_id}"
-    return RedirectResponse(destination, status_code=307)
 
 
 class ChunkCreate(BaseModel):
@@ -82,20 +76,11 @@ def upload_files(
     kind: UploadKind,
     request: Request,
     files: Annotated[list[UploadFile], File()],
-    csrf_token: Annotated[str | None, Form()] = None,
     lecture_id: Annotated[int | None, Form()] = None,
 ) -> dict[str, str]:
-    require_form_csrf(request, csrf_token)
     if not files:
         raise HTTPException(422, "at least one file is required")
     _require_lecture(request, lecture_id)
-    try:
-        _staging(request).prevalidate_files(
-            kind,
-            ((upload.filename or "", upload.file) for upload in files),
-        )
-    except UploadRejected as error:
-        raise HTTPException(422, str(error)) from error
     batch = _staging(request).begin_batch(kind)
     repository = _repository(request)
     repository.create_batch(kind, batch.id)
@@ -200,8 +185,7 @@ async def append_chunk(
 ) -> dict[str, int]:
     body = await request.body()
     try:
-        received = await asyncio.to_thread(
-            _staging(request).append_chunk,
+        received = _staging(request).append_chunk(
             session_id,
             offset,
             BytesIO(body),

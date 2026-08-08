@@ -198,4 +198,3 @@ Automated coverage must prove:
 - the browser player supports selection, elimination, submission, feedback,
   continuation, and local progress; and
 - release archives contain the new runtime files and no browser credentials.
-

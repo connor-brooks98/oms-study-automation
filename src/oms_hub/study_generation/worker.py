@@ -167,7 +167,7 @@ class GenerationWorker:
             notebook_prompt = (
                 prompt
                 if job.kind is GenerationKind.OUTLINE
-                else quiz_prompt(prompt)
+                else quiz_prompt(prompt, lecture.subject)
             )
             generate = getattr(self.notebook, "generate", None)
             if callable(generate):

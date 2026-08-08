@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from notebooklm import AuthError
 
 from oms_hub.study_generation.domain import (
     LectureSourceSet,
@@ -16,8 +15,14 @@ from oms_hub.study_generation.domain import (
     SourceIsolationError,
     SourceKind,
 )
-from oms_hub.study_generation.notebook import StoredNotebookLMGateway
-from oms_hub.study_generation.notebook_errors import NotebookAuthenticationError
+from oms_hub.study_generation.notebook import (
+    NotebookAuthenticationError,
+    NotebookQuestionContractError,
+    NotebookQuestionResult,
+    NotebookQuestionStatus,
+    StoredNotebookLMGateway,
+)
+from oms_hub.study_generation.practice_domain import QuestionDraft, QuestionSourceRef
 
 
 @dataclass
@@ -76,6 +81,7 @@ class FakeSources:
 class FakeChat:
     def __init__(self):
         self.calls = []
+        self.answer = "Selected lecture only"
 
     async def ask(self, notebook_id, question, *, source_ids):
         self.calls.append(
@@ -85,7 +91,7 @@ class FakeChat:
                 "source_ids": list(source_ids),
             }
         )
-        return type("Answer", (), {"answer": "Selected lecture only"})()
+        return type("Answer", (), {"answer": self.answer})()
 
 
 class FakeClient:
@@ -108,7 +114,11 @@ class FakeClientContext:
 
 class ExpiredClientContext:
     async def __aenter__(self):
-        raise AuthError("expired provider storage with secret-cookie-value")
+        raise RuntimeError(
+            "Authentication expired or invalid. Redirected to: "
+            "https://accounts.google.com/ Run 'notebooklm login' "
+            "to re-authenticate."
+        )
 
     async def __aexit__(self, exc_type, exc, traceback):
         return False
@@ -201,6 +211,24 @@ def _gateway(tmp_path, client, repository):
     )
 
 
+def _question() -> QuestionDraft:
+    return QuestionDraft(
+        question_id="question-1",
+        original_identifier="1",
+        stem="Which muscle flexes the elbow?",
+        choices=("Biceps", "Triceps"),
+        correct_index=None,
+        rationale=None,
+        image_ref=None,
+        source_refs=(QuestionSourceRef("questions", "page-1", "page 1"),),
+        answer_provenance=None,
+        extraction_confidence=0.9,
+        diagnostics=(),
+        verification_required=True,
+        verified_at=None,
+    )
+
+
 def test_source_upload_uses_canonical_path_stem(tmp_path):
     events = []
     repository = FakeRepository(events)
@@ -233,60 +261,6 @@ def test_source_upload_uses_canonical_path_stem(tmp_path):
         "Lecture 02 - Demyelinating Disease - Transcript",
     ]
     assert sources.remote_ids == ["new-1", "new-2"]
-
-
-def test_generation_uses_one_client_context_for_notebook_sources_and_chat(
-    tmp_path,
-):
-    events = []
-    contexts = []
-    repository = FakeRepository(events)
-    client = FakeClient([], events)
-
-    def context_factory():
-        context = FakeClientContext(client)
-        contexts.append(context)
-        return context
-
-    gateway = StoredNotebookLMGateway(
-        tmp_path / "notebooklm-storage.json",
-        repository,
-        client_factory=context_factory,
-    )
-    pdf = _revision(
-        tmp_path / "Lecture 02.pdf",
-        2,
-        10,
-        SourceKind.LECTURE_PDF,
-        b"pdf",
-    )
-    transcript = _revision(
-        tmp_path / "Lecture 02 - Transcript.txt",
-        2,
-        11,
-        SourceKind.CLEANED_TRANSCRIPT,
-        b"transcript",
-    )
-
-    result = gateway.generate(
-        "Neuro",
-        1,
-        2,
-        pdf,
-        transcript,
-        PromptSnapshot(
-            tmp_path / "Quiz.md",
-            "Create the quiz",
-            "c" * 64,
-            "now",
-        ),
-    )
-
-    assert len(contexts) == 1
-    assert result.notebook.id == "nb-1"
-    assert result.sources.remote_ids == ["new-1", "new-2"]
-    assert result.answer.text == "Selected lecture only"
-    assert client.chat.calls[0]["source_ids"] == ["new-1", "new-2"]
 
 
 def test_gateway_translates_expired_storage_into_safe_auth_error(tmp_path):
@@ -497,3 +471,92 @@ def test_ask_fails_closed_when_selected_remote_is_not_ready(tmp_path):
         )
 
     assert client.chat.calls == []
+
+
+def test_answer_studio_question_uses_only_selected_ready_supporting_sources(tmp_path) -> None:
+    events = []
+    repository = FakeRepository(events)
+    client = FakeClient(
+        [FakeRemote("support-1", "Course guide"), FakeRemote("other", "Other source")], events
+    )
+    client.chat.answer = (
+        '{"status":"answered","correct_index":0,"rationale":"The guide says biceps flexes.",'
+        '"evidence":["Course guide, page 4"]}'
+    )
+
+    result = _gateway(tmp_path, client, repository).answer_studio_question(
+        "Neuro", 1, _question(), ("support-1",)
+    )
+
+    assert result.status is NotebookQuestionStatus.ANSWERED
+    assert result.correct_index == 0
+    assert client.chat.calls[-1]["source_ids"] == ["support-1"]
+    assert "Biceps" in client.chat.calls[-1]["question"]
+
+
+def test_notebook_question_result_rejects_internally_inconsistent_status() -> None:
+    with pytest.raises(NotebookQuestionContractError):
+        NotebookQuestionResult(NotebookQuestionStatus.ANSWERED, None, "Biceps", ("p4",))
+
+
+def test_answer_studio_question_accepts_explicit_no_support_json(tmp_path) -> None:
+    events = []
+    client = FakeClient([FakeRemote("support-1", "Course guide")], events)
+    client.chat.answer = (
+        '{"status":"no_support","correct_index":null,'
+        '"rationale":"The selected guide does not address elbow flexion.","evidence":[]}'
+    )
+
+    result = _gateway(tmp_path, client, FakeRepository(events)).answer_studio_question(
+        "Neuro", 1, _question(), ("support-1",)
+    )
+
+    assert result == NotebookQuestionResult(
+        NotebookQuestionStatus.NO_SUPPORT,
+        None,
+        "The selected guide does not address elbow flexion.",
+        (),
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_ids", "sources"),
+    [
+        (("support-1", "support-1"), [FakeRemote("support-1", "Course guide")]),
+        (("missing",), [FakeRemote("support-1", "Course guide")]),
+        (("support-1",), [FakeRemote("support-1", "Course guide", status="processing")]),
+    ],
+)
+def test_answer_studio_question_rejects_invalid_source_selection(
+    tmp_path, source_ids, sources
+) -> None:
+    events = []
+    gateway = _gateway(tmp_path, FakeClient(sources, events), FakeRepository(events))
+
+    with pytest.raises(SourceIsolationError):
+        gateway.answer_studio_question("Neuro", 1, _question(), source_ids)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "",
+        "maybe the answer is 0",
+        '{"status":"answered","correct_index":null,"rationale":"Maybe Biceps",'
+        '"evidence":["p4"]}',
+        '{"status":"answered","correct_index":0,"rationale":"Probably Biceps",'
+        '"evidence":["p4"]}',
+        '{"status":"answered","correct_index":0,"rationale":"It appears to be Biceps",'
+        '"evidence":["p4"]}',
+        '{"status":"answered","correct_index":2,"rationale":"Biceps",' '"evidence":["p4"]}',
+    ],
+)
+def test_answer_studio_question_rejects_invalid_model_contract(tmp_path, response) -> None:
+    events = []
+    client = FakeClient([FakeRemote("support-1", "Course guide")], events)
+    client.chat.answer = response
+
+    with pytest.raises(NotebookQuestionContractError):
+        _gateway(tmp_path, client, FakeRepository(events)).answer_studio_question(
+            "Neuro", 1, _question(), ("support-1",)
+        )

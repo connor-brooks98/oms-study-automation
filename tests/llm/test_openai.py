@@ -1,8 +1,19 @@
+import copy
+import json
+
 import httpx
+import pytest
 import respx
 
-from oms_hub.llm.domain import ProviderName
-from oms_hub.llm.openai import OpenAIProvider
+from oms_hub.llm.domain import (
+    DiagnosticSource,
+    GenerationOptions,
+    LLMRequestError,
+    ProviderName,
+    ThinkingMode,
+)
+from oms_hub.llm.openai import OpenAIProvider, openai_output_schema
+from oms_hub.study_generation.practice_contracts import ExtractionPayload
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
 
@@ -77,3 +88,254 @@ def test_openai_connection_test_uses_a_real_minimal_generation():
     assert result.request_id == "resp-test"
     assert route.calls.call_count == 1
 
+
+@respx.mock
+def test_openai_structured_generation_sends_json_schema():
+    route = respx.post("https://api.openai.com/v1/responses").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "resp-json",
+                "status": "completed",
+                "model": "gpt-5.2",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": '{"answer":"iron"}',
+                            }
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 10, "output_tokens": 4},
+            },
+        )
+    )
+
+    result = OpenAIProvider().generate_text(
+        "Return a grounded answer.",
+        "Question",
+        api_key="secret",
+        model="gpt-5.2",
+        output_schema={
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+    )
+
+    payload = route.calls.last.request.content.decode()
+    assert '"json_schema"' in payload
+    assert '"structured_output"' in payload
+    assert result.text == '{"answer":"iron"}'
+
+
+def test_openai_output_schema_makes_pydantic_optionals_strict_schema_compatible() -> None:
+    schema = openai_output_schema(ExtractionPayload.model_json_schema())
+
+    def assert_strict(value: object) -> None:
+        if isinstance(value, list):
+            for item in value:
+                assert_strict(item)
+            return
+        if not isinstance(value, dict):
+            return
+        properties = value.get("properties")
+        if isinstance(properties, dict):
+            assert value["required"] == list(properties)
+            assert value["additionalProperties"] is False
+            assert "default" not in value
+        for child in value.values():
+            assert_strict(child)
+
+    assert_strict(schema)
+
+
+@respx.mock
+def test_openai_generation_preserves_prefix_order_without_claiming_cache_hits() -> None:
+    route = respx.post("https://api.openai.com/v1/responses").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "resp-cache",
+                "status": "completed",
+                "model": "gpt-5.2",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": '{"ok":true}'}],
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 4,
+                    "input_tokens_details": {"cached_tokens": 9},
+                },
+            },
+        )
+    )
+
+    result = OpenAIProvider().generate_text(
+        "Return JSON.",
+        "Question",
+        api_key="secret",
+        model="gpt-5.2",
+        output_schema={"type": "object"},
+        options=GenerationOptions(cacheable_source_prefix="SUM: source"),
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    assert OpenAIProvider.capabilities.prompt_prefix_caching is False
+    assert OpenAIProvider.capabilities.thinking is False
+    assert payload["input"] == "SUM: source\n\nQuestion"
+    assert result.cache_creation_input_tokens == 0
+    assert result.cache_read_input_tokens == 0
+
+
+def test_openai_rejects_unsupported_thinking() -> None:
+    with pytest.raises(LLMRequestError) as raised:
+        OpenAIProvider().generate_text(
+            "Return JSON.",
+            "Question",
+            api_key="secret",
+            model="gpt-5.2",
+            output_schema={"type": "object"},
+            options=GenerationOptions(thinking=ThinkingMode.ENABLED),
+        )
+
+    assert raised.value.source is DiagnosticSource.CONTRACT
+
+
+@respx.mock
+def test_openai_structured_generation_sends_provider_safe_schema_copy():
+    route = respx.post("https://api.openai.com/v1/responses").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "resp-schema",
+                "status": "completed",
+                "model": "gpt-5.6-terra",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": '{"values":["a","b"]}',
+                            }
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 12, "output_tokens": 5},
+            },
+        )
+    )
+    schema = {
+        "type": "object",
+        "properties": {
+            "values": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "prefixItems": [
+                    {"type": "string", "minLength": 1},
+                    {"type": "string", "minLength": 1},
+                ],
+            }
+        },
+        "required": ["values"],
+        "additionalProperties": False,
+    }
+    original = copy.deepcopy(schema)
+
+    OpenAIProvider().generate_text(
+        "Return two values.",
+        "Question",
+        api_key="secret",
+        model="gpt-5.6-terra",
+        output_schema=schema,
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    sent = payload["text"]["format"]["schema"]
+    assert sent == {
+        "type": "object",
+        "properties": {
+            "values": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {"type": "string", "minLength": 1},
+            }
+        },
+        "required": ["values"],
+        "additionalProperties": False,
+    }
+    assert schema == original
+
+
+@respx.mock
+def test_openai_list_models_returns_sorted_ids():
+    route = respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "gpt-4.1"},
+                    {"id": "gpt-5.2"},
+                    {"id": "gpt-5.2-mini"},
+                ]
+            },
+        )
+    )
+
+    models = OpenAIProvider().list_models("sentinel-secret")
+
+    assert models == ("gpt-4.1", "gpt-5.2", "gpt-5.2-mini")
+    assert route.calls.last.request.headers["authorization"] == (
+        "Bearer sentinel-secret"
+    )
+
+
+@respx.mock
+def test_openai_list_models_raises_on_unauthorized_without_leaking_key():
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(
+            401,
+            json={"error": {"message": "invalid api key: sentinel-secret"}},
+        )
+    )
+
+    with pytest.raises(LLMRequestError) as raised:
+        OpenAIProvider().list_models("sentinel-secret")
+
+    assert raised.value.source is DiagnosticSource.AUTHENTICATION
+    assert "sentinel-secret" not in str(raised.value)
+
+
+@respx.mock
+def test_openai_list_models_raises_on_network_error_without_leaking_key():
+    respx.get("https://api.openai.com/v1/models").mock(
+        side_effect=httpx.ReadTimeout("timed out")
+    )
+
+    with pytest.raises(LLMRequestError) as raised:
+        OpenAIProvider().list_models("sentinel-secret")
+
+    assert raised.value.source is DiagnosticSource.NETWORK
+    assert "sentinel-secret" not in str(raised.value)
+
+
+@respx.mock
+def test_openai_list_models_raises_on_malformed_payload():
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": "not-a-list"})
+    )
+
+    with pytest.raises(LLMRequestError) as raised:
+        OpenAIProvider().list_models("sentinel-secret")
+
+    assert raised.value.source is DiagnosticSource.SERVICE
+    assert "sentinel-secret" not in str(raised.value)

@@ -17,7 +17,7 @@ from oms_hub.progress import overall_status
 from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.study_generation.domain import GenerationKind
 from oms_hub.study_generation.repository import GenerationRepository
-from oms_hub.web.csrf import require_form_csrf
+from oms_hub.study_generation.service import revision_readiness_problem
 from oms_hub.web.schemas import LectureApi, StepApi
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -26,15 +26,16 @@ router = APIRouter()
 _COURSE_HUES = {
     "clinical neuroscience": 290,
     "neuro": 290,
+    "neuroscience": 290,
     "msk": 50,
-    "opp": 190,
+    "opp": 175,
     "epc": 95,
-    "heme & lymph": 15,
-    "heme/lymph": 15,
+    "heme lymph": 15,
     "heme": 15,
     "cardio": 340,
     "renal": 135,
-    "respiratory": 205,
+    "resp": 210,
+    "respiratory": 210,
 }
 _V2_STEP_VALUES = {name.value for name in V2StepName}
 _V2_RELEASE_VALUES = {
@@ -130,8 +131,7 @@ def dashboard(request: Request) -> HTMLResponse:
 
 @router.get("/lectures/{lecture_id}", response_class=HTMLResponse)
 def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
-    repository = _repo(request)
-    lecture = repository.get_lecture(lecture_id)
+    lecture = _repo(request).get_lecture(lecture_id)
     if lecture is None:
         return HTMLResponse("Lecture not found", status_code=404)
     key = LectureKey(
@@ -166,10 +166,11 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
             request.app.state.database
         ).list_current_revisions(lecture_id)
     }
+    slide_revision = revisions.get(UploadKind.SLIDES)
+    transcript_revision = revisions.get(UploadKind.TRANSCRIPTS)
     generation = GenerationRepository(request.app.state.database)
     outline = generation.current_outline(lecture_id)
     quiz = generation.current_quiz(lecture_id)
-    previous_lecture, next_lecture = repository.get_adjacent_lectures(lecture_id)
     return templates.TemplateResponse(
         request=request,
         name="lecture.html",
@@ -184,9 +185,11 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
             if release_steps
             else 0,
             "release_steps": release_steps,
-            "slide_revision": revisions.get(UploadKind.SLIDES),
-            "transcript_revision": revisions.get(
-                UploadKind.TRANSCRIPTS
+            "slide_revision": slide_revision,
+            "slide_problem": revision_readiness_problem(slide_revision),
+            "transcript_revision": transcript_revision,
+            "transcript_problem": revision_readiness_problem(
+                transcript_revision
             ),
             "course_hue": _course_hue(lecture.subject),
             "outline_output": outline,
@@ -199,18 +202,7 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
                 lecture_id,
                 GenerationKind.QUIZ,
             ),
-            "previous_lecture": previous_lecture,
-            "next_lecture": next_lecture,
         },
-    )
-
-
-@router.get("/anki", response_class=HTMLResponse)
-def anki_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(
-        request=request,
-        name="anki.html",
-        context={},
     )
 
 
@@ -230,13 +222,11 @@ def review(request: Request) -> HTMLResponse:
         name="review.html",
         context={
             "lectures": lectures,
+            "lecture_hues": {lecture.id: _course_hue(lecture.subject) for lecture in lectures},
             "import_issues": repository.list_import_issues(),
             "proposed_revisions": IngestionRepository(
                 request.app.state.database
             ).list_proposed_revisions(),
-            "failed_revisions": IngestionRepository(
-                request.app.state.database
-            ).list_failed_revisions(),
         },
     )
 
@@ -251,9 +241,7 @@ def update_lecture_metadata(
     topic: str = Form(),
     lecturer: str = Form(default=""),
     exam_date: str = Form(default=""),
-    csrf_token: str | None = Form(default=None),
 ) -> RedirectResponse:
-    require_form_csrf(request, csrf_token)
     _repo(request).update_lecture(
         lecture_id,
         LectureInput(
@@ -277,9 +265,7 @@ def resolve_import_issue(
     lecture_number: int = Form(),
     topic: str = Form(),
     lecturer: str = Form(default=""),
-    csrf_token: str | None = Form(default=None),
 ) -> RedirectResponse:
-    require_form_csrf(request, csrf_token)
     repository = _repo(request)
     repository.upsert_lecture(
         LectureInput(
@@ -322,7 +308,9 @@ def lecture_api(request: Request) -> list[LectureApi]:
 
 
 def _course_hue(subject: str) -> int:
-    normalized = subject.casefold().strip()
+    normalized = " ".join(
+        subject.casefold().replace("&", " ").replace("/", " ").split()
+    )
     for name, hue in _COURSE_HUES.items():
         if name in normalized or normalized in name:
             return hue

@@ -1,7 +1,16 @@
+import json
+
 import httpx
+import pytest
 import respx
 
-from oms_hub.llm.domain import ProviderName
+from oms_hub.llm.domain import (
+    DiagnosticSource,
+    GenerationOptions,
+    LLMRequestError,
+    ProviderName,
+    ThinkingMode,
+)
 from oms_hub.llm.gemini import GeminiProvider
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
@@ -53,3 +62,169 @@ def test_gemini_provider_sends_generate_content_request_and_parses_usage():
     assert result.output_tokens == 18
     assert result.cost_microusd == 270
 
+
+@respx.mock
+def test_gemini_structured_generation_sends_response_format():
+    route = respx.post(
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-3.6-flash:generateContent"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            headers={"x-request-id": "gemini-json"},
+            json={
+                "modelVersion": "gemini-3.6-flash",
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [{"text": '{"answer":"iron"}'}]
+                        }
+                    }
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 4,
+                },
+            },
+        )
+    )
+
+    result = GeminiProvider().generate_text(
+        "Return a grounded answer.",
+        "Question",
+        api_key="secret",
+        model="gemini-3.6-flash",
+        output_schema={
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+    )
+
+    payload = route.calls.last.request.content.decode()
+    assert '"responseFormat"' in payload
+    assert '"application/json"' in payload
+    assert result.text == '{"answer":"iron"}'
+
+
+@respx.mock
+def test_gemini_generation_preserves_prefix_order_without_cache_telemetry() -> None:
+    route = respx.post(
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-3.6-flash:generateContent"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "modelVersion": "gemini-3.6-flash",
+                "candidates": [{"content": {"parts": [{"text": '{"ok":true}'}]}}],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 4,
+                    "cachedContentTokenCount": 9,
+                },
+            },
+        )
+    )
+
+    result = GeminiProvider().generate_text(
+        "Return JSON.",
+        "Question",
+        api_key="secret",
+        model="gemini-3.6-flash",
+        output_schema={"type": "object"},
+        options=GenerationOptions(cacheable_source_prefix="SUM: source"),
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    assert GeminiProvider.capabilities.prompt_prefix_caching is False
+    assert GeminiProvider.capabilities.thinking is False
+    assert payload["contents"][0]["parts"] == [
+        {"text": "SUM: source"},
+        {"text": "Question"},
+    ]
+    assert result.cache_creation_input_tokens == 0
+    assert result.cache_read_input_tokens == 0
+
+
+def test_gemini_rejects_unsupported_thinking() -> None:
+    with pytest.raises(LLMRequestError) as raised:
+        GeminiProvider().generate_text(
+            "Return JSON.",
+            "Question",
+            api_key="secret",
+            model="gemini-3.6-flash",
+            output_schema={"type": "object"},
+            options=GenerationOptions(thinking=ThinkingMode.ENABLED),
+        )
+
+    assert raised.value.source is DiagnosticSource.CONTRACT
+
+
+@respx.mock
+def test_gemini_list_models_filters_to_generate_content_and_sorts():
+    route = respx.get(
+        "https://generativelanguage.googleapis.com/v1beta/models"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "name": "models/gemini-3-flash",
+                        "supportedGenerationMethods": ["generateContent"],
+                    },
+                    {
+                        "name": "models/gemini-3-pro",
+                        "supportedGenerationMethods": ["generateContent"],
+                    },
+                    {
+                        "name": "models/text-embedding-004",
+                        "supportedGenerationMethods": ["embedContent"],
+                    },
+                ]
+            },
+        )
+    )
+
+    models = GeminiProvider().list_models("sentinel-secret")
+
+    assert models == ("gemini-3-flash", "gemini-3-pro")
+    request = route.calls.last.request
+    assert request.url.params["key"] == "sentinel-secret"
+
+
+@respx.mock
+def test_gemini_list_models_raises_on_unauthorized_without_leaking_key():
+    respx.get(
+        "https://generativelanguage.googleapis.com/v1beta/models"
+    ).mock(
+        return_value=httpx.Response(
+            401,
+            json={
+                "error": {
+                    "status": "UNAUTHENTICATED",
+                    "message": "API key sentinel-secret is invalid",
+                }
+            },
+        )
+    )
+
+    with pytest.raises(LLMRequestError) as raised:
+        GeminiProvider().list_models("sentinel-secret")
+
+    assert raised.value.source is DiagnosticSource.AUTHENTICATION
+    assert "sentinel-secret" not in str(raised.value)
+
+
+@respx.mock
+def test_gemini_list_models_raises_on_network_error_without_leaking_key():
+    respx.get(
+        "https://generativelanguage.googleapis.com/v1beta/models"
+    ).mock(side_effect=httpx.ReadTimeout("timed out"))
+
+    with pytest.raises(LLMRequestError) as raised:
+        GeminiProvider().list_models("sentinel-secret")
+
+    assert raised.value.source is DiagnosticSource.NETWORK
+    assert "sentinel-secret" not in str(raised.value)

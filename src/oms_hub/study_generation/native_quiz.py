@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Annotated
 from urllib.parse import urlsplit
 
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -54,6 +55,10 @@ _ImageMetadata = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
 ]
+_Dimension = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=300),
+]
 
 _QUIZ_OUTPUT_CONTRACT = """
 
@@ -68,12 +73,19 @@ Use this exact shape:
       "stem": "Question text",
       "choices": ["Choice A", "Choice B", "Choice C", "Choice D"],
       "correct_index": 0,
-      "rationale": "Why the correct answer is correct and the others are not."
+      "rationale": "Why the correct answer is correct and the others are not.",
+      "area": "Optional clinical area",
+      "learning_objective": "Optional learning objective",
+      "topic": "Optional topic",
+      "image_ref": null
     }
   ]
 }
 `correct_index` is zero-based. Include 1 to 100 questions, 2 to 8 distinct
-choices per question, and a non-empty expert rationale for every question.
+choices per question, and a non-empty expert rationale for every question. If
+a question genuinely depends on a source diagram, image, graph, or table, add
+an image_ref with the source title, page or slide locator, and a short
+description; otherwise set image_ref to null. Do not invent image URLs.
 """.strip()
 
 _STUDIO_QUIZ_OUTPUT_CONTRACT = """
@@ -90,6 +102,9 @@ Use this exact shape:
       "choices": ["Choice A", "Choice B", "Choice C", "Choice D"],
       "correct_index": 0,
       "rationale": "Why the correct answer is correct and the others are not.",
+      "area": "Optional clinical area",
+      "learning_objective": "Optional learning objective",
+      "topic": "Optional topic",
       "image_ref": null
     }
   ]
@@ -156,6 +171,12 @@ class _QuestionInput(BaseModel):
     choices: Annotated[list[_Text], Field(min_length=2, max_length=8)]
     correct_index: int = Field(ge=0)
     rationale: _Text
+    area: _Dimension | None = None
+    learning_objective: _Dimension | None = Field(
+        default=None,
+        validation_alias=AliasChoices("learning_objective", "objective"),
+    )
+    topic: _Dimension | None = None
     image_ref: _ImageRefInput | None = None
 
     @field_validator("choices")
@@ -187,18 +208,50 @@ class _QuizInput(BaseModel):
     questions: Annotated[list[_QuestionInput], Field(min_length=1, max_length=100)]
 
 
-def quiz_prompt(prompt: PromptSnapshot) -> PromptSnapshot:
+def quiz_prompt(
+    prompt: PromptSnapshot,
+    subject: str | None = None,
+) -> PromptSnapshot:
+    guidance = subject_quiz_guidance(subject)
     return replace(
         prompt,
-        content=f"{prompt.content.rstrip()}\n\n{_QUIZ_OUTPUT_CONTRACT}",
+        content=f"{prompt.content.rstrip()}\n\n{guidance}\n\n{_QUIZ_OUTPUT_CONTRACT}",
     )
 
 
-def studio_quiz_prompt(prompt: str) -> str:
+def studio_quiz_prompt(prompt: str, subject: str | None = None) -> str:
     normalized = prompt.strip()
     if not normalized:
         raise ValueError("Studio prompt is empty")
-    return f"{normalized}\n\n{_STUDIO_QUIZ_OUTPUT_CONTRACT}"
+    return f"{normalized}\n\n{subject_quiz_guidance(subject)}\n\n{_STUDIO_QUIZ_OUTPUT_CONTRACT}"
+
+
+def is_omm_subject(subject: str | None) -> bool:
+    normalized = " ".join((subject or "").casefold().replace("&", " ").split())
+    return (
+        "omm" in normalized.split()
+        or any(
+            marker in normalized
+            for marker in (
+                "osteopathic manipulative",
+                "osteopathic medicine",
+                "manipulative medicine",
+            )
+        )
+    )
+
+
+def subject_quiz_guidance(subject: str | None) -> str:
+    if is_omm_subject(subject):
+        return (
+            "SUBJECT SCOPE: This is an OMM subject. Include OMM concepts when "
+            "supported by the provided sources, including relevant anatomy and mechanics."
+        )
+    return (
+        "SUBJECT SCOPE: This is not an OMM subject. Do not ask OMM questions "
+        "or unrelated thoracic spine segmental-level questions; stay within "
+        "the subject and the provided sources."
+    )
 
 
 def parse_native_quiz(raw: str) -> NativeQuiz:
@@ -250,6 +303,9 @@ def parse_native_quiz(raw: str) -> NativeQuiz:
                     if question.image_ref is not None
                     else None
                 ),
+                area=question.area,
+                learning_objective=question.learning_objective,
+                topic=question.topic,
             )
             for question_index, question in enumerate(
                 validated.questions,
@@ -269,7 +325,7 @@ def image_requirements(quiz: NativeQuiz) -> tuple[QuizImageRef, ...]:
 
 def public_quiz_content(
     quiz: NativeQuiz,
-    image_urls: Mapping[str, tuple[str, str]] | None = None,
+    image_urls: Mapping[str, tuple[str, str, int | None, int | None]] | None = None,
 ) -> dict[str, object]:
     questions: list[dict[str, object]] = []
     for question in quiz.questions:
@@ -284,7 +340,16 @@ def public_quiz_content(
         if question.image_ref is not None and image_urls is not None:
             media = image_urls.get(question.image_ref.key)
             if media is not None:
-                item["image_url"], item["image_alt"] = media
+                image_url, image_alt, image_width, image_height = media
+                item["image_url"] = image_url
+                item["image_alt"] = image_alt
+                if image_width is not None and image_height is not None:
+                    item["image_width"] = image_width
+                    item["image_height"] = image_height
+        for field_name in ("area", "learning_objective", "topic"):
+            value = getattr(question, field_name)
+            if value is not None:
+                item[field_name] = value
         questions.append(item)
     return {"title": quiz.title, "questions": questions}
 
@@ -323,6 +388,21 @@ def serialize_native_quiz(quiz: NativeQuiz) -> str:
                         if choice.id == question.correct_choice_id
                     ),
                     "rationale": question.rationale,
+                    **(
+                        {"area": question.area}
+                        if question.area is not None
+                        else {}
+                    ),
+                    **(
+                        {"learning_objective": question.learning_objective}
+                        if question.learning_objective is not None
+                        else {}
+                    ),
+                    **(
+                        {"topic": question.topic}
+                        if question.topic is not None
+                        else {}
+                    ),
                     "image_ref": (
                         {
                             "key": question.image_ref.key,

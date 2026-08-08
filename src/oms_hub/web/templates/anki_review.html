@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}Review Anki Curation · Study Hub{% endblock %}
+{% block content %}
+<article class="page-shell sh-container anki-review-page" data-anki-review data-job-id="{{ job.id }}">
+  <nav class="breadcrumbs" aria-label="Breadcrumb">
+    <a href="/anki">Anki curation</a><span aria-hidden="true">/</span>
+    <span>Lecture {{ job.lecture_id }}</span>
+  </nav>
+
+  <div class="page-heading sh-header">
+    <div>
+      <p class="eyebrow sh-eyebrow">Review before changing Anki</p>
+      <h1 class="sh-title">Curation review</h1>
+      <p class="page-summary sh-subtitle">Approve existing cards, inspect recovered matches, edit generated cards, and adjust only the lecture tags you control.</p>
+    </div>
+    {% set job_tone = "sh-pill--ok" if job.state in ("complete", "completed", "ready", "configured", "connected", "skipped") else "sh-pill--info" if job.state in ("processing", "queued", "running", "pending", "in_progress", "preflight", "building_source_index", "building_lcl", "retrieving_pass_1", "judging_pass_1", "localizing_missed_concepts", "retrieving_pass_2", "judging_pass_2", "deduping", "generating_gaps", "applying_local", "syncing", "verifying", "envelope_pending") else "sh-pill--warn" if job.state in ("needs_review", "review", "ready_for_review") else "sh-pill--err" if job.state in ("failed", "quarantined") else "" %}
+    <span id="anki-job-state" class="status-pill sh-pill {{ job_tone }} status-{{ job.state }}">{{ job.state.replace('_', ' ') }}</span>
+  </div>
+
+  <ol class="anki-workflow" aria-label="Anki curation steps">
+    <li><span>1</span><strong>Choose</strong><small>Lecture and scope</small></li>
+    <li><span>2</span><strong>Curate</strong><small>Find and recover</small></li>
+    <li class="is-current"><span>3</span><strong>Review</strong><small>Cards and tags</small></li>
+    <li><span>4</span><strong>Apply</strong><small>Confirm and sync</small></li>
+  </ol>
+
+  <section id="anki-recovery" class="anki-notice" role="status" aria-live="polite" hidden>
+    <span class="anki-notice-mark" aria-hidden="true">i</span>
+    <div>
+      <h2 data-recovery-title>Apply status</h2>
+      <p data-recovery-message></p>
+      <button class="button secondary sh-btn sh-btn--secondary" type="button" data-retry-sync hidden>Retry cloud sync</button>
+    </div>
+  </section>
+
+  <section id="anki-processing" class="pipeline-card sh-card" aria-live="polite">
+    <p class="mono-label">Curation status</p>
+    <div class="pipeline-status">
+      <strong id="anki-processing-label" class="status-text">Loading review…</strong>
+      <span id="anki-processing-count">Pinned inputs</span>
+    </div>
+    <div class="progress-track" aria-hidden="true">
+      <span id="anki-processing-progress" class="progress-fill status-processing" style="width: 8%"></span>
+    </div>
+    <p id="anki-processing-note" class="pipeline-note">Reading the committed curation results.</p>
+    <button class="button secondary sh-btn sh-btn--secondary" type="button" data-retry-job hidden>Retry curation</button>
+  </section>
+
+  <div id="anki-review-content" hidden>
+    <section class="anki-review-summary" aria-label="Review totals">
+      <div><strong data-count-pass1>0</strong><span>Pass 1 matches</span></div>
+      <div><strong data-count-pass2>0</strong><span>Recovered after Pass 1</span></div>
+      <div><strong data-count-convergence>—</strong><span data-label-convergence>Convergence</span></div>
+      <div><strong data-count-generated>0</strong><span>Generated cards</span></div>
+      <div><strong data-count-unresolved>0</strong><span>Unresolved</span></div>
+      <div><strong data-count-assertions>—</strong><span>Safety checks</span></div>
+      <div><strong data-count-audit-drop>—</strong><span>Audit drop rate</span></div>
+      <div><strong data-count-uncited>0</strong><span>Uncited passages</span></div>
+    </section>
+    <p class="pipeline-note" data-convergence-warning hidden></p>
+    <p class="pipeline-note" data-reconciliation-warning hidden></p>
+
+    <section class="anki-review-toolbar" aria-label="Review filters">
+      <div class="anki-review-switcher" role="group" aria-label="Review view">
+        <button class="button secondary sh-btn sh-btn--secondary sh-seg__btn sh-seg__btn--active is-active" type="button" data-review-view="final" aria-pressed="true">Final proposed changes <span data-count-final>0</span></button>
+        <button class="button secondary sh-btn sh-btn--secondary sh-seg__btn" type="button" data-review-view="candidates" aria-pressed="false">Candidates <span data-count-candidates>0</span></button>
+      </div>
+      <label class="anki-review-search">Search cards
+        <input class="sh-input" type="search" placeholder="Search card text, note ID, extra, or tags" data-review-search>
+      </label>
+    </section>
+
+    <section class="anki-review-group" aria-labelledby="concepts-heading" data-review-concepts>
+      <div class="anki-review-group-heading">
+        <div>
+          <p class="mono-label">Coverage checklist</p>
+          <h2 id="concepts-heading">Concept-first review</h2>
+        </div>
+      </div>
+      <div class="anki-review-list" data-group-concepts></div>
+    </section>
+
+    <section class="anki-review-group" aria-labelledby="existing-heading" data-review-existing>
+      <div class="anki-section-heading">
+        <div>
+          <p class="mono-label">Existing collection</p>
+          <h2 id="existing-heading" data-existing-heading>Existing notes to retag</h2>
+        </div>
+        <span class="anki-explainer" data-existing-explainer>Final selection</span>
+      </div>
+      <p class="anki-group-help" data-existing-help>Only cards currently proposed to receive the lecture tag are shown.</p>
+      <div class="anki-review-list" data-group-existing></div>
+    </section>
+
+    <section class="anki-review-group" aria-labelledby="generated-heading" data-review-generated>
+      <div class="anki-section-heading">
+        <div>
+          <p class="mono-label">Source-backed proposals</p>
+          <h2 id="generated-heading">New cards to create</h2>
+        </div>
+        <span class="anki-explainer">Editable before apply</span>
+      </div>
+      <div class="anki-review-list" data-group-generated></div>
+    </section>
+
+    <details class="anki-review-group" data-review-unresolved>
+      <summary>Unresolved items (<span data-count-unresolved-details>0</span>)</summary>
+      <div class="anki-review-list" data-group-unresolved></div>
+    </details>
+
+    <section class="card sh-card anki-policy-card">
+      <div>
+        <p class="mono-label">Tag safety</p>
+        <h2>Your lecture tags are editable; source tags stay locked</h2>
+        <p>OMS and approved LMU optional tags can be added or removed. AnKing, Pathoma, Sketchy, First Aid, and other source-managed tags are shown with a lock and cannot be changed here.</p>
+      </div>
+      <span class="anki-lock-key"><span aria-hidden="true">⌑</span> Protected</span>
+    </section>
+
+    <section class="anki-review-actions" aria-label="Review actions">
+      <p id="anki-review-message" class="anki-action-message" role="status" aria-live="polite"></p>
+      <div>
+        <button class="button secondary sh-btn sh-btn--secondary" type="button" data-save-review>Save review</button>
+        <button class="button primary sh-btn sh-btn--primary" type="button" data-build-envelope>Review apply plan</button>
+      </div>
+    </section>
+  </div>
+
+  <dialog id="anki-apply-dialog" class="anki-apply-dialog">
+    <form method="dialog">
+      <p class="eyebrow">Final confirmation</p>
+      <h2>Apply these reviewed changes to Anki?</h2>
+      <p>Study Hub will sync first, apply only this frozen plan, sync again, and verify the result.</p>
+      <dl class="anki-apply-counts">
+        <div><dt>New notes</dt><dd data-plan-created>0</dd></div>
+        <div><dt>Existing notes retagged</dt><dd data-plan-retagged>0</dd></div>
+        <div><dt>Tags added</dt><dd data-plan-added>0</dd></div>
+        <div><dt>Tags removed</dt><dd data-plan-removed>0</dd></div>
+      </dl>
+      <p class="anki-confirm-note"><strong>This is the only step that can change your Anki collection.</strong></p>
+      <p class="anki-dialog-status" data-dialog-status role="status" aria-live="polite"></p>
+      <p class="anki-dialog-error" data-dialog-error role="alert"></p>
+      <div class="anki-dialog-actions">
+        <button class="button secondary sh-btn sh-btn--secondary" value="cancel">Go back</button>
+        <button class="button primary sh-btn sh-btn--primary" type="button" data-confirm-apply>Apply to Anki</button>
+      </div>
+    </form>
+  </dialog>
+</article>
+{% endblock %}
+{% block scripts %}
+<script src="/static/anki.js?v=20260804.1" defer></script>
+{% endblock %}

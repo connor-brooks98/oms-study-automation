@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  python:
+    name: Python (lint, types, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -e ".[dev,document-processing,pdf-inspection]"
+
+      - name: Ruff
+        run: ruff check src tests scripts
+
+      - name: Mypy
+        run: mypy src
+
+      - name: Pytest
+        env:
+          # GitHub's Linux runners do not provide an OS credential backend.
+          # Tests that exercise credentials inject their own in-memory store.
+          PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+        run: pytest -q -m "not windows_office"
+
+  javascript:
+    name: JavaScript tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run tests
+        run: node --test "tests/js/*.test.js"
+
+  windows-document-processing:
+    name: Windows Python 3.12 document processors
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install and test document processors
+        shell: powershell
+        env:
+          PYTEST_ADDOPTS: -m "not windows_office"
+        run: |
+          py -3.12 -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -e ".[dev,document-processing,pdf-inspection]"
+          .\.venv\Scripts\python.exe -c "import anydoc, pdf_inspector; print('document processors ready')"
+          .\.venv\Scripts\python.exe -m pytest tests\document_processing tests\study_generation tests\v2 -q

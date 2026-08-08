@@ -22,15 +22,15 @@
 
   const testPresentation = (state) => {
     if (state === "testing") {
-      return { label: "Testing…", className: "is-testing" };
+      return { label: "Testing…", className: "sh-pill--info" };
     }
     if (state === "connected") {
-      return { label: "Connected", className: "is-connected" };
+      return { label: "Connected", className: "sh-pill--ok" };
     }
     if (state === "failed") {
-      return { label: "Connection failed", className: "is-failed" };
+      return { label: "Connection failed", className: "sh-pill--err" };
     }
-    return { label: "Test connection", className: "" };
+    return { label: "Not tested", className: "" };
   };
 
   const sourceLabels = {
@@ -38,6 +38,7 @@
     network: "Network issue",
     provider_authentication: "Provider authentication issue",
     provider_model: "Provider model issue",
+    provider_request: "Provider request issue",
     provider_quota: "Provider quota issue",
     provider_service: "Provider service issue",
   };
@@ -54,9 +55,9 @@
     return lines;
   };
 
-  const postJson = async (fetchImpl, url, body, token) => {
+  const postJson = async (fetchImpl, url, body, token, method = "POST") => {
     const response = await fetchImpl(url, {
-      method: "POST",
+      method,
       headers: {
         "Content-Type": "application/json",
         "X-CSRF-Token": token,
@@ -64,7 +65,12 @@
       body: JSON.stringify(body),
       cache: "no-store",
     });
-    const payload = await response.json().catch(() => ({}));
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = {};
+    }
     if (!response.ok) {
       throw new Error(payload.detail || "Study Hub rejected the request.");
     }
@@ -76,27 +82,85 @@
       headers: { Accept: "application/json" },
       cache: "no-store",
     });
-    const payload = await response.json().catch(() => ({}));
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = {};
+    }
     if (!response.ok) {
       throw new Error(payload.detail || "Study Hub rejected the request.");
     }
     return payload;
   };
 
+  const CUSTOM_MODEL_VALUE = "__custom__";
+
+  const modelOptionValues = (models, currentModel) => {
+    const list = Array.isArray(models) ? models.map((model) => String(model)) : [];
+    const unique = [...new Set(list)];
+    const current = String(currentModel || "").trim();
+    if (current && !unique.includes(current)) {
+      return [current, ...unique];
+    }
+    return unique;
+  };
+
+  const syncCustomModelVisibility = (select, customInput) => {
+    customInput.hidden = select.value !== CUSTOM_MODEL_VALUE;
+  };
+
+  const populateModelSelect = (documentRef, select, customInput, models, currentModel) => {
+    const values = modelOptionValues(models, currentModel);
+    select.replaceChildren();
+    values.forEach((value) => {
+      const option = documentRef.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      select.append(option);
+    });
+    const customOption = documentRef.createElement("option");
+    customOption.value = CUSTOM_MODEL_VALUE;
+    customOption.textContent = "Custom model ID…";
+    select.append(customOption);
+
+    const current = String(currentModel || "").trim();
+    if (current && values.includes(current)) {
+      select.value = current;
+    } else if (values.length) {
+      select.value = values[0];
+    } else {
+      select.value = CUSTOM_MODEL_VALUE;
+      customInput.value = current;
+    }
+    syncCustomModelVisibility(select, customInput);
+  };
+
+  const resolvedModelValue = (select, customInput) => (
+    select.value === CUSTOM_MODEL_VALUE ? customInput.value.trim() : select.value
+  );
+
   const renderNotebookStatus = (card, status) => {
     const badge = card.querySelector("[data-notebook-badge]");
     const message = card.querySelector("[data-notebook-status]");
     const connected = status.state === "connected";
     const connecting = status.state === "connecting";
+    const failed = status.state === "failed";
 
-    badge.textContent = connecting ? "Connecting" : connected ? "Connected" : "Not connected";
-    badge.classList.toggle("is-configured", connected);
+    badge.textContent = connecting
+      ? "Connecting"
+      : connected ? "Connected" : failed ? "Connection failed" : "Not connected";
+    badge.classList.toggle("sh-pill--ok", connected);
+    badge.classList.toggle("sh-pill--info", connecting);
+    badge.classList.toggle("sh-pill--err", failed);
 
     if (connecting) {
       message.textContent = status.message
         || "Finish signing in using the browser window on this Study Hub device.";
     } else if (connected) {
       message.textContent = "Gemini Notebook is connected.";
+    } else if (failed) {
+      message.textContent = status.message || "Notebook connection failed. Try again.";
     } else if (status.message) {
       message.textContent = status.message;
     }
@@ -106,11 +170,32 @@
     String(value || "").trim() ? "save" : "select"
   );
 
-  const setTestState = (button, state) => {
+  const promptRoutes = (kind) => ({
+    select: `/settings/generation/prompts/${kind}/select`,
+    save: `/settings/generation/prompts/${kind}`,
+    test: `/settings/generation/prompts/${kind}/test`,
+  });
+
+  const catalogMessage = (result) => {
+    const count = Number(result?.choice_count || 0);
+    const issues = Array.isArray(result?.issues) ? result.issues : [];
+    const choiceText = `${count} prompt ${count === 1 ? "choice is" : "choices are"} ready.`;
+    if (!issues.length) return choiceText;
+    const warning = issues.map((item) => item.message).join(" · ");
+    return `${choiceText} ${issues.length} ${issues.length === 1 ? "warning" : "warnings"}: ${warning}`;
+  };
+
+  const setTestState = (button, state, statusBadge) => {
     const presentation = testPresentation(state);
-    button.classList.remove("is-testing", "is-connected", "is-failed");
-    if (presentation.className) button.classList.add(presentation.className);
-    button.textContent = presentation.label;
+    button.textContent = state === "testing" ? presentation.label : "Test connection";
+    if (statusBadge) {
+      statusBadge.textContent = presentation.label;
+      statusBadge.classList.remove("sh-pill--info", "sh-pill--ok", "sh-pill--err");
+      if (presentation.className) statusBadge.classList.add(presentation.className);
+      statusBadge.classList.toggle("sh-pill--ok", state === "connected");
+      statusBadge.classList.toggle("sh-pill--err", state === "failed");
+      statusBadge.classList.toggle("sh-pill--info", state === "testing");
+    }
   };
 
   const renderDiagnostic = (container, diagnostic, correlationId) => {
@@ -144,7 +229,26 @@
       const message = card.querySelector("[data-provider-message]");
       const diagnostic = card.querySelector("[data-diagnostic]");
       const testButton = card.querySelector("[data-test-connection]");
-      const model = card.querySelector("[data-model-input]");
+      const connectionState = card.querySelector("[data-connection-state]");
+      const model = card.querySelector("[data-model-select]");
+      const customModel = card.querySelector("[data-model-custom]");
+      const initialModel = model.value;
+      let fetchedModels = [];
+
+      const refreshModelOptions = (currentModel) => {
+        populateModelSelect(documentRef, model, customModel, fetchedModels, currentModel);
+      };
+
+      model.addEventListener("change", () => syncCustomModelVisibility(model, customModel));
+
+      void getJson(fetchImpl, `/api/settings/providers/${provider}/models`)
+        .then((result) => {
+          fetchedModels = Array.isArray(result.models) ? result.models : [];
+          refreshModelOptions(initialModel);
+        })
+        .catch(() => {
+          refreshModelOptions(initialModel);
+        });
 
       toggle.addEventListener("click", () => {
         togglePassword(credential, toggle, providerLabel);
@@ -165,11 +269,11 @@
           credential.type = "password";
           toggle.textContent = "Show";
           configured.textContent = result.configured ? "Configured" : "Not configured";
-          configured.classList.toggle("is-configured", result.configured);
+          configured.classList.toggle("sh-pill--ok", result.configured);
           message.textContent = result.configured
             ? "Credential saved securely."
             : "No credential is configured.";
-          setTestState(testButton, "neutral");
+          setTestState(testButton, "neutral", connectionState);
           renderDiagnostic(diagnostic, null, null);
         } catch (error) {
           message.textContent = error.message;
@@ -186,12 +290,12 @@
           const result = await postJson(
             fetchImpl,
             `/settings/ai/${provider}/model`,
-            { model: model.value },
+            { model: resolvedModelValue(model, customModel) },
             token(),
           );
-          model.value = result.model;
+          refreshModelOptions(result.model);
           message.textContent = "Model saved.";
-          setTestState(testButton, "neutral");
+          setTestState(testButton, "neutral", connectionState);
           renderDiagnostic(diagnostic, null, null);
         } catch (error) {
           message.textContent = error.message;
@@ -202,7 +306,7 @@
 
       testButton.addEventListener("click", async () => {
         testButton.disabled = true;
-        setTestState(testButton, "testing");
+        setTestState(testButton, "testing", connectionState);
         message.textContent = "Testing the selected model with a small request…";
         renderDiagnostic(diagnostic, null, null);
         try {
@@ -212,7 +316,7 @@
             {},
             token(),
           );
-          setTestState(testButton, result.state);
+          setTestState(testButton, result.state, connectionState);
           message.textContent = result.state === "connected"
             ? "Provider and model are ready."
             : "The connection test found a problem.";
@@ -222,7 +326,7 @@
             result.correlation_id,
           );
         } catch (error) {
-          setTestState(testButton, "failed");
+          setTestState(testButton, "failed", connectionState);
           message.textContent = error.message;
         } finally {
           testButton.disabled = false;
@@ -230,8 +334,134 @@
       });
     });
 
+    const voyageCard = documentRef.querySelector("[data-voyage-card]");
+    if (voyageCard) {
+      const credential = voyageCard.querySelector("[data-voyage-credential]");
+      const toggle = voyageCard.querySelector("[data-voyage-toggle]");
+      const configured = voyageCard.querySelector("[data-voyage-configured]");
+      const message = voyageCard.querySelector("[data-voyage-message]");
+      toggle.addEventListener("click", () => togglePassword(credential, toggle, "Voyage AI"));
+      voyageCard.querySelector("[data-save-voyage]").addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        message.textContent = "Saving credential…";
+        try {
+          const result = await postJson(
+            fetchImpl,
+            "/settings/anki/voyage/credential",
+            { credential: credential.value },
+            token(),
+          );
+          credential.value = "";
+          credential.type = "password";
+          toggle.textContent = "Show";
+          configured.textContent = result.configured ? "Configured" : "Not configured";
+          configured.classList.toggle("sh-pill--ok", result.configured);
+          message.textContent = result.configured ? "Credential saved securely." : "No credential is configured.";
+        } catch (error) {
+          message.textContent = error.message;
+        } finally {
+          button.disabled = false;
+        }
+      });
+    }
+
+    documentRef.querySelectorAll("[data-assignment-row]").forEach((row) => {
+      const task = row.dataset.task;
+      const providerSelect = row.querySelector("[data-assignment-provider]");
+      const modelSelect = row.querySelector("[data-assignment-model]");
+      const customModel = row.querySelector("[data-assignment-custom]");
+      const saveButton = row.querySelector("[data-save-assignment]");
+      const keyState = row.querySelector("[data-assignment-key]");
+      const message = row.querySelector("[data-assignment-message]");
+      const gate = row.querySelector("[data-openrouter-gate]");
+      const initialModel = modelSelect.value;
+      let fetchedModels = [];
+
+      const controls = [providerSelect, modelSelect, customModel, saveButton, gate]
+        .filter(Boolean);
+      const setBusy = (busy) => {
+        controls.forEach((control) => {
+          control.disabled = busy;
+        });
+      };
+
+      const refreshModelOptions = (currentModel) => {
+        populateModelSelect(documentRef, modelSelect, customModel, fetchedModels, currentModel);
+      };
+
+      const loadModelsForProvider = async (provider, currentModel) => {
+        try {
+          const result = await getJson(fetchImpl, `/api/settings/providers/${provider}/models`);
+          fetchedModels = Array.isArray(result.models) ? result.models : [];
+        } catch (error) {
+          fetchedModels = [];
+          message.textContent = error.message;
+        }
+        refreshModelOptions(currentModel);
+      };
+
+      modelSelect.addEventListener("change", () => {
+        syncCustomModelVisibility(modelSelect, customModel);
+      });
+
+      providerSelect.addEventListener("change", () => {
+        void loadModelsForProvider(providerSelect.value, "");
+      });
+
+      saveButton.addEventListener("click", async () => {
+        setBusy(true);
+        message.textContent = "Saving assignment…";
+        try {
+          const result = await postJson(
+            fetchImpl,
+            `/api/settings/task-assignments/${task}`,
+            {
+              provider: providerSelect.value,
+              model: resolvedModelValue(modelSelect, customModel),
+            },
+            token(),
+            "PUT",
+          );
+          keyState.textContent = result.key_configured
+            ? "Key configured"
+            : "Key not configured";
+          keyState.classList.toggle("sh-pill--ok", result.key_configured);
+          refreshModelOptions(result.model);
+          message.textContent = "Assignment saved.";
+        } catch (error) {
+          message.textContent = error.message;
+        } finally {
+          setBusy(false);
+        }
+      });
+
+      if (gate) {
+        gate.addEventListener("change", async () => {
+          try {
+            const result = await postJson(
+              fetchImpl,
+              "/settings/ai/openrouter/gate",
+              { enabled: gate.checked },
+              token(),
+            );
+            gate.checked = result.enabled;
+            message.textContent = result.enabled
+              ? "Publication will wait for medical review."
+              : "Medical review gate disabled.";
+          } catch (error) {
+            gate.checked = !gate.checked;
+            message.textContent = error.message;
+          }
+        });
+      }
+
+      void loadModelsForProvider(providerSelect.value, initialModel);
+    });
+
     documentRef.querySelectorAll("[data-prompt-card]").forEach((card) => {
       const kind = card.dataset.prompt;
+      const routes = promptRoutes(kind);
       const input = card.querySelector("[data-prompt-path]");
       const message = card.querySelector("[data-prompt-message]");
       const pathButton = card.querySelector("[data-save-prompt]");
@@ -242,12 +472,13 @@
       };
       input.addEventListener("input", updatePromptAction);
       pathButton.addEventListener("click", async () => {
+        pathButton.disabled = true;
         try {
           if (promptPathAction(input.value) === "select") {
             message.textContent = "Choose the Obsidian prompt on the NUC…";
             const result = await postJson(
               fetchImpl,
-              `/settings/generation/prompts/${kind}/select`,
+              routes.select,
               {},
               token(),
             );
@@ -262,20 +493,24 @@
           }
           await postJson(
             fetchImpl,
-            `/settings/generation/prompts/${kind}`,
+            routes.save,
             { path: input.value },
             token(),
           );
           message.textContent = "Prompt path saved.";
         } catch (error) {
           message.textContent = error.message;
+        } finally {
+          pathButton.disabled = false;
         }
       });
-      card.querySelector("[data-test-prompt]").addEventListener("click", async () => {
+      const testPromptButton = card.querySelector("[data-test-prompt]");
+      testPromptButton.addEventListener("click", async () => {
+        testPromptButton.disabled = true;
         try {
           const result = await postJson(
             fetchImpl,
-            `/settings/generation/prompts/${kind}/test`,
+            routes.test,
             {},
             token(),
           );
@@ -284,9 +519,144 @@
             : result.message;
         } catch (error) {
           message.textContent = error.message;
+        } finally {
+          testPromptButton.disabled = false;
         }
       });
     });
+
+    const ankiPromptCard = documentRef.querySelector("[data-anki-prompt-directory]");
+    if (ankiPromptCard) {
+      const input = ankiPromptCard.querySelector("[data-anki-prompt-directory-path]");
+      const action = ankiPromptCard.querySelector("[data-save-anki-prompt-directory]");
+      const testButton = ankiPromptCard.querySelector("[data-test-anki-prompt-directory]");
+      const message = ankiPromptCard.querySelector("[data-anki-prompt-directory-message]");
+      const updateAction = () => {
+        action.textContent = promptPathAction(input.value) === "select"
+          ? "Select Folder"
+          : "Save Path";
+      };
+      input.addEventListener("input", updateAction);
+      action.addEventListener("click", async () => {
+        action.disabled = true;
+        try {
+          if (promptPathAction(input.value) === "select") {
+            const result = await postJson(
+              fetchImpl,
+              "/settings/anki/prompts/directory/select",
+              {},
+              token(),
+            );
+            if (!result.selected) {
+              message.textContent = "No prompt folder was selected.";
+              return;
+            }
+            input.value = result.path;
+            updateAction();
+            message.textContent = "Folder selected. Click Save Path to keep it.";
+            return;
+          }
+          await postJson(
+            fetchImpl,
+            "/settings/anki/prompts/directory",
+            { path: input.value },
+            token(),
+          );
+          message.textContent = "Anki prompt directory saved.";
+        } catch (error) {
+          message.textContent = error.message;
+        } finally {
+          action.disabled = false;
+        }
+      });
+      testButton.addEventListener("click", async () => {
+        testButton.disabled = true;
+        try {
+          const result = await postJson(
+            fetchImpl,
+            "/settings/anki/prompts/directory/test",
+            {},
+            token(),
+          );
+          message.textContent = catalogMessage(result);
+        } catch (error) {
+          message.textContent = error.message;
+        } finally {
+          testButton.disabled = false;
+        }
+      });
+    }
+
+    const runtimePortCard = documentRef.querySelector("[data-runtime-anki-port]");
+    if (runtimePortCard) {
+      const input = runtimePortCard.querySelector("[data-runtime-port-input]");
+      const saveButton = runtimePortCard.querySelector("[data-runtime-save]");
+      const clearButton = runtimePortCard.querySelector("[data-runtime-clear]");
+      const source = runtimePortCard.querySelector("[data-runtime-port-source]");
+      const message = runtimePortCard.querySelector("[data-runtime-message]");
+
+      const renderRuntime = (result) => {
+        input.value = String(result.anki_connect_port);
+        const staged = result.source === "staged_override";
+        const active = result.source === "active_override";
+        source.textContent = staged
+          ? "Staged override"
+          : active ? "Active override" : "Deployment value";
+        source.classList.toggle("sh-pill--ok", staged || active);
+        clearButton.disabled = result.source === "environment";
+        message.textContent = result.message || (
+          active
+            ? "The audited AnkiConnect override is active; no restart is required."
+            : result.restart_required && result.source === "environment"
+              ? "The deployment value will take effect after Study Hub restarts."
+              : result.restart_required
+                ? "A restart is required before the staged override takes effect."
+                : "Using the managed deployment value."
+        );
+      };
+
+      saveButton.addEventListener("click", async () => {
+        saveButton.disabled = true;
+        clearButton.disabled = true;
+        message.textContent = "Staging AnkiConnect port…";
+        try {
+          const result = await postJson(
+            fetchImpl,
+            "/settings/runtime/anki-connect-port",
+            { port: Number(input.value) },
+            token(),
+            "PUT",
+          );
+          renderRuntime(result);
+        } catch (error) {
+          message.textContent = error.message;
+          clearButton.disabled = source.textContent === "Deployment value";
+        } finally {
+          saveButton.disabled = false;
+        }
+      });
+
+      clearButton.addEventListener("click", async () => {
+        saveButton.disabled = true;
+        clearButton.disabled = true;
+        message.textContent = "Resetting to the deployment value…";
+        try {
+          const result = await postJson(
+            fetchImpl,
+            "/settings/runtime/anki-connect-port",
+            {},
+            token(),
+            "DELETE",
+          );
+          renderRuntime(result);
+        } catch (error) {
+          message.textContent = error.message;
+          clearButton.disabled = false;
+        } finally {
+          saveButton.disabled = false;
+        }
+      });
+    }
 
     const notebookCard = documentRef.querySelector("[data-notebook-card]");
     if (notebookCard) {
@@ -344,66 +714,24 @@
       });
     }
 
-    const active = documentRef.querySelector("[data-active-provider]");
-    const saveActive = documentRef.querySelector("[data-save-active]");
-    const activeMessage = documentRef.querySelector("[data-active-message]");
-    if (active && saveActive) {
-      saveActive.addEventListener("click", async () => {
-        saveActive.disabled = true;
-        activeMessage.textContent = "Updating active provider…";
-        try {
-          const result = await postJson(
-            fetchImpl,
-            "/settings/ai/active",
-            { provider: active.value },
-            token(),
-          );
-          active.value = result.provider;
-          activeMessage.textContent = "New transcripts will use this provider.";
-        } catch (error) {
-          activeMessage.textContent = error.message;
-        } finally {
-          saveActive.disabled = false;
-        }
-      });
-    }
-
-    const trackerInput = documentRef.querySelector("[data-tracker-input]");
-    const trackerZone = documentRef.querySelector("[data-tracker-dropzone]");
-    if (trackerInput && trackerZone) {
-      const selection = trackerZone.querySelector("[data-tracker-selection]");
-      const showTracker = () => {
-        selection.textContent = trackerInput.files?.[0]?.name || "XLSX only";
-      };
-      trackerZone.querySelector("[data-tracker-browse]").addEventListener(
-        "click",
-        () => trackerInput.click(),
-      );
-      trackerInput.addEventListener("change", showTracker);
-      ["dragenter", "dragover"].forEach((name) => trackerZone.addEventListener(
-        name,
-        (event) => { event.preventDefault(); trackerZone.classList.add("is-dragging"); },
-      ));
-      ["dragleave", "drop"].forEach((name) => trackerZone.addEventListener(
-        name,
-        (event) => { event.preventDefault(); trackerZone.classList.remove("is-dragging"); },
-      ));
-      trackerZone.addEventListener("drop", (event) => {
-        trackerInput.files = event.dataTransfer.files;
-        showTracker();
-      });
-    }
   };
 
   const api = {
+    catalogMessage,
     csrfToken,
     diagnosticLines,
     getJson,
     initialize,
+    modelOptionValues,
+    populateModelSelect,
     postJson,
     promptPathAction,
+    promptRoutes,
     renderNotebookStatus,
+    resolvedModelValue,
     runWhenReady,
+    setTestState,
+    syncCustomModelVisibility,
     testPresentation,
     togglePassword,
   };

@@ -46,6 +46,12 @@ def translate_notebook_error(
 ) -> NotebookGatewayError | None:
     if isinstance(error, NotebookGatewayError):
         return error
+    message = str(error).casefold()
+    if any(
+        phrase in message
+        for phrase in ("accounts.google.com", "notebooklm login", "login to notebooklm")
+    ):
+        return NotebookAuthenticationError()
     if isinstance(error, (AuthError, ConfigurationError)):
         return NotebookAuthenticationError()
     if isinstance(error, SourceError):

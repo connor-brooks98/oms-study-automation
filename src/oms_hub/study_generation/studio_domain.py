@@ -3,6 +3,12 @@ from enum import StrEnum
 from pathlib import Path
 
 from oms_hub.study_generation.domain import NativeQuiz
+from oms_hub.study_generation.practice_domain import (
+    ImportSourceRole,
+    QuizContentKind,
+    QuizWorkflowKind,
+    StudioSourcePurpose,
+)
 
 
 class StudioSourceType(StrEnum):
@@ -15,6 +21,7 @@ class StudioSourceState(StrEnum):
     PENDING = "pending"
     ATTACHING = "attaching"
     ATTACHED = "attached"
+    READY = "ready"
     FAILED = "failed"
     DELETED = "deleted"
 
@@ -24,6 +31,7 @@ class StudioRunState(StrEnum):
     RUNNING = "running"
     RETRYING = "retrying"
     AWAITING_IMAGES = "awaiting_images"
+    AWAITING_REVIEW = "awaiting_review"
     COMPLETE = "complete"
     FAILED = "failed"
 
@@ -36,6 +44,15 @@ class StudioRunStage(StrEnum):
     IMAGE_REVIEW = "image_review"
     PUBLISH = "publish"
     COMPLETE = "complete"
+    ACQUIRE = "acquire"
+    PARSE = "parse"
+    EXTRACT = "extract"
+    PAIR = "pair"
+    ANSWER_NOTEBOOK = "answer_notebook"
+    ANSWER_FALLBACK = "answer_fallback"
+    NORMALIZE = "normalize"
+    REVIEW = "review"
+    ACCURACY = "accuracy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +74,10 @@ class StudioSource:
     remote_notebook_id: str | None
     remote_source_id: str | None
     converted_from_pptx: bool
+    purpose: StudioSourcePurpose = StudioSourcePurpose.NOTEBOOK
+    snapshot_sha256: str | None = None
+    media_type: str | None = None
+    final_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +85,16 @@ class StudioRunSource:
     source_id: str
     remote_source_id: str
     title: str
+
+
+@dataclass(frozen=True, slots=True)
+class StudioImportRunSource:
+    source_id: str
+    role: ImportSourceRole
+    attach_to_notebook: bool
+    remote_notebook_id: str | None
+    remote_source_id: str | None
+    position: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +120,8 @@ class StudioRun:
     published_token: str | None
     supersedes_run_id: str | None
     sources: tuple[StudioRunSource, ...]
+    workflow_kind: QuizWorkflowKind = QuizWorkflowKind.NOTEBOOK_GENERATION
+    content_kind: QuizContentKind = QuizContentKind.EXAM_REVIEW
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +131,16 @@ class StudioRunAttempt:
     raw_response: str | None
     error: str | None
     created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class StudioRunArtifact:
+    artifact_key: str
+    signature_sha256: str
+    payload_json: str
+    provider: str | None
+    model: str | None
+    request_id: str | None
 
 
 @dataclass(frozen=True, slots=True)

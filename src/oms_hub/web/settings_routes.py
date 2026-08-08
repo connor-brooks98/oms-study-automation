@@ -1,40 +1,88 @@
-import asyncio
 import json
 import logging
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, BinaryIO, cast
+from typing import Annotated, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
 from starlette.responses import Response
 
+from oms_hub.llm.catalog import FALLBACK_MODELS
 from oms_hub.llm.domain import (
     DiagnosticSource,
     LLMRequestError,
+    LLMTask,
     ProviderName,
+)
+from oms_hub.llm.openrouter import (
+    OPENROUTER_API_KEY_SECRET,
+    AccuracyGateError,
+    MedicalAccuracyGate,
 )
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.llm.service import SECRET_KEYS, LLMService
 from oms_hub.repositories import CatalogRepository
-from oms_hub.security.secret_store import SecretStore
+from oms_hub.runtime_settings import RuntimeSettingsRepository, RuntimeSettingStatus
+from oms_hub.security.secret_store import VOYAGE_API_KEY_SECRET, SecretStore
+from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
 from oms_hub.study_generation.domain import PromptKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.tracker_preview import TrackerPreview, TrackerPreviewService
 from oms_hub.web.csrf import require_form_csrf
-from oms_hub.web.llm_schemas import (
-    ActiveProviderUpdate,
-    CredentialUpdate,
-    ModelUpdate,
-)
+from oms_hub.web.llm_schemas import CredentialUpdate, ModelUpdate, TaskAssignmentUpdate
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 router = APIRouter(prefix="/settings")
+api_router = APIRouter(prefix="/api/settings")
 logger = logging.getLogger(__name__)
 
 _MAX_TRACKER_BYTES = 25 * 1024 * 1024
+# Moved to oms_hub.llm.catalog.FALLBACK_MODELS; kept as a re-import shim
+# because this module name is referenced elsewhere.
+_OPENROUTER_MODELS = FALLBACK_MODELS[ProviderName.OPENROUTER]
+
+_MODEL_CACHE_TTL_SECONDS = 3600.0
+_model_cache: dict[ProviderName, tuple[float, tuple[str, ...]]] = {}
+_model_cache_lock = threading.Lock()
+_PROMPT_LABELS = {
+    PromptKind.TRANSCRIPT: "Transcript cleaning prompt",
+    PromptKind.OUTLINE: "Lecture outline prompt",
+    PromptKind.QUIZ: "Lecture quiz prompt",
+}
+
+
+def _cached_models(provider: ProviderName) -> tuple[str, ...] | None:
+    with _model_cache_lock:
+        entry = _model_cache.get(provider)
+    if entry is None:
+        return None
+    cached_at, models = entry
+    if time.monotonic() - cached_at > _MODEL_CACHE_TTL_SECONDS:
+        return None
+    return models
+
+
+def _cache_models(provider: ProviderName, models: tuple[str, ...]) -> None:
+    with _model_cache_lock:
+        _model_cache[provider] = (time.monotonic(), models)
+
+
+class AccuracyGateUpdate(BaseModel):
+    enabled: bool
+
+
+class OpenRouterModelUpdate(BaseModel):
+    model: str = Field(min_length=1, max_length=200)
+
+
+class AnkiConnectPortUpdate(BaseModel):
+    port: int
 
 
 def _service(request: Request) -> TrackerPreviewService:
@@ -73,8 +121,11 @@ def settings_page(request: Request) -> HTMLResponse:
         ProviderName.OPENAI: "OpenAI",
         ProviderName.GEMINI: "Google Gemini",
         ProviderName.ANTHROPIC: "Anthropic Claude",
+        ProviderName.OPENROUTER: "OpenRouter",
     }
     preferences = _llm_settings(request).list()
+    assignments = _assignment_rows(request)
+    usage_counts = _provider_usage_counts(assignments)
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
@@ -84,7 +135,7 @@ def settings_page(request: Request) -> HTMLResponse:
                     "name": preference.provider.value,
                     "label": labels[preference.provider],
                     "model": preference.model,
-                    "active": preference.active,
+                    "used_by_count": usage_counts.get(preference.provider.value, 0),
                     "configured": _llm_service(
                         request
                     ).credential_configured(preference.provider),
@@ -99,20 +150,15 @@ def settings_page(request: Request) -> HTMLResponse:
                 }
                 for preference in preferences
             ),
-            "active_provider": _llm_settings(
-                request
-            ).active().provider.value,
+            "assignments": assignments,
+            "openrouter": _openrouter_context(request),
             "notebook_status": (
                 request.app.state.notebook_connection.status()
             ),
             "prompt_settings": tuple(
                 {
                     "kind": kind.value,
-                    "label": (
-                        "Lecture outline prompt"
-                        if kind is PromptKind.OUTLINE
-                        else "Lecture quiz prompt"
-                    ),
+                    "label": _PROMPT_LABELS[kind],
                     "path": GenerationRepository(
                         request.app.state.database
                     ).prompt_path(kind)
@@ -120,8 +166,212 @@ def settings_page(request: Request) -> HTMLResponse:
                 }
                 for kind in PromptKind
             ),
+            "anki_prompt_directory": (
+                GenerationRepository(
+                    request.app.state.database
+                ).anki_prompt_directory()
+                or str(request.app.state.settings.anki_prompt_directory or "")
+            ),
+            "voyage_configured": _voyage_configured(request),
+            "runtime": _runtime_context(request),
         },
     )
+
+
+def _runtime_context(request: Request) -> dict[str, object]:
+    status = _runtime_settings(request).status()
+    base = request.app.state.base_settings
+    return {
+        "anki_connect_port": status.anki_connect_port,
+        "source": status.source,
+        "revision": status.revision,
+        "restart_required": status.restart_required,
+        "dashboard_status": "Configured (managed deployment)",
+        "cloudflare_status": (
+            "Configured (managed outside Study Hub)"
+            if base.cloudflare_access_issuer
+            else "Not configured"
+        ),
+        "public_hostname_status": (
+            "Configured (managed outside Study Hub)"
+            if base.public_hostname
+            else "Not configured"
+        ),
+        "anki_agent_status": (
+            "Configured (managed deployment)"
+            if base.anki_agent_hostname
+            else "Not configured"
+        ),
+    }
+
+
+@router.put("/runtime/anki-connect-port")
+def stage_anki_connect_port(
+    request: Request,
+    update: AnkiConnectPortUpdate,
+) -> JSONResponse:
+    require_form_csrf(request, None)
+    try:
+        saved = _runtime_settings(request).stage_anki_connect_port(
+            update.port,
+            actor=_runtime_actor(request),
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    message = (
+        "AnkiConnect port staged. Restart Study Hub to apply it."
+        if saved.restart_required
+        else "AnkiConnect port is already active."
+    )
+    return _runtime_response(saved, message)
+
+
+@router.delete("/runtime/anki-connect-port")
+def clear_anki_connect_port(request: Request) -> JSONResponse:
+    require_form_csrf(request, None)
+    saved = _runtime_settings(request).clear_anki_connect_port(
+        actor=_runtime_actor(request),
+    )
+    message = (
+        "AnkiConnect port reset to the deployment value. Restart Study Hub to apply it."
+        if saved.restart_required
+        else "Using the deployment value; no restart is required."
+    )
+    return _runtime_response(saved, message)
+
+
+def _runtime_response(status: RuntimeSettingStatus, message: str) -> JSONResponse:
+    return _no_store(
+        {
+            "anki_connect_port": status.anki_connect_port,
+            "source": status.source,
+            "revision": status.revision,
+            "restart_required": status.restart_required,
+            "message": message,
+        }
+    )
+
+
+def _runtime_actor(request: Request) -> str:
+    identity = getattr(request.state, "access_identity", None)
+    email = getattr(identity, "email", None)
+    return str(email).strip() if email else "local"
+
+
+def _voyage_configured(request: Request) -> bool:
+    try:
+        value = cast(SecretStore, request.app.state.secrets).get(
+            VOYAGE_API_KEY_SECRET
+        )
+        return bool((value or "").strip())
+    except Exception:
+        return False
+
+
+def _assignment_rows(request: Request) -> tuple[dict[str, object], ...]:
+    llm_settings = _llm_settings(request)
+    llm_service = _llm_service(request)
+    rows: list[dict[str, object]] = []
+    for task in LLMTask:
+        assignment = llm_settings.assignment(task)
+        rows.append(
+            {
+                "task": task.value,
+                "provider": assignment.provider.value,
+                "model": assignment.model,
+                "key_configured": llm_service.credential_configured(
+                    assignment.provider
+                ),
+            }
+        )
+    return tuple(rows)
+
+
+def _provider_usage_counts(
+    assignments: tuple[dict[str, object], ...],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in assignments:
+        provider = cast(str, row["provider"])
+        counts[provider] = counts.get(provider, 0) + 1
+    return counts
+
+
+def _openrouter_context(request: Request) -> dict[str, object]:
+    settings = cast(StudyAISettingsRepository, request.app.state.study_ai_settings).get()
+    secrets = cast(SecretStore, request.app.state.secrets)
+    assignment = _llm_settings(request).assignment(LLMTask.ACCURACY_REVIEW)
+    return {
+        "model": assignment.model,
+        "models": _OPENROUTER_MODELS,
+        "accuracy_gate_enabled": settings.accuracy_gate_enabled,
+        "configured": bool((secrets.get(OPENROUTER_API_KEY_SECRET) or "").strip()),
+    }
+
+
+@router.post("/ai/openrouter/credential")
+def save_openrouter_credential(
+    request: Request,
+    update: CredentialUpdate,
+) -> JSONResponse:
+    secrets = cast(SecretStore, request.app.state.secrets)
+    if update.credential.strip():
+        secrets.set(OPENROUTER_API_KEY_SECRET, update.credential.strip())
+    return _no_store(
+        {
+            "configured": bool(
+                (secrets.get(OPENROUTER_API_KEY_SECRET) or "").strip()
+            )
+        }
+    )
+
+
+@router.post("/anki/voyage/credential")
+def save_voyage_credential(request: Request, update: CredentialUpdate) -> JSONResponse:
+    require_form_csrf(request, None)
+    credential = update.credential.strip()
+    secrets = cast(SecretStore, request.app.state.secrets)
+    if credential:
+        secrets.set(VOYAGE_API_KEY_SECRET, credential)
+    return _no_store({"configured": _voyage_configured(request)})
+
+
+@router.post("/ai/openrouter/model")
+def save_openrouter_model(
+    request: Request,
+    update: OpenRouterModelUpdate,
+) -> JSONResponse:
+    llm_settings = _llm_settings(request)
+    current = llm_settings.assignment(LLMTask.ACCURACY_REVIEW)
+    try:
+        saved = llm_settings.set_assignment(
+            LLMTask.ACCURACY_REVIEW,
+            current.provider,
+            update.model,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return _no_store({"model": saved.model})
+
+
+@router.post("/ai/openrouter/gate")
+def save_accuracy_gate(
+    request: Request,
+    update: AccuracyGateUpdate,
+) -> JSONResponse:
+    settings = cast(StudyAISettingsRepository, request.app.state.study_ai_settings)
+    saved = settings.save(accuracy_gate_enabled=update.enabled)
+    return _no_store({"enabled": saved.accuracy_gate_enabled})
+
+
+@router.post("/ai/openrouter/test")
+def test_openrouter_connection(request: Request) -> JSONResponse:
+    gate = cast(MedicalAccuracyGate, request.app.state.medical_accuracy_gate)
+    try:
+        gate.test_connection()
+    except AccuracyGateError as error:
+        return _no_store({"state": "failed", "message": str(error)})
+    return _no_store({"state": "connected", "message": "OpenRouter is ready."})
 
 
 @router.post("/ai/{provider}/credential")
@@ -163,25 +413,6 @@ def save_ai_model(
     return _no_store(
         {
             "provider": selected.value,
-            "model": preference.model,
-        }
-    )
-
-
-@router.post("/ai/active")
-def save_active_ai_provider(
-    request: Request,
-    update: ActiveProviderUpdate,
-) -> JSONResponse:
-    if not _llm_service(request).credential_configured(update.provider):
-        raise HTTPException(
-            409,
-            f"Configure the {update.provider.value.title()} credential first",
-        )
-    preference = _llm_settings(request).set_active(update.provider)
-    return _no_store(
-        {
-            "provider": preference.provider.value,
             "model": preference.model,
         }
     )
@@ -294,30 +525,22 @@ def test_ai_connection(
 async def preview_tracker(
     request: Request,
     workbook: Annotated[UploadFile, File()],
-    csrf_token: Annotated[str | None, Form()] = None,
 ) -> Response:
-    require_form_csrf(request, csrf_token)
     filename = Path(workbook.filename or "").name
     if Path(filename).suffix.casefold() != ".xlsx":
         raise HTTPException(415, "tracker must be an .xlsx workbook")
     incoming_root = request.app.state.settings.data_dir / "tracker-previews" / "incoming"
-    await asyncio.to_thread(incoming_root.mkdir, parents=True, exist_ok=True)
+    incoming_root.mkdir(parents=True, exist_ok=True)
     incoming = incoming_root / f"{uuid4()}.xlsx"
     size = 0
     try:
-        await workbook.seek(0)
-        size = await asyncio.to_thread(
-            _write_tracker_upload,
-            workbook.file,
-            incoming,
-        )
-        if size > _MAX_TRACKER_BYTES:
-            raise HTTPException(413, "tracker workbook is too large")
-        preview = await asyncio.to_thread(
-            _service(request).preview,
-            incoming,
-            filename,
-        )
+        with incoming.open("xb") as output:
+            while chunk := await workbook.read(1024 * 1024):
+                size += len(chunk)
+                if size > _MAX_TRACKER_BYTES:
+                    raise HTTPException(413, "tracker workbook is too large")
+                output.write(chunk)
+        preview = _service(request).preview(incoming, source_name=filename)
         if "application/json" in request.headers.get("accept", "").casefold():
             return JSONResponse(preview.public_dict())
         courses = _preview_courses(preview)
@@ -337,27 +560,14 @@ async def preview_tracker(
             },
         )
     finally:
-        await asyncio.to_thread(incoming.unlink, missing_ok=True)
-
-
-def _write_tracker_upload(source: BinaryIO, destination: Path) -> int:
-    size = 0
-    with destination.open("xb") as output:
-        while chunk := source.read(1024 * 1024):
-            size += len(chunk)
-            if size > _MAX_TRACKER_BYTES:
-                break
-            output.write(chunk)
-    return size
+        incoming.unlink(missing_ok=True)
 
 
 @router.post("/tracker/apply")
 def apply_tracker(
     request: Request,
     preview_id: Annotated[str, Form()],
-    csrf_token: Annotated[str | None, Form()] = None,
 ) -> RedirectResponse:
-    require_form_csrf(request, csrf_token)
     try:
         _service(request).apply(preview_id)
     except (ValueError, FileNotFoundError, json.JSONDecodeError) as error:
@@ -365,11 +575,81 @@ def apply_tracker(
     return RedirectResponse("/", status_code=303)
 
 
+@api_router.get("/providers/{provider}/models")
+def list_provider_models(request: Request, provider: str) -> JSONResponse:
+    selected = _provider(provider)
+    secrets = cast(SecretStore, request.app.state.secrets)
+    api_key = secrets.get(SECRET_KEYS[selected])
+    if not api_key or not api_key.strip():
+        return _no_store(
+            {
+                "models": list(FALLBACK_MODELS[selected]),
+                "source": "fallback",
+            }
+        )
+    cached = _cached_models(selected)
+    if cached is not None:
+        return _no_store({"models": list(cached), "source": "live"})
+    try:
+        models = _llm_service(request).providers[selected].list_models(api_key)
+    except LLMRequestError:
+        return _no_store(
+            {
+                "models": list(FALLBACK_MODELS[selected]),
+                "source": "fallback",
+            }
+        )
+    _cache_models(selected, models)
+    return _no_store({"models": list(models), "source": "live"})
+
+
+@api_router.put("/task-assignments/{task}")
+def update_task_assignment(
+    request: Request,
+    task: str,
+    update: TaskAssignmentUpdate,
+) -> JSONResponse:
+    selected_task = _task(task)
+    selected_provider = _body_provider(update.provider)
+    try:
+        saved = _llm_settings(request).set_assignment(
+            selected_task,
+            selected_provider,
+            update.model,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return _no_store(
+        {
+            "task": saved.task.value,
+            "provider": saved.provider.value,
+            "model": saved.model,
+            "key_configured": _llm_service(request).credential_configured(
+                saved.provider
+            ),
+        }
+    )
+
+
 def _provider(value: str) -> ProviderName:
     try:
         return ProviderName(value)
     except ValueError as error:
         raise HTTPException(404, "AI provider was not found") from error
+
+
+def _task(value: str) -> LLMTask:
+    try:
+        return LLMTask(value)
+    except ValueError as error:
+        raise HTTPException(404, "task was not found") from error
+
+
+def _body_provider(value: str) -> ProviderName:
+    try:
+        return ProviderName(value)
+    except ValueError as error:
+        raise HTTPException(422, "AI provider was not found") from error
 
 
 def _llm_service(request: Request) -> LLMService:
@@ -381,6 +661,10 @@ def _llm_settings(request: Request) -> LLMSettingsRepository:
         LLMSettingsRepository,
         request.app.state.llm_settings,
     )
+
+
+def _runtime_settings(request: Request) -> RuntimeSettingsRepository:
+    return cast(RuntimeSettingsRepository, request.app.state.runtime_settings)
 
 
 def _no_store(payload: dict[str, object]) -> JSONResponse:
@@ -407,6 +691,9 @@ def _diagnostic(
         ),
         DiagnosticSource.MODEL: (
             "Choose a model available to this provider account."
+        ),
+        DiagnosticSource.REQUEST: (
+            "Review the provider request format and try again."
         ),
         DiagnosticSource.QUOTA: (
             "Check provider billing, quota, and rate limits."

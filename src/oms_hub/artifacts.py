@@ -1,3 +1,4 @@
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -6,11 +7,8 @@ from pathlib import Path
 from oms_hub.config import Settings
 from oms_hub.db import Database
 from oms_hub.domain import StepStatus, V2StepName
-from oms_hub.files.atomic import sha256_file
+from oms_hub.files.atomic import sha256_file, verified_atomic_copy
 from oms_hub.files.pdf import validate_pdf
-from oms_hub.files.promotion import (
-    PromotionCoordinator,
-)
 from oms_hub.ingestion.domain import StudyRevision, UploadKind
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.repositories import CatalogRepository
@@ -51,7 +49,6 @@ class ArtifactService:
         self.settings = settings
         self.repository = IngestionRepository(database)
         self.catalog = CatalogRepository(database)
-        self.promotion = PromotionCoordinator()
 
     def resolve(
         self,
@@ -286,26 +283,79 @@ class ArtifactService:
                 "artifact path is outside its approved storage root"
             )
 
+    @staticmethod
     def _promote_with_rollback(
-        self,
         pairs: list[tuple[Path, Path]],
         revision_id: int,
         commit: Callable[[], StudyRevision],
     ) -> None:
-        self.promotion.promote(pairs, revision_id, commit)
+        backups: dict[Path, Path | None] = {}
+        try:
+            for _, destination in pairs:
+                if destination.exists():
+                    existing_backup = destination.with_name(
+                        f".{destination.name}.oms-backup-{revision_id}"
+                    )
+                    verified_atomic_copy(destination, existing_backup)
+                    backups[destination] = existing_backup
+                else:
+                    backups[destination] = None
+            for source, destination in pairs:
+                verified_atomic_copy(source, destination)
+            commit()
+        except Exception:
+            for destination, saved_path in backups.items():
+                if saved_path is not None and saved_path.exists():
+                    os.replace(saved_path, destination)
+                elif saved_path is None:
+                    destination.unlink(missing_ok=True)
+            raise
+        finally:
+            for saved_path in backups.values():
+                if saved_path is not None:
+                    saved_path.unlink(missing_ok=True)
 
     def _recover_promotion(
         self,
         revision: StudyRevision,
         pairs: list[tuple[Path, Path]],
     ) -> bool:
-        recovered = self.promotion.recover(
-            pairs,
-            revision.id,
-            lambda: self.repository.promote_study_revision(revision.id),
-            lambda: self.repository.reset_study_promotion(revision.id),
+        if all(
+            destination.is_file()
+            and sha256_file(destination) == sha256_file(source)
+            for source, destination in pairs
+        ):
+            self.repository.promote_study_revision(revision.id)
+            self._remove_promotion_backups(pairs, revision.id)
+            return True
+        for source, destination in pairs:
+            backup = self._backup_path(destination, revision.id)
+            if backup.exists():
+                os.replace(backup, destination)
+            elif (
+                destination.is_file()
+                and sha256_file(destination) == sha256_file(source)
+            ):
+                destination.unlink()
+        self.repository.reset_study_promotion(revision.id)
+        return False
+
+    @classmethod
+    def _remove_promotion_backups(
+        cls,
+        pairs: list[tuple[Path, Path]],
+        revision_id: int,
+    ) -> None:
+        for _, destination in pairs:
+            cls._backup_path(destination, revision_id).unlink(
+                missing_ok=True
+            )
+
+    @staticmethod
+    def _backup_path(destination: Path, revision_id: int) -> Path:
+        return destination.with_name(
+            f".{destination.name}.oms-backup-{revision_id}"
         )
-        return recovered is not None
 
     def _complete_filing_progress(
         self,
