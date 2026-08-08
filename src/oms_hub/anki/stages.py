@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import math
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
@@ -119,7 +120,7 @@ from oms_hub.anki.retrieval import (
 )
 from oms_hub.anki.runtime import AnkiRuntime
 from oms_hub.anki.semantic.domain import EmbeddingClient
-from oms_hub.anki.semantic.service import SemanticIndexService
+from oms_hub.anki.semantic.service import SemanticIndexService, normalize_semantic_text
 from oms_hub.anki.semantic.store import SemanticSnapshotStore
 from oms_hub.anki.source_index import (
     LectureSourceIndex,
@@ -656,43 +657,61 @@ class CurationServicesRunner:
         if context.job.semantic_generation is None:
             raise PinnedInputChanged("card-centric v2 job has no pinned semantic generation")
         ledger = _card_ledger(context)
-        concept_queries = tuple(
-            " ".join((concept.primary_entity, *concept.aliases)).strip()
-            for concept in ledger.concepts
-        )
-        scores = await self.semantic.pinned_similarity(
-            concept_queries,
+        similarity = await self.semantic.pinned_centroid_similarity(
+            tuple(_card_concept_centroid_terms(concept) for concept in ledger.concepts),
             note_ids=scoped_note_ids,
             expected_generation=context.job.semantic_generation,
         )
-        if set(scores) != set(scoped_note_ids):
-            raise PinnedInputChanged("pinned semantic scores do not cover scoped notes")
+        scores = dict(similarity.scores)
+        unavailable = tuple(sorted(set(similarity.unavailable_note_ids)))
+        if (
+            set(scores) & set(unavailable)
+            or set(scores) | set(unavailable) != set(scoped_note_ids)
+            or any(note_id <= 0 for note_id in unavailable)
+        ):
+            raise PinnedInputChanged(
+                "pinned semantic scores and unavailable notes do not cover scoped notes"
+            )
+        if any(
+            not isinstance(score, (int, float)) or not math.isfinite(score)
+            for score in scores.values()
+        ):
+            raise PinnedInputChanged("pinned semantic scores are invalid")
         threshold = 0.55
         pre_filtered = tuple(
-            sorted(note_id for note_id, score in scores.items() if score >= threshold)
+            sorted(
+                set(unavailable)
+                | {note_id for note_id, score in scores.items() if score >= threshold}
+            )
         )
         pre_excluded = tuple(sorted(set(scoped_note_ids) - set(pre_filtered)))
         ordered_scores = sorted(scores.values())
         midpoint = len(ordered_scores) // 2
         median = (
-            ordered_scores[midpoint]
-            if len(ordered_scores) % 2
-            else (ordered_scores[midpoint - 1] + ordered_scores[midpoint]) / 2
+            0.0
+            if not ordered_scores
+            else (
+                ordered_scores[midpoint]
+                if len(ordered_scores) % 2
+                else (ordered_scores[midpoint - 1] + ordered_scores[midpoint]) / 2
+            )
         )
         result = SemanticPreFilterResult(
             pre_filtered_note_ids=pre_filtered,
             pre_excluded_note_ids=pre_excluded,
             threshold=threshold,
             similarity_stats={
-                "min": min(ordered_scores),
-                "max": max(ordered_scores),
-                "mean": sum(ordered_scores) / len(ordered_scores),
+                "min": min(ordered_scores, default=0.0),
+                "max": max(ordered_scores, default=0.0),
+                "mean": sum(ordered_scores) / len(ordered_scores) if ordered_scores else 0.0,
                 "median": median,
             },
         )
+        payload = result.model_dump(mode="json")
+        payload["embedding_unavailable_note_ids"] = list(unavailable)
         return StageProduct(
             kind="card_centric_prefilter",
-            payload=result.model_dump(mode="json"),
+            payload=payload,
         )
 
     async def _card_fast_classify(self, context: StageContext) -> StageProduct:
@@ -702,19 +721,10 @@ class CurationServicesRunner:
             card.note_id: card
             for card in _card_records(_payload(context, CurationStage.SOURCE_INDEX))
         }
-        try:
-            prefilter = SemanticPreFilterResult.model_validate(
-                _payload(context, CurationStage.CARD_PREFILTER)
-            )
-        except (TypeError, ValueError) as exc:
-            raise PinnedInputChanged("card-centric prefilter artifact is malformed") from exc
         scope = TagScopeResult.model_validate(
             _payload(context, CurationStage.CARD_TAG_SCOPE)["scope"]
         )
-        if set(prefilter.pre_filtered_note_ids) | set(prefilter.pre_excluded_note_ids) != set(
-            scope.scoped_note_ids
-        ):
-            raise PinnedInputChanged("card-centric prefilter does not partition scoped notes")
+        prefilter, _ = _read_card_prefilter(context, scope)
         selected = tuple(
             cards_by_id[note_id]
             for note_id in sorted(prefilter.pre_filtered_note_ids)
@@ -972,7 +982,16 @@ class CurationServicesRunner:
             for alias in (concept.aliases or (concept.primary_entity,))
         )
         queries = tuple(query for _, query in query_specs)
-        hits = await self.semantic.search(queries, eligible_note_ids=set(cards), limit=12)
+        semantic_generation = getattr(context.job, "semantic_generation", None)
+        if hasattr(context.job, "semantic_generation") and semantic_generation is None:
+            raise PinnedInputChanged("card-centric v2 job has no pinned semantic generation")
+        search_kwargs: dict[str, Any] = {
+            "eligible_note_ids": set(cards),
+            "limit": 12,
+        }
+        if semantic_generation is not None:
+            search_kwargs["expected_generation"] = semantic_generation
+        hits = await self.semantic.search(queries, **search_kwargs)
         audit: list[dict[str, Any]] = []
         hit_ids: set[int] = set()
         # Terminal v2 fast rows are classification decisions, as are actual
@@ -1006,6 +1025,14 @@ class CurationServicesRunner:
                     str(item.note_id): item.score
                     for item in sorted(usable, key=lambda item: item.note_id)
                 }
+                below_threshold = tuple(
+                    sorted(
+                        item.note_id
+                        for item in usable
+                        if 0.40 <= item.score < 0.50
+                    )
+                )
+                row["below_classification_threshold_note_ids"] = list(below_threshold)
                 if top is None or top < 0.40:
                     row.update({"classified_note_ids": [], "semantic_skip": True})
                     audit.append(row)
@@ -2814,6 +2841,51 @@ def _card_residual_targets(
     )
 
 
+def _card_concept_centroid_terms(concept: CardConcept) -> tuple[str, ...]:
+    """Return stable, separately normalized primary/alias S4a query terms."""
+    primary = normalize_semantic_text(concept.primary_entity)
+    if not primary:
+        raise PinnedInputChanged("card-centric concept primary entity is blank")
+    terms = {primary}
+    terms.update(
+        normalized
+        for alias in concept.aliases
+        if (normalized := normalize_semantic_text(alias))
+    )
+    return (primary, *sorted(terms - {primary}))
+
+
+def _read_card_prefilter(
+    context: StageContext,
+    scope: TagScopeResult,
+) -> tuple[SemanticPreFilterResult, tuple[int, ...]]:
+    """Validate the S4a/S4b partition, including diagnostic pass-through rows."""
+    payload = _payload(context, CurationStage.CARD_PREFILTER)
+    if not isinstance(payload, dict):
+        raise PinnedInputChanged("card-centric prefilter artifact is malformed")
+    try:
+        prefilter = SemanticPreFilterResult.model_validate(
+            {name: payload[name] for name in SemanticPreFilterResult.model_fields}
+        )
+        unavailable = tuple(
+            sorted({int(value) for value in payload.get("embedding_unavailable_note_ids", [])})
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PinnedInputChanged("card-centric prefilter artifact is malformed") from exc
+    pre_filtered = set(prefilter.pre_filtered_note_ids)
+    excluded = set(prefilter.pre_excluded_note_ids)
+    if (
+        len(pre_filtered) != len(prefilter.pre_filtered_note_ids)
+        or len(excluded) != len(prefilter.pre_excluded_note_ids)
+        or pre_filtered & excluded
+        or pre_filtered | excluded != set(scope.scoped_note_ids)
+        or not set(unavailable) <= pre_filtered
+        or any(note_id <= 0 for note_id in unavailable)
+    ):
+        raise PinnedInputChanged("card-centric prefilter does not partition scoped notes")
+    return prefilter, unavailable
+
+
 def _card_records(payload: dict[str, Any]) -> tuple[CardRecord, ...]:
     raw = payload.get("cards")
     if not isinstance(raw, list):
@@ -2924,7 +2996,16 @@ def _effective_v2_fallback_note_ids(
     fallback_note_ids: Sequence[int],
     classifications: Sequence[CardClassification],
 ) -> tuple[int, ...]:
-    """A thorough S4c/S6 result replaces an unresolved S4a fallback row."""
+    """S4a exclusions are diagnostic only and never selection fallback candidates."""
+    del fallback_note_ids, classifications
+    return ()
+
+
+def _unrecovered_s4a_exclusion_note_ids(
+    fallback_note_ids: Sequence[int],
+    classifications: Sequence[CardClassification],
+) -> tuple[int, ...]:
+    """Expose S4a exclusions for audit accounting without making them selectable."""
     classified_ids = {item.note_id for item in classifications}
     return tuple(
         note_id for note_id in sorted(set(fallback_note_ids)) if note_id not in classified_ids
@@ -3123,7 +3204,11 @@ def _v2_card_candidates(
     needs_review_ids = {
         item.note_id for item in fast_classifications if item.verdict == "NEEDS_REVIEW"
     }
-    fallback = set(fallback_note_ids)
+    if CurationStage.CARD_FAST_CLASSIFY in context.prior_payloads:
+        _, pre_excluded_note_ids = _card_fast_classifier(context)
+    else:
+        pre_excluded_note_ids = tuple(fallback_note_ids)
+    fallback = set(_unrecovered_s4a_exclusion_note_ids(pre_excluded_note_ids, classifications))
     if needs_review_ids - set(thorough):
         raise PinnedInputChanged("v2 S4b NEEDS_REVIEW rows lack S4c terminal results")
     if set(thorough) & (set(fast) | fallback) or set(fast) & fallback:
@@ -3223,7 +3308,7 @@ def _v2_reconciliation_classifications(
     fast_by_id = {item.note_id: item for item in _terminal_fast_classifications(fast)}
     needs_review_ids = {item.note_id for item in fast if item.verdict == "NEEDS_REVIEW"}
     fallback = set(
-        _effective_v2_fallback_note_ids(fallback_note_ids, tuple(thorough_by_id.values()))
+        _unrecovered_s4a_exclusion_note_ids(fallback_note_ids, tuple(thorough_by_id.values()))
     )
     if needs_review_ids - set(thorough_by_id):
         raise PinnedInputChanged("v2 reconciliation has unresolved S4b NEEDS_REVIEW rows")

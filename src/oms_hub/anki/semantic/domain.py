@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
@@ -49,6 +49,14 @@ class SemanticHit:
     note_id: int
     score: float
     content_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class PinnedCentroidSimilarityResult:
+    """Pinned S4a scores plus scoped notes with unavailable embeddings."""
+
+    scores: Mapping[int, float]
+    unavailable_note_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
