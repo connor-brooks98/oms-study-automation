@@ -75,9 +75,7 @@ def convert_office_file(
             "Microsoft Office conversion is available only on Windows"
         )
     import pythoncom  # type: ignore[import-untyped]
-    import pywintypes  # type: ignore[import-untyped]
     import win32com.client  # type: ignore[import-untyped]
-    import win32process  # type: ignore[import-untyped]
 
     application: Any = None
     document: Any = None
@@ -87,12 +85,8 @@ def convert_office_file(
             application = win32com.client.DispatchEx("PowerPoint.Application")
             application.DisplayAlerts = 1
             _force_disable_macros(application)
-            process_id = _process_id_for_window(
-                _window_handle_for_process_id(application, "HWND", pythoncom),
-                win32process,
-                pywintypes,
-            )
-            report_process(process_id)
+            # PowerPoint's HWND member is unavailable in some automation
+            # contexts.  The known-working conversion path does not require it.
             document = application.Presentations.Open(
                 str(source),
                 ReadOnly=True,
@@ -100,6 +94,9 @@ def convert_office_file(
             )
             document.SaveAs(str(destination), 32)
         else:
+            import pywintypes  # type: ignore[import-untyped]
+            import win32process  # type: ignore[import-untyped]
+
             application = win32com.client.DispatchEx("Word.Application")
             application.Visible = False
             application.DisplayAlerts = 0
