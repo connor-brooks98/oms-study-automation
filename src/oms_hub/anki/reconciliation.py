@@ -39,7 +39,11 @@ class GeneratedResolution(BaseModel):
     text: str = Field(min_length=1)
     extra: str = ""
     split: bool = False
-    split_index: int | None = Field(default=None, ge=1)
+    split_index: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class AuditResolution(BaseModel):
@@ -170,6 +174,11 @@ def selected_card_centric_coverage(
 
 def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> ReconciliationReport:
     """Architecture A1--A10 with warnings only for A7/A9/A10."""
+    legacy_snapshot = _is_legacy_card_centric_snapshot(snapshot)
+    snapshot = _adapt_legacy_card_centric_snapshot(snapshot, legacy_snapshot)
+    strict_v2 = (
+        snapshot.pipeline_contract_version == "card_centric_v2" and not legacy_snapshot
+    )
     passed: list[str] = []
     failed: list[AssertionFinding] = []
     warned: list[AssertionFinding] = []
@@ -203,7 +212,7 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
             )
         except ValidationError:
             output_set_error = True
-    elif snapshot.pipeline_contract_version == "card_centric_v2":
+    elif strict_v2:
         output_set_error = True
 
     terminal_exact = (
@@ -229,7 +238,7 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
     exact_fact_terminal = (
         terminal_exact
         if snapshot.terminal_resolutions_provided
-        or snapshot.pipeline_contract_version == "card_centric_v2"
+        or strict_v2
         else legacy_exact
     )
     _record(
@@ -293,6 +302,13 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
             malformed.append(f"{item.card_id}: {exc}")
     _record(
         "A5b", not malformed, "Generated cards fail structural cloze validation", passed, failed
+    )
+    _record(
+        "S7",
+        not strict_v2 or not canonical_generated or bool(snapshot.raw_generated_cards),
+        "V2 reconciliation requires the raw S7 generated rows before S8 selection",
+        passed,
+        failed,
     )
     _record(
         "A6",
@@ -392,7 +408,7 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
         f"existing:{note_id}" for note_id in snapshot.selected_nids
     ) + tuple(f"generated:{card_id}" for card_id in snapshot.selected_generated_card_ids)
     metadata_valid = (
-        snapshot.pipeline_contract_version != "card_centric_v2"
+        not strict_v2
         or (
             len(snapshot.selection_metadata) == total
             and set(metadata_identities) == set(expected_identities)
@@ -602,6 +618,36 @@ def _forbidden_cloze_rows(
         if forbidden & answers:
             violations.append(card.card_id)
     return tuple(violations)
+
+
+def _is_legacy_card_centric_snapshot(snapshot: CardCentricReconciliationInput) -> bool:
+    """Recognize only persisted pre-P3-D V2-shaped review snapshots.
+
+    These rows predate the S7/S8/S9 split and therefore have no raw output,
+    terminal-resolution marker, or QualitySelectionResult metadata.  New stage
+    snapshots set ``terminal_resolutions_provided`` even when their resolution
+    set is empty, so they never take this compatibility route.
+    """
+    return (
+        snapshot.pipeline_contract_version == "card_centric_v2"
+        and not snapshot.raw_generated_cards
+        and not snapshot.terminal_resolutions_provided
+        and not snapshot.terminal_resolutions
+        and not snapshot.selection_metadata
+        and not snapshot.selection_order
+        and snapshot.selected_count is None
+        and snapshot.below_warning_floor is None
+    )
+
+
+def _adapt_legacy_card_centric_snapshot(
+    snapshot: CardCentricReconciliationInput,
+    legacy_snapshot: bool,
+) -> CardCentricReconciliationInput:
+    """Infer the pre-P3-D raw view from the review-time selected card text."""
+    if not legacy_snapshot:
+        return snapshot
+    return snapshot.model_copy(update={"raw_generated_cards": snapshot.generated_cards})
 
 
 def _normalize_visible(value: str) -> str:
