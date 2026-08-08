@@ -26,5 +26,6 @@ def test_timeout_kills_child_cleans_partial_and_releases_global_lock(tmp_path):
 
     assert not destination.exists()
     converter.worker = _succeed
+    converter.timeout_seconds = 5
     converter.convert(source, destination)
     assert destination.read_bytes() == b"pdf"
