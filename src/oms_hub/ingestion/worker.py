@@ -60,8 +60,12 @@ class IngestionWorker:
 
     def _handle_failure(self, job: IngestionJob, error: Exception) -> None:
         detail = self._concise_error(error)
-        if self._is_transient(error) and job.attempts < self.max_attempts:
-            delay = timedelta(seconds=5 * (2 ** (job.attempts - 1)))
+        recovery_pending = isinstance(error, PromotionRecoveryError)
+        if self._is_transient(error) and (
+            recovery_pending or job.attempts < self.max_attempts
+        ):
+            retry_exponent = min(max(job.attempts - 1, 0), 6)
+            delay = timedelta(seconds=5 * (2**retry_exponent))
             self.repository.retry_job(job, detail, delay=delay)
             logger.warning(
                 "V2 ingestion job %s will retry after attempt %s: %s",

@@ -372,11 +372,19 @@ def test_interrupted_group_promotion_recovers_old_files_before_clean_retry(
     assert canonical[1].read_bytes() == b"old"
     assert canonical[2].read_bytes() == b"old"
 
+    recovery_started = datetime(2026, 8, 8, tzinfo=UTC)
+    recovery_attempts = iter(
+        (
+            recovery_started,
+            recovery_started + timedelta(seconds=10),
+            recovery_started + timedelta(seconds=30),
+        )
+    )
     worker = IngestionWorker(
         pipeline.repository,
         pipeline,
         pipeline,
-        now=lambda: datetime(2026, 8, 8, tzinfo=UTC),
+        now=lambda: next(recovery_attempts),
     )
     assert worker.recover_interrupted_jobs() == 1
     monkeypatch.setattr(
@@ -386,6 +394,8 @@ def test_interrupted_group_promotion_recovers_old_files_before_clean_retry(
             PromotionRecoveryError("destination is locked")
         ),
     )
+    assert worker.run_once() is True
+    assert worker.run_once() is True
     assert worker.run_once() is True
     assert pipeline.repository.require_item(item_id).state is UploadState.QUEUED
     assert pipeline.repository.get_study_revision(interrupted.id).state == "promoting"
