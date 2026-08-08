@@ -35,6 +35,7 @@ from oms_hub.anki.card_centric_contracts import (
     FastCardClassification,
     FastClassificationResult,
     GeneratedCardResolution,
+    QualitySelectionResult,
     SemanticDedupeReview,
     SemanticPreFilterResult,
     SnapshotCensus,
@@ -108,7 +109,6 @@ from oms_hub.anki.prompts import (
     StaticPromptSynchronizer,
 )
 from oms_hub.anki.reconciliation import (
-    AssertionFinding,
     AuditResolution,
     CardCentricReconciliationInput,
     ConceptResolution,
@@ -2616,6 +2616,65 @@ class CurationServicesRunner:
         )
         census = _card_census(_payload(context, CurationStage.SOURCE_INDEX))
         is_v2 = context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
+        selection_result: QualitySelectionResult | None = None
+        if is_v2:
+            try:
+                selection_result = QualitySelectionResult.model_validate(
+                    {
+                        name: selection[name]
+                        for name in QualitySelectionResult.model_fields
+                    }
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise PinnedInputChanged("card-centric selection artifact is malformed") from exc
+            selection_order = tuple(
+                item.identity
+                for item in sorted(
+                    selection_result.selection_metadata,
+                    key=lambda item: item.selected_position,
+                )
+            )
+            if (
+                selection.get("selected_count")
+                != len(selection_result.selected_existing_note_ids)
+                + len(selection_result.selected_generated_card_ids)
+                or tuple(selection.get("selection_order", ())) != selection_order
+            ):
+                raise PinnedInputChanged("card-centric selection metadata/order/count changed")
+        terminal_payload = selection.get("terminal_resolutions")
+        if not isinstance(terminal_payload, list):
+            raise PinnedInputChanged("card-centric selection terminal resolutions are malformed")
+        try:
+            terminal_resolutions = tuple(
+                GeneratedFactResolution.model_validate(value) for value in terminal_payload
+            )
+        except (TypeError, ValueError) as exc:
+            raise PinnedInputChanged(
+                "card-centric selection terminal resolutions are malformed"
+            ) from exc
+        expected_terminal_resolutions = _dedupe_terminal_resolutions(
+            generated,
+            semantic_dedupe_reviews,
+        )
+        if (
+            [item.model_dump(mode="json") for item in terminal_resolutions]
+            != expected_terminal_resolutions
+        ):
+            raise PinnedInputChanged("card-centric selection terminal resolutions changed")
+        raw_generated = _card_generated(context)
+        raw_by_id = {item.card_id: item for item in raw_generated}
+        deduped_by_id = {item.card_id: item for item in generated}
+        if (
+            len(raw_by_id) != len(raw_generated)
+            or set(raw_by_id) != set(deduped_by_id)
+            or any(
+                raw_by_id[card_id].fact_id != deduped_by_id[card_id].fact_id
+                or raw_by_id[card_id].split != deduped_by_id[card_id].split
+                or raw_by_id[card_id].split_index != deduped_by_id[card_id].split_index
+                for card_id in raw_by_id
+            )
+        ):
+            raise PinnedInputChanged("card-centric S7/S8 generated identities changed")
         fast, fallback_ids = _card_fast_classifier(context) if is_v2 else (None, ())
         required_fact_ids = tuple(
             f"{concept.concept_id}-M{index + 1}"
@@ -2627,9 +2686,21 @@ class CurationServicesRunner:
                 else 1
             )
         )
-        selected_nids = tuple(selection["selected_existing_note_ids"])
-        selected_generated_card_ids = tuple(selection["selected_generated_card_ids"])
-        selected_review_ids = tuple(selection.get("semantic_review_required_card_ids", []))
+        selected_nids = (
+            selection_result.selected_existing_note_ids
+            if selection_result is not None
+            else tuple(selection["selected_existing_note_ids"])
+        )
+        selected_generated_card_ids = (
+            selection_result.selected_generated_card_ids
+            if selection_result is not None
+            else tuple(selection["selected_generated_card_ids"])
+        )
+        selected_review_ids = (
+            selection_result.semantic_review_required_card_ids
+            if selection_result is not None
+            else tuple(selection.get("semantic_review_required_card_ids", []))
+        )
         if set(selected_review_ids) != {review.card_id for review in semantic_dedupe_reviews}:
             raise PinnedInputChanged("selection semantic review IDs do not match dedupe reviews")
         existing_coverage_by_nid = {
@@ -2648,6 +2719,49 @@ class CurationServicesRunner:
                     for item in fast.results
                     if fast_selection_eligible_v2(item, _card_source_index(context))
                 }
+            )
+        forbidden_by_fact = {
+            f"{concept.concept_id}-M{index + 1}": (
+                concept.forbidden_cloze_targets_by_fact[index]
+                if index < len(concept.forbidden_cloze_targets_by_fact)
+                else ledger.forbidden_cloze_targets
+            )
+            for concept in ledger.concepts
+            for index in range(
+                concept.suggested_fact_count
+                if is_v2
+                else 1
+            )
+        }
+        acknowledgement = (
+            selection_result.overflow_acknowledgement.as_dict()
+            if selection_result is not None
+            and selection_result.overflow_acknowledgement is not None
+            else selection.get("overflow_acknowledgement")
+        )
+        acknowledgement_valid = False
+        if acknowledgement is not None and hasattr(
+            self.repository, "validate_card_centric_overflow_acknowledgement"
+        ):
+            acknowledgement_valid = bool(
+                self.repository.validate_card_centric_overflow_acknowledgement(
+                    context.job.id,
+                    review_revision=context.job.review_revision,
+                    selected_note_ids=tuple(
+                        selection_result.mandatory_note_ids
+                        if selection_result is not None
+                        else selection["mandatory_note_ids"]
+                    ),
+                    selected_generated_ids=tuple(
+                        selection_result.mandatory_generated_card_ids
+                        if selection_result is not None and is_v2
+                        else selected_generated_card_ids
+                    ),
+                    cap=int(
+                        selection_result.cap if selection_result is not None else selection["cap"]
+                    ),
+                    document=cast(dict[str, Any], acknowledgement),
+                )
             )
         initial_snapshot = CardCentricReconciliationInput(
             pipeline_contract_version=cast(
@@ -2672,9 +2786,22 @@ class CurationServicesRunner:
                     text=item.text,
                     extra=item.extra,
                     split=item.split,
+                    split_index=item.split_index,
                 )
                 for item in generated
                 if item.status == "generated" and item.card_id in set(selected_generated_card_ids)
+            ),
+            raw_generated_cards=tuple(
+                GeneratedResolution(
+                    card_id=item.card_id,
+                    fact_id=item.fact_id,
+                    text=item.text,
+                    extra=item.extra,
+                    split=item.split,
+                    split_index=item.split_index,
+                )
+                for item in raw_generated
+                if item.status == "generated"
             ),
             canonical_generated_cards=tuple(
                 GeneratedResolution(
@@ -2683,10 +2810,13 @@ class CurationServicesRunner:
                     text=item.text,
                     extra=item.extra,
                     split=item.split,
+                    split_index=item.split_index,
                 )
                 for item in generated
                 if item.status == "generated"
             ),
+            terminal_resolutions=terminal_resolutions,
+            terminal_resolutions_provided=True,
             # A duplicate is not an unresolved fact. Until P3-D's duplicate
             # coverage reconciliation has its selected target, A1/A2 must
             # fail closed rather than misrepresent it as an intentional gap.
@@ -2745,19 +2875,49 @@ class CurationServicesRunner:
             forbidden_cloze_targets=ledger.all_forbidden_targets
             if context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
             else ledger.forbidden_cloze_targets,
+            forbidden_cloze_targets_by_fact=forbidden_by_fact,
             prompt_sync_stale=bool(
                 _payload(context, CurationStage.PREFLIGHT).get("prompt_sync_stale", False)
             ),
             untagged_rate=census.trust.untagged_rate,
-            target=int(selection["target"]),
-            cap=int(selection["cap"]),
-            mandatory_nids=tuple(selection["mandatory_note_ids"]),
-            mandatory_generated_card_ids=tuple(selection.get("mandatory_generated_card_ids", [])),
+            target=int(
+                selection_result.target if selection_result is not None else selection["target"]
+            ),
+            cap=int(
+                selection_result.cap if selection_result is not None else selection["cap"]
+            ),
+            mandatory_nids=tuple(
+                selection_result.mandatory_note_ids
+                if selection_result is not None
+                else selection["mandatory_note_ids"]
+            ),
+            mandatory_generated_card_ids=tuple(
+                selection_result.mandatory_generated_card_ids
+                if selection_result is not None
+                else selection.get("mandatory_generated_card_ids", [])
+            ),
             covered_concept_ids_by_nid=existing_coverage_by_nid,
             generated_concept_id_by_card_id={
                 item.card_id: item.concept_id for item in generated if item.status == "generated"
             },
-            overflow_acknowledgement=selection.get("overflow_acknowledgement"),
+            # Only carry an acknowledgement into an initial S9 snapshot after
+            # the repository has checked its immutable HMAC/revision binding.
+            # On later persistence, the repository performs the same check
+            # before adding the document to the stored snapshot.
+            overflow_acknowledgement=(
+                cast(dict[str, object], acknowledgement) if acknowledgement_valid else None
+            ),
+            selection_metadata=(
+                selection_result.selection_metadata if selection_result is not None else ()
+            ),
+            selection_order=(selection_order if selection_result is not None else ()),
+            selected_count=(
+                int(selection["selected_count"]) if selection_result is not None else None
+            ),
+            below_warning_floor=(
+                selection_result.below_warning_floor if selection_result is not None else None
+            ),
+            semantic_review_required_card_ids=selected_review_ids,
             historical_yes_rates=(
                 tuple(self.repository.card_centric_yes_rate_history(context.job.id))
                 if is_v2 and hasattr(self.repository, "card_centric_yes_rate_history")
@@ -2784,22 +2944,6 @@ class CurationServicesRunner:
             update={"coverage": selected_card_centric_coverage(initial_snapshot)}
         )
         report = reconcile_card_centric(snapshot)
-        if semantic_dedupe_reviews:
-            report = report.model_copy(
-                update={
-                    "failed": (
-                        *report.failed,
-                        AssertionFinding(
-                            assertion_id="S8",
-                            message=(
-                                "Semantic dedupe retries are exhausted; affected generated cards "
-                                "require manual review before envelope issuance"
-                            ),
-                        ),
-                    ),
-                    "can_render_envelope": False,
-                }
-            )
         return StageProduct(
             kind="card_centric_reconciliation",
             payload={

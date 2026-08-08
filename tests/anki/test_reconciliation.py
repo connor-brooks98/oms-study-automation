@@ -279,7 +279,7 @@ def test_card_centric_s9_accepts_fast_only_coverage_when_the_fast_card_is_select
     assert "A4" in report.passed
 
 
-def test_card_centric_s9_allows_review_for_unsigned_exact_mandatory_overflow() -> None:
+def test_card_centric_s9_blocks_unsigned_exact_mandatory_overflow() -> None:
     mandatory = tuple(range(1, 72))
     snapshot = CardCentricReconciliationInput(
         concept_ids=("C01",),
@@ -306,7 +306,7 @@ def test_card_centric_s9_allows_review_for_unsigned_exact_mandatory_overflow() -
     report = reconcile_card_centric(snapshot)
 
     assert {item.assertion_id for item in report.failed} == {"selection_cap"}
-    assert report.can_render_envelope is True
+    assert report.can_render_envelope is False
 
 
 def test_card_centric_s9_blocks_nonmandatory_cards_in_an_overflow_selection() -> None:
@@ -378,6 +378,6 @@ def test_v1_overflow_can_bind_generated_cards_alongside_mandatory_existing_cards
     )
 
     assert {item.assertion_id for item in v1.failed} == {"selection_cap"}
-    assert v1.can_render_envelope is True
+    assert v1.can_render_envelope is False
     assert "selection_cap" in {item.assertion_id for item in v2.failed}
     assert v2.can_render_envelope is False
