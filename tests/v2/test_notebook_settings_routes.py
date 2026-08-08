@@ -6,10 +6,12 @@ from fastapi.testclient import TestClient
 import oms_hub.app as app_module
 from oms_hub.app import create_app
 from oms_hub.config import Settings
+from oms_hub.db import Database
 from oms_hub.study_generation.notebook_connection import (
     NotebookConnectionStatus,
 )
 from oms_hub.study_generation.notebook_storage import EncryptedNotebookStorage
+from oms_hub.study_generation.repository import GenerationRepository
 
 
 class FakeNotebookConnection:
@@ -131,16 +133,31 @@ def test_app_starts_disconnected_when_encrypted_notebook_session_is_unreadable(
     plaintext_path = google / "notebooklm-storage.json"
     encrypted_path.write_bytes(b"unreadable-session")
     monkeypatch.setattr(app_module, "KeyringSecretStore", lambda: secrets)
+    database_url = f"sqlite:///{tmp_path / 'hub.db'}"
+    database = Database(database_url)
+    database.migrate()
+    GenerationRepository(database).save_google_status(
+        state="connected",
+        account_email=None,
+        notebook_state="connected",
+        gemini_state="unused",
+        docs_state="retired",
+        diagnostic=None,
+        tested_at="2026-08-08T00:00:00+00:00",
+    )
 
     created = app_module.create_app(
         Settings(
             _env_file=None,
             data_dir=tmp_path,
-            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+            database_url=database_url,
         )
     )
 
     assert created.state.notebook_storage_migrated is False
     assert "reconnect Google" in created.state.notebook_storage_migration_error
+    status = created.state.notebook_connection.status()
+    assert status.state == "failed"
+    assert status.message == created.state.notebook_storage_migration_error
     assert not plaintext_path.exists()
     assert encrypted_path.read_bytes() == b"unreadable-session"

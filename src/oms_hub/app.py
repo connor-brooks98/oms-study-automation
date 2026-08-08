@@ -537,6 +537,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.generation_repository,
         app.state.notebook_auth,
     )
+    if app.state.notebook_storage_migration_error is not None:
+        app.state.notebook_connection.invalidate(
+            app.state.notebook_storage_migration_error
+        )
     app.state.prompt_path_picker = SystemPromptPathPicker()
     app.state.prompt_directory_picker = SystemPromptDirectoryPicker()
     app.state.upload_staging = StagingService(
