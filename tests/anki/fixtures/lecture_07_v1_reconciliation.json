@@ -1,0 +1,29 @@
+{
+  "concepts": [
+    {
+      "concept_id": "C01",
+      "missing_fact_ids": [
+        "C01-M1",
+        "C01-M2"
+      ],
+      "status": "partial",
+      "converged": false,
+      "cited_passage_ids": [
+        "SLD:07:0001"
+      ]
+    }
+  ],
+  "generated_cards": [],
+  "unresolved_fact_ids": [],
+  "expected_audit_nids": [
+    1001,
+    1002
+  ],
+  "audit_verdicts": [],
+  "source_passage_ids": [
+    "SLD:07:0001",
+    "TRX:07:0001"
+  ],
+  "forbidden_cloze_targets": [],
+  "prompt_sync_stale": false
+}

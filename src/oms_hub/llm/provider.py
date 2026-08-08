@@ -3,11 +3,16 @@ from typing import Any, Protocol
 import httpx
 
 from oms_hub.llm.domain import (
+    DEFAULT_GENERATION_OPTIONS,
     CleanResult,
     DiagnosticSource,
+    GeneratedText,
+    GenerationOptions,
     LLMRequestError,
+    ProviderCapabilities,
     ProviderConnection,
     ProviderName,
+    ThinkingMode,
 )
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
@@ -20,6 +25,9 @@ Do not invent content. Return only the cleaned transcript as plain text."""
 
 class LLMProvider(Protocol):
     name: ProviderName
+    capabilities: ProviderCapabilities
+
+    def capabilities_for_model(self, model: str) -> ProviderCapabilities: ...
 
     def clean(
         self,
@@ -36,6 +44,19 @@ class LLMProvider(Protocol):
         model: str,
     ) -> ProviderConnection: ...
 
+    def generate_text(
+        self,
+        instruction: str,
+        input_text: str,
+        *,
+        api_key: str,
+        model: str,
+        output_schema: dict[str, object],
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
+    ) -> GeneratedText: ...
+
+    def list_models(self, api_key: str) -> tuple[str, ...]: ...
+
 
 def transcript_input(raw_text: str, prompt: ApprovedPrompt) -> str:
     return (
@@ -48,6 +69,38 @@ def transcript_input(raw_text: str, prompt: ApprovedPrompt) -> str:
     )
 
 
+def prompt_with_cacheable_prefix(
+    input_text: str,
+    options: GenerationOptions,
+) -> str:
+    """Preserve source-before-prompt ordering for non-caching transports."""
+    prefix = options.cacheable_source_prefix
+    if prefix is None:
+        return input_text
+    return f"{prefix}\n\n{input_text}"
+
+
+def require_supported_generation_options(
+    provider: ProviderName,
+    capabilities: ProviderCapabilities,
+    options: GenerationOptions,
+) -> None:
+    if options.thinking is ThinkingMode.ENABLED and not capabilities.thinking:
+        raise LLMRequestError(
+            f"{provider.value.title()} does not support thinking mode",
+            source=DiagnosticSource.CONTRACT,
+        )
+
+
+def optional_token_count(
+    value: object,
+    provider: ProviderName,
+    response: httpx.Response,
+) -> int:
+    """Normalize absent provider cache telemetry to zero without inventing hits."""
+    return 0 if value is None else token_count(value, provider, response)
+
+
 def post_provider_json(
     http: httpx.Client,
     url: str,
@@ -58,6 +111,25 @@ def post_provider_json(
 ) -> httpx.Response:
     try:
         response = http.post(url, headers=headers, json=payload)
+    except httpx.RequestError as error:
+        raise LLMRequestError(
+            f"{provider.value.title()} could not be reached",
+            source=DiagnosticSource.NETWORK,
+        ) from error
+    _raise_for_status(response, provider)
+    return response
+
+
+def get_provider_json(
+    http: httpx.Client,
+    url: str,
+    *,
+    provider: ProviderName,
+    headers: dict[str, str],
+    params: dict[str, str] | None = None,
+) -> httpx.Response:
+    try:
+        response = http.get(url, headers=headers, params=params)
     except httpx.RequestError as error:
         raise LLMRequestError(
             f"{provider.value.title()} could not be reached",
@@ -144,6 +216,9 @@ def _raise_for_status(
         DiagnosticSource.MODEL: (
             f"{provider.value.title()} rejected the selected model"
         ),
+        DiagnosticSource.REQUEST: (
+            f"{provider.value.title()} rejected the request"
+        ),
         DiagnosticSource.QUOTA: (
             f"{provider.value.title()} reported a quota or rate limit"
         ),
@@ -162,8 +237,10 @@ def _raise_for_status(
 def _diagnostic_source(response: httpx.Response) -> DiagnosticSource:
     if response.status_code in {401, 403} or _api_key_invalid(response):
         return DiagnosticSource.AUTHENTICATION
-    if response.status_code in {400, 404, 422}:
+    if response.status_code == 404:
         return DiagnosticSource.MODEL
+    if response.status_code in {400, 422}:
+        return DiagnosticSource.REQUEST
     if response.status_code == 429:
         return DiagnosticSource.QUOTA
     return DiagnosticSource.SERVICE

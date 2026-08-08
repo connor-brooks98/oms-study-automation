@@ -1,3 +1,4 @@
+import hmac
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -69,3 +70,14 @@ class CloudflareAccessVerifier:
             expires_at=datetime.fromtimestamp(float(claims["exp"]), UTC),
         )
 
+
+def bearer_token_is_valid(
+    authorization: str | None,
+    expected_token: str | None,
+) -> bool:
+    if not authorization or not expected_token:
+        return False
+    scheme, separator, submitted = authorization.partition(" ")
+    if separator != " " or scheme != "Bearer" or not submitted:
+        return False
+    return hmac.compare_digest(submitted, expected_token)

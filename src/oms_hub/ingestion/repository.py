@@ -9,8 +9,8 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
+from oms_hub.files.atomic import sha256_file
 from oms_hub.ingestion.domain import (
-    FailedRevision,
     IngestionJob,
     MatchDecision,
     StagedUpload,
@@ -23,13 +23,22 @@ from oms_hub.ingestion.domain import (
 )
 from oms_hub.models import (
     IngestionJobModel,
-    LectureModel,
     StudyRevisionModel,
     StudyUsageModel,
     UploadBatchModel,
     UploadItemModel,
     utc_now,
 )
+
+
+def _filed_artifact_matches(revision: StudyRevisionModel) -> bool:
+    if not revision.canonical_derived_path or not revision.derived_sha256:
+        return False
+    path = Path(revision.canonical_derived_path)
+    try:
+        return path.is_file() and sha256_file(path) == revision.derived_sha256
+    except OSError:
+        return False
 
 
 class IngestionRepository:
@@ -147,50 +156,6 @@ class IngestionRepository:
             item.error = None
             self._enqueue_unless_current_duplicate(session, item)
             self._sync_batch_state(session, item.batch_id)
-
-    def assign_quarantined_items(
-        self,
-        item_ids: list[str],
-        lecture_id: int,
-    ) -> list[StoredUploadItem]:
-        unique_ids = list(dict.fromkeys(item_ids))
-        if not unique_ids:
-            raise ValueError("select at least one quarantined file")
-        with self.database.session() as session:
-            if session.get(LectureModel, lecture_id) is None:
-                raise KeyError(lecture_id)
-            items = list(
-                session.scalars(
-                    select(UploadItemModel).where(
-                        UploadItemModel.id.in_(unique_ids)
-                    )
-                ).all()
-            )
-            by_id = {item.id: item for item in items}
-            if set(by_id) != set(unique_ids):
-                raise KeyError("one or more upload items were not found")
-            if any(
-                item.state != UploadState.QUARANTINED.value
-                for item in items
-            ):
-                raise ValueError("all selected files must still be quarantined")
-            for item_id in unique_ids:
-                item = by_id[item_id]
-                item.lecture_id = lecture_id
-                item.confidence = 1.0
-                item.evidence_json = json.dumps(
-                    [
-                        *json.loads(item.evidence_json),
-                        "Assigned manually in Quarantine",
-                    ]
-                )
-                item.manual_assignment = True
-                item.state = UploadState.QUEUED.value
-                item.error = None
-                self._enqueue_unless_current_duplicate(session, item)
-                self._sync_batch_state(session, item.batch_id)
-            session.flush()
-            return [self._stored_item(by_id[item_id]) for item_id in unique_ids]
 
     def count_jobs(self, item_id: str, action: str) -> int:
         with self.database.session() as session:
@@ -368,17 +333,12 @@ class IngestionRepository:
                     StudyRevisionModel.upload_item_id == item_id
                 )
             )
-            if revision is not None and revision.state in {"failed", "retrying"}:
-                revision.state = "proposed"
             if revision is None:
                 revision = session.scalar(
                     select(StudyRevisionModel).where(
                         StudyRevisionModel.lecture_id == item.lecture_id,
                         StudyRevisionModel.kind == item.kind,
                         StudyRevisionModel.source_sha256 == item.sha256,
-                        StudyRevisionModel.state.in_(
-                            {"current", "proposed", "promoting"}
-                        ),
                     )
                 )
             if revision is None:
@@ -463,56 +423,6 @@ class IngestionRepository:
                 .order_by(StudyRevisionModel.created_at, StudyRevisionModel.id)
             ).all()
             return [self._study_revision(item) for item in revisions]
-
-    def list_failed_revisions(self) -> list[FailedRevision]:
-        with self.database.session() as session:
-            rows = session.execute(
-                select(StudyRevisionModel, UploadItemModel.error)
-                .join(
-                    UploadItemModel,
-                    UploadItemModel.id == StudyRevisionModel.upload_item_id,
-                )
-                .where(
-                    StudyRevisionModel.state == "failed",
-                    StudyRevisionModel.kind == UploadKind.TRANSCRIPTS.value,
-                    UploadItemModel.state.in_(
-                        {
-                            UploadState.NEEDS_REVIEW.value,
-                            UploadState.QUARANTINED.value,
-                            UploadState.FAILED.value,
-                        }
-                    ),
-                )
-                .order_by(StudyRevisionModel.created_at, StudyRevisionModel.id)
-            ).all()
-            return [
-                FailedRevision(self._study_revision(revision), error or "Unknown failure")
-                for revision, error in rows
-            ]
-
-    def retry_failed_revision(self, revision_id: int) -> StudyRevision:
-        with self.database.session() as session:
-            revision = session.get(StudyRevisionModel, revision_id)
-            if revision is None:
-                raise KeyError(revision_id)
-            if revision.state != "failed":
-                raise ValueError("revision is not failed")
-            item = session.get(UploadItemModel, revision.upload_item_id)
-            if item is None:
-                raise ValueError("revision upload item is missing")
-            if item.state in {
-                UploadState.QUEUED.value,
-                UploadState.PROCESSING.value,
-            }:
-                raise ValueError("revision retry is already in progress")
-            revision.state = "retrying"
-            revision.current = False
-            item.state = UploadState.QUEUED.value
-            item.error = None
-            self._enqueue(session, item.id, "process")
-            self._sync_batch_state(session, item.batch_id)
-            session.flush()
-            return self._study_revision(revision)
 
     def list_current_revisions(
         self,
@@ -842,7 +752,6 @@ class IngestionRepository:
             )
         else:
             stored.state = UploadState.QUEUED.value
-            stored.next_attempt_at = None
             stored.error = None
 
     def _enqueue_unless_current_duplicate(
@@ -851,19 +760,30 @@ class IngestionRepository:
         item: UploadItemModel,
     ) -> None:
         exact = session.scalar(
-            select(StudyRevisionModel.id).where(
+            select(StudyRevisionModel).where(
                 StudyRevisionModel.lecture_id == item.lecture_id,
                 StudyRevisionModel.kind == item.kind,
                 StudyRevisionModel.source_sha256 == item.sha256,
                 StudyRevisionModel.current.is_(True),
             )
         )
-        if exact is not None:
+        if exact is not None and _filed_artifact_matches(exact):
             item.state = UploadState.COMPLETE.value
             item.error = None
             evidence = list(json.loads(item.evidence_json))
-            evidence.append("Exact transcript already processed")
+            label = (
+                "transcript"
+                if item.kind == UploadKind.TRANSCRIPTS.value
+                else "slide"
+            )
+            evidence.append(f"Exact {label} already processed")
             item.evidence_json = json.dumps(evidence)
+            return
+        if exact is not None:
+            evidence = list(json.loads(item.evidence_json))
+            evidence.append("Exact source queued to repair filed artifact")
+            item.evidence_json = json.dumps(evidence)
+            self._enqueue(session, item.id, "process")
             return
         current = session.scalar(
             select(StudyRevisionModel.id).where(

@@ -1,10 +1,13 @@
 import threading
+from pathlib import Path
 from typing import Annotated, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
+from oms_hub.routing import expanded_path
 from oms_hub.study_generation.domain import (
     GenerationJob,
     GenerationKind,
@@ -14,19 +17,64 @@ from oms_hub.study_generation.notebook_connection import (
     NotebookConnectionService,
     NotebookConnectionStatus,
 )
-from oms_hub.study_generation.path_picker import PromptPathPicker
+from oms_hub.study_generation.path_picker import PromptDirectoryPicker, PromptPathPicker
 from oms_hub.study_generation.prompts import PromptConfigurationError, PromptFileService
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.service import (
     GenerationPrerequisiteError,
     GenerationService,
 )
+from oms_hub.transcripts.prompt import PromptError as TranscriptPromptError
+from oms_hub.transcripts.prompt import PromptLoader as TranscriptPromptLoader
 
 router = APIRouter(prefix="/settings/generation")
+anki_prompt_router = APIRouter(prefix="/settings/anki/prompts")
 
 
 class PromptPathUpdate(BaseModel):
     path: Annotated[str, Field(min_length=1, max_length=2048)]
+
+
+@anki_prompt_router.post("/directory")
+def save_anki_prompt_directory(
+    request: Request,
+    update: PromptPathUpdate,
+) -> JSONResponse:
+    try:
+        _repository(request).set_anki_prompt_directory(update.path)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return JSONResponse(
+        {"path": update.path.strip()},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@anki_prompt_router.post("/directory/select")
+def select_anki_prompt_directory(request: Request) -> JSONResponse:
+    picker = cast(PromptDirectoryPicker, request.app.state.prompt_directory_picker)
+    try:
+        selected = picker.select_directory()
+    except RuntimeError as error:
+        raise HTTPException(409, str(error)) from error
+    return JSONResponse(
+        {
+            "path": str(selected) if selected is not None else None,
+            "selected": selected is not None,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@anki_prompt_router.post("/directory/test")
+def test_anki_prompt_directory(request: Request) -> JSONResponse:
+    catalog = cast(
+        AnkiPromptCatalogService,
+        request.app.state.anki_prompt_catalog,
+    ).catalog()
+    payload = catalog.payload()
+    payload["state"] = "valid" if catalog.ready else "invalid"
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 
 def _repository(request: Request) -> GenerationRepository:
@@ -70,6 +118,12 @@ def save_prompt_path(
         _repository(request).set_prompt_path(selected, update.path)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
+    if selected is PromptKind.TRANSCRIPT:
+        active_prompt = cast(
+            TranscriptPromptLoader,
+            request.app.state.transcript_prompt,
+        )
+        active_prompt.path = expanded_path(Path(update.path.strip()))
     return JSONResponse(
         {"kind": selected.value, "path": update.path.strip()},
         headers={"Cache-Control": "no-store"},
@@ -79,6 +133,32 @@ def save_prompt_path(
 @router.post("/prompts/{kind}/test")
 def test_prompt_path(request: Request, kind: str) -> JSONResponse:
     selected = _kind(kind)
+    if selected is PromptKind.TRANSCRIPT:
+        configured = _repository(request).prompt_path(selected)
+        try:
+            transcript_prompt = TranscriptPromptLoader(
+                expanded_path(Path(configured)) if configured else None,
+                None,
+            ).inspect()
+        except TranscriptPromptError as error:
+            return JSONResponse(
+                {
+                    "kind": selected.value,
+                    "state": "invalid",
+                    "message": str(error),
+                },
+                headers={"Cache-Control": "no-store"},
+            )
+        return JSONResponse(
+            {
+                "kind": selected.value,
+                "state": "valid",
+                "path": configured,
+                "sha256": transcript_prompt.sha256,
+                "modified_at": None,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
     try:
         prompt = PromptFileService(_repository(request)).inspect(selected)
     except PromptConfigurationError as error:

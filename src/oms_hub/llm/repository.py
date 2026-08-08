@@ -1,13 +1,15 @@
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
-from oms_hub.llm.domain import ProviderName, ProviderPreference
-from oms_hub.models import LLMProviderSettingModel
+from oms_hub.llm.domain import LLMTask, ProviderName, ProviderPreference, TaskAssignment
+from oms_hub.models import LLMProviderSettingModel, LLMTaskAssignmentModel
 
 DEFAULT_MODELS = {
     ProviderName.OPENAI: "gpt-5.2",
     ProviderName.GEMINI: "gemini-3.6-flash",
     ProviderName.ANTHROPIC: "claude-sonnet-5",
+    ProviderName.OPENROUTER: "openai/gpt-4o-mini",
 }
 
 
@@ -45,17 +47,6 @@ class LLMSettingsRepository:
                 raise KeyError(provider.value)
             return self._preference(stored)
 
-    def active(self) -> ProviderPreference:
-        with self.database.session() as session:
-            stored = session.scalar(
-                select(LLMProviderSettingModel).where(
-                    LLMProviderSettingModel.active.is_(True)
-                )
-            )
-            if stored is None:
-                raise RuntimeError("no active language model provider")
-            return self._preference(stored)
-
     def set_model(
         self,
         provider: ProviderName,
@@ -70,20 +61,36 @@ class LLMSettingsRepository:
             session.flush()
             return self._preference(stored)
 
-    def set_active(self, provider: ProviderName) -> ProviderPreference:
+    def assignment(self, task: LLMTask) -> TaskAssignment:
         with self.database.session() as session:
-            settings = session.scalars(
-                select(LLMProviderSettingModel)
-            ).all()
-            selected: LLMProviderSettingModel | None = None
-            for stored in settings:
-                stored.active = stored.provider == provider.value
-                if stored.active:
-                    selected = stored
-            if selected is None:
-                raise KeyError(provider.value)
+            stored = session.get(LLMTaskAssignmentModel, task.value)
+            if stored is None:
+                provider = self._default_task_provider(task, session)
+                stored = LLMTaskAssignmentModel(
+                    task=task.value,
+                    provider=provider.value,
+                    model=self.default_models[provider],
+                )
+                session.add(stored)
+                session.flush()
+            return self._assignment(stored)
+
+    def set_assignment(
+        self,
+        task: LLMTask,
+        provider: ProviderName,
+        model: str,
+    ) -> TaskAssignment:
+        normalized = self._validated_model(model)
+        with self.database.session() as session:
+            stored = session.get(LLMTaskAssignmentModel, task.value)
+            if stored is None:
+                stored = LLMTaskAssignmentModel(task=task.value)
+                session.add(stored)
+            stored.provider = provider.value
+            stored.model = normalized
             session.flush()
-            return self._preference(selected)
+            return self._assignment(stored)
 
     def record_test(
         self,
@@ -145,6 +152,30 @@ class LLMSettingsRepository:
                         active=provider is ProviderName.OPENAI and not has_active,
                     )
                 )
+
+    @staticmethod
+    def _default_task_provider(task: LLMTask, session: Session) -> ProviderName:
+        if task in {
+            LLMTask.QUIZ_EXTRACTION,
+            LLMTask.QUIZ_ANSWER_GENERATION,
+        }:
+            return ProviderName.OPENAI
+        stored = session.scalar(
+            select(LLMProviderSettingModel).where(
+                LLMProviderSettingModel.active.is_(True)
+            )
+        )
+        if stored is None:
+            return ProviderName.ANTHROPIC
+        return ProviderName(stored.provider)
+
+    @staticmethod
+    def _assignment(stored: LLMTaskAssignmentModel) -> TaskAssignment:
+        return TaskAssignment(
+            task=LLMTask(stored.task),
+            provider=ProviderName(stored.provider),
+            model=stored.model,
+        )
 
     @staticmethod
     def _validated_model(model: str) -> str:

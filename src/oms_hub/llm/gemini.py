@@ -3,15 +3,21 @@ from urllib.parse import quote
 import httpx
 
 from oms_hub.llm.domain import (
+    DEFAULT_GENERATION_OPTIONS,
     CleanResult,
+    GeneratedText,
+    GenerationOptions,
+    ProviderCapabilities,
     ProviderConnection,
     ProviderName,
 )
 from oms_hub.llm.provider import (
     FIXED_TRANSCRIPT_CONSTRAINTS,
     estimated_cost,
+    get_provider_json,
     invalid_response,
     post_provider_json,
+    require_supported_generation_options,
     response_object,
     safe_request_id,
     token_count,
@@ -22,6 +28,7 @@ from oms_hub.transcripts.prompt import ApprovedPrompt
 
 class GeminiProvider:
     name = ProviderName.GEMINI
+    capabilities = ProviderCapabilities()
     base_url = "https://generativelanguage.googleapis.com/v1beta/models"
 
     def __init__(
@@ -49,6 +56,7 @@ class GeminiProvider:
             FIXED_TRANSCRIPT_CONSTRAINTS,
             transcript_input(raw_text, prompt),
             max_output_tokens=None,
+            output_schema=None,
         )
         return self._clean_result(response, model)
 
@@ -63,9 +71,58 @@ class GeminiProvider:
             "Return only the requested text.",
             "Reply with exactly OK.",
             max_output_tokens=16,
+            output_schema=None,
         )
         result = self._clean_result(response, model)
         return ProviderConnection(self.name, result.model, result.request_id)
+
+    def generate_text(
+        self,
+        instruction: str,
+        input_text: str,
+        *,
+        api_key: str,
+        model: str,
+        output_schema: dict[str, object],
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
+    ) -> GeneratedText:
+        response = self._request(
+            api_key,
+            model,
+            instruction,
+            input_text,
+            max_output_tokens=32768,
+            output_schema=output_schema,
+            options=options,
+        )
+        return self._generated_text(response, model)
+
+    def list_models(self, api_key: str) -> tuple[str, ...]:
+        response = get_provider_json(
+            self.http,
+            self.base_url,
+            provider=self.name,
+            headers={},
+            params={"key": api_key},
+        )
+        payload = response_object(response, self.name)
+        models = payload.get("models")
+        if not isinstance(models, list):
+            raise invalid_response(self.name, response)
+        ids: list[str] = []
+        for item in models:
+            if not isinstance(item, dict):
+                continue
+            methods = item.get("supportedGenerationMethods")
+            if not isinstance(methods, list) or "generateContent" not in methods:
+                continue
+            model_name = item.get("name")
+            if isinstance(model_name, str) and model_name:
+                ids.append(model_name.removeprefix("models/"))
+        return tuple(sorted(ids))
+
+    def capabilities_for_model(self, model: str) -> ProviderCapabilities:
+        return self.capabilities
 
     def _request(
         self,
@@ -75,7 +132,13 @@ class GeminiProvider:
         content: str,
         *,
         max_output_tokens: int | None,
+        output_schema: dict[str, object] | None,
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
     ) -> httpx.Response:
+        require_supported_generation_options(self.name, self.capabilities, options)
+        parts = [{"text": content}]
+        if options.cacheable_source_prefix is not None:
+            parts.insert(0, {"text": options.cacheable_source_prefix})
         payload: dict[str, object] = {
             "systemInstruction": {
                 "parts": [{"text": instruction}],
@@ -83,14 +146,22 @@ class GeminiProvider:
             "contents": [
                 {
                     "role": "user",
-                    "parts": [{"text": content}],
+                    "parts": parts,
                 }
             ],
         }
+        generation_config: dict[str, object] = {}
         if max_output_tokens is not None:
-            payload["generationConfig"] = {
-                "maxOutputTokens": max_output_tokens
+            generation_config["maxOutputTokens"] = max_output_tokens
+        if output_schema is not None:
+            generation_config["responseFormat"] = {
+                "text": {
+                    "mimeType": "application/json",
+                    "schema": output_schema,
+                }
             }
+        if generation_config:
+            payload["generationConfig"] = generation_config
         safe_model = quote(model, safe="-._")
         return post_provider_json(
             self.http,
@@ -105,6 +176,22 @@ class GeminiProvider:
         response: httpx.Response,
         requested_model: str,
     ) -> CleanResult:
+        generated = self._generated_text(response, requested_model)
+        return CleanResult(
+            text=generated.text,
+            provider=generated.provider,
+            model=generated.model,
+            request_id=generated.request_id,
+            input_tokens=generated.input_tokens,
+            output_tokens=generated.output_tokens,
+            cost_microusd=generated.cost_microusd,
+        )
+
+    def _generated_text(
+        self,
+        response: httpx.Response,
+        requested_model: str,
+    ) -> GeneratedText:
         payload = response_object(response, self.name)
         candidates = payload.get("candidates")
         usage = payload.get("usageMetadata")
@@ -140,7 +227,7 @@ class GeminiProvider:
         if not isinstance(returned_model, str) or not returned_model:
             raise invalid_response(self.name, response)
         request_id = safe_request_id(response) or ""
-        return CleanResult(
+        return GeneratedText(
             text=cleaned,
             provider=self.name,
             model=returned_model,
@@ -154,4 +241,3 @@ class GeminiProvider:
                 self.output_usd_per_million,
             ),
         )
-

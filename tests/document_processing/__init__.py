@@ -1,0 +1,1 @@
+"""Document-processing contract tests."""

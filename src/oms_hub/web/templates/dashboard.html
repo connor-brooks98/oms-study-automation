@@ -1,46 +1,51 @@
 {% extends "base.html" %}
 {% block title %}Course library · Study Hub{% endblock %}
 {% block content %}
-<section class="page-shell dashboard-page">
-  <div class="page-heading">
+<section class="page-shell sh-container dashboard-page">
+  <div class="page-heading sh-header">
     <div>
-      <p class="eyebrow">Study library</p>
-      <h1>Course library</h1>
-      <p class="page-summary">{{ courses|length }} courses · course → Exam → lecture</p>
+      <p class="eyebrow sh-eyebrow">Study library</p>
+      <h1 class="sh-title">Course library</h1>
+      <p class="page-summary sh-subtitle">{{ courses|length }} courses · course → exam → lecture</p>
+      {% if review_count %}
+      <a class="review-count sh-pill sh-pill--warn" href="/review">{{ review_count }} needs review</a>
+      {% endif %}
     </div>
     <div class="heading-actions">
-      {% if review_count %}
-      <a class="review-count" href="/review">{{ review_count }} needs review</a>
-      {% endif %}
-      <a class="button primary" href="/uploads">+ Upload files</a>
+      <a class="button secondary sh-btn sh-btn--secondary" href="/uploads/transcripts">+ Upload transcript</a>
+      <a class="button primary sh-btn sh-btn--primary" href="/uploads/slides">+ Upload lecture</a>
     </div>
   </div>
 
   <div class="course-list">
     {% for course in courses %}
     {% set course_id = "course-" ~ loop.index %}
-    <section class="course-group" data-course="{{ course.name }}" style="--course-hue: {{ course.hue }}">
+    <section class="course-group sh-card" data-course="{{ course.name }}" style="--course-hue: {{ course.hue }}; --sh-hue: {{ course.hue }}">
       <button class="course-toggle" type="button" data-disclosure data-storage-key="course:{{ course.name }}" aria-expanded="{{ 'true' if loop.first else 'false' }}" aria-controls="{{ course_id }}">
-        <span class="chevron" aria-hidden="true">▸</span>
-        <span class="course-dot" aria-hidden="true"></span>
+        <span class="chevron sh-disclose" aria-hidden="true">▸</span>
+        <span class="course-dot sh-subject-dot" aria-hidden="true"></span>
         <span class="course-name">{{ course.name }}</span>
-        <span class="count-pill">{{ course.lecture_count }} lectures</span>
+        <span class="count-pill sh-pill sh-pill--bare">{{ course.lecture_count }} lectures</span>
       </button>
       <div class="exam-list" id="{{ course_id }}" {% if not loop.first %}hidden{% endif %}>
         {% for exam in course.exams %}
         {% set exam_id = course_id ~ "-exam-" ~ exam.number %}
         <section class="exam-group" data-exam="{{ exam.number }}">
           <button class="exam-toggle" type="button" data-disclosure data-storage-key="exam:{{ course.name }}:{{ exam.number }}" aria-expanded="{{ 'true' if loop.first else 'false' }}" aria-controls="{{ exam_id }}">
-            <span class="chevron" aria-hidden="true">▸</span>
+            <span class="chevron sh-disclose" aria-hidden="true">▸</span>
             <span>Exam {{ exam.number }}</span>
             <span class="exam-count">{{ exam.lectures|length }} lectures</span>
           </button>
           <div class="lecture-list" id="{{ exam_id }}" {% if not loop.first %}hidden{% endif %}>
             {% for row in exam.lectures %}
-            <a class="lecture-row" href="/lectures/{{ row.lecture.id }}">
-              <span class="status-marker status-{{ row.status }} {{ 'has-slides' if row.has_slides }} {{ 'has-transcript' if row.has_transcript }}" aria-label="{{ row.status_label }}. Slides {{ 'available' if row.has_slides else 'missing' }}. Transcript {{ 'available' if row.has_transcript else 'missing' }}."></span>
-              <span class="lecture-title">{{ row.title }}</span>
-              <span class="status-pill status-{{ row.status }}">{{ row.status_label }}</span>
+            <a class="lecture-row sh-row" href="/lectures/{{ row.lecture.id }}">
+              <span class="status-dot sh-dot {% if row.status == 'complete' %}sh-dot--ok{% elif row.status == 'processing' %}sh-dot--info{% elif row.status == 'needs_review' %}sh-dot--warn{% elif row.status in ('failed', 'quarantined') %}sh-dot--err{% endif %} status-{{ row.status }}" aria-hidden="true"></span>
+              <span class="lecture-title sh-row__title">{{ row.title }}</span>
+              <span class="status-pill sh-pill {% if row.status == 'complete' %}sh-pill--ok{% elif row.status == 'processing' %}sh-pill--info{% elif row.status == 'needs_review' %}sh-pill--warn{% elif row.status in ('failed', 'quarantined') %}sh-pill--err{% endif %} status-{{ row.status }}">{{ row.status_label }}</span>
+              <span class="file-flags" aria-label="Available files">
+                <span class="{{ 'available' if row.has_slides else 'missing' }}">PPTX</span>
+                <span class="{{ 'available' if row.has_transcript else 'missing' }}">TXT</span>
+              </span>
               <span class="row-progress">{{ row.percent }}%</span>
             </a>
             {% endfor %}
@@ -50,11 +55,11 @@
       </div>
     </section>
     {% else %}
-    <section class="empty-state">
-      <p class="eyebrow">Start here</p>
-      <h2>Import your lecture tracker</h2>
-      <p>The tracker creates your courses, Exams, and lecture checklist.</p>
-      <a class="button primary" href="/settings">Open settings</a>
+    <section class="empty-state sh-empty">
+      <p class="eyebrow sh-eyebrow">Start here</p>
+      <h2 class="sh-empty__title">Import your lecture tracker</h2>
+      <p class="sh-empty__text">The tracker creates your courses, exams, and lecture checklist.</p>
+      <a class="button primary sh-btn sh-btn--primary" href="/settings">Open settings</a>
     </section>
     {% endfor %}
   </div>

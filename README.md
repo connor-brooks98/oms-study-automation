@@ -22,7 +22,18 @@ Copy-Item .env.example .env
 .\.venv\Scripts\oms-hub.exe serve
 ```
 
-Open `http://127.0.0.1:8765`. Upload the tracker on Settings, then use the
+Before sending a change, run the same checks CI runs:
+
+```powershell
+.\.venv\Scripts\mypy
+.\.venv\Scripts\ruff check src tests scripts
+.\.venv\Scripts\pytest -q
+node --test tests/js
+```
+
+Open the loopback URL configured by `OMS_HUB_DASHBOARD_PORT`. The example
+configuration uses `http://127.0.0.1:8787` so local AnkiConnect can keep its
+standard loopback port, `8765`. Upload the tracker on Settings, then use the
 Slides and Transcripts pages.
 
 ## Transcript setup
@@ -91,7 +102,49 @@ Not started, In progress, or Completed using only that browser's local storage.
 The branch setup, Google Cloud setup, Cloudflare quiz-sharing rule, acceptance
 test, and rollback procedure are in
 [docs/native-quizzes-nuc-rollout.md](docs/native-quizzes-nuc-rollout.md).
-Anki automation remains a later milestone.
+
+For Quiz Builder installation, parser rollout, answer-verification recovery,
+and the required corpus gate, see [docs/operations/quiz-builder.md](docs/operations/quiz-builder.md).
+
+### Integrated Anki curation
+
+The V4 workflow is one Study Hub package on the NUC. It reads local Anki through
+loopback-only AnkiConnect, builds its own Voyage and FTS indexes, finds existing
+cards, reruns missed-topic searches against the selected lecture slides and
+transcript, and proposes source-grounded cards. It has no runtime dependency on
+the semantic-search research add-on or `sbm_smart_anki`, and it performs no
+AMBOSS retrieval.
+
+Enable Anki and add `VOYAGE_API_KEY=...` to the local, untracked `.env` file,
+then build the first index while Anki is open. The environment value takes
+precedence over Windows Credential Manager, which remains an optional fallback:
+
+```powershell
+.\.venv\Scripts\oms-hub.exe anki-index-refresh `
+  --deck "AnKing Step Deck"
+```
+
+Use `--deck` for ordinary deck refreshes, especially from Windows PowerShell.
+Study Hub constructs the required Anki search query internally; reserve
+`--query` for advanced Anki searches.
+
+Open `/anki` in Study Hub to start a run. Choose the course, then exam, then
+lecture from the three dependent dropdowns; Study Hub shows that lecture's
+current slides and transcript. The canonical lecture tag fills automatically
+as editable text.
+Existing-card choices, generated cards, source citations, and first-release tag
+edits remain proposals until review is saved, the immutable apply plan is
+frozen, and the user types the explicit confirmation. Source-managed tags stay
+locked. Apply always performs a leading sync, local read-back verification, and
+a trailing sync, with a separate retry action when local writes succeeded but
+sync did not.
+
+The installation, backup, copied-profile acceptance, recovery, and Mac sync
+procedure is in
+[docs/anki-curation-nuc-rollout.md](docs/anki-curation-nuc-rollout.md).
+Legacy Mac-agent files remain in this pre-acceptance branch only as a rollback
+path; they are not part of V4 operation and will not be removed until the
+copied-profile report is approved.
 
 The multi-provider hotfix procedure is in
 [docs/v2-multi-provider-nuc-rollout.md](docs/v2-multi-provider-nuc-rollout.md).

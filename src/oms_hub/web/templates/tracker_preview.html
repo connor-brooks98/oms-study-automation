@@ -1,23 +1,23 @@
 {% extends "base.html" %}
 {% block title %}Review tracker import · Study Hub{% endblock %}
 {% block content %}
-<section class="page-shell tracker-preview-page">
+<section class="page-shell sh-container tracker-preview-page">
   <nav class="breadcrumbs" aria-label="Breadcrumb">
     <a href="/settings">Settings</a>
     <span aria-hidden="true">/</span>
     <span>Tracker preview</span>
   </nav>
 
-  <div class="page-heading">
+  <div class="page-heading sh-header">
     <div>
-      <p class="eyebrow">Non-mutating preview</p>
-      <h1>Review tracker import</h1>
-      <p class="page-summary">
+      <p class="eyebrow sh-eyebrow">Non-mutating preview</p>
+      <h1 class="sh-title">Review tracker import</h1>
+      <p class="page-summary sh-subtitle">
         Nothing has been added yet. Review the detected structure and approve
         <strong>{{ preview.source_name }}</strong> when it looks right.
       </p>
     </div>
-    <span class="status-pill status-{{ 'complete' if preview.state == 'ready' else 'review' }}">
+    <span class="status-pill sh-pill {{ 'sh-pill--ok' if preview.state == 'ready' else 'sh-pill--warn' }} status-{{ 'complete' if preview.state == 'ready' else 'review' }}">
       {{ preview.state }}
     </span>
   </div>
@@ -41,9 +41,7 @@
     </article>
   </section>
 
-  <p class="catalog-size-summary">Catalog will go from <strong>{{ preview.current_count }}</strong> → <strong>{{ preview.resulting_count }}</strong> lectures.</p>
-
-  <section class="card preview-change-card">
+  <section class="card sh-card preview-change-card">
     <div>
       <p class="mono-label">Catalog changes</p>
       <h2>What applying this tracker will do</h2>
@@ -83,7 +81,7 @@
   </section>
 
   {% if preview.issues %}
-  <section class="card preview-issues-card" aria-labelledby="tracker-issues-heading">
+  <section class="card sh-card preview-issues-card" aria-labelledby="tracker-issues-heading">
     <p class="mono-label">Needs review</p>
     <h2 id="tracker-issues-heading">
       {{ preview.issues|length }} ambiguous {{ "row" if preview.issues|length == 1 else "rows" }}
@@ -147,7 +145,7 @@
     </div>
   </section>
 
-  <section class="card preview-approval">
+  <section class="card sh-card preview-approval">
     <div>
       <p class="mono-label">Approval</p>
       <h2>
@@ -167,12 +165,11 @@
       </p>
     </div>
     <div class="preview-actions">
-      <a class="button secondary" href="/settings">Choose another file</a>
+      <a class="button secondary sh-btn sh-btn--secondary" href="/settings">Choose another file</a>
       {% if preview.state != "identical" %}
       <form method="post" action="/settings/tracker/apply">
-        <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
         <input type="hidden" name="preview_id" value="{{ preview.id }}">
-        <button class="button primary" type="submit">Apply tracker</button>
+        <button class="button primary sh-btn sh-btn--primary" type="submit">Apply tracker</button>
       </form>
       {% endif %}
     </div>

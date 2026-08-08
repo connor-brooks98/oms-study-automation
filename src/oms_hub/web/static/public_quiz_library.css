@@ -1,40 +1,156 @@
-:root {
-  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-  color: var(--text);
-  background: var(--page);
+.public-library {
+  width: 100%;
+  max-width: var(--w-page);
+  margin: 0 auto;
+  padding-block: var(--sp-10) var(--sp-16);
 }
-* { box-sizing: border-box; }
-body { min-width: 320px; min-height: 100vh; margin: 0; background: var(--page); }
-button, .button { font: inherit; }
-:focus-visible { outline: 3px solid oklch(0.67 0.16 255); outline-offset: 3px; }
-.public-library { width: min(100% - 2rem, 920px); margin: 0 auto; padding: clamp(2rem, 6vw, 4.5rem) 0; }
-.library-heading { display: flex; justify-content: space-between; align-items: end; gap: 1.5rem; margin-bottom: 1.5rem; }
-.eyebrow { margin: 0 0 .45rem; color: var(--brand-mid); font: 600 .72rem/1.4 "IBM Plex Mono", monospace; letter-spacing: .06em; text-transform: uppercase; }
-h1 { margin: 0; color: var(--brand); font-size: clamp(1.8rem, 4vw, 2.6rem); }
-.library-heading p:last-child { margin: .55rem 0 0; color: var(--muted); }
-.button { display: inline-flex; min-height: 2.55rem; align-items: center; justify-content: center; padding: .65rem .9rem; border: 1px solid var(--border); border-radius: .5rem; color: var(--brand); background: white; font-weight: 600; text-decoration: none; cursor: pointer; }
-.secondary { color: var(--muted); background: var(--surface); }
-.course-list { display: grid; gap: .9rem; }
-.course-card, .empty-state { overflow: hidden; border: 1px solid var(--border); border-radius: .75rem; background: var(--card); box-shadow: 0 12px 30px rgb(29 42 66 / 7%); }
-.disclosure { display: flex; width: 100%; align-items: center; justify-content: space-between; border: 0; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
-.course-button { padding: 1.1rem 1.25rem; color: var(--brand); font-size: 1.08rem; font-weight: 700; }
-.count { color: var(--muted); font: 500 .72rem/1.3 "IBM Plex Mono", monospace; }
-.course-content { padding: 0 1rem 1rem; }
-.exam-card { border-top: 1px solid var(--border); }
-.exam-button { padding: .85rem .4rem; font-weight: 650; }
-.lecture-list { display: grid; gap: .6rem; padding-bottom: .5rem; }
-.lecture-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .6rem; align-items: stretch; }
-.quiz-link { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 1rem; padding: .8rem .9rem; border: 1px solid var(--border); border-radius: .55rem; color: var(--text); background: var(--surface); text-decoration: none; }
-.quiz-link:hover, .outline-button:hover { border-color: var(--brand-mid); }
+.skip-link {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+.skip-link:focus-visible {
+  position: fixed;
+  z-index: 10;
+  top: var(--sp-3);
+  left: var(--sp-3);
+  width: auto;
+  height: auto;
+  padding: var(--sp-3) var(--sp-4);
+  clip: auto;
+  color: #fff;
+  background: var(--brand);
+}
+.nuc-state.sh-pill::before { display: none; }
+.nuc-state .nuc-state__dot {
+  display: block;
+  flex: none;
+  width: .5rem;
+  height: .5rem;
+  border-radius: 50%;
+  background: var(--st-ok-dot);
+  box-shadow: 0 0 0 4px var(--st-ok-bg);
+}
+.library-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--sp-6);
+  margin-bottom: var(--sp-6);
+}
+.library-heading .sh-seg { justify-self: end; }
+.library-heading .sh-seg__btn { white-space: nowrap; }
+.eyebrow {
+  margin: 0 0 var(--sp-2);
+  color: var(--link);
+  font: 600 var(--fs-label) var(--font-mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.course-list { display: grid; gap: var(--sp-3); }
+.course-card { overflow: visible; }
+.disclosure {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.course-button { padding: var(--sp-5) var(--sp-6); font-size: var(--fs-h3); }
+.count { font: var(--fs-xs) var(--font-mono); color: var(--text-3); }
+.course-content { padding: 0 var(--sp-4) var(--sp-4); }
+.exam-card { margin-top: var(--sp-2); padding: 0; overflow: visible; }
+.exam-button { padding: var(--sp-5) var(--sp-6); }
+.chevron {
+  width: .75rem;
+  color: var(--text-3);
+  transition: transform 150ms ease;
+}
+[aria-expanded="true"] > .chevron { transform: rotate(90deg); }
+.lecture-list {
+  display: grid;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-4) var(--sp-2);
+}
+.lecture-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-3);
+  align-items: center;
+}
+.lecture-row[data-quiz-order-row] { grid-template-columns: 32px minmax(0, 1fr) auto; }
+.quiz-link {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  color: inherit;
+  text-decoration: none;
+}
 .quiz-link strong, .quiz-link small { display: block; }
-.quiz-link small { overflow: hidden; margin-top: .2rem; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
-.progress-pill { flex: none; color: var(--brand-mid); font: 600 .69rem/1.3 "IBM Plex Mono", monospace; }
-.outline-button { white-space: nowrap; }
-.empty-state { padding: 2rem; text-align: center; }
-.reset-message { min-height: 1.4rem; color: var(--muted); text-align: right; }
+.quiz-link small {
+  overflow: hidden;
+  margin-top: var(--sp-1);
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.progress-pill { flex: none; white-space: nowrap; }
+.quiz-drag-handle { padding: 0; color: var(--text-2); cursor: grab; font-size: 1.1rem; }
+.quiz-drag-handle:active, .lecture-row.is-dragging .quiz-drag-handle { cursor: grabbing; }
+.lecture-row.is-dragging { opacity: .62; }
+.quiz-row-actions { display: flex; align-items: center; gap: var(--sp-2); }
+.quiz-row-actions, .quiz-overflow { position: relative; }
+.reset-quiz-button { color: var(--brand); font-size: 1.1rem; }
+.quiz-overflow > summary { padding: 0; list-style: none; color: var(--text-2); }
+.quiz-overflow > summary::-webkit-details-marker { display: none; }
+.quiz-overflow__menu {
+  position: absolute;
+  z-index: 3;
+  top: calc(100% + var(--sp-1));
+  right: 0;
+  display: grid;
+  width: min(20rem, calc(100vw - var(--sp-16)));
+  max-width: calc(100vw - var(--sp-16));
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--card);
+  box-shadow: var(--shadow-md);
+}
+.quiz-overflow__menu .button { width: 100%; justify-content: flex-start; white-space: normal; }
+.quiz-title-editor > summary {
+  width: 100%;
+  list-style: none;
+  justify-content: flex-start;
+}
+.quiz-title-editor > summary::-webkit-details-marker { display: none; }
+.quiz-title-editor__form {
+  display: grid;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
+  padding: var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+.quiz-title-editor__form .sh-field-label { min-width: 0; margin: 0; }
+.quiz-title-editor__form .sh-input { margin-top: var(--sp-2); }
+.outline-button, .reset-quiz-button, .management-button { white-space: nowrap; }
+.management-button:disabled, .remove-quiz-button:disabled { cursor: wait; }
+.reset-message { min-height: 1.4rem; color: var(--text-2); text-align: right; }
 @media (max-width: 640px) {
-  .library-heading { align-items: stretch; flex-direction: column; }
-  .lecture-row { grid-template-columns: 1fr; }
-  .outline-button { width: 100%; }
+  .library-heading { grid-template-columns: 1fr; align-items: stretch; }
+  .library-heading .sh-seg { justify-self: start; }
   .quiz-link { align-items: flex-start; flex-direction: column; }
 }

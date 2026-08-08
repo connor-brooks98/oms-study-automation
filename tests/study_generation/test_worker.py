@@ -1,11 +1,8 @@
 import hashlib
 import json
-import sqlite3
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-
-from sqlalchemy.exc import OperationalError
 
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.ingestion.domain import UploadKind
@@ -17,8 +14,8 @@ from oms_hub.study_generation.domain import (
     NotebookAnswer,
     PromptSnapshot,
 )
-from oms_hub.study_generation.notebook_errors import NotebookAuthenticationError
-from oms_hub.study_generation.worker import GenerationWorker, _is_transient
+from oms_hub.study_generation.notebook import NotebookAuthenticationError
+from oms_hub.study_generation.worker import GenerationWorker
 
 QUIZ_JSON = json.dumps(
     {
@@ -42,7 +39,6 @@ class Repository:
         self.claimable = job
         self.quiz = None
         self.advances = []
-        self.attempt_records = []
 
     def claim_next(self, now):
         del now
@@ -66,36 +62,6 @@ class Repository:
 
     def fail(self, job_id, error, paused=False):
         raise AssertionError((job_id, error, paused))
-
-    def retry(self, job_id, error, delay):
-        del error, delay
-        assert job_id == self.current.id
-        self.current = replace(self.current, state=GenerationState.QUEUED)
-        return self.current
-
-    def record_attempt(
-        self,
-        job_id,
-        attempt_number,
-        diagnostic_source,
-        raw_response,
-        error,
-    ):
-        self.attempt_records.append(
-            (
-                job_id,
-                attempt_number,
-                diagnostic_source,
-                raw_response,
-                error,
-            )
-        )
-
-    def contract_failure_count(self, job_id):
-        return sum(
-            record[0] == job_id and record[2] == "contract"
-            for record in self.attempt_records
-        )
 
     def record_quiz(self, lecture_id, job_id, url):
         self.quiz = (lecture_id, job_id, url)
@@ -326,33 +292,3 @@ def test_worker_pauses_and_invalidates_expired_notebook_login(tmp_path):
         V2StepName.QUIZ_PUBLISHED,
         StepStatus.NEEDS_REVIEW,
     )
-
-
-def test_worker_preserves_invalid_raw_quiz_and_retries_once(tmp_path):
-    invalid = '{"title":"Broken","questions":[]}'
-    worker, repository, _, _ = _worker(
-        tmp_path,
-        _job(
-            stage=GenerationStage.QUIZ_VALIDATE,
-            notebook_answer=invalid,
-        ),
-        Publisher(),
-    )
-
-    assert worker.run_once()
-
-    assert repository.current.state is GenerationState.QUEUED
-    assert repository.current.notebook_answer is None
-    assert repository.attempt_records[0][:4] == (
-        "job-1",
-        1,
-        "contract",
-        invalid,
-    )
-
-
-def test_generation_retries_typed_sqlite_busy_error():
-    busy = sqlite3.OperationalError("localized message")
-    busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
-
-    assert _is_transient(OperationalError("statement", {}, busy)) is True

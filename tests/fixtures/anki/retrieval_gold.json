@@ -1,0 +1,238 @@
+{
+  "schema_version": 1,
+  "dataset_version": "anki-retrieval-gold-v1",
+  "description": "Deterministic architecture-level regression seed. Replace observations with manually labeled copied-profile results for release acceptance.",
+  "profile": {
+    "kind": "synthetic_regression",
+    "name": "v4-contract-fixture",
+    "label_provenance": "architecture_regression_seed",
+    "note_count": 10,
+    "copied_via_supported_backup": false,
+    "production_profile_untouched": true
+  },
+  "index": {
+    "model": "voyage-4-large",
+    "dimensions": 1024,
+    "search_engine": "exact_numpy",
+    "eligible_note_ids": [101, 102, 103, 104, 105, 106, 107, 108, 109, 110],
+    "semantic_indexed_note_ids": [101, 102, 103, 104, 105, 106, 107, 108, 109, 110],
+    "snapshot_size_bytes": 20480,
+    "full_refresh_ms": 42.0,
+    "incremental_refresh_ms": 5.5,
+    "peak_memory_bytes": 524288
+  },
+  "resolvable_evidence_ids": [
+    "slide:iron:06",
+    "transcript:iron:08"
+  ],
+  "queries": [
+    {
+      "id": "easy-terminology",
+      "category": "easy_terminology",
+      "statement": "Iron deficiency causes low ferritin.",
+      "relevant_note_ids": [101],
+      "eligible_note_ids": [101, 102, 103, 104, 105, 106, 107, 108, 109, 110],
+      "rankings": {
+        "statement_only": [101, 109],
+        "four_semantic_variants": [101, 102],
+        "fts_only": [101, 103],
+        "semantic_only": [101, 102],
+        "fused": [101, 102],
+        "fused_with_boosts": [101, 102]
+      },
+      "latency_ms": {
+        "statement_only": 1.1,
+        "four_semantic_variants": 2.7,
+        "fts_only": 0.8,
+        "semantic_only": 1.3,
+        "fused": 2.0,
+        "fused_with_boosts": 2.1
+      },
+      "ground_truth_covered": true,
+      "pass_1_predicted_covered": true,
+      "pass_2_expected_recoverable": false,
+      "pass_2_predicted_recovered": false,
+      "gap_proposal": null
+    },
+    {
+      "id": "paraphrase",
+      "category": "paraphrase",
+      "statement": "Depleted storage iron precedes a fall in serum iron.",
+      "relevant_note_ids": [102],
+      "eligible_note_ids": [101, 102, 103, 104, 105, 106, 107, 108, 109, 110],
+      "rankings": {
+        "statement_only": [109, 102],
+        "four_semantic_variants": [102, 109],
+        "fts_only": [109, 102],
+        "semantic_only": [102, 109],
+        "fused": [102, 109],
+        "fused_with_boosts": [102, 109]
+      },
+      "latency_ms": {
+        "statement_only": 1.0,
+        "four_semantic_variants": 2.9,
+        "fts_only": 0.7,
+        "semantic_only": 1.2,
+        "fused": 1.9,
+        "fused_with_boosts": 2.0
+      },
+      "ground_truth_covered": true,
+      "pass_1_predicted_covered": true,
+      "pass_2_expected_recoverable": false,
+      "pass_2_predicted_recovered": false,
+      "gap_proposal": null
+    },
+    {
+      "id": "slide-only-wording",
+      "category": "slide_only_wording",
+      "statement": "The first stage of deficiency exhausts marrow iron.",
+      "relevant_note_ids": [103],
+      "eligible_note_ids": [101, 102, 103, 104, 105, 106, 107, 108, 109, 110],
+      "rankings": {
+        "statement_only": [109, 108],
+        "four_semantic_variants": [103, 109],
+        "fts_only": [109, 103],
+        "semantic_only": [103, 109],
+        "fused": [103, 109],
+        "fused_with_boosts": [103, 109]
+      },
+      "latency_ms": {
+        "statement_only": 1.2,
+        "four_semantic_variants": 3.1,
+        "fts_only": 0.9,
+        "semantic_only": 1.4,
+        "fused": 2.2,
+        "fused_with_boosts": 2.3
+      },
+      "ground_truth_covered": true,
+      "pass_1_predicted_covered": false,
+      "pass_2_expected_recoverable": true,
+      "pass_2_predicted_recovered": true,
+      "gap_proposal": null
+    },
+    {
+      "id": "transcript-only-wording",
+      "category": "transcript_only_wording",
+      "statement": "Ferritin falls before the red-cell indices change.",
+      "relevant_note_ids": [104],
+      "eligible_note_ids": [101, 102, 103, 104, 105, 106, 107, 108, 109, 110],
+      "rankings": {
+        "statement_only": [109, 104],
+        "four_semantic_variants": [104, 109],
+        "fts_only": [108, 104],
+        "semantic_only": [104, 109],
+        "fused": [104, 109],
+        "fused_with_boosts": [104, 109]
+      },
+      "latency_ms": {
+        "statement_only": 1.3,
+        "four_semantic_variants": 3.0,
+        "fts_only": 0.8,
+        "semantic_only": 1.5,
+        "fused": 2.1,
+        "fused_with_boosts": 2.2
+      },
+      "ground_truth_covered": true,
+      "pass_1_predicted_covered": false,
+      "pass_2_expected_recoverable": true,
+      "pass_2_predicted_recovered": true,
+      "gap_proposal": null
+    },
+    {
+      "id": "multi-source-concept",
+      "category": "multi_source",
+      "statement": "Hepcidin links inflammation to iron-restricted erythropoiesis.",
+      "relevant_note_ids": [105, 106],
+      "eligible_note_ids": [101, 102, 103, 104, 105, 106, 107, 108, 109, 110],
+      "rankings": {
+        "statement_only": [105, 109, 106],
+        "four_semantic_variants": [105, 106, 109],
+        "fts_only": [105, 106, 109],
+        "semantic_only": [106, 105, 109],
+        "fused": [105, 106, 109],
+        "fused_with_boosts": [105, 106, 109]
+      },
+      "latency_ms": {
+        "statement_only": 1.4,
+        "four_semantic_variants": 3.3,
+        "fts_only": 0.9,
+        "semantic_only": 1.6,
+        "fused": 2.4,
+        "fused_with_boosts": 2.5
+      },
+      "ground_truth_covered": true,
+      "pass_1_predicted_covered": true,
+      "pass_2_expected_recoverable": false,
+      "pass_2_predicted_recovered": false,
+      "gap_proposal": null
+    },
+    {
+      "id": "genuine-gap",
+      "category": "genuine_gap",
+      "statement": "The lecture-specific treatment threshold is absent from the deck.",
+      "relevant_note_ids": [],
+      "eligible_note_ids": [101, 102, 103, 104, 105, 106, 107, 108, 109, 110],
+      "rankings": {
+        "statement_only": [109],
+        "four_semantic_variants": [109],
+        "fts_only": [108],
+        "semantic_only": [109],
+        "fused": [109, 108],
+        "fused_with_boosts": [109, 108]
+      },
+      "latency_ms": {
+        "statement_only": 1.1,
+        "four_semantic_variants": 2.8,
+        "fts_only": 0.8,
+        "semantic_only": 1.3,
+        "fused": 2.0,
+        "fused_with_boosts": 2.1
+      },
+      "ground_truth_covered": false,
+      "pass_1_predicted_covered": false,
+      "pass_2_expected_recoverable": false,
+      "pass_2_predicted_recovered": false,
+      "gap_proposal": {
+        "proposal_id": "gap-iron-threshold",
+        "evidence_ids": ["slide:iron:06", "transcript:iron:08"]
+      }
+    },
+    {
+      "id": "hard-negative",
+      "category": "hard_negative",
+      "statement": "Similar vocabulary describes a different mechanism.",
+      "relevant_note_ids": [],
+      "eligible_note_ids": [101, 102, 103, 104, 105, 106, 107, 108, 109, 110],
+      "rankings": {
+        "statement_only": [107, 108],
+        "four_semantic_variants": [107, 108],
+        "fts_only": [108, 107],
+        "semantic_only": [107, 108],
+        "fused": [107, 108],
+        "fused_with_boosts": [107, 108]
+      },
+      "latency_ms": {
+        "statement_only": 1.5,
+        "four_semantic_variants": 3.4,
+        "fts_only": 1.0,
+        "semantic_only": 1.7,
+        "fused": 2.5,
+        "fused_with_boosts": 2.6
+      },
+      "ground_truth_covered": false,
+      "pass_1_predicted_covered": false,
+      "pass_2_expected_recoverable": false,
+      "pass_2_predicted_recovered": false,
+      "gap_proposal": null
+    }
+  ],
+  "acceptance": {
+    "protected_tag_mutation_count": 0,
+    "duplicate_notes_after_retry": 0,
+    "research_addons_unavailable": null,
+    "leading_sync_failure_no_writes": null,
+    "trailing_sync_failure_recorded": null,
+    "retry_completed_without_reapply": null,
+    "read_back_verified": null
+  }
+}

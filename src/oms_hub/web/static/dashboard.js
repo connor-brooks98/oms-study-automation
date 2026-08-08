@@ -5,6 +5,7 @@
     const target = document.getElementById(button.getAttribute("aria-controls"));
     if (!target) return;
     button.setAttribute("aria-expanded", String(expanded));
+    button.querySelector(".sh-disclose")?.classList.toggle("is-open", expanded);
     target.hidden = !expanded;
   }
 

@@ -1,8 +1,7 @@
-from functools import lru_cache
 from pathlib import Path
 from typing import cast
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
@@ -22,14 +21,9 @@ from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import expanded_path
 from oms_hub.study_generation.domain import OutlineRecord
 from oms_hub.study_generation.repository import GenerationRepository
-from oms_hub.web.csrf import require_form_csrf
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-
-
-class _OutlineChecksumError(ValueError):
-    pass
 
 
 @router.get("/artifacts/outlines/{outline_id}")
@@ -51,21 +45,10 @@ def outline_pdf_response(
     path = record.path.resolve()
     if not path.is_relative_to(root):
         raise HTTPException(409, "outline path is outside the study folder")
-    try:
-        metadata = path.stat()
-    except OSError as error:
-        raise HTTPException(409, "outline file no longer matches its record") from error
-    if not path.is_file():
+    if not path.is_file() or sha256_file(path) != record.sha256:
         raise HTTPException(409, "outline file no longer matches its record")
     try:
-        _validate_outline_pdf(
-            str(path),
-            metadata.st_mtime_ns,
-            metadata.st_size,
-            record.sha256,
-        )
-    except (_OutlineChecksumError, OSError) as error:
-        raise HTTPException(409, "outline file no longer matches its record") from error
+        validate_pdf(path)
     except Exception as error:
         raise HTTPException(409, "outline PDF is not valid") from error
     return FileResponse(
@@ -76,19 +59,6 @@ def outline_pdf_response(
             "Content-Disposition": f'inline; filename="{path.name}"',
         },
     )
-
-
-@lru_cache(maxsize=256)
-def _validate_outline_pdf(
-    path_value: str,
-    _mtime_ns: int,
-    _size: int,
-    expected_sha256: str,
-) -> None:
-    path = Path(path_value)
-    if sha256_file(path) != expected_sha256:
-        raise _OutlineChecksumError("outline checksum mismatch")
-    validate_pdf(path)
 
 
 def _service(request: Request) -> ArtifactService:
@@ -203,9 +173,7 @@ def download_cleaned_transcript(
 def approve_replacement(
     request: Request,
     revision_id: int,
-    csrf_token: str | None = Form(default=None),
 ) -> RedirectResponse:
-    require_form_csrf(request, csrf_token)
     try:
         _service(request).approve(revision_id)
     except KeyError as error:
@@ -219,30 +187,11 @@ def approve_replacement(
 def keep_replacement(
     request: Request,
     revision_id: int,
-    csrf_token: str | None = Form(default=None),
 ) -> RedirectResponse:
-    require_form_csrf(request, csrf_token)
     try:
         _service(request).keep_current(revision_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="revision not found") from error
     except ArtifactConflict as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    return RedirectResponse("/review", status_code=303)
-
-
-@router.post("/review/replacements/{revision_id}/retry")
-def retry_failed_revision(
-    request: Request,
-    revision_id: int,
-    csrf_token: str | None = Form(default=None),
-) -> RedirectResponse:
-    require_form_csrf(request, csrf_token)
-    repository = IngestionRepository(request.app.state.database)
-    try:
-        repository.retry_failed_revision(revision_id)
-    except KeyError as error:
-        raise HTTPException(status_code=404, detail="revision not found") from error
-    except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return RedirectResponse("/review", status_code=303)

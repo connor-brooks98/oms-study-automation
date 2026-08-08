@@ -1,32 +1,40 @@
 {% extends "base.html" %}
 {% block title %}Quarantine · Study Hub{% endblock %}
 {% block content %}
-<section class="page-shell narrow-page" data-quarantine-page>
-  <div class="page-heading"><div><p class="eyebrow">Manual assignment</p><h1>Quarantine</h1><p class="page-summary">Select one or more files, then choose their course, exam, and lecture.</p></div><span class="status-pill status-quarantined"><span data-waiting-count>{{ items|length }}</span> waiting</span></div>
-  {% if items %}
-  <section class="card quarantine-controls">
-    <div class="quarantine-picker">
-      <label>Course<select data-course-select required><option value="">Select course</option></select></label>
-      <label>Exam<select data-exam-select required disabled><option value="">Select exam</option></select></label>
-      <label>Lecture<select data-lecture-select required disabled><option value="">Select lecture</option></select></label>
+<section class="page-shell narrow-page sh-container--narrow">
+  <div class="page-heading sh-header">
+    <div>
+      <p class="eyebrow sh-eyebrow">Manual assignment</p>
+      <h1 class="sh-title">Quarantine</h1>
+      <p class="page-summary sh-subtitle">Choose a lecture for files the Hub could not match confidently.</p>
     </div>
-    <select data-lecture-source hidden aria-hidden="true">
-      {% for lecture in lectures %}<option value="{{ lecture.id }}" data-subject="{{ lecture.subject }}" data-exam="{{ lecture.exam_number }}" data-number="{{ lecture.lecture_number }}">Lecture {{ lecture.lecture_number }} — {{ lecture.topic }}</option>{% endfor %}
-    </select>
-    <div class="quarantine-actions"><button class="button secondary" type="button" data-select-all>Select all</button><button class="button primary" type="button" data-assign-selected>Assign selected</button></div>
-    <p class="field-message" data-quarantine-message role="status" aria-live="polite"></p>
-  </section>
-  {% endif %}
-  <div data-quarantine-items>
-  {% for item in items %}
-  <article class="card quarantine-item" data-quarantine-item data-item-id="{{ item.id }}">
-    <label class="quarantine-check"><input type="checkbox" data-item-select> Select {{ item.original_filename }}</label>
-    <p class="mono-label">{{ item.kind.value }}</p><h2>{{ item.original_filename }}</h2><p class="page-summary">{{ item.size_bytes }} bytes</p>
-    {% if item.evidence %}<ul>{% for evidence in item.evidence %}<li>{{ evidence }}</li>{% endfor %}</ul>{% endif %}
-    <p class="field-message" data-item-result aria-live="polite"></p>
-  </article>
-  {% else %}<section class="empty-state"><h2>Nothing is quarantined</h2><p>Ambiguous uploads will appear here with their matching evidence.</p></section>{% endfor %}
+    <span class="status-pill sh-pill {{ 'sh-pill--err' if items|length else 'sh-pill--bare' }} status-quarantined">{{ items|length }} waiting</span>
   </div>
+  {% for item in items %}
+  <section class="card sh-card">
+    <p class="mono-label">{{ item.kind.value }}</p>
+    <h2>{{ item.original_filename }}</h2>
+    <p class="page-summary">{{ item.size_bytes }} bytes</p>
+    {% if item.evidence %}
+    <ul>{% for evidence in item.evidence %}<li>{{ evidence }}</li>{% endfor %}</ul>
+    {% endif %}
+    <form method="post" action="/quarantine/{{ item.id }}/assign">
+      <label>Lecture
+        <select class="sh-select" name="lecture_id" required>
+          <option value="">Select a lecture</option>
+          {% for lecture in lectures %}
+          <option value="{{ lecture.id }}">{{ lecture.subject }} · Exam {{ lecture.exam_number }} · Lecture {{ lecture.lecture_number }} — {{ lecture.topic }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button class="button primary sh-btn sh-btn--primary" type="submit">Assign and process</button>
+    </form>
+  </section>
+  {% else %}
+  <section class="empty-state sh-empty">
+    <h2 class="sh-empty__title">Nothing is quarantined</h2>
+    <p class="sh-empty__text">Ambiguous uploads will appear here with their matching evidence.</p>
+  </section>
+  {% endfor %}
 </section>
 {% endblock %}
-{% block scripts %}<script src="/static/quarantine.js?v=20260731.1" defer></script>{% endblock %}

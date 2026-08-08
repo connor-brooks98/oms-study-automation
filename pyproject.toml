@@ -2,62 +2,81 @@
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [project]
 name = "oms-study-automation"
 version = "0.1.0"
 requires-python = ">=3.12,<3.14"
 dependencies = [
-  "cryptography>=45,<47",
-  "defusedxml>=0.7,<1",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
   "jinja2>=3.1,<4",
   "keyring>=25,<26",
   "openpyxl>=3.1,<4",
   "msoffcrypto-tool>=6,<7",
-  "notebooklm-py==0.7.3",
+  "numpy>=2,<3",
   "Pillow>=11,<13",
+  "notebooklm-py==0.7.3",
   "pyjwt[crypto]>=2.10,<3",
+  "PyMuPDF>=1.26,<2",
   "pypdf>=6.14,<7",
   "pydantic-settings>=2.7,<3",
   "playwright>=1.55,<2",
+  "python-pptx>=1.0,<2",
   "python-multipart>=0.0.20,<1",
+  "selectolax>=0.3,<1",
   "reportlab>=4.4,<5",
   "sqlalchemy>=2.0,<3",
+  "tzdata>=2025.2,<2027",
   "uvicorn[standard]>=0.34,<1",
   "pywin32==312; sys_platform == 'win32'",
-  "tzdata>=2025.2; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
+document-processing = [
+  "firecrawl-anydoc==0.1.3",
+]
+pdf-inspection = [
+  "pdf-inspector @ git+https://github.com/firecrawl/pdf-inspector.git@ae6246ba0c39008931b67f9cee1a898ee405d023",
+]
 dev = [
-  "httpx2>=2.9,<3",
+  "httpx>=0.28,<1",
+  "httpx2",
   "mypy>=1.14,<2",
   "pytest>=8.3,<9",
   "pytest-cov>=6,<7",
   "respx>=0.22,<1",
   "ruff>=0.9,<1",
   "types-openpyxl>=3.1,<4",
-  "types-defusedxml>=0.7,<1",
 ]
 
 [project.scripts]
 oms-hub = "oms_hub.cli:main"
+oms-study-hub = "oms_hub.cli:main"
+oms-anki-agent = "oms_anki_agent.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/oms_hub"]
+packages = ["src/oms_hub", "src/oms_anki_agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
 filterwarnings = ["error"]
-markers = ["windows_office: requires Windows with desktop Microsoft Office installed"]
+markers = [
+  "performance: deterministic local performance characterization",
+  "windows_office: requires Windows with desktop Microsoft Office installed",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
-packages = ["oms_hub"]
+packages = ["oms_hub", "oms_anki_agent"]

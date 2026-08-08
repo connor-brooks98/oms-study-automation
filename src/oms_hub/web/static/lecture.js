@@ -13,12 +13,15 @@
   const render = (card, status) => {
     const message = card.querySelector("[data-generation-message]");
     const active = ["queued", "running"].includes(status.state);
+    const completeMessage = card.dataset.kind === "quiz"
+      ? "1 Study Hub quiz is ready."
+      : "Lecture outline PDF is ready.";
     const labels = {
       queued: "Queued on the Study Hub device.",
       running: `Working: ${(status.stage || "starting").replaceAll("_", " ")}.`,
       paused: status.message || "Reconnect Google, then try again.",
       failed: status.message || "Generation stopped. You can retry.",
-      complete: "Ready.",
+      complete: completeMessage,
       ready: "Ready to generate.",
     };
     message.textContent = labels[status.state] || "Status updated.";
@@ -27,7 +30,7 @@
       let link = card.querySelector("[data-generation-link]");
       if (!link) {
         link = card.ownerDocument.createElement("a");
-        link.className = "button primary";
+        link.className = "button primary sh-btn sh-btn--primary";
         link.dataset.generationLink = "";
         card.querySelector(".file-actions").prepend(link);
       }
@@ -51,29 +54,29 @@
     callback();
   };
 
-  const shortcutTarget = (key, previousUrl, nextUrl, tagName = "") => {
-    if (["INPUT", "TEXTAREA", "SELECT"].includes(tagName.toUpperCase())) return null;
-    if (key === "[") return previousUrl || null;
-    if (key === "]") return nextUrl || null;
-    return null;
-  };
-
   const initialize = (documentRef, fetchImpl = root.fetch.bind(root)) => {
     const match = root.location.pathname.match(/^\/lectures\/(\d+)/);
     if (!match) return;
     const lectureId = match[1];
     let pollTimer;
-    const previousUrl = documentRef.querySelector("[data-previous-lecture]")?.href;
-    const nextUrl = documentRef.querySelector("[data-next-lecture]")?.href;
-    documentRef.addEventListener("keydown", (event) => {
-      const target = shortcutTarget(
-        event.key,
-        previousUrl,
-        nextUrl,
-        event.target?.tagName,
-      );
-      if (target) root.location.assign(target);
-    });
+    const basePollDelayMs = 2500;
+    const maxPollDelayMs = 30000;
+    let pollDelayMs = basePollDelayMs;
+
+    const scheduleRefresh = (delay) => {
+      pollTimer = root.setTimeout(() => {
+        refresh().catch(handlePollError);
+      }, delay);
+    };
+
+    const handlePollError = (error) => {
+      documentRef.querySelectorAll("[data-generation-card]").forEach((card) => {
+        const message = card.querySelector("[data-generation-message]");
+        if (message) message.textContent = `${error.message} Retrying…`;
+      });
+      pollDelayMs = Math.min(pollDelayMs * 2, maxPollDelayMs);
+      scheduleRefresh(pollDelayMs);
+    };
 
     const refresh = async () => {
       const response = await fetchImpl(`/lectures/${lectureId}/generation-status`, {
@@ -84,7 +87,10 @@
       documentRef.querySelectorAll("[data-generation-card]").forEach((card) => {
         active = render(card, payload[card.dataset.kind]) || active;
       });
-      if (active) pollTimer = root.setTimeout(refresh, 2500);
+      if (active) {
+        pollDelayMs = basePollDelayMs;
+        scheduleRefresh(pollDelayMs);
+      }
     };
 
     documentRef.querySelectorAll("[data-generation-card]").forEach((card) => {
@@ -112,17 +118,18 @@
           }
           render(card, payload);
           root.clearTimeout(pollTimer);
-          pollTimer = root.setTimeout(refresh, 1000);
+          pollDelayMs = basePollDelayMs;
+          scheduleRefresh(1000);
         } catch (error) {
           message.textContent = error.message;
           button.disabled = false;
         }
       });
     });
-    void refresh();
+    void refresh().catch(handlePollError);
   };
 
-  const api = { csrfToken, initialize, render, runWhenReady, shortcutTarget };
+  const api = { csrfToken, initialize, render, runWhenReady };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) {
     runWhenReady(

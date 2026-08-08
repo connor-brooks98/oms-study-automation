@@ -130,7 +130,49 @@ def test_outline_queue_requires_current_pdf_and_cleaned_transcript(tmp_path):
     with pytest.raises(GenerationPrerequisiteError) as error:
         service.queue_outline(4)
 
-    assert str(error.value) == "Current lecture PDF and cleaned transcript are required"
+    assert str(error.value) == (
+        "Current lecture PDF and cleaned transcript are required: "
+        "lecture PDF is not uploaded; cleaned transcript is not uploaded"
+    )
+
+
+def test_quiz_queue_identifies_a_changed_pdf_checksum(tmp_path):
+    pdf = tmp_path / "lecture.pdf"
+    transcript = tmp_path / "transcript.txt"
+    pdf.write_bytes(b"changed")
+    transcript.write_bytes(b"clean")
+    import hashlib
+
+    service = GenerationService(
+        Catalog(),
+        Ingestion(
+            [
+                Revision(
+                    10,
+                    UploadKind.SLIDES,
+                    pdf,
+                    hashlib.sha256(b"original").hexdigest(),
+                ),
+                Revision(
+                    11,
+                    UploadKind.TRANSCRIPTS,
+                    transcript,
+                    hashlib.sha256(b"clean").hexdigest(),
+                ),
+            ]
+        ),
+        Jobs(),
+        Prompts(),
+        Google(),
+    )
+
+    with pytest.raises(GenerationPrerequisiteError) as error:
+        service.queue_quiz(4)
+
+    assert str(error.value) == (
+        "Current lecture PDF and cleaned transcript are required: "
+        "lecture PDF file checksum does not match"
+    )
 
 
 def test_queue_snapshots_current_revision_ids_and_prompt(tmp_path):

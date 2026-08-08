@@ -36,9 +36,7 @@ def verified_atomic_write(payload: bytes, destination: Path) -> str:
         if sha256_file(destination) != expected_sha256:
             raise OSError("immutable destination already contains other data")
         return expected_sha256
-    temporary = destination.with_name(
-        f".{destination.name}.partial-{uuid.uuid4().hex}"
-    )
+    temporary = destination.parent / f".write-{uuid.uuid4().hex}.tmp"
     try:
         with temporary.open("xb") as stream:
             stream.write(payload)

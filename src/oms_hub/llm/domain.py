@@ -6,6 +6,84 @@ class ProviderName(StrEnum):
     OPENAI = "openai"
     GEMINI = "gemini"
     ANTHROPIC = "anthropic"
+    OPENROUTER = "openrouter"
+
+
+class LLMTask(StrEnum):
+    TRANSCRIPTS = "transcripts"
+    ANKI_CURATION = "anki_curation"
+    ACCURACY_REVIEW = "accuracy_review"
+    QUIZ_EXTRACTION = "quiz_extraction"
+    QUIZ_ANSWER_GENERATION = "quiz_answer_generation"
+
+
+class ThinkingMode(StrEnum):
+    """Whether a generation may spend output budget on extended thinking."""
+
+    DISABLED = "disabled"
+    ENABLED = "enabled"
+
+
+class ThinkingCapability(StrEnum):
+    """The transport a selected model accepts for enabled thinking."""
+
+    UNSUPPORTED = "unsupported"
+    MANUAL = "manual"
+    ADAPTIVE = "adaptive"
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationOptions:
+    """Immutable, provider-neutral controls for one text generation call.
+
+    ``cacheable_source_prefix`` is ordered before the per-call prompt. Providers
+    that cannot explicitly cache it still send it as ordinary prompt context.
+    ``thinking_budget_tokens`` is only used when ``thinking`` is enabled.
+    """
+
+    cacheable_source_prefix: str | None = None
+    thinking: ThinkingMode = ThinkingMode.DISABLED
+    thinking_budget_tokens: int = 1024
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.thinking, ThinkingMode):
+            raise TypeError("thinking must be a ThinkingMode")
+        if self.cacheable_source_prefix is not None:
+            if not isinstance(self.cacheable_source_prefix, str):
+                raise TypeError("cacheable_source_prefix must be a string or None")
+            if not self.cacheable_source_prefix.strip():
+                raise ValueError("cacheable_source_prefix cannot be blank")
+        if (
+            isinstance(self.thinking_budget_tokens, bool)
+            or not isinstance(self.thinking_budget_tokens, int)
+            or self.thinking_budget_tokens < 1024
+        ):
+            raise ValueError("thinking_budget_tokens must be at least 1024")
+
+    @property
+    def thinking_mode(self) -> ThinkingMode:
+        """Alias that reads naturally at stage-configuration call sites."""
+        return self.thinking
+
+
+DEFAULT_GENERATION_OPTIONS = GenerationOptions()
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCapabilities:
+    """Provider or selected-model guarantees; support is conservative by default."""
+
+    prompt_prefix_caching: bool = False
+    thinking: bool = False
+    thinking_capability: ThinkingCapability = ThinkingCapability.UNSUPPORTED
+
+    @property
+    def supports_prompt_prefix_caching(self) -> bool:
+        return self.prompt_prefix_caching
+
+    @property
+    def supports_thinking(self) -> bool:
+        return self.thinking
 
 
 class DiagnosticSource(StrEnum):
@@ -13,6 +91,7 @@ class DiagnosticSource(StrEnum):
     NETWORK = "network"
     AUTHENTICATION = "provider_authentication"
     MODEL = "provider_model"
+    REQUEST = "provider_request"
     QUOTA = "provider_quota"
     SERVICE = "provider_service"
     SOURCE_PROCESSING = "source_processing"
@@ -47,6 +126,19 @@ class CleanResult:
 
 
 @dataclass(frozen=True, slots=True)
+class GeneratedText:
+    text: str
+    provider: ProviderName
+    model: str
+    request_id: str
+    input_tokens: int
+    output_tokens: int
+    cost_microusd: int
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderConnection:
     provider: ProviderName
     model: str
@@ -64,3 +156,10 @@ class ProviderPreference:
     diagnostic_message: str | None
     http_status: int | None
     provider_request_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TaskAssignment:
+    task: LLMTask
+    provider: ProviderName
+    model: str

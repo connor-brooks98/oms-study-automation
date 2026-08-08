@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 from dataclasses import replace
 from datetime import timedelta
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
+from oms_hub.db import is_sqlite_busy
 from oms_hub.files.office import OfficeConverter
-from oms_hub.files.pdf import validate_pdf
+from oms_hub.files.pdf import inspect_pdf
 from oms_hub.llm.domain import DiagnosticSource
 from oms_hub.study_generation.native_quiz import (
     QuizContractError,
@@ -15,6 +18,7 @@ from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
     NotebookGatewayError,
 )
+from oms_hub.study_generation.quiz_images import StudioQuizImageService
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.studio_domain import (
     StudioRunStage,
@@ -22,6 +26,9 @@ from oms_hub.study_generation.studio_domain import (
     StudioSourceType,
 )
 from oms_hub.study_generation.studio_repository import StudioRepository
+
+if TYPE_CHECKING:
+    from oms_hub.study_generation.quiz_import_worker import QuizImportWorker
 
 
 class NotebookConnection(Protocol):
@@ -36,12 +43,16 @@ class StudioWorker:
         converter: OfficeConverter,
         connection: NotebookConnection,
         publisher: GenerationRepository | None = None,
+        image_service: StudioQuizImageService | None = None,
+        import_worker: QuizImportWorker | None = None,
     ):
         self.repository = repository
         self.gateway = gateway
         self.converter = converter
         self.connection = connection
         self.publisher = publisher
+        self.image_service = image_service
+        self.import_worker = import_worker
 
     def recover_interrupted_jobs(self) -> int:
         return self.repository.recover_interrupted_jobs()
@@ -54,6 +65,18 @@ class StudioWorker:
         run = self.repository.claim_next_run()
         if run is None:
             return False
+        from oms_hub.study_generation.practice_domain import QuizWorkflowKind
+
+        if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
+            if self.import_worker is None:
+                self.repository.fail_run(
+                    run.id,
+                    DiagnosticSource.STUDY_HUB.value,
+                    "direct-import worker is not configured",
+                )
+            else:
+                self.import_worker.run(run)
+            return True
         try:
             self.repository.set_run_stage(run.id, StudioRunStage.CHAT)
             notebook_id, answer = self.gateway.ask_studio(
@@ -90,11 +113,19 @@ class StudioWorker:
                 None,
                 str(error),
             )
-            self.repository.fail_run(
-                run.id,
-                DiagnosticSource.STUDY_HUB.value,
-                str(error),
-            )
+            if is_sqlite_busy(error) and run.attempts < 4:
+                self.repository.retry_run(
+                    run.id,
+                    DiagnosticSource.STUDY_HUB.value,
+                    str(error),
+                    timedelta(seconds=min(30 * (2 ** (run.attempts - 1)), 300)),
+                )
+            else:
+                self.repository.fail_run(
+                    run.id,
+                    DiagnosticSource.STUDY_HUB.value,
+                    str(error),
+                )
             return True
 
         self.repository.save_run_response(run.id, answer)
@@ -139,6 +170,18 @@ class StudioWorker:
                 answer,
                 quiz,
             )
+            if self.image_service is not None:
+                review = self.repository.quiz_review(run.id)
+                sources = tuple(
+                    source
+                    for snapshot in run.sources
+                    if (source := self.repository.get(snapshot.source_id)) is not None
+                )
+                self.image_service.auto_bind_from_sources(
+                    run.id,
+                    review.requirements,
+                    sources,
+                )
             return True
         try:
             self.repository.set_run_stage(run.id, StudioRunStage.PUBLISH)
@@ -159,11 +202,19 @@ class StudioWorker:
                 DiagnosticSource.VALIDATION.value,
                 str(error),
             )
-            self.repository.fail_run(
-                run.id,
-                DiagnosticSource.VALIDATION.value,
-                str(error),
-            )
+            if is_sqlite_busy(error) and run.attempts < 4:
+                self.repository.retry_run(
+                    run.id,
+                    DiagnosticSource.VALIDATION.value,
+                    str(error),
+                    timedelta(seconds=min(30 * (2 ** (run.attempts - 1)), 300)),
+                )
+            else:
+                self.repository.fail_run(
+                    run.id,
+                    DiagnosticSource.VALIDATION.value,
+                    str(error),
+                )
         return True
 
     def _run_source(self, source: StudioSource) -> None:
@@ -179,11 +230,11 @@ class StudioWorker:
                 if path.suffix.casefold() == ".pptx":
                     converted_path = path.with_name("converted.pdf")
                     self.converter.convert(path, converted_path)
-                    validate_pdf(converted_path)
+                    inspect_pdf(converted_path)
                     path = converted_path
                     converted = True
-                else:
-                    validate_pdf(path)
+                elif path.suffix.casefold() == ".pdf":
+                    inspect_pdf(path)
             text = (
                 path.read_text(encoding="utf-8")
                 if source.source_type is StudioSourceType.TEXT and path
@@ -219,5 +270,5 @@ class StudioWorker:
                 source.id,
                 "study_hub",
                 str(error),
-                retry=False,
+                retry=is_sqlite_busy(error),
             )

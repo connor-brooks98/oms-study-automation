@@ -81,35 +81,6 @@ class CatalogRepository:
                 .options(selectinload(LectureModel.steps))
             )
 
-    def get_adjacent_lectures(
-        self,
-        lecture_id: int,
-    ) -> tuple[LectureModel | None, LectureModel | None]:
-        with self.database.session() as session:
-            current = session.get(LectureModel, lecture_id)
-            if current is None:
-                raise KeyError(lecture_id)
-            lectures = list(
-                session.scalars(
-                    select(LectureModel)
-                    .where(LectureModel.subject == current.subject)
-                    .order_by(
-                        LectureModel.exam_number,
-                        LectureModel.lecture_number,
-                        LectureModel.id,
-                    )
-                ).all()
-            )
-            index = next(
-                position
-                for position, lecture in enumerate(lectures)
-                if lecture.id == lecture_id
-            )
-            return (
-                lectures[index - 1] if index > 0 else None,
-                lectures[index + 1] if index + 1 < len(lectures) else None,
-            )
-
     def update_lecture(self, lecture_id: int, value: LectureInput) -> None:
         with self.database.session() as session:
             lecture = session.get(LectureModel, lecture_id)

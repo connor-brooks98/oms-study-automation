@@ -1,12 +1,18 @@
 from collections.abc import Mapping
 
 from oms_hub.llm.domain import (
+    DEFAULT_GENERATION_OPTIONS,
     CleanResult,
     DiagnosticSource,
+    GeneratedText,
+    GenerationOptions,
     LLMRequestError,
+    LLMTask,
+    ProviderCapabilities,
     ProviderConnection,
     ProviderName,
 )
+from oms_hub.llm.openrouter import OPENROUTER_API_KEY_SECRET
 from oms_hub.llm.provider import LLMProvider
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.security.secret_store import SecretStore
@@ -16,6 +22,7 @@ SECRET_KEYS = {
     ProviderName.OPENAI: "openai-api-key",
     ProviderName.GEMINI: "gemini-api-key",
     ProviderName.ANTHROPIC: "anthropic-api-key",
+    ProviderName.OPENROUTER: OPENROUTER_API_KEY_SECRET,
 }
 
 
@@ -39,15 +46,19 @@ class LLMService:
         raw_text: str,
         prompt: ApprovedPrompt,
     ) -> CleanResult:
-        preference = self.settings.active()
-        api_key = self._credential(preference.provider)
-        provider = self.providers[preference.provider]
+        provider, model, api_key = self.for_task(LLMTask.TRANSCRIPTS)
         return provider.clean(
             raw_text,
             prompt,
             api_key=api_key,
-            model=preference.model,
+            model=model,
         )
+
+    def for_task(self, task: LLMTask) -> tuple[LLMProvider, str, str]:
+        assignment = self.settings.assignment(task)
+        api_key = self._credential(assignment.provider)
+        provider = self.providers[assignment.provider]
+        return provider, assignment.model, api_key
 
     def test_connection(
         self,
@@ -59,6 +70,58 @@ class LLMService:
             api_key,
             preference.model,
         )
+
+    def generate_text(
+        self,
+        instruction: str,
+        input_text: str,
+        *,
+        output_schema: dict[str, object],
+        provider: ProviderName,
+        model: str,
+        options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
+    ) -> GeneratedText:
+        api_key = self._credential(provider)
+        arguments: dict[str, object] = {
+            "api_key": api_key,
+            "model": model,
+            "output_schema": output_schema,
+        }
+        if options is not DEFAULT_GENERATION_OPTIONS:
+            arguments["options"] = options
+        return self.providers[provider].generate_text(
+            instruction,
+            input_text,
+            **arguments,  # type: ignore[arg-type]
+        )
+
+    def generate_text_for_task(
+        self,
+        task: LLMTask,
+        instruction: str,
+        input_text: str,
+        *,
+        output_schema: dict[str, object],
+    ) -> GeneratedText:
+        assignment = self.settings.assignment(task)
+        return self.generate_text(
+            instruction,
+            input_text,
+            output_schema=output_schema,
+            provider=assignment.provider,
+            model=assignment.model,
+        )
+
+    def capabilities_for(
+        self,
+        provider: ProviderName,
+        model: str | None = None,
+    ) -> ProviderCapabilities:
+        """Expose conservative provider or selected-model guarantees locally."""
+        adapter = self.providers[provider]
+        if model is None:
+            return adapter.capabilities
+        return adapter.capabilities_for_model(model)
 
     def credential_configured(self, provider: ProviderName) -> bool:
         try:

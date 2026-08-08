@@ -1,7 +1,9 @@
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from types import TracebackType
+from typing import Any, Self
+from weakref import finalize
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.exc import DBAPIError
@@ -28,6 +30,7 @@ class Database:
         if sqlite_url:
             event.listen(self.engine, "connect", _configure_sqlite_connection)
         self._sessions = sessionmaker(self.engine, expire_on_commit=False)
+        self._finalizer = finalize(self, self.engine.dispose)
 
     def create_schema(self) -> None:
         Base.metadata.create_all(self.engine)
@@ -38,7 +41,19 @@ class Database:
         migrate_database(self)
 
     def close(self) -> None:
-        self.engine.dispose()
+        if self._finalizer.alive:
+            self._finalizer()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -59,9 +74,9 @@ def _configure_sqlite_connection(
 ) -> None:
     cursor = connection.cursor()
     try:
-        cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA busy_timeout=5000")
         cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA foreign_keys=ON")
     finally:
         cursor.close()
 

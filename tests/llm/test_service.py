@@ -4,9 +4,14 @@ import pytest
 
 from oms_hub.db import Database
 from oms_hub.llm.domain import (
+    DEFAULT_GENERATION_OPTIONS,
     CleanResult,
     DiagnosticSource,
+    GeneratedText,
+    GenerationOptions,
     LLMRequestError,
+    LLMTask,
+    ProviderCapabilities,
     ProviderConnection,
     ProviderName,
 )
@@ -34,10 +39,16 @@ class StubProvider:
     name: ProviderName
     settings: LLMSettingsRepository | None = None
     switch_to: ProviderName | None = None
+    capabilities: ProviderCapabilities = ProviderCapabilities()
+    received_options: GenerationOptions | None = None
 
     def clean(self, raw_text, prompt, *, api_key, model):
         if self.settings is not None and self.switch_to is not None:
-            self.settings.set_active(self.switch_to)
+            self.settings.set_assignment(
+                LLMTask.TRANSCRIPTS,
+                self.switch_to,
+                "irrelevant-model",
+            )
         return CleanResult(
             text=f"{self.name.value}:{raw_text}",
             provider=self.name,
@@ -50,6 +61,27 @@ class StubProvider:
 
     def test_connection(self, api_key, model):
         return ProviderConnection(self.name, model, f"{self.name.value}-test")
+
+    def generate_text(
+        self,
+        instruction,
+        input_text,
+        *,
+        api_key,
+        model,
+        output_schema,
+        options=DEFAULT_GENERATION_OPTIONS,
+    ):
+        self.received_options = options
+        return GeneratedText(
+            text='{"ok":true}',
+            provider=self.name,
+            model=model,
+            request_id=f"{self.name.value}-structured",
+            input_tokens=8,
+            output_tokens=3,
+            cost_microusd=0,
+        )
 
 
 def prepared_service(tmp_path):
@@ -67,13 +99,13 @@ def prepared_service(tmp_path):
     return settings, LLMService(settings, secrets, providers)
 
 
-def test_clean_resolves_active_provider_for_each_new_call(tmp_path):
+def test_clean_resolves_transcripts_assignment_for_each_new_call(tmp_path):
     settings, service = prepared_service(tmp_path)
     prompt = ApprovedPrompt("Prompt", "a" * 64)
 
-    settings.set_active(ProviderName.GEMINI)
+    settings.set_assignment(LLMTask.TRANSCRIPTS, ProviderName.GEMINI, "gemini-3.6-flash")
     first = service.clean("first", prompt)
-    settings.set_active(ProviderName.ANTHROPIC)
+    settings.set_assignment(LLMTask.TRANSCRIPTS, ProviderName.ANTHROPIC, "claude-sonnet-5")
     second = service.clean("second", prompt)
 
     assert first.provider is ProviderName.GEMINI
@@ -88,18 +120,18 @@ def test_clean_captures_provider_and_model_before_request_starts(tmp_path):
         switch_to=ProviderName.ANTHROPIC,
     )
     service.providers[ProviderName.GEMINI] = provider
-    settings.set_active(ProviderName.GEMINI)
+    settings.set_assignment(LLMTask.TRANSCRIPTS, ProviderName.GEMINI, "gemini-3.6-flash")
 
     result = service.clean("raw", ApprovedPrompt("Prompt", "a" * 64))
 
     assert result.provider is ProviderName.GEMINI
     assert result.model == "gemini-3.6-flash"
-    assert settings.active().provider is ProviderName.ANTHROPIC
+    assert settings.assignment(LLMTask.TRANSCRIPTS).provider is ProviderName.ANTHROPIC
 
 
 def test_missing_credential_is_an_authentication_diagnostic(tmp_path):
     settings, service = prepared_service(tmp_path)
-    settings.set_active(ProviderName.GEMINI)
+    settings.set_assignment(LLMTask.TRANSCRIPTS, ProviderName.GEMINI, "gemini-3.6-flash")
     service.secrets.delete("gemini-api-key")
 
     with pytest.raises(LLMRequestError) as raised:
@@ -127,3 +159,90 @@ def test_configured_status_fails_closed_when_credential_store_is_unavailable(
     service.secrets = FailingSecrets()
 
     assert service.credential_configured(ProviderName.OPENAI) is False
+
+
+def test_generate_text_uses_explicit_provider_and_model(tmp_path):
+    _, service = prepared_service(tmp_path)
+
+    result = service.generate_text(
+        "Return JSON.",
+        "Input",
+        output_schema={"type": "object"},
+        provider=ProviderName.GEMINI,
+        model="gemini-explicit",
+    )
+
+    assert result.provider is ProviderName.GEMINI
+    assert result.model == "gemini-explicit"
+    assert result.text == '{"ok":true}'
+
+
+def test_generate_text_for_task_uses_current_assignment(tmp_path):
+    settings, service = prepared_service(tmp_path)
+    settings.set_assignment(
+        LLMTask.QUIZ_EXTRACTION,
+        ProviderName.GEMINI,
+        "extractor-model",
+    )
+
+    result = service.generate_text_for_task(
+        LLMTask.QUIZ_EXTRACTION,
+        "Extract questions",
+        "source",
+        output_schema={"type": "object"},
+    )
+
+    assert result.provider is ProviderName.GEMINI
+    assert result.model == "extractor-model"
+
+
+def test_generate_text_propagates_explicit_immutable_options(tmp_path):
+    _, service = prepared_service(tmp_path)
+    options = GenerationOptions(cacheable_source_prefix="SUM: source")
+
+    service.generate_text(
+        "Return JSON.",
+        "Input",
+        output_schema={"type": "object"},
+        provider=ProviderName.GEMINI,
+        model="gemini-explicit",
+        options=options,
+    )
+
+    assert service.providers[ProviderName.GEMINI].received_options is options  # type: ignore[attr-defined]
+
+
+def test_capabilities_are_available_without_a_provider_request(tmp_path):
+    _, service = prepared_service(tmp_path)
+
+    assert service.capabilities_for(ProviderName.OPENAI) == ProviderCapabilities()
+
+
+def test_for_task_returns_adapter_model_and_api_key(tmp_path):
+    settings, service = prepared_service(tmp_path)
+    settings.set_assignment(
+        LLMTask.ANKI_CURATION,
+        ProviderName.ANTHROPIC,
+        "claude-sonnet-5",
+    )
+
+    provider, model, api_key = service.for_task(LLMTask.ANKI_CURATION)
+
+    assert provider is service.providers[ProviderName.ANTHROPIC]
+    assert model == "claude-sonnet-5"
+    assert api_key == "anthropic-secret"
+
+
+def test_for_task_raises_missing_credential_error(tmp_path):
+    settings, service = prepared_service(tmp_path)
+    settings.set_assignment(
+        LLMTask.ACCURACY_REVIEW,
+        ProviderName.GEMINI,
+        "gemini-3.6-flash",
+    )
+    service.secrets.delete("gemini-api-key")
+
+    with pytest.raises(LLMRequestError) as raised:
+        service.for_task(LLMTask.ACCURACY_REVIEW)
+
+    assert raised.value.source is DiagnosticSource.AUTHENTICATION

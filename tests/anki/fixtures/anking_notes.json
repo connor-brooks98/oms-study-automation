@@ -1,0 +1,60 @@
+[
+  {
+    "noteId": 101,
+    "modelName": "AnKingOverhaul",
+    "fields": {
+      "Text": {
+        "value": "<style>.hidden{display:none}</style><script>ignore()</script><b>{{c1::Warfarin::drug}}</b> inhibits vitamin K epoxide reductase. <img src=\"warfarin.png\">",
+        "order": 0
+      },
+      "Extra": {
+        "value": "Monitor the {{c2::INR}}. [sound:warfarin.mp3] <img src='inr.jpg'>",
+        "order": 1
+      }
+    },
+    "tags": [
+      "#AK_Step1_v12::Pharmacology::Hematology",
+      "AnkiHub_Optional::LMU_OMS_II::HemeLymph::Block1",
+      "low_value"
+    ],
+    "cards": [1002, 1001]
+  },
+  {
+    "noteId": 102,
+    "modelName": "AnKingOverhaul",
+    "fields": {
+      "Text": {
+        "value": "Microcytic anemia has a low MCV.",
+        "order": 0
+      },
+      "Extra": {
+        "value": "<div>Iron studies distinguish the causes.</div>",
+        "order": 1
+      }
+    },
+    "tags": [
+      "#Pathoma::Hematology::Anemia",
+      "#AK_Step1_v12::Hematology"
+    ],
+    "cards": [1003]
+  },
+  {
+    "noteId": 103,
+    "modelName": "AnKingOverhaul",
+    "fields": {
+      "Text": {
+        "value": "Staphylococcus aureus is catalase positive.",
+        "order": 0
+      },
+      "Extra": {
+        "value": "<p>Gram-positive cocci in clusters.</p>",
+        "order": 1
+      }
+    },
+    "tags": [
+      "#Sketchy::Micro::Gram_Positive",
+      "#AK_Step1_v12::Microbiology"
+    ],
+    "cards": [1004]
+  }
+]

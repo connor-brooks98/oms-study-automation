@@ -2,23 +2,23 @@
 {% block title %}Quiz images · Study Hub{% endblock %}
 {% block content %}
 <section
-  class="page-shell"
+  class="page-shell sh-container--narrow"
   data-image-review-page
   data-run-id="{{ run.id }}"
   data-status-url="/studio/runs/{{ run.id }}/image-review"
 >
-  <div class="page-heading">
+  <div class="page-heading sh-header">
     <div>
-      <p class="eyebrow">Private publication review</p>
-      <h1>Quiz images</h1>
-      <p class="page-summary">{{ run.label }} needs one or more source images before it can be previewed and published.</p>
+      <p class="eyebrow sh-eyebrow">Private publication review</p>
+      <h1 class="sh-title">Quiz images</h1>
+      <p class="page-summary sh-subtitle">{{ run.label }} needs one or more source images before it can be previewed and published.</p>
     </div>
     <div class="heading-actions">
-      <a class="button secondary" href="/studio">Back to NotebookLM Studio</a>
+      <a class="button secondary sh-btn sh-btn--secondary" href="/studio">Back to Quiz Builder</a>
     </div>
   </div>
   <p class="studio-image-message" data-image-review-message aria-live="polite"></p>
-  <div class="studio-image-requirements" data-image-review-list>
+  <div class="studio-image-requirements sh-stack" data-image-review-list>
     <p>Loading image requirements…</p>
   </div>
 </section>

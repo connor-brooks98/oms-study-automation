@@ -60,6 +60,7 @@ class NotebookSourceBinding:
 
 
 class PromptKind(StrEnum):
+    TRANSCRIPT = "transcript"
     OUTLINE = "outline"
     QUIZ = "quiz"
 
@@ -81,6 +82,7 @@ class GenerationJob:
     pdf_source_id: str | None = None
     transcript_source_id: str | None = None
     notebook_answer: str | None = None
+    gemini_quiz_id: str | None = None
     supersedes_job_id: str | None = None
     quiz_url: str | None = None
 
@@ -134,7 +136,10 @@ class LectureSourceSet:
             or self.transcript.kind is not SourceKind.CLEANED_TRANSCRIPT
         ):
             raise SourceIsolationError("lecture source kinds are invalid")
-        if self.pdf.lecture_id != self.lecture_id or self.transcript.lecture_id != self.lecture_id:
+        if (
+            self.pdf.lecture_id != self.lecture_id
+            or self.transcript.lecture_id != self.lecture_id
+        ):
             raise SourceIsolationError("lecture sources belong to different lectures")
         if not self.pdf.ready or not self.transcript.ready:
             raise SourceIsolationError("lecture sources are not ready")
@@ -199,6 +204,9 @@ class QuizQuestion:
     correct_choice_id: str
     rationale: str
     image_ref: QuizImageRef | None = None
+    area: str | None = None
+    learning_objective: str | None = None
+    topic: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +236,18 @@ class PublishedQuizRecord:
     quiz: NativeQuiz
     version: int
     active: bool
+    content_kind: str = "lecture_quiz"
+    display_order: int = 0
+
+
+class PublishedQuizLibrarySection(StrEnum):
+    QUIZZES = "quizzes"
+    PRACTICE_QUESTIONS = "practice_questions"
+
+
+class PublishedQuizOrderDirection(StrEnum):
+    UP = "up"
+    DOWN = "down"
 
 
 @dataclass(frozen=True, slots=True)

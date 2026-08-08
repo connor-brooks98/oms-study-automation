@@ -20,23 +20,24 @@
     container.replaceChildren();
     if (payload.resolved && payload.preview_url) {
       const preview = documentRef.createElement("a");
-      preview.className = "button primary studio-preview-link";
+      preview.className = "button primary sh-btn sh-btn--primary studio-preview-link";
       preview.href = payload.preview_url;
       preview.textContent = "Preview quiz";
       container.append(preview);
     }
     if (!payload.requirements?.length) {
-      container.append(textNode(
-        documentRef,
-        "p",
-        "studio-image-empty",
-        "No image requirements remain.",
-      ));
+      const empty = documentRef.createElement("section");
+      empty.className = "sh-empty studio-image-empty";
+      empty.append(
+        textNode(documentRef, "h2", "sh-empty__title", "No image requirements remain."),
+        textNode(documentRef, "p", "sh-empty__text", "This quiz is ready for preview."),
+      );
+      container.append(empty);
       return;
     }
     payload.requirements.forEach((requirement) => {
       const card = documentRef.createElement("article");
-      card.className = "card studio-image-card";
+      card.className = "sh-card studio-image-card";
       card.dataset.imageKey = requirement.image_key;
       card.append(
         textNode(documentRef, "h2", "", requirement.image_key),
@@ -48,21 +49,32 @@
       const status = requirement.uploaded
         ? `Uploaded ${requirement.original_filename} · ${requirement.width} × ${requirement.height}`
         : "Image still needed";
-      card.append(textNode(documentRef, "p", "studio-image-upload-status", status));
+      card.append(textNode(
+        documentRef,
+        "p",
+        `studio-image-upload-status sh-pill ${requirement.uploaded ? "sh-pill--ok" : "sh-pill--warn"}`,
+        status,
+      ));
 
       const form = documentRef.createElement("form");
       form.dataset.uploadKey = requirement.image_key;
       form.className = "studio-image-upload";
+      const fileLabel = documentRef.createElement("label");
+      fileLabel.className = "sh-file";
+      const fileButton = textNode(documentRef, "span", "sh-btn sh-btn--secondary sh-file__btn", "Choose image");
       const input = documentRef.createElement("input");
       input.type = "file";
       input.name = "file";
+      input.className = "sh-input";
+      input.hidden = true;
       input.accept = "image/png,image/jpeg,image/webp";
       input.required = true;
+      fileLabel.append(fileButton, input);
       const upload = documentRef.createElement("button");
       upload.type = "submit";
-      upload.className = "button secondary compact";
+      upload.className = "button secondary compact sh-btn sh-btn--secondary";
       upload.textContent = requirement.uploaded ? "Replace image" : "Upload image";
-      form.append(input, upload);
+      form.append(fileLabel, upload);
       card.append(form);
 
       const questions = documentRef.createElement("ul");
@@ -70,7 +82,7 @@
       requirement.questions.forEach((question) => {
         const row = documentRef.createElement("li");
         row.dataset.questionId = question.id;
-        if (question.overridden) row.className = "is-overridden";
+        row.className = `sh-row studio-image-question-row${question.overridden ? " is-overridden" : ""}`;
         const copy = textNode(
           documentRef,
           "span",
@@ -79,7 +91,7 @@
         );
         const toggle = documentRef.createElement("button");
         toggle.type = "button";
-        toggle.className = "button secondary compact";
+        toggle.className = "button secondary compact sh-btn sh-btn--secondary";
         toggle.dataset.overrideQuestion = question.id;
         toggle.dataset.overridden = String(question.overridden);
         toggle.textContent = question.overridden ? "Require image" : "No image needed";
@@ -97,6 +109,24 @@
     } catch (_error) {
       return {};
     }
+  };
+
+  const renderLoadError = (documentRef, container, message, onRetry) => {
+    container.replaceChildren();
+    const wrap = documentRef.createElement("section");
+    wrap.className = "sh-empty studio-image-load-error";
+    wrap.append(
+      textNode(documentRef, "h2", "sh-empty__title", "Image review is unavailable"),
+      textNode(documentRef, "p", "sh-validation", message),
+    );
+    const retry = documentRef.createElement("button");
+    retry.type = "button";
+    retry.className = "button secondary compact sh-btn sh-btn--secondary";
+    retry.dataset.retryImageReview = "true";
+    retry.textContent = "Retry";
+    retry.addEventListener("click", onRetry);
+    wrap.append(retry);
+    container.append(wrap);
   };
 
   const initialize = (documentRef, fetchImpl = root.fetch.bind(root)) => {
@@ -126,6 +156,8 @@
       const body = new FormData();
       body.append("file", file);
       const token = csrf(documentRef);
+      const uploadButton = form.querySelector("button[type=submit]");
+      if (uploadButton) uploadButton.disabled = true;
       try {
         const response = await fetchImpl(
           `/studio/runs/${encodeURIComponent(runId)}/images/${encodeURIComponent(form.dataset.uploadKey)}`,
@@ -137,6 +169,7 @@
         await refresh();
       } catch (error) {
         message.textContent = error instanceof Error ? error.message : "Image could not be uploaded.";
+        if (uploadButton) uploadButton.disabled = false;
       }
     });
 
@@ -162,12 +195,17 @@
       }
     });
 
-    refresh().catch((error) => {
-      message.textContent = error instanceof Error ? error.message : "Image review could not be loaded.";
-    });
+    const loadInitial = () => {
+      refresh().catch((error) => {
+        const detail = error instanceof Error ? error.message : "Image review could not be loaded.";
+        message.textContent = detail;
+        renderLoadError(documentRef, container, detail, loadInitial);
+      });
+    };
+    loadInitial();
   };
 
-  const api = { initialize, renderReview };
+  const api = { initialize, renderReview, renderLoadError };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) {
     root.document.addEventListener(

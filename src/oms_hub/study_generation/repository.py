@@ -3,11 +3,12 @@ import secrets
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
 from oms_hub.files.atomic import sha256_file
@@ -39,7 +40,9 @@ from oms_hub.study_generation.domain import (
     NotebookSourceBinding,
     OutlineRecord,
     PromptKind,
+    PublishedQuizLibrarySection,
     PublishedQuizMediaRecord,
+    PublishedQuizOrderDirection,
     PublishedQuizRecord,
     QuizRecord,
     SourceKind,
@@ -49,6 +52,7 @@ from oms_hub.study_generation.native_quiz import (
     parse_native_quiz,
     serialize_native_quiz,
 )
+from oms_hub.study_generation.practice_domain import QuizContentKind, QuizWorkflowKind
 from oms_hub.study_generation.studio_domain import StudioRunStage, StudioRunState
 
 _ACTIVE_STATES = {
@@ -56,6 +60,13 @@ _ACTIVE_STATES = {
     GenerationState.RUNNING.value,
     GenerationState.PAUSED.value,
 }
+_ANKI_PROMPT_DIRECTORY_KEY = "anki_curation_prompt_directory"
+
+
+class DirectImportReviewer(Protocol):
+    def to_native_quiz_in_session(
+        self, session: Session, run_id: str, *, title: str
+    ) -> NativeQuiz: ...
 
 
 def _normalize(value: str) -> str:
@@ -63,8 +74,15 @@ def _normalize(value: str) -> str:
 
 
 class GenerationRepository:
-    def __init__(self, database: Database):
+    def __init__(
+        self,
+        database: Database,
+        accuracy_gate: object | None = None,
+        practice_review: DirectImportReviewer | None = None,
+    ):
         self.database = database
+        self.accuracy_gate = accuracy_gate
+        self.practice_review = practice_review
 
     def queue(self, lecture_id: int, kind: GenerationKind) -> GenerationJob:
         with self.database.session() as session:
@@ -116,6 +134,32 @@ class GenerationRepository:
     def prompt_path(self, kind: PromptKind) -> str | None:
         with self.database.session() as session:
             model = session.get(StudyPromptSettingModel, kind.value)
+            return model.path if model is not None and model.path else None
+
+    def set_anki_prompt_directory(self, path: str) -> None:
+        normalized = path.strip()
+        if not normalized:
+            raise ValueError("Anki prompt directory cannot be empty")
+        selected = Path(normalized)
+        if not selected.is_dir():
+            raise ValueError("Anki prompt directory is unavailable")
+        with self.database.session() as session:
+            model = session.get(StudyPromptSettingModel, _ANKI_PROMPT_DIRECTORY_KEY)
+            if model is None:
+                session.add(
+                    StudyPromptSettingModel(
+                        kind=_ANKI_PROMPT_DIRECTORY_KEY,
+                        path=str(selected),
+                    )
+                )
+            else:
+                model.path = str(selected)
+                model.last_sha256 = None
+                model.last_modified_at = None
+
+    def anki_prompt_directory(self) -> str | None:
+        with self.database.session() as session:
+            model = session.get(StudyPromptSettingModel, _ANKI_PROMPT_DIRECTORY_KEY)
             return model.path if model is not None and model.path else None
 
     def record_prompt_validation(
@@ -357,6 +401,7 @@ class GenerationRepository:
             "pdf_source_id",
             "transcript_source_id",
             "notebook_answer",
+            "gemini_quiz_id",
             "quiz_url",
             "prompt_path",
             "prompt_sha256",
@@ -582,6 +627,7 @@ class GenerationRepository:
         job_id: str,
         quiz: NativeQuiz,
     ) -> PublishedQuizRecord:
+        self._validate_accuracy(quiz)
         with self.database.session() as session:
             lecture = session.get(LectureModel, lecture_id)
             if lecture is None:
@@ -605,9 +651,11 @@ class GenerationRepository:
                     label_key=_normalize(quiz.title),
                     title=quiz.title,
                     payload_json=serialize_native_quiz(quiz),
+                    content_kind=QuizContentKind.LECTURE_QUIZ.value,
                     version=1,
                     active=True,
                 )
+                model.display_order = self._next_display_order(session, model)
                 session.add(model)
             elif model.job_id != job_id:
                 model.job_id = job_id
@@ -619,6 +667,7 @@ class GenerationRepository:
                 model.title = quiz.title
                 model.payload_json = serialize_native_quiz(quiz)
                 model.version += 1
+            model.content_kind = QuizContentKind.LECTURE_QUIZ.value
             session.flush()
             return self._published_quiz(model)
 
@@ -627,24 +676,105 @@ class GenerationRepository:
             model = session.get(PublishedQuizModel, token)
             return self._published_quiz(model) if model is not None and model.active else None
 
-    def published_quizzes(self) -> tuple[PublishedQuizRecord, ...]:
+    def published_quizzes(
+        self,
+        content_kinds: frozenset[QuizContentKind],
+    ) -> tuple[PublishedQuizRecord, ...]:
         with self.database.session() as session:
-            models = session.scalars(
+            statement = (
                 select(PublishedQuizModel)
-                .order_by(
-                    PublishedQuizModel.destination_subject_key,
-                    PublishedQuizModel.destination_exam_number,
-                    PublishedQuizModel.title,
-                )
                 .where(PublishedQuizModel.active.is_(True))
-            ).all()
+                .where(
+                    PublishedQuizModel.content_kind.in_(
+                        [content_kind.value for content_kind in content_kinds]
+                    )
+                )
+            )
+            models = sorted(
+                session.scalars(statement).all(),
+                key=lambda model: self._published_quiz_order_key(session, model),
+            )
             return tuple(self._published_quiz(model) for model in models)
+
+    def rename_published_quiz(self, token: str, title: str) -> PublishedQuizRecord:
+        """Update only a released quiz's display title and native payload title."""
+        cleaned_title = title.strip()
+        if not cleaned_title or len(cleaned_title) > 300:
+            raise ValueError("title must contain between 1 and 300 characters")
+        with self.database.session() as session:
+            model = self._active_published_quiz_in_session(session, token)
+            model.title = cleaned_title
+            model.payload_json = serialize_native_quiz(
+                replace(parse_native_quiz(model.payload_json), title=cleaned_title)
+            )
+            session.flush()
+            return self._published_quiz(model)
+
+    def move_published_quiz(
+        self,
+        token: str,
+        section: PublishedQuizLibrarySection,
+    ) -> PublishedQuizRecord:
+        """Move a released quiz between the two public library sections."""
+        with self.database.session() as session:
+            model = self._active_published_quiz_in_session(session, token)
+            source_scope = self._published_quiz_scope(session, model)
+            source_section = self._library_section(model)
+            self._normalize_scope_order(session, source_scope, source_section)
+
+            if section is source_section:
+                session.flush()
+                return self._published_quiz(model)
+
+            target_kind = self._content_kind_for_section(model, section)
+            model.content_kind = target_kind
+            self._normalize_scope_order(
+                session,
+                source_scope,
+                source_section,
+                exclude_token=model.token,
+            )
+            target_scope = self._published_quiz_scope(session, model)
+            destination = self._normalize_scope_order(
+                session,
+                target_scope,
+                section,
+                exclude_token=model.token,
+            )
+            model.display_order = len(destination) + 1
+            session.flush()
+            return self._published_quiz(model)
+
+    def reorder_published_quiz(
+        self,
+        token: str,
+        direction: PublishedQuizOrderDirection,
+    ) -> PublishedQuizRecord:
+        """Move a released quiz one position inside its canonical library scope."""
+        with self.database.session() as session:
+            model = self._active_published_quiz_in_session(session, token)
+            ordered = self._normalize_scope_order(
+                session,
+                self._published_quiz_scope(session, model),
+                self._library_section(model),
+            )
+            index = next(index for index, row in enumerate(ordered) if row.token == token)
+            adjacent = index - 1 if direction is PublishedQuizOrderDirection.UP else index + 1
+            if 0 <= adjacent < len(ordered):
+                other = ordered[adjacent]
+                model.display_order, other.display_order = (
+                    other.display_order,
+                    model.display_order,
+                )
+            session.flush()
+            return self._published_quiz(model)
 
     def publish_studio_quiz(
         self,
         run_id: str,
         quiz: NativeQuiz,
     ) -> PublishedQuizRecord:
+        self._validate_accuracy(quiz)
         with self.database.session() as session:
             run = session.get(StudioRunModel, run_id)
             if run is None:
@@ -682,9 +812,11 @@ class GenerationRepository:
                     label_key=run.label_key,
                     title=quiz.title,
                     payload_json=serialize_native_quiz(quiz),
+                    content_kind=run.content_kind,
                     version=1,
                     active=True,
                 )
+                model.display_order = self._next_display_order(session, model)
                 session.add(model)
             else:
                 previous = session.get(StudioRunModel, run.supersedes_run_id)
@@ -698,6 +830,7 @@ class GenerationRepository:
                 model.label_key = run.label_key
                 model.title = quiz.title
                 model.payload_json = serialize_native_quiz(quiz)
+                model.content_kind = run.content_kind
                 model.version += 1
                 model.active = True
             session.flush()
@@ -719,6 +852,18 @@ class GenerationRepository:
                     and existing.studio_run_id == run_id
                 ):
                     return self._published_quiz(existing)
+            if run.workflow_kind == QuizWorkflowKind.DIRECT_IMPORT.value:
+                if run.state != StudioRunState.AWAITING_REVIEW.value:
+                    raise ValueError("imported quiz is not awaiting question review")
+                if self.practice_review is None:
+                    raise ValueError("imported question review is not configured")
+                quiz = self.practice_review.to_native_quiz_in_session(
+                    session,
+                    run.id,
+                    title=run.label,
+                )
+                self._validate_accuracy(quiz)
+                return self._publish_direct_import_in_session(session, run, quiz)
             if run.state != StudioRunState.AWAITING_IMAGES.value:
                 raise ValueError("Studio run is not awaiting image publication")
             if not run.draft_payload_json:
@@ -769,6 +914,7 @@ class GenerationRepository:
                     for question in draft.questions
                 ),
             )
+            self._validate_accuracy(quiz)
 
             model = None
             if run.supersedes_run_id:
@@ -805,9 +951,11 @@ class GenerationRepository:
                     label_key=run.label_key,
                     title=quiz.title,
                     payload_json=serialize_native_quiz(quiz),
+                    content_kind=run.content_kind,
                     version=1,
                     active=True,
                 )
+                model.display_order = self._next_display_order(session, model)
                 session.add(model)
                 session.flush()
             else:
@@ -822,6 +970,7 @@ class GenerationRepository:
                 model.label_key = run.label_key
                 model.title = quiz.title
                 model.payload_json = serialize_native_quiz(quiz)
+                model.content_kind = run.content_kind
                 model.version += 1
                 model.active = True
 
@@ -857,6 +1006,119 @@ class GenerationRepository:
             session.flush()
             return self._published_quiz(model)
 
+    def _publish_direct_import_in_session(
+        self,
+        session: Session,
+        run: StudioRunModel,
+        quiz: NativeQuiz,
+    ) -> PublishedQuizRecord:
+        requirements_by_key = {
+            item.image_key: item
+            for item in session.scalars(
+                select(StudioQuizImageRequirementModel).where(
+                    StudioQuizImageRequirementModel.run_id == run.id
+                )
+            ).all()
+        }
+        active_image_keys = tuple(
+            dict.fromkeys(
+                question.image_ref.key
+                for question in quiz.questions
+                if question.image_ref is not None
+            )
+        )
+        unresolved = [
+            key
+            for key in active_image_keys
+            if not self._stored_image_is_complete(requirements_by_key.get(key))
+        ]
+        if unresolved:
+            raise ValueError("quiz images are still required: " + ", ".join(unresolved))
+        model = None
+        if run.supersedes_run_id:
+            model = session.scalar(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id == run.supersedes_run_id
+                )
+            )
+        if model is None:
+            duplicate = session.scalar(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id.is_not(None),
+                    PublishedQuizModel.destination_subject_key == run.destination_subject_key,
+                    PublishedQuizModel.destination_exam_number == run.destination_exam_number,
+                    PublishedQuizModel.label_key == run.label_key,
+                    PublishedQuizModel.active.is_(True),
+                )
+            )
+            if duplicate is not None:
+                raise ValueError("a published Studio quiz already uses this label for that exam")
+            model = PublishedQuizModel(
+                token=secrets.token_hex(32),
+                lecture_id=None,
+                job_id=None,
+                studio_run_id=run.id,
+                destination_subject=run.destination_subject,
+                destination_subject_key=run.destination_subject_key,
+                destination_exam_number=run.destination_exam_number,
+                label=run.label,
+                label_key=run.label_key,
+                title=quiz.title,
+                payload_json=serialize_native_quiz(quiz),
+                content_kind=run.content_kind,
+                version=1,
+                active=True,
+            )
+            model.display_order = self._next_display_order(session, model)
+            session.add(model)
+        else:
+            previous = session.get(StudioRunModel, run.supersedes_run_id)
+            if previous is not None:
+                previous.published_token = None
+            model.studio_run_id = run.id
+            model.destination_subject = run.destination_subject
+            model.destination_subject_key = run.destination_subject_key
+            model.destination_exam_number = run.destination_exam_number
+            model.label = run.label
+            model.label_key = run.label_key
+            model.title = quiz.title
+            model.payload_json = serialize_native_quiz(quiz)
+            model.content_kind = run.content_kind
+            model.version += 1
+            model.active = True
+        session.flush()
+        session.execute(
+            delete(PublishedQuizMediaModel).where(
+                PublishedQuizMediaModel.quiz_token == model.token
+            )
+        )
+        for image_key in active_image_keys:
+            requirement = requirements_by_key[image_key]
+            assert requirement.asset_path is not None
+            assert requirement.asset_sha256 is not None
+            assert requirement.media_type is not None
+            assert requirement.width is not None
+            assert requirement.height is not None
+            session.add(
+                PublishedQuizMediaModel(
+                    quiz_token=model.token,
+                    image_key=image_key,
+                    path=requirement.asset_path,
+                    sha256=requirement.asset_sha256,
+                    media_type=requirement.media_type,
+                    width=requirement.width,
+                    height=requirement.height,
+                    alt_text=requirement.description,
+                )
+            )
+        run.state = StudioRunState.COMPLETE.value
+        run.stage = StudioRunStage.COMPLETE.value
+        run.published_token = model.token
+        run.error = None
+        run.next_attempt_at = None
+        session.flush()
+        return self._published_quiz(model)
+
     def published_quiz_media(
         self,
         token: str,
@@ -889,6 +1151,10 @@ class GenerationRepository:
             )
             return None if model is None else self._published_quiz_media(model)
 
+    def unpublish_quiz(self, token: str) -> str:
+        with self.database.session() as session:
+            return self._unpublish_quiz_in_session(session, token)
+
     def unpublish_studio_quiz(self, run_id: str) -> str:
         with self.database.session() as session:
             model = session.scalar(
@@ -899,11 +1165,126 @@ class GenerationRepository:
             )
             if model is None:
                 raise KeyError(run_id)
-            model.active = False
-            run = session.get(StudioRunModel, run_id)
-            if run is not None:
+            return self._unpublish_quiz_in_session(session, model.token)
+
+    @staticmethod
+    def _unpublish_quiz_in_session(session: Session, token: str) -> str:
+        model = session.get(PublishedQuizModel, token)
+        if model is None or not model.active:
+            raise KeyError(token)
+        model.active = False
+        if model.studio_run_id is not None:
+            run = session.get(StudioRunModel, model.studio_run_id)
+            if run is not None and run.published_token == token:
                 run.published_token = None
-            return model.token
+        return model.token
+
+    @staticmethod
+    def _active_published_quiz_in_session(
+        session: Session,
+        token: str,
+    ) -> PublishedQuizModel:
+        model = session.get(PublishedQuizModel, token)
+        if model is None or not model.active:
+            raise KeyError(token)
+        return model
+
+    @staticmethod
+    def _library_section(
+        model: PublishedQuizModel,
+    ) -> PublishedQuizLibrarySection:
+        if model.content_kind == QuizContentKind.PRACTICE_QUESTIONS.value:
+            return PublishedQuizLibrarySection.PRACTICE_QUESTIONS
+        return PublishedQuizLibrarySection.QUIZZES
+
+    @staticmethod
+    def _content_kind_for_section(
+        model: PublishedQuizModel,
+        section: PublishedQuizLibrarySection,
+    ) -> str:
+        if section is PublishedQuizLibrarySection.PRACTICE_QUESTIONS:
+            return QuizContentKind.PRACTICE_QUESTIONS.value
+        if model.lecture_id is not None:
+            return QuizContentKind.LECTURE_QUIZ.value
+        return QuizContentKind.EXAM_REVIEW.value
+
+    @staticmethod
+    def _published_quiz_scope(
+        session: Session,
+        model: PublishedQuizModel,
+    ) -> tuple[str, int]:
+        if model.lecture_id is not None:
+            lecture = session.get(LectureModel, model.lecture_id)
+            if lecture is not None:
+                return (_normalize(lecture.subject), lecture.exam_number)
+        return (
+            _normalize(model.destination_subject_key or model.destination_subject),
+            model.destination_exam_number,
+        )
+
+    @classmethod
+    def _published_quiz_order_key(
+        cls,
+        session: Session,
+        model: PublishedQuizModel,
+    ) -> tuple[str, int, int, int, int, str, str]:
+        scope = cls._published_quiz_scope(session, model)
+        lecture = (
+            session.get(LectureModel, model.lecture_id)
+            if model.lecture_id is not None
+            else None
+        )
+        return (
+            scope[0],
+            scope[1],
+            model.display_order,
+            0 if lecture is not None else 1,
+            lecture.lecture_number if lecture is not None else 0,
+            model.title.casefold(),
+            model.token,
+        )
+
+    @classmethod
+    def _normalize_scope_order(
+        cls,
+        session: Session,
+        scope: tuple[str, int],
+        section: PublishedQuizLibrarySection,
+        *,
+        exclude_token: str | None = None,
+    ) -> list[PublishedQuizModel]:
+        models = session.scalars(
+            select(PublishedQuizModel).where(PublishedQuizModel.active.is_(True))
+        ).all()
+        scoped = [
+            model
+            for model in models
+            if model.token != exclude_token
+            and cls._published_quiz_scope(session, model) == scope
+            and cls._library_section(model) is section
+        ]
+        scoped.sort(key=lambda model: cls._published_quiz_order_key(session, model))
+        for index, model in enumerate(scoped, start=1):
+            model.display_order = index
+        return scoped
+
+    @classmethod
+    def _next_display_order(
+        cls,
+        session: Session,
+        model: PublishedQuizModel,
+    ) -> int:
+        scope = cls._published_quiz_scope(session, model)
+        section = cls._library_section(model)
+        existing = [
+            row.display_order
+            for row in session.scalars(
+                select(PublishedQuizModel).where(PublishedQuizModel.active.is_(True))
+            ).all()
+            if cls._published_quiz_scope(session, row) == scope
+            and cls._library_section(row) is section
+        ]
+        return max(existing, default=0) + 1
 
     def course_document(self, subject_key: str) -> CourseQuizDocumentModel | None:
         with self.database.session() as session:
@@ -997,6 +1378,13 @@ class GenerationRepository:
             session.flush()
             return self._job(model)
 
+    def _validate_accuracy(self, quiz: NativeQuiz) -> None:
+        gate = self.accuracy_gate
+        if gate is not None:
+            validate = getattr(gate, "validate", None)
+            if callable(validate):
+                validate(quiz)
+
     @staticmethod
     def _job(model: GenerationJobModel) -> GenerationJob:
         return GenerationJob(
@@ -1015,6 +1403,7 @@ class GenerationRepository:
             pdf_source_id=model.pdf_source_id,
             transcript_source_id=model.transcript_source_id,
             notebook_answer=model.notebook_answer,
+            gemini_quiz_id=model.gemini_quiz_id,
             supersedes_job_id=model.supersedes_job_id,
             quiz_url=model.quiz_url,
         )
@@ -1056,6 +1445,8 @@ class GenerationRepository:
             quiz,
             model.version,
             model.active,
+            model.content_kind,
+            model.display_order,
         )
 
     @staticmethod
