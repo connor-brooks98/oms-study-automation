@@ -19,12 +19,20 @@ from oms_hub.anki.card_centric_contracts import (
     CardRecord,
     ClassifierResult,
     ClassifierTelemetry,
+    DedupeAdvisoryCandidate,
     FastCardClassification,
     FastClassificationResult,
+    GeneratedCardResolution,
+    SemanticDedupeReview,
     SemanticPreFilterResult,
     TagScopeResult,
 )
-from oms_hub.anki.correction_contracts import CanonicalJsonObject, PinnedLectureMetadata
+from oms_hub.anki.correction_contracts import (
+    CanonicalJsonObject,
+    DuplicateIdentity,
+    PinnedLectureMetadata,
+)
+from oms_hub.anki.dedupe import SemanticDedupeIntegrityError
 from oms_hub.anki.domain import (
     Candidate,
     CurationStage,
@@ -39,16 +47,19 @@ from oms_hub.anki.normalize import NormalizedNote
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
 from oms_hub.anki.prompts import AnkiPromptLibrary, StaticPromptSynchronizer
 from oms_hub.anki.reconciliation import AssertionFinding, ReconciliationReport
-from oms_hub.anki.semantic.domain import SemanticHit
+from oms_hub.anki.semantic.domain import FloatMatrix, InputType, SemanticHit
+from oms_hub.anki.semantic.voyage import VoyageEmbeddingError
 from oms_hub.anki.sources import SourcePassage
 from oms_hub.anki.stages import (
     CurationServicesRunner,
+    _card_dedupe_reviews,
     _card_residual_targets,
     _effective_v2_fallback_note_ids,
     _pinned_card_v2_prompt,
     _priority_candidate_groups,
     _v2_card_candidates,
     _v2_reconciliation_classifications,
+    record_exhausted_semantic_dedupe_review,
 )
 from oms_hub.anki.v2_contracts import (
     AuditVerdictV2,
@@ -62,6 +73,262 @@ from oms_hub.llm.domain import DiagnosticSource, GeneratedText, LLMRequestError,
 from oms_hub.llm.structured import StructuredJSONResult, StructuredOutputError
 
 _CARD_GAP_FILL_PASSAGE_ID = "SLD:12:0003:P:b6a235c8f012693e"
+
+
+class _DedupeEmbedder:
+    def __init__(self, result: object) -> None:
+        self.result = result
+
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        input_type: InputType,
+    ) -> FloatMatrix:
+        assert input_type == "document"
+        return self.result  # type: ignore[return-value]
+
+
+class _FailingDedupeEmbedder:
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        input_type: InputType,
+    ) -> FloatMatrix:
+        raise VoyageEmbeddingError("retryable provider outage")
+
+
+def _dedupe_stage_fixture(
+    embedder: object,
+    *,
+    existing: tuple[CardClassification, ...] = (),
+    cards: tuple[CardRecord, ...] = (),
+) -> tuple[CurationServicesRunner, SimpleNamespace, str]:
+    passage = SourcePassage.create(
+        revision_id=7,
+        lecture_id=12,
+        artifact_id="slides-7",
+        source_kind=SourceKind.SLIDE,
+        locator="slide:8",
+        text="Dedupe fixture evidence.",
+        slide_number=8,
+    )
+    source = build_source_index(
+        (passage,), snapshot_id="dedupe-snapshot", source_revision_hashes={7: "d" * 64}
+    )
+    telemetry = ClassifierTelemetry(
+        batch_count=0,
+        cache_prefix_sha256="e" * 64,
+        cache_mode="ordinary_prefix",
+        provider="openai",
+        model="fixture",
+        request_ids=(),
+        batches=(),
+    )
+    runner = CurationServicesRunner.__new__(CurationServicesRunner)
+    runner.embedder = embedder
+    context = SimpleNamespace(
+        job=SimpleNamespace(
+            resolved_model_config=SimpleNamespace(
+                gap_fill_s7=SimpleNamespace(provider="openai", model="fixture")
+            ),
+            gap_prompt_version="gap-v2",
+        ),
+        prior_payloads={
+            CurationStage.SOURCE_INDEX: {
+                "source_index": source.model_dump(mode="json"),
+                "cards": [card.model_dump(mode="json") for card in cards],
+            },
+            CurationStage.CARD_CLASSIFY: {
+                "classifier": ClassifierResult(
+                    results=existing,
+                    telemetry=telemetry,
+                ).model_dump(mode="json")
+            },
+            CurationStage.CARD_RESIDUAL: {},
+            CurationStage.CARD_FAST_CLASSIFY: {
+                "fast_classifier": FastClassificationResult(results=()).model_dump(mode="json"),
+                "fallback_note_ids": [],
+            },
+        },
+    )
+    return runner, context, source.passages[0].passage_id
+
+
+def _generated_dedupe_row(
+    card_id: str,
+    fact_id: str,
+    text: str,
+    passage_id: str,
+) -> GeneratedCardResolution:
+    return GeneratedCardResolution(
+        card_id=card_id,
+        concept_id="C01",
+        fact_id=fact_id,
+        text=text,
+        source_passage_ids=(passage_id,),
+        evidence_ids=("a" * 64,),
+    )
+
+
+def _set_dedupe_existing(context: SimpleNamespace, note_id: int, passage_id: str) -> None:
+    context.prior_payloads[CurationStage.CARD_CLASSIFY]["classifier"]["results"] = [
+        CardClassification(
+            note_id=note_id,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="eligible comparison",
+            covered_concept_ids=("C01",),
+            supporting_passage_ids=(passage_id,),
+        ).model_dump(mode="json")
+    ]
+
+
+def test_card_dedupe_v2_preserves_existing_duplicate_identity() -> None:
+    note = CardRecord(
+        note_id=41,
+        content_sha256="1" * 64,
+        text="{{c1::Alpha}} beta",
+        extra="",
+        tags=(),
+        deck_names=("AnKing",),
+    )
+    runner, context, passage_id = _dedupe_stage_fixture(
+        _DedupeEmbedder([]),
+        cards=(note,),
+    )
+    _set_dedupe_existing(context, note.note_id, passage_id)
+
+    product = asyncio.run(
+        runner._card_dedupe_v2(
+            context,
+            {note.note_id: note},
+            (_generated_dedupe_row("G01", "C01-M1", "Alpha beta", passage_id),),
+        )
+    )
+
+    result = product.payload["resolutions"][0]
+    assert result["status"] == "duplicate_of_existing"
+    assert result["duplicate_of_existing_note_id"] == 41
+    assert result["duplicate_of_generated_card_id"] is None
+    assert product.payload["terminal_resolutions"] == [
+        {
+            "fact_id": "C01-M1",
+            "kind": "duplicate_of_existing",
+            "duplicate_of": {"existing_note_id": 41},
+        }
+    ]
+
+
+def test_card_dedupe_v2_preserves_generated_duplicate_card_identity() -> None:
+    runner, context, passage_id = _dedupe_stage_fixture(_DedupeEmbedder([]))
+    first = _generated_dedupe_row("G01", "C01-M1", "Alpha beta", passage_id)
+    second = _generated_dedupe_row("G02", "C01-M2", "{{c1::Alpha}} beta", passage_id)
+
+    product = asyncio.run(runner._card_dedupe_v2(context, {}, (first, second)))
+
+    result = product.payload["resolutions"][1]
+    assert result["status"] == "duplicate_of_existing"
+    assert result["duplicate_of_existing_note_id"] is None
+    assert result["duplicate_of_generated_card_id"] == "G01"
+    assert product.payload["terminal_resolutions"][1] == {
+        "fact_id": "C01-M2",
+        "kind": "duplicate_of_existing",
+        "duplicate_of": {"generated_card_id": "G01"},
+    }
+
+
+def test_card_dedupe_v2_propagates_provider_and_vector_integrity_failures() -> None:
+    existing_note = CardRecord(
+        note_id=41,
+        content_sha256="1" * 64,
+        text="Gamma delta",
+        extra="",
+        tags=(),
+        deck_names=("AnKing",),
+    )
+    failing_runner, failing_context, passage_id = _dedupe_stage_fixture(
+        _FailingDedupeEmbedder(),
+        cards=(existing_note,),
+    )
+    _set_dedupe_existing(failing_context, existing_note.note_id, passage_id)
+    generated = (_generated_dedupe_row("G01", "C01-M1", "Alpha beta", passage_id),)
+    with pytest.raises(VoyageEmbeddingError, match="retryable provider outage"):
+        asyncio.run(failing_runner._card_dedupe_v2(failing_context, {41: existing_note}, generated))
+
+    invalid_runner, invalid_context, passage_id = _dedupe_stage_fixture(
+        _DedupeEmbedder([[1.0, 0.0], [1.0]]),
+        cards=(existing_note,),
+    )
+    _set_dedupe_existing(invalid_context, existing_note.note_id, passage_id)
+    with pytest.raises(SemanticDedupeIntegrityError, match="numeric rectangular matrix"):
+        asyncio.run(
+            invalid_runner._card_dedupe_v2(
+                invalid_context,
+                {41: existing_note},
+                (_generated_dedupe_row("G01", "C01-M1", "Alpha beta", passage_id),),
+            )
+        )
+
+
+def test_exhausted_semantic_dedupe_review_is_transportable_to_selection() -> None:
+    runner, context, passage_id = _dedupe_stage_fixture(_DedupeEmbedder([]))
+    generated = _generated_dedupe_row("G01", "C01-M1", "Alpha beta", passage_id)
+    review = SemanticDedupeReview(
+        card_id="G01",
+        fact_id="C01-M1",
+        lexical_candidates=(
+            DedupeAdvisoryCandidate(
+                card_id="G01",
+                fact_id="C01-M1",
+                identity=DuplicateIdentity(existing_note_id=41),
+                lexical_score=0.5,
+            ),
+        ),
+    )
+    payload = record_exhausted_semantic_dedupe_review(
+        {
+            "resolutions": [generated.model_dump(mode="json")],
+            "semantic_dedupe_reviews": [],
+        },
+        review,
+    )
+    context.prior_payloads[CurationStage.DEDUPE] = payload
+    context.job.pipeline_contract_version = PipelineContractVersion.CARD_CENTRIC_V2
+    context.prior_payloads[CurationStage.CARD_TAG_SCOPE] = {
+        "scope": TagScopeResult(
+            snapshot_id="dedupe-snapshot",
+            filters_sha256="f" * 64,
+            scoped_note_ids=(),
+            unscoped_note_ids=(),
+        ).model_dump(mode="json")
+    }
+    context.prior_payloads[CurationStage.CARD_LEDGER] = {
+        "ledger": CardConceptLedger(
+            lecture_entity_count=1,
+            concepts=(
+                CardConcept(
+                    concept_id="C01",
+                    canonical_statement="Alpha beta is a fixture fact.",
+                    primary_entity="Alpha",
+                    depth="deep",
+                    emphasis_flag=False,
+                    importance="high",
+                ),
+            ),
+        ).model_dump(mode="json")
+    }
+
+    assert _card_dedupe_reviews(context) == (review,)
+    assert payload["semantic_dedupe_reviews"] == [review.model_dump(mode="json")]
+    assert payload["terminal_resolutions"] == [
+        {"fact_id": "C01-M1", "kind": "generated", "generated_card_ids": ["G01"]}
+    ]
+    selection = asyncio.run(runner._card_selection(context))
+    assert selection.payload["semantic_review_required_card_ids"] == ["G01"]
+    assert selection.payload["selected_generated_card_ids"] == []
+    assert selection.payload["semantic_dedupe_reviews"] == [review.model_dump(mode="json")]
 
 
 class ReadyRuntime:

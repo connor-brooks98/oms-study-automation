@@ -90,10 +90,12 @@ def _note(note_id: int, text: str) -> NormalizedNote:
         (np.asarray([[1.0, 0.0]], dtype=np.float32), "wrong row count"),
         (np.asarray([[1.0, 0.0], [np.nan, 1.0]], dtype=np.float32), "finite"),
         (np.asarray([[1.0, 0.0], [0.0, 0.0]], dtype=np.float32), "zero vectors"),
+        ([[1.0, 0.0], [1.0]], "numeric rectangular matrix"),
+        ([[1.0, "not-a-number"], [1.0, 0.0]], "numeric rectangular matrix"),
     ],
 )
 def test_invalid_semantic_vectors_are_explicit_integrity_failures(
-    vectors: np.ndarray,
+    vectors: object,
     message: str,
 ) -> None:
     async def scenario() -> None:

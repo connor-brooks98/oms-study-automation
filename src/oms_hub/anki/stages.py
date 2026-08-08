@@ -31,6 +31,7 @@ from oms_hub.anki.card_centric_contracts import (
     FastCardClassification,
     FastClassificationResult,
     GeneratedCardResolution,
+    SemanticDedupeReview,
     SemanticPreFilterResult,
     SnapshotCensus,
     TagScopeResult,
@@ -99,6 +100,7 @@ from oms_hub.anki.prompts import (
     StaticPromptSynchronizer,
 )
 from oms_hub.anki.reconciliation import (
+    AssertionFinding,
     AuditResolution,
     CardCentricReconciliationInput,
     ConceptResolution,
@@ -1181,22 +1183,30 @@ class CurationServicesRunner:
         ledger = _card_ledger(context)
         classifications = _all_card_classifications(context)
         generated = _card_deduped(context)
+        semantic_dedupe_reviews = _card_dedupe_reviews(context)
+        _validate_semantic_dedupe_reviews(semantic_dedupe_reviews, generated)
         is_v2 = context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
         fast, fallback_ids = _card_fast_classifier(context) if is_v2 else (None, ())
         if is_v2:
             assert fast is not None
             fallback_ids = _effective_v2_fallback_note_ids(fallback_ids, classifications)
-            selected, excluded, generated_ids = select_high_yield_v2(
+            selection_result = select_high_yield_v2(
                 classifications,
                 fast_classifications=fast.results,
                 fast_fallback_note_ids=fallback_ids,
                 ledger=ledger,
                 source_index=source,
                 generated_cards=generated,
+                semantic_review_required_card_ids=tuple(
+                    review.card_id for review in semantic_dedupe_reviews
+                ),
                 target=65,
                 cap=70,
                 minimum=60,
             )
+            selected = selection_result.selected_existing_note_ids
+            excluded = selection_result.excluded_existing_note_ids
+            generated_ids = selection_result.selected_generated_card_ids
         else:
             selected, excluded, generated_ids = select_high_yield(
                 classifications,
@@ -1206,24 +1216,18 @@ class CurationServicesRunner:
                     item.card_id for item in generated if item.status == "generated"
                 ],
             )
-        mandatory_note_ids = _mandatory_card_note_ids(
-            classifications,
-            fast.results if fast is not None else (),
-            ledger,
-            source,
-            v2=is_v2,
-        )
-        mandatory_generated_card_ids = tuple(
-            item.card_id
-            for item in generated
-            if is_v2
-            and item.status == "generated"
-            and any(
-                concept.concept_id == item.concept_id
-                and (concept.importance == "high" or concept.emphasis_flag)
-                for concept in ledger.concepts
+        if is_v2:
+            mandatory_note_ids = selection_result.mandatory_note_ids
+            mandatory_generated_card_ids = selection_result.mandatory_generated_card_ids
+        else:
+            mandatory_note_ids = _mandatory_card_note_ids(
+                classifications,
+                fast.results if fast is not None else (),
+                ledger,
+                source,
+                v2=False,
             )
-        )
+            mandatory_generated_card_ids = ()
         selected_set = set(selected)
         source_by_id = {passage.passage_id: passage for passage in source.passages}
         candidate_rows = (
@@ -1304,9 +1308,10 @@ class CurationServicesRunner:
             for item in generated
             if item.status == "generated"
         )
-        return StageProduct(
-            kind="card_centric_selection",
-            payload={
+        if is_v2:
+            selection_payload = selection_result.model_dump(mode="json")
+        else:
+            selection_payload = {
                 "selected_existing_note_ids": list(selected),
                 "excluded_existing_note_ids": list(excluded),
                 "selected_generated_card_ids": list(generated_ids),
@@ -1315,10 +1320,15 @@ class CurationServicesRunner:
                 "minimum_target": 60,
                 "mandatory_note_ids": list(mandatory_note_ids),
                 "mandatory_generated_card_ids": list(mandatory_generated_card_ids),
-                # Review acknowledgements are issued only after the reviewer has
-                # saved the exact selection at a concrete review revision.
                 "overflow_acknowledgement": None,
-            },
+            }
+        selection_payload["semantic_dedupe_reviews"] = [
+            review.model_dump(mode="json") for review in semantic_dedupe_reviews
+        ]
+        selection_payload["terminal_resolutions"] = _dedupe_terminal_resolutions(generated)
+        return StageProduct(
+            kind="card_centric_selection",
+            payload=selection_payload,
             candidates=candidate_rows,
             gap_cards=gap_cards,
         )
@@ -1981,7 +1991,7 @@ class CurationServicesRunner:
         )
         resolved: list[GeneratedCardResolution] = []
         accepted: list[GapCardProposal] = []
-        accepted_ids: dict[str, str] = {}
+        accepted_ids: set[str] = set()
         for item in generated:
             if item.status != "generated":
                 resolved.append(item)
@@ -1991,7 +2001,7 @@ class CurationServicesRunner:
             if outcome.disposition == "unique":
                 resolved.append(item)
                 accepted.append(proposal)
-                accepted_ids[f"proposal:{proposal.concept_id}"] = item.card_id
+                accepted_ids.add(f"proposal:{item.card_id}")
                 continue
             nearest = outcome.nearest_matches[0].identifier if outcome.nearest_matches else None
             update: dict[str, Any] = {
@@ -2008,13 +2018,17 @@ class CurationServicesRunner:
                         "semantic dedupe returned an invalid note identity"
                     ) from exc
             elif nearest is not None and nearest in accepted_ids:
-                update["duplicate_of_generated_card_id"] = accepted_ids[nearest]
+                update["duplicate_of_generated_card_id"] = nearest.removeprefix("proposal:")
             else:
                 raise PinnedInputChanged("semantic dedupe returned an unknown identity")
             resolved.append(item.model_copy(update=update))
         return StageProduct(
             kind="card_centric_dedupe",
-            payload={"resolutions": [item.model_dump(mode="json") for item in resolved]},
+            payload={
+                "resolutions": [item.model_dump(mode="json") for item in resolved],
+                "semantic_dedupe_reviews": [],
+                "terminal_resolutions": _dedupe_terminal_resolutions(resolved),
+            },
         )
 
     async def _finalize_outcomes(
@@ -2423,6 +2437,8 @@ class CurationServicesRunner:
         coverage = _merged_card_coverage(context)
         classifications = _all_card_classifications(context)
         generated = _card_deduped(context)
+        semantic_dedupe_reviews = _card_dedupe_reviews(context)
+        _validate_semantic_dedupe_reviews(semantic_dedupe_reviews, generated)
         selection = _payload(context, CurationStage.CARD_SELECTION)
         scope = TagScopeResult.model_validate(
             _payload(context, CurationStage.CARD_TAG_SCOPE)["scope"]
@@ -2442,6 +2458,9 @@ class CurationServicesRunner:
         )
         selected_nids = tuple(selection["selected_existing_note_ids"])
         selected_generated_card_ids = tuple(selection["selected_generated_card_ids"])
+        selected_review_ids = tuple(selection.get("semantic_review_required_card_ids", []))
+        if set(selected_review_ids) != {review.card_id for review in semantic_dedupe_reviews}:
+            raise PinnedInputChanged("selection semantic review IDs do not match dedupe reviews")
         existing_coverage_by_nid = {
             item.note_id: item.covered_concept_ids
             for item in classifications
@@ -2497,11 +2516,14 @@ class CurationServicesRunner:
                 for item in generated
                 if item.status == "generated"
             ),
+            # A duplicate is not an unresolved fact. Until P3-D's duplicate
+            # coverage reconciliation has its selected target, A1/A2 must
+            # fail closed rather than misrepresent it as an intentional gap.
             canonical_unresolved_fact_ids=tuple(
-                item.fact_id for item in generated if item.status != "generated"
+                item.fact_id for item in generated if item.status == "unresolved"
             ),
             unresolved_fact_ids=tuple(
-                item.fact_id for item in generated if item.status != "generated"
+                item.fact_id for item in generated if item.status == "unresolved"
             ),
             expected_scoped_nids=scope.scoped_note_ids,
             classifications=(
@@ -2591,6 +2613,22 @@ class CurationServicesRunner:
             update={"coverage": selected_card_centric_coverage(initial_snapshot)}
         )
         report = reconcile_card_centric(snapshot)
+        if semantic_dedupe_reviews:
+            report = report.model_copy(
+                update={
+                    "failed": (
+                        *report.failed,
+                        AssertionFinding(
+                            assertion_id="S8",
+                            message=(
+                                "Semantic dedupe retries are exhausted; affected generated cards "
+                                "require manual review before envelope issuance"
+                            ),
+                        ),
+                    ),
+                    "can_render_envelope": False,
+                }
+            )
         return StageProduct(
             kind="card_centric_reconciliation",
             payload={
@@ -2598,6 +2636,10 @@ class CurationServicesRunner:
                 **report.model_dump(mode="json"),
                 "selection": selection,
                 "snapshot": snapshot.model_dump(mode="json"),
+                "semantic_dedupe_reviews": [
+                    review.model_dump(mode="json") for review in semantic_dedupe_reviews
+                ],
+                "terminal_resolutions": _dedupe_terminal_resolutions(generated),
             },
             blocking_error=_card_reconciliation_error(report),
         )
@@ -2988,6 +3030,102 @@ def _card_deduped(context: StageContext) -> tuple[GeneratedCardResolution, ...]:
         raise PinnedInputChanged("card-centric dedupe artifact is malformed") from exc
 
 
+def _card_dedupe_reviews(context: StageContext) -> tuple[SemanticDedupeReview, ...]:
+    raw = _payload(context, CurationStage.DEDUPE).get("semantic_dedupe_reviews", [])
+    if not isinstance(raw, list):
+        raise PinnedInputChanged("card-centric semantic dedupe reviews are malformed")
+    try:
+        reviews = tuple(SemanticDedupeReview.model_validate(value) for value in raw)
+    except (TypeError, ValueError) as exc:
+        raise PinnedInputChanged("card-centric semantic dedupe reviews are malformed") from exc
+    if len({review.card_id for review in reviews}) != len(reviews):
+        raise PinnedInputChanged("card-centric semantic dedupe reviews repeat a card")
+    return tuple(sorted(reviews, key=lambda review: review.card_id))
+
+
+def _validate_semantic_dedupe_reviews(
+    reviews: Sequence[SemanticDedupeReview],
+    generated: Sequence[GeneratedCardResolution],
+) -> None:
+    generated_by_id = {item.card_id: item for item in generated}
+    for review in reviews:
+        item = generated_by_id.get(review.card_id)
+        if item is None or item.status != "generated" or item.fact_id != review.fact_id:
+            raise PinnedInputChanged("semantic dedupe review does not match a generated card")
+
+
+def _dedupe_terminal_resolutions(
+    generated: Sequence[GeneratedCardResolution],
+) -> list[dict[str, Any]]:
+    """Persist only the three frozen terminal facts with exact duplicate links."""
+    resolutions: list[dict[str, Any]] = []
+    for item in generated:
+        if item.status == "generated":
+            resolutions.append(
+                {
+                    "fact_id": item.fact_id,
+                    "kind": "generated",
+                    "generated_card_ids": [item.card_id],
+                }
+            )
+        elif item.status == "unresolved":
+            resolutions.append(
+                {
+                    "fact_id": item.fact_id,
+                    "kind": "unresolved",
+                    "unresolved_reason": item.reason,
+                }
+            )
+        else:
+            duplicate_of: dict[str, Any]
+            if item.duplicate_of_existing_note_id is not None:
+                duplicate_of = {"existing_note_id": item.duplicate_of_existing_note_id}
+            else:
+                duplicate_of = {"generated_card_id": item.duplicate_of_generated_card_id}
+            resolutions.append(
+                {
+                    "fact_id": item.fact_id,
+                    "kind": "duplicate_of_existing",
+                    "duplicate_of": duplicate_of,
+                }
+            )
+    return resolutions
+
+
+def record_exhausted_semantic_dedupe_review(
+    dedupe_payload: Mapping[str, Any],
+    review: SemanticDedupeReview,
+) -> dict[str, Any]:
+    """P1/I0 hook: immutably append one post-retry semantic review record.
+
+    P1 invokes this only after the worker exhausts retries for a propagated
+    semantic-provider failure. It must first create ``review`` through the
+    dedupe service's lexical advisory adapter; normal S8 classification never
+    calls this hook or catches that provider failure.
+    """
+    raw_resolutions = dedupe_payload.get("resolutions", [])
+    if not isinstance(raw_resolutions, list):
+        raise PinnedInputChanged("card-centric dedupe artifact is malformed")
+    try:
+        generated = tuple(
+            GeneratedCardResolution.model_validate(value) for value in raw_resolutions
+        )
+        existing = tuple(
+            SemanticDedupeReview.model_validate(value)
+            for value in dedupe_payload.get("semantic_dedupe_reviews", [])
+        )
+    except (TypeError, ValueError) as exc:
+        raise PinnedInputChanged("card-centric dedupe artifact is malformed") from exc
+    _validate_semantic_dedupe_reviews((review,), generated)
+    if any(item.card_id == review.card_id for item in existing):
+        raise PinnedInputChanged("semantic dedupe review already exists for this card")
+    payload = dict(dedupe_payload)
+    reviews = tuple(sorted((*existing, review), key=lambda item: item.card_id))
+    payload["semantic_dedupe_reviews"] = [item.model_dump(mode="json") for item in reviews]
+    payload["terminal_resolutions"] = _dedupe_terminal_resolutions(generated)
+    return payload
+
+
 def _combined_usage(label: str, usages: Sequence[StageUsage]) -> StageUsage | None:
     if not usages:
         return None
@@ -3029,12 +3167,10 @@ def _dedupe_gap_proposal(
     item: GeneratedCardResolution,
     context: StageContext,
 ) -> GapCardProposal:
-    """Give every generated row a unique dedupe identity without changing it."""
+    """Adapt a generated row with its stable card identity for semantic dedupe."""
     stage_model = context.job.resolved_model_config.gap_fill_s7
     return GapCardProposal(
-        # DeduplicationService uses this field for its in-batch identifier.  A
-        # card ID suffix avoids collisions for two split facts in one concept.
-        concept_id=f"{item.concept_id}::{item.card_id}",
+        concept_id=item.concept_id,
         note_type="Cloze",
         fields={"Text": item.text, "Extra": item.extra},
         source_refs=(),
