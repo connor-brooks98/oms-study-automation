@@ -21,8 +21,9 @@ def _process_id_for_window(
     win32process: Any,
     pywintypes: Any,
 ) -> int:
-    """Resolve an Office HWND after coercing COM's integer to a PyHANDLE."""
-    handle = pywintypes.HANDLE(int(window_handle))
+    """Resolve an Office HWND exposed as either a property or COM method."""
+    raw_handle = window_handle() if callable(window_handle) else window_handle
+    handle = pywintypes.HANDLE(int(raw_handle))
     try:
         _, process_id = win32process.GetWindowThreadProcessId(handle)
         return int(process_id)

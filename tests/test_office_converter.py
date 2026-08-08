@@ -70,6 +70,43 @@ def test_office_window_pid_coerces_integer_hwnd_to_pyhandle():
     assert detached == [987654]
 
 
+def test_office_window_pid_calls_method_style_hwnd_accessor():
+    calls: list[str] = []
+
+    class FakeHandle:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def Detach(self) -> int:
+            return self.value
+
+    class FakePyWinTypes:
+        @staticmethod
+        def HANDLE(value: int) -> object:
+            return FakeHandle(value)
+
+    class FakeWin32Process:
+        @staticmethod
+        def GetWindowThreadProcessId(handle: object) -> tuple[int, int]:
+            assert isinstance(handle, FakeHandle)
+            assert handle.value == 987654
+            return (123, 4242)
+
+    def get_hwnd() -> int:
+        calls.append("called")
+        return 987654
+
+    assert (
+        office_worker._process_id_for_window(
+            get_hwnd,
+            FakeWin32Process,
+            FakePyWinTypes,
+        )
+        == 4242
+    )
+    assert calls == ["called"]
+
+
 def test_office_window_pid_detaches_borrowed_hwnd_after_lookup_failure():
     detached: list[int] = []
 
