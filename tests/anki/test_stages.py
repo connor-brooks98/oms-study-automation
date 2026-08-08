@@ -768,7 +768,9 @@ def test_v2_residual_classifies_a_prefilter_fallback(monkeypatch) -> None:
                     {
                         "id": "card-centric-classifier",
                         "version": "2.0.0",
-                        "prompt_hash": hashlib.sha256(b"Pinned classifier instruction").hexdigest()[:12],
+                        "prompt_hash": hashlib.sha256(
+                            b"Pinned classifier instruction"
+                        ).hexdigest()[:12],
                         "content": "Pinned classifier instruction",
                         "metadata": {
                             "id": "card-centric-classifier",
