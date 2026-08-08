@@ -236,8 +236,7 @@ class SemanticIndexService:
             for row, note_id in enumerate(snapshot.manifest.note_ids)
             if note_id in requested_ids
         }
-        if requested_ids - set(rows):
-            raise SemanticCoverageError("pinned semantic snapshot lacks scoped notes")
+        unavailable_note_ids = tuple(sorted(requested_ids - set(rows)))
         normalized_terms = [
             tuple(normalize_semantic_text(term) for term in terms)
             for terms in concept_terms
@@ -268,6 +267,7 @@ class SemanticIndexService:
                 note_id: float(scores[index].max())
                 for index, note_id in enumerate(ordered_note_ids)
             },
+            unavailable_note_ids=unavailable_note_ids,
         )
 
     def _pinned_snapshot(self, expected_generation: str) -> SemanticSnapshot:
