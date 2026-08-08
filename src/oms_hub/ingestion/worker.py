@@ -9,6 +9,7 @@ from oms_hub.files.office import (
     OfficeTimeoutError,
     OfficeUnavailableError,
 )
+from oms_hub.files.promotion import PromotionRecoveryError
 from oms_hub.ingestion.domain import IngestionJob, UploadKind, UploadState
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.llm.domain import DiagnosticSource, LLMRequestError
@@ -107,6 +108,7 @@ class IngestionWorker:
                 OfficeConversionError,
                 OfficeTimeoutError,
                 OfficeUnavailableError,
+                PromotionRecoveryError,
             ),
         )
 

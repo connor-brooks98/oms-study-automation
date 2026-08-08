@@ -19,6 +19,7 @@ from oms_hub.document_processing.shadow import DocumentShadowEvaluator
 from oms_hub.domain import LectureKey
 from oms_hub.files.atomic import verified_atomic_copy
 from oms_hub.files.office import OfficeTimeoutError, OfficeUnavailableError
+from oms_hub.files.promotion import PromotionRecoveryError
 from oms_hub.ingestion.domain import StagedUpload, UploadKind, UploadState
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.ingestion.worker import IngestionWorker
@@ -221,6 +222,41 @@ def test_exhausted_office_retries_retire_incomplete_revision(
     assert pipeline.repository.require_item("manual-retry").state is UploadState.COMPLETE
 
 
+def test_exhausted_failure_retires_revision_with_corrupt_immutable_pdf(
+    tmp_path: Path,
+) -> None:
+    pipeline, item_id = _slide_pipeline(tmp_path)
+    pipeline.process(item_id)
+    replacement_payload = b"replacement slide fixture"
+    replacement_staged = tmp_path / "replacement.pptx"
+    replacement_staged.write_bytes(replacement_payload)
+    replacement_batch = pipeline.repository.create_batch(UploadKind.SLIDES)
+    pipeline.repository.add_item(
+        UploadKind.SLIDES,
+        StagedUpload(
+            batch_id=replacement_batch,
+            item_id="replacement",
+            path=replacement_staged,
+            sha256=hashlib.sha256(replacement_payload).hexdigest(),
+            size_bytes=len(replacement_payload),
+            original_filename="replacement.pptx",
+        ),
+    )
+    lecture_id = pipeline.repository.require_item(item_id).lecture_id
+    assert lecture_id is not None
+    pipeline.repository.set_manual_assignment("replacement", lecture_id)
+    proposed = pipeline.process("replacement")
+    assert proposed.state == "proposed"
+    assert proposed.immutable_derived_path is not None
+    proposed.immutable_derived_path.write_bytes(b"corrupt PDF")
+
+    pipeline.repository.fail_incomplete_study_revision("replacement")
+
+    retired = pipeline.repository.get_study_revision(proposed.id)
+    assert retired.state == "failed"
+    assert retired not in pipeline.repository.list_proposed_revisions()
+
+
 def test_exact_current_slide_repairs_filed_artifacts_without_state_transition(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -311,6 +347,7 @@ def test_interrupted_group_promotion_recovers_old_files_before_clean_retry(
         destination.write_bytes(b"old")
 
     original_promote = pipeline.promotion.promote
+    original_recover = pipeline.promotion.recover
 
     def crash_after_first_copy(pairs, revision_id, commit):
         del commit
@@ -335,6 +372,24 @@ def test_interrupted_group_promotion_recovers_old_files_before_clean_retry(
     assert canonical[1].read_bytes() == b"old"
     assert canonical[2].read_bytes() == b"old"
 
+    worker = IngestionWorker(
+        pipeline.repository,
+        pipeline,
+        pipeline,
+        now=lambda: datetime(2026, 8, 8, tzinfo=UTC),
+    )
+    assert worker.recover_interrupted_jobs() == 1
+    monkeypatch.setattr(
+        pipeline.promotion,
+        "recover",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            PromotionRecoveryError("destination is locked")
+        ),
+    )
+    assert worker.run_once() is True
+    assert pipeline.repository.require_item(item_id).state is UploadState.QUEUED
+    assert pipeline.repository.get_study_revision(interrupted.id).state == "promoting"
+
     payload = pipeline.repository.require_item(item_id).staged_path.read_bytes()
     duplicate_staged = tmp_path / "recovery-duplicate.pptx"
     duplicate_staged.write_bytes(payload)
@@ -357,6 +412,7 @@ def test_interrupted_group_promotion_recovers_old_files_before_clean_retry(
     pipeline.settings.study_root = tmp_path / "moved-study"
     pipeline.settings.icloud_staging_root = tmp_path / "moved-icloud"
     monkeypatch.setattr(pipeline.promotion, "promote", original_promote)
+    monkeypatch.setattr(pipeline.promotion, "recover", original_recover)
     recovered = pipeline.process("recovery-duplicate")
 
     assert recovered.current is True

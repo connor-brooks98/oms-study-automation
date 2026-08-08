@@ -1,7 +1,8 @@
 import pytest
 
+import oms_hub.files.promotion as promotion_module
 from oms_hub.files.atomic import verified_atomic_copy
-from oms_hub.files.promotion import PromotionCoordinator
+from oms_hub.files.promotion import PromotionCoordinator, PromotionRecoveryError
 
 
 def test_promotion_restores_prior_file_when_database_commit_fails(tmp_path):
@@ -95,3 +96,31 @@ def test_recovery_rolls_back_partial_initial_promotion_for_clean_retry(tmp_path)
     assert calls == ["reset"]
     assert not first_destination.exists()
     assert not second_destination.exists()
+
+
+def test_recovery_translates_locked_destination_to_retryable_error(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "immutable.pdf"
+    destination = tmp_path / "current.pdf"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"partial")
+    coordinator = PromotionCoordinator()
+    coordinator.backup_path(destination, 31).write_bytes(b"old")
+
+    def locked_replace(_source, _destination):
+        raise OSError("destination is locked")
+
+    monkeypatch.setattr(promotion_module.os, "replace", locked_replace)
+
+    with pytest.raises(PromotionRecoveryError) as error:
+        coordinator.recover(
+            [(source, destination)],
+            31,
+            lambda: None,
+            lambda: None,
+        )
+
+    assert isinstance(error.value.__cause__, OSError)
+    assert "destination is locked" in str(error.value.__cause__)

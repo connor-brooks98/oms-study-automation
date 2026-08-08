@@ -5,6 +5,10 @@ from pathlib import Path
 from oms_hub.files.atomic import sha256_file, verified_atomic_copy
 
 
+class PromotionRecoveryError(RuntimeError):
+    pass
+
+
 class PromotionCoordinator:
     def promote[T](
         self,
@@ -21,7 +25,12 @@ class PromotionCoordinator:
         commit: Callable[[], T],
         reset: Callable[[], None],
     ) -> T | None:
-        return recover_promotion(pairs, revision_id, commit, reset)
+        try:
+            return recover_promotion(pairs, revision_id, commit, reset)
+        except OSError as error:
+            raise PromotionRecoveryError(
+                "slide file promotion recovery could not complete"
+            ) from error
 
     def remove_backups(
         self,

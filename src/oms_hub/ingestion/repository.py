@@ -41,6 +41,16 @@ def _filed_artifact_matches(revision: StudyRevisionModel) -> bool:
         return False
 
 
+def _immutable_derived_matches(revision: StudyRevisionModel) -> bool:
+    if not revision.immutable_derived_path or not revision.derived_sha256:
+        return False
+    path = Path(revision.immutable_derived_path)
+    try:
+        return path.is_file() and sha256_file(path) == revision.derived_sha256
+    except OSError:
+        return False
+
+
 class IngestionRepository:
     def __init__(self, database: Database):
         self.database = database
@@ -577,7 +587,7 @@ class IngestionRepository:
                 and not revision.current
                 and revision.state in {"proposed", "promoting"}
                 and (
-                    revision.derived_sha256 is None
+                    not _immutable_derived_matches(revision)
                     or revision.canonical_derived_path is None
                 )
             ):
