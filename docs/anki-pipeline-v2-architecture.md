@@ -1,5 +1,13 @@
 # Anki Curation Pipeline v2 — Architecture Plan
 
+> **Superseded for `card_centric_v2` correction work:** This historical retrieval-v2
+> plan does not govern the current card-centric correction. Its single-provider
+> routing and primary-source-only summary rules are superseded by
+> [Card-Centric v2 Correction Policy](anki-card-centric-v2-correction-policy.md),
+> which authorizes persisted configurable model routes and grounded,
+> explicitly labeled `summary_grounded` evidence. Its reconciliation/card-count
+> language must not be used to reintroduce a quota or a 72/80 or 70–75 target.
+
 Rewrite scope: add NotebookLM summary ingestion, externalize prompts to Obsidian
 markdown, add the card relevance audit, close the convergence loop, and enforce
 reconciliation assertions. Single provider (Anthropic) throughout.

@@ -1,5 +1,12 @@
 # Current Card-Centric Anki Curation Process
 
+> **Correction authority:** This remains a baseline description of coded v1 behavior.
+> For `card_centric_v2` correction work, the decision-locked policy in
+> [Card-Centric v2 Correction Policy](anki-card-centric-v2-correction-policy.md)
+> governs deck sizing, evidence quality, model routing, failure posture, replay
+> identity, and acceptance. In particular, 60/65/70 are a warning floor,
+> ordinary target, and soft cap—not quotas.
+
 This document summarizes the `card_centric_v1` Anki curation pipeline exactly as it is
 coded at commit `231fe3e9899ba1f6293a601f35b29b0012de3f82`. It describes current behavior,
 validation, retries, warnings, and stopping conditions. It does not describe proposed
