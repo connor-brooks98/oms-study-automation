@@ -67,7 +67,10 @@ class SerialOfficeConverter:
                 raise OfficeTimeoutError(
                     f"Office conversion exceeded {self.timeout_seconds:g} seconds"
                 )
-            result = receiver.recv() if receiver.poll() else None
+            try:
+                result = receiver.recv() if receiver.poll() else None
+            except EOFError:
+                result = None
             if result == ("ok", "") and process.exitcode == 0:
                 return
             destination.unlink(missing_ok=True)

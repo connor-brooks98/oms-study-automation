@@ -62,28 +62,24 @@ class SlidePipeline:
         derived = revision.immutable_derived_path
         if derived is None:
             raise ValueError("slide revision has no PDF destination")
-        destinations = build_slide_destinations(
-            self.settings,
-            LectureKey(
-                lecture.subject,
-                lecture.exam_number,
-                lecture.lecture_number,
-                lecture.topic,
-            ),
-        )
         recovering_promotion = revision.state == "promoting"
         try:
             if recovering_promotion:
                 revision = self._promote_revision(
                     revision,
-                    [
-                        (revision.immutable_source_path, destinations.source),
-                        (derived, destinations.pdf),
-                        (derived, destinations.icloud_pdf),
-                    ],
+                    self._persisted_promotion_pairs(revision, derived),
                 )
                 self._mark_promoted(revision.lecture_id)
                 return revision
+            destinations = build_slide_destinations(
+                self.settings,
+                LectureKey(
+                    lecture.subject,
+                    lecture.exam_number,
+                    lecture.lecture_number,
+                    lecture.topic,
+                ),
+            )
             self._set_slide_steps(
                 revision.lecture_id,
                 StepStatus.RUNNING,
@@ -274,6 +270,23 @@ class SlidePipeline:
         except Exception:
             self.repository.reset_study_promotion(revision.id)
             raise
+
+    @staticmethod
+    def _persisted_promotion_pairs(
+        revision: StudyRevision,
+        derived: Path,
+    ) -> list[tuple[Path, Path]]:
+        if (
+            revision.canonical_source_path is None
+            or revision.canonical_derived_path is None
+            or revision.icloud_path is None
+        ):
+            raise ValueError("promoting slide revision has incomplete canonical paths")
+        return [
+            (revision.immutable_source_path, revision.canonical_source_path),
+            (derived, revision.canonical_derived_path),
+            (derived, revision.icloud_path),
+        ]
 
     def _set_slide_steps(
         self,

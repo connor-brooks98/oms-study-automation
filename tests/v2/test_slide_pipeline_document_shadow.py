@@ -215,6 +215,8 @@ def test_interrupted_group_promotion_recovers_old_files_before_clean_retry(
     assert canonical[2].read_bytes() == b"old"
 
     Path(pipeline.repository.require_item(item_id).staged_path).unlink()
+    pipeline.settings.study_root = tmp_path / "moved-study"
+    pipeline.settings.icloud_staging_root = tmp_path / "moved-icloud"
     monkeypatch.setattr(pipeline.promotion, "promote", original_promote)
     recovered = pipeline.process(item_id)
 
