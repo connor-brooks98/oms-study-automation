@@ -745,7 +745,7 @@ def select_high_yield_v2(
             if count >= target and count < cap and marginal_reason is None:
                 continue
             if count >= cap:
-                if not candidate.mandatory:
+                if not candidate.mandatory or overflow_acknowledgement is None:
                     continue
             selected.append(candidate)
             selected_coverage.update(candidate.coverage)

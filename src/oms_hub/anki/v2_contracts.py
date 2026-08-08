@@ -225,9 +225,9 @@ def adapt_legacy_split_indices(
                 f"mixed split rows require recomputation: fact_id={fact_id}"
             )
         if not group[0][1].split:
-            if any(card.split_index is not None for _, card in group):
+            if len(group) != 1 or any(card.split_index is not None for _, card in group):
                 raise LegacySplitIndexRecomputationRequired(
-                    f"unsplit rows carry split indices: fact_id={fact_id}"
+                    f"invalid unsplit rows require recomputation: fact_id={fact_id}"
                 )
             continue
         indices = [card.split_index for _, card in group]

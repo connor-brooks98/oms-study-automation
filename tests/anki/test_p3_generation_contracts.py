@@ -1,5 +1,7 @@
+import hashlib
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -11,11 +13,13 @@ from oms_hub.anki.card_centric_contracts import (
     SemanticDedupeReview,
 )
 from oms_hub.anki.correction_contracts import (
+    CanonicalJsonObject,
     DuplicateIdentity,
     EvidenceQuality,
     FactForbiddenClozeMap,
     FactForbiddenClozeTargets,
     MarginalValueReason,
+    PinnedLectureMetadata,
     SelectionMetadata,
     SelectionTier,
 )
@@ -210,6 +214,42 @@ def test_legacy_split_adapter_is_stable_and_rejects_ambiguous_partial_indices() 
                 _generated("C01-M1", source_id, split=True),
             )
         )
+    with pytest.raises(LegacySplitIndexRecomputationRequired, match="unsplit"):
+        adapt_legacy_split_indices(
+            (
+                _generated("C01-M2", source_id),
+                _generated("C01-M2", source_id),
+            )
+        )
+
+
+def test_pinned_metadata_seam_rejects_mutable_title_or_lecture_identity() -> None:
+    request = _request()
+    metadata = CanonicalJsonObject.from_mapping({"exam": "block-1"})
+    payload = {
+        "lecture_id": 1,
+        "title": request.lecture_title,
+        "metadata": metadata.as_dict(),
+    }
+    pinned = PinnedLectureMetadata(
+        lecture_id=1,
+        title=request.lecture_title,
+        metadata=metadata,
+        metadata_sha256=hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    )
+
+    assert replace(request, lecture_id=1, pinned_lecture_metadata=pinned).lecture_id == 1
+    with pytest.raises(ValueError, match="request lecture identity"):
+        replace(request, lecture_id=2, pinned_lecture_metadata=pinned)
+    with pytest.raises(ValueError, match="request lecture title"):
+        replace(
+            request,
+            lecture_id=1,
+            lecture_title="Edited after S1",
+            pinned_lecture_metadata=pinned,
+        )
 
 
 def _selection_metadata(identity: str, position: int) -> SelectionMetadata:
@@ -244,6 +284,53 @@ def test_semantic_review_and_selection_partitions_are_non_terminal_and_exact() -
             identity=DuplicateIdentity(existing_note_id=9),
             lexical_score=1.01,
         )
+
+
+def test_over_cap_selection_requires_the_actual_overflow_acknowledgement() -> None:
+    candidate_ids = tuple(f"G{position:02d}" for position in range(1, 72))
+    metadata = tuple(
+        SelectionMetadata(
+            identity=f"generated:{card_id}",
+            selected_position=position,
+            tier=SelectionTier.T1,
+            evidence_quality=EvidenceQuality.PRIMARY_SOURCE,
+            mandatory=position == 71,
+            marginal_value_reason=(
+                MarginalValueReason.ONLY_VALID_REQUIRED_FACT if position >= 66 else None
+            ),
+            overflow_reason="Required fact coverage." if position == 71 else None,
+            manual_acknowledgement_required=position == 71,
+        )
+        for position, card_id in enumerate(candidate_ids, start=1)
+    )
+    kwargs = {
+        "existing_candidate_note_ids": (),
+        "generated_candidate_card_ids": candidate_ids,
+        "selected_existing_note_ids": (),
+        "selected_generated_card_ids": candidate_ids,
+        "excluded_existing_note_ids": (),
+        "excluded_generated_card_ids": (),
+        "selection_metadata": metadata,
+        "below_warning_floor": False,
+        "target": 65,
+        "cap": 70,
+        "minimum_target": 60,
+        "mandatory_generated_card_ids": ("G71",),
+    }
+    with pytest.raises(ValidationError, match="overflow acknowledgement"):
+        QualitySelectionResult(**kwargs)
+
+    result = QualitySelectionResult(
+        **kwargs,
+        overflow_acknowledgement=CanonicalJsonObject.from_mapping(
+            {
+                "acknowledged_by": "reviewer",
+                "acknowledged_at": "2026-08-08T18:00:00Z",
+                "reason": "required coverage",
+            }
+        ),
+    )
+    assert result.overflow_acknowledgement is not None
 
     result = QualitySelectionResult(
         existing_candidate_note_ids=(101, 102),

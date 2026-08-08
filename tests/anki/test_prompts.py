@@ -146,6 +146,7 @@ def test_gap_generation_prompt_is_quality_first_and_forbids_padding() -> None:
 
     assert "Counts are soft\ntargets, never quotas" in prompt
     assert "Do\nnot split merely to increase card count" in prompt
+    assert "do not label a card eligible merely to reach a count" in prompt
     assert "forbidden_cloze_targets_by_fact" in prompt
 
 

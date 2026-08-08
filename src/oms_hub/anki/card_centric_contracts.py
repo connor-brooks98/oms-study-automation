@@ -639,6 +639,8 @@ class QualitySelectionResult(CardCentricContract):
         review_required = set(self.semantic_review_required_card_ids)
         if not review_required <= candidate_generated or review_required & selected_generated:
             raise ValueError("semantic-review identities must be candidates and never selected")
+        if len(selected_identities) > self.cap and self.overflow_acknowledgement is None:
+            raise ValueError("selection above cap requires an overflow acknowledgement")
         return self
 
 
