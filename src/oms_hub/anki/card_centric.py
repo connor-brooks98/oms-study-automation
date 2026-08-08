@@ -27,7 +27,11 @@ from oms_hub.anki.correction_contracts import EvidenceQuality
 from oms_hub.anki.domain import SourceKind
 from oms_hub.anki.sources import SourcePassage
 from oms_hub.llm.domain import GenerationOptions, ProviderCapabilities, ProviderName
-from oms_hub.llm.structured import StructuredTextService
+from oms_hub.llm.structured import (
+    StructuredJSONResult,
+    StructuredOutputError,
+    StructuredTextService,
+)
 
 
 class CardCentricValidationError(ValueError):
@@ -327,12 +331,19 @@ class CardCentricClassifier:
         "Return YES, MAYBE, or NO. YES requires cited source support. "
         "Do not invent IDs; return exactly one result per card."
     )
-    batch_size: int = 40
-    concurrency: int = 8
+    batch_size: int = 30
+    concurrency: int = 4
+    retry_attempts: int = 2
+    thinking_budget_tokens: int = 1024
     capabilities: ProviderCapabilities = ProviderCapabilities()
 
     def __post_init__(self) -> None:
-        if self.batch_size < 1 or self.concurrency < 1:
+        if (
+            self.batch_size < 1
+            or self.concurrency < 1
+            or self.retry_attempts < 1
+            or self.thinking_budget_tokens < 1024
+        ):
             raise ValueError("classifier batch size and concurrency must be positive")
 
     async def classify(
@@ -404,40 +415,103 @@ class CardCentricClassifier:
         provider: ProviderName,
         model: str,
     ) -> _CompletedBatch:
-        result = self.structured.generate_json(
-            self.instruction,
-            json.dumps(
-                {
-                    "cards": [card.model_dump(mode="json") for card in cards],
-                    "allowed_concept_ids": list(concept_ids),
-                    "allowed_supporting_passage_ids": [
-                        passage.passage_id for passage in source_index.passages
-                    ],
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-            output_model=CardClassificationBatchOutput,
-            provider=provider,
-            model=model,
-            options=GenerationOptions(cacheable_source_prefix=source_index.prefix),
+        request = json.dumps(
+            {
+                "cards": [card.model_dump(mode="json") for card in cards],
+                "allowed_concept_ids": list(concept_ids),
+                "allowed_supporting_passage_ids": [
+                    passage.passage_id for passage in source_index.passages
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
         )
-        return _CompletedBatch(
-            results=self.validate_output(
-                result.value,
+        attempts: list[StructuredJSONResult[CardClassificationBatchOutput]] = []
+        try:
+            first = self._request(
+                self.instruction,
+                request,
+                provider=provider,
+                model=model,
+                source_index=source_index,
+            )
+            attempts.append(first)
+            validated = self.validate_output(
+                first.value,
                 cards=cards,
                 source_index=source_index,
                 concept_ids=concept_ids,
-            ),
+            )
+        except (StructuredOutputError, CardCentricValidationError) as first_error:
+            if self.retry_attempts < 2:
+                raise
+            raw = (
+                first_error.raw_text
+                if isinstance(first_error, StructuredOutputError)
+                else first.raw_text
+            )
+            repair_input = json.dumps(
+                {
+                    "classification_input": json.loads(request),
+                    "invalid_response": raw,
+                    "validation_error": str(first_error),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            repaired = self._request(
+                f"{self.instruction}\n\nRepair the invalid classifier batch. "
+                "Correct only the reported defect and return the complete batch.",
+                repair_input,
+                provider=provider,
+                model=model,
+                source_index=source_index,
+            )
+            attempts.append(repaired)
+            validated = self.validate_output(
+                repaired.value,
+                cards=cards,
+                source_index=source_index,
+                concept_ids=concept_ids,
+            )
+        result = attempts[-1]
+        return _CompletedBatch(
+            results=validated,
             audit=ClassifierBatchAudit(
                 batch_index=batch_index,
                 note_ids=tuple(card.note_id for card in cards),
                 request_id=result.request_id,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                cost_microusd=result.cost_microusd,
-                cache_creation_input_tokens=result.cache_creation_input_tokens,
-                cache_read_input_tokens=result.cache_read_input_tokens,
+                input_tokens=sum(attempt.input_tokens for attempt in attempts),
+                output_tokens=sum(attempt.output_tokens for attempt in attempts),
+                cost_microusd=sum(attempt.cost_microusd for attempt in attempts),
+                cache_creation_input_tokens=sum(
+                    attempt.cache_creation_input_tokens for attempt in attempts
+                ),
+                cache_read_input_tokens=sum(
+                    attempt.cache_read_input_tokens for attempt in attempts
+                ),
+            ),
+        )
+
+    def _request(
+        self,
+        instruction: str,
+        input_text: str,
+        *,
+        provider: ProviderName,
+        model: str,
+        source_index: CardCentricSourceIndex,
+    ) -> StructuredJSONResult[CardClassificationBatchOutput]:
+        return self.structured.generate_json(
+            instruction,
+            input_text,
+            output_model=CardClassificationBatchOutput,
+            provider=provider,
+            model=model,
+            options=GenerationOptions(
+                cacheable_source_prefix=source_index.prefix,
+                thinking_budget_tokens=self.thinking_budget_tokens,
             ),
         )
 
@@ -458,6 +532,8 @@ class CardCentricClassifier:
         passages = {passage.passage_id: passage for passage in source_index.passages}
         allowed_concepts = set(concept_ids)
         for result in output.results:
+            if not result.reason.strip():
+                raise CardCentricValidationError("classifier returned a blank reason")
             if not set(result.covered_concept_ids) <= allowed_concepts:
                 raise CardCentricValidationError("classifier invented a concept ID")
             if not set(result.supporting_passage_ids) <= set(passages):

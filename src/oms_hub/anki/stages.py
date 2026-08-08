@@ -53,6 +53,7 @@ from oms_hub.anki.domain import (
     EvidenceSupport,
     GapCard,
     PipelineContractVersion,
+    ResolvedClassifierExecution,
     RetrievalPass,
     SourceEvidence,
     SourceKind,
@@ -748,50 +749,60 @@ class CurationServicesRunner:
         ]
         allowed_concepts = {concept.concept_id for concept in ledger.concepts}
         allowed_passages = {passage.passage_id for passage in source.passages}
-        results: list[FastCardClassification] = []
-        usages: list[StageUsage] = []
-        degraded_batches: list[dict[str, Any]] = []
-        for batch_index, start in enumerate(range(0, len(selected), 60)):
-            batch = selected[start : start + 60]
+        execution = _classifier_execution(context)
+        batches = tuple(
+            selected[start : start + execution.fast_batch_size]
+            for start in range(0, len(selected), execution.fast_batch_size)
+        )
+        semaphore = asyncio.Semaphore(execution.fast_concurrency)
+
+        async def classify_batch(
+            batch_index: int,
+            batch: tuple[CardRecord, ...],
+        ) -> tuple[
+            tuple[FastCardClassification, ...],
+            StageUsage | None,
+            dict[str, Any] | None,
+        ]:
             expected_note_ids = tuple(card.note_id for card in batch)
             reason_code: str | None = None
             try:
-                generated = await asyncio.to_thread(
-                    self.structured.generate_json,
-                    instruction,
-                    json.dumps(
-                        {
-                            "cards": [card.model_dump(mode="json") for card in batch],
-                            "concept_definitions": concept_definitions,
-                            "allowed_concept_ids": sorted(allowed_concepts),
-                            "allowed_supporting_passage_ids": sorted(allowed_passages),
-                        },
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                    output_model=FastClassificationResult,
-                    provider=ProviderName(stage_model.provider),
-                    model=stage_model.model,
-                    options=GenerationOptions(cacheable_source_prefix=source.prefix),
-                )
+                async with semaphore:
+                    generated = await asyncio.to_thread(
+                        self.structured.generate_json,
+                        instruction,
+                        json.dumps(
+                            {
+                                "cards": [card.model_dump(mode="json") for card in batch],
+                                "concept_definitions": concept_definitions,
+                                "allowed_concept_ids": sorted(allowed_concepts),
+                                "allowed_supporting_passage_ids": sorted(allowed_passages),
+                            },
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        output_model=FastClassificationResult,
+                        provider=ProviderName(stage_model.provider),
+                        model=stage_model.model,
+                        options=GenerationOptions(
+                            cacheable_source_prefix=source.prefix,
+                            thinking_budget_tokens=execution.thinking_budget_tokens,
+                        ),
+                    )
             except StructuredOutputError as exc:
                 reason_code = "structured_output_invalid"
-                usages.append(
-                    StageUsage(
-                        exc.generation.request_id,
-                        exc.generation.input_tokens,
-                        exc.generation.output_tokens,
-                        exc.generation.cost_microusd,
-                    )
+                usage = StageUsage(
+                    exc.generation.request_id,
+                    exc.generation.input_tokens,
+                    exc.generation.output_tokens,
+                    exc.generation.cost_microusd,
                 )
             else:
-                usages.append(
-                    StageUsage(
-                        generated.request_id,
-                        generated.input_tokens,
-                        generated.output_tokens,
-                        generated.cost_microusd,
-                    )
+                usage = StageUsage(
+                    generated.request_id,
+                    generated.input_tokens,
+                    generated.output_tokens,
+                    generated.cost_microusd,
                 )
                 reason_code = _fast_batch_degradation_reason(
                     generated.value.results,
@@ -800,23 +811,32 @@ class CurationServicesRunner:
                     allowed_passages=allowed_passages,
                 )
                 if reason_code is None:
-                    results.extend(generated.value.results)
+                    return tuple(generated.value.results), usage, None
             if reason_code is not None:
-                results.extend(
-                    FastCardClassification(
-                        note_id=note_id,
-                        verdict="NEEDS_REVIEW",
-                        reason=f"S4b degraded batch: {reason_code}",
-                    )
-                    for note_id in expected_note_ids
-                )
-                degraded_batches.append(
+                return (
+                    tuple(
+                        FastCardClassification(
+                            note_id=note_id,
+                            verdict="NEEDS_REVIEW",
+                            reason=f"S4b degraded batch: {reason_code}",
+                        )
+                        for note_id in expected_note_ids
+                    ),
+                    usage,
                     {
                         "batch_index": batch_index,
                         "note_ids": list(expected_note_ids),
                         "reason_code": reason_code,
-                    }
+                    },
                 )
+            raise AssertionError("S4b batch did not produce a terminal outcome")
+
+        completed = await asyncio.gather(
+            *(classify_batch(index, batch) for index, batch in enumerate(batches))
+        )
+        results = [item for batch, _, _ in completed for item in batch]
+        usages = [usage for _, usage, _ in completed if usage is not None]
+        degraded_batches = [degraded for _, _, degraded in completed if degraded is not None]
         fast = FastClassificationResult(
             results=tuple(sorted(results, key=lambda item: item.note_id))
         )
@@ -874,9 +894,19 @@ class CurationServicesRunner:
             ProviderName(stage_model.provider),
             stage_model.model,
         )
+        execution = _classifier_execution(context)
+        instruction = (
+            _pinned_card_v2_prompt(context, "card-centric-classifier")
+            if is_v2
+            else _card_classifier_prompt(self.prompts)
+        )
         classifier = CardCentricClassifier(
             self.structured,
-            instruction=_card_classifier_prompt(self.prompts),
+            instruction=instruction,
+            batch_size=execution.thorough_batch_size,
+            concurrency=execution.thorough_concurrency,
+            retry_attempts=execution.thorough_retry_attempts,
+            thinking_budget_tokens=execution.thinking_budget_tokens,
             capabilities=capabilities,
         )
         classified = await classifier.classify(
@@ -894,6 +924,14 @@ class CurationServicesRunner:
                 "source_sha256": source.source_sha256,
                 "scoped_note_count": len(selected),
                 "thorough_count": len(selected),
+                # P1 includes this exact persisted payload and the pinned prompt
+                # snapshot in ResolvedStageModelIdentity.generation_parameters.
+                "classifier_execution": _classifier_generation_parameters(
+                    stage_model.provider,
+                    stage_model.model,
+                    execution,
+                    prompt_id="card-centric-classifier" if is_v2 else None,
+                ),
             },
             usage=_card_classifier_usage(classified),
             cache_hits=sum(
@@ -1049,9 +1087,18 @@ class CurationServicesRunner:
             audit.append(row)
         selected = tuple(cards[note_id] for note_id in sorted(hit_ids) if note_id in cards)
         stage_model = context.job.resolved_model_config.residual_s6
+        execution = _classifier_execution(context)
         classified = await CardCentricClassifier(
             self.structured,
-            instruction=_card_classifier_prompt(self.prompts),
+            instruction=(
+                _pinned_card_v2_prompt(context, "card-centric-classifier")
+                if is_v2
+                else _card_classifier_prompt(self.prompts)
+            ),
+            batch_size=execution.thorough_batch_size,
+            concurrency=execution.thorough_concurrency,
+            retry_attempts=execution.thorough_retry_attempts,
+            thinking_budget_tokens=execution.thinking_budget_tokens,
             capabilities=_structured_capabilities(
                 self.structured, ProviderName(stage_model.provider), stage_model.model
             ),
@@ -1069,6 +1116,12 @@ class CurationServicesRunner:
                 "classifier": classified.model_dump(mode="json"),
                 "uncovered_concept_ids": [concept.concept_id for concept in targets],
                 "residual_mode": residual_mode,
+                "classifier_execution": _classifier_generation_parameters(
+                    stage_model.provider,
+                    stage_model.model,
+                    execution,
+                    prompt_id="card-centric-classifier" if is_v2 else None,
+                ),
             },
             usage=_card_classifier_usage(classified),
         )
@@ -2959,6 +3012,41 @@ def _card_fast_classifier(
     return classifier, fallback
 
 
+def _classifier_execution(context: StageContext) -> ResolvedClassifierExecution:
+    """Resolve P2-C execution defaults without rewriting legacy job documents."""
+    configuration = context.job.resolved_model_config
+    resolver = getattr(configuration, "resolved_classifier_execution", None)
+    if callable(resolver):
+        return cast(ResolvedClassifierExecution, resolver())
+    return ResolvedClassifierExecution()
+
+
+def _classifier_generation_parameters(
+    provider: str,
+    model: str,
+    execution: ResolvedClassifierExecution,
+    *,
+    prompt_id: str | None,
+) -> dict[str, Any]:
+    """P1 hook for ``ResolvedStageModelIdentity.generation_parameters``.
+
+    P1 pairs this canonical payload with the corresponding immutable prompt
+    snapshot, whose content is hashed by ``ResolvedStageModelIdentity``.
+    """
+    return {
+        "provider": provider,
+        "model": model,
+        "prompt_id": prompt_id,
+        "execution": execution.canonical_document(),
+        "execution_sha256": execution.generation_parameters_sha256(),
+        "generation_options": {
+            "cacheable_source_prefix": True,
+            "thinking": "disabled",
+            "thinking_budget_tokens": execution.thinking_budget_tokens,
+        },
+    }
+
+
 def _fast_batch_degradation_reason(
     results: Sequence[FastCardClassification],
     *,
@@ -3376,6 +3464,7 @@ def _card_fast_classifier_prompt(catalog: AnkiPromptCatalogService) -> str:
 _CARD_V2_PINNED_PROMPT_SCHEMAS = {
     "card-centric-ledger-v2": "lcl_v2",
     "card-centric-fast-classifier": "card_centric_fast_classify_v2",
+    "card-centric-classifier": "card_centric_classify_v1",
     "card-centric-gap-v2": "gap_cards_v2",
 }
 
