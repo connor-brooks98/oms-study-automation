@@ -538,3 +538,40 @@ def test_missing_immutable_source_terminates_promotion_recovery(
     terminal = pipeline.repository.get_study_revision(interrupted.id)
     assert terminal.state == "failed"
     assert pipeline.repository.require_item(item_id).state is UploadState.FAILED
+
+
+@pytest.mark.parametrize(
+    "artifact_name",
+    ("immutable_source_path", "immutable_derived_path"),
+)
+def test_corrupt_immutable_artifact_terminates_promotion_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_name: str,
+) -> None:
+    pipeline, item_id = _slide_pipeline(tmp_path)
+    original_promote = pipeline.promotion.promote
+
+    def interrupt_promotion(_pairs, _revision_id, _commit):
+        raise SystemExit("simulated process interruption")
+
+    monkeypatch.setattr(pipeline.promotion, "promote", interrupt_promotion)
+    with pytest.raises(SystemExit, match="simulated process interruption"):
+        pipeline.process(item_id)
+
+    interrupted = pipeline.repository.begin_revision(
+        item_id,
+        tmp_path / "artifacts" / "v2" / "slides",
+    )
+    assert interrupted.state == "promoting"
+    corrupted = getattr(interrupted, artifact_name)
+    assert isinstance(corrupted, Path)
+    corrupted.write_bytes(b"corrupt immutable artifact")
+    monkeypatch.setattr(pipeline.promotion, "promote", original_promote)
+
+    with pytest.raises(PromotionSourceError, match="checksum mismatch"):
+        pipeline.process(item_id)
+
+    terminal = pipeline.repository.get_study_revision(interrupted.id)
+    assert terminal.state == "failed"
+    assert pipeline.repository.require_item(item_id).state is UploadState.FAILED

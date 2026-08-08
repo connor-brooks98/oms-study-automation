@@ -274,6 +274,7 @@ class SlidePipeline:
         revision: StudyRevision,
         pairs: list[tuple[Path, Path]],
     ) -> StudyRevision:
+        self._validate_promotion_sources(revision)
         if revision.state == "promoting":
             recovered = self.promotion.recover(
                 pairs,
@@ -296,6 +297,25 @@ class SlidePipeline:
         except Exception:
             self.repository.reset_study_promotion(revision.id)
             raise
+
+    @staticmethod
+    def _validate_promotion_sources(revision: StudyRevision) -> None:
+        derived = revision.immutable_derived_path
+        try:
+            if (
+                sha256_file(revision.immutable_source_path)
+                != revision.source_sha256
+                or derived is None
+                or revision.derived_sha256 is None
+                or sha256_file(derived) != revision.derived_sha256
+            ):
+                raise PromotionSourceError(
+                    "immutable promotion source checksum mismatch; upload the file again"
+                )
+        except OSError as error:
+            raise PromotionSourceError(
+                "immutable promotion source is unavailable; upload the file again"
+            ) from error
 
     def _repair_current_revision(
         self,
