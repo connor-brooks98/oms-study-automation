@@ -2724,6 +2724,8 @@ class CurationServicesRunner:
             f"{concept.concept_id}-M{index + 1}": (
                 concept.forbidden_cloze_targets_by_fact[index]
                 if index < len(concept.forbidden_cloze_targets_by_fact)
+                else ()
+                if is_v2
                 else ledger.forbidden_cloze_targets
             )
             for concept in ledger.concepts
