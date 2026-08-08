@@ -52,6 +52,7 @@
   text-transform: uppercase;
 }
 .course-list { display: grid; gap: var(--sp-3); }
+[hidden] { display: none !important; }
 .course-card { overflow: visible; }
 .disclosure {
   display: flex;
