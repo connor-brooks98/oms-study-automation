@@ -331,10 +331,13 @@ class CardCentricClassifier:
         "Return YES, MAYBE, or NO. YES requires cited source support. "
         "Do not invent IDs; return exactly one result per card."
     )
-    batch_size: int = 30
-    concurrency: int = 4
-    retry_attempts: int = 2
-    thinking_budget_tokens: int = 1024
+    # These are the S0/v1 defaults. V2 explicitly supplies its frozen
+    # execution settings at the stage boundary.
+    batch_size: int = 40
+    concurrency: int = 8
+    retry_attempts: int = 1
+    thinking_budget_tokens: int | None = None
+    require_nonblank_reason: bool = False
     capabilities: ProviderCapabilities = ProviderCapabilities()
 
     def __post_init__(self) -> None:
@@ -342,7 +345,10 @@ class CardCentricClassifier:
             self.batch_size < 1
             or self.concurrency < 1
             or self.retry_attempts < 1
-            or self.thinking_budget_tokens < 1024
+            or (
+                self.thinking_budget_tokens is not None
+                and self.thinking_budget_tokens < 1024
+            )
         ):
             raise ValueError("classifier batch size and concurrency must be positive")
 
@@ -503,16 +509,19 @@ class CardCentricClassifier:
         model: str,
         source_index: CardCentricSourceIndex,
     ) -> StructuredJSONResult[CardClassificationBatchOutput]:
+        options = GenerationOptions(cacheable_source_prefix=source_index.prefix)
+        if self.thinking_budget_tokens is not None:
+            options = GenerationOptions(
+                cacheable_source_prefix=source_index.prefix,
+                thinking_budget_tokens=self.thinking_budget_tokens,
+            )
         return self.structured.generate_json(
             instruction,
             input_text,
             output_model=CardClassificationBatchOutput,
             provider=provider,
             model=model,
-            options=GenerationOptions(
-                cacheable_source_prefix=source_index.prefix,
-                thinking_budget_tokens=self.thinking_budget_tokens,
-            ),
+            options=options,
         )
 
     def validate_output(
@@ -532,7 +541,7 @@ class CardCentricClassifier:
         passages = {passage.passage_id: passage for passage in source_index.passages}
         allowed_concepts = set(concept_ids)
         for result in output.results:
-            if not result.reason.strip():
+            if self.require_nonblank_reason and not result.reason.strip():
                 raise CardCentricValidationError("classifier returned a blank reason")
             if not set(result.covered_concept_ids) <= allowed_concepts:
                 raise CardCentricValidationError("classifier invented a concept ID")

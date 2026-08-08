@@ -29,9 +29,20 @@ from oms_hub.anki.domain import (
     ResolvedModelConfiguration,
     SourceKind,
 )
+from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
 from oms_hub.anki.sources import SourcePassage
-from oms_hub.anki.stages import CurationServicesRunner, _classifier_generation_parameters
-from oms_hub.llm.domain import DiagnosticSource, GeneratedText, LLMRequestError, ProviderName
+from oms_hub.anki.stages import (
+    CurationServicesRunner,
+    _card_classifier_for_version,
+    _classifier_generation_parameters,
+)
+from oms_hub.llm.domain import (
+    DiagnosticSource,
+    GeneratedText,
+    LLMRequestError,
+    ProviderCapabilities,
+    ProviderName,
+)
 from oms_hub.llm.structured import StructuredTextService
 
 
@@ -246,9 +257,11 @@ class _ThoroughGenerator:
     def __init__(self, outputs: list[str]):
         self.outputs = outputs
         self.instructions: list[str] = []
+        self.options = []
 
-    def generate_text(self, instruction, _input_text, *, provider, model, **_kwargs):
+    def generate_text(self, instruction, _input_text, *, provider, model, **kwargs):
         self.instructions.append(instruction)
+        self.options.append(kwargs["options"])
         return GeneratedText(
             text=self.outputs.pop(0),
             provider=provider,
@@ -261,7 +274,189 @@ class _ThoroughGenerator:
 
 
 def _classifier(generator: _ThoroughGenerator) -> CardCentricClassifier:
-    return CardCentricClassifier(StructuredTextService(generator), batch_size=30, concurrency=1)
+    return CardCentricClassifier(
+        StructuredTextService(generator),
+        batch_size=30,
+        concurrency=1,
+        retry_attempts=2,
+        thinking_budget_tokens=1024,
+        require_nonblank_reason=True,
+    )
+
+
+def test_v1_classifier_retains_s0_batch_concurrency_retry_and_live_prompt() -> None:
+    invalid = CardClassificationBatchOutput(results=()).model_dump_json()
+    generator = _ThoroughGenerator([invalid])
+    context = SimpleNamespace(
+        job=SimpleNamespace(
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+            resolved_model_config=SimpleNamespace(
+                resolved_classifier_execution=lambda: pytest.fail(
+                    "v1 must not resolve v2 execution"
+                )
+            ),
+        )
+    )
+    classifier, execution = _card_classifier_for_version(
+        context,
+        structured=StructuredTextService(generator),
+        prompt_catalog=AnkiPromptCatalogService(),
+        capabilities=ProviderCapabilities(),
+    )
+
+    assert execution is None
+    assert classifier.batch_size == 40
+    assert classifier.concurrency == 8
+    assert classifier.retry_attempts == 1
+    assert classifier.thinking_budget_tokens is None
+    assert classifier.require_nonblank_reason is False
+    assert "Optimize for the smallest set" not in classifier.instruction
+    assert "summary passages aid orientation" in classifier.instruction
+
+    with pytest.raises(CardCentricValidationError, match="exactly partition"):
+        asyncio.run(
+            classifier.classify(
+                (_card(1),),
+                source_index=_source(),
+                concept_ids=(),
+                provider=ProviderName.OPENAI,
+                model="configured-model",
+            )
+        )
+    assert len(generator.instructions) == 1
+
+
+def test_v1_classifier_batches_at_forty_without_v2_execution_settings() -> None:
+    cards = tuple(_card(note_id) for note_id in range(1, 42))
+
+    class EchoGenerator:
+        def generate_text(self, _instruction, input_text, *, provider, model, **_kwargs):
+            output = CardClassificationBatchOutput(
+                results=tuple(
+                    CardClassification(
+                        note_id=card["note_id"],
+                        verdict="NO",
+                        primary_subject="fixture",
+                        reason="not taught",
+                    )
+                    for card in json.loads(input_text)["cards"]
+                )
+            ).model_dump_json()
+            return GeneratedText(
+                text=output,
+                provider=provider,
+                model=model,
+                request_id="v1-batch",
+                input_tokens=10,
+                output_tokens=5,
+                cost_microusd=1,
+            )
+
+    context = SimpleNamespace(
+        job=SimpleNamespace(
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+            resolved_model_config=SimpleNamespace(
+                resolved_classifier_execution=lambda: pytest.fail(
+                    "v1 must not resolve v2 execution"
+                )
+            ),
+        )
+    )
+    classifier, execution = _card_classifier_for_version(
+        context,
+        structured=StructuredTextService(EchoGenerator()),
+        prompt_catalog=AnkiPromptCatalogService(),
+        capabilities=ProviderCapabilities(),
+    )
+
+    result = asyncio.run(
+        classifier.classify(
+            cards,
+            source_index=_source(),
+            concept_ids=(),
+            provider=ProviderName.OPENAI,
+            model="configured-model",
+        )
+    )
+
+    assert execution is None
+    assert result.telemetry.batch_count == 2
+    assert [audit.note_ids for audit in result.telemetry.batches] == [
+        tuple(range(1, 41)),
+        (41,),
+    ]
+
+
+def test_v1_s4_omits_v2_classifier_execution_artifact() -> None:
+    context = _fast_context((_card(1),))
+    context.job = SimpleNamespace(
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        resolved_model_config=ResolvedModelConfiguration.card_centric_default(
+            "openai", "configured-model"
+        ),
+    )
+    valid = CardClassificationBatchOutput(
+        results=(
+            CardClassification(
+                note_id=1,
+                verdict="NO",
+                primary_subject="fixture",
+                reason="not taught",
+            ),
+        )
+    ).model_dump_json()
+    runner = CurationServicesRunner.__new__(CurationServicesRunner)
+    runner.structured = StructuredTextService(_ThoroughGenerator([valid]))
+    runner.prompts = AnkiPromptCatalogService()
+
+    product = asyncio.run(runner._card_classify(context))
+
+    assert "classifier_execution" not in product.payload
+    assert product.payload["thorough_count"] == 1
+
+
+def test_v2_classifier_uses_frozen_execution_and_pinned_quality_prompt() -> None:
+    execution = ResolvedClassifierExecution()
+    prompt_content = "Optimize for the smallest set of the best-supported cards."
+    context = SimpleNamespace(
+        job=SimpleNamespace(
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+            resolved_model_config=SimpleNamespace(resolved_classifier_execution=lambda: execution),
+        ),
+        prior_payloads={
+            CurationStage.PREFLIGHT: {
+                "prompt_snapshot": [
+                    {
+                        "id": "card-centric-classifier",
+                        "version": "2.0.0",
+                        "prompt_hash": hashlib.sha256(prompt_content.encode()).hexdigest()[:12],
+                        "content": prompt_content,
+                        "metadata": {
+                            "id": "card-centric-classifier",
+                            "version": "2.0.0",
+                            "schema": "card_centric_classify_v1",
+                            "response_format": "json",
+                        },
+                    }
+                ]
+            }
+        },
+    )
+
+    classifier, resolved = _card_classifier_for_version(
+        context,
+        structured=StructuredTextService(_ThoroughGenerator([])),
+        prompt_catalog=AnkiPromptCatalogService(),
+        capabilities=ProviderCapabilities(),
+    )
+
+    assert resolved == execution
+    assert classifier.batch_size == 30
+    assert classifier.concurrency == 4
+    assert classifier.retry_attempts == 2
+    assert classifier.thinking_budget_tokens == 1024
+    assert classifier.require_nonblank_reason is True
+    assert classifier.instruction == prompt_content
 
 
 def test_p2_s4c_s6_retry_once_then_accepts_a_repaired_batch() -> None:

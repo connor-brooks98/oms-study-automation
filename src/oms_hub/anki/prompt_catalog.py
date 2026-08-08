@@ -30,6 +30,7 @@ _CARD_CENTRIC_INTERNAL_PROMPT_IDS = (
     "card-centric-ledger-v1",
     "card-centric-ledger-v2",
     "card-centric-classifier",
+    "card-centric-classifier-v1",
     "card-centric-fast-classifier",
     "card-centric-gap-v1",
     "card-centric-gap-v2",

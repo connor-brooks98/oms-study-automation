@@ -916,19 +916,10 @@ class CurationServicesRunner:
             ProviderName(stage_model.provider),
             stage_model.model,
         )
-        execution = _classifier_execution(context)
-        instruction = (
-            _pinned_card_v2_prompt(context, "card-centric-classifier")
-            if is_v2
-            else _card_classifier_prompt(self.prompts)
-        )
-        classifier = CardCentricClassifier(
-            self.structured,
-            instruction=instruction,
-            batch_size=execution.thorough_batch_size,
-            concurrency=execution.thorough_concurrency,
-            retry_attempts=execution.thorough_retry_attempts,
-            thinking_budget_tokens=execution.thinking_budget_tokens,
+        classifier, execution = _card_classifier_for_version(
+            context,
+            structured=self.structured,
+            prompt_catalog=self.prompts,
             capabilities=capabilities,
         )
         classified = await classifier.classify(
@@ -946,13 +937,19 @@ class CurationServicesRunner:
                 "source_sha256": source.source_sha256,
                 "scoped_note_count": len(selected),
                 "thorough_count": len(selected),
-                # P1/I0 will pair this frozen payload with the corresponding
-                # persisted prompt snapshot in replay identity.
-                "classifier_execution": _classifier_generation_parameters(
-                    stage_model.provider,
-                    stage_model.model,
-                    execution,
-                    prompt_id="card-centric-classifier" if is_v2 else None,
+                **(
+                    {
+                        # P1/I0 will pair this frozen payload with the corresponding
+                        # persisted prompt snapshot in replay identity.
+                        "classifier_execution": _classifier_generation_parameters(
+                            stage_model.provider,
+                            stage_model.model,
+                            execution,
+                            prompt_id="card-centric-classifier" if is_v2 else None,
+                        ),
+                    }
+                    if execution is not None
+                    else {}
                 ),
             },
             usage=_card_classifier_usage(classified),
@@ -1109,22 +1106,15 @@ class CurationServicesRunner:
             audit.append(row)
         selected = tuple(cards[note_id] for note_id in sorted(hit_ids) if note_id in cards)
         stage_model = context.job.resolved_model_config.residual_s6
-        execution = _classifier_execution(context)
-        classified = await CardCentricClassifier(
-            self.structured,
-            instruction=(
-                _pinned_card_v2_prompt(context, "card-centric-classifier")
-                if is_v2
-                else _card_classifier_prompt(self.prompts)
-            ),
-            batch_size=execution.thorough_batch_size,
-            concurrency=execution.thorough_concurrency,
-            retry_attempts=execution.thorough_retry_attempts,
-            thinking_budget_tokens=execution.thinking_budget_tokens,
+        classifier, execution = _card_classifier_for_version(
+            context,
+            structured=self.structured,
+            prompt_catalog=self.prompts,
             capabilities=_structured_capabilities(
                 self.structured, ProviderName(stage_model.provider), stage_model.model
             ),
-        ).classify(
+        )
+        classified = await classifier.classify(
             selected,
             source_index=_card_source_index(context),
             concept_ids=tuple(concept.concept_id for concept in ledger.concepts),
@@ -1138,11 +1128,17 @@ class CurationServicesRunner:
                 "classifier": classified.model_dump(mode="json"),
                 "uncovered_concept_ids": [concept.concept_id for concept in targets],
                 "residual_mode": residual_mode,
-                "classifier_execution": _classifier_generation_parameters(
-                    stage_model.provider,
-                    stage_model.model,
-                    execution,
-                    prompt_id="card-centric-classifier" if is_v2 else None,
+                **(
+                    {
+                        "classifier_execution": _classifier_generation_parameters(
+                            stage_model.provider,
+                            stage_model.model,
+                            execution,
+                            prompt_id="card-centric-classifier" if is_v2 else None,
+                        ),
+                    }
+                    if execution is not None
+                    else {}
                 ),
             },
             usage=_card_classifier_usage(classified),
@@ -2871,7 +2867,7 @@ def _provider(context: StageContext) -> ProviderName:
 
 
 def _card_classifier_prompt(catalog: AnkiPromptCatalogService) -> str:
-    prompt = AnkiPromptLibrary(catalog.bundled_directory).load("card-centric-classifier")
+    prompt = AnkiPromptLibrary(catalog.bundled_directory).load("card-centric-classifier-v1")
     return prompt.content
 
 
@@ -3041,6 +3037,39 @@ def _classifier_execution(context: StageContext) -> ResolvedClassifierExecution:
     if callable(resolver):
         return cast(ResolvedClassifierExecution, resolver())
     return ResolvedClassifierExecution()
+
+
+def _card_classifier_for_version(
+    context: StageContext,
+    *,
+    structured: StructuredTextService,
+    prompt_catalog: AnkiPromptCatalogService,
+    capabilities: ProviderCapabilities,
+) -> tuple[CardCentricClassifier, ResolvedClassifierExecution | None]:
+    """Build legacy v1 or frozen v2 classifier settings without cross-version bleed."""
+    if context.job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V2:
+        return (
+            CardCentricClassifier(
+                structured,
+                instruction=_card_classifier_prompt(prompt_catalog),
+                capabilities=capabilities,
+            ),
+            None,
+        )
+    execution = _classifier_execution(context)
+    return (
+        CardCentricClassifier(
+            structured,
+            instruction=_pinned_card_v2_prompt(context, "card-centric-classifier"),
+            batch_size=execution.thorough_batch_size,
+            concurrency=execution.thorough_concurrency,
+            retry_attempts=execution.thorough_retry_attempts,
+            thinking_budget_tokens=execution.thinking_budget_tokens,
+            require_nonblank_reason=True,
+            capabilities=capabilities,
+        ),
+        execution,
+    )
 
 
 def _classifier_generation_parameters(
