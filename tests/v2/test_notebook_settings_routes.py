@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from keyring.errors import KeyringError
 
 import oms_hub.app as app_module
 from oms_hub.app import create_app
@@ -161,3 +162,59 @@ def test_app_starts_disconnected_when_encrypted_notebook_session_is_unreadable(
     assert status.message == created.state.notebook_storage_migration_error
     assert not plaintext_path.exists()
     assert encrypted_path.read_bytes() == b"unreadable-session"
+
+
+def test_app_starts_disconnected_when_credential_store_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    google = tmp_path / "google"
+    encrypted_path = google / "notebooklm-storage.enc"
+    plaintext_path = google / "notebooklm-storage.json"
+    seed_secrets = MemorySecrets()
+    with EncryptedNotebookStorage(encrypted_path, seed_secrets).plaintext(
+        writable=True
+    ) as temporary_path:
+        temporary_path.write_text('{"cookies":[]}', encoding="utf-8")
+    encrypted_payload = encrypted_path.read_bytes()
+
+    class UnavailableSecrets(MemorySecrets):
+        def get(self, key: str) -> str | None:
+            raise KeyringError("credential store unavailable")
+
+        def delete(self, key: str) -> None:
+            raise KeyringError("credential store unavailable")
+
+    monkeypatch.setattr(
+        app_module,
+        "KeyringSecretStore",
+        lambda: UnavailableSecrets(),
+    )
+    database_url = f"sqlite:///{tmp_path / 'hub.db'}"
+    database = Database(database_url)
+    database.migrate()
+    GenerationRepository(database).save_google_status(
+        state="connected",
+        account_email=None,
+        notebook_state="connected",
+        gemini_state="unused",
+        docs_state="retired",
+        diagnostic=None,
+        tested_at="2026-08-08T00:00:00+00:00",
+    )
+
+    created = app_module.create_app(
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path,
+            database_url=database_url,
+        )
+    )
+
+    assert created.state.notebook_storage_migrated is False
+    assert "reconnect Google" in created.state.notebook_storage_migration_error
+    status = created.state.notebook_connection.status()
+    assert status.state == "failed"
+    assert status.message == created.state.notebook_storage_migration_error
+    assert encrypted_path.read_bytes() == encrypted_payload
+    assert not plaintext_path.exists()

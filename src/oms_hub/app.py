@@ -464,7 +464,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else None
     )
     app.state.secrets = KeyringSecretStore()
-    retire_google_docs_credentials(resolved.data_dir, app.state.secrets)
+    app.state.notebook_storage_migration_error = None
+    try:
+        retire_google_docs_credentials(resolved.data_dir, app.state.secrets)
+    except KeyringError:
+        app.state.notebook_storage_migration_error = (
+            "NotebookLM credential store is unavailable; reconnect Google."
+        )
     app.state.study_ai_settings = StudyAISettingsRepository(database)
     app.state.anki_repository = AnkiCurationRepository(database)
     app.state.anki_tag_policy = TagPolicy(
@@ -520,7 +526,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         active_anki_prompt_directory,
     )
     notebook_storage_path = resolved.data_dir / "google" / "notebooklm-storage.json"
-    app.state.notebook_storage_migration_error = None
     try:
         app.state.notebook_storage_migrated = migrate_encrypted_notebook_storage(
             notebook_storage_path.with_suffix(".enc"),
