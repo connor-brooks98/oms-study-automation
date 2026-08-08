@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from types import SimpleNamespace
 
 import numpy as np
@@ -284,6 +285,24 @@ def test_residual_audits_borderline_band_and_binds_semantic_generation(monkeypat
             ),
         ),
         prior_payloads={
+            CurationStage.PREFLIGHT: {
+                "prompt_snapshot": [
+                    {
+                        "id": "card-centric-classifier",
+                        "version": "2.0.0",
+                        "prompt_hash": hashlib.sha256(
+                            b"Pinned classifier instruction"
+                        ).hexdigest()[:12],
+                        "content": "Pinned classifier instruction",
+                        "metadata": {
+                            "id": "card-centric-classifier",
+                            "version": "2.0.0",
+                            "schema": "card_centric_classify_v1",
+                            "response_format": "json",
+                        },
+                    }
+                ]
+            },
             CurationStage.SOURCE_INDEX: {
                 "source_index": source.model_dump(mode="json"),
                 "cards": [card.model_dump(mode="json")],
