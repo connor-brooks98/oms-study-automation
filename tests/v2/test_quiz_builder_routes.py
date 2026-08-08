@@ -65,6 +65,8 @@ def test_quiz_builder_keeps_generate_and_import_workflows(tmp_path) -> None:
     assert "Quiz Builder" in response.text
     assert "Generate Quiz" in response.text
     assert "Import Practice Questions" in response.text
+    assert 'href="/studio/library/quizzes"' in response.text
+    assert "Manage released libraries" in response.text
     assert "NotebookLM Studio" not in response.text
 
 
@@ -210,6 +212,9 @@ def test_direct_review_data_is_safe_and_edits_and_verification_require_csrf(tmp_
     assert "path" not in question
     assert "diagnostics" not in question
     assert all("path" not in candidate for candidate in question["candidates"])
+    assert data.json()["issues"]
+    assert data.json()["issues"][0]["role"] == "err"
+    assert all("path" not in issue for issue in data.json()["issues"])
     assert denied.status_code == 403
     assert unsafe.status_code == 422
     assert blocked_publication.status_code == 409

@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="page-shell artifact-text">
-  <header class="artifact-text-heading">
-    <h1>{{ title }}</h1>
+<section class="page-shell sh-container--narrow artifact-text">
+  <header class="artifact-text-heading sh-header">
+    <h1 class="sh-title">{{ title }}</h1>
     {% if download_url %}
-    <a class="button primary" href="{{ download_url }}">Download transcript</a>
+    <a class="button primary sh-btn sh-btn--primary" href="{{ download_url }}">Download transcript</a>
     {% endif %}
   </header>
   <pre>{{ content }}</pre>

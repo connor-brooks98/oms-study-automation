@@ -1,0 +1,7 @@
+* { box-sizing: border-box; }
+html { min-width: 320px; min-height: 100%; }
+body { min-height: 100vh; margin: 0; }
+body, button, input, select, textarea { font: inherit; }
+button, input, select, textarea { color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }

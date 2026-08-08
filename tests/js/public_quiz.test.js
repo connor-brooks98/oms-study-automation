@@ -439,57 +439,6 @@ test("restoreFocus falls back to the container when the equivalent control rende
   );
 });
 
-test("results-screen Start Over is a no-op when the confirmation is cancelled", async () => {
-  const { documentRef, app } = buildQuizApp();
-  documentRef.defaultView = { localStorage: makeQuizStorage() };
-  const fetchImpl = async () => ({
-    ok: true,
-    async json() {
-      return { token: "tok", version: 1, questions: [] };
-    },
-  });
-
-  const originalConfirm = global.confirm;
-  global.confirm = () => false;
-  try {
-    await quiz.initialize(documentRef, fetchImpl);
-    const restart = app.querySelector('[data-focus-key="result-restart"]');
-    assert.ok(restart, "expected a Start Over button on the results screen");
-    const [handler] = restart._listeners.click;
-    handler();
-  } finally {
-    global.confirm = originalConfirm;
-  }
-
-  assert.deepEqual(documentRef.defaultView.localStorage.removed, []);
-});
-
-test("results-screen Start Over clears progress once confirmed", async () => {
-  const { documentRef, app } = buildQuizApp();
-  documentRef.defaultView = { localStorage: makeQuizStorage() };
-  const fetchImpl = async () => ({
-    ok: true,
-    async json() {
-      return { token: "tok", version: 1, questions: [] };
-    },
-  });
-
-  const originalConfirm = global.confirm;
-  global.confirm = () => true;
-  try {
-    await quiz.initialize(documentRef, fetchImpl);
-    const restart = app.querySelector('[data-focus-key="result-restart"]');
-    const [handler] = restart._listeners.click;
-    handler();
-  } finally {
-    global.confirm = originalConfirm;
-  }
-
-  assert.deepEqual(documentRef.defaultView.localStorage.removed, [
-    "oms-study-hub-quiz:tok:v1",
-  ]);
-});
-
 test("captureFocusKey only restores focus when a tracked control already had it", () => {
   const documentRef = new FakeQuizDocument();
   const container = documentRef.createElement("main");

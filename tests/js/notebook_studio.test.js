@@ -21,6 +21,7 @@ class Element {
   append(...items) { this.children.push(...items); }
   replaceChildren(...items) { this.children = items; }
   addEventListener() {}
+  setAttribute(name, value) { this[name] = value; }
 }
 
 const documentRef = {
@@ -63,6 +64,9 @@ test("dynamic imported-source role select has a visible associated label", () =>
   assert.equal(roleLabel.textContent, "Role");
   assert.equal(roleLabel.htmlFor, roleSelect.id);
   assert.equal(roleSelect.id, "import-source-role-source-42");
+  assert.match(roleSelect.className, /sh-select/);
+  assert.match(row.children[3].className, /sh-check/);
+  assert.match(row.children[4].className, /sh-btn--danger/);
 });
 
 test("role changes clear and disable NotebookLM use for question and answer-key sources", () => {
@@ -84,6 +88,34 @@ test("role changes clear and disable NotebookLM use for question and answer-key 
 test("workflow panel state remains deterministic", () => {
   assert.deepEqual(studio.workflowPanelState("generate"), { generate: true, import: false });
   assert.deepEqual(studio.workflowPanelState("import"), { generate: false, import: true });
+});
+
+test("workflow tabs receive the locked segmented active state", () => {
+  const generate = new Element("button");
+  generate.className = "button sh-btn";
+  generate.dataset.workflowTab = "generate";
+  const imported = new Element("button");
+  imported.className = "button sh-btn";
+  imported.dataset.workflowTab = "import";
+  const generatePanel = new Element("section");
+  generatePanel.dataset.workflowPanel = "generate";
+  const importPanel = new Element("section");
+  importPanel.dataset.workflowPanel = "import";
+  const page = {
+    querySelectorAll: (selector) => selector === "[data-workflow-tab]"
+      ? [generate, imported]
+      : [generatePanel, importPanel],
+  };
+
+  studio.setWorkflowState(page, "import");
+
+  assert.match(imported.className, /sh-seg__btn--active/);
+  assert.match(imported.className, /sh-btn--primary/);
+  assert.doesNotMatch(imported.className, /sh-btn--secondary/);
+  assert.match(generate.className, /sh-btn--secondary/);
+  assert.equal(imported["aria-pressed"], "true");
+  assert.equal(generatePanel.hidden, true);
+  assert.equal(importPanel.hidden, false);
 });
 
 test("direct run history labels review stages and links to question review", () => {

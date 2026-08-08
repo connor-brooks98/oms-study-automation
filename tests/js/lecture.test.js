@@ -47,6 +47,36 @@ const buildCard = (kind) => {
   return { card, message, generateButton };
 };
 
+test("completed generation refresh names the ready artifact", () => {
+  const quiz = buildCard("quiz");
+  const outline = buildCard("outline");
+
+  lecture.render(quiz.card, { state: "complete" });
+  lecture.render(outline.card, { state: "complete" });
+
+  assert.equal(quiz.message.textContent, "1 Study Hub quiz is ready.");
+  assert.equal(outline.message.textContent, "Lecture outline PDF is ready.");
+});
+
+test("runtime generation links use the shared primary button classes", () => {
+  const { card } = buildCard("quiz");
+  const actions = {
+    prepend(node) { this.node = node; },
+  };
+  card._children[".file-actions"] = actions;
+  card.ownerDocument = {
+    createElement() {
+      return { dataset: {} };
+    },
+  };
+
+  lecture.render(card, { state: "complete", url: "/public/quizzes/a1" });
+
+  assert.equal(actions.node.className, "button primary sh-btn sh-btn--primary");
+  assert.equal(actions.node.dataset.generationLink, "");
+  assert.equal(actions.node.textContent, "Take Lecture Quiz");
+});
+
 // The real setTimeout, saved before any monkeypatching below, used only to
 // yield to pending microtasks between async steps.
 const realSetTimeout = global.setTimeout;

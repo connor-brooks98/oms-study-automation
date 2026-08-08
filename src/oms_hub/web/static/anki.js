@@ -59,6 +59,24 @@
     .replaceAll("_", " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 
+  const statusTone = (state) => {
+    const normalized = String(state || "").toLowerCase();
+    if (["complete", "completed", "ready", "configured", "connected", "skipped"].includes(normalized)) return "sh-pill--ok";
+    if (["processing", "queued", "running", "pending", "in_progress", "preflight", "building_source_index", "building_lcl", "retrieving_pass_1", "judging_pass_1", "localizing_missed_concepts", "retrieving_pass_2", "judging_pass_2", "deduping", "generating_gaps", "applying_local", "syncing", "verifying", "envelope_pending"].includes(normalized)) return "sh-pill--info";
+    if (["needs_review", "review", "ready_for_review"].includes(normalized)) return "sh-pill--warn";
+    if (["failed", "quarantined"].includes(normalized)) return "sh-pill--err";
+    return "";
+  };
+
+  const statusDotTone = (state) => statusTone(state).replace("pill", "dot");
+
+  const displayTimestamp = (value) => {
+    const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}:\d{2})/);
+    if (!match) return String(value || "");
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${months[Number(match[2]) - 1]} ${Number(match[3])}, ${match[1]} · ${match[4]}`;
+  };
+
   const candidateAudit = (candidate) => {
     const audit = candidate?.provenance?.audit;
     if (!audit || typeof audit !== "object") {
@@ -348,7 +366,7 @@
       container.append(element(
         documentRef,
         "p",
-        "quiet-state",
+        "sh-empty sh-empty__text",
         "Curation unlocks when current slides, transcript, and NotebookLM outline are all available.",
       ));
     }
@@ -356,14 +374,14 @@
   };
 
   const jobRow = (documentRef, job) => {
-    const row = element(documentRef, "div", "anki-job-row");
+    const row = element(documentRef, "div", "anki-job-row sh-row");
     row.dataset.jobId = job.id;
     const link = element(documentRef, "a", "anki-job-link");
     link.href = `/anki/jobs/${job.id}`;
     const dot = element(
       documentRef,
       "span",
-      `status-dot status-${job.state}`,
+      `status-dot sh-dot ${statusDotTone(job.state)} status-${job.state}`,
     );
     const description = element(documentRef, "span");
     description.append(
@@ -373,21 +391,21 @@
     const state = element(
       documentRef,
       "span",
-      `status-pill status-${job.state}`,
+      `status-pill sh-pill ${statusTone(job.state)} status-${job.state}`,
       readableState(job.state),
     );
     const time = element(
       documentRef,
       "time",
-      "",
-      String(job.updated_at || "").slice(0, 16).replace("T", " "),
+      "sh-mono",
+      displayTimestamp(job.updated_at),
     );
     link.append(dot, description, state, time);
     row.append(link);
     if (canRetryCuration(job.state)) {
       const actions = element(documentRef, "span", "anki-job-actions");
       actions.setAttribute("aria-label", "Failed run actions");
-      const retry = element(documentRef, "button", "anki-icon-button");
+      const retry = element(documentRef, "button", "anki-icon-button sh-iconbtn");
       retry.type = "button";
       retry.dataset.retryQueuedJob = "";
       retry.setAttribute("aria-label", "Retry failed run");
@@ -397,7 +415,7 @@
       const remove = element(
         documentRef,
         "button",
-        "anki-icon-button is-danger",
+        "anki-icon-button sh-iconbtn sh-btn--danger is-danger",
       );
       remove.type = "button";
       remove.dataset.removeFailedJob = "";
@@ -446,13 +464,13 @@
     );
     container.replaceChildren();
     if (!payload.jobs.length) {
-      const empty = element(documentRef, "div", "empty-state anki-empty-compact");
+      const empty = element(documentRef, "div", "sh-empty anki-empty-compact");
       empty.append(
-        element(documentRef, "h2", "", "No curation runs yet"),
+        element(documentRef, "h2", "sh-empty__title", "No curation runs yet"),
         element(
           documentRef,
           "p",
-          "",
+          "sh-empty__text",
           "Your first run will appear here and remain resumable if Study Hub restarts.",
         ),
       );
@@ -847,8 +865,8 @@
   };
 
   const emptyGroup = (documentRef, message) => {
-    const empty = element(documentRef, "div", "anki-group-empty");
-    empty.textContent = message;
+    const empty = element(documentRef, "div", "anki-group-empty sh-empty");
+    empty.append(element(documentRef, "p", "sh-empty__text", message));
     return empty;
   };
 
@@ -933,7 +951,7 @@
     ].filter(Boolean).join(" ").toLocaleLowerCase();
     const header = element(documentRef, "div", "anki-card-choice");
     const label = documentRef.createElement("label");
-    label.className = "anki-select-control";
+    label.className = "anki-select-control sh-check";
     const checkbox = documentRef.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = candidate.selected;
@@ -955,7 +973,7 @@
     const origin = element(
       documentRef,
       "span",
-      "status-pill",
+      "status-pill sh-pill sh-pill--info",
       recovered ? "Recovered" : "Initial match",
     );
     header.append(label, origin, score);
@@ -1029,7 +1047,7 @@
       .filter(Boolean).join(" ").toLocaleLowerCase();
     const header = element(documentRef, "div", "anki-card-choice");
     const label = documentRef.createElement("label");
-    label.className = "anki-select-control";
+    label.className = "anki-select-control sh-check";
     const checkbox = documentRef.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = card.selected;
@@ -1084,7 +1102,7 @@
         "",
         readableState(item.concept_id),
       ),
-      element(documentRef, "span", "status-pill", readableState(item.status)),
+      element(documentRef, "span", `status-pill sh-pill ${statusTone(item.status)}`, readableState(item.status)),
       element(documentRef, "p", "", item.reason),
     );
     return article;
@@ -1317,7 +1335,7 @@
     documentRef.querySelector("#anki-job-state").textContent =
       readableState(job.state);
     documentRef.querySelector("#anki-job-state").className =
-      `status-pill status-${job.state}`;
+      `status-pill sh-pill ${statusTone(job.state)} status-${job.state}`;
     documentRef.querySelector("#anki-processing-label").textContent =
       readableState(job.state);
     documentRef.querySelector("#anki-processing-count").textContent =
@@ -1746,6 +1764,7 @@
     hasRequiredSources,
     initialize,
     initializeReview,
+    jobRow,
     lectureOptions,
     loadModelOptions,
     matchesReviewSearch,
@@ -1755,6 +1774,7 @@
     populateModelOptions,
     processingPercent,
     readableState,
+    statusTone,
     reconciliationDisplay,
     reviewViews,
     renderProcessing,

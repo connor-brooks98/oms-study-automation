@@ -1,17 +1,17 @@
 {% extends "base.html" %}
 {% block title %}Quarantine · Study Hub{% endblock %}
 {% block content %}
-<section class="page-shell narrow-page">
-  <div class="page-heading">
+<section class="page-shell narrow-page sh-container--narrow">
+  <div class="page-heading sh-header">
     <div>
-      <p class="eyebrow">Manual assignment</p>
-      <h1>Quarantine</h1>
-      <p class="page-summary">Choose a lecture for files the Hub could not match confidently.</p>
+      <p class="eyebrow sh-eyebrow">Manual assignment</p>
+      <h1 class="sh-title">Quarantine</h1>
+      <p class="page-summary sh-subtitle">Choose a lecture for files the Hub could not match confidently.</p>
     </div>
-    <span class="status-pill status-quarantined">{{ items|length }} waiting</span>
+    <span class="status-pill sh-pill {{ 'sh-pill--err' if items|length else 'sh-pill--bare' }} status-quarantined">{{ items|length }} waiting</span>
   </div>
   {% for item in items %}
-  <section class="card">
+  <section class="card sh-card">
     <p class="mono-label">{{ item.kind.value }}</p>
     <h2>{{ item.original_filename }}</h2>
     <p class="page-summary">{{ item.size_bytes }} bytes</p>
@@ -20,20 +20,20 @@
     {% endif %}
     <form method="post" action="/quarantine/{{ item.id }}/assign">
       <label>Lecture
-        <select name="lecture_id" required>
+        <select class="sh-select" name="lecture_id" required>
           <option value="">Select a lecture</option>
           {% for lecture in lectures %}
           <option value="{{ lecture.id }}">{{ lecture.subject }} · Exam {{ lecture.exam_number }} · Lecture {{ lecture.lecture_number }} — {{ lecture.topic }}</option>
           {% endfor %}
         </select>
       </label>
-      <button class="button primary" type="submit">Assign and process</button>
+      <button class="button primary sh-btn sh-btn--primary" type="submit">Assign and process</button>
     </form>
   </section>
   {% else %}
-  <section class="empty-state">
-    <h2>Nothing is quarantined</h2>
-    <p>Ambiguous uploads will appear here with their matching evidence.</p>
+  <section class="empty-state sh-empty">
+    <h2 class="sh-empty__title">Nothing is quarantined</h2>
+    <p class="sh-empty__text">Ambiguous uploads will appear here with their matching evidence.</p>
   </section>
   {% endfor %}
 </section>

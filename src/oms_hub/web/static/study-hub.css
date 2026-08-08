@@ -1,0 +1,253 @@
+/* ============================================================================
+   Study Hub — shared stylesheet (implements the LOCKED Design Standard)
+   Single flat class per component (no element selectors) so nothing cancels.
+   Include this AFTER any reset and BEFORE page-specific CSS.
+   Wrap app pages in <body class="sh-app"> (or a top wrapper) for font/bg context.
+   Maps to tracker global IDs G-01 … G-16.
+   ============================================================================ */
+
+/* ---- Tokens (G-11 type, G-03/04 color, G-05 spacing, G-14 radius/elevation) ---- */
+:root {
+  /* fonts */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* type scale (px) */
+  --fs-title: 40px; --fs-h2: 24px; --fs-h3: 18px;
+  --fs-body: 16px;  --fs-sm: 14px; --fs-xs: 13px;
+  --fs-label: 12px; --fs-micro: 11px;
+
+  /* neutrals */
+  --bg: oklch(0.985 0.004 255);
+  --card: oklch(1 0 0);
+  --surface: oklch(0.965 0.005 255);
+  --border: oklch(0.91 0.006 255);
+  --text-1: oklch(0.24 0.014 255);
+  --text-2: oklch(0.48 0.012 255);
+  --text-3: oklch(0.64 0.01 255);
+  --text-faint: oklch(0.82 0.005 255);
+
+  /* brand — interactive only */
+  --brand: oklch(0.32 0.07 255);
+  --link: oklch(0.48 0.09 255);
+  --link-hover: oklch(0.32 0.07 255);
+  --brand-tint: oklch(0.94 0.02 255);
+  --focus-ring: oklch(0.55 0.11 255);
+
+  /* status triads: dot / bg / text */
+  --st-neutral-dot: oklch(0.6 0.008 255); --st-neutral-bg: var(--surface);       --st-neutral-tx: oklch(0.45 0.01 255);
+  --st-info-dot:    oklch(0.55 0.11 255); --st-info-bg:    oklch(0.95 0.025 255); --st-info-tx:    oklch(0.3 0.09 255);
+  --st-warn-dot:    oklch(0.68 0.14 70);  --st-warn-bg:    oklch(0.95 0.035 70);  --st-warn-tx:    oklch(0.4 0.11 70);
+  --st-ok-dot:      oklch(0.58 0.11 150); --st-ok-bg:      oklch(0.95 0.03 150);  --st-ok-tx:      oklch(0.3 0.09 150);
+  --st-err-dot:     oklch(0.58 0.15 25);  --st-err-bg:     oklch(0.95 0.035 25);  --st-err-tx:     oklch(0.4 0.12 25);
+
+  /* spacing (4px base) */
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px;
+  --sp-6:24px; --sp-8:32px; --sp-10:40px; --sp-12:48px; --sp-16:64px;
+
+  /* layout */
+  --w-page: 1040px; --w-narrow: 720px; --pad-side: var(--sp-8);
+
+  /* radius + elevation */
+  --r-sm: 8px; --r-md: 12px; --r-pill: 999px;
+  --shadow-sm: 0 1px 2px oklch(0.24 0.014 255 / 0.05), 0 1px 3px oklch(0.24 0.014 255 / 0.06);
+
+  /* control height */
+  --control-h: 40px;
+}
+
+/* ---- App context (G-11): put class="sh-app" on body or top wrapper ---- */
+.sh-app {
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  color: var(--text-1);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+.sh-mono { font-family: var(--font-mono); }
+
+/* ---- Containers (G-01): nothing full-bleed ---- */
+.sh-container         { max-width: var(--w-page);   margin-inline: auto; padding-inline: var(--pad-side); }
+.sh-container--narrow { max-width: var(--w-narrow); margin-inline: auto; padding-inline: var(--pad-side); }
+
+/* ---- App chrome (G-02): nav + brand + system pill on every page ---- */
+.sh-nav {
+  display: flex; align-items: center; gap: var(--sp-5);
+  padding: var(--sp-2) var(--sp-8);
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  font: 600 var(--fs-micro)/1 var(--font-mono);
+  letter-spacing: .04em; text-transform: uppercase;
+  overflow-x: auto;                 /* nav has ~10 items — degrade gracefully */
+}
+.sh-nav__link        { color: var(--text-3); text-decoration: none; white-space: nowrap; }
+.sh-nav__link--active { color: var(--brand); }
+.sh-brand {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-8);
+  background: var(--card); border-bottom: 1px solid var(--border);
+}
+.sh-brand__tile {
+  width: 32px; height: 32px; border-radius: var(--r-sm); flex: none;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--brand); color: #fff; font: 700 var(--fs-xs) var(--font-mono);
+}
+.sh-brand__name { font-size: var(--fs-h3); font-weight: 600; }
+.sh-syspill { margin-left: auto; }   /* pushes "NUC online" right; use .sh-pill inside */
+
+/* ---- Page header (G-11 + DASH-01): one title, pills sit with the header ---- */
+.sh-header          { margin: var(--sp-10) 0 var(--sp-8); }
+.sh-eyebrow {
+  font: 600 var(--fs-label) var(--font-mono);
+  letter-spacing: .06em; text-transform: uppercase; color: var(--brand);
+  margin-bottom: var(--sp-3);
+}
+.sh-title    { font-size: var(--fs-title); font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; color: var(--text-1); margin: 0 0 var(--sp-2); }
+.sh-subtitle { font-size: var(--fs-body); color: var(--text-2); margin: 0; }
+.sh-header__row     { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-6); flex-wrap: wrap; }
+.sh-header__actions { display: flex; align-items: center; gap: var(--sp-3); }
+
+.sh-h2 { font-size: var(--fs-h2); font-weight: 600; line-height: 1.3; }
+.sh-h3 { font-size: var(--fs-h3); font-weight: 600; line-height: 1.3; }
+
+/* ---- Buttons (G-09): auto-width default; --block only as a card's sole action ---- */
+.sh-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2);
+  padding: 11px 20px; border-radius: var(--r-sm);
+  font: 500 var(--fs-sm)/1 var(--font-sans);
+  border: 1px solid transparent; cursor: pointer; text-decoration: none;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.sh-btn--sm        { padding: 8px 14px; }
+.sh-btn--block     { width: 100%; }
+.sh-btn--primary   { background: var(--brand); color: #fff; }
+.sh-btn--primary:hover { background: oklch(0.28 0.07 255); }
+.sh-btn--secondary { background: var(--card); color: var(--brand); border-color: var(--border); }
+.sh-btn--secondary:hover { background: var(--surface); }
+.sh-btn--ghost     { background: transparent; color: var(--link); }
+.sh-btn--ghost:hover { color: var(--link-hover); }
+.sh-btn--danger    { background: var(--card); color: var(--st-err-tx); border-color: var(--st-err-dot); }
+.sh-btn--danger:hover { background: var(--st-err-bg); }
+.sh-btn:disabled, .sh-btn.is-disabled { background: var(--surface); color: var(--text-3); border-color: transparent; cursor: not-allowed; }
+
+/* ---- Cards / panels (G-04, G-14, G-15): one grouping treatment ---- */
+.sh-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--r-md); padding: var(--sp-5) var(--sp-6);
+  box-shadow: var(--shadow-sm);
+}
+.sh-panel {              /* read-only / inset content ONLY */
+  background: var(--surface); border-radius: var(--r-md);
+  padding: var(--sp-5) var(--sp-6);
+}
+.sh-stack > * + * { margin-top: var(--sp-3); }   /* list rhythm (G-15) */
+.sh-section + .sh-section { margin-top: var(--sp-10); }
+
+/* ---- Labels (G-04): two styles only ---- */
+.sh-field-label   { display: block; font-size: var(--fs-sm); font-weight: 600; margin-bottom: var(--sp-2); }
+.sh-section-label { font: 600 var(--fs-label) var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); margin-bottom: var(--sp-3); }
+
+/* ---- Form controls (G-03): kill native chrome ---- */
+.sh-control, .sh-input, .sh-select, .sh-textarea {
+  width: 100%; min-height: var(--control-h);
+  padding: 10px 12px; font: 400 var(--fs-body) var(--font-sans);
+  color: var(--text-1); background: var(--card);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  box-sizing: border-box;
+}
+.sh-textarea { min-height: 96px; line-height: 1.5; resize: vertical; }
+.sh-select {
+  -webkit-appearance: none; appearance: none; padding-right: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%23969ba3' stroke-width='1.5'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center;
+}
+.sh-input:focus-visible, .sh-select:focus-visible, .sh-textarea:focus-visible, .sh-control:focus-visible {
+  outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--focus-ring);
+}
+/* styled file input: <label class="sh-file"><span>Choose files</span><input type=file hidden></label> + a filename node */
+.sh-file { display: inline-flex; align-items: center; gap: var(--sp-3); }
+.sh-file__btn { /* apply .sh-btn .sh-btn--secondary in markup, or reuse: */ }
+.sh-file__name { font: var(--fs-xs) var(--font-mono); color: var(--text-3); }
+/* checkbox: 16px, brand accent, label to the right */
+.sh-check { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-sm); }
+.sh-check input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--brand); margin: 0; flex: none; }
+
+/* ---- Status pill + dot (G-07): one success pill; neutral at 0 ---- */
+.sh-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 12px 5px 9px; border-radius: var(--r-pill);
+  font: 600 var(--fs-micro) var(--font-mono); letter-spacing: .03em; text-transform: uppercase;
+  background: var(--st-neutral-bg); color: var(--st-neutral-tx);
+}
+.sh-pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--st-neutral-dot); }
+.sh-pill--info { background: var(--st-info-bg); color: var(--st-info-tx); }  .sh-pill--info::before { background: var(--st-info-dot); }
+.sh-pill--warn { background: var(--st-warn-bg); color: var(--st-warn-tx); }  .sh-pill--warn::before { background: var(--st-warn-dot); }
+.sh-pill--ok   { background: var(--st-ok-bg);   color: var(--st-ok-tx); }    .sh-pill--ok::before   { background: var(--st-ok-dot); }
+.sh-pill--err  { background: var(--st-err-bg);  color: var(--st-err-tx); }   .sh-pill--err::before  { background: var(--st-err-dot); }
+.sh-pill--bare::before { display: none; }   /* count pills without a dot */
+
+.sh-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--st-neutral-dot); }
+.sh-dot--info { background: var(--st-info-dot); } .sh-dot--warn { background: var(--st-warn-dot); }
+.sh-dot--ok   { background: var(--st-ok-dot); }   .sh-dot--err  { background: var(--st-err-dot); }
+
+/* ---- Subject accent (G-08): set --sh-hue inline, e.g. style="--sh-hue:15" ---- */
+.sh-subject-dot   { display:inline-block; width:10px; height:10px; border-radius:50%; flex:none; background: oklch(0.55 0.11 var(--sh-hue, 255)); }
+.sh-subject-spine { width:5px; height:34px; border-radius:3px; flex:none; background: oklch(0.55 0.11 var(--sh-hue, 255)); }
+.sh-subject-pill {
+  display:inline-block; padding:4px 10px; border-radius: var(--r-pill);
+  font: 600 var(--fs-micro) var(--font-mono); letter-spacing:.03em; text-transform:uppercase;
+  color: oklch(0.4 0.11 var(--sh-hue, 255)); background: oklch(0.95 0.025 var(--sh-hue, 255));
+}
+/* hues (locked): neuro 290 · msk 50 · opp 175 · epc 95 · heme 15 · cardio 340 · renal 135 · resp 210 */
+
+/* ---- Segmented toggle (G-13): views only; keep actions out ---- */
+.sh-seg { display: inline-flex; gap: var(--sp-2); }
+.sh-seg__btn { /* apply .sh-btn .sh-btn--secondary; active gets --active */ }
+.sh-seg__btn--active { background: var(--brand) !important; color: #fff !important; border-color: var(--brand) !important; }
+
+/* ---- Empty state (G-06): bordered card; dashed reserved for dropzones ---- */
+.sh-empty { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-12) var(--sp-8); text-align: center; }
+.sh-empty__title { font-size: var(--fs-h3); font-weight: 600; margin-bottom: var(--sp-2); }
+.sh-empty__text  { font-size: var(--fs-sm); color: var(--text-2); }
+.sh-dropzone { border: 1.5px dashed var(--border); border-radius: var(--r-md); padding: var(--sp-16) var(--sp-8); text-align: center; }
+.sh-validation { font-size: var(--fs-sm); color: var(--st-warn-tx); }   /* inline validation ≠ empty state */
+
+/* ---- Entity row (G-10): dot · title · meta · pill · actions ---- */
+.sh-row {
+  display: flex; align-items: center; gap: var(--sp-3);
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--r-md); padding: var(--sp-4) var(--sp-5); box-shadow: var(--shadow-sm);
+}
+.sh-row__title { font-size: var(--fs-sm); font-weight: 600; }
+.sh-row__meta  { font: var(--fs-xs) var(--font-mono); color: var(--text-3); }
+.sh-row__spacer { flex: 1; }
+.sh-row__actions { display: flex; align-items: center; gap: var(--sp-2); flex: none; }
+.sh-iconbtn { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--card); cursor: pointer; }
+
+/* ---- Checklist / step row (LECT-01): shares the ok token ---- */
+.sh-step { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); border-radius: var(--r-sm); background: var(--surface); }
+.sh-step--ok { background: var(--st-ok-bg); }
+
+/* ---- Answer option (QVIEW-01): selected state must be visible ---- */
+.sh-option {
+  display: flex; align-items: center; gap: var(--sp-3);
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  padding: var(--sp-4) var(--sp-5); background: var(--card); cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+.sh-option:hover { border-color: var(--text-3); }
+.sh-option--selected  { border: 2px solid var(--brand); background: var(--brand-tint); }
+.sh-option--correct   { border-color: var(--st-ok-dot);  background: var(--st-ok-bg); }
+.sh-option--incorrect { border-color: var(--st-err-dot); background: var(--st-err-bg); }
+.sh-option__medallion { width: 24px; height: 24px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center; font-size: var(--fs-xs); background: var(--surface); color: var(--text-2); }
+.sh-option--selected .sh-option__medallion { background: var(--brand); color: #fff; }
+
+/* ---- Disclosure (G-05): one chevron, rotates on open ---- */
+.sh-disclose { display: inline-block; color: var(--text-3); transition: transform .15s; }
+.sh-disclose.is-open { transform: rotate(90deg); }
+
+/* ---- a11y floor ---- */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) {
+  .sh-btn, .sh-option, .sh-disclose { transition: none; }
+}

@@ -42,7 +42,8 @@ test("progress is classified from the quiz player's saved state", () => {
 
   assert.equal(library.progressLabel(untouched, 2), "Not started");
   assert.equal(library.progressLabel(started, 2), "In progress");
-  assert.equal(library.progressLabel(complete, 2), "Completed");
+  assert.equal(library.progressLabel(complete, 2), "Complete");
+  assert.equal(library.progressClass("Complete"), "sh-pill--ok");
   assert.equal(library.progressLabel(complete, 3), "Not started");
 });
 
@@ -52,6 +53,27 @@ test("corrupt browser progress is treated as not started", () => {
   };
 
   assert.equal(library.readProgress(storage, "token", 1), "Not started");
+});
+
+test("course disclosures keep aria and the shared glyph state in sync", () => {
+  const glyph = {
+    states: [],
+    classList: { toggle(_name, active) { glyph.states.push(active); } },
+  };
+  const panel = { hidden: false };
+  const button = {
+    attributes: { "aria-controls": "course-1" },
+    setAttribute(name, value) { this.attributes[name] = value; },
+    getAttribute(name) { return this.attributes[name] || null; },
+    querySelector(selector) { return selector === ".sh-disclose" ? glyph : null; },
+    ownerDocument: { getElementById(id) { return id === "course-1" ? panel : null; } },
+  };
+
+  library.setExpanded(button, false);
+
+  assert.equal(button.attributes["aria-expanded"], "false");
+  assert.equal(panel.hidden, true);
+  assert.deepEqual(glyph.states, [false]);
 });
 
 // -- Minimal fake DOM sufficient to drive initialize()'s reset controls --
@@ -107,25 +129,39 @@ class FakeRemoveButton extends FakeLibraryElement {
   }
 }
 
+class FakeTitleForm extends FakeLibraryElement {
+  constructor(title) {
+    super();
+    this.dataset.titleUrl = "/api/published-quizzes/tok1/title";
+    this.input = new FakeLibraryElement();
+    this.input.value = title;
+    this.saveButton = new FakeLibraryElement();
+  }
+
+  querySelector(selector) {
+    if (selector === "[data-title-input]") return this.input;
+    if (selector === "[data-save-title]") return this.saveButton;
+    return null;
+  }
+}
+
 class FakeLibraryDocument {
   constructor({
     rows = [],
     resetButtons = [],
     removeButtons = [],
-    titleButtons = [],
+    titleForms = [],
     libraryMoveButtons = [],
     orderMoveButtons = [],
     resetMessage,
-    resetProgressButton,
   }) {
     this.rows = rows;
     this.resetButtons = resetButtons;
     this.removeButtons = removeButtons;
-    this.titleButtons = titleButtons;
+    this.titleForms = titleForms;
     this.libraryMoveButtons = libraryMoveButtons;
     this.orderMoveButtons = orderMoveButtons;
     this.resetMessage = resetMessage || new FakeLibraryElement();
-    this.resetProgressButton = resetProgressButton || null;
   }
 
   querySelectorAll(selector) {
@@ -133,7 +169,7 @@ class FakeLibraryDocument {
     if (selector === "[data-quiz-row]") return this.rows;
     if (selector === "[data-reset-quiz]") return this.resetButtons;
     if (selector === "[data-remove-quiz]") return this.removeButtons;
-    if (selector === "[data-edit-quiz-title]") return this.titleButtons;
+    if (selector === "[data-title-form]") return this.titleForms;
     if (selector === "[data-move-quiz-library]") return this.libraryMoveButtons;
     if (selector === "[data-move-quiz-order]") return this.orderMoveButtons;
     return [];
@@ -141,7 +177,6 @@ class FakeLibraryDocument {
 
   querySelector(selector) {
     if (selector === "[data-reset-message]") return this.resetMessage;
-    if (selector === "[data-reset-progress]") return this.resetProgressButton;
     return null;
   }
 }
@@ -205,48 +240,6 @@ test("per-quiz reset clears progress once confirmed", () => {
 
   assert.equal(storage.getItem(storageKey), null);
   assert.match(documentRef.resetMessage.textContent, /reset/i);
-});
-
-test("global reset-all asks for confirmation and leaves progress untouched when cancelled", () => {
-  const storage = makeMemoryStorage();
-  storage.setItem("oms-study-hub-quiz:tok1:v1", "{}");
-  const resetProgressButton = new FakeLibraryElement();
-  const documentRef = new FakeLibraryDocument({ resetProgressButton });
-
-  const originalConfirm = global.confirm;
-  global.confirm = () => false;
-  try {
-    library.initialize(documentRef, storage);
-    const [handler] = resetProgressButton._listeners.click;
-    handler();
-  } finally {
-    global.confirm = originalConfirm;
-  }
-
-  assert.equal(storage.getItem("oms-study-hub-quiz:tok1:v1"), "{}");
-});
-
-test("global reset-all clears every quiz's progress once confirmed", () => {
-  const storage = makeMemoryStorage();
-  storage.setItem("oms-study-hub-quiz:tok1:v1", "{}");
-  storage.setItem("oms-study-hub-quiz:tok2:v1", "{}");
-  storage.setItem("unrelated-key", "keep me");
-  const resetProgressButton = new FakeLibraryElement();
-  const documentRef = new FakeLibraryDocument({ resetProgressButton });
-
-  const originalConfirm = global.confirm;
-  global.confirm = () => true;
-  try {
-    library.initialize(documentRef, storage);
-    const [handler] = resetProgressButton._listeners.click;
-    handler();
-  } finally {
-    global.confirm = originalConfirm;
-  }
-
-  assert.equal(storage.getItem("oms-study-hub-quiz:tok1:v1"), null);
-  assert.equal(storage.getItem("oms-study-hub-quiz:tok2:v1"), null);
-  assert.equal(storage.getItem("unrelated-key"), "keep me");
 });
 
 test("remove leaves a released quiz alone when confirmation is cancelled", async () => {
@@ -330,19 +323,13 @@ test("failed remove keeps the row and reports the server detail", async () => {
 });
 
 test("title edit sends a trimmed PATCH and reloads only after success", async () => {
-  const titleButton = new FakeLibraryElement();
-  titleButton.dataset = {
-    title: "Old title",
-    titleUrl: "/api/published-quizzes/tok1/title",
-  };
-  const documentRef = new FakeLibraryDocument({ titleButtons: [titleButton] });
+  const titleForm = new FakeTitleForm("  Revised title  ");
+  const documentRef = new FakeLibraryDocument({ titleForms: [titleForm] });
   documentRef.cookie = "study_hub_csrf=csrf-token";
   const originalFetch = global.fetch;
-  const originalPrompt = global.prompt;
   const originalLocation = global.location;
   let request;
   let reloads = 0;
-  global.prompt = () => "  Revised title  ";
   global.location = { reload: () => { reloads += 1; } };
   global.fetch = async (url, options) => {
     request = { url, options };
@@ -350,10 +337,9 @@ test("title edit sends a trimmed PATCH and reloads only after success", async ()
   };
   try {
     library.initialize(documentRef, makeMemoryStorage());
-    await titleButton._listeners.click[0]();
+    await titleForm._listeners.submit[0]({ preventDefault() {} });
   } finally {
     global.fetch = originalFetch;
-    global.prompt = originalPrompt;
     global.location = originalLocation;
   }
 
@@ -371,25 +357,14 @@ test("title edit sends a trimmed PATCH and reloads only after success", async ()
   assert.equal(reloads, 1);
 });
 
-test("library and order controls send their PATCH payloads", async () => {
+test("library controls and direction sequences preserve management payloads", async () => {
   const libraryButton = new FakeLibraryElement();
   libraryButton.dataset = {
     libraryUrl: "/api/published-quizzes/tok1/library",
     targetSection: "practice_questions",
   };
-  const upButton = new FakeLibraryElement();
-  upButton.dataset = {
-    orderUrl: "/api/published-quizzes/tok1/order",
-    direction: "up",
-  };
-  const downButton = new FakeLibraryElement();
-  downButton.dataset = {
-    orderUrl: "/api/published-quizzes/tok1/order",
-    direction: "down",
-  };
   const documentRef = new FakeLibraryDocument({
     libraryMoveButtons: [libraryButton],
-    orderMoveButtons: [upButton, downButton],
   });
   documentRef.cookie = "study_hub_csrf=csrf-token";
   const originalFetch = global.fetch;
@@ -403,8 +378,6 @@ test("library and order controls send their PATCH payloads", async () => {
   try {
     library.initialize(documentRef, makeMemoryStorage());
     await libraryButton._listeners.click[0]();
-    await upButton._listeners.click[0]();
-    await downButton._listeners.click[0]();
   } finally {
     global.fetch = originalFetch;
     global.location = originalLocation;
@@ -415,15 +388,106 @@ test("library and order controls send their PATCH payloads", async () => {
       url: "/api/published-quizzes/tok1/library",
       body: JSON.stringify({ section: "practice_questions" }),
     },
-    {
-      url: "/api/published-quizzes/tok1/order",
-      body: JSON.stringify({ direction: "up" }),
-    },
-    {
-      url: "/api/published-quizzes/tok1/order",
-      body: JSON.stringify({ direction: "down" }),
-    },
   ]);
+  assert.deepEqual(library.directionSequence(0, 3), ["down", "down", "down"]);
+  assert.deepEqual(library.directionSequence(3, 1), ["up", "up"]);
+  assert.deepEqual(library.directionSequence(2, 2), []);
+});
+
+test("failed drag reorder keeps the control usable and reports the server detail", async () => {
+  const control = new FakeLibraryElement();
+  const row = { dataset: { orderUrl: "/api/published-quizzes/tok1/order" } };
+  const documentRef = new FakeLibraryDocument({});
+  documentRef.cookie = "study_hub_csrf=csrf-token";
+  const originalLocation = global.location;
+  let reloads = 0;
+  global.location = { reload: () => { reloads += 1; } };
+  let result;
+  try {
+    result = await library.reorderRequest(
+      documentRef,
+      control,
+      row,
+      ["down", "down"],
+      async () => ({ ok: false, async json() { return { detail: "Order is no longer available" }; } }),
+    );
+  } finally {
+    global.location = originalLocation;
+  }
+
+  assert.equal(result, false);
+  assert.equal(reloads, 0);
+  assert.equal(control.disabled, false);
+  assert.equal(documentRef.resetMessage.textContent, "Order is no longer available");
+});
+
+test("successful multi-step reorder sends every direction and reloads once", async () => {
+  const control = new FakeLibraryElement();
+  const row = { dataset: { orderUrl: "/api/published-quizzes/tok1/order" } };
+  const documentRef = new FakeLibraryDocument({});
+  const originalLocation = global.location;
+  const requests = [];
+  let reloads = 0;
+  global.location = { reload: () => { reloads += 1; } };
+  try {
+    const result = await library.reorderRequest(
+      documentRef,
+      control,
+      row,
+      ["down", "down"],
+      async (_url, options) => {
+        requests.push(JSON.parse(options.body).direction);
+        return { ok: true, async json() { return {}; } };
+      },
+    );
+    assert.equal(result, true);
+  } finally {
+    global.location = originalLocation;
+  }
+  assert.deepEqual(requests, ["down", "down"]);
+  assert.equal(reloads, 1);
+});
+
+test("partial reorder failure reloads authoritative state and restores its message", async () => {
+  const control = new FakeLibraryElement();
+  const row = { dataset: { orderUrl: "/api/published-quizzes/tok1/order" } };
+  const documentRef = new FakeLibraryDocument({});
+  const storage = makeMemoryStorage();
+  const originalLocation = global.location;
+  let reloads = 0;
+  let requests = 0;
+  global.location = { reload: () => { reloads += 1; } };
+  try {
+    const result = await library.reorderRequest(
+      documentRef,
+      control,
+      row,
+      ["down", "down"],
+      async () => {
+        requests += 1;
+        return requests === 1
+          ? { ok: true, async json() { return {}; } }
+          : { ok: false, async json() { return { detail: "Order changed elsewhere" }; } };
+      },
+      storage,
+    );
+    assert.equal(result, false);
+  } finally {
+    global.location = originalLocation;
+  }
+  assert.equal(reloads, 1);
+  assert.equal(storage.getItem(library.reorderFailureStorageKey), "Order changed elsewhere");
+  library.consumeReorderFailure(documentRef, storage);
+  assert.equal(documentRef.resetMessage.textContent, "Order changed elsewhere");
+  assert.equal(storage.getItem(library.reorderFailureStorageKey), null);
+});
+
+test("keyboard reorder only permits an in-bounds arrow direction", () => {
+  assert.equal(library.keyboardReorderDirection("ArrowUp", 0, 3), null);
+  assert.equal(library.keyboardReorderDirection("ArrowDown", 0, 3), "down");
+  assert.equal(library.keyboardReorderDirection("ArrowUp", 2, 3), "up");
+  assert.equal(library.keyboardReorderDirection("ArrowDown", 2, 3), null);
+  assert.equal(library.keyboardReorderDirection("Enter", 1, 3), null);
 });
 
 test("failed management updates keep the button enabled and do not reload", async () => {

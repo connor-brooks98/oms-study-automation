@@ -38,6 +38,33 @@
     import: workflow === "import",
   });
 
+  const toggleClass = (element, className, enabled) => {
+    if (element.classList) {
+      element.classList.toggle(className, enabled);
+      return;
+    }
+    const classes = new Set(String(element.className || "").split(/\s+/).filter(Boolean));
+    if (enabled) classes.add(className);
+    else classes.delete(className);
+    element.className = [...classes].join(" ");
+  };
+
+  const setWorkflowState = (page, workflow) => {
+    const state = workflowPanelState(workflow);
+    page.querySelectorAll("[data-workflow-panel]").forEach((panel) => {
+      panel.hidden = !state[panel.dataset.workflowPanel];
+    });
+    page.querySelectorAll("[data-workflow-tab]").forEach((tab) => {
+      const active = tab.dataset.workflowTab === workflow;
+      tab.setAttribute("aria-pressed", String(active));
+      toggleClass(tab, "primary", active);
+      toggleClass(tab, "secondary", !active);
+      toggleClass(tab, "sh-seg__btn--active", active);
+      toggleClass(tab, "sh-btn--primary", active);
+      toggleClass(tab, "sh-btn--secondary", !active);
+    });
+  };
+
   const renderSources = (documentRef, list, sources) => {
     list.replaceChildren();
     if (!sources.length) {
@@ -54,7 +81,7 @@
       if (source.state !== "deleted") {
         const remove = documentRef.createElement("button");
         remove.type = "button";
-        remove.className = "button secondary compact";
+        remove.className = "button secondary compact sh-btn sh-btn--secondary";
         remove.dataset.deleteSource = source.id;
         remove.textContent = "Delete source";
         row.append(remove);
@@ -78,6 +105,7 @@
     }
     attached.forEach((source) => {
       const label = documentRef.createElement("label");
+      label.className = "sh-check";
       const checkbox = documentRef.createElement("input");
       checkbox.type = "checkbox";
       checkbox.value = source.id;
@@ -133,7 +161,7 @@
     }
     runs.forEach((run) => {
       const card = documentRef.createElement("article");
-      card.className = "studio-run";
+      card.className = "sh-card studio-run";
       card.dataset.runId = run.id;
       const heading = documentRef.createElement("h3");
       heading.textContent = run.label;
@@ -153,27 +181,27 @@
       card.append(status);
       if (run.image_review_url) {
         const images = documentRef.createElement("a");
-        images.className = "button primary compact";
+        images.className = "button primary compact sh-btn sh-btn--primary";
         images.href = run.image_review_url;
         images.textContent = "Add images";
         card.append(images);
       }
       if (run.review_url) {
         const review = documentRef.createElement("a");
-        review.className = "button primary compact";
+        review.className = "button primary compact sh-btn sh-btn--primary";
         review.href = run.review_url;
         review.textContent = "Review questions";
         card.append(review);
       }
       if (run.published_url) {
         const link = documentRef.createElement("a");
-        link.className = "button secondary compact";
+        link.className = "button secondary compact sh-btn sh-btn--secondary";
         link.href = run.published_url;
         link.textContent = "Open published quiz";
         card.append(link);
         const unpublish = documentRef.createElement("button");
         unpublish.type = "button";
-        unpublish.className = "button secondary compact";
+        unpublish.className = "button secondary compact sh-btn sh-btn--secondary";
         unpublish.dataset.unpublishRun = run.id;
         unpublish.textContent = "Unpublish";
         card.append(unpublish);
@@ -183,7 +211,7 @@
         actions.className = "studio-run-actions";
         const rerun = documentRef.createElement("button");
         rerun.type = "button";
-        rerun.className = "button secondary compact";
+        rerun.className = "button secondary compact sh-btn sh-btn--secondary";
         rerun.dataset.rerun = run.id;
         rerun.textContent = "↻";
         rerun.ariaLabel = "Re-run this quiz";
@@ -192,7 +220,7 @@
         actions.append(rerun);
         const remove = documentRef.createElement("button");
         remove.type = "button";
-        remove.className = "button danger compact";
+        remove.className = "button danger compact sh-btn sh-btn--danger";
         remove.dataset.removeRun = run.id;
         remove.textContent = "×";
         remove.ariaLabel = "Remove run from history";
@@ -262,9 +290,11 @@
     const select = documentRef.createElement("select");
     select.id = `import-source-role-${source.id}`;
     select.dataset.importRowRole = "true";
+    select.className = "sh-select";
     const roleLabel = documentRef.createElement("label");
     roleLabel.htmlFor = select.id;
     roleLabel.textContent = "Role";
+    roleLabel.className = "sh-field-label";
     [
       ["questions", "Questions"], ["answer_key", "Answer key"],
       ["supporting_reference", "Supporting reference"],
@@ -280,9 +310,11 @@
     notebook.checked = attachToNotebook && importRoleAllowsNotebook(role);
     notebook.disabled = !importRoleAllowsNotebook(role);
     const notebookLabel = documentRef.createElement("label");
+    notebookLabel.className = "sh-check";
     notebookLabel.append(notebook, documentRef.createTextNode(" Use in NotebookLM for missing answers"));
     const remove = documentRef.createElement("button");
     remove.type = "button"; remove.dataset.removeImportSource = "true"; remove.textContent = "Remove";
+    remove.className = "sh-btn sh-btn--danger";
     select.addEventListener("change", () => {
       notebook.disabled = !importRoleAllowsNotebook(select.value);
       if (notebook.disabled) notebook.checked = false;
@@ -336,22 +368,10 @@
     const maxPollDelayMs = 30000;
     let pollDelayMs = basePollDelayMs;
 
-    const setWorkflow = (workflow) => {
-      const state = workflowPanelState(workflow);
-      page.querySelectorAll("[data-workflow-panel]").forEach((panel) => {
-        panel.hidden = !state[panel.dataset.workflowPanel];
-      });
-      page.querySelectorAll("[data-workflow-tab]").forEach((tab) => {
-        const active = tab.dataset.workflowTab === workflow;
-        tab.setAttribute("aria-pressed", String(active));
-        tab.classList.toggle("primary", active);
-        tab.classList.toggle("secondary", !active);
-      });
-    };
     page.querySelectorAll("[data-workflow-tab]").forEach((tab) => {
-      tab.addEventListener("click", () => setWorkflow(tab.dataset.workflowTab));
+      tab.addEventListener("click", () => setWorkflowState(page, tab.dataset.workflowTab));
     });
-    setWorkflow("generate");
+    setWorkflowState(page, "generate");
 
     const scheduleRefresh = (delay = basePollDelayMs) => {
       if (pollHandle !== null) root.clearTimeout(pollHandle);
@@ -729,6 +749,7 @@
     renderSources,
     retryStatus,
     selectAllAttachedSources,
+    setWorkflowState,
     workflowPanelState,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

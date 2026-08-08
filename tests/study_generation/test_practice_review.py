@@ -23,6 +23,8 @@ from oms_hub.study_generation.practice_contracts import (
 )
 from oms_hub.study_generation.practice_domain import (
     AnswerProvenance,
+    DiagnosticSeverity,
+    DraftDiagnostic,
     QuestionDraft,
     QuestionSourceRef,
     QuizContentKind,
@@ -163,6 +165,41 @@ def test_missing_answer_is_not_mislabeled_as_ai_generated(tmp_path: Path) -> Non
 
     assert "q1: answer is missing" in blockers
     assert "q1: AI-generated answer requires verification" not in blockers
+
+
+def test_structured_issues_keep_warnings_non_blocking_and_deduplicate(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    draft = replace(
+        _draft("q1", generated=False),
+        diagnostics=(
+            DraftDiagnostic(
+                "uncertain_source",
+                "Source wording is uncertain",
+                DiagnosticSeverity.WARNING,
+            ),
+            DraftDiagnostic(
+                "uncertain_source",
+                "Source wording is uncertain",
+                DiagnosticSeverity.WARNING,
+            ),
+            DraftDiagnostic(
+                "missing_context",
+                "Source context is incomplete",
+                DiagnosticSeverity.BLOCKER,
+            ),
+        ),
+    )
+    service.store("run-1", (draft,))
+
+    issues = service.issues("run-1")
+
+    assert [(issue.code, issue.severity) for issue in issues] == [
+        ("uncertain_source", DiagnosticSeverity.WARNING),
+        ("missing_context", DiagnosticSeverity.BLOCKER),
+    ]
+    assert issues[0].question_id == "q1"
+    assert issues[0].display_label == "q1"
+    assert service.blockers("run-1") == ("q1: Source context is incomplete",)
 
 
 def test_editing_answer_clears_verification_and_marks_manual(tmp_path: Path) -> None:

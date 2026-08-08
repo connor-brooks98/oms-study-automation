@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 
 const studioImages = require("../../src/oms_hub/web/static/studio_quiz_images.js");
 
@@ -52,9 +53,10 @@ test("renderLoadError clears the container, shows the message, and retries on cl
 
   assert.equal(container.children.length, 1);
   const wrap = container.children[0];
-  assert.equal(wrap.className, "studio-image-load-error");
-  const [message, retryButton] = wrap.children;
+  assert.match(wrap.className, /sh-empty/);
+  const [, message, retryButton] = wrap.children;
   assert.equal(message.textContent, "Image review could not be loaded.");
+  assert.match(message.className, /sh-validation/);
   assert.equal(retryButton.textContent, "Retry");
   assert.equal(retryButton.dataset.retryImageReview, "true");
   assert.equal(retried, false);
@@ -84,11 +86,48 @@ test("renderReview renders an upload form with a submit button per requirement",
 
   assert.equal(container.children.length, 1);
   const card = container.children[0];
+  assert.match(card.className, /sh-card/);
   const form = card.children.find((child) => child.tagName === "form");
   assert.ok(form, "expected an upload form on the requirement card");
+  const fileLabel = form.children.find((child) => child.tagName === "label");
+  assert.match(fileLabel.className, /sh-file/);
+  assert.match(fileLabel.children[0].className, /sh-btn--secondary/);
+  assert.match(fileLabel.children[1].className, /sh-input/);
   const submitButton = form.children.find(
     (child) => child.tagName === "button",
   );
   assert.equal(submitButton.type, "submit");
   assert.equal(submitButton.textContent, "Upload image");
+  assert.match(submitButton.className, /sh-btn--secondary/);
+});
+
+test("image review empties and question actions use locked runtime components", () => {
+  const container = new FakeContainer("div");
+  studioImages.renderReview(fakeDocument, container, {
+    resolved: false,
+    preview_url: null,
+    requirements: [],
+  });
+  assert.match(container.children[0].className, /sh-empty/);
+  assert.match(container.children[0].children[0].className, /sh-empty__title/);
+
+  studioImages.renderReview(fakeDocument, container, {
+    resolved: false,
+    preview_url: null,
+    requirements: [{
+      image_key: "img-1", source_title: "Slides", locator: "4", description: "Diagram",
+      uploaded: false, questions: [{ id: "q1", number: 1, stem: "Question", overridden: false }],
+    }],
+  });
+  const row = container.children[0].children.find((child) => child.tagName === "ul").children[0];
+  assert.match(row.className, /sh-row/);
+  assert.match(row.children[1].className, /sh-btn--secondary/);
+});
+
+test("review radios have the locked 16px accent treatment without changing shared CSS", () => {
+  const appCss = fs.readFileSync("src/oms_hub/web/static/app.css", "utf8");
+  assert.match(
+    appCss,
+    /\.studio-review-choice \.sh-check input\[type="radio"\] \{ width: 16px; height: 16px; margin: 0; accent-color: var\(--brand\); flex: none; \}/,
+  );
 });

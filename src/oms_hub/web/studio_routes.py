@@ -40,6 +40,10 @@ from oms_hub.study_generation.studio_domain import StudioQuizReview, StudioRun, 
 from oms_hub.study_generation.studio_repository import StudioRepository
 from oms_hub.study_generation.studio_service import StudioService
 from oms_hub.web.csrf import require_form_csrf
+from oms_hub.web.public_quiz_routes import (
+    practice_question_library_response,
+    quiz_library_response,
+)
 
 router = APIRouter(prefix="/studio")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -125,6 +129,16 @@ def studio_page(request: Request) -> HTMLResponse:
         name="notebook_studio.html",
         context={"courses": _choices(request)},
     )
+
+
+@router.get("/library/quizzes", response_class=HTMLResponse)
+def managed_quiz_library(request: Request) -> HTMLResponse:
+    return quiz_library_response(request, management_mode=True)
+
+
+@router.get("/library/practice-questions", response_class=HTMLResponse)
+def managed_practice_question_library(request: Request) -> HTMLResponse:
+    return practice_question_library_response(request, management_mode=True)
 
 
 @router.get("/sources")
@@ -348,10 +362,23 @@ def _review_question_payload(
 def _direct_review_payload(request: Request, run_id: str) -> dict[str, object]:
     service = _practice_review(request)
     questions = service.review(run_id)
+    issues = service.issues(run_id)
     blockers = service.blockers(run_id)
     return {
         "run_id": run_id,
         "blockers": list(blockers),
+        "issues": [
+            {
+                "question_id": issue.question_id,
+                "original_identifier": issue.original_identifier,
+                "display_label": issue.display_label,
+                "type": issue.issue_type,
+                "code": issue.code,
+                "message": issue.message,
+                "role": "err" if issue.severity.value == "blocker" else "warn",
+            }
+            for issue in issues
+        ],
         "preview_url": f"/studio/runs/{run_id}/preview" if not blockers else None,
         "publish_url": f"/studio/runs/{run_id}/publication",
         "questions": [

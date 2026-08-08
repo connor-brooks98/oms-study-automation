@@ -22,15 +22,15 @@
 
   const testPresentation = (state) => {
     if (state === "testing") {
-      return { label: "Testing…", className: "is-testing" };
+      return { label: "Testing…", className: "sh-pill--info" };
     }
     if (state === "connected") {
-      return { label: "Connected", className: "is-connected" };
+      return { label: "Connected", className: "sh-pill--ok" };
     }
     if (state === "failed") {
-      return { label: "Connection failed", className: "is-failed" };
+      return { label: "Connection failed", className: "sh-pill--err" };
     }
-    return { label: "Test connection", className: "" };
+    return { label: "Not tested", className: "" };
   };
 
   const sourceLabels = {
@@ -145,15 +145,22 @@
     const message = card.querySelector("[data-notebook-status]");
     const connected = status.state === "connected";
     const connecting = status.state === "connecting";
+    const failed = status.state === "failed";
 
-    badge.textContent = connecting ? "Connecting" : connected ? "Connected" : "Not connected";
-    badge.classList.toggle("is-configured", connected);
+    badge.textContent = connecting
+      ? "Connecting"
+      : connected ? "Connected" : failed ? "Connection failed" : "Not connected";
+    badge.classList.toggle("sh-pill--ok", connected);
+    badge.classList.toggle("sh-pill--info", connecting);
+    badge.classList.toggle("sh-pill--err", failed);
 
     if (connecting) {
       message.textContent = status.message
         || "Finish signing in using the browser window on this Study Hub device.";
     } else if (connected) {
       message.textContent = "Gemini Notebook is connected.";
+    } else if (failed) {
+      message.textContent = status.message || "Notebook connection failed. Try again.";
     } else if (status.message) {
       message.textContent = status.message;
     }
@@ -178,11 +185,17 @@
     return `${choiceText} ${issues.length} ${issues.length === 1 ? "warning" : "warnings"}: ${warning}`;
   };
 
-  const setTestState = (button, state) => {
+  const setTestState = (button, state, statusBadge) => {
     const presentation = testPresentation(state);
-    button.classList.remove("is-testing", "is-connected", "is-failed");
-    if (presentation.className) button.classList.add(presentation.className);
-    button.textContent = presentation.label;
+    button.textContent = state === "testing" ? presentation.label : "Test connection";
+    if (statusBadge) {
+      statusBadge.textContent = presentation.label;
+      statusBadge.classList.remove("sh-pill--info", "sh-pill--ok", "sh-pill--err");
+      if (presentation.className) statusBadge.classList.add(presentation.className);
+      statusBadge.classList.toggle("sh-pill--ok", state === "connected");
+      statusBadge.classList.toggle("sh-pill--err", state === "failed");
+      statusBadge.classList.toggle("sh-pill--info", state === "testing");
+    }
   };
 
   const renderDiagnostic = (container, diagnostic, correlationId) => {
@@ -216,6 +229,7 @@
       const message = card.querySelector("[data-provider-message]");
       const diagnostic = card.querySelector("[data-diagnostic]");
       const testButton = card.querySelector("[data-test-connection]");
+      const connectionState = card.querySelector("[data-connection-state]");
       const model = card.querySelector("[data-model-select]");
       const customModel = card.querySelector("[data-model-custom]");
       const initialModel = model.value;
@@ -255,11 +269,11 @@
           credential.type = "password";
           toggle.textContent = "Show";
           configured.textContent = result.configured ? "Configured" : "Not configured";
-          configured.classList.toggle("is-configured", result.configured);
+          configured.classList.toggle("sh-pill--ok", result.configured);
           message.textContent = result.configured
             ? "Credential saved securely."
             : "No credential is configured.";
-          setTestState(testButton, "neutral");
+          setTestState(testButton, "neutral", connectionState);
           renderDiagnostic(diagnostic, null, null);
         } catch (error) {
           message.textContent = error.message;
@@ -281,7 +295,7 @@
           );
           refreshModelOptions(result.model);
           message.textContent = "Model saved.";
-          setTestState(testButton, "neutral");
+          setTestState(testButton, "neutral", connectionState);
           renderDiagnostic(diagnostic, null, null);
         } catch (error) {
           message.textContent = error.message;
@@ -292,7 +306,7 @@
 
       testButton.addEventListener("click", async () => {
         testButton.disabled = true;
-        setTestState(testButton, "testing");
+        setTestState(testButton, "testing", connectionState);
         message.textContent = "Testing the selected model with a small request…";
         renderDiagnostic(diagnostic, null, null);
         try {
@@ -302,7 +316,7 @@
             {},
             token(),
           );
-          setTestState(testButton, result.state);
+          setTestState(testButton, result.state, connectionState);
           message.textContent = result.state === "connected"
             ? "Provider and model are ready."
             : "The connection test found a problem.";
@@ -312,7 +326,7 @@
             result.correlation_id,
           );
         } catch (error) {
-          setTestState(testButton, "failed");
+          setTestState(testButton, "failed", connectionState);
           message.textContent = error.message;
         } finally {
           testButton.disabled = false;
@@ -342,7 +356,7 @@
           credential.type = "password";
           toggle.textContent = "Show";
           configured.textContent = result.configured ? "Configured" : "Not configured";
-          configured.classList.toggle("is-configured", result.configured);
+          configured.classList.toggle("sh-pill--ok", result.configured);
           message.textContent = result.configured ? "Credential saved securely." : "No credential is configured.";
         } catch (error) {
           message.textContent = error.message;
@@ -412,7 +426,7 @@
           keyState.textContent = result.key_configured
             ? "Key configured"
             : "Key not configured";
-          keyState.classList.toggle("is-configured", result.key_configured);
+          keyState.classList.toggle("sh-pill--ok", result.key_configured);
           refreshModelOptions(result.model);
           message.textContent = "Assignment saved.";
         } catch (error) {
@@ -588,7 +602,7 @@
         source.textContent = staged
           ? "Staged override"
           : active ? "Active override" : "Deployment value";
-        source.classList.toggle("is-configured", staged || active);
+        source.classList.toggle("sh-pill--ok", staged || active);
         clearButton.disabled = result.source === "environment";
         message.textContent = result.message || (
           active
@@ -716,6 +730,7 @@
     renderNotebookStatus,
     resolvedModelValue,
     runWhenReady,
+    setTestState,
     syncCustomModelVisibility,
     testPresentation,
     togglePassword,

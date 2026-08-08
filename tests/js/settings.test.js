@@ -23,19 +23,46 @@ test("password toggle reveals only the current input", () => {
   assert.equal(button.textContent, "Show");
 });
 
-test("test states include text and color-independent classes", () => {
+test("test states use semantic pill modifiers", () => {
   assert.deepEqual(settings.testPresentation("testing"), {
     label: "Testing…",
-    className: "is-testing",
+    className: "sh-pill--info",
   });
   assert.deepEqual(settings.testPresentation("connected"), {
     label: "Connected",
-    className: "is-connected",
+    className: "sh-pill--ok",
   });
   assert.deepEqual(settings.testPresentation("failed"), {
     label: "Connection failed",
-    className: "is-failed",
+    className: "sh-pill--err",
   });
+  assert.deepEqual(settings.testPresentation("neutral"), {
+    label: "Not tested",
+    className: "",
+  });
+});
+
+test("connection state recolors only the status pill", () => {
+  const changes = [];
+  const button = {
+    textContent: "",
+    classList: { add() {}, remove() {} },
+  };
+  const statusBadge = {
+    textContent: "",
+    classList: {
+      add(name) { changes.push(`add:${name}`); },
+      remove(...names) { changes.push(`remove:${names.join(",")}`); },
+      toggle(name, active) { changes.push(`toggle:${name}:${active}`); },
+    },
+  };
+
+  settings.setTestState(button, "connected", statusBadge);
+
+  assert.equal(button.textContent, "Test connection");
+  assert.equal(statusBadge.textContent, "Connected");
+  assert.ok(changes.includes("add:sh-pill--ok"));
+  assert.equal(changes.some((change) => change.includes("is-connected")), false);
 });
 
 test("postJson sends CSRF protection and never puts a credential in the URL", async () => {
@@ -175,6 +202,33 @@ test("Notebook connecting state is rendered without Google Docs surfaces", () =>
     message.textContent,
     "Complete Google sign-in in the browser window.",
   );
+});
+
+test("Notebook failures use an error pill instead of a neutral label", () => {
+  const changes = [];
+  const badge = {
+    textContent: "",
+    classList: {
+      toggle(name, active) { changes.push(`${name}:${active}`); },
+    },
+  };
+  const message = { textContent: "" };
+  const card = {
+    querySelector(selector) {
+      if (selector === "[data-notebook-badge]") return badge;
+      if (selector === "[data-notebook-status]") return message;
+      throw new Error(`unexpected selector: ${selector}`);
+    },
+  };
+
+  settings.renderNotebookStatus(card, {
+    state: "failed",
+    message: "Google denied the connection.",
+  });
+
+  assert.equal(badge.textContent, "Connection failed");
+  assert.equal(message.textContent, "Google denied the connection.");
+  assert.ok(changes.includes("sh-pill--err:true"));
 });
 
 test("prompt action changes from select to save after a path is chosen", () => {
@@ -553,7 +607,7 @@ test("assignment row disables its controls while a save request is in flight", a
   assert.equal(modelSelect.disabled, false);
   assert.equal(saveButton.disabled, false);
   assert.equal(keyState.textContent, "Key configured");
-  assert.equal(keyState.classList.contains("is-configured"), true);
+  assert.equal(keyState.classList.contains("sh-pill--ok"), true);
 });
 
 test("assignment row accuracy gate toggle posts to the existing gate route", async () => {

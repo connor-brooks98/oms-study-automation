@@ -1,39 +1,39 @@
 {% extends "base.html" %}
 {% block title %}Review · Study Hub{% endblock %}
 {% block content %}
-<section class="page-shell narrow-page">
-  <div class="page-heading">
+<section class="page-shell narrow-page sh-container--narrow">
+  <div class="page-heading sh-header">
     <div>
-      <p class="eyebrow">Human checkpoint</p>
-      <h1>Review</h1>
-      <p class="page-summary">Approve replacements and resolve anything that stopped the pipeline.</p>
+      <p class="eyebrow sh-eyebrow">Human checkpoint</p>
+      <h1 class="sh-title">Review</h1>
+      <p class="page-summary sh-subtitle">Approve replacements and resolve anything that stopped the pipeline.</p>
     </div>
   </div>
 
   <section class="review-section">
     <h2>Proposed replacements</h2>
     {% for revision in proposed_revisions %}
-    <article class="card review-card">
+    <article class="card sh-card review-card">
       <div>
         <p class="mono-label">{{ revision.kind.value }} · Revision {{ revision.id }}</p>
         <h3>Lecture {{ revision.lecture_id }}</h3>
       </div>
       <div class="review-actions">
         {% if revision.kind.value == "slides" %}
-        <a class="button secondary" href="/artifacts/{{ revision.id }}/pdf">Preview PDF</a>
+        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ revision.id }}/pdf">Preview PDF</a>
         {% else %}
-        <a class="button secondary" href="/artifacts/{{ revision.id }}/cleaned">Preview transcript</a>
+        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ revision.id }}/cleaned">Preview transcript</a>
         {% endif %}
         <form method="post" action="/review/replacements/{{ revision.id }}/approve">
-          <button class="button primary" type="submit">Approve replacement</button>
+          <button class="button primary sh-btn sh-btn--primary" type="submit">Approve replacement</button>
         </form>
         <form method="post" action="/review/replacements/{{ revision.id }}/keep">
-          <button class="button secondary" type="submit">Keep current file</button>
+          <button class="button secondary sh-btn sh-btn--secondary" type="submit">Keep current file</button>
         </form>
       </div>
     </article>
     {% else %}
-    <p class="quiet-state">No replacement files need review.</p>
+    <section class="sh-empty"><p class="sh-empty__text">No replacement files need review.</p></section>
     {% endfor %}
   </section>
 
@@ -41,9 +41,9 @@
     <h2>Lecture steps</h2>
     <ul class="plain-list">
     {% for lecture in lectures %}
-      <li class="card"><a href="/lectures/{{ lecture.id }}">{{ lecture.subject }} · Exam {{ lecture.exam_number }} · Lecture {{ "%02d"|format(lecture.lecture_number) }} — {{ lecture.topic }}</a></li>
+      <li class="card sh-row" style="--sh-hue: {{ lecture_hues.get(lecture.id, 255) }}"><span class="sh-subject-dot"></span><a class="sh-row__title" href="/lectures/{{ lecture.id }}">{{ lecture.subject }} · Exam {{ lecture.exam_number }} · Lecture {{ "%02d"|format(lecture.lecture_number) }} — {{ lecture.topic }}</a></li>
     {% else %}
-      <li class="quiet-state">No lecture steps need review.</li>
+      <li class="sh-empty"><p class="sh-empty__text">No lecture steps need review.</p></li>
     {% endfor %}
     </ul>
   </section>
@@ -56,16 +56,16 @@
         <strong>{{ issue.sheet }} row {{ issue.row_number }}</strong>
         <p>{{ issue.message }} — {{ issue.raw_values }}</p>
         <form method="post" action="/review/import-issues/{{ issue.id }}/resolve">
-          <label>Course <input name="subject" required></label>
-          <label>Exam <input name="exam_number" type="number" min="1" required></label>
-          <label>Lecture <input name="lecture_number" type="number" min="1" required></label>
-          <label>Topic <input name="topic" required></label>
-          <label>Lecturer <input name="lecturer"></label>
-          <button class="button primary" type="submit">Create lecture and resolve</button>
+          <label class="sh-field-label">Course <input class="sh-input" name="subject" required></label>
+          <label class="sh-field-label">Exam <input class="sh-input" name="exam_number" type="number" min="1" required></label>
+          <label class="sh-field-label">Lecture <input class="sh-input" name="lecture_number" type="number" min="1" required></label>
+          <label class="sh-field-label">Topic <input class="sh-input" name="topic" required></label>
+          <label class="sh-field-label">Lecturer <input class="sh-input" name="lecturer"></label>
+          <button class="button primary sh-btn sh-btn--primary" type="submit">Create lecture and resolve</button>
         </form>
       </li>
     {% else %}
-      <li class="quiet-state">No tracker import issues.</li>
+      <li class="sh-empty"><p class="sh-empty__text">No tracker import issues.</p></li>
     {% endfor %}
     </ul>
   </section>

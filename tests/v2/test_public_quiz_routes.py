@@ -107,6 +107,31 @@ def test_public_library_groups_only_published_quizzes(tmp_path):
     assert "Unpublished lecture" not in response.text
 
 
+def test_public_library_is_read_only_and_private_library_keeps_management(tmp_path):
+    app, published = _published_app(tmp_path)
+
+    with TestClient(app) as client:
+        public = client.get("/public/quizzes")
+        managed = client.get("/studio/library/quizzes")
+
+    assert public.status_code == 200
+    assert managed.status_code == 200
+    assert published.token in public.text
+    assert 'data-reset-quiz' in public.text
+    assert 'title="Restart quiz"' in public.text
+    for private_hook in (
+        "data-quiz-drag-handle",
+        "data-title-form",
+        "data-move-quiz-library",
+        "data-remove-quiz",
+    ):
+        assert private_hook not in public.text
+        assert private_hook in managed.text
+    assert "Quiz Builder management" in managed.text
+    assert "/studio/library/practice-questions" in managed.text
+    assert "Reset quiz progress" not in public.text
+
+
 def test_public_library_uses_current_lecture_scope_and_repository_order(tmp_path):
     app, published = _published_app(tmp_path)
     app.state.catalog_repository.update_lecture(
@@ -233,7 +258,7 @@ def test_public_quiz_page_and_content_do_not_expose_answer_key(tmp_path):
 
     assert page.status_code == 200
     assert "Lecture 1 Practice Quiz" in page.text
-    assert 'class="quiz-library-button"' in page.text
+    assert 'class="quiz-library-button sh-btn sh-btn--secondary"' in page.text
     assert "/public/quizzes/assets/player.css?v=" in page.text
     assert "/public/quizzes/assets/player.js?v=" in page.text
     assert page.headers["content-security-policy"].startswith(
@@ -259,7 +284,9 @@ def test_public_quiz_assets_are_served_inside_the_bypass_path(tmp_path):
         styles = client.get("/public/quizzes/assets/player.css")
         library_script = client.get("/public/quizzes/assets/library.js")
         library_styles = client.get("/public/quizzes/assets/library.css")
+        reset = client.get("/public/quizzes/assets/reset.css")
         tokens = client.get("/public/quizzes/assets/tokens.css")
+        shared = client.get("/public/quizzes/assets/study-hub.css")
 
     assert script.status_code == 200
     assert script.headers["content-type"].startswith("text/javascript")
@@ -267,8 +294,12 @@ def test_public_quiz_assets_are_served_inside_the_bypass_path(tmp_path):
     assert styles.headers["content-type"].startswith("text/css")
     assert library_script.status_code == 200
     assert library_styles.status_code == 200
+    assert reset.status_code == 200
+    assert reset.headers["content-type"].startswith("text/css")
     assert tokens.status_code == 200
     assert tokens.headers["content-type"].startswith("text/css")
+    assert shared.status_code == 200
+    assert shared.headers["content-type"].startswith("text/css")
 
 
 def test_public_quiz_player_markup_uses_content_versioned_assets(tmp_path):
@@ -281,6 +312,12 @@ def test_public_quiz_player_markup_uses_content_versioned_assets(tmp_path):
     assert first.status_code == 200
     assert first.headers["cache-control"] == "no-store"
     assert "?v=" in first.text
+    assert "/public/quizzes/assets/reset.css?v=" in first.text
+    assert "/public/quizzes/assets/tokens.css?v=" in first.text
+    assert "/public/quizzes/assets/study-hub.css?v=" in first.text
+    assert "/static/reset.css" not in first.text
+    assert "/static/tokens.css" not in first.text
+    assert "/static/study-hub.css" not in first.text
     assert first.text == second.text
 
 
@@ -299,6 +336,11 @@ def test_public_quiz_library_markup_uses_content_versioned_assets(
         assert f"/library.js?v={current_version}" in quizzes.text
         assert f"/library.css?v={current_version}" in practice.text
         assert f"/library.js?v={current_version}" in practice.text
+        for page in (quizzes.text, practice.text):
+            assert f"/reset.css?v={current_version}" in page
+            assert f"/tokens.css?v={current_version}" in page
+            assert f"/study-hub.css?v={current_version}" in page
+            assert "/static/study-hub.css" not in page
 
         def changed_digest(path):
             return "a" * 64 if path.suffix == ".js" else "b" * 64

@@ -26,15 +26,16 @@ router = APIRouter()
 _COURSE_HUES = {
     "clinical neuroscience": 290,
     "neuro": 290,
+    "neuroscience": 290,
     "msk": 50,
-    "opp": 190,
+    "opp": 175,
     "epc": 95,
-    "heme & lymph": 15,
-    "heme/lymph": 15,
+    "heme lymph": 15,
     "heme": 15,
     "cardio": 340,
     "renal": 135,
-    "respiratory": 205,
+    "resp": 210,
+    "respiratory": 210,
 }
 _V2_STEP_VALUES = {name.value for name in V2StepName}
 _V2_RELEASE_VALUES = {
@@ -221,6 +222,7 @@ def review(request: Request) -> HTMLResponse:
         name="review.html",
         context={
             "lectures": lectures,
+            "lecture_hues": {lecture.id: _course_hue(lecture.subject) for lecture in lectures},
             "import_issues": repository.list_import_issues(),
             "proposed_revisions": IngestionRepository(
                 request.app.state.database
@@ -306,7 +308,9 @@ def lecture_api(request: Request) -> list[LectureApi]:
 
 
 def _course_hue(subject: str) -> int:
-    normalized = subject.casefold().strip()
+    normalized = " ".join(
+        subject.casefold().replace("&", " ").replace("/", " ").split()
+    )
     for name, hue in _COURSE_HUES.items():
         if name in normalized or normalized in name:
             return hue

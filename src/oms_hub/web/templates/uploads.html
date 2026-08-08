@@ -2,12 +2,12 @@
 {% set is_slides = kind.value == "slides" %}
 {% block title %}Upload {{ "slides" if is_slides else "transcripts" }} · Study Hub{% endblock %}
 {% block content %}
-<section class="page-shell upload-page">
-  <div class="page-heading">
+<section class="page-shell sh-container--narrow upload-page">
+  <div class="page-heading sh-header">
     <div>
-      <p class="eyebrow">Manual ingestion</p>
-      <h1>Upload {{ "lecture slides" if is_slides else "lecture transcripts" }}</h1>
-      <p class="page-summary">
+      <p class="eyebrow sh-eyebrow">Manual ingestion</p>
+      <h1 class="sh-title">Upload {{ "lecture slides" if is_slides else "lecture transcripts" }}</h1>
+      <p class="page-summary sh-subtitle">
         {% if is_slides %}Add downloaded PowerPoint files. The NUC will match, preserve, convert, and file them.
         {% else %}Add downloaded text transcripts. The NUC will match, clean, validate, and file them.{% endif %}
       </p>
@@ -19,19 +19,19 @@
 
   <form class="upload-form" action="/uploads/{{ kind.value }}" method="post" enctype="multipart/form-data" data-upload-form data-kind="{{ kind.value }}" data-lecture-id="{{ selected_lecture.id if selected_lecture else '' }}">
     {% if selected_lecture %}<input type="hidden" name="lecture_id" value="{{ selected_lecture.id }}">{% endif %}
-    <div class="upload-zone" data-drop-zone>
+    <div class="upload-zone sh-dropzone" data-drop-zone>
       <span class="upload-mark" aria-hidden="true">↑</span>
       <h2>Drop {{ "PowerPoint" if is_slides else "transcript" }} files here</h2>
       <p id="upload-help">{{ "PPTX only" if is_slides else "TXT only" }} · multiple files supported · up to 100 MB each</p>
       <label for="upload-files" class="sr-only">Choose {{ "PowerPoint" if is_slides else "transcript" }} files</label>
       <input id="upload-files" class="sr-only" name="files" type="file" accept="{{ accept }}" multiple required aria-describedby="upload-help">
-      <button class="button secondary upload-browse" type="button">Choose files</button>
+      <button class="button secondary sh-btn sh-btn--secondary upload-browse" type="button">Choose files</button>
     </div>
     <div class="selected-files" data-selected-files aria-live="polite"></div>
-    <button class="button primary upload-submit" type="submit">Upload files</button>
+    <button class="button primary sh-btn sh-btn--primary upload-submit" type="submit">Upload files</button>
   </form>
 
-  <section class="upload-results" aria-labelledby="upload-status-heading">
+  <section class="upload-results sh-card" aria-labelledby="upload-status-heading">
     <h2 id="upload-status-heading">Upload status</h2>
     <div class="upload-status" data-upload-status role="status" aria-live="polite">Ready for files.</div>
     <div class="upload-progress" hidden data-progress-wrap>
@@ -40,7 +40,7 @@
     <ul class="upload-items" data-upload-items></ul>
   </section>
 
-  <aside class="info-card">
+  <aside class="info-card sh-panel">
     <strong>What happens next</strong>
     <p>Confident matches enter processing automatically. Anything ambiguous stays in <a href="/quarantine">Quarantine</a> until you choose its lecture.</p>
   </aside>
@@ -54,8 +54,8 @@
     <p class="duplicate-lecture" data-duplicate-lecture></p>
     <p class="duplicate-error" data-duplicate-error role="alert" aria-live="assertive"></p>
     <div class="duplicate-actions">
-      <button class="button danger" type="button" data-discard-duplicate>Discard upload</button>
-      <button class="button primary" type="button" data-confirm-duplicate>Process anyway</button>
+      <button class="button danger sh-btn sh-btn--danger" type="button" data-discard-duplicate>Discard upload</button>
+      <button class="button primary sh-btn sh-btn--primary" type="button" data-confirm-duplicate>Process anyway</button>
     </div>
   </dialog>
   {% endif %}

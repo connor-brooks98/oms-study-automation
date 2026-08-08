@@ -13,12 +13,15 @@
   const render = (card, status) => {
     const message = card.querySelector("[data-generation-message]");
     const active = ["queued", "running"].includes(status.state);
+    const completeMessage = card.dataset.kind === "quiz"
+      ? "1 Study Hub quiz is ready."
+      : "Lecture outline PDF is ready.";
     const labels = {
       queued: "Queued on the Study Hub device.",
       running: `Working: ${(status.stage || "starting").replaceAll("_", " ")}.`,
       paused: status.message || "Reconnect Google, then try again.",
       failed: status.message || "Generation stopped. You can retry.",
-      complete: "Ready.",
+      complete: completeMessage,
       ready: "Ready to generate.",
     };
     message.textContent = labels[status.state] || "Status updated.";
@@ -27,7 +30,7 @@
       let link = card.querySelector("[data-generation-link]");
       if (!link) {
         link = card.ownerDocument.createElement("a");
-        link.className = "button primary";
+        link.className = "button primary sh-btn sh-btn--primary";
         link.dataset.generationLink = "";
         card.querySelector(".file-actions").prepend(link);
       }

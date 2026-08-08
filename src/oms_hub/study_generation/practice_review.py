@@ -58,6 +58,19 @@ class ReviewQuestion:
 
 
 @dataclass(frozen=True, slots=True)
+class ReviewIssue:
+    """A reviewer-safe, question-scoped publication diagnostic."""
+
+    question_id: str
+    original_identifier: str | None
+    display_label: str
+    issue_type: str
+    code: str
+    message: str
+    severity: DiagnosticSeverity
+
+
+@dataclass(frozen=True, slots=True)
 class ImageCandidate:
     candidate_id: str
     question_id: str
@@ -423,7 +436,10 @@ class PracticeReviewService:
         return updated
 
     def blockers(self, run_id: str) -> tuple[str, ...]:
-        return _blockers(self.review(run_id))
+        return _blockers_from_issues(self.issues(run_id))
+
+    def issues(self, run_id: str) -> tuple[ReviewIssue, ...]:
+        return _issues(self.review(run_id))
 
     def to_native_quiz_in_session(
         self, session: Session, run_id: str, *, title: str
@@ -460,30 +476,122 @@ class PracticeReviewService:
 
 
 def _blockers(questions: tuple[ReviewQuestion, ...]) -> tuple[str, ...]:
-    blockers: list[str] = []
+    return _blockers_from_issues(_issues(questions))
+
+
+def _blockers_from_issues(issues: tuple[ReviewIssue, ...]) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            f"{issue.question_id}: {issue.message}"
+            for issue in issues
+            if issue.severity is DiagnosticSeverity.BLOCKER
+        )
+    )
+
+
+def _issues(questions: tuple[ReviewQuestion, ...]) -> tuple[ReviewIssue, ...]:
+    """Return deterministic diagnostics from the persisted review questions.
+
+    This is intentionally derived at read time: an edit, verification, or image
+    selection immediately updates both the review UI and the publication gate.
+    """
+    issues: list[ReviewIssue] = []
     for question in questions:
         draft = question.draft
-        prefix = f"{draft.question_id}: "
+        display_label = draft.original_identifier or draft.question_id
+
         if draft.correct_index is None:
-            blockers.append(prefix + "answer is missing")
+            issues.append(
+                ReviewIssue(
+                    draft.question_id,
+                    draft.original_identifier,
+                    display_label,
+                    "answer",
+                    "missing_answer",
+                    "answer is missing",
+                    DiagnosticSeverity.BLOCKER,
+                )
+            )
         elif not 0 <= draft.correct_index < len(draft.choices):
-            blockers.append(prefix + "correct answer is outside the available choices")
+            issues.append(
+                ReviewIssue(
+                    draft.question_id,
+                    draft.original_identifier,
+                    display_label,
+                    "answer",
+                    "answer_out_of_range",
+                    "correct answer is outside the available choices",
+                    DiagnosticSeverity.BLOCKER,
+                )
+            )
         if len(draft.choices) < 2 or len(draft.choices) > 8 or len(
             {choice.casefold() for choice in draft.choices}
         ) != len(draft.choices):
-            blockers.append(prefix + "choices are invalid")
+            issues.append(
+                ReviewIssue(
+                    draft.question_id,
+                    draft.original_identifier,
+                    display_label,
+                    "choices",
+                    "invalid_choices",
+                    "choices are invalid",
+                    DiagnosticSeverity.BLOCKER,
+                )
+            )
         for diagnostic in draft.diagnostics:
-            if diagnostic.severity is DiagnosticSeverity.BLOCKER:
-                blockers.append(prefix + diagnostic.message)
+            issues.append(
+                ReviewIssue(
+                    draft.question_id,
+                    draft.original_identifier,
+                    display_label,
+                    "draft_diagnostic",
+                    diagnostic.code,
+                    diagnostic.message,
+                    diagnostic.severity,
+                )
+            )
         if (
             draft.correct_index is not None
             and draft.verification_required
             and not draft.verified_at
         ):
-            blockers.append(prefix + "AI-generated answer requires verification")
+            issues.append(
+                ReviewIssue(
+                    draft.question_id,
+                    draft.original_identifier,
+                    display_label,
+                    "answer_verification",
+                    "generated_answer_verification_required",
+                    "AI-generated answer requires verification",
+                    DiagnosticSeverity.BLOCKER,
+                )
+            )
         if draft.image_ref is not None and question.chosen_image is None:
-            blockers.append(prefix + "required image is unresolved")
-    return tuple(dict.fromkeys(blockers))
+            issues.append(
+                ReviewIssue(
+                    draft.question_id,
+                    draft.original_identifier,
+                    display_label,
+                    "image",
+                    "required_image_unresolved",
+                    "required image is unresolved",
+                    DiagnosticSeverity.BLOCKER,
+                )
+            )
+    unique: dict[tuple[object, ...], ReviewIssue] = {}
+    for issue in issues:
+        unique.setdefault(
+            (
+                issue.question_id,
+                issue.original_identifier,
+                issue.issue_type,
+                issue.code,
+                issue.message,
+                issue.severity,
+            ),
+            issue,
+        )
+    return tuple(unique.values())
 
 
 def _native_quiz(questions: tuple[ReviewQuestion, ...], title: str) -> NativeQuiz:

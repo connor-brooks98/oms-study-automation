@@ -1,19 +1,20 @@
 {% extends "base.html" %}
 {% block title %}Review Anki Curation · Study Hub{% endblock %}
 {% block content %}
-<article class="page-shell anki-review-page" data-anki-review data-job-id="{{ job.id }}">
+<article class="page-shell sh-container anki-review-page" data-anki-review data-job-id="{{ job.id }}">
   <nav class="breadcrumbs" aria-label="Breadcrumb">
     <a href="/anki">Anki curation</a><span aria-hidden="true">/</span>
     <span>Lecture {{ job.lecture_id }}</span>
   </nav>
 
-  <div class="page-heading">
+  <div class="page-heading sh-header">
     <div>
-      <p class="eyebrow">Review before changing Anki</p>
-      <h1>Curation review</h1>
-      <p class="page-summary">Approve existing cards, inspect recovered matches, edit generated cards, and adjust only the lecture tags you control.</p>
+      <p class="eyebrow sh-eyebrow">Review before changing Anki</p>
+      <h1 class="sh-title">Curation review</h1>
+      <p class="page-summary sh-subtitle">Approve existing cards, inspect recovered matches, edit generated cards, and adjust only the lecture tags you control.</p>
     </div>
-    <span id="anki-job-state" class="status-pill status-{{ job.state }}">{{ job.state.replace('_', ' ') }}</span>
+    {% set job_tone = "sh-pill--ok" if job.state in ("complete", "completed", "ready", "configured", "connected", "skipped") else "sh-pill--info" if job.state in ("processing", "queued", "running", "pending", "in_progress", "preflight", "building_source_index", "building_lcl", "retrieving_pass_1", "judging_pass_1", "localizing_missed_concepts", "retrieving_pass_2", "judging_pass_2", "deduping", "generating_gaps", "applying_local", "syncing", "verifying", "envelope_pending") else "sh-pill--warn" if job.state in ("needs_review", "review", "ready_for_review") else "sh-pill--err" if job.state in ("failed", "quarantined") else "" %}
+    <span id="anki-job-state" class="status-pill sh-pill {{ job_tone }} status-{{ job.state }}">{{ job.state.replace('_', ' ') }}</span>
   </div>
 
   <ol class="anki-workflow" aria-label="Anki curation steps">
@@ -28,11 +29,11 @@
     <div>
       <h2 data-recovery-title>Apply status</h2>
       <p data-recovery-message></p>
-      <button class="button secondary" type="button" data-retry-sync hidden>Retry cloud sync</button>
+      <button class="button secondary sh-btn sh-btn--secondary" type="button" data-retry-sync hidden>Retry cloud sync</button>
     </div>
   </section>
 
-  <section id="anki-processing" class="pipeline-card" aria-live="polite">
+  <section id="anki-processing" class="pipeline-card sh-card" aria-live="polite">
     <p class="mono-label">Curation status</p>
     <div class="pipeline-status">
       <strong id="anki-processing-label" class="status-text">Loading review…</strong>
@@ -42,7 +43,7 @@
       <span id="anki-processing-progress" class="progress-fill status-processing" style="width: 8%"></span>
     </div>
     <p id="anki-processing-note" class="pipeline-note">Reading the committed curation results.</p>
-    <button class="button secondary" type="button" data-retry-job hidden>Retry curation</button>
+    <button class="button secondary sh-btn sh-btn--secondary" type="button" data-retry-job hidden>Retry curation</button>
   </section>
 
   <div id="anki-review-content" hidden>
@@ -61,11 +62,11 @@
 
     <section class="anki-review-toolbar" aria-label="Review filters">
       <div class="anki-review-switcher" role="group" aria-label="Review view">
-        <button class="button secondary is-active" type="button" data-review-view="final" aria-pressed="true">Final proposed changes <span data-count-final>0</span></button>
-        <button class="button secondary" type="button" data-review-view="candidates" aria-pressed="false">Candidates <span data-count-candidates>0</span></button>
+        <button class="button secondary sh-btn sh-btn--secondary sh-seg__btn sh-seg__btn--active is-active" type="button" data-review-view="final" aria-pressed="true">Final proposed changes <span data-count-final>0</span></button>
+        <button class="button secondary sh-btn sh-btn--secondary sh-seg__btn" type="button" data-review-view="candidates" aria-pressed="false">Candidates <span data-count-candidates>0</span></button>
       </div>
       <label class="anki-review-search">Search cards
-        <input type="search" placeholder="Search card text, note ID, extra, or tags" data-review-search>
+        <input class="sh-input" type="search" placeholder="Search card text, note ID, extra, or tags" data-review-search>
       </label>
     </section>
 
@@ -107,7 +108,7 @@
       <div class="anki-review-list" data-group-unresolved></div>
     </details>
 
-    <section class="card anki-policy-card">
+    <section class="card sh-card anki-policy-card">
       <div>
         <p class="mono-label">Tag safety</p>
         <h2>Your lecture tags are editable; source tags stay locked</h2>
@@ -119,8 +120,8 @@
     <section class="anki-review-actions" aria-label="Review actions">
       <p id="anki-review-message" class="anki-action-message" role="status" aria-live="polite"></p>
       <div>
-        <button class="button secondary" type="button" data-save-review>Save review</button>
-        <button class="button primary" type="button" data-build-envelope>Review apply plan</button>
+        <button class="button secondary sh-btn sh-btn--secondary" type="button" data-save-review>Save review</button>
+        <button class="button primary sh-btn sh-btn--primary" type="button" data-build-envelope>Review apply plan</button>
       </div>
     </section>
   </div>
@@ -140,8 +141,8 @@
       <p class="anki-dialog-status" data-dialog-status role="status" aria-live="polite"></p>
       <p class="anki-dialog-error" data-dialog-error role="alert"></p>
       <div class="anki-dialog-actions">
-        <button class="button secondary" value="cancel">Go back</button>
-        <button class="button primary" type="button" data-confirm-apply>Apply to Anki</button>
+        <button class="button secondary sh-btn sh-btn--secondary" value="cancel">Go back</button>
+        <button class="button primary sh-btn sh-btn--primary" type="button" data-confirm-apply>Apply to Anki</button>
       </div>
     </form>
   </dialog>

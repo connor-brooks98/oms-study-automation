@@ -462,7 +462,7 @@
           const result = element(documentRef, "section", "quiz-result");
           result.append(
             element(documentRef, "p", "quiz-brand", "Study Hub"),
-            element(documentRef, "h1", "", "Quiz complete"),
+            element(documentRef, "h1", "sh-title", "Quiz complete"),
             element(
               documentRef,
               "p",
@@ -479,7 +479,7 @@
           const summaryHeading = element(
             documentRef,
             "h2",
-            "quiz-summary-heading",
+            "quiz-summary-heading sh-h2",
             "Performance summary",
           );
           result.append(summaryHeading);
@@ -517,7 +517,7 @@
           const review = element(
             documentRef,
             "button",
-            "quiz-secondary quiz-review",
+            "quiz-secondary quiz-review sh-btn sh-btn--secondary",
             "Review answers",
             "result-review",
           );
@@ -527,26 +527,7 @@
             persist();
             render();
           });
-          const restart = element(
-            documentRef,
-            "button",
-            "quiz-primary",
-            "Start Over",
-            "result-restart",
-          );
-          restart.type = "button";
-          restart.addEventListener("click", () => {
-            if (
-              typeof root.confirm === "function"
-              && !root.confirm("Start over this quiz on this browser?")
-            ) {
-              return;
-            }
-            storage?.removeItem(key);
-            state = createQuizState(content);
-            render();
-          });
-          result.append(review, restart);
+          result.append(review);
           app.append(result);
           restoreFocus(app, focusKey);
           return;
@@ -623,7 +604,7 @@
         const highlight = element(
           documentRef,
           "button",
-          "quiz-tool",
+            "quiz-tool sh-btn sh-btn--ghost sh-btn--sm",
           "Highlight selection",
           "tool-highlight",
         );
@@ -646,7 +627,7 @@
         const clear = element(
           documentRef,
           "button",
-          "quiz-tool",
+            "quiz-tool sh-btn sh-btn--secondary sh-btn--sm",
           "Clear highlights",
           "tool-clear",
         );
@@ -657,29 +638,13 @@
           persist();
           render();
         });
-        const reset = element(
-          documentRef,
-          "button",
-          "quiz-tool",
-          "Reset quiz",
-          "tool-reset",
-        );
-        reset.type = "button";
-        reset.addEventListener("click", () => {
-          if (typeof root.confirm === "function" && !root.confirm("Reset this quiz on this browser?")) {
-            return;
-          }
-          storage?.removeItem(key);
-          state = createQuizState(content);
-          render();
-        });
-        tools.append(highlight, clear, reset);
+        tools.append(highlight, clear);
         body.append(tools);
 
         const flag = element(documentRef, "div", "quiz-flag");
         const flagLabel = element(documentRef, "label", "quiz-flag-label", "Flag this question");
         const flagSelect = documentRef.createElement("select");
-        flagSelect.className = "quiz-flag-select";
+        flagSelect.className = "quiz-flag-select sh-select";
         flagSelect.dataset.focusKey = "flag-select";
         flagSelect.setAttribute("aria-label", "Reason for flagging this question");
         const noFlag = element(documentRef, "option", "", "No flag");
@@ -719,11 +684,11 @@
             && selected
             && !questionProgress.feedback.correct
           );
-          const row = element(documentRef, "div", "quiz-answer-row");
-          if (selected) row.classList.add("is-selected");
+          const row = element(documentRef, "div", "quiz-answer-row sh-option");
+          if (selected) row.classList.add("is-selected", "sh-option--selected");
           if (eliminated) row.classList.add("is-eliminated");
-          if (correct) row.classList.add("is-correct");
-          if (incorrect) row.classList.add("is-incorrect");
+          if (correct) row.classList.add("is-correct", "sh-option--correct");
+          if (incorrect) row.classList.add("is-incorrect", "sh-option--incorrect");
 
           const answer = element(
             documentRef,
@@ -739,7 +704,7 @@
             element(
               documentRef,
               "span",
-              "quiz-choice-letter",
+              "quiz-choice-letter sh-option__medallion",
               String.fromCharCode(65 + index),
             ),
             element(documentRef, "span", "quiz-choice-text", choice.text),
@@ -753,8 +718,8 @@
           const strike = element(
             documentRef,
             "button",
-            "quiz-strike",
-            "S",
+            "quiz-strike sh-iconbtn",
+            "✕",
             `strike-${choice.id}`,
           );
           strike.type = "button";
@@ -821,7 +786,7 @@
           const submit = element(
             documentRef,
             "button",
-            "quiz-primary quiz-submit",
+            "quiz-primary quiz-submit sh-btn sh-btn--primary sh-btn--block",
             "Submit Answer",
             "submit",
           );
@@ -865,7 +830,7 @@
         const back = element(
           documentRef,
           "button",
-          "quiz-secondary",
+          "quiz-secondary sh-btn sh-btn--secondary",
           "← Back",
           "back",
         );
@@ -879,7 +844,7 @@
         const forward = element(
           documentRef,
           "button",
-          "quiz-secondary",
+          "quiz-secondary sh-btn sh-btn--secondary",
           state.currentIndex === content.questions.length - 1
             ? "See results →"
             : "Next →",

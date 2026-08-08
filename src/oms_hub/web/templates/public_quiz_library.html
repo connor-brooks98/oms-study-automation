@@ -7,21 +7,42 @@
   <title>{{ library_title }} · Study Hub</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/public/quizzes/assets/reset.css?v={{ library_asset_version }}">
+  <link rel="stylesheet" href="/public/quizzes/assets/tokens.css?v={{ library_asset_version }}">
+  <link rel="stylesheet" href="/public/quizzes/assets/study-hub.css?v={{ library_asset_version }}">
   <link rel="stylesheet" href="/public/quizzes/assets/library.css?v={{ library_asset_version }}">
 </head>
-<body>
-  <main class="public-library" data-quiz-library>
-    <header class="library-heading">
+<body class="sh-app">
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <header class="site-header">
+    <nav class="utility-nav sh-nav" aria-label="Primary navigation">
+      <a class="sh-nav__link" href="/">Dashboard</a>
+      <a class="sh-nav__link" href="/uploads/slides">Slides</a>
+      <a class="sh-nav__link" href="/uploads/transcripts">Transcripts</a>
+      <a class="sh-nav__link" href="/quarantine">Quarantine</a>
+      <a class="sh-nav__link" href="/review">Review</a>
+      <a class="sh-nav__link" href="/anki">Anki</a>
+      <a class="sh-nav__link {% if management_mode %}sh-nav__link--active{% endif %}" href="/studio" {% if management_mode %}aria-current="page"{% endif %}>Quiz Builder</a>
+      <a class="sh-nav__link {% if not management_mode and library_path == '/public/quizzes' %}sh-nav__link--active{% endif %}" href="/public/quizzes" {% if not management_mode and library_path == '/public/quizzes' %}aria-current="page"{% endif %}>Quizzes</a>
+      <a class="sh-nav__link {% if not management_mode and library_path == '/public/practice-questions' %}sh-nav__link--active{% endif %}" href="/public/practice-questions" {% if not management_mode and library_path == '/public/practice-questions' %}aria-current="page"{% endif %}>Practice Questions</a>
+      <a class="sh-nav__link" href="/settings">Settings</a>
+    </nav>
+    <div class="brand-bar sh-brand">
+      <a class="brand sh-brand__name" href="/" aria-label="Study Hub dashboard"><span class="brand-mark sh-brand__tile" aria-hidden="true">SH</span><span>Study Hub</span></a>
+      <span class="nuc-state sh-pill sh-pill--ok sh-syspill"><span class="nuc-state__dot" aria-hidden="true"></span>NUC online</span>
+    </div>
+  </header>
+  <main id="main-content" class="public-library sh-container" tabindex="-1" data-quiz-library>
+    <header class="library-heading sh-header">
       <div>
-        <p class="eyebrow">Study Hub</p>
-        <h1>{{ library_title }}</h1>
-        <p>{{ library_summary }}</p>
+        <p class="eyebrow">{{ 'Quiz Builder management' if management_mode else 'Study Hub' }}</p>
+        <h1 class="sh-title">{{ library_title }}</h1>
+        <p class="sh-subtitle">{{ library_summary }}</p>
       </div>
-      <div>
-        <a class="button secondary" href="/public/quizzes" {% if library_path == '/public/quizzes' %}aria-current="page"{% endif %}>Quizzes</a>
-        <a class="button secondary" href="/public/practice-questions" {% if library_path == '/public/practice-questions' %}aria-current="page"{% endif %}>Practice Questions</a>
-        <button class="button secondary" type="button" data-reset-progress>Reset quiz progress</button>
+      <div class="sh-seg" role="group" aria-label="Quiz library view">
+        <a class="button secondary sh-btn sh-btn--secondary sh-seg__btn {% if library_path == quiz_library_path %}sh-seg__btn--active{% endif %}" href="{{ quiz_library_path }}" {% if library_path == quiz_library_path %}aria-current="page"{% endif %}>Quizzes</a>
+        <a class="button secondary sh-btn sh-btn--secondary sh-seg__btn {% if library_path == practice_library_path %}sh-seg__btn--active{% endif %}" href="{{ practice_library_path }}" {% if library_path == practice_library_path %}aria-current="page"{% endif %}>Practice Questions</a>
       </div>
     </header>
 
@@ -29,84 +50,85 @@
     <div class="course-list">
       {% for course in courses %}
       {% set course_index = loop.index %}
-      <section class="course-card">
+      <section class="course-card sh-card" style="--sh-hue: {{ course.hue }}">
         <button class="disclosure course-button" type="button" aria-expanded="{{ 'true' if loop.first else 'false' }}" aria-controls="course-{{ loop.index }}">
-          <span>{{ course.name }}</span>
-          <span class="count">{{ course.quiz_count }} quiz{{ '' if course.quiz_count == 1 else 'zes' }}</span>
+          <span><span class="sh-subject-dot" aria-hidden="true"></span> {{ course.name }}</span>
+          <span><span class="count">{{ course.quiz_count }} quiz{{ '' if course.quiz_count == 1 else 'zes' }}</span> <span class="chevron sh-disclose {% if loop.first %}is-open{% endif %}" aria-hidden="true">▸</span></span>
         </button>
         <div id="course-{{ loop.index }}" class="course-content" {% if not loop.first %}hidden{% endif %}>
           {% for exam in course.exams %}
-          <section class="exam-card">
+          <section class="exam-card sh-card">
             <button class="disclosure exam-button" type="button" aria-expanded="{{ 'true' if loop.first else 'false' }}" aria-controls="course-{{ course_index }}-exam-{{ loop.index }}">
               <span>Exam {{ exam.number }}</span>
-              <span class="chevron" aria-hidden="true">⌄</span>
+              <span class="chevron sh-disclose" aria-hidden="true">▸</span>
             </button>
             <div id="course-{{ course_index }}-exam-{{ loop.index }}" class="lecture-list" {% if not loop.first %}hidden{% endif %}>
               {% for row in exam.quizzes %}
-              <article class="lecture-row">
-                <a class="quiz-link" href="{{ row.url }}" data-quiz-row data-quiz-token="{{ row.token }}" data-quiz-version="{{ row.version }}">
+              <article class="lecture-row sh-row" {% if management_mode %}data-quiz-order-row data-order-url="/api/published-quizzes/{{ row.token }}/order"{% endif %}>
+                {% if management_mode %}
+                <button
+                  class="sh-iconbtn quiz-drag-handle"
+                  type="button"
+                  data-quiz-drag-handle
+                  aria-label="Reorder {{ row.title }}. Use Arrow Up or Arrow Down."
+                  title="Reorder quiz"
+                >⠿</button>
+                {% endif %}
+                <a class="quiz-link sh-row__title" href="{{ row.url }}" data-quiz-row data-quiz-token="{{ row.token }}" data-quiz-version="{{ row.version }}">
                   <span>
                     <strong>{{ row.primary_label }}{% if not row.is_studio %} · {{ row.title }}{% endif %}</strong>
                     {% if row.secondary_label %}<small>{{ row.secondary_label }}</small>{% endif %}
                   </span>
-                  <span class="progress-pill" data-quiz-progress>Not started</span>
+                  <span class="progress-pill sh-pill" data-quiz-progress>Not started</span>
                 </a>
-                {% if row.outline_url %}
-                <a class="button outline-button" href="{{ row.outline_url }}" target="_blank" rel="noopener">Lecture Outline</a>
-                {% endif %}
-                <button
-                  class="button reset-quiz-button"
-                  type="button"
-                  data-reset-quiz
-                  data-quiz-token="{{ row.token }}"
-                  data-quiz-version="{{ row.version }}"
-                >Reset</button>
-                <div class="quiz-management-controls">
+                <div class="sh-row__actions quiz-row-actions">
                   <button
-                    class="button management-button"
+                    class="sh-iconbtn reset-quiz-button"
                     type="button"
-                    data-edit-quiz-title
+                    data-reset-quiz
                     data-quiz-token="{{ row.token }}"
-                    data-title="{{ row.title }}"
-                    data-title-url="/api/published-quizzes/{{ row.token }}/title"
-                  >Edit title</button>
+                    data-quiz-version="{{ row.version }}"
+                    aria-label="Restart {{ row.title }}"
+                    title="Restart quiz"
+                  >↻</button>
+                  {% if row.outline_url or management_mode %}
+                  <details class="quiz-overflow" data-quiz-overflow>
+                    <summary class="sh-iconbtn" aria-label="More actions for {{ row.title }}" title="More actions">⋯</summary>
+                    <div class="quiz-overflow__menu">
+                      {% if row.outline_url %}
+                      <a class="button outline-button sh-btn sh-btn--secondary" href="{{ row.outline_url }}" target="_blank" rel="noopener">Lecture Outline</a>
+                      {% endif %}
+                      {% if management_mode %}
+                  <details class="quiz-title-editor">
+                    <summary class="button management-button sh-btn sh-btn--secondary">Edit title</summary>
+                    <form class="quiz-title-editor__form" data-title-form data-title-url="/api/published-quizzes/{{ row.token }}/title">
+                      <label class="sh-field-label">Quiz title
+                        <input class="sh-input" type="text" maxlength="300" value="{{ row.title }}" data-title-input required>
+                      </label>
+                      <button class="sh-btn sh-btn--primary" type="submit" data-save-title>Save title</button>
+                    </form>
+                  </details>
                   <button
-                    class="button management-button"
+                    class="button management-button sh-btn sh-btn--secondary"
                     type="button"
                     data-move-quiz-library
                     data-quiz-token="{{ row.token }}"
                     data-library-url="/api/published-quizzes/{{ row.token }}/library"
-                    data-target-section="{{ 'practice_questions' if library_path == '/public/quizzes' else 'quizzes' }}"
-                  >Move to {{ 'Practice Questions' if library_path == '/public/quizzes' else 'Quizzes' }}</button>
+                    data-target-section="{{ 'practice_questions' if library_path == quiz_library_path else 'quizzes' }}"
+                  >Move to {{ 'Practice Questions' if library_path == quiz_library_path else 'Quizzes' }}</button>
                   <button
-                    class="button management-button"
+                    class="button remove-quiz-button sh-btn sh-btn--danger"
                     type="button"
-                    data-move-quiz-order
+                    data-remove-quiz
                     data-quiz-token="{{ row.token }}"
-                    data-order-url="/api/published-quizzes/{{ row.token }}/order"
-                    data-direction="up"
-                    aria-label="Move quiz up"
-                    title="Move quiz up"
-                  >Move up</button>
-                  <button
-                    class="button management-button"
-                    type="button"
-                    data-move-quiz-order
-                    data-quiz-token="{{ row.token }}"
-                    data-order-url="/api/published-quizzes/{{ row.token }}/order"
-                    data-direction="down"
-                    aria-label="Move quiz down"
-                    title="Move quiz down"
-                  >Move down</button>
+                    data-quiz-version="{{ row.version }}"
+                    data-remove-url="/api/published-quizzes/{{ row.token }}"
+                  >Remove</button>
+                      {% endif %}
                 </div>
-                <button
-                  class="button remove-quiz-button"
-                  type="button"
-                  data-remove-quiz
-                  data-quiz-token="{{ row.token }}"
-                  data-quiz-version="{{ row.version }}"
-                  data-remove-url="/api/published-quizzes/{{ row.token }}"
-                >Remove</button>
+                  </details>
+                  {% endif %}
+                </div>
               </article>
               {% endfor %}
             </div>
@@ -117,9 +139,9 @@
       {% endfor %}
     </div>
     {% else %}
-    <section class="empty-state">
-      <h2>{{ empty_title }}</h2>
-      <p>{{ empty_summary }}</p>
+    <section class="empty-state sh-empty">
+      <h2 class="sh-empty__title">{{ empty_title }}</h2>
+      <p class="sh-empty__text">{{ empty_summary }}</p>
     </section>
     {% endif %}
     <p class="reset-message" data-reset-message aria-live="polite"></p>

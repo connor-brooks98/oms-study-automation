@@ -2,28 +2,28 @@
 {% block title %}Review imported questions · Study Hub{% endblock %}
 {% block content %}
 <section
-  class="page-shell"
+  class="page-shell sh-container--narrow"
   id="practice-review"
   data-practice-review
   data-review-url="{{ review_data_url }}"
   data-run-id="{{ run.id }}"
 >
-  <div class="page-heading">
+  <div class="page-heading sh-header">
     <div>
-      <p class="eyebrow">Private publication review</p>
-      <h1>Review imported questions</h1>
-      <p class="page-summary">{{ run.label }} · confirm answers, source context, and images before publishing.</p>
+      <p class="eyebrow sh-eyebrow">Private publication review</p>
+      <h1 class="sh-title">Review imported questions</h1>
+      <p class="page-summary sh-subtitle">{{ run.label }} · confirm answers, source context, and images before publishing.</p>
     </div>
     <div class="heading-actions">
-      <a class="button secondary" href="/studio">Back to Quiz Builder</a>
-      <a class="button secondary" data-preview-link hidden>Preview quiz</a>
-      <button class="button primary" type="button" data-publish-quiz disabled>Publish quiz</button>
+      <a class="button secondary sh-btn sh-btn--secondary" href="/studio">Back to Quiz Builder</a>
+      <a class="button secondary sh-btn sh-btn--secondary" data-preview-link hidden>Preview quiz</a>
+      <button class="button primary sh-btn sh-btn--primary" type="button" data-publish-quiz disabled>Publish quiz</button>
     </div>
   </div>
   <p data-review-message aria-live="polite"></p>
-  <section aria-labelledby="review-blockers-heading">
+  <section class="sh-card studio-review-checks" aria-labelledby="review-blockers-heading">
     <h2 id="review-blockers-heading">Publication checks</h2>
-    <ul data-review-blockers aria-live="polite"></ul>
+    <div data-review-blockers data-review-issues aria-live="polite"></div>
   </section>
   <section aria-labelledby="review-questions-heading">
     <h2 id="review-questions-heading">Questions</h2>

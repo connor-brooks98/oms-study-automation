@@ -7,17 +7,20 @@
   <title>{{ quiz.title }} · Study Hub</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/public/quizzes/assets/reset.css?v={{ player_asset_version }}">
+  <link rel="stylesheet" href="/public/quizzes/assets/tokens.css?v={{ player_asset_version }}">
+  <link rel="stylesheet" href="/public/quizzes/assets/study-hub.css?v={{ player_asset_version }}">
   <link rel="stylesheet" href="/public/quizzes/assets/player.css?v={{ player_asset_version }}">
 </head>
-<body class="public-quiz-page">
+<body class="sh-app public-quiz-page">
   <a class="skip-link" href="#quiz-player">Skip to quiz</a>
-  <nav class="quiz-page-nav" aria-label="Quiz library">
-    <a class="quiz-library-button" href="{{ library_url }}" aria-label="{{ library_label }}">← {{ library_label }}</a>
+  <nav class="quiz-page-nav sh-container--narrow" aria-label="Quiz library">
+    <a class="quiz-library-button sh-btn sh-btn--secondary" href="{{ library_url }}" aria-label="{{ library_label }}">← {{ library_label }}</a>
   </nav>
   <main
     id="quiz-player"
-    class="quiz-app"
+    class="quiz-app sh-container--narrow"
     tabindex="-1"
     data-quiz-token="{{ quiz.token }}"
     data-quiz-version="{{ quiz.version }}"
@@ -26,7 +29,7 @@
   >
     <section class="quiz-loading" aria-live="polite">
       <p class="quiz-brand">Study Hub</p>
-      <h1>{{ quiz.title }}</h1>
+      <h1 class="sh-title">{{ quiz.title }}</h1>
       <p>
         {{ quiz_context.subject }} · Exam {{ quiz_context.exam_number }}{% if quiz_context.lecture_number is not none %} · Lecture {{ quiz_context.lecture_number }}{% endif %}
       </p>

@@ -15,6 +15,7 @@ from oms_hub.study_generation.native_quiz import (
 from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.web.artifact_routes import outline_pdf_response
+from oms_hub.web.routes import _course_hue
 
 router = APIRouter(prefix="/public")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -41,14 +42,22 @@ def _player_asset_version() -> str:
     """
     javascript = sha256_file(_STATIC_ROOT / "public_quiz.js")[:12]
     stylesheet = sha256_file(_STATIC_ROOT / "public_quiz.css")[:12]
-    return f"{javascript}-{stylesheet}"
+    return f"{javascript}-{stylesheet}-{_shared_style_version()}"
 
 
 def _library_asset_version() -> str:
     """Content-address the cached public quiz-library assets."""
     javascript = sha256_file(_STATIC_ROOT / "public_quiz_library.js")[:12]
     stylesheet = sha256_file(_STATIC_ROOT / "public_quiz_library.css")[:12]
-    return f"{javascript}-{stylesheet}"
+    return f"{javascript}-{stylesheet}-{_shared_style_version()}"
+
+
+def _shared_style_version() -> str:
+    """Content-address the fixed public shell styles as one deterministic set."""
+    return "-".join(
+        sha256_file(_STATIC_ROOT / name)[:12]
+        for name in ("reset.css", "tokens.css", "study-hub.css")
+    )
 
 
 class AnswerSubmission(BaseModel):
@@ -101,6 +110,24 @@ def design_tokens() -> FileResponse:
     )
 
 
+@router.get("/quizzes/assets/reset.css", include_in_schema=False)
+def reset_styles() -> FileResponse:
+    return FileResponse(
+        _STATIC_ROOT / "reset.css",
+        media_type="text/css",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+@router.get("/quizzes/assets/study-hub.css", include_in_schema=False)
+def study_hub_styles() -> FileResponse:
+    return FileResponse(
+        _STATIC_ROOT / "study-hub.css",
+        media_type="text/css",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
 def _repository(request: Request) -> GenerationRepository:
     return cast(
         GenerationRepository,
@@ -128,6 +155,7 @@ def _quiz_library(
     empty_title: str,
     empty_summary: str,
     library_path: str,
+    management_mode: bool = False,
 ) -> HTMLResponse:
     courses: dict[str, dict[int, list[dict[str, object]]]] = {}
     course_names: dict[str, str] = {}
@@ -183,6 +211,7 @@ def _quiz_library(
     grouped = tuple(
         {
             "name": course_names[subject_key],
+            "hue": _course_hue(course_names[subject_key]),
             "quiz_count": sum(len(rows) for rows in exams.values()),
             "exams": tuple(
                 {
@@ -207,14 +236,26 @@ def _quiz_library(
             "empty_title": empty_title,
             "empty_summary": empty_summary,
             "library_path": library_path,
+            "management_mode": management_mode,
+            "quiz_library_path": (
+                "/studio/library/quizzes" if management_mode else "/public/quizzes"
+            ),
+            "practice_library_path": (
+                "/studio/library/practice-questions"
+                if management_mode
+                else "/public/practice-questions"
+            ),
             "library_asset_version": _library_asset_version(),
         },
         headers={"Cache-Control": "no-store"},
     )
 
 
-@router.get("/quizzes", response_class=HTMLResponse)
-def quiz_library(request: Request) -> HTMLResponse:
+def quiz_library_response(
+    request: Request,
+    *,
+    management_mode: bool = False,
+) -> HTMLResponse:
     return _quiz_library(
         request,
         frozenset({QuizContentKind.LECTURE_QUIZ, QuizContentKind.EXAM_REVIEW}),
@@ -222,12 +263,18 @@ def quiz_library(request: Request) -> HTMLResponse:
         summary="Choose a course, exam, and quiz.",
         empty_title="No quizzes are published yet",
         empty_summary="Published lecture and exam-review quizzes will appear here automatically.",
-        library_path="/public/quizzes",
+        library_path=(
+            "/studio/library/quizzes" if management_mode else "/public/quizzes"
+        ),
+        management_mode=management_mode,
     )
 
 
-@router.get("/practice-questions", response_class=HTMLResponse)
-def practice_question_library(request: Request) -> HTMLResponse:
+def practice_question_library_response(
+    request: Request,
+    *,
+    management_mode: bool = False,
+) -> HTMLResponse:
     return _quiz_library(
         request,
         frozenset({QuizContentKind.PRACTICE_QUESTIONS}),
@@ -235,8 +282,23 @@ def practice_question_library(request: Request) -> HTMLResponse:
         summary="Choose a course and exam to review imported practice questions.",
         empty_title="No practice questions are published yet",
         empty_summary="Published practice questions will appear here automatically.",
-        library_path="/public/practice-questions",
+        library_path=(
+            "/studio/library/practice-questions"
+            if management_mode
+            else "/public/practice-questions"
+        ),
+        management_mode=management_mode,
     )
+
+
+@router.get("/quizzes", response_class=HTMLResponse)
+def quiz_library(request: Request) -> HTMLResponse:
+    return quiz_library_response(request)
+
+
+@router.get("/practice-questions", response_class=HTMLResponse)
+def practice_question_library(request: Request) -> HTMLResponse:
+    return practice_question_library_response(request)
 
 
 @router.get("/quizzes/{token}", response_class=HTMLResponse)
