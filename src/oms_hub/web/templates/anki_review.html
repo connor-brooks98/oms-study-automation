@@ -60,6 +60,20 @@
     <p class="pipeline-note" data-convergence-warning hidden></p>
     <p class="pipeline-note" data-reconciliation-warning hidden></p>
 
+    <section class="card sh-card anki-policy-card" data-review-quality hidden>
+      <div>
+        <p class="mono-label">Quality-first selection</p>
+        <h2>Evidence and card-count context</h2>
+        <p>60 is a warning floor, 65 is the ordinary target, and 70 is a soft cap—not a quota to fill. Prefer fewer excellent, grounded, nonredundant cards; no card should be added merely to reach a count.</p>
+        <p class="pipeline-note" data-review-sizing></p>
+        <p class="pipeline-note" data-review-below-floor hidden></p>
+        <div data-review-evidence-quality></div>
+        <div data-review-s2b-diagnostic></div>
+        <div data-review-selection-reasons></div>
+        <div data-review-duplicates></div>
+      </div>
+    </section>
+
     <section class="anki-review-toolbar" aria-label="Review filters">
       <div class="anki-review-switcher" role="group" aria-label="Review view">
         <button class="button secondary sh-btn sh-btn--secondary sh-seg__btn sh-seg__btn--active is-active" type="button" data-review-view="final" aria-pressed="true">Final proposed changes <span data-count-final>0</span></button>

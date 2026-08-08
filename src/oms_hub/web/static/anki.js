@@ -148,6 +148,124 @@
     };
   };
 
+  const reviewSurfaceDisplay = (surface) => {
+    const selection = surface?.selection;
+    if (!selection || typeof selection !== "object") {
+      return { visible: false, sizing: "", belowFloorWarning: "" };
+    }
+    const count = Number(selection.selected_count);
+    const floor = Number(selection.warning_floor);
+    const target = Number(selection.ordinary_target);
+    const cap = Number(selection.soft_cap);
+    const hasSizing = [floor, target, cap].every(Number.isFinite);
+    return {
+      visible: true,
+      sizing: hasSizing
+        ? `${Number.isFinite(count) ? `${count} selected. ` : ""}${floor} is a warning floor; ${target} is the ordinary target; ${cap} is a soft cap for quality-first exceptions.`
+        : "Card counts remain quality-first guidance, not quotas.",
+      belowFloorWarning: selection.below_warning_floor === true
+        ? `Fewer than ${floor} cards were selected. This is allowed when fewer cards meet grounding and quality requirements; do not add weak, redundant, or ungrounded cards to reach a count.`
+        : "",
+    };
+  };
+
+  const reviewSurfaceList = (documentRef, selector, heading, entries, format) => {
+    const container = documentRef.querySelector(selector);
+    if (!container) return;
+    container.replaceChildren();
+    if (!entries.length) return;
+    container.append(element(documentRef, "strong", "", heading));
+    const list = element(documentRef, "ul", "field-help");
+    entries.forEach((entry) => list.append(element(documentRef, "li", "", format(entry))));
+    container.append(list);
+  };
+
+  const renderReviewSurface = (documentRef, surface) => {
+    const section = documentRef.querySelector("[data-review-quality]");
+    if (!section) return;
+    const display = reviewSurfaceDisplay(surface);
+    section.hidden = !display.visible;
+    if (!display.visible) return;
+    const sizing = documentRef.querySelector("[data-review-sizing]");
+    sizing.textContent = display.sizing;
+    const belowFloor = documentRef.querySelector("[data-review-below-floor]");
+    belowFloor.textContent = display.belowFloorWarning;
+    belowFloor.hidden = !display.belowFloorWarning;
+
+    const evidenceQuality = Array.isArray(surface.evidence_quality)
+      ? surface.evidence_quality
+      : [];
+    reviewSurfaceList(
+      documentRef,
+      "[data-review-evidence-quality]",
+      "Evidence quality",
+      evidenceQuality,
+      (item) => `${item.identity}: ${readableState(item.evidence_quality)}`,
+    );
+
+    const diagnostic = surface.s2b_diagnostic;
+    const poorConcepts = Array.isArray(diagnostic?.evidence_poor_concept_ids)
+      ? diagnostic.evidence_poor_concept_ids
+      : [];
+    const matched = diagnostic?.matched_slide_passage_ids;
+    if (diagnostic && typeof diagnostic === "object") {
+      const details = [];
+      if (poorConcepts.length) details.push(`Evidence-poor concepts: ${poorConcepts.join(", ")}`);
+      if (matched && typeof matched === "object") {
+        Object.entries(matched).forEach(([conceptId, passageIds]) => {
+          details.push(`${conceptId}: ${(Array.isArray(passageIds) ? passageIds : []).join(", ") || "no matched slide passages"}`);
+        });
+      }
+      if (Number.isFinite(Number(diagnostic.threshold_chars))) {
+        details.push(`Diagnostic threshold: ${diagnostic.threshold_chars} matched slide characters`);
+      }
+      if (Number.isFinite(Number(diagnostic.total_concepts))) {
+        details.push(`Concepts audited: ${diagnostic.total_concepts}`);
+      }
+      reviewSurfaceList(
+        documentRef,
+        "[data-review-s2b-diagnostic]",
+        "S2b evidence diagnostic (diagnostic only)",
+        details,
+        (value) => value,
+      );
+    } else {
+      reviewSurfaceList(documentRef, "[data-review-s2b-diagnostic]", "", [], (value) => value);
+    }
+
+    const metadata = Array.isArray(surface.selection?.selection_metadata)
+      ? surface.selection.selection_metadata
+      : [];
+    const acknowledgement = surface.selection?.overflow_acknowledgement || {};
+    const selectionReasons = metadata
+      .filter((item) => Number(item.selected_position) >= 66)
+      .map((item) => {
+        const position = Number(item.selected_position);
+        if (position <= 70) {
+          return `Card ${position} (${item.identity}, ${item.tier}): marginal value — ${readableState(item.marginal_value_reason)}`;
+        }
+        return `Card ${position} (${item.identity}, ${item.tier}): mandatory ${item.mandatory === true ? "yes" : "no"}; overflow reason — ${item.overflow_reason || "not recorded"}; signed acknowledgement ${acknowledgement.signed === true ? "recorded" : "pending"}.`;
+      });
+    reviewSurfaceList(
+      documentRef,
+      "[data-review-selection-reasons]",
+      "Selection reasons beyond the ordinary target",
+      selectionReasons,
+      (value) => value,
+    );
+
+    const duplicates = Array.isArray(surface.duplicate_resolutions)
+      ? surface.duplicate_resolutions
+      : [];
+    reviewSurfaceList(
+      documentRef,
+      "[data-review-duplicates]",
+      "Duplicate resolutions",
+      duplicates,
+      (item) => `${item.card_id || item.fact_id}: duplicate of ${item.duplicate_of_existing_note_id ? `existing note ${item.duplicate_of_existing_note_id}` : `generated card ${item.duplicate_of_generated_card_id}`}`,
+    );
+  };
+
   const sourceLabel = (kind) => ({
     slides: "Lecture slides",
     transcripts: "Lecture transcript",
@@ -1224,6 +1342,7 @@
     const convergence = convergenceDisplay(review.convergence);
     const reconciliation = reconciliationDisplay(review.reconciliation);
     renderConceptGroups(documentRef, review.concepts);
+    renderReviewSurface(documentRef, review.review_surface || {});
     documentRef.querySelector("[data-count-convergence]").textContent =
       convergence.count;
     documentRef.querySelector("[data-label-convergence]").textContent =
@@ -1566,9 +1685,9 @@
       )).filter(Boolean);
       if (selectedExisting.length + selectedGenerated.length <= 70) return null;
       if (!root.confirm(
-        "This selection exceeds the 70-card cap. Confirm the exact mandatory selection before freezing the apply plan.",
+        "This selection exceeds the 70-card soft cap. Confirm the exact mandatory, nonredundant coverage before freezing the apply plan.",
       )) {
-        throw new Error("The over-cap selection was not confirmed.");
+        throw new Error("The over-soft-cap selection was not confirmed.");
       }
       return requestJson(
         documentRef,
@@ -1776,6 +1895,7 @@
     readableState,
     statusTone,
     reconciliationDisplay,
+    reviewSurfaceDisplay,
     reviewViews,
     renderProcessing,
     renderSourceChoices,

@@ -605,6 +605,7 @@ async def read_anki_review(
         "job": _job_payload(job),
         "convergence": _convergence_summary(request, job_id),
         "reconciliation": reconciliation,
+        "review_surface": _review_surface_payload(request, job, reconciliation),
         "groups": {
             "pass_1_matches": pass_1,
             "recovered_in_pass_2": pass_2,
@@ -1393,6 +1394,282 @@ def _evidence_payload(evidence: SourceEvidence) -> dict[str, Any]:
         "source_refs": [_source_reference_payload(reference) for reference in evidence.source_refs],
         "content_hash": evidence.content_hash,
     }
+
+
+_EVIDENCE_QUALITY_VALUES = frozenset({"primary_source", "summary_grounded", "fast_pass"})
+
+
+def _review_surface_payload(
+    request: Request,
+    job: CurationJob,
+    reconciliation: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Expose committed v2 review evidence without changing its outcome semantics."""
+    evidence_audit = _committed_stage_payload(request, job.id, CurationStage.CARD_EVIDENCE_AUDIT)
+    coverage = _committed_stage_payload(request, job.id, CurationStage.CARD_COVERAGE)
+    selection = _committed_stage_payload(request, job.id, CurationStage.CARD_SELECTION)
+    dedupe = _committed_stage_payload(request, job.id, CurationStage.DEDUPE)
+    current_metadata = _current_selection_metadata(selection, reconciliation)
+    return {
+        "evidence_quality": _review_evidence_quality(coverage, current_metadata),
+        "s2b_diagnostic": _s2b_diagnostic(evidence_audit),
+        "selection": _selection_review_surface(
+            _repository(request), job, selection, reconciliation, current_metadata
+        ),
+        "duplicate_resolutions": _duplicate_resolutions(dedupe),
+    }
+
+
+def _committed_stage_payload(
+    request: Request,
+    job_id: UUID,
+    stage: CurationStage,
+) -> dict[str, Any] | None:
+    pipeline = getattr(request.app.state, "anki_curation_pipeline", None)
+    artifacts = getattr(pipeline, "artifacts", None)
+    if artifacts is None:
+        return None
+    artifact = next(
+        (
+            item
+            for item in reversed(_repository(request).list_stage_artifacts(job_id))
+            if item.stage is stage
+        ),
+        None,
+    )
+    if artifact is None:
+        return None
+    try:
+        payload = artifacts.read(artifact)
+    except (OSError, TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _s2b_diagnostic(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    diagnostic: dict[str, Any] = {}
+    for key in (
+        "evidence_poor_concept_ids",
+        "matched_slide_passage_ids",
+        "matched_slide_char_counts",
+        "threshold_chars",
+        "total_concepts",
+    ):
+        value = payload.get(key)
+        if value is not None:
+            diagnostic[key] = value
+    return diagnostic or None
+
+
+def _review_evidence_quality(
+    coverage: dict[str, Any] | None,
+    selection_metadata: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    values: list[dict[str, Any]] = []
+    coverage_items = (coverage or {}).get("coverage", {})
+    if isinstance(coverage_items, dict):
+        for concept_id, item in sorted(coverage_items.items()):
+            if not isinstance(item, dict):
+                continue
+            evidence = item.get("evidence", [])
+            if not isinstance(evidence, list):
+                continue
+            for record in evidence:
+                if not isinstance(record, dict):
+                    continue
+                quality = record.get("evidence_quality")
+                if quality not in _EVIDENCE_QUALITY_VALUES:
+                    continue
+                values.append(
+                    {
+                        "identity": f"note:{record.get('note_id')}",
+                        "concept_id": concept_id,
+                        "evidence_quality": quality,
+                    }
+                )
+    for item in selection_metadata:
+        quality = item.get("evidence_quality")
+        identity = item.get("identity")
+        if quality not in _EVIDENCE_QUALITY_VALUES or not isinstance(identity, str):
+            continue
+        values.append({"identity": identity, "evidence_quality": quality})
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in values:
+        key = (str(item["identity"]), str(item["evidence_quality"]))
+        if key not in unique or "concept_id" in item:
+            unique[key] = item
+    return [unique[key] for key in sorted(unique)]
+
+
+def _selection_review_surface(
+    repository: AnkiCurationRepository,
+    job: CurationJob,
+    selection: dict[str, Any] | None,
+    reconciliation: dict[str, Any] | None,
+    current_metadata: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if selection is None:
+        return None
+    reconciliation_selection = (reconciliation or {}).get("selection")
+    current_selection = (
+        reconciliation_selection if isinstance(reconciliation_selection, dict) else selection
+    )
+    existing = current_selection.get("selected_existing_note_ids", [])
+    generated = current_selection.get("selected_generated_card_ids", [])
+    selected_count = (
+        len(existing) + len(generated)
+        if isinstance(existing, list) and isinstance(generated, list)
+        else None
+    )
+    minimum = current_selection.get("minimum_target", selection.get("minimum_target"))
+    target = current_selection.get("target", selection.get("target"))
+    cap = current_selection.get("cap", selection.get("cap"))
+    acknowledgement = current_selection.get("overflow_acknowledgement")
+    acknowledgement_state = _overflow_acknowledgement_state(
+        repository,
+        job,
+        existing,
+        generated,
+        cap,
+        acknowledgement,
+    )
+    result: dict[str, Any] = {
+        "warning_floor": minimum,
+        "ordinary_target": target,
+        "soft_cap": cap,
+        "selected_existing_note_ids": existing if isinstance(existing, list) else [],
+        "selected_generated_card_ids": generated if isinstance(generated, list) else [],
+        "selected_count": selected_count,
+        "below_warning_floor": (
+            selected_count < minimum
+            if isinstance(selected_count, int) and isinstance(minimum, int)
+            else None
+        ),
+        "selection_metadata": current_metadata,
+        "overflow_acknowledgement": acknowledgement_state,
+        "acknowledgement_satisfied": (
+            selected_count is not None
+            and isinstance(cap, int)
+            and (selected_count <= cap or acknowledgement_state["signed"])
+        ),
+    }
+    return result
+
+
+def _current_selection_metadata(
+    selection: dict[str, Any] | None,
+    reconciliation: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if selection is None:
+        return []
+    reconciliation_selection = (reconciliation or {}).get("selection")
+    current_selection = (
+        reconciliation_selection if isinstance(reconciliation_selection, dict) else selection
+    )
+    metadata = current_selection.get("selection_metadata", selection.get("selection_metadata", []))
+    existing = current_selection.get("selected_existing_note_ids", [])
+    generated = current_selection.get("selected_generated_card_ids", [])
+    if (
+        not isinstance(metadata, list)
+        or not isinstance(existing, list)
+        or not isinstance(generated, list)
+    ):
+        return []
+    selected_identities = {
+        *(
+            identity
+            for note_id in existing
+            if isinstance(note_id, int)
+            for identity in (str(note_id), f"note:{note_id}")
+        ),
+        *(
+            identity
+            for card_id in generated
+            if isinstance(card_id, str)
+            for identity in (card_id, f"card:{card_id}", f"generated:{card_id}")
+        ),
+    }
+    return [
+        item
+        for item in metadata
+        if isinstance(item, dict)
+        and isinstance(item.get("identity"), str)
+        and item["identity"] in selected_identities
+    ]
+
+
+def _overflow_acknowledgement_state(
+    repository: AnkiCurationRepository,
+    job: CurationJob,
+    existing: object,
+    generated: object,
+    cap: object,
+    value: object,
+) -> dict[str, Any]:
+    if (
+        not isinstance(value, dict)
+        or not isinstance(existing, list)
+        or not isinstance(generated, list)
+        or not isinstance(cap, int)
+        or any(not isinstance(note_id, int) for note_id in existing)
+        or any(not isinstance(card_id, str) for card_id in generated)
+    ):
+        return {"signed": False, "state": "pending", "provenance": None}
+    try:
+        signed = repository.validate_card_centric_overflow_acknowledgement(
+            job.id,
+            review_revision=job.review_revision,
+            selected_note_ids=tuple(note_id for note_id in existing if isinstance(note_id, int)),
+            selected_generated_ids=tuple(
+                card_id for card_id in generated if isinstance(card_id, str)
+            ),
+            cap=cap,
+            document=value,
+        )
+    except (TypeError, ValueError):
+        signed = False
+    if not signed:
+        return {"signed": False, "state": "pending", "provenance": None}
+    provenance = {
+        key: value[key]
+        for key in (
+            "job_id",
+            "review_revision",
+            "selection_digest",
+            "mandatory_count",
+            "cap",
+            "pipeline_contract_version",
+            "model_config_sha256",
+        )
+        if key in value
+    }
+    return {"signed": True, "state": "signed", "provenance": provenance or None}
+
+
+def _duplicate_resolutions(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    records = (payload or {}).get("resolutions", [])
+    if not isinstance(records, list):
+        return []
+    duplicates = [
+        {
+            key: record[key]
+            for key in (
+                "status",
+                "card_id",
+                "concept_id",
+                "fact_id",
+                "reason",
+                "duplicate_of_existing_note_id",
+                "duplicate_of_generated_card_id",
+            )
+            if key in record
+        }
+        for record in records
+        if isinstance(record, dict) and record.get("status") == "duplicate_of_existing"
+    ]
+    return sorted(duplicates, key=lambda item: str(item.get("card_id", item.get("fact_id", ""))))
 
 
 def _source_reference_payload(
