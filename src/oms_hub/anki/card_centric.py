@@ -12,6 +12,7 @@ from oms_hub.anki.card_centric_contracts import (
     CardCentricSourceIndex,
     CardClassification,
     CardClassificationBatchOutput,
+    CardConcept,
     CardConceptLedger,
     CardRecord,
     CensusTrust,
@@ -20,8 +21,16 @@ from oms_hub.anki.card_centric_contracts import (
     ClassifierTelemetry,
     FastCardClassification,
     GeneratedCardResolution,
+    QualitySelectionResult,
     SnapshotCensus,
     TagScopeResult,
+)
+from oms_hub.anki.correction_contracts import (
+    CanonicalJsonObject,
+    EvidenceQuality,
+    MarginalValueReason,
+    SelectionMetadata,
+    SelectionTier,
 )
 from oms_hub.anki.domain import SourceKind
 from oms_hub.anki.sources import SourcePassage
@@ -509,6 +518,29 @@ def fast_selection_eligible_v2(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _QualitySelectionCandidate:
+    identity: str
+    kind: Literal["existing", "generated"]
+    existing_note_id: int | None
+    generated_card_id: str | None
+    tier: SelectionTier
+    evidence_quality: EvidenceQuality
+    coverage: frozenset[tuple[str, str]]
+    priority: int
+    mandatory: bool
+    split: bool
+    flag_count: int
+
+
+def _selection_identity_for_note(note_id: int) -> str:
+    return f"existing:{note_id}"
+
+
+def _selection_identity_for_generated(card_id: str) -> str:
+    return f"generated:{card_id}"
+
+
 def select_high_yield_v2(
     classifications: Sequence[CardClassification],
     *,
@@ -517,14 +549,25 @@ def select_high_yield_v2(
     source_index: CardCentricSourceIndex,
     generated_cards: Sequence[GeneratedCardResolution],
     fast_fallback_note_ids: Sequence[int] = (),
+    semantic_review_required_card_ids: Sequence[str] = (),
+    overflow_acknowledgement: dict[str, object] | CanonicalJsonObject | None = None,
     target: int = 65,
     cap: int = 70,
     minimum: int = 60,
-) -> tuple[tuple[int, ...], tuple[int, ...], tuple[str, ...]]:
-    """Deterministic v2 tiers. T6 never creates coverage and only fills a short deck."""
+) -> QualitySelectionResult:
+    """Select the smallest deterministic, quality-first v2 card set.
+
+    T6 is a last-resort source of independently grounded cards below the warning
+    floor.  It never turns an unrecovered semantic fallback into a candidate.
+    """
     if not minimum <= target <= cap:
         raise CardCentricValidationError("selection target/cap is invalid")
     concepts = {concept.concept_id: concept for concept in ledger.concepts}
+    source_authority = {
+        passage.passage_id: passage.authority for passage in source_index.passages
+    }
+    semantic_review_ids = tuple(sorted(set(semantic_review_required_card_ids)))
+    semantic_review_set = set(semantic_review_ids)
 
     def priority(concept_id: str) -> tuple[int, str]:
         concept = concepts[concept_id]
@@ -537,101 +580,341 @@ def select_high_yield_v2(
             concept_id,
         )
 
-    generated = [
-        item
-        for item in generated_cards
-        if item.status == "generated" and item.concept_id in concepts
+    def evidence_quality(passage_ids: Sequence[str], *, fast: bool = False) -> EvidenceQuality:
+        if fast:
+            return EvidenceQuality.FAST_PASS
+        if any(source_authority.get(passage_id) != "summary" for passage_id in passage_ids):
+            return EvidenceQuality.PRIMARY_SOURCE
+        return EvidenceQuality.SUMMARY_GROUNDED
+
+    def covered_priority(concept_ids: Sequence[str]) -> int:
+        return min(
+            (priority(concept_id)[0] for concept_id in concept_ids if concept_id in concepts),
+            default=3,
+        )
+
+    candidates: list[_QualitySelectionCandidate] = []
+    selectable_generated_ids: set[str] = set()
+    for generated_row in generated_cards:
+        tier_priority = (
+            priority(generated_row.concept_id)[0]
+            if generated_row.concept_id in concepts
+            else 3
+        )
+        tier = (
+            SelectionTier.T1
+            if tier_priority == 0
+            else SelectionTier.T2
+            if tier_priority == 1
+            else SelectionTier.T4
+        )
+        candidates.append(
+            _QualitySelectionCandidate(
+                identity=_selection_identity_for_generated(generated_row.card_id),
+                kind="generated",
+                existing_note_id=None,
+                generated_card_id=generated_row.card_id,
+                tier=tier,
+                evidence_quality=evidence_quality(generated_row.source_passage_ids),
+                coverage=frozenset({("fact", generated_row.fact_id)}),
+                priority=tier_priority,
+                mandatory=tier_priority == 0,
+                split=generated_row.split,
+                flag_count=0,
+            )
+        )
+        if (
+            generated_row.status == "generated"
+            and generated_row.concept_id in concepts
+            and any(
+                passage_id in source_authority
+                for passage_id in generated_row.source_passage_ids
+            )
+        ):
+            selectable_generated_ids.add(generated_row.card_id)
+
+    for classification in classifications:
+        tier_priority = covered_priority(classification.covered_concept_ids)
+        coverage = frozenset(
+            ("concept", concept_id)
+            for concept_id in classification.covered_concept_ids
+            if concept_id in concepts
+        )
+        if selection_eligible_v2(classification, source_index):
+            tier = SelectionTier.T3 if tier_priority == 0 else SelectionTier.T5
+        elif (
+            classification.verdict == "MAYBE"
+            and not classification.flags
+            and coverage
+            and any(
+                passage_id in source_authority
+                for passage_id in classification.supporting_passage_ids
+            )
+        ):
+            tier = SelectionTier.T6
+        else:
+            continue
+        candidates.append(
+            _QualitySelectionCandidate(
+                identity=_selection_identity_for_note(classification.note_id),
+                kind="existing",
+                existing_note_id=classification.note_id,
+                generated_card_id=None,
+                tier=tier,
+                evidence_quality=evidence_quality(classification.supporting_passage_ids),
+                coverage=coverage,
+                priority=tier_priority,
+                mandatory=tier is SelectionTier.T3 and tier_priority == 0,
+                split=False,
+                flag_count=len(classification.flags),
+            )
+        )
+
+    for fast_classification in fast_classifications:
+        if not fast_selection_eligible_v2(fast_classification, source_index):
+            continue
+        coverage = frozenset(
+            ("concept", concept_id)
+            for concept_id in fast_classification.grounded_concept_ids
+            if concept_id in concepts
+        )
+        candidates.append(
+            _QualitySelectionCandidate(
+                identity=_selection_identity_for_note(fast_classification.note_id),
+                kind="existing",
+                existing_note_id=fast_classification.note_id,
+                generated_card_id=None,
+                tier=SelectionTier.T6,
+                evidence_quality=EvidenceQuality.FAST_PASS,
+                coverage=coverage,
+                priority=covered_priority(fast_classification.grounded_concept_ids),
+                mandatory=False,
+                split=False,
+                flag_count=len(fast_classification.flags),
+            )
+        )
+
+    existing_candidate_ids = tuple(
+        sorted(
+            {
+                *(row.note_id for row in classifications),
+                *(row.note_id for row in fast_classifications),
+                *fast_fallback_note_ids,
+            }
+        )
+    )
+    generated_candidate_ids = tuple(sorted({row.card_id for row in generated_cards}))
+    if len(generated_candidate_ids) != len(generated_cards):
+        raise CardCentricValidationError("generated selection card IDs must be unique")
+    if not semantic_review_set <= set(generated_candidate_ids):
+        raise CardCentricValidationError("semantic review IDs must be generated candidates")
+
+    # Preserve every input identity in the frozen partition but only make
+    # structurally valid, independently grounded rows selectable.
+    candidate_by_identity: dict[str, _QualitySelectionCandidate] = {}
+    for candidate in candidates:
+        current = candidate_by_identity.get(candidate.identity)
+        if current is None or _candidate_static_key(candidate) < _candidate_static_key(current):
+            candidate_by_identity[candidate.identity] = candidate
+    selectable = [
+        candidate
+        for candidate in candidate_by_identity.values()
+        if candidate.generated_card_id not in semantic_review_set
+        and candidate.existing_note_id not in set(fast_fallback_note_ids)
+        and (
+            candidate.kind == "existing"
+            or candidate.generated_card_id in selectable_generated_ids
+        )
     ]
-    generated.sort(key=lambda item: (*priority(item.concept_id), item.card_id))
-    clean = [item for item in classifications if selection_eligible_v2(item, source_index)]
-    clean.sort(
-        key=lambda item: (
-            min(
-                (priority(cid) for cid in item.covered_concept_ids if cid in concepts),
-                default=(3, ""),
+    selectable = _without_dominated_candidates(selectable)
+
+    selected: list[_QualitySelectionCandidate] = []
+    selected_coverage: set[tuple[str, str]] = set()
+    for tier in SelectionTier:
+        tier_candidates = [candidate for candidate in selectable if candidate.tier is tier]
+        while tier_candidates:
+            candidate = min(
+                tier_candidates,
+                key=lambda item: _candidate_selection_key(item, selected_coverage),
+            )
+            tier_candidates.remove(candidate)
+            count = len(selected)
+            if tier is SelectionTier.T6 and count >= minimum:
+                break
+            marginal_reason = _marginal_reason(candidate, selected_coverage, concepts)
+            if count >= target and count < cap and marginal_reason is None:
+                continue
+            if count >= cap:
+                if not candidate.mandatory:
+                    continue
+            selected.append(candidate)
+            selected_coverage.update(candidate.coverage)
+
+    metadata = tuple(
+        SelectionMetadata(
+            identity=candidate.identity,
+            selected_position=index,
+            tier=candidate.tier,
+            evidence_quality=candidate.evidence_quality,
+            mandatory=candidate.mandatory,
+            marginal_value_reason=(
+                _marginal_reason(candidate, set(), concepts) if 66 <= index <= cap else None
             ),
-            item.note_id,
+            overflow_reason=(
+                "validated mandatory high-value nonredundant coverage" if index > cap else None
+            ),
+            manual_acknowledgement_required=index > cap,
         )
+        for index, candidate in enumerate(selected, start=1)
     )
-    maybe = [item for item in classifications if item.verdict == "MAYBE"]
-    maybe.sort(key=lambda item: item.note_id)
-    fast = [item for item in fast_classifications if fast_selection_eligible_v2(item, source_index)]
-    fast.sort(key=lambda item: item.note_id)
-    selected_notes: list[int] = []
-    selected_generated: list[str] = []
+    selected_existing = tuple(
+        candidate.existing_note_id
+        for candidate in selected
+        if candidate.existing_note_id is not None
+    )
+    selected_generated = tuple(
+        candidate.generated_card_id
+        for candidate in selected
+        if candidate.generated_card_id is not None
+    )
+    selected_existing_set = set(selected_existing)
+    selected_generated_set = set(selected_generated)
+    acknowledgement = (
+        overflow_acknowledgement
+        if isinstance(overflow_acknowledgement, CanonicalJsonObject)
+        else CanonicalJsonObject.from_mapping(overflow_acknowledgement)
+        if overflow_acknowledgement is not None
+        else None
+    )
+    return QualitySelectionResult(
+        existing_candidate_note_ids=existing_candidate_ids,
+        generated_candidate_card_ids=generated_candidate_ids,
+        selected_existing_note_ids=selected_existing,
+        selected_generated_card_ids=selected_generated,
+        excluded_existing_note_ids=tuple(
+            note_id for note_id in existing_candidate_ids if note_id not in selected_existing_set
+        ),
+        excluded_generated_card_ids=tuple(
+            card_id for card_id in generated_candidate_ids if card_id not in selected_generated_set
+        ),
+        selection_metadata=metadata,
+        below_warning_floor=len(selected) < minimum,
+        target=target,
+        cap=cap,
+        minimum_target=minimum,
+        mandatory_note_ids=tuple(
+            sorted(
+                candidate.existing_note_id
+                for candidate in selected
+                if candidate.mandatory and candidate.existing_note_id is not None
+            )
+        ),
+        mandatory_generated_card_ids=tuple(
+            sorted(
+                candidate.generated_card_id
+                for candidate in selected
+                if candidate.mandatory and candidate.generated_card_id is not None
+            )
+        ),
+        semantic_review_required_card_ids=semantic_review_ids,
+        overflow_acknowledgement=acknowledgement,
+    )
 
-    def add_generated(rows: Sequence[GeneratedCardResolution], *, force: bool = False) -> None:
-        for row in rows:
-            if row.card_id not in selected_generated and (
-                force or len(selected_notes) + len(selected_generated) < target
-            ):
-                selected_generated.append(row.card_id)
 
-    def add_notes(
-        rows: Sequence[CardClassification | FastCardClassification], *, force: bool = False
-    ) -> None:
-        for row in rows:
-            if row.note_id not in selected_notes and (
-                force or len(selected_notes) + len(selected_generated) < target
-            ):
-                selected_notes.append(row.note_id)
-
-    # Select every mandatory identity before any ordinary tier.  Otherwise a
-    # medium generated row could consume the target slot that a mandatory high
-    # existing row needs, yielding an unactionable mixed overflow.
-    mandatory_generated = [row for row in generated if priority(row.concept_id)[0] == 0]
-    mandatory_clean = [
-        row
-        for row in clean
-        if min(
-            (priority(cid)[0] for cid in row.covered_concept_ids if cid in concepts),
-            default=3,
-        )
-        == 0
-    ]
-    mandatory_fast = [
-        row
-        for row in fast
-        if min(
-            (priority(cid)[0] for cid in row.grounded_concept_ids if cid in concepts),
-            default=3,
-        )
-        == 0
-    ]
-    add_generated(mandatory_generated, force=True)
-    add_notes(mandatory_clean, force=True)
-    add_notes(mandatory_fast, force=True)
-
-    # T2 medium generated gaps, T4 low generated gaps, and T5 grounded
-    # remainder fill only to the 65-card target. Fast YES has the same
-    # coverage standing as thorough YES, so it is never demoted to T6.
-    add_generated([row for row in generated if priority(row.concept_id)[0] == 1])
-    add_generated([row for row in generated if priority(row.concept_id)[0] == 2])
-    add_notes([row for row in clean if row.note_id not in selected_notes])
-    add_notes([row for row in fast if row.note_id not in selected_notes])
-    # T6 may include a thorough MAYBE and the documented prefilter fallback
-    # only below the warning floor.  Fast YES rows establish coverage in S5 and
-    # therefore belong to T3/T5 instead of this non-coverage tier.
-    if len(selected_notes) + len(selected_generated) < minimum:
-        add_notes(maybe)
-    if len(selected_notes) + len(selected_generated) < minimum:
-        add_notes(
-            [
-                FastCardClassification(
-                    note_id=note_id,
-                    verdict="NEEDS_REVIEW",
-                    reason="documented semantic prefilter fallback",
-                )
-                for note_id in sorted(set(fast_fallback_note_ids))
-            ]
-        )
-    selected = tuple(sorted(selected_notes))
-    selected_gen = tuple(selected_generated)
+def _candidate_static_key(
+    candidate: _QualitySelectionCandidate,
+) -> tuple[int, int, int, int, int, str]:
+    """The stable portion of the quality order, used for ties and dominance."""
     return (
-        selected,
-        tuple(sorted(item.note_id for item in clean if item.note_id not in set(selected))),
-        selected_gen,
+        -int(candidate.mandatory),
+        -_evidence_quality_rank(candidate.evidence_quality),
+        candidate.priority,
+        candidate.flag_count,
+        len(candidate.coverage),
+        candidate.identity,
     )
+
+
+def _candidate_quality_key(candidate: _QualitySelectionCandidate) -> tuple[int, int, int, int]:
+    return (
+        -int(candidate.mandatory),
+        -_evidence_quality_rank(candidate.evidence_quality),
+        candidate.priority,
+        candidate.flag_count,
+    )
+
+
+def _candidate_selection_key(
+    candidate: _QualitySelectionCandidate,
+    selected_coverage: set[tuple[str, str]],
+) -> tuple[int, int, int, int, int, int, str]:
+    return (
+        -int(candidate.mandatory),
+        -_evidence_quality_rank(candidate.evidence_quality),
+        -len(candidate.coverage - selected_coverage),
+        candidate.priority,
+        candidate.flag_count,
+        len(candidate.coverage & selected_coverage),
+        candidate.identity,
+    )
+
+
+def _evidence_quality_rank(evidence_quality: EvidenceQuality) -> int:
+    return {
+        EvidenceQuality.PRIMARY_SOURCE: 2,
+        EvidenceQuality.SUMMARY_GROUNDED: 1,
+        EvidenceQuality.FAST_PASS: 0,
+    }[evidence_quality]
+
+
+def _without_dominated_candidates(
+    candidates: Sequence[_QualitySelectionCandidate],
+) -> list[_QualitySelectionCandidate]:
+    kept: list[_QualitySelectionCandidate] = []
+    for candidate in candidates:
+        if candidate.split:
+            kept.append(candidate)
+            continue
+        quality = _candidate_quality_key(candidate)
+        dominated = any(
+            not other.split
+            and candidate.coverage <= other.coverage
+            and _candidate_quality_key(other) <= quality
+            and (
+                candidate.coverage != other.coverage
+                or _candidate_quality_key(other) != quality
+                or other.identity < candidate.identity
+            )
+            for other in candidates
+            if other.identity != candidate.identity
+        )
+        if not dominated:
+            kept.append(candidate)
+    return kept
+
+
+def _marginal_reason(
+    candidate: _QualitySelectionCandidate,
+    selected_coverage: set[tuple[str, str]],
+    concepts: dict[str, CardConcept],
+) -> MarginalValueReason | None:
+    if candidate.split:
+        return MarginalValueReason.VALIDATED_NECESSARY_SPLIT
+    if (
+        candidate.kind == "generated"
+        and candidate.priority <= 1
+        and candidate.coverage - selected_coverage
+    ):
+        return MarginalValueReason.ONLY_VALID_REQUIRED_FACT
+    if any(
+        kind == "concept"
+        and concept_id in concepts
+        and concepts[concept_id].emphasis_flag
+        and (kind, concept_id) not in selected_coverage
+        for kind, concept_id in candidate.coverage
+    ):
+        return MarginalValueReason.UNIQUE_EMPHASIZED_DISTINCTION
+    return None
 
 
 def select_high_yield(
