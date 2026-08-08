@@ -2,6 +2,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -16,6 +17,15 @@ from oms_hub.files.office import (
 
 def _hang(_source: Path, destination: Path, report_process) -> None:
     report_process(4242)
+    destination.write_bytes(b"partial")
+    time.sleep(30)
+
+
+def _hang_without_process_id(
+    _source: Path,
+    destination: Path,
+    _report_process,
+) -> None:
     destination.write_bytes(b"partial")
     time.sleep(30)
 
@@ -176,6 +186,73 @@ def test_office_window_handle_reraises_non_member_not_found_errors():
         )
 
 
+def test_powerpoint_conversion_does_not_probe_hwnd(monkeypatch, tmp_path):
+    calls: list[tuple[object, ...]] = []
+
+    class FakeDocument:
+        def SaveAs(self, destination: str, file_type: int) -> None:
+            calls.append(("SaveAs", destination, file_type))
+
+        def Close(self) -> None:
+            calls.append(("Close",))
+
+    class FakePresentations:
+        @staticmethod
+        def Open(
+            source: str,
+            *,
+            ReadOnly: bool,
+            WithWindow: bool,
+        ) -> FakeDocument:
+            calls.append(("Open", source, ReadOnly, WithWindow))
+            return FakeDocument()
+
+    class FakePowerPoint:
+        Presentations = FakePresentations()
+        DisplayAlerts = 0
+        AutomationSecurity = 0
+
+        def __getattr__(self, name: str) -> object:
+            if name == "HWND":
+                raise AssertionError("PowerPoint HWND must not be accessed")
+            raise AttributeError(name)
+
+        def Quit(self) -> None:
+            calls.append(("Quit",))
+
+    pythoncom = ModuleType("pythoncom")
+    pythoncom.CoInitialize = lambda: calls.append(("CoInitialize",))
+    pythoncom.CoUninitialize = lambda: calls.append(("CoUninitialize",))
+    win32com = ModuleType("win32com")
+    client = ModuleType("win32com.client")
+    client.DispatchEx = lambda progid: (
+        calls.append(("DispatchEx", progid)) or FakePowerPoint()
+    )
+    win32com.client = client
+
+    monkeypatch.setattr(office_worker.sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "pythoncom", pythoncom)
+    monkeypatch.setitem(sys.modules, "win32com", win32com)
+    monkeypatch.setitem(sys.modules, "win32com.client", client)
+
+    source = tmp_path / "lecture.pptx"
+    destination = tmp_path / "lecture.pdf"
+    reported: list[int] = []
+
+    office_worker.convert_office_file(source, destination, reported.append)
+
+    assert reported == []
+    assert calls == [
+        ("CoInitialize",),
+        ("DispatchEx", "PowerPoint.Application"),
+        ("Open", str(source), True, False),
+        ("SaveAs", str(destination), 32),
+        ("Close",),
+        ("Quit",),
+        ("CoUninitialize",),
+    ]
+
+
 def test_office_window_pid_detaches_borrowed_hwnd_after_lookup_failure():
     detached: list[int] = []
 
@@ -243,6 +320,35 @@ def test_timeout_kills_owned_office_tree_cleans_partial_and_releases_lock(
         converter.convert(source, destination)
 
     assert terminated == [4242]
+    assert not destination.exists()
+    converter.worker = _succeed
+    converter.timeout_seconds = 5
+    converter.convert(source, destination)
+    assert destination.read_bytes() == b"pdf"
+
+
+def test_timeout_without_office_pid_cleans_partial_and_releases_lock(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "lecture.pptx"
+    destination = tmp_path / "lecture.pdf"
+    source.write_bytes(b"pptx")
+    converter = SerialOfficeConverter(
+        timeout_seconds=0.1,
+        worker=_hang_without_process_id,
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        office_module,
+        "_terminate_office_process_tree",
+        terminated.append,
+    )
+
+    with pytest.raises(OfficeTimeoutError):
+        converter.convert(source, destination)
+
+    assert terminated == []
     assert not destination.exists()
     converter.worker = _succeed
     converter.timeout_seconds = 5
