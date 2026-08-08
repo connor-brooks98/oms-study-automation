@@ -14,10 +14,12 @@ from oms_hub.anki.card_centric_contracts import (
 from oms_hub.anki.correction_contracts import (
     A11HistoryEntry,
     A11HistorySnapshot,
+    CanonicalJsonObject,
     DeckSizingPolicy,
     DuplicateIdentity,
     EvidenceQuality,
     FactForbiddenClozeMap,
+    FactForbiddenClozeTargets,
     GeneratedCardIdentity,
     GeneratedFactResolution,
     GeneratedOutputSet,
@@ -35,7 +37,7 @@ from oms_hub.anki.domain import CurationStage
 
 def _sha(value: object) -> str:
     return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     ).hexdigest()
 
 
@@ -75,10 +77,17 @@ def test_deck_sizing_and_selection_metadata_enforce_quality_first_boundaries() -
 
 def test_fact_scope_split_sequence_and_terminal_resolutions_are_conserved() -> None:
     cloze_map = FactForbiddenClozeMap(
-        targets_by_fact_id={"C01:M1": ("porphobilinogen",), "C01:M2": ("lead",)}
+        facts=(
+            FactForbiddenClozeTargets(
+                fact_id="C01:M1",
+                targets=("porphobilinogen",),
+            ),
+            FactForbiddenClozeTargets(fact_id="C01:M2", targets=("lead",)),
+        )
     )
     assert cloze_map.targets_by_fact_id["C01:M1"] == ("porphobilinogen",)
     outputs = GeneratedOutputSet(
+        required_fact_ids=("C01:M1", "C01:M2", "C01:M3"),
         canonical_all_generated=(
             GeneratedCardIdentity(
                 card_id="G01",
@@ -117,6 +126,7 @@ def test_fact_scope_split_sequence_and_terminal_resolutions_are_conserved() -> N
 
     with pytest.raises(ValidationError, match="sequential"):
         GeneratedOutputSet(
+            required_fact_ids=("C01:M1",),
             canonical_all_generated=(
                 GeneratedCardIdentity(
                     card_id="G01",
@@ -136,11 +146,38 @@ def test_fact_scope_split_sequence_and_terminal_resolutions_are_conserved() -> N
         )
 
 
+def test_generated_outputs_reject_missing_and_cross_fact_resolutions() -> None:
+    card = GeneratedCardIdentity(card_id="G01", fact_id="C01:M2")
+    resolution = GeneratedFactResolution(
+        fact_id="C01:M1",
+        kind=GeneratedResolutionKind.GENERATED,
+        generated_card_ids=("G01",),
+    )
+
+    with pytest.raises(ValidationError, match="exactly cover required facts"):
+        GeneratedOutputSet(
+            required_fact_ids=("C01:M1", "C01:M2"),
+            canonical_all_generated=(card,),
+            selected_generated_card_ids=(),
+            resolutions=(resolution,),
+        )
+
+    with pytest.raises(ValidationError, match="linked to their resolved fact"):
+        GeneratedOutputSet(
+            required_fact_ids=("C01:M1",),
+            canonical_all_generated=(card,),
+            selected_generated_card_ids=(),
+            resolutions=(resolution,),
+        )
+
+
 def test_replay_history_and_orphan_adoption_contracts_validate_exact_identity() -> None:
+    prompt_content = "Pinned classifier instruction."
     prompt = PromptSnapshotIdentity(
         prompt_id="card-centric-classifier",
         prompt_version="v2",
-        content_sha256="a" * 64,
+        content=prompt_content,
+        content_sha256=hashlib.sha256(prompt_content.encode()).hexdigest(),
     )
     model_payload = {
         "stage": CurationStage.CARD_CLASSIFY.value,
@@ -149,15 +186,16 @@ def test_replay_history_and_orphan_adoption_contracts_validate_exact_identity() 
         "prompts": [prompt.model_dump(mode="json")],
         "generation_parameters": {"batch_size": 30},
     }
+    generation_parameters = CanonicalJsonObject.from_mapping({"batch_size": 30})
     identity = ResolvedStageModelIdentity(
         stage=CurationStage.CARD_CLASSIFY,
         provider="anthropic",
         model="configured-model",
         prompts=(prompt,),
-        generation_parameters={"batch_size": 30},
+        generation_parameters=generation_parameters,
         identity_sha256=_sha(model_payload),
     )
-    assert identity.generation_parameters["batch_size"] == 30
+    assert identity.generation_parameters.as_dict()["batch_size"] == 30
 
     lecture_payload = {
         "lecture_id": 12,
@@ -167,10 +205,16 @@ def test_replay_history_and_orphan_adoption_contracts_validate_exact_identity() 
     lecture = PinnedLectureMetadata(
         lecture_id=12,
         title="Heme synthesis",
-        metadata={"exam": 1},
+        metadata=CanonicalJsonObject.from_mapping({"exam": 1}),
         metadata_sha256=_sha(lecture_payload),
     )
     assert lecture.title == "Heme synthesis"
+
+    copied_parameters = identity.generation_parameters.as_dict()
+    copied_parameters["batch_size"] = 999
+    assert identity.generation_parameters.as_dict() == {"batch_size": 30}
+    with pytest.raises((TypeError, ValueError), match="finite JSON"):
+        CanonicalJsonObject.from_mapping({"unsupported": object()})
 
     entry = A11HistoryEntry(
         job_id=UUID("11111111-1111-4111-8111-111111111111"),

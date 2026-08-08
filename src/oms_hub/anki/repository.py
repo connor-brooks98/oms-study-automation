@@ -954,12 +954,15 @@ class AnkiCurationRepository:
         if lease_seconds < 1:
             raise ValueError("lease duration must be positive")
         expires = (_aware_utc(now) + timedelta(seconds=lease_seconds)).isoformat()
+        now_text = _aware_utc(now).isoformat()
         with self.database.session() as session:
             changed = session.execute(
                 update(AnkiCurationJobModel)
                 .where(
                     AnkiCurationJobModel.id == str(job_id),
                     AnkiCurationJobModel.lease_owner == worker_id,
+                    AnkiCurationJobModel.lease_expires_at.is_not(None),
+                    AnkiCurationJobModel.lease_expires_at > now_text,
                     AnkiCurationJobModel.state.in_([state.value for state in _CLAIMABLE_STATES]),
                 )
                 .values(lease_expires_at=expires)
@@ -1260,9 +1263,16 @@ class AnkiCurationRepository:
         stage: CurationStage,
         provider: str | None = None,
         model: str | None = None,
+        *,
+        expected_state: CurationState | None = None,
+        lease_owner: str | None = None,
+        now: datetime | None = None,
     ) -> JobStage:
         with self.database.session() as session:
-            self._require_job_model(session, job_id)
+            job = self._require_job_model(session, job_id)
+            if expected_state is not None and job.state != expected_state.value:
+                raise InvalidCurationTransition(f"job {job_id} is not in {expected_state.value}")
+            self._require_active_stage_lease(job, job_id, lease_owner, now=now)
             stored = session.scalar(
                 select(AnkiJobStageModel).where(
                     AnkiJobStageModel.job_id == str(job_id),
@@ -1319,13 +1329,13 @@ class AnkiCurationRepository:
         *,
         expected_state: CurationState,
         lease_owner: str | None,
+        now: datetime | None = None,
     ) -> JobStage:
         with self.database.session() as session:
             job = self._require_job_model(session, job_id)
             if job.state != expected_state.value:
                 raise InvalidCurationTransition(f"job {job_id} is not in {expected_state.value}")
-            if job.lease_owner != lease_owner:
-                raise InvalidCurationTransition(f"worker no longer owns job {job_id}")
+            self._require_active_stage_lease(job, job_id, lease_owner, now=now)
             stored = self._require_stage(session, job_id, stage)
             if stored.state != "running":
                 raise InvalidCurationTransition(f"stage {stage.value} is not running")
@@ -1365,6 +1375,7 @@ class AnkiCurationRepository:
         gap_cards: Sequence[GapCard] | None = None,
         job_pins: dict[str, str] | None = None,
         failure_detail: str | None = None,
+        now: datetime | None = None,
     ) -> CurationJob:
         if target_state not in ALLOWED_TRANSITIONS.get(
             expected_state,
@@ -1382,8 +1393,7 @@ class AnkiCurationRepository:
             self._validate_stage_artifact_for_commit(job, job_id, stage, artifact)
             if job.state != expected_state.value:
                 raise InvalidCurationTransition(f"job {job_id} is not in {expected_state.value}")
-            if job.lease_owner != lease_owner:
-                raise InvalidCurationTransition(f"worker no longer owns job {job_id}")
+            self._require_active_stage_lease(job, job_id, lease_owner, now=now)
             stored_stage = self._require_stage(session, job_id, stage)
             if stored_stage.state != "running":
                 raise InvalidCurationTransition(f"stage {stage.value} is not running")
@@ -1469,6 +1479,25 @@ class AnkiCurationRepository:
                 job.ready_at = utc_now()
             session.flush()
             return self._job(job)
+
+    @staticmethod
+    def _require_active_stage_lease(
+        job: AnkiCurationJobModel,
+        job_id: UUID,
+        lease_owner: str | None,
+        *,
+        now: datetime | None,
+    ) -> None:
+        if job.lease_owner != lease_owner:
+            raise InvalidCurationTransition(f"worker no longer owns job {job_id}")
+        if lease_owner is None:
+            return
+        if job.lease_expires_at is None:
+            raise InvalidCurationTransition(f"worker lease is unavailable for job {job_id}")
+        current = _aware_utc(now or datetime.now(UTC))
+        expires_at = _aware_utc(datetime.fromisoformat(job.lease_expires_at))
+        if expires_at <= current:
+            raise InvalidCurationTransition(f"worker lease expired for job {job_id}")
 
     def replace_source_evidence(
         self,

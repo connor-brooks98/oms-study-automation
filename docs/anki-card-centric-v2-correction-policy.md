@@ -104,8 +104,9 @@ not silently rewritten by S0.
   availability, lexical similarity is advisory only and cannot automatically
   declare uniqueness. Invalid/nonfinite/zero/wrong-shape vectors are integrity
   failures.
-- Stage success and failure are fenced by exact expected state, running stage,
-  and lease owner. A stale worker cannot commit or fail reclaimed work.
+- Stage start, success, and failure are fenced by exact expected state, running
+  stage where applicable, lease owner, and an unexpired lease. Expired leases
+  cannot renew. A stale worker cannot start, commit, or fail reclaimed work.
 - S0 defines but does not scan for orphan artifacts. P1 may adopt only an
   orphan matching the exact job ID, stage, input hash, kind/schema version,
   content checksum, complete-write evidence, and absence of a conflicting

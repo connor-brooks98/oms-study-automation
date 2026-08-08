@@ -723,13 +723,20 @@ def test_failed_job_can_retry_its_failed_stage_without_losing_artifacts(
         lease_seconds=30,
     )
     assert claimed is not None
-    repository.start_stage(job.id, CurationStage.PREFLIGHT)
+    repository.start_stage(
+        job.id,
+        CurationStage.PREFLIGHT,
+        expected_state=CurationState.PREFLIGHT,
+        lease_owner="worker-1",
+        now=now,
+    )
     repository.fail_stage(
         job.id,
         CurationStage.PREFLIGHT,
         "provider returned malformed output",
         expected_state=CurationState.PREFLIGHT,
         lease_owner="worker-1",
+        now=now,
     )
     repository.fail_job(
         job.id,
@@ -1041,13 +1048,20 @@ def test_failed_job_can_be_removed_from_the_run_list(tmp_path: Path) -> None:
         lease_seconds=30,
     )
     assert claimed is not None
-    repository.start_stage(job.id, CurationStage.PREFLIGHT)
+    repository.start_stage(
+        job.id,
+        CurationStage.PREFLIGHT,
+        expected_state=CurationState.PREFLIGHT,
+        lease_owner="worker-1",
+        now=now,
+    )
     repository.fail_stage(
         job.id,
         CurationStage.PREFLIGHT,
         "malformed output",
         expected_state=CurationState.PREFLIGHT,
         lease_owner="worker-1",
+        now=now,
     )
     repository.fail_job(job.id, "worker-1", "malformed output")
 

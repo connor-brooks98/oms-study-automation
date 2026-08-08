@@ -73,6 +73,7 @@ class AnkiCurationWorker:
             result = await self.pipeline.run_stage(
                 job.id,
                 lease_owner=self.worker_id,
+                lease_clock=self.now,
             )
             if result is not None and result.state is CurationState.FAILED:
                 current = self.repository.require_job(job.id)

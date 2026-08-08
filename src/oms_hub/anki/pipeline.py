@@ -2,8 +2,9 @@ import hashlib
 import json
 import os
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 from uuid import UUID
@@ -475,6 +476,7 @@ class CurationPipeline:
         job_id: UUID,
         *,
         lease_owner: str | None = None,
+        lease_clock: Callable[[], datetime] | None = None,
     ) -> StageRunResult | None:
         job = self.repository.require_job(job_id)
         definition = stage_definition(job.state, job.pipeline_contract_version)
@@ -485,6 +487,9 @@ class CurationPipeline:
             definition.stage,
             provider=job.provider,
             model=job.model,
+            expected_state=definition.state,
+            lease_owner=lease_owner,
+            now=_lease_now(lease_clock),
         )
         try:
             self.input_validator.validate(job_id)
@@ -538,6 +543,7 @@ class CurationPipeline:
                 gap_cards=product.gap_cards,
                 job_pins=product.job_pins,
                 failure_detail=product.blocking_error,
+                now=_lease_now(lease_clock),
             )
         except Exception as exc:
             self.repository.fail_stage(
@@ -546,6 +552,7 @@ class CurationPipeline:
                 _safe_error(exc),
                 expected_state=definition.state,
                 lease_owner=lease_owner,
+                now=_lease_now(lease_clock),
             )
             raise
         if started.attempt_count < 1:
@@ -613,6 +620,10 @@ def _canonical_json(value: object) -> str:
 
 def _safe_error(error: Exception) -> str:
     return (" ".join(str(error).split()) or type(error).__name__)[:1_000]
+
+
+def _lease_now(clock: Callable[[], datetime] | None) -> datetime:
+    return clock() if clock is not None else datetime.now(UTC)
 
 
 def _fsync_directory(path: Path) -> None:

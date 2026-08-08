@@ -50,3 +50,25 @@ the exact remote SHA above.
 P1–P4 must branch from the final pushed S0 tip reported in the S0 handoff, not
 from `origin/main` or an intermediate S0 commit. They may not start until a
 separate fresh Sol reviewer reports no blocking S0 finding.
+
+## S0 correction rerun
+
+The failure-first follow-up closed the S0 review blockers before a new handoff:
+
+- stage claim, start, commit, failure, expiry, and reclaim now enforce exact
+  state, owner, and unexpired-lease fencing;
+- required fact resolutions exactly conserve canonical generated outputs and
+  reject cross-fact card links;
+- replay inputs retain exact prompt contents and canonical, deeply immutable
+  JSON for model parameters and lecture metadata;
+- the deterministic lifecycle smoke test routes provider and embedding doubles
+  through the production S2, S2b, and S8 handlers.
+
+Verification rerun from the corrected isolated S0 worktree:
+
+- baseline seven-module evidence remains `124 passed` from the immutable base;
+- named S0 handoff suite: `177 passed in 18.74s`;
+- complete Anki suite: `468 passed in 21.64s`;
+- `ruff check .`: passed;
+- `mypy src/oms_hub/anki`: passed for 46 source files;
+- `git diff --check`: passed.

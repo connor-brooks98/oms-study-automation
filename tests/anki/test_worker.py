@@ -241,6 +241,7 @@ def test_expired_worker_cannot_commit_or_fail_reclaimed_stage(
             lease_seconds=3,
         )
         assert claimed_by_a is not None
+        current = [started]
 
         runner_a = ControlledRunner()
         runner_a.entered = asyncio.Event()
@@ -252,27 +253,22 @@ def test_expired_worker_cannot_commit_or_fail_reclaimed_stage(
             input_validator=ControlledValidator(),
         )
         stale_run = asyncio.create_task(
-            pipeline_a.run_stage(job.id, lease_owner="worker-a")
+            pipeline_a.run_stage(
+                job.id,
+                lease_owner="worker-a",
+                lease_clock=lambda: current[0],
+            )
         )
         await runner_a.entered.wait()
 
+        current[0] = started + timedelta(seconds=4)
         claimed_by_b = repository.claim_next_job(
-            started + timedelta(seconds=4),
+            current[0],
             worker_id="worker-b",
             lease_seconds=30,
         )
         assert claimed_by_b is not None
         assert claimed_by_b.lease_owner == "worker-b"
-
-        runner_a.release.set()
-        with pytest.raises(InvalidCurationTransition, match="no longer owns"):
-            await stale_run
-
-        reclaimed_stage = repository.get_stage(job.id, CurationStage.PREFLIGHT)
-        assert reclaimed_stage is not None
-        assert reclaimed_stage.state == "running"
-        assert repository.require_job(job.id).lease_owner == "worker-b"
-        assert repository.list_stage_artifacts(job.id) == []
 
         pipeline_b = CurationPipeline(
             repository,
@@ -280,11 +276,128 @@ def test_expired_worker_cannot_commit_or_fail_reclaimed_stage(
             ControlledRunner(),
             input_validator=ControlledValidator(),
         )
-        result = await pipeline_b.run_stage(job.id, lease_owner="worker-b")
+        result = await pipeline_b.run_stage(
+            job.id,
+            lease_owner="worker-b",
+            lease_clock=lambda: current[0],
+        )
 
         assert result is not None
         assert result.state is CurationState.BUILDING_SOURCE_INDEX
         assert repository.get_stage(job.id, CurationStage.PREFLIGHT).state == "complete"  # type: ignore[union-attr]
+
+        runner_a.release.set()
+        with pytest.raises(InvalidCurationTransition, match="not in preflight"):
+            await stale_run
+
+        assert repository.require_job(job.id).state is CurationState.BUILDING_SOURCE_INDEX
+        assert repository.get_stage(job.id, CurationStage.PREFLIGHT).state == "complete"  # type: ignore[union-attr]
+        assert len(repository.list_stage_artifacts(job.id)) == 1
+
+    asyncio.run(scenario())
+
+
+def test_expired_worker_cannot_start_after_reclaim(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        job = _create_job(repository)
+        started = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
+        assert (
+            repository.claim_next_job(
+                started,
+                worker_id="worker-a",
+                lease_seconds=3,
+            )
+            is not None
+        )
+        reclaimed_at = started + timedelta(seconds=4)
+        assert (
+            repository.claim_next_job(
+                reclaimed_at,
+                worker_id="worker-b",
+                lease_seconds=30,
+            )
+            is not None
+        )
+        stale = CurationPipeline(
+            repository,
+            StageArtifactStore(tmp_path / "artifacts"),
+            ControlledRunner(),
+            input_validator=ControlledValidator(),
+        )
+
+        with pytest.raises(InvalidCurationTransition, match="no longer owns"):
+            await stale.run_stage(
+                job.id,
+                lease_owner="worker-a",
+                lease_clock=lambda: reclaimed_at,
+            )
+
+        assert repository.get_stage(job.id, CurationStage.PREFLIGHT) is None
+        assert repository.require_job(job.id).lease_owner == "worker-b"
+
+    asyncio.run(scenario())
+
+
+def test_expired_lease_cannot_commit_fail_or_renew_before_reclaim(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        job = _create_job(repository)
+        started = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
+        assert (
+            repository.claim_next_job(
+                started,
+                worker_id="worker-a",
+                lease_seconds=3,
+            )
+            is not None
+        )
+        runner = ControlledRunner()
+        runner.entered = asyncio.Event()
+        runner.release = asyncio.Event()
+        current = [started]
+        pipeline = CurationPipeline(
+            repository,
+            StageArtifactStore(tmp_path / "artifacts"),
+            runner,
+            input_validator=ControlledValidator(),
+        )
+        stale_run = asyncio.create_task(
+            pipeline.run_stage(
+                job.id,
+                lease_owner="worker-a",
+                lease_clock=lambda: current[0],
+            )
+        )
+        await runner.entered.wait()
+
+        current[0] = started + timedelta(seconds=4)
+        assert not repository.renew_lease(
+            job.id,
+            "worker-a",
+            current[0],
+            lease_seconds=30,
+        )
+        with pytest.raises(InvalidCurationTransition, match="lease expired"):
+            repository.fail_stage(
+                job.id,
+                CurationStage.PREFLIGHT,
+                "stale worker failure",
+                expected_state=CurationState.PREFLIGHT,
+                lease_owner="worker-a",
+                now=current[0],
+            )
+        runner.release.set()
+        with pytest.raises(InvalidCurationTransition, match="lease expired"):
+            await stale_run
+
+        stage = repository.get_stage(job.id, CurationStage.PREFLIGHT)
+        assert stage is not None and stage.state == "running"
+        assert repository.list_stage_artifacts(job.id) == []
 
     asyncio.run(scenario())
 

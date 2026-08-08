@@ -1000,7 +1000,13 @@ def test_failed_curation_job_can_be_retried_through_api(
         lease_seconds=30,
     )
     assert claimed is not None
-    repository.start_stage(created.id, CurationStage.PREFLIGHT)
+    repository.start_stage(
+        created.id,
+        CurationStage.PREFLIGHT,
+        expected_state=CurationState.PREFLIGHT,
+        lease_owner="worker-1",
+        now=datetime.now(UTC),
+    )
     repository.fail_stage(
         created.id,
         CurationStage.PREFLIGHT,
@@ -1094,7 +1100,13 @@ def test_failed_curation_job_can_be_removed_through_api(
         lease_seconds=30,
     )
     assert claimed is not None
-    repository.start_stage(created.id, CurationStage.PREFLIGHT)
+    repository.start_stage(
+        created.id,
+        CurationStage.PREFLIGHT,
+        expected_state=CurationState.PREFLIGHT,
+        lease_owner="worker-1",
+        now=datetime.now(UTC),
+    )
     repository.fail_stage(
         created.id,
         CurationStage.PREFLIGHT,

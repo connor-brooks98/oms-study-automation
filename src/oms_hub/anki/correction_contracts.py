@@ -6,9 +6,10 @@ The types are additive and do not alter persisted v1 or existing v2 artifacts.
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -32,6 +33,38 @@ class FrozenCorrectionContract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     correction_contract_version: Literal[1] = 1
+
+
+class CanonicalJsonObject(BaseModel):
+    """Deeply immutable JSON object represented by its canonical bytes."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    canonical_json: str = Field(min_length=2)
+
+    @field_validator("canonical_json")
+    @classmethod
+    def validate_canonical_object(cls, value: str) -> str:
+        try:
+            parsed = json.loads(value, parse_constant=_reject_json_constant)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("value must be a finite JSON object") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("value must be a JSON object")
+        canonical = _canonical_json(parsed)
+        if value != canonical:
+            raise ValueError("JSON object must use canonical serialization")
+        return value
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> Self:
+        return cls(canonical_json=_canonical_json(dict(value)))
+
+    def as_dict(self) -> dict[str, Any]:
+        value = json.loads(self.canonical_json, parse_constant=_reject_json_constant)
+        if not isinstance(value, dict):  # pragma: no cover - validated at construction
+            raise AssertionError("canonical JSON object changed after validation")
+        return value
 
 
 class EvidenceQuality(StrEnum):
@@ -69,27 +102,40 @@ class DeckSizingPolicy(FrozenCorrectionContract):
     padding_allowed: Literal[False] = False
 
 
+class FactForbiddenClozeTargets(FrozenCorrectionContract):
+    fact_id: str = Field(min_length=1)
+    targets: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def clean_targets(self) -> "FactForbiddenClozeTargets":
+        fact_id = self.fact_id.strip()
+        targets = tuple(target.strip() for target in self.targets)
+        if not fact_id or any(not target for target in targets):
+            raise ValueError("fact IDs and forbidden cloze targets must be nonblank")
+        if len({target.casefold() for target in targets}) != len(targets):
+            raise ValueError("forbidden cloze targets must be unique within each fact")
+        object.__setattr__(self, "fact_id", fact_id)
+        object.__setattr__(self, "targets", targets)
+        return self
+
+
 class FactForbiddenClozeMap(FrozenCorrectionContract):
     """V2 cloze exclusions remain keyed by their stable fact identity."""
 
-    targets_by_fact_id: dict[str, tuple[str, ...]]
+    facts: tuple[FactForbiddenClozeTargets, ...]
 
-    @field_validator("targets_by_fact_id")
-    @classmethod
-    def clean_targets(
-        cls,
-        value: dict[str, tuple[str, ...]],
-    ) -> dict[str, tuple[str, ...]]:
-        cleaned: dict[str, tuple[str, ...]] = {}
-        for fact_id, targets in sorted(value.items()):
-            fact_id = fact_id.strip()
-            normalized = tuple(target.strip() for target in targets)
-            if not fact_id or any(not target for target in normalized):
-                raise ValueError("fact IDs and forbidden cloze targets must be nonblank")
-            if len({target.casefold() for target in normalized}) != len(normalized):
-                raise ValueError("forbidden cloze targets must be unique within each fact")
-            cleaned[fact_id] = normalized
-        return cleaned
+    @model_validator(mode="after")
+    def unique_fact_ids(self) -> "FactForbiddenClozeMap":
+        ordered = tuple(sorted(self.facts, key=lambda item: item.fact_id))
+        ids = [item.fact_id for item in ordered]
+        if len(ids) != len(set(ids)):
+            raise ValueError("forbidden cloze fact IDs must be unique")
+        object.__setattr__(self, "facts", ordered)
+        return self
+
+    @property
+    def targets_by_fact_id(self) -> dict[str, tuple[str, ...]]:
+        return {item.fact_id: item.targets for item in self.facts}
 
 
 class GeneratedCardIdentity(FrozenCorrectionContract):
@@ -148,12 +194,19 @@ class GeneratedFactResolution(FrozenCorrectionContract):
 class GeneratedOutputSet(FrozenCorrectionContract):
     """Canonical generation is conserved independently of selected deck IDs."""
 
+    required_fact_ids: tuple[str, ...]
     canonical_all_generated: tuple[GeneratedCardIdentity, ...]
     selected_generated_card_ids: tuple[str, ...]
     resolutions: tuple[GeneratedFactResolution, ...]
 
     @model_validator(mode="after")
     def validate_conservation_and_splits(self) -> "GeneratedOutputSet":
+        required_fact_ids = tuple(fact_id.strip() for fact_id in self.required_fact_ids)
+        if any(not fact_id for fact_id in required_fact_ids) or len(required_fact_ids) != len(
+            set(required_fact_ids)
+        ):
+            raise ValueError("required fact IDs must be nonblank and unique")
+        object.__setattr__(self, "required_fact_ids", required_fact_ids)
         cards_by_id = {card.card_id: card for card in self.canonical_all_generated}
         if len(cards_by_id) != len(self.canonical_all_generated):
             raise ValueError("canonical generated card IDs must be unique")
@@ -163,6 +216,8 @@ class GeneratedOutputSet(FrozenCorrectionContract):
         fact_ids = [resolution.fact_id for resolution in self.resolutions]
         if len(fact_ids) != len(set(fact_ids)):
             raise ValueError("each required fact must have one terminal resolution")
+        if set(fact_ids) != set(required_fact_ids):
+            raise ValueError("terminal resolutions must exactly cover required facts")
         generated_ids = {
             card_id
             for resolution in self.resolutions
@@ -171,6 +226,14 @@ class GeneratedOutputSet(FrozenCorrectionContract):
         }
         if generated_ids != set(cards_by_id):
             raise ValueError("generated resolutions must conserve every canonical generated card")
+        for resolution in self.resolutions:
+            if resolution.kind is not GeneratedResolutionKind.GENERATED:
+                continue
+            if any(
+                cards_by_id[card_id].fact_id != resolution.fact_id
+                for card_id in resolution.generated_card_ids
+            ):
+                raise ValueError("generated cards must remain linked to their resolved fact")
         cards_by_fact: dict[str, list[GeneratedCardIdentity]] = {}
         for card in self.canonical_all_generated:
             cards_by_fact.setdefault(card.fact_id, []).append(card)
@@ -212,7 +275,14 @@ class SelectionMetadata(FrozenCorrectionContract):
 class PromptSnapshotIdentity(FrozenCorrectionContract):
     prompt_id: str = Field(min_length=1)
     prompt_version: str = Field(min_length=1)
+    content: str = Field(min_length=1)
     content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_content_hash(self) -> "PromptSnapshotIdentity":
+        if hashlib.sha256(self.content.encode("utf-8")).hexdigest() != self.content_sha256:
+            raise ValueError("prompt content hash does not match exact prompt contents")
+        return self
 
 
 class ResolvedStageModelIdentity(FrozenCorrectionContract):
@@ -220,7 +290,7 @@ class ResolvedStageModelIdentity(FrozenCorrectionContract):
     provider: str = Field(min_length=1)
     model: str = Field(min_length=1)
     prompts: tuple[PromptSnapshotIdentity, ...] = Field(min_length=1)
-    generation_parameters: dict[str, object]
+    generation_parameters: CanonicalJsonObject
     identity_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -230,7 +300,7 @@ class ResolvedStageModelIdentity(FrozenCorrectionContract):
             "provider": self.provider,
             "model": self.model,
             "prompts": [prompt.model_dump(mode="json") for prompt in self.prompts],
-            "generation_parameters": self.generation_parameters,
+            "generation_parameters": self.generation_parameters.as_dict(),
         }
         if _sha(payload) != self.identity_sha256:
             raise ValueError("resolved model identity hash does not match its inputs")
@@ -240,7 +310,7 @@ class ResolvedStageModelIdentity(FrozenCorrectionContract):
 class PinnedLectureMetadata(FrozenCorrectionContract):
     lecture_id: int = Field(gt=0)
     title: str = Field(min_length=1)
-    metadata: dict[str, object]
+    metadata: CanonicalJsonObject
     metadata_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -248,7 +318,7 @@ class PinnedLectureMetadata(FrozenCorrectionContract):
         payload = {
             "lecture_id": self.lecture_id,
             "title": self.title,
-            "metadata": self.metadata,
+            "metadata": self.metadata.as_dict(),
         }
         if _sha(payload) != self.metadata_sha256:
             raise ValueError("pinned lecture metadata hash does not match its contents")
@@ -297,13 +367,23 @@ class OrphanArtifactAdoptionEvidence(FrozenCorrectionContract):
 
 
 def _sha(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode()
-    return hashlib.sha256(encoded).hexdigest()
+    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
+
+
+def _canonical_json(value: object) -> str:
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("replay identity values must be finite JSON data") from exc
+
+
+def _reject_json_constant(value: str) -> object:
+    raise ValueError(f"nonfinite JSON constant {value} is not allowed")
 
 
 def _nonblank(value: str | None) -> bool:
@@ -313,10 +393,12 @@ def _nonblank(value: str | None) -> bool:
 __all__ = [
     "A11HistoryEntry",
     "A11HistorySnapshot",
+    "CanonicalJsonObject",
     "DeckSizingPolicy",
     "DuplicateIdentity",
     "EvidenceQuality",
     "FactForbiddenClozeMap",
+    "FactForbiddenClozeTargets",
     "GeneratedCardIdentity",
     "GeneratedFactResolution",
     "GeneratedOutputSet",

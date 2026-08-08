@@ -1,8 +1,10 @@
 # Card-Centric v2 Lifecycle Fixture
 
-The S0 smoke test invokes the real `CurationServicesRunner` dispatch and proves
-that stage products are retained as exposed fixture artifacts. The reusable
-script and doubles provide deterministic inputs for:
+The S0 smoke test invokes the real `CurationServicesRunner` dispatch for S2,
+S2b, and S8. It proves that structured-output and embedding doubles are consumed
+through production handlers and that stage products are retained as exposed
+fixture artifacts. The reusable script and doubles provide deterministic inputs
+for:
 
 - S2 ledger output;
 - S4b fast batches;
