@@ -134,16 +134,19 @@ class DeduplicationService:
         # VoyageEmbeddingError must reach the worker unchanged so its retry
         # policy remains effective.  Lexical evidence is requested only by the
         # explicit exhausted-retry adapter below.
-        vectors = np.asarray(
-            await self.embedder.embed(
-                [
-                    proposed_text,
-                    *(comparison.text for comparison in comparisons),
-                ],
-                input_type="document",
-            ),
-            dtype=np.float32,
+        embedded = await self.embedder.embed(
+            [
+                proposed_text,
+                *(comparison.text for comparison in comparisons),
+            ],
+            input_type="document",
         )
+        try:
+            vectors = np.asarray(embedded, dtype=np.float32)
+        except (TypeError, ValueError) as exc:
+            raise SemanticDedupeIntegrityError(
+                "deduplication embeddings must be a numeric rectangular matrix"
+            ) from exc
         _validate_embedding_vectors(vectors, expected_rows=len(comparisons) + 1)
         norms = np.linalg.norm(vectors, axis=1, keepdims=True)
         if np.any(norms == 0):
