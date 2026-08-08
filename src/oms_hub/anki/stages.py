@@ -655,16 +655,29 @@ class CurationServicesRunner:
             )
         if set(scoped_note_ids) - set(cards_by_id):
             raise PinnedInputChanged("card-centric semantic scope contains unknown notes")
+        ledger = _card_ledger(context)
+        is_v2 = context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
         if context.job.semantic_generation is None:
             raise PinnedInputChanged("card-centric v2 job has no pinned semantic generation")
-        ledger = _card_ledger(context)
-        similarity = await self.semantic.pinned_centroid_similarity(
-            tuple(_card_concept_centroid_terms(concept) for concept in ledger.concepts),
-            note_ids=scoped_note_ids,
-            expected_generation=context.job.semantic_generation,
-        )
-        scores = dict(similarity.scores)
-        unavailable = tuple(sorted(set(similarity.unavailable_note_ids)))
+        if is_v2:
+            similarity = await self.semantic.pinned_centroid_similarity(
+                tuple(_card_concept_centroid_terms(concept) for concept in ledger.concepts),
+                note_ids=scoped_note_ids,
+                expected_generation=context.job.semantic_generation,
+            )
+            scores = dict(similarity.scores)
+            unavailable = tuple(sorted(set(similarity.unavailable_note_ids)))
+        else:
+            concept_queries = tuple(
+                " ".join((concept.primary_entity, *concept.aliases)).strip()
+                for concept in ledger.concepts
+            )
+            scores = await self.semantic.pinned_similarity(
+                concept_queries,
+                note_ids=scoped_note_ids,
+                expected_generation=context.job.semantic_generation,
+            )
+            unavailable = ()
         if (
             set(scores) & set(unavailable)
             or set(scores) | set(unavailable) != set(scoped_note_ids)
@@ -709,7 +722,8 @@ class CurationServicesRunner:
             },
         )
         payload = result.model_dump(mode="json")
-        payload["embedding_unavailable_note_ids"] = list(unavailable)
+        if is_v2:
+            payload["embedding_unavailable_note_ids"] = list(unavailable)
         return StageProduct(
             kind="card_centric_prefilter",
             payload=payload,

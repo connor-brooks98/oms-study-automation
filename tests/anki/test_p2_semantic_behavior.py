@@ -24,7 +24,11 @@ from oms_hub.anki.semantic.domain import (
     PinnedCentroidSimilarityResult,
     SemanticHit,
 )
-from oms_hub.anki.semantic.service import SemanticIndexService, content_hash
+from oms_hub.anki.semantic.service import (
+    SemanticCoverageError,
+    SemanticIndexService,
+    content_hash,
+)
 from oms_hub.anki.semantic.store import SemanticSnapshotStore
 from oms_hub.anki.sources import SourcePassage
 
@@ -48,13 +52,18 @@ def _record(note_id: int, text: str) -> DocumentRecord:
     return DocumentRecord(note_id=note_id, text=text, content_hash=content_hash(text))
 
 
-def _semantic_service(tmp_path, embedder: FakeEmbeddingClient) -> SemanticIndexService:
+def _semantic_service(
+    tmp_path,
+    embedder: FakeEmbeddingClient,
+    *,
+    min_coverage: float = 0.0,
+) -> SemanticIndexService:
     return SemanticIndexService(
         SemanticSnapshotStore(tmp_path / "semantic"),
         embedder,
         model="fixture",
         dimensions=3,
-        min_coverage=0.0,
+        min_coverage=min_coverage,
         query_cache_size=8,
     )
 
@@ -133,6 +142,34 @@ def test_pinned_centroid_similarity_blocks_invalid_pinned_note_vector(tmp_path) 
     asyncio.run(scenario())
 
 
+def test_pinned_centroid_similarity_reports_valid_snapshot_unavailable_notes(tmp_path) -> None:
+    async def scenario() -> None:
+        embedder = FakeEmbeddingClient(
+            {"stored": [1.0, 0.0, 0.0], "Primary": [1.0, 0.0, 0.0]}
+        )
+        service = _semantic_service(tmp_path, embedder, min_coverage=0.5)
+        generation = await service.refresh(
+            [_record(1, "stored")], expected_note_ids=(1, 2)
+        )
+
+        result = await service.pinned_centroid_similarity(
+            (("Primary",),),
+            note_ids=(1, 2),
+            expected_generation=str(generation.manifest.generation),
+        )
+
+        assert result.scores == {1: pytest.approx(1.0, abs=0.001)}
+        assert result.unavailable_note_ids == (2,)
+        with pytest.raises(SemanticCoverageError, match="lacks scoped notes"):
+            await service.pinned_similarity(
+                ("Primary",),
+                note_ids=(1, 2),
+                expected_generation=str(generation.manifest.generation),
+            )
+
+    asyncio.run(scenario())
+
+
 def test_generation_aware_search_rejects_a_replacement_snapshot(tmp_path) -> None:
     async def scenario() -> None:
         embedder = FakeEmbeddingClient(
@@ -184,7 +221,10 @@ def test_prefilter_routes_only_reported_unavailable_notes_to_s4b_and_audits_them
     runner = stages_module.CurationServicesRunner.__new__(stages_module.CurationServicesRunner)
     runner.semantic = FakeSemantic()
     context = SimpleNamespace(
-        job=SimpleNamespace(semantic_generation="generation"),
+        job=SimpleNamespace(
+            semantic_generation="generation",
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        ),
         prior_payloads={
             CurationStage.SOURCE_INDEX: {
                 "cards": [_card(1).model_dump(), _card(2).model_dump(), _card(3).model_dump()]
@@ -203,6 +243,59 @@ def test_prefilter_routes_only_reported_unavailable_notes_to_s4b_and_audits_them
     prefilter, unavailable = stages_module._read_card_prefilter(context, scope)
     assert prefilter.pre_filtered_note_ids == (1, 3)
     assert unavailable == (3,)
+
+
+def test_v1_prefilter_preserves_concatenated_pinned_similarity_contract() -> None:
+    class FakeSemantic:
+        async def pinned_similarity(self, queries, **kwargs):
+            assert queries == ("Primary Alias",)
+            assert kwargs == {"note_ids": (1, 2), "expected_generation": "generation"}
+            return {1: 0.80, 2: 0.20}
+
+        async def pinned_centroid_similarity(self, *_args, **_kwargs):
+            raise AssertionError("v1 must not use centroid scoring")
+
+    scope = TagScopeResult(
+        snapshot_id="snapshot",
+        filters_sha256="b" * 64,
+        scoped_note_ids=(1, 2),
+        unscoped_note_ids=(),
+    )
+    ledger = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="fact",
+                primary_entity="Primary",
+                aliases=("Alias",),
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+            ),
+        ),
+    )
+    runner = stages_module.CurationServicesRunner.__new__(stages_module.CurationServicesRunner)
+    runner.semantic = FakeSemantic()
+    context = SimpleNamespace(
+        job=SimpleNamespace(
+            semantic_generation="generation",
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+        ),
+        prior_payloads={
+            CurationStage.SOURCE_INDEX: {
+                "cards": [_card(1).model_dump(), _card(2).model_dump()]
+            },
+            CurationStage.CARD_TAG_SCOPE: {"scope": scope.model_dump(mode="json")},
+            CurationStage.CARD_LEDGER: {"ledger": ledger.model_dump(mode="json")},
+        },
+    )
+
+    product = asyncio.run(runner._card_prefilter(context))
+
+    assert product.payload["pre_filtered_note_ids"] == [1]
+    assert product.payload["pre_excluded_note_ids"] == [2]
+    assert "embedding_unavailable_note_ids" not in product.payload
 
 
 def test_prefilter_read_blocks_incomplete_s4a_partition() -> None:
