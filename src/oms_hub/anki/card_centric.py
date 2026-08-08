@@ -23,6 +23,7 @@ from oms_hub.anki.card_centric_contracts import (
     SnapshotCensus,
     TagScopeResult,
 )
+from oms_hub.anki.correction_contracts import EvidenceQuality
 from oms_hub.anki.domain import SourceKind
 from oms_hub.anki.sources import SourcePassage
 from oms_hub.llm.domain import GenerationOptions, ProviderCapabilities, ProviderName
@@ -487,12 +488,23 @@ def selection_eligible_v2(
     source_index: CardCentricSourceIndex,
 ) -> bool:
     """V2 admits grounded summary evidence; v1 keeps its stricter rule."""
-    passages = {passage.passage_id for passage in source_index.passages}
-    return (
-        result.verdict == "YES"
-        and not result.flags
-        and any(passage_id in passages for passage_id in result.supporting_passage_ids)
-    )
+    return evidence_quality_v2(result, source_index) is not None
+
+
+def evidence_quality_v2(
+    result: CardClassification,
+    source_index: CardCentricSourceIndex,
+) -> EvidenceQuality | None:
+    """Return v2 grounding quality only for an eligible thorough classification."""
+    if result.verdict != "YES" or result.flags or not result.supporting_passage_ids:
+        return None
+    passages = {passage.passage_id: passage for passage in source_index.passages}
+    cited = tuple(passages.get(passage_id) for passage_id in result.supporting_passage_ids)
+    if any(passage is None for passage in cited):
+        return None
+    if any(passage.authority != "summary" for passage in cited if passage is not None):
+        return EvidenceQuality.PRIMARY_SOURCE
+    return EvidenceQuality.SUMMARY_GROUNDED
 
 
 def fast_selection_eligible_v2(

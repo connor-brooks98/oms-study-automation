@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Literal, cast
@@ -13,6 +14,7 @@ from oms_hub.anki.card_centric import (
     CardCentricLedgerService,
     build_snapshot_census,
     build_source_index,
+    evidence_quality_v2,
     fast_selection_eligible_v2,
     scope_cards,
     select_high_yield,
@@ -25,6 +27,7 @@ from oms_hub.anki.card_centric_contracts import (
     CardClassification,
     CardConcept,
     CardConceptLedger,
+    CardEvidenceAudit,
     CardGapBatch,
     CardRecord,
     ClassifierResult,
@@ -140,6 +143,47 @@ from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.llm.structured import StructuredOutputError, StructuredTextService
 
 SourceIndexFactory = Callable[[UUID], LectureSourceIndex]
+
+
+def _evidence_audit_tokens(value: str) -> tuple[str, ...]:
+    """Normalize visible text into Unicode-aware evidence-audit word tokens."""
+    tokens: list[str] = []
+    token: list[str] = []
+    for character in unicodedata.normalize("NFKC", value).casefold():
+        if character.isalnum() or unicodedata.category(character).startswith("M"):
+            token.append(character)
+        elif token:
+            tokens.append("".join(token))
+            token = []
+    if token:
+        tokens.append("".join(token))
+    return tuple(tokens)
+
+
+def _evidence_audit_terms(concept: CardConcept) -> tuple[tuple[str, ...], ...]:
+    terms = {
+        tokens
+        for value in (concept.primary_entity, *concept.aliases)
+        if (tokens := _evidence_audit_tokens(value))
+    }
+    return tuple(sorted(terms, key=lambda value: (-len(value), value)))
+
+
+def _has_evidence_audit_term(
+    passage_text: str,
+    terms: Sequence[tuple[str, ...]],
+) -> bool:
+    tokens = _evidence_audit_tokens(passage_text)
+    return any(
+        tokens[start : start + len(term)] == term
+        for term in terms
+        for start in range(len(tokens) - len(term) + 1)
+    )
+
+
+def _normalized_visible_character_count(value: str) -> int:
+    """Count normalized visible token characters, excluding formatting separators."""
+    return sum(len(token) for token in _evidence_audit_tokens(value))
 
 
 class PinnedCurationInputValidator:
@@ -522,28 +566,36 @@ class CurationServicesRunner:
         matched: dict[str, list[str]] = {}
         counts: dict[str, int] = {}
         for concept in ledger.concepts:
-            terms = {
-                concept.primary_entity.casefold(),
-                *(alias.casefold() for alias in concept.aliases),
-            }
-            passages = [
-                passage
-                for passage in source.passages
-                if passage.authority == "slide"
-                and any(term in passage.text.casefold() for term in terms)
-            ]
+            terms = _evidence_audit_terms(concept)
+            seen_passage_ids: set[str] = set()
+            passages = []
+            for passage in source.passages:
+                if (
+                    passage.authority != "slide"
+                    or passage.passage_id in seen_passage_ids
+                    or not _has_evidence_audit_term(passage.text, terms)
+                ):
+                    continue
+                seen_passage_ids.add(passage.passage_id)
+                passages.append(passage)
             matched[concept.concept_id] = [passage.passage_id for passage in passages]
-            counts[concept.concept_id] = sum(len(passage.text.strip()) for passage in passages)
+            counts[concept.concept_id] = sum(
+                _normalized_visible_character_count(passage.text) for passage in passages
+            )
+        audit = CardEvidenceAudit(
+            evidence_poor_concept_ids=tuple(
+                concept_id for concept_id, count in counts.items() if count < 50
+            ),
+            matched_slide_passage_ids={
+                concept_id: tuple(passage_ids) for concept_id, passage_ids in matched.items()
+            },
+            matched_slide_char_counts=counts,
+            threshold_chars=50,
+            total_concepts=len(ledger.concepts),
+        )
         return StageProduct(
             kind="card_centric_evidence_audit",
-            payload={
-                "evidence_poor_concept_ids": sorted(
-                    key for key, value in counts.items() if value < 50
-                ),
-                "matched_slide_passage_ids": matched,
-                "matched_slide_char_counts": counts,
-                "threshold_chars": 50,
-            },
+            payload=audit.model_dump(mode="json"),
         )
 
     async def _card_tag_scope(self, context: StageContext) -> StageProduct:
@@ -849,19 +901,19 @@ class CurationServicesRunner:
             concept.concept_id: [] for concept in ledger.concepts
         }
         for item in classified.results:
-            eligible = (
-                selection_eligible_v2(item, source) if is_v2 else selection_eligible(item, source)
-            )
+            evidence_quality = evidence_quality_v2(item, source) if is_v2 else None
+            eligible = evidence_quality is not None if is_v2 else selection_eligible(item, source)
             if not eligible:
                 continue
             for concept_id in item.covered_concept_ids:
                 if concept_id in coverage:
-                    coverage[concept_id].append(
-                        {
-                            "note_id": item.note_id,
-                            "supporting_passage_ids": list(item.supporting_passage_ids),
-                        }
-                    )
+                    evidence = {
+                        "note_id": item.note_id,
+                        "supporting_passage_ids": list(item.supporting_passage_ids),
+                    }
+                    if evidence_quality is not None:
+                        evidence["evidence_quality"] = evidence_quality.value
+                    coverage[concept_id].append(evidence)
         if fast is not None:
             for fast_item in fast.results:
                 if not fast_selection_eligible_v2(fast_item, source):
@@ -2909,19 +2961,19 @@ def _merged_card_coverage(context: StageContext) -> dict[str, dict[str, Any]]:
     source = _card_source_index(context)
     is_v2 = context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
     for item in _all_card_classifications(context):
-        eligible = (
-            selection_eligible_v2(item, source) if is_v2 else selection_eligible(item, source)
-        )
+        evidence_quality = evidence_quality_v2(item, source) if is_v2 else None
+        eligible = evidence_quality is not None if is_v2 else selection_eligible(item, source)
         if eligible:
             for concept_id in item.covered_concept_ids:
                 if concept_id in coverage:
                     coverage[concept_id]["status"] = "covered"
-                    coverage[concept_id]["evidence"].append(
-                        {
-                            "note_id": item.note_id,
-                            "supporting_passage_ids": list(item.supporting_passage_ids),
-                        }
-                    )
+                    evidence = {
+                        "note_id": item.note_id,
+                        "supporting_passage_ids": list(item.supporting_passage_ids),
+                    }
+                    if evidence_quality is not None:
+                        evidence["evidence_quality"] = evidence_quality.value
+                    coverage[concept_id]["evidence"].append(evidence)
     if is_v2:
         fast, _ = _card_fast_classifier(context)
         for fast_item in fast.results:

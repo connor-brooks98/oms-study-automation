@@ -100,6 +100,34 @@ class CardCentricSourceIndex(CardCentricContract):
         return self
 
 
+class CardEvidenceAudit(CardCentricContract):
+    """Deterministic S2b diagnostics, retained for later review surfacing."""
+
+    evidence_poor_concept_ids: tuple[str, ...]
+    matched_slide_passage_ids: dict[str, tuple[str, ...]]
+    matched_slide_char_counts: dict[str, int]
+    threshold_chars: int = Field(ge=0)
+    total_concepts: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def valid_concept_evidence(self) -> "CardEvidenceAudit":
+        passage_keys = set(self.matched_slide_passage_ids)
+        if (
+            passage_keys != set(self.matched_slide_char_counts)
+            or len(passage_keys) != self.total_concepts
+            or not set(self.evidence_poor_concept_ids) <= passage_keys
+            or len(self.evidence_poor_concept_ids) != len(set(self.evidence_poor_concept_ids))
+            or any(not concept_id.strip() for concept_id in passage_keys)
+            or any(count < 0 for count in self.matched_slide_char_counts.values())
+            or any(
+                len(passage_ids) != len(set(passage_ids))
+                for passage_ids in self.matched_slide_passage_ids.values()
+            )
+        ):
+            raise ValueError("evidence audit concept diagnostics are inconsistent")
+        return self
+
+
 class CensusTrust(CardCentricContract):
     decision: Literal["trusted", "blocked"]
     reason: str = Field(min_length=1)
