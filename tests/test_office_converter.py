@@ -54,3 +54,22 @@ def test_child_exit_without_result_is_retryable_and_cleans_partial(tmp_path):
     converter.worker = _succeed
     converter.convert(source, destination)
     assert destination.read_bytes() == b"pdf"
+
+
+def test_pipe_allocation_failure_releases_global_lock(tmp_path, monkeypatch):
+    source = tmp_path / "lecture.pptx"
+    destination = tmp_path / "lecture.pdf"
+    source.write_bytes(b"pptx")
+    converter = SerialOfficeConverter(timeout_seconds=5, worker=_succeed)
+
+    def fail_pipe(*, duplex: bool):
+        del duplex
+        raise OSError("no handles available")
+
+    monkeypatch.setattr(converter._context, "Pipe", fail_pipe)
+    with pytest.raises(OSError, match="no handles available"):
+        converter.convert(source, destination)
+
+    monkeypatch.undo()
+    converter.convert(source, destination)
+    assert destination.read_bytes() == b"pdf"
