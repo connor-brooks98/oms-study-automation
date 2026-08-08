@@ -33,6 +33,38 @@ def _process_id_for_window(
         handle.Detach()
 
 
+def _is_member_not_found(error: Exception, pythoncom: Any) -> bool:
+    """Return whether a COM call failed because the invoked member was absent."""
+    hresult = getattr(error, "hresult", None)
+    if hresult is None and error.args:
+        hresult = error.args[0]
+    return hresult == getattr(pythoncom, "DISP_E_MEMBERNOTFOUND", -2147352573)
+
+
+def _window_handle_for_process_id(
+    application: Any,
+    property_name: str,
+    pythoncom: Any,
+) -> Any:
+    """Read an Office HWND, correcting a generated wrapper's bad invoke kind."""
+    window_handle = getattr(application, property_name)
+    if not callable(window_handle):
+        return window_handle
+
+    try:
+        return window_handle()
+    except Exception as error:  # noqa: BLE001 - preserve non-COM failures below
+        if not _is_member_not_found(error, pythoncom):
+            raise
+
+    # Some generated Office wrappers expose HWND as a method even though the
+    # server only accepts a property get. Resolve the DISPID on the underlying
+    # IDispatch, then invoke that one member explicitly as a property get.
+    ole_object = application._oleobj_
+    dispid = ole_object.GetIDsOfNames(0, property_name)
+    return ole_object.Invoke(dispid, 0, pythoncom.INVOKE_PROPERTYGET, 1)
+
+
 def convert_office_file(
     source: Path,
     destination: Path,
@@ -56,7 +88,7 @@ def convert_office_file(
             application.DisplayAlerts = 1
             _force_disable_macros(application)
             process_id = _process_id_for_window(
-                application.HWND,
+                _window_handle_for_process_id(application, "HWND", pythoncom),
                 win32process,
                 pywintypes,
             )
@@ -73,7 +105,7 @@ def convert_office_file(
             application.DisplayAlerts = 0
             _force_disable_macros(application)
             process_id = _process_id_for_window(
-                application.Hwnd,
+                _window_handle_for_process_id(application, "Hwnd", pythoncom),
                 win32process,
                 pywintypes,
             )
