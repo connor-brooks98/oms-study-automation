@@ -286,7 +286,7 @@ def test_semantic_review_and_selection_partitions_are_non_terminal_and_exact() -
         )
 
 
-def test_over_cap_selection_requires_the_actual_overflow_acknowledgement() -> None:
+def test_over_cap_selection_is_pending_review_until_s9_issues_acknowledgement() -> None:
     candidate_ids = tuple(f"G{position:02d}" for position in range(1, 72))
     metadata = tuple(
         SelectionMetadata(
@@ -317,20 +317,36 @@ def test_over_cap_selection_requires_the_actual_overflow_acknowledgement() -> No
         "minimum_target": 60,
         "mandatory_generated_card_ids": ("G71",),
     }
-    with pytest.raises(ValidationError, match="overflow acknowledgement"):
-        QualitySelectionResult(**kwargs)
+    # S9/repository validates acknowledgement signature/digest and blocks issuance;
+    # the selector must first preserve this exact mandatory overflow for review.
+    pending = QualitySelectionResult(**kwargs)
+    assert pending.overflow_acknowledgement is None
 
+    acknowledgement = CanonicalJsonObject.from_mapping(
+        {
+            "acknowledged_by": "reviewer",
+            "acknowledged_at": "2026-08-08T18:00:00Z",
+            "reason": "required coverage",
+        }
+    )
     result = QualitySelectionResult(
         **kwargs,
-        overflow_acknowledgement=CanonicalJsonObject.from_mapping(
-            {
-                "acknowledged_by": "reviewer",
-                "acknowledged_at": "2026-08-08T18:00:00Z",
-                "reason": "required coverage",
-            }
-        ),
+        overflow_acknowledgement=acknowledgement,
     )
-    assert result.overflow_acknowledgement is not None
+    assert result.overflow_acknowledgement == acknowledgement
+
+    for invalid_row in (
+        metadata[-1].model_copy(update={"mandatory": False}),
+        metadata[-1].model_copy(update={"overflow_reason": None}),
+        metadata[-1].model_copy(update={"manual_acknowledgement_required": False}),
+    ):
+        with pytest.raises(ValidationError, match="cards above 70|overflow selection metadata"):
+            QualitySelectionResult(
+                **{
+                    **kwargs,
+                    "selection_metadata": (*metadata[:-1], invalid_row),
+                }
+            )
 
     result = QualitySelectionResult(
         existing_candidate_note_ids=(101, 102),
