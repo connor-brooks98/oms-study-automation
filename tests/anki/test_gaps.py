@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from oms_hub.anki.correction_contracts import FactForbiddenClozeMap, FactForbiddenClozeTargets
 from oms_hub.anki.domain import SourceKind
 from oms_hub.anki.gaps import (
     CardDraft,
@@ -169,7 +170,15 @@ def _v2_request() -> V2GapGenerationRequest:
         evidence=(evidence,),
         lecture_title="Iron Deficiency Anemia",
         lecture_entity_count=1,
-        forbidden_cloze_targets=("Iron Deficiency Anemia", "iron deficiency"),
+        forbidden_cloze_targets_by_fact=FactForbiddenClozeMap(
+            facts=(
+                FactForbiddenClozeTargets(
+                    fact_id="C01-M1",
+                    targets=("Iron Deficiency Anemia", "iron deficiency"),
+                ),
+                FactForbiddenClozeTargets(fact_id="C01-M2", targets=()),
+            )
+        ),
         existing_supports=(),
         initial_tags=("OMS::Generated",),
     )
@@ -222,9 +231,12 @@ def test_v2_generation_sends_all_missing_facts_in_one_concept_call() -> None:
         "C01-M2",
     ]
     assert sent["lecture_entity_count"] == 1
-    assert sent["forbidden_cloze_targets"] == [
-        "Iron Deficiency Anemia",
-        "iron deficiency",
+    assert sent["forbidden_cloze_targets_by_fact"] == [
+        {
+            "fact_id": "C01-M1",
+            "targets": ["Iron Deficiency Anemia", "iron deficiency"],
+        },
+        {"fact_id": "C01-M2", "targets": []},
     ]
     assert [item.fact_id for item in result.generated] == ["C01-M1"]
     assert [item.fact_id for item in result.unresolved] == ["C01-M2"]
@@ -284,7 +296,7 @@ def test_v2_request_rejects_missing_fact_evidence_not_in_bundle() -> None:
             evidence=request.evidence,
             lecture_title=request.lecture_title,
             lecture_entity_count=request.lecture_entity_count,
-            forbidden_cloze_targets=request.forbidden_cloze_targets,
+            forbidden_cloze_targets_by_fact=request.forbidden_cloze_targets_by_fact,
             existing_supports=request.existing_supports,
             initial_tags=request.initial_tags,
         )

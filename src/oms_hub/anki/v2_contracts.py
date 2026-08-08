@@ -1,4 +1,5 @@
 import re
+from collections.abc import Sequence
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -172,6 +173,9 @@ class GeneratedGapCardV2(V2Contract):
     note_type: Literal["AnKingOverhaul (AnKing Step Deck / AnKingMed)"]
     source_passage_ids: tuple[PassageId, ...] = Field(min_length=1)
     split: bool
+    # Existing artifacts predate P3's sequential split contract.  Read them
+    # unchanged; V2GapGenerationService enforces indices for new emissions.
+    split_index: int | None = Field(default=None, ge=1)
     image_needed: str | None
 
     @model_validator(mode="after")
@@ -194,6 +198,53 @@ GapResolutionV2 = Annotated[
     GeneratedGapCardV2 | UnresolvedGapV2,
     Field(discriminator="status"),
 ]
+
+
+class LegacySplitIndexRecomputationRequired(ValueError):
+    """A legacy split artifact cannot be deterministically upgraded."""
+
+
+def adapt_legacy_split_indices(
+    cards: Sequence[GeneratedGapCardV2],
+) -> tuple[GeneratedGapCardV2, ...]:
+    """Assign stable indices to wholly legacy split groups.
+
+    A pre-P3 batch that has no indices can be upgraded in its serialized order.
+    Mixed explicit/missing, duplicate, and non-sequential explicit groups are
+    ambiguous or malformed and must be recomputed rather than guessed.
+    """
+    groups: dict[str, list[tuple[int, GeneratedGapCardV2]]] = {}
+    for position, card in enumerate(cards):
+        groups.setdefault(card.fact_id, []).append((position, card))
+
+    adapted = list(cards)
+    for fact_id, group in groups.items():
+        split_values = {card.split for _, card in group}
+        if len(split_values) != 1:
+            raise LegacySplitIndexRecomputationRequired(
+                f"mixed split rows require recomputation: fact_id={fact_id}"
+            )
+        if not group[0][1].split:
+            if any(card.split_index is not None for _, card in group):
+                raise LegacySplitIndexRecomputationRequired(
+                    f"unsplit rows carry split indices: fact_id={fact_id}"
+                )
+            continue
+        indices = [card.split_index for _, card in group]
+        if all(index is None for index in indices):
+            for index, (position, card) in enumerate(group, start=1):
+                adapted[position] = card.model_copy(update={"split_index": index})
+            continue
+        if any(index is None for index in indices):
+            raise LegacySplitIndexRecomputationRequired(
+                f"partial split indices require recomputation: fact_id={fact_id}"
+            )
+        explicit = [index for index in indices if index is not None]
+        if sorted(explicit) != list(range(1, len(group) + 1)):
+            raise LegacySplitIndexRecomputationRequired(
+                f"invalid split indices require recomputation: fact_id={fact_id}"
+            )
+    return tuple(adapted)
 
 
 class PromptManifestEntryV2(V2Contract):

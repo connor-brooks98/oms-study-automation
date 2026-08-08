@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from oms_hub.anki.correction_contracts import FactForbiddenClozeMap, PinnedLectureMetadata
 from oms_hub.anki.domain import SourceReference
 from oms_hub.anki.lcl import LectureConcept
 from oms_hub.anki.sources import SourcePassage
@@ -108,6 +109,7 @@ class GapCardProposal:
     prompt_hash: str | None = None
     fact_id: str | None = None
     split: bool = False
+    split_index: int | None = None
     image_needed: str | None = None
 
 
@@ -142,9 +144,10 @@ class V2GapGenerationRequest:
     evidence: tuple[SourcePassage, ...]
     lecture_title: str
     lecture_entity_count: int
-    forbidden_cloze_targets: tuple[str, ...]
+    forbidden_cloze_targets_by_fact: FactForbiddenClozeMap
     existing_supports: tuple[ExistingGapSupport, ...]
     initial_tags: tuple[str, ...]
+    pinned_lecture_metadata: PinnedLectureMetadata | None = None
 
     def __post_init__(self) -> None:
         if not self.missing_facts:
@@ -188,6 +191,13 @@ class V2GapGenerationRequest:
             for fact in self.missing_facts
         ):
             raise ValueError("V2 gap generation facts must belong to the concept")
+        targets_by_fact = self.forbidden_cloze_targets_by_fact.targets_by_fact_id
+        unexpected_target_fact_ids = sorted(set(targets_by_fact) - set(fact_ids))
+        if unexpected_target_fact_ids:
+            raise ValueError(
+                "V2 forbidden cloze targets must name requested facts only: "
+                f"fact_ids={_format_ids(unexpected_target_fact_ids)}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,8 +345,29 @@ class V2GapGenerationService:
                 _validate_v2_card(
                     card,
                     evidence_by_id=evidence_by_id,
-                    forbidden_cloze_targets=request.forbidden_cloze_targets,
+                    forbidden_cloze_targets=request.forbidden_cloze_targets_by_fact
+                    .targets_by_fact_id.get(fact_id, ()),
                 )
+            if generated:
+                if len(generated) == 1:
+                    card = generated[0]
+                    if card.split or card.split_index is not None:
+                        raise GapValidationError(
+                            "an unsplit fact requires one generated row with no split_index: "
+                            f"fact_id={fact_id}"
+                        )
+                else:
+                    indices = [card.split_index for card in generated]
+                    if (
+                        any(not card.split for card in generated)
+                        or any(index is None for index in indices)
+                        or sorted(index for index in indices if index is not None)
+                        != list(range(1, len(generated) + 1))
+                    ):
+                        raise GapValidationError(
+                            "split generated rows require sequential split_index values from one: "
+                            f"fact_id={fact_id}"
+                        )
 
 
 def _v2_generation_input(request: V2GapGenerationRequest) -> str:
@@ -357,7 +388,17 @@ def _v2_generation_input(request: V2GapGenerationRequest) -> str:
             ],
             "lecture_title": request.lecture_title,
             "lecture_entity_count": request.lecture_entity_count,
-            "forbidden_cloze_targets": list(request.forbidden_cloze_targets),
+            "forbidden_cloze_targets_by_fact": [
+                {
+                    "fact_id": fact.fact_id,
+                    "targets": list(
+                        request.forbidden_cloze_targets_by_fact.targets_by_fact_id.get(
+                            fact.fact_id, ()
+                        )
+                    ),
+                }
+                for fact in request.missing_facts
+            ],
             "existing_supports": [
                 {
                     "nid": support.note_id,
@@ -435,12 +476,14 @@ def _v2_proposal(
             "generation_request_id": generated.request_id,
             "fact_id": card.fact_id,
             "split": card.split,
+            "split_index": card.split_index,
             "image_needed": card.image_needed,
             "source_passage_ids": list(card.source_passage_ids),
         },
         prompt_hash=prompt_hash,
         fact_id=card.fact_id,
         split=card.split,
+        split_index=card.split_index,
         image_needed=card.image_needed,
     )
 

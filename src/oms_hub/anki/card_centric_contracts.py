@@ -11,6 +11,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from oms_hub.anki.correction_contracts import (
+    WARNING_FLOOR,
+    CanonicalJsonObject,
+    DuplicateIdentity,
+    SelectionMetadata,
+)
+
 
 class CardCentricContract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -468,6 +475,7 @@ class GeneratedCardResolution(CardCentricContract):
     source_passage_ids: tuple[str, ...] = Field(min_length=1)
     evidence_ids: tuple[str, ...] = ()
     split: bool = False
+    split_index: int | None = Field(default=None, ge=1)
     status: Literal["generated", "unresolved", "duplicate_of_existing"] = "generated"
     duplicate_of_existing_note_id: int | None = None
     duplicate_of_generated_card_id: str | None = None
@@ -506,6 +514,7 @@ class CardGapOutput(CardCentricContract):
     note_type: str = ""
     source_passage_ids: tuple[str, ...] = ()
     split: bool = False
+    split_index: int | None = Field(default=None, ge=1)
     image_needed: str | None = None
     reason: str = ""
 
@@ -522,6 +531,115 @@ class CardGapOutput(CardCentricContract):
 
 class CardGapBatch(CardCentricContract):
     resolutions: tuple[CardGapOutput, ...] = Field(min_length=1)
+
+
+class DedupeAdvisoryCandidate(CardCentricContract):
+    """Lexical-only evidence after semantic dedupe exhausts its retry budget."""
+
+    card_id: str = Field(min_length=1)
+    fact_id: str = Field(pattern=r"^C[0-9]{2,4}-M[0-9]{1,4}$")
+    identity: DuplicateIdentity
+    lexical_score: float = Field(ge=0, le=1)
+
+
+class SemanticDedupeReview(CardCentricContract):
+    """Non-terminal review metadata; it never makes a card automatically unique."""
+
+    card_id: str = Field(min_length=1)
+    fact_id: str = Field(pattern=r"^C[0-9]{2,4}-M[0-9]{1,4}$")
+    retry_exhausted: Literal[True] = True
+    automatic_unique: Literal[False] = False
+    lexical_candidates: tuple[DedupeAdvisoryCandidate, ...]
+
+    @model_validator(mode="after")
+    def candidates_describe_this_generated_card(self) -> "SemanticDedupeReview":
+        if any(
+            candidate.card_id != self.card_id or candidate.fact_id != self.fact_id
+            for candidate in self.lexical_candidates
+        ):
+            raise ValueError("dedupe advisory candidates must match the reviewed card and fact")
+        identities = [candidate.identity.model_dump_json() for candidate in self.lexical_candidates]
+        if len(identities) != len(set(identities)):
+            raise ValueError("dedupe advisory candidate identities must be unique")
+        return self
+
+
+def _existing_selection_identity(note_id: int) -> str:
+    return f"existing:{note_id}"
+
+
+def _generated_selection_identity(card_id: str) -> str:
+    return f"generated:{card_id}"
+
+
+class QualitySelectionResult(CardCentricContract):
+    """P3-C's immutable quality-first selection partition and audit record."""
+
+    existing_candidate_note_ids: tuple[int, ...]
+    generated_candidate_card_ids: tuple[str, ...]
+    selected_existing_note_ids: tuple[int, ...]
+    selected_generated_card_ids: tuple[str, ...]
+    excluded_existing_note_ids: tuple[int, ...]
+    excluded_generated_card_ids: tuple[str, ...]
+    selection_metadata: tuple[SelectionMetadata, ...]
+    below_warning_floor: bool
+    target: int = Field(ge=1)
+    cap: int = Field(ge=1)
+    minimum_target: int = Field(ge=1)
+    mandatory_note_ids: tuple[int, ...] = ()
+    mandatory_generated_card_ids: tuple[str, ...] = ()
+    semantic_review_required_card_ids: tuple[str, ...] = ()
+    overflow_acknowledgement: CanonicalJsonObject | None = None
+
+    @model_validator(mode="after")
+    def validate_quality_selection(self) -> "QualitySelectionResult":
+        if not self.minimum_target <= self.target <= self.cap:
+            raise ValueError("selection minimum, target, and cap are invalid")
+        candidate_existing = set(self.existing_candidate_note_ids)
+        selected_existing = set(self.selected_existing_note_ids)
+        excluded_existing = set(self.excluded_existing_note_ids)
+        if (
+            len(candidate_existing) != len(self.existing_candidate_note_ids)
+            or len(selected_existing) != len(self.selected_existing_note_ids)
+            or len(excluded_existing) != len(self.excluded_existing_note_ids)
+            or selected_existing & excluded_existing
+            or selected_existing | excluded_existing != candidate_existing
+        ):
+            raise ValueError("existing selection partitions must be disjoint and exact")
+        candidate_generated = set(self.generated_candidate_card_ids)
+        selected_generated = set(self.selected_generated_card_ids)
+        excluded_generated = set(self.excluded_generated_card_ids)
+        if (
+            len(candidate_generated) != len(self.generated_candidate_card_ids)
+            or any(not card_id.strip() for card_id in candidate_generated)
+            or len(selected_generated) != len(self.selected_generated_card_ids)
+            or len(excluded_generated) != len(self.excluded_generated_card_ids)
+            or selected_generated & excluded_generated
+            or selected_generated | excluded_generated != candidate_generated
+        ):
+            raise ValueError("generated selection partitions must be disjoint and exact")
+        selected_identities = {
+            *(_existing_selection_identity(note_id) for note_id in selected_existing),
+            *(_generated_selection_identity(card_id) for card_id in selected_generated),
+        }
+        metadata_identities = {item.identity for item in self.selection_metadata}
+        positions = sorted(item.selected_position for item in self.selection_metadata)
+        if metadata_identities != selected_identities or len(metadata_identities) != len(
+            self.selection_metadata
+        ):
+            raise ValueError("selection metadata identities must exactly equal selected identities")
+        if positions != list(range(1, len(selected_identities) + 1)):
+            raise ValueError("selection metadata positions must be unique and contiguous")
+        if self.below_warning_floor != (len(selected_identities) < WARNING_FLOOR):
+            raise ValueError("below_warning_floor must derive from the selected count")
+        if not set(self.mandatory_note_ids) <= selected_existing:
+            raise ValueError("mandatory existing identities must be selected")
+        if not set(self.mandatory_generated_card_ids) <= set(selected_generated):
+            raise ValueError("mandatory generated identities must be selected")
+        review_required = set(self.semantic_review_required_card_ids)
+        if not review_required <= candidate_generated or review_required & selected_generated:
+            raise ValueError("semantic-review identities must be candidates and never selected")
+        return self
 
 
 class SelectionEvidence(CardCentricContract):
