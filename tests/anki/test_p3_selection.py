@@ -9,7 +9,11 @@ from oms_hub.anki.card_centric_contracts import (
     FastCardClassification,
     GeneratedCardResolution,
 )
-from oms_hub.anki.correction_contracts import MarginalValueReason, SelectionTier
+from oms_hub.anki.correction_contracts import (
+    EvidenceQuality,
+    MarginalValueReason,
+    SelectionTier,
+)
 from oms_hub.anki.domain import SourceKind
 from oms_hub.anki.sources import SourcePassage
 
@@ -191,6 +195,31 @@ def test_selector_applies_subset_and_equivalent_coverage_dominance() -> None:
     assert result.excluded_existing_note_ids == (10, 11)
 
 
+def test_summary_evidence_with_unknown_id_does_not_upgrade_to_primary() -> None:
+    source = _source()
+    summary_id = next(
+        passage.passage_id for passage in source.passages if passage.authority == "summary"
+    )
+    result = select_high_yield_v2(
+        (
+            CardClassification(
+                note_id=10,
+                verdict="YES",
+                primary_subject="fixture",
+                reason="summary grounded",
+                covered_concept_ids=("C01",),
+                supporting_passage_ids=(summary_id, "unknown:passage"),
+            ),
+        ),
+        fast_classifications=(),
+        ledger=_ledger(1),
+        source_index=source,
+        generated_cards=(),
+    )
+
+    assert result.selection_metadata[0].evidence_quality is EvidenceQuality.SUMMARY_GROUNDED
+
+
 def test_selector_never_pads_and_excludes_fallbacks_and_semantic_review_cards() -> None:
     source = _source()
     passage_id = source.passages[0].passage_id
@@ -273,6 +302,23 @@ def test_marginal_cards_need_approved_reasons_and_overflow_is_mandatory() -> Non
     assert overflow.mandatory is True
     assert overflow.manual_acknowledgement_required is True
     assert overflow.overflow_reason == "validated mandatory high-value nonredundant coverage"
+
+
+def test_pending_mandatory_overflow_needs_review_but_excludes_nonmandatory_overflow() -> None:
+    source = _source()
+    passage_id = source.passages[0].passage_id
+    result = select_high_yield_v2(
+        (),
+        fast_classifications=(),
+        ledger=_ledger(72, high=set(range(1, 72))),
+        source_index=source,
+        generated_cards=tuple(_generated(index, passage_id) for index in range(1, 73)),
+    )
+
+    assert len(result.selected_generated_card_ids) == 71
+    assert result.excluded_generated_card_ids == ("G72",)
+    assert result.overflow_acknowledgement is None
+    assert result.selection_metadata[-1].manual_acknowledgement_required is True
 
 
 def test_invalid_low_value_marginal_card_is_excluded_after_65() -> None:
