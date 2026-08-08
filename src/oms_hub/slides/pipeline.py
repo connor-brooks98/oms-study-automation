@@ -73,6 +73,12 @@ class SlidePipeline:
                     revision,
                     self._persisted_promotion_pairs(revision, derived),
                 )
+                revision = self.repository.finish_revision(
+                    item_id,
+                    revision.id,
+                    UploadState.COMPLETE,
+                    current=False,
+                )
                 self._mark_promoted(revision.lecture_id)
                 return revision
             destinations = build_slide_destinations(

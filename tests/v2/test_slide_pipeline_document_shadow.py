@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -17,9 +18,10 @@ from oms_hub.document_processing.domain import (
 from oms_hub.document_processing.shadow import DocumentShadowEvaluator
 from oms_hub.domain import LectureKey
 from oms_hub.files.atomic import verified_atomic_copy
-from oms_hub.files.office import OfficeTimeoutError
+from oms_hub.files.office import OfficeTimeoutError, OfficeUnavailableError
 from oms_hub.ingestion.domain import StagedUpload, UploadKind, UploadState
 from oms_hub.ingestion.repository import IngestionRepository
+from oms_hub.ingestion.worker import IngestionWorker
 from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.routing import build_slide_destinations
 from oms_hub.slides.pipeline import SlidePipeline
@@ -147,6 +149,42 @@ def test_transient_office_failure_keeps_revision_promotable_for_retry(
     assert converter.calls == 2
 
 
+def test_exhausted_office_retries_retire_incomplete_revision(
+    tmp_path: Path,
+) -> None:
+    class UnavailableConverter(PdfFixtureConverter):
+        def convert(self, source: Path, destination: Path) -> None:
+            del source, destination
+            raise OfficeUnavailableError("Office is unavailable")
+
+    pipeline, item_id = _slide_pipeline(
+        tmp_path,
+        converter=UnavailableConverter(),
+    )
+    started = datetime(2026, 8, 8, tzinfo=UTC)
+    attempts = iter(
+        (started, started + timedelta(seconds=10), started + timedelta(seconds=30))
+    )
+    worker = IngestionWorker(
+        pipeline.repository,
+        pipeline,
+        pipeline,
+        now=lambda: next(attempts),
+    )
+
+    assert worker.run_once() is True
+    revision = pipeline.repository.list_proposed_revisions()[0]
+    assert revision.state == "proposed"
+    assert worker.run_once() is True
+    assert worker.run_once() is True
+
+    retired = pipeline.repository.get_study_revision(revision.id)
+    assert retired.state == "failed"
+    assert retired.derived_sha256 is None
+    assert retired not in pipeline.repository.list_proposed_revisions()
+    assert pipeline.repository.require_item(item_id).state is UploadState.NEEDS_REVIEW
+
+
 def test_exact_current_slide_repairs_filed_artifacts_without_state_transition(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -261,16 +299,39 @@ def test_interrupted_group_promotion_recovers_old_files_before_clean_retry(
     assert canonical[1].read_bytes() == b"old"
     assert canonical[2].read_bytes() == b"old"
 
+    payload = pipeline.repository.require_item(item_id).staged_path.read_bytes()
+    duplicate_staged = tmp_path / "recovery-duplicate.pptx"
+    duplicate_staged.write_bytes(payload)
+    duplicate_batch = pipeline.repository.create_batch(UploadKind.SLIDES)
+    pipeline.repository.add_item(
+        UploadKind.SLIDES,
+        StagedUpload(
+            batch_id=duplicate_batch,
+            item_id="recovery-duplicate",
+            path=duplicate_staged,
+            sha256=hashlib.sha256(payload).hexdigest(),
+            size_bytes=len(payload),
+            original_filename="recovery-duplicate.pptx",
+        ),
+    )
+    lecture_id = pipeline.repository.require_item(item_id).lecture_id
+    assert lecture_id is not None
+    pipeline.repository.set_manual_assignment("recovery-duplicate", lecture_id)
     Path(pipeline.repository.require_item(item_id).staged_path).unlink()
     pipeline.settings.study_root = tmp_path / "moved-study"
     pipeline.settings.icloud_staging_root = tmp_path / "moved-icloud"
     monkeypatch.setattr(pipeline.promotion, "promote", original_promote)
-    recovered = pipeline.process(item_id)
+    recovered = pipeline.process("recovery-duplicate")
 
     assert recovered.current is True
     assert recovered.state == "current"
     assert canonical[0].read_bytes() == recovered.immutable_source_path.read_bytes()
     assert canonical[1].read_bytes() == recovered.immutable_derived_path.read_bytes()
     assert canonical[2].read_bytes() == recovered.immutable_derived_path.read_bytes()
+    assert pipeline.repository.require_item(item_id).state is UploadState.COMPLETE
+    assert (
+        pipeline.repository.require_item("recovery-duplicate").state
+        is UploadState.COMPLETE
+    )
     for destination in canonical:
         assert not pipeline.promotion.backup_path(destination, recovered.id).exists()

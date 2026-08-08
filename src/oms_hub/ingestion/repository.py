@@ -369,6 +369,8 @@ class IngestionRepository:
                     revision.immutable_derived_path = str(
                         revision_dir / "cleaned.txt"
                     )
+            elif revision.state == "failed" and not revision.current:
+                revision.state = "proposed"
             item.state = UploadState.PROCESSING.value
             item.error = None
             job = session.scalar(
@@ -550,6 +552,36 @@ class IngestionRepository:
             self._sync_batch_state(session, item.batch_id)
             session.flush()
             return self._study_revision(revision)
+
+    def fail_incomplete_study_revision(self, item_id: str) -> None:
+        """Retire an unusable revision after its processing retries are exhausted."""
+        with self.database.session() as session:
+            item = session.get(UploadItemModel, item_id)
+            if item is None:
+                raise KeyError(item_id)
+            revision = session.scalar(
+                select(StudyRevisionModel).where(
+                    StudyRevisionModel.upload_item_id == item_id
+                )
+            )
+            if revision is None:
+                revision = session.scalar(
+                    select(StudyRevisionModel).where(
+                        StudyRevisionModel.lecture_id == item.lecture_id,
+                        StudyRevisionModel.kind == item.kind,
+                        StudyRevisionModel.source_sha256 == item.sha256,
+                    )
+                )
+            if (
+                revision is not None
+                and not revision.current
+                and revision.state in {"proposed", "promoting"}
+                and (
+                    revision.derived_sha256 is None
+                    or revision.canonical_derived_path is None
+                )
+            ):
+                revision.state = "failed"
 
     def promote_study_revision(
         self,

@@ -74,6 +74,15 @@ class IngestionWorker:
             if isinstance(error, (TranscriptValidationError, ValueError))
             else UploadState.NEEDS_REVIEW
         )
+        if isinstance(
+            error,
+            (
+                OfficeConversionError,
+                OfficeTimeoutError,
+                OfficeUnavailableError,
+            ),
+        ):
+            self.repository.fail_incomplete_study_revision(job.upload_item_id)
         self.repository.fail_job(job, detail, state=failure_state)
         logger.error(
             "V2 ingestion job %s stopped after attempt %s: %s",
