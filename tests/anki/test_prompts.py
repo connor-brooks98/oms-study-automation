@@ -145,6 +145,21 @@ def test_utf8_bom_does_not_hide_yaml_frontmatter(tmp_path: Path) -> None:
     assert prompt.metadata.id == "coverage-rubric"
 
 
+def test_gap_generation_prompt_is_quality_first_and_forbids_padding() -> None:
+    prompt = (
+        Path(__file__).parents[2]
+        / "src"
+        / "oms_hub"
+        / "anki"
+        / "prompt_assets"
+        / "gap-card-generation.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Counts are soft\ntargets, never quotas" in prompt
+    assert "Do\nnot split merely to increase card count" in prompt
+    assert "forbidden_cloze_targets_by_fact" in prompt
+
+
 def test_git_sync_fast_forwards_nuc_prompt_checkout(tmp_path: Path) -> None:
     seed, remote, nuc = _prompt_repositories(tmp_path)
     prompt = seed / "coverage-rubric.md"
