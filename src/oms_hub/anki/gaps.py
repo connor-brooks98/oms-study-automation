@@ -147,6 +147,7 @@ class V2GapGenerationRequest:
     forbidden_cloze_targets_by_fact: FactForbiddenClozeMap
     existing_supports: tuple[ExistingGapSupport, ...]
     initial_tags: tuple[str, ...]
+    lecture_id: int | None = None
     pinned_lecture_metadata: PinnedLectureMetadata | None = None
 
     def __post_init__(self) -> None:
@@ -198,6 +199,15 @@ class V2GapGenerationRequest:
                 "V2 forbidden cloze targets must name requested facts only: "
                 f"fact_ids={_format_ids(unexpected_target_fact_ids)}"
             )
+        if self.pinned_lecture_metadata is not None:
+            if self.lecture_id != self.pinned_lecture_metadata.lecture_id:
+                raise ValueError(
+                    "V2 pinned lecture metadata must match the request lecture identity"
+                )
+            if self.lecture_title != self.pinned_lecture_metadata.title:
+                raise ValueError(
+                    "V2 pinned lecture metadata title must match the request lecture title"
+                )
 
 
 @dataclass(frozen=True, slots=True)

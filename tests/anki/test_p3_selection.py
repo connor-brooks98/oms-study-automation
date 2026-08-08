@@ -255,10 +255,15 @@ def test_marginal_cards_need_approved_reasons_and_overflow_is_mandatory() -> Non
         ledger=ledger,
         source_index=source,
         generated_cards=tuple(_generated(index, passage_id) for index in range(1, 72)),
+        overflow_acknowledgement={
+            "acknowledged_at": "2026-08-08T00:00:00Z",
+            "acknowledged_by": "reviewer",
+            "reason": "mandatory overflow",
+        },
     )
 
     assert len(result.selected_generated_card_ids) == 71
-    assert result.overflow_acknowledgement is None
+    assert result.overflow_acknowledgement is not None
     marginal = [item for item in result.selection_metadata if 66 <= item.selected_position <= 70]
     assert [item.marginal_value_reason for item in marginal] == [
         MarginalValueReason.ONLY_VALID_REQUIRED_FACT

@@ -33,7 +33,8 @@ do not cover.
 Generate cards for every entry in `missing_facts[]`. Optimize for the smallest
 set of the best-supported, highest-yield, nonredundant cards. Counts are soft
 targets, never quotas: do not invent facts, add a weak card, or split a fact to
-pad a count. Prefer fewer excellent grounded cards over marginal cards.
+pad a count, and do not label a card eligible merely to reach a count. Prefer
+fewer excellent grounded cards over marginal cards.
 
 **Splitting is correct behavior, not a rule violation.** If a single missing
 fact cannot be tested atomically in one card, produce two or more and set
