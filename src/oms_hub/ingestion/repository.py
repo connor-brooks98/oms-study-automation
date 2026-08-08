@@ -34,9 +34,22 @@ from oms_hub.models import (
 def _filed_artifact_matches(revision: StudyRevisionModel) -> bool:
     if not revision.canonical_derived_path or not revision.derived_sha256:
         return False
-    path = Path(revision.canonical_derived_path)
     try:
-        return path.is_file() and sha256_file(path) == revision.derived_sha256
+        derived = Path(revision.canonical_derived_path)
+        if not derived.is_file() or sha256_file(derived) != revision.derived_sha256:
+            return False
+        if revision.kind != UploadKind.SLIDES.value:
+            return True
+        if not revision.canonical_source_path or not revision.icloud_path:
+            return False
+        source = Path(revision.canonical_source_path)
+        icloud = Path(revision.icloud_path)
+        return (
+            source.is_file()
+            and sha256_file(source) == revision.source_sha256
+            and icloud.is_file()
+            and sha256_file(icloud) == revision.derived_sha256
+        )
     except OSError:
         return False
 

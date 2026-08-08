@@ -19,7 +19,7 @@ from oms_hub.document_processing.shadow import DocumentShadowEvaluator
 from oms_hub.domain import LectureKey
 from oms_hub.files.atomic import verified_atomic_copy
 from oms_hub.files.office import OfficeTimeoutError, OfficeUnavailableError
-from oms_hub.files.promotion import PromotionRecoveryError
+from oms_hub.files.promotion import PromotionRecoveryError, PromotionSourceError
 from oms_hub.ingestion.domain import StagedUpload, UploadKind, UploadState
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.ingestion.worker import IngestionWorker
@@ -257,14 +257,20 @@ def test_exhausted_failure_retires_revision_with_corrupt_immutable_pdf(
     assert retired not in pipeline.repository.list_proposed_revisions()
 
 
+@pytest.mark.parametrize(
+    "artifact_name",
+    ("canonical_source_path", "canonical_derived_path", "icloud_path"),
+)
 def test_exact_current_slide_repairs_filed_artifacts_without_state_transition(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    artifact_name: str,
 ) -> None:
     pipeline, item_id = _slide_pipeline(tmp_path)
     current = pipeline.process(item_id)
-    assert current.canonical_derived_path is not None
-    current.canonical_derived_path.write_bytes(b"corrupt filed PDF")
+    damaged = getattr(current, artifact_name)
+    assert isinstance(damaged, Path)
+    damaged.write_bytes(b"corrupt filed artifact")
 
     staged = tmp_path / "repair-slide.pptx"
     payload = current.immutable_source_path.read_bytes()
@@ -298,8 +304,19 @@ def test_exact_current_slide_repairs_filed_artifacts_without_state_transition(
     assert repaired.state == "current"
     assert pipeline.repository.require_item("repair-slide").state is UploadState.COMPLETE
     assert current.immutable_derived_path is not None
+    assert current.canonical_source_path is not None
+    assert current.canonical_derived_path is not None
+    assert current.icloud_path is not None
+    assert (
+        current.canonical_source_path.read_bytes()
+        == current.immutable_source_path.read_bytes()
+    )
     assert (
         current.canonical_derived_path.read_bytes()
+        == current.immutable_derived_path.read_bytes()
+    )
+    assert (
+        current.icloud_path.read_bytes()
         == current.immutable_derived_path.read_bytes()
     )
 
@@ -437,3 +454,33 @@ def test_interrupted_group_promotion_recovers_old_files_before_clean_retry(
     )
     for destination in canonical:
         assert not pipeline.promotion.backup_path(destination, recovered.id).exists()
+
+
+def test_missing_immutable_source_terminates_promotion_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline, item_id = _slide_pipeline(tmp_path)
+    original_promote = pipeline.promotion.promote
+
+    def interrupt_promotion(_pairs, _revision_id, _commit):
+        raise SystemExit("simulated process interruption")
+
+    monkeypatch.setattr(pipeline.promotion, "promote", interrupt_promotion)
+    with pytest.raises(SystemExit, match="simulated process interruption"):
+        pipeline.process(item_id)
+
+    interrupted = pipeline.repository.begin_revision(
+        item_id,
+        tmp_path / "artifacts" / "v2" / "slides",
+    )
+    assert interrupted.state == "promoting"
+    interrupted.immutable_source_path.unlink()
+    monkeypatch.setattr(pipeline.promotion, "promote", original_promote)
+
+    with pytest.raises(PromotionSourceError, match="upload the file again"):
+        pipeline.process(item_id)
+
+    terminal = pipeline.repository.get_study_revision(interrupted.id)
+    assert terminal.state == "failed"
+    assert pipeline.repository.require_item(item_id).state is UploadState.FAILED

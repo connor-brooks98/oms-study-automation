@@ -14,7 +14,7 @@ from oms_hub.files.office import (
     OfficeUnavailableError,
 )
 from oms_hub.files.pdf import validate_pdf
-from oms_hub.files.promotion import PromotionCoordinator
+from oms_hub.files.promotion import PromotionCoordinator, PromotionSourceError
 from oms_hub.ingestion.domain import (
     StudyRevision,
     UploadKind,
@@ -163,7 +163,9 @@ class SlidePipeline:
         except Exception as error:
             self._mark_failed(revision.lecture_id, str(error))
             revision_state = None
-            if recovering_promotion:
+            if isinstance(error, PromotionSourceError):
+                revision_state = "failed"
+            elif recovering_promotion:
                 stored = self.repository.get_study_revision(revision.id)
                 if stored.state in {"proposed", "promoting"}:
                     revision_state = stored.state

@@ -72,7 +72,7 @@ def test_recovery_restores_prior_file_when_database_commit_still_fails(tmp_path)
     assert not backup.exists()
 
 
-def test_recovery_rolls_back_partial_initial_promotion_for_clean_retry(tmp_path):
+def test_recovery_preserves_ambiguous_matching_destination_without_backup(tmp_path):
     first_source = tmp_path / "first-immutable.pdf"
     second_source = tmp_path / "second-immutable.pdf"
     first_destination = tmp_path / "first-current.pdf"
@@ -94,7 +94,7 @@ def test_recovery_rolls_back_partial_initial_promotion_for_clean_retry(tmp_path)
 
     assert result is None
     assert calls == ["reset"]
-    assert not first_destination.exists()
+    assert first_destination.read_bytes() == b"first"
     assert not second_destination.exists()
 
 
