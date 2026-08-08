@@ -707,11 +707,14 @@ def _prepare_stage_replay_inputs(
     job: CurationJob,
     stage: CurationStage,
 ) -> _StageReplayInputs:
+    # P1-A replay documents are a v2-only identity extension. Legacy and v1
+    # jobs retain their exact historical stage hashes even after P1-A is
+    # deployed and exposes its repository API.
+    if job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V2:
+        return _StageReplayInputs("", "", MappingProxyType({}))
     prepare = getattr(repository, "prepare_stage_replay_inputs", None)
     if prepare is None:
-        if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2:
-            raise PinnedInputChanged("card-centric-v2 replay inputs are unavailable")
-        return _StageReplayInputs("", "", MappingProxyType({}))
+        raise PinnedInputChanged("card-centric-v2 replay inputs are unavailable")
     prepared = cast(_ReplayInputRepository, repository).prepare_stage_replay_inputs(job.id, stage)
     if prepared.job_id != job.id or prepared.stage is not stage:
         raise PinnedInputChanged("prepared replay inputs are for a different job or stage")

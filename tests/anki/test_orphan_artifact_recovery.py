@@ -359,12 +359,66 @@ def test_prepared_replay_inputs_are_hashed_and_exposed_to_runner(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "pipeline_contract_version",
+    [
+        PipelineContractVersion.RETRIEVAL_V4,
+        PipelineContractVersion.CARD_CENTRIC_V1,
+    ],
+)
+def test_non_v2_hashes_ignore_the_p1_a_repository_api(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline_contract_version: PipelineContractVersion,
+) -> None:
+    async def scenario() -> None:
+        job = _claimed_job(repository, pipeline_contract_version)
+        historical_hash = _stage_input_hash(job, CurationStage.PREFLIGHT, ())
+        called = False
+
+        def prepare_stage_replay_inputs(
+            self: AnkiCurationRepository,
+            job_id: UUID,
+            stage: CurationStage,
+        ) -> SimpleNamespace:
+            del self, job_id, stage
+            nonlocal called
+            called = True
+            return SimpleNamespace(
+                job_id=job.id,
+                stage=CurationStage.PREFLIGHT,
+                canonical_json="{}",
+                sha256=hashlib.sha256(b"{}").hexdigest(),
+                document={},
+            )
+
+        monkeypatch.setattr(
+            AnkiCurationRepository,
+            "prepare_stage_replay_inputs",
+            prepare_stage_replay_inputs,
+            raising=False,
+        )
+        result = await CurationPipeline(
+            repository,
+            StageArtifactStore(tmp_path / "artifacts"),
+            CountingRunner(),
+        ).run_stage(job.id)
+
+        assert result is not None
+        assert result.artifact.input_sha256 == historical_hash
+        assert called is False
+
+    asyncio.run(scenario())
+
+
 def test_card_centric_v2_rejects_missing_prepared_replay_inputs(
     repository: AnkiCurationRepository,
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
         job = _claimed_job(repository, PipelineContractVersion.CARD_CENTRIC_V2)
+        repository.prepare_stage_replay_inputs = None  # type: ignore[attr-defined]
         runner = CountingRunner()
 
         with pytest.raises(PinnedInputChanged, match="replay inputs are unavailable"):
