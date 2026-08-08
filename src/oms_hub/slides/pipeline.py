@@ -71,20 +71,20 @@ class SlidePipeline:
             if revision.current:
                 revision = self._repair_current_revision(item_id, revision, derived)
                 self._mark_promoted(revision.lecture_id)
-                return revision
+                return self.repository.complete_promoted_revision(
+                    revision.id,
+                    item_id,
+                )
             if recovering_promotion:
                 revision = self._promote_revision(
                     revision,
                     self._persisted_promotion_pairs(revision, derived),
                 )
-                revision = self.repository.finish_revision(
-                    item_id,
-                    revision.id,
-                    UploadState.COMPLETE,
-                    current=False,
-                )
                 self._mark_promoted(revision.lecture_id)
-                return revision
+                return self.repository.complete_promoted_revision(
+                    revision.id,
+                    item_id,
+                )
             destinations = build_slide_destinations(
                 self.settings,
                 LectureKey(
@@ -156,14 +156,11 @@ class SlidePipeline:
                     (derived, destinations.icloud_pdf),
                 ],
             )
-            revision = self.repository.finish_revision(
-                item_id,
-                revision.id,
-                UploadState.COMPLETE,
-                current=False,
-            )
             self._mark_promoted(revision.lecture_id)
-            return revision
+            return self.repository.complete_promoted_revision(
+                revision.id,
+                item_id,
+            )
         except Exception as error:
             self._mark_failed(revision.lecture_id, str(error))
             revision_state = None
@@ -282,7 +279,10 @@ class SlidePipeline:
             recovered = self.promotion.recover(
                 pairs,
                 revision.id,
-                lambda: self.repository.promote_study_revision(revision.id),
+                lambda: self.repository.promote_study_revision(
+                    revision.id,
+                    complete_item=False,
+                ),
                 lambda: self.repository.reset_study_promotion(revision.id),
             )
             if recovered is not None:
@@ -293,7 +293,10 @@ class SlidePipeline:
             return self.promotion.promote(
                 pairs,
                 revision.id,
-                lambda: self.repository.promote_study_revision(revision.id),
+                lambda: self.repository.promote_study_revision(
+                    revision.id,
+                    complete_item=False,
+                ),
             )
         except PromotionRecoveryError:
             raise
@@ -337,12 +340,7 @@ class SlidePipeline:
         return self.promotion.promote(
             self._persisted_promotion_pairs(revision, derived),
             revision.id,
-            lambda: self.repository.finish_revision(
-                item_id,
-                revision.id,
-                UploadState.COMPLETE,
-                current=False,
-            ),
+            lambda: revision,
         )
 
     @staticmethod

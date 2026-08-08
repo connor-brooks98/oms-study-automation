@@ -609,6 +609,8 @@ class IngestionRepository:
     def promote_study_revision(
         self,
         revision_id: int,
+        *,
+        complete_item: bool = True,
     ) -> StudyRevision:
         with self.database.session() as session:
             revision = session.get(StudyRevisionModel, revision_id)
@@ -630,7 +632,39 @@ class IngestionRepository:
             revision.current = True
             revision.state = "current"
             revision.promoted_at = utc_now()
+            if complete_item:
+                self._complete_revision_item(session, revision)
+            session.flush()
+            return self._study_revision(revision)
+
+    def complete_promoted_revision(
+        self,
+        revision_id: int,
+        item_id: str,
+    ) -> StudyRevision:
+        with self.database.session() as session:
+            revision = session.get(StudyRevisionModel, revision_id)
+            if revision is None:
+                raise KeyError(revision_id)
+            if not revision.current or revision.state != "current":
+                raise ValueError("revision promotion is not committed")
             self._complete_revision_item(session, revision)
+            if item_id != revision.upload_item_id:
+                item = session.get(UploadItemModel, item_id)
+                if item is None:
+                    raise KeyError(item_id)
+                item.state = UploadState.COMPLETE.value
+                item.error = None
+                job = session.scalar(
+                    select(IngestionJobModel).where(
+                        IngestionJobModel.upload_item_id == item_id,
+                        IngestionJobModel.action == "process",
+                    )
+                )
+                if job is not None:
+                    job.state = UploadState.COMPLETE.value
+                    job.error = None
+                self._sync_batch_state(session, item.batch_id)
             session.flush()
             return self._study_revision(revision)
 

@@ -463,6 +463,68 @@ def test_interrupted_group_promotion_recovers_old_files_before_clean_retry(
         assert not pipeline.promotion.backup_path(destination, recovered.id).exists()
 
 
+def test_post_commit_promotion_crash_requeues_finalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline, item_id = _slide_pipeline(tmp_path)
+    destinations = build_slide_destinations(
+        pipeline.settings,
+        LectureKey("Neuro", 1, 1, "Seizures"),
+    )
+    canonical = (destinations.source, destinations.pdf, destinations.icloud_pdf)
+    for destination in canonical:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"old")
+    original_promote = pipeline.promotion.promote
+
+    def crash_after_database_commit(pairs, revision_id, commit):
+        for _, destination in pairs:
+            if destination.exists():
+                verified_atomic_copy(
+                    destination,
+                    pipeline.promotion.backup_path(destination, revision_id),
+                )
+        for source, destination in pairs:
+            verified_atomic_copy(source, destination)
+        commit()
+        raise SystemExit("simulated post-commit process interruption")
+
+    monkeypatch.setattr(
+        pipeline.promotion,
+        "promote",
+        crash_after_database_commit,
+    )
+    with pytest.raises(SystemExit, match="post-commit process interruption"):
+        pipeline.process(item_id)
+
+    stored_item = pipeline.repository.require_item(item_id)
+    assert stored_item.lecture_id is not None
+    committed = pipeline.repository.list_current_revisions(
+        stored_item.lecture_id
+    )[0]
+    assert committed.current is True
+    assert committed.state == "current"
+    assert pipeline.repository.require_item(item_id).state is UploadState.PROCESSING
+    for destination in canonical:
+        assert pipeline.promotion.backup_path(destination, committed.id).is_file()
+
+    assert pipeline.repository.recover_interrupted_jobs() == 1
+    assert pipeline.repository.require_item(item_id).state is UploadState.QUEUED
+    monkeypatch.setattr(pipeline.promotion, "promote", original_promote)
+    recovered = pipeline.process(item_id)
+
+    assert recovered.current is True
+    assert pipeline.repository.require_item(item_id).state is UploadState.COMPLETE
+    lecture = pipeline.catalog.get_lecture(recovered.lecture_id)
+    assert lecture is not None
+    step_statuses = {step.name: step.status for step in lecture.steps}
+    for step in SLIDE_PIPELINE_STEPS:
+        assert step_statuses[step.value] == StepStatus.COMPLETE.value
+    for destination in canonical:
+        assert not pipeline.promotion.backup_path(destination, recovered.id).exists()
+
+
 def test_initial_group_promotion_lock_preserves_backup_and_retries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
