@@ -679,7 +679,10 @@ def select_high_yield_v2(
     def evidence_quality(passage_ids: Sequence[str], *, fast: bool = False) -> EvidenceQuality:
         if fast:
             return EvidenceQuality.FAST_PASS
-        if any(source_authority.get(passage_id) != "summary" for passage_id in passage_ids):
+        if any(
+            source_authority.get(passage_id) in {"slide", "transcript"}
+            for passage_id in passage_ids
+        ):
             return EvidenceQuality.PRIMARY_SOURCE
         return EvidenceQuality.SUMMARY_GROUNDED
 
@@ -841,7 +844,7 @@ def select_high_yield_v2(
             if count >= target and count < cap and marginal_reason is None:
                 continue
             if count >= cap:
-                if not candidate.mandatory or overflow_acknowledgement is None:
+                if not candidate.mandatory:
                     continue
             selected.append(candidate)
             selected_coverage.update(candidate.coverage)
