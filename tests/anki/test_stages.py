@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -23,6 +24,7 @@ from oms_hub.anki.card_centric_contracts import (
     FastCardClassification,
     FastClassificationResult,
     GeneratedCardResolution,
+    QualitySelectionResult,
     SemanticDedupeReview,
     SemanticPreFilterResult,
     TagScopeResult,
@@ -30,9 +32,12 @@ from oms_hub.anki.card_centric_contracts import (
 from oms_hub.anki.correction_contracts import (
     CanonicalJsonObject,
     DuplicateIdentity,
+    EvidenceQuality,
     GeneratedFactResolution,
     MarginalValueReason,
     PinnedLectureMetadata,
+    SelectionMetadata,
+    SelectionTier,
 )
 from oms_hub.anki.dedupe import SemanticDedupeIntegrityError
 from oms_hub.anki.domain import (
@@ -525,6 +530,277 @@ def test_card_selection_v2_keeps_short_decks_and_fallbacks_unselected() -> None:
     assert product.payload["selection_metadata"] == []
     assert product.payload["excluded_existing_note_ids"] == [fallback_card.note_id]
     assert product.candidates[0].selected is False
+
+
+def test_card_reconciliation_constructs_the_full_v2_s9_snapshot() -> None:
+    class SnapshotRepository:
+        def __init__(self) -> None:
+            self.acknowledgement_calls: list[dict[str, object]] = []
+
+        def validate_card_centric_overflow_acknowledgement(
+            self,
+            job_id: object,
+            **kwargs: object,
+        ) -> bool:
+            self.acknowledgement_calls.append({"job_id": job_id, **kwargs})
+            return True
+
+        def card_centric_yes_rate_history(self, job_id: object) -> tuple[float, ...]:
+            assert job_id
+            return ()
+
+    cards = tuple(_card_record(note_id, ()) for note_id in range(1, 11))
+    runner, context, passage_id = _dedupe_stage_fixture(_DedupeEmbedder([]), cards=cards)
+    repository = SnapshotRepository()
+    runner.repository = repository
+    context.job.pipeline_contract_version = PipelineContractVersion.CARD_CENTRIC_V2
+    context.job.id = uuid4()
+    context.job.review_revision = 7
+    ledger = CardConceptLedger(
+        lecture_entity_count=4,
+        forbidden_cloze_targets=("global-only",),
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="First generated fact.",
+                primary_entity="first",
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+                forbidden_cloze_targets_by_fact=(("alpha",),),
+            ),
+            CardConcept(
+                concept_id="C02",
+                canonical_statement="Second duplicate fact.",
+                primary_entity="second",
+                depth="medium",
+                emphasis_flag=False,
+                importance="medium",
+            ),
+            CardConcept(
+                concept_id="C03",
+                canonical_statement="Third unresolved fact.",
+                primary_entity="third",
+                depth="medium",
+                emphasis_flag=False,
+                importance="medium",
+                forbidden_cloze_targets_by_fact=(("gamma",),),
+            ),
+            CardConcept(
+                concept_id="C04",
+                canonical_statement="Fourth review fact.",
+                primary_entity="fourth",
+                depth="medium",
+                emphasis_flag=False,
+                importance="medium",
+                forbidden_cloze_targets_by_fact=(("delta",),),
+            ),
+        ),
+    )
+    classifications = tuple(
+        CardClassification(
+            note_id=note_id,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="grounded existing candidate",
+            supporting_passage_ids=(passage_id,),
+        )
+        for note_id in range(1, 11)
+    )
+    classifier = ClassifierResult.model_validate(
+        context.prior_payloads[CurationStage.CARD_CLASSIFY]["classifier"]
+    ).model_copy(update={"results": classifications})
+    raw = (
+        _generated_dedupe_row("G1", "C01-M1", "{{c1::first split}}", passage_id).model_copy(
+            update={"split": True, "split_index": 1}
+        ),
+        _generated_dedupe_row("G2", "C01-M1", "{{c1::second split}}", passage_id).model_copy(
+            update={"split": True, "split_index": 2}
+        ),
+        _generated_dedupe_row("G3", "C02-M1", "{{c1::deduplicated}}", passage_id),
+        GeneratedCardResolution(
+            card_id="G4",
+            concept_id="C03",
+            fact_id="C03-M1",
+            source_passage_ids=(passage_id,),
+            status="unresolved",
+            reason="No grounded atomic cloze.",
+        ),
+        _generated_dedupe_row("G5", "C04-M1", "{{c1::manual review}}", passage_id),
+    )
+    deduped = (
+        raw[0],
+        raw[1],
+        raw[2].model_copy(
+            update={
+                "status": "duplicate_of_existing",
+                "duplicate_of_existing_note_id": 99,
+                "reason": "Exact existing duplicate.",
+            }
+        ),
+        raw[3],
+        raw[4],
+    )
+    semantic_review = SemanticDedupeReview(
+        card_id="G5",
+        fact_id="C04-M1",
+        lexical_candidates=(
+            DedupeAdvisoryCandidate(
+                card_id="G5",
+                fact_id="C04-M1",
+                identity=DuplicateIdentity(existing_note_id=55),
+                lexical_score=0.8,
+            ),
+        ),
+    )
+    selected_existing = tuple(range(1, 11))
+    selection_metadata = tuple(
+        SelectionMetadata(
+            identity=identity,
+            selected_position=position,
+            tier=SelectionTier.T1,
+            evidence_quality=EvidenceQuality.PRIMARY_SOURCE,
+        )
+        for position, identity in enumerate(
+            [*(f"existing:{note_id}" for note_id in selected_existing), "generated:G1"],
+            start=1,
+        )
+    )
+    acknowledgement = CanonicalJsonObject.from_mapping(
+        {"token": "fixture-token", "selection_digest": "fixture", "signature": "fixture"}
+    )
+    selection_result = QualitySelectionResult(
+        existing_candidate_note_ids=selected_existing,
+        generated_candidate_card_ids=("G1", "G2", "G5"),
+        selected_existing_note_ids=selected_existing,
+        selected_generated_card_ids=("G1",),
+        excluded_existing_note_ids=(),
+        excluded_generated_card_ids=("G2", "G5"),
+        selection_metadata=selection_metadata,
+        below_warning_floor=True,
+        target=65,
+        cap=70,
+        minimum_target=60,
+        semantic_review_required_card_ids=("G5",),
+        overflow_acknowledgement=acknowledgement,
+    )
+    selection_payload = selection_result.model_dump(mode="json")
+    selection_payload.update(
+        {
+            "selected_count": 11,
+            "selection_order": [item.identity for item in selection_metadata],
+            "terminal_resolutions": stages_module._dedupe_terminal_resolutions(
+                deduped,
+                (semantic_review,),
+            ),
+        }
+    )
+    context.prior_payloads.update(
+        {
+            CurationStage.CARD_LEDGER: {"ledger": ledger.model_dump(mode="json")},
+            CurationStage.CARD_CLASSIFY: {"classifier": classifier.model_dump(mode="json")},
+            CurationStage.CARD_COVERAGE: {
+                "coverage": {
+                    concept.concept_id: {"status": "uncovered", "evidence": []}
+                    for concept in ledger.concepts
+                }
+            },
+            CurationStage.CARD_RESIDUAL: {
+                "uncovered_concept_ids": [concept.concept_id for concept in ledger.concepts]
+            },
+            CurationStage.CARD_TAG_SCOPE: {
+                "scope": TagScopeResult(
+                    snapshot_id="dedupe-snapshot",
+                    filters_sha256="f" * 64,
+                    scoped_note_ids=selected_existing,
+                    unscoped_note_ids=(),
+                ).model_dump(mode="json")
+            },
+            CurationStage.CARD_GAP_FILL: {
+                "resolutions": [item.model_dump(mode="json") for item in raw]
+            },
+            CurationStage.DEDUPE: {
+                "resolutions": [item.model_dump(mode="json") for item in deduped],
+                "semantic_dedupe_reviews": [semantic_review.model_dump(mode="json")],
+            },
+            CurationStage.CARD_SELECTION: selection_payload,
+            CurationStage.PREFLIGHT: {"prompt_sync_stale": False},
+        }
+    )
+    context.prior_payloads[CurationStage.SOURCE_INDEX]["census"] = build_snapshot_census(
+        cards,
+        deck_allowlist=("AnKing",),
+        scope_tokens=("fixture",),
+        snapshot_id="dedupe-snapshot",
+    ).model_dump(mode="json")
+
+    product = asyncio.run(runner._card_reconciliation(context))
+
+    snapshot = product.payload["snapshot"]
+    assert [row["card_id"] for row in snapshot["raw_generated_cards"]] == [
+        "G1",
+        "G2",
+        "G3",
+        "G5",
+    ]
+    raw_identity_and_split = [
+        (row["card_id"], row.get("split_index")) for row in snapshot["raw_generated_cards"]
+    ]
+    assert raw_identity_and_split == [
+        ("G1", 1),
+        ("G2", 2),
+        ("G3", None),
+        ("G5", None),
+    ]
+    assert [row["card_id"] for row in snapshot["canonical_generated_cards"]] == ["G1", "G2", "G5"]
+    assert [row["card_id"] for row in snapshot["generated_cards"]] == ["G1"]
+    terminal = {row["fact_id"]: row for row in snapshot["terminal_resolutions"]}
+    assert terminal["C01-M1"]["generated_card_ids"] == ["G1", "G2"]
+    assert terminal["C02-M1"]["duplicate_of"]["existing_note_id"] == 99
+    assert terminal["C02-M1"]["duplicate_of"]["generated_card_id"] is None
+    assert terminal["C03-M1"]["unresolved_reason"] == "No grounded atomic cloze."
+    assert "C04-M1" not in terminal
+    assert snapshot["forbidden_cloze_targets_by_fact"] == {
+        "C01-M1": ["alpha"],
+        "C02-M1": [],
+        "C03-M1": ["gamma"],
+        "C04-M1": ["delta"],
+    }
+    assert "global-only" not in {
+        target
+        for targets in snapshot["forbidden_cloze_targets_by_fact"].values()
+        for target in targets
+    }
+    assert snapshot["selection_metadata"] == [
+        item.model_dump(mode="json") for item in selection_metadata
+    ]
+    assert snapshot["selection_order"] == [item.identity for item in selection_metadata]
+    assert snapshot["selected_count"] == 11
+    assert snapshot["below_warning_floor"] is True
+    assert snapshot["semantic_review_required_card_ids"] == ["G5"]
+    assert snapshot["source_passage_ids"] == [passage_id]
+    assert snapshot["classifications"] == [
+        {"nid": note_id, "verdict": "keep"} for note_id in selected_existing
+    ]
+    assert snapshot["uncovered_after_s5"] == ["C01", "C02", "C03", "C04"]
+    assert snapshot["residual_ran_for"] == ["C01", "C02", "C03", "C04"]
+    assert snapshot["coverage"] == {
+        "C01": "covered",
+        "C02": "uncovered",
+        "C03": "intentional_gap",
+        "C04": "uncovered",
+    }
+    assert snapshot["overflow_acknowledgement"] == acknowledgement.as_dict()
+    assert repository.acknowledgement_calls == [
+        {
+            "job_id": context.job.id,
+            "review_revision": 7,
+            "selected_note_ids": (),
+            "selected_generated_ids": (),
+            "cap": 70,
+            "document": acknowledgement.as_dict(),
+        }
+    ]
 
 
 class ReadyRuntime:
