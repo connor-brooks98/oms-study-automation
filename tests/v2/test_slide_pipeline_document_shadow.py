@@ -17,6 +17,7 @@ from oms_hub.document_processing.domain import (
 from oms_hub.document_processing.shadow import DocumentShadowEvaluator
 from oms_hub.domain import LectureKey
 from oms_hub.files.atomic import verified_atomic_copy
+from oms_hub.files.office import OfficeTimeoutError
 from oms_hub.ingestion.domain import StagedUpload, UploadKind
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.repositories import CatalogRepository, LectureInput
@@ -71,6 +72,7 @@ class RaisingProcessor(LegacyProcessor):
 def _slide_pipeline(
     tmp_path: Path,
     evaluator: DocumentShadowEvaluator | None = None,
+    converter: PdfFixtureConverter | None = None,
 ) -> tuple[SlidePipeline, str]:
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()
@@ -106,11 +108,43 @@ def _slide_pipeline(
         SlidePipeline(
             database,
             settings,
-            PdfFixtureConverter(),
+            converter or PdfFixtureConverter(),
             evaluator or DocumentShadowEvaluator(RaisingProcessor(), LegacyProcessor()),
         ),
         "slide-item",
     )
+
+
+def test_transient_office_failure_keeps_revision_promotable_for_retry(
+    tmp_path: Path,
+) -> None:
+    class TimeoutThenSuccessConverter(PdfFixtureConverter):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def convert(self, source: Path, destination: Path) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                raise OfficeTimeoutError("Office timed out")
+            super().convert(source, destination)
+
+    converter = TimeoutThenSuccessConverter()
+    pipeline, item_id = _slide_pipeline(tmp_path, converter=converter)
+
+    with pytest.raises(OfficeTimeoutError, match="Office timed out"):
+        pipeline.process(item_id)
+
+    retryable = pipeline.repository.begin_revision(
+        item_id,
+        tmp_path / "artifacts" / "v2" / "slides",
+    )
+    assert retryable.state == "proposed"
+
+    revision = pipeline.process(item_id)
+
+    assert revision.current is True
+    assert revision.state == "current"
+    assert converter.calls == 2
 
 
 def test_shadow_failure_does_not_fail_slide_filing(tmp_path: Path) -> None:

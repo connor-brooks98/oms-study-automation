@@ -7,7 +7,12 @@ from oms_hub.document_processing.router import ParserMode
 from oms_hub.document_processing.shadow import DocumentShadowEvaluator
 from oms_hub.domain import LectureKey, StepStatus, V2StepName
 from oms_hub.files.atomic import sha256_file, verified_atomic_copy
-from oms_hub.files.office import OfficeConverter
+from oms_hub.files.office import (
+    OfficeConversionError,
+    OfficeConverter,
+    OfficeTimeoutError,
+    OfficeUnavailableError,
+)
 from oms_hub.files.pdf import validate_pdf
 from oms_hub.files.promotion import PromotionCoordinator
 from oms_hub.ingestion.domain import (
@@ -150,6 +155,15 @@ class SlidePipeline:
                 stored = self.repository.get_study_revision(revision.id)
                 if stored.state in {"proposed", "promoting"}:
                     revision_state = stored.state
+            elif isinstance(
+                error,
+                (
+                    OfficeConversionError,
+                    OfficeTimeoutError,
+                    OfficeUnavailableError,
+                ),
+            ):
+                revision_state = "proposed"
             self.repository.finish_revision(
                 item_id,
                 revision.id,
