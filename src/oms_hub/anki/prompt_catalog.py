@@ -34,6 +34,12 @@ _CARD_CENTRIC_INTERNAL_PROMPT_IDS = (
     "card-centric-gap-v1",
     "card-centric-gap-v2",
 )
+_CARD_CENTRIC_V2_PROMPT_IDS = (
+    "card-centric-ledger-v2",
+    "card-centric-fast-classifier",
+    "card-centric-classifier",
+    "card-centric-gap-v2",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +193,18 @@ class AnkiPromptCatalogService:
         if len(ids) != len(set(ids)):
             raise AnkiPromptConfigurationError("Anki job prompt IDs must be unique")
         return AnkiPromptSnapshot(prompts=prompts)
+
+    def load_card_centric_v2_snapshot(self) -> AnkiPromptSnapshot:
+        """Resolve all bundled v2 prompts into immutable exact-content values.
+
+        This is the single catalog entry point for the S0 v2 prompt capture.
+        It resolves includes before returning, so ``content`` and
+        ``content_sha256`` are the bytes logically executed by the stages, not
+        live asset names or unexpanded Markdown fragments.
+        """
+        return AnkiPromptLibrary(self.bundled_directory).load_many(
+            _CARD_CENTRIC_V2_PROMPT_IDS
+        )
 
 
 def _choice(prompt: AnkiPrompt) -> PromptChoice:

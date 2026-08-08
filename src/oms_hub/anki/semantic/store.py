@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from oms_hub.anki.semantic.domain import (
     DocumentRecord,
+    SemanticGenerationMismatchError,
     SemanticManifest,
     SemanticSnapshot,
 )
@@ -109,6 +110,7 @@ class SemanticSnapshotStore:
         *,
         expected_model: str | None = None,
         expected_dimensions: int | None = None,
+        expected_generation: str | UUID | None = None,
     ) -> SemanticSnapshot:
         if not self.current_path.is_file():
             raise SemanticSnapshotError("semantic snapshot is unavailable")
@@ -120,6 +122,11 @@ class SemanticSnapshotStore:
             raise SemanticSnapshotError(
                 "semantic snapshot pointer is invalid"
             ) from exc
+        if expected_generation is not None and str(generation) != str(expected_generation):
+            raise SemanticGenerationMismatchError(
+                "pinned semantic generation "
+                f"{expected_generation} is no longer active"
+            )
         return self._load_generation(
             self.generations_path / str(generation),
             expected_generation=generation,

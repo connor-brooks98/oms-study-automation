@@ -2,6 +2,7 @@ from oms_hub.anki.semantic.domain import (
     DocumentRecord,
     EmbeddingClient,
     InputType,
+    SemanticGenerationMismatchError,
     SemanticManifest,
     SemanticSnapshot,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "EmbeddingClient",
     "InputType",
     "SemanticCoverageError",
+    "SemanticGenerationMismatchError",
     "SemanticIndexService",
     "SemanticManifest",
     "SemanticSnapshot",

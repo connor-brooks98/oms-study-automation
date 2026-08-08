@@ -88,6 +88,7 @@ class AnkiPrompt:
     path: Path
     content: str
     prompt_hash: str
+    content_sha256: str
     source_paths: tuple[Path, ...]
 
     @property
@@ -139,11 +140,15 @@ class AnkiPromptLibrary:
             raise AnkiPromptConfigurationError(
                 f"Anki prompt {normalized} is empty"
             )
+        content_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
         return AnkiPrompt(
             metadata=metadata,
             path=self.root / relative,
             content=content,
-            prompt_hash=hashlib.sha256(content.encode("utf-8")).hexdigest()[:12],
+            # ``prompt_hash`` is retained for existing display and persisted-v1
+            # compatibility.  Replay identity must use ``content_sha256``.
+            prompt_hash=content_sha256[:12],
+            content_sha256=content_sha256,
             source_paths=tuple(paths),
         )
 
@@ -205,7 +210,10 @@ def _read_markdown(
         content = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError) as error:
         raise AnkiPromptConfigurationError(
-            f"Anki prompt {relative} was not found or is not readable UTF-8"
+            "Required Anki prompt "
+            f"{relative.stem!r} at {path} is missing or unreadable UTF-8 "
+            f"(configured prompt root: {root}). Restore that prompt file or "
+            "configure the prompt directory to a readable checkout containing it."
         ) from error
     frontmatter, body = _split_frontmatter(content, relative)
     try:

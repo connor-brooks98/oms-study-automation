@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -82,3 +83,21 @@ def test_bundled_card_centric_v2_prompts_are_internal_not_catalog_errors() -> No
         }
         for issue in catalog.issues
     )
+
+
+def test_v2_snapshot_resolves_all_executed_internal_prompt_content() -> None:
+    snapshot = AnkiPromptCatalogService(
+        bundled_directory=_bundled_root()
+    ).load_card_centric_v2_snapshot()
+
+    assert [prompt.metadata.id for prompt in snapshot.prompts] == [
+        "card-centric-ledger-v2",
+        "card-centric-fast-classifier",
+        "card-centric-classifier",
+        "card-centric-gap-v2",
+    ]
+    for prompt in snapshot.prompts:
+        assert prompt.content_sha256 == hashlib.sha256(
+            prompt.content.encode("utf-8")
+        ).hexdigest()
+        assert prompt.prompt_hash == prompt.content_sha256[:12]

@@ -133,6 +133,7 @@ class SemanticIndexService:
         *,
         eligible_note_ids: Collection[int] | None = None,
         limit: int,
+        expected_generation: str | None = None,
     ) -> list[list[SemanticHit]]:
         if limit < 1:
             raise ValueError("limit must be positive")
@@ -144,6 +145,7 @@ class SemanticIndexService:
         snapshot = self.store.load(
             expected_model=self.model,
             expected_dimensions=self.dimensions,
+            expected_generation=expected_generation,
         )
         eligible = None if eligible_note_ids is None else set(eligible_note_ids)
         selected_rows = [
@@ -186,9 +188,8 @@ class SemanticIndexService:
         snapshot = self.store.load(
             expected_model=self.model,
             expected_dimensions=self.dimensions,
+            expected_generation=expected_generation,
         )
-        if str(snapshot.manifest.generation) != expected_generation:
-            raise ValueError("pinned semantic generation is no longer active")
         normalized = [normalize_semantic_text(query) for query in queries]
         if not normalized or any(not query for query in normalized):
             raise ValueError("semantic queries cannot be blank")

@@ -1,11 +1,16 @@
 import asyncio
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from oms_hub.anki.semantic.domain import DocumentRecord, InputType
+from oms_hub.anki.semantic.domain import (
+    DocumentRecord,
+    InputType,
+    SemanticGenerationMismatchError,
+)
 from oms_hub.anki.semantic.service import (
     SemanticCoverageError,
     SemanticIndexService,
@@ -19,6 +24,7 @@ class FakeEmbeddingClient:
         self.vectors = vectors
         self.calls: list[tuple[InputType, tuple[str, ...]]] = []
         self.fail = False
+        self.before_query: Callable[[], None] | None = None
 
     async def embed(
         self,
@@ -29,6 +35,9 @@ class FakeEmbeddingClient:
         self.calls.append((input_type, tuple(texts)))
         if self.fail:
             raise RuntimeError("injected embedding failure")
+        if input_type == "query" and self.before_query is not None:
+            self.before_query()
+            self.before_query = None
         return np.asarray(
             [self.vectors[text] for text in texts],
             dtype=np.float32,
@@ -238,6 +247,64 @@ def test_query_cache_avoids_duplicate_embedding_calls_and_is_bounded(
             ("query", ("query two", "query three")),
             ("query", ("query one",)),
         ]
+
+    asyncio.run(scenario())
+
+
+def test_expected_generation_rejects_replacement_before_search(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        embedder = FakeEmbeddingClient(
+            {
+                "first": [1.0, 0.0, 0.0],
+                "replacement": [0.0, 1.0, 0.0],
+                "query": [1.0, 0.0, 0.0],
+            }
+        )
+        service = _service(tmp_path, embedder)
+        first = await service.refresh([_record(1, "first")])
+        await service.refresh([_record(2, "replacement")])
+
+        with pytest.raises(SemanticGenerationMismatchError, match="no longer active"):
+            await service.search(
+                ["query"],
+                limit=1,
+                expected_generation=str(first.manifest.generation),
+            )
+
+        assert ("query", ("query",)) not in embedder.calls
+
+    asyncio.run(scenario())
+
+
+def test_search_holds_pinned_snapshot_when_generation_switches_during_query(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        embedder = FakeEmbeddingClient(
+            {
+                "first": [1.0, 0.0, 0.0],
+                "replacement": [0.0, 1.0, 0.0],
+                "query": [1.0, 0.0, 0.0],
+            }
+        )
+        service = _service(tmp_path, embedder)
+        first = await service.refresh([_record(1, "first")])
+        embedder.before_query = lambda: service.store.replace(
+            [_record(2, "replacement")],
+            np.asarray([[0.0, 1.0, 0.0]], dtype=np.float32),
+            model="voyage-4-large",
+        )
+
+        hits = await service.search(
+            ["query"],
+            limit=1,
+            expected_generation=str(first.manifest.generation),
+        )
+
+        assert [hit.note_id for hit in hits[0]] == [1]
+        assert service.store.load().manifest.note_ids == (2,)
 
     asyncio.run(scenario())
 

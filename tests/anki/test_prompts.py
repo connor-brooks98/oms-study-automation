@@ -75,6 +75,17 @@ def test_load_many_is_an_immutable_job_snapshot(tmp_path: Path) -> None:
     assert snapshot.require("lecture-concept-ledger").metadata.version == "2.0.0"
 
 
+def test_missing_prompt_error_identifies_id_path_and_remediation(tmp_path: Path) -> None:
+    with pytest.raises(AnkiPromptConfigurationError) as captured:
+        AnkiPromptLibrary(tmp_path / "configured-prompts").load("missing-prompt")
+
+    message = str(captured.value)
+    assert "missing-prompt" in message
+    assert str(tmp_path / "configured-prompts" / "missing-prompt.md") in message
+    assert "Restore" in message
+    assert "configure" in message
+
+
 def test_include_cycle_is_rejected(tmp_path: Path) -> None:
     vault = tmp_path / "prompts"
     vault.mkdir()

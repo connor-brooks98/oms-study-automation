@@ -60,6 +60,15 @@ class SemanticRefreshResult:
     coverage: float
 
 
+class SemanticGenerationMismatchError(ValueError):
+    """The active semantic generation differs from a caller's pinned input.
+
+    This is an input-integrity failure, distinct from embedding-provider
+    unavailability.  I0 maps it to the established nonretryable
+    ``PinnedInputChanged`` terminal outcome before a stage performs work.
+    """
+
+
 class EmbeddingClient(Protocol):
     async def embed(
         self,
