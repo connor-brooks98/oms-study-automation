@@ -57,7 +57,28 @@ class SlidePipeline:
         derived = revision.immutable_derived_path
         if derived is None:
             raise ValueError("slide revision has no PDF destination")
+        destinations = build_slide_destinations(
+            self.settings,
+            LectureKey(
+                lecture.subject,
+                lecture.exam_number,
+                lecture.lecture_number,
+                lecture.topic,
+            ),
+        )
+        recovering_promotion = revision.state == "promoting"
         try:
+            if recovering_promotion:
+                revision = self._promote_revision(
+                    revision,
+                    [
+                        (revision.immutable_source_path, destinations.source),
+                        (derived, destinations.pdf),
+                        (derived, destinations.icloud_pdf),
+                    ],
+                )
+                self._mark_promoted(revision.lecture_id)
+                return revision
             self._set_slide_steps(
                 revision.lecture_id,
                 StepStatus.RUNNING,
@@ -85,15 +106,6 @@ class SlidePipeline:
                 V2StepName.PDF_CONVERTED,
                 StepStatus.COMPLETE,
                 "Converted PDF validated",
-            )
-            destinations = build_slide_destinations(
-                self.settings,
-                LectureKey(
-                    lecture.subject,
-                    lecture.exam_number,
-                    lecture.lecture_number,
-                    lecture.topic,
-                ),
             )
             revision = self.repository.update_revision_paths(
                 revision.id,
@@ -129,27 +141,22 @@ class SlidePipeline:
                     (derived, destinations.icloud_pdf),
                 ],
             )
-            self.catalog.set_step_status(
-                revision.lecture_id,
-                V2StepName.SLIDES_FILED,
-                StepStatus.COMPLETE,
-                "PowerPoint and PDF filed on the NUC",
-            )
-            self.catalog.set_step_status(
-                revision.lecture_id,
-                V2StepName.ICLOUD_PDF_STAGED,
-                StepStatus.COMPLETE,
-                "PDF staged in iCloud",
-            )
+            self._mark_promoted(revision.lecture_id)
             return revision
         except Exception as error:
             self._mark_failed(revision.lecture_id, str(error))
+            revision_state = None
+            if recovering_promotion:
+                stored = self.repository.get_study_revision(revision.id)
+                if stored.state in {"proposed", "promoting"}:
+                    revision_state = stored.state
             self.repository.finish_revision(
                 item_id,
                 revision.id,
                 UploadState.FAILED,
                 current=False,
                 error=str(error),
+                revision_state=revision_state,
             )
             raise
 
@@ -267,6 +274,20 @@ class SlidePipeline:
                 status,
                 detail,
             )
+
+    def _mark_promoted(self, lecture_id: int) -> None:
+        self.catalog.set_step_status(
+            lecture_id,
+            V2StepName.SLIDES_FILED,
+            StepStatus.COMPLETE,
+            "PowerPoint and PDF filed on the NUC",
+        )
+        self.catalog.set_step_status(
+            lecture_id,
+            V2StepName.ICLOUD_PDF_STAGED,
+            StepStatus.COMPLETE,
+            "PDF staged in iCloud",
+        )
 
     def _mark_failed(self, lecture_id: int, detail: str) -> None:
         for step in SLIDE_PIPELINE_STEPS:

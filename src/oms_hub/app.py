@@ -89,6 +89,7 @@ from oms_hub.study_generation.notebook_connection import (
     retire_google_docs_credentials,
 )
 from oms_hub.study_generation.notebook_storage import (
+    NotebookStorageError,
     migrate_encrypted_notebook_storage,
 )
 from oms_hub.study_generation.outline import OutlineService
@@ -519,11 +520,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         active_anki_prompt_directory,
     )
     notebook_storage_path = resolved.data_dir / "google" / "notebooklm-storage.json"
-    app.state.notebook_storage_migrated = migrate_encrypted_notebook_storage(
-        notebook_storage_path.with_suffix(".enc"),
-        notebook_storage_path,
-        app.state.secrets,
-    )
+    app.state.notebook_storage_migration_error = None
+    try:
+        app.state.notebook_storage_migrated = migrate_encrypted_notebook_storage(
+            notebook_storage_path.with_suffix(".enc"),
+            notebook_storage_path,
+            app.state.secrets,
+        )
+    except NotebookStorageError as error:
+        # NotebookLM is optional. Keep the encrypted rollback artifact and let
+        # the Hub start disconnected so Settings remains available to reconnect.
+        app.state.notebook_storage_migrated = False
+        app.state.notebook_storage_migration_error = str(error)
     app.state.notebook_auth = NotebookCLIAuth(notebook_storage_path)
     app.state.notebook_connection = NotebookConnectionService(
         app.state.generation_repository,

@@ -118,3 +118,29 @@ def test_app_startup_migrates_existing_encrypted_notebook_session(
     assert created.state.notebook_storage_migrated is True
     assert "preserved-session" in plaintext_path.read_text(encoding="utf-8")
     assert encrypted_path.is_file()
+
+
+def test_app_starts_disconnected_when_encrypted_notebook_session_is_unreadable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secrets = MemorySecrets()
+    google = tmp_path / "google"
+    google.mkdir()
+    encrypted_path = google / "notebooklm-storage.enc"
+    plaintext_path = google / "notebooklm-storage.json"
+    encrypted_path.write_bytes(b"unreadable-session")
+    monkeypatch.setattr(app_module, "KeyringSecretStore", lambda: secrets)
+
+    created = app_module.create_app(
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path,
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        )
+    )
+
+    assert created.state.notebook_storage_migrated is False
+    assert "reconnect Google" in created.state.notebook_storage_migration_error
+    assert not plaintext_path.exists()
+    assert encrypted_path.read_bytes() == b"unreadable-session"
