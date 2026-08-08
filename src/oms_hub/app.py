@@ -88,6 +88,9 @@ from oms_hub.study_generation.notebook_connection import (
     NotebookConnectionService,
     retire_google_docs_credentials,
 )
+from oms_hub.study_generation.notebook_storage import (
+    migrate_encrypted_notebook_storage,
+)
 from oms_hub.study_generation.outline import OutlineService
 from oms_hub.study_generation.path_picker import (
     SystemPromptDirectoryPicker,
@@ -516,6 +519,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         active_anki_prompt_directory,
     )
     notebook_storage_path = resolved.data_dir / "google" / "notebooklm-storage.json"
+    app.state.notebook_storage_migrated = migrate_encrypted_notebook_storage(
+        notebook_storage_path.with_suffix(".enc"),
+        notebook_storage_path,
+        app.state.secrets,
+    )
     app.state.notebook_auth = NotebookCLIAuth(notebook_storage_path)
     app.state.notebook_connection = NotebookConnectionService(
         app.state.generation_repository,

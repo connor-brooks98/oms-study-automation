@@ -1,10 +1,15 @@
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
 
+import oms_hub.app as app_module
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.study_generation.notebook_connection import (
     NotebookConnectionStatus,
 )
+from oms_hub.study_generation.notebook_storage import EncryptedNotebookStorage
 
 
 class FakeNotebookConnection:
@@ -69,3 +74,47 @@ def test_retired_google_settings_routes_are_gone(tmp_path):
     assert client.get("/settings/google/status").status_code == 404
     assert client.post("/settings/google/connect").status_code == 404
     assert client.post("/settings/google/oauth-client").status_code == 404
+
+
+class MemorySecrets:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    def set(self, key: str, value: str) -> None:
+        self.values[key] = value
+
+    def delete(self, key: str) -> None:
+        self.values.pop(key, None)
+
+
+def test_app_startup_migrates_existing_encrypted_notebook_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secrets = MemorySecrets()
+    google = tmp_path / "google"
+    encrypted_path = google / "notebooklm-storage.enc"
+    plaintext_path = google / "notebooklm-storage.json"
+    with EncryptedNotebookStorage(encrypted_path, secrets).plaintext(
+        writable=True
+    ) as temporary_path:
+        temporary_path.write_text(
+            '{"cookies":[{"value":"preserved-session"}]}',
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(app_module, "KeyringSecretStore", lambda: secrets)
+
+    created = app_module.create_app(
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path,
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        )
+    )
+
+    assert created.state.notebook_storage_migrated is True
+    assert "preserved-session" in plaintext_path.read_text(encoding="utf-8")
+    assert encrypted_path.is_file()

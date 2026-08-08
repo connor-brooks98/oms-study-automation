@@ -118,6 +118,39 @@ class PlaintextNotebookStorage:
         yield self.path
 
 
+def migrate_encrypted_notebook_storage(
+    encrypted_path: Path,
+    plaintext_path: Path,
+    secrets: SecretStore,
+) -> bool:
+    """Restore a prior encrypted session for the plaintext CLI storage format.
+
+    Existing plaintext always wins so a newer login is never overwritten. The
+    encrypted file is retained as a rollback artifact after the atomic export.
+    """
+    encrypted_path = encrypted_path.resolve()
+    plaintext_path = plaintext_path.resolve()
+    if plaintext_path.is_file() or not encrypted_path.is_file():
+        return False
+
+    storage = EncryptedNotebookStorage(encrypted_path, secrets)
+    with storage.plaintext() as temporary_path:
+        payload = temporary_path.read_bytes()
+
+    plaintext_path.parent.mkdir(parents=True, exist_ok=True)
+    _restrict_owner_only(plaintext_path.parent, directory=True)
+    part = plaintext_path.with_name(
+        f".{plaintext_path.name}.{uuid4().hex}.part"
+    )
+    try:
+        _private_write(part, payload)
+        os.replace(part, plaintext_path)
+        _restrict_owner_only(plaintext_path, directory=False)
+    finally:
+        part.unlink(missing_ok=True)
+    return True
+
+
 def _private_write(path: Path, payload: bytes) -> None:
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "wb") as stream:

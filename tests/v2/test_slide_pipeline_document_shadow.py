@@ -2,6 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
 from pypdf import PdfWriter
 
 from oms_hub.config import Settings
@@ -14,9 +15,12 @@ from oms_hub.document_processing.domain import (
     SourceSnapshot,
 )
 from oms_hub.document_processing.shadow import DocumentShadowEvaluator
+from oms_hub.domain import LectureKey
+from oms_hub.files.atomic import verified_atomic_copy
 from oms_hub.ingestion.domain import StagedUpload, UploadKind
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.repositories import CatalogRepository, LectureInput
+from oms_hub.routing import build_slide_destinations
 from oms_hub.slides.pipeline import SlidePipeline
 
 
@@ -135,3 +139,54 @@ def test_shadow_report_write_failure_does_not_fail_slide_filing(tmp_path: Path) 
     revision = pipeline.process(item_id)
 
     assert revision.current is True
+
+
+def test_interrupted_group_promotion_recovers_old_files_before_clean_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline, item_id = _slide_pipeline(tmp_path)
+    destinations = build_slide_destinations(
+        pipeline.settings,
+        LectureKey("Neuro", 1, 1, "Seizures"),
+    )
+    canonical = (destinations.source, destinations.pdf, destinations.icloud_pdf)
+    for destination in canonical:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"old")
+
+    original_promote = pipeline.promotion.promote
+
+    def crash_after_first_copy(pairs, revision_id, commit):
+        del commit
+        for _, destination in pairs:
+            verified_atomic_copy(
+                destination,
+                pipeline.promotion.backup_path(destination, revision_id),
+            )
+        verified_atomic_copy(*pairs[0])
+        raise SystemExit("simulated process interruption")
+
+    monkeypatch.setattr(pipeline.promotion, "promote", crash_after_first_copy)
+    with pytest.raises(SystemExit, match="simulated process interruption"):
+        pipeline.process(item_id)
+
+    interrupted = pipeline.repository.begin_revision(
+        item_id,
+        tmp_path / "artifacts" / "v2" / "slides",
+    )
+    assert interrupted.state == "promoting"
+    assert canonical[0].read_bytes() != b"old"
+    assert canonical[1].read_bytes() == b"old"
+    assert canonical[2].read_bytes() == b"old"
+
+    monkeypatch.setattr(pipeline.promotion, "promote", original_promote)
+    recovered = pipeline.process(item_id)
+
+    assert recovered.current is True
+    assert recovered.state == "current"
+    assert canonical[0].read_bytes() == recovered.immutable_source_path.read_bytes()
+    assert canonical[1].read_bytes() == recovered.immutable_derived_path.read_bytes()
+    assert canonical[2].read_bytes() == recovered.immutable_derived_path.read_bytes()
+    for destination in canonical:
+        assert not pipeline.promotion.backup_path(destination, recovered.id).exists()
