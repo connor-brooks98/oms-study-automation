@@ -381,7 +381,7 @@ def test_v2_selection_uses_grounded_fast_coverage_and_t6_only_below_minimum() ->
         ),
         source,
     )
-    selected, excluded, generated = select_high_yield_v2(
+    result = select_high_yield_v2(
         (maybe,),
         fast_classifications=(fast,),
         fast_fallback_note_ids=(3,),
@@ -393,9 +393,10 @@ def test_v2_selection_uses_grounded_fast_coverage_and_t6_only_below_minimum() ->
         minimum=60,
     )
 
-    assert selected == (1, 2, 3)
-    assert excluded == ()
-    assert generated == ()
+    assert result.selected_existing_note_ids == (1,)
+    assert result.excluded_existing_note_ids == (2, 3)
+    assert result.selected_generated_card_ids == ()
+    assert result.below_warning_floor is True
 
 
 def test_v2_selection_keeps_all_mandatory_high_existing_cards_above_soft_cap() -> None:
@@ -429,7 +430,7 @@ def test_v2_selection_keeps_all_mandatory_high_existing_cards_above_soft_cap() -
         for note_id in range(1, 72)
     )
 
-    selected, _, _ = select_high_yield_v2(
+    result = select_high_yield_v2(
         classifications,
         fast_classifications=(),
         ledger=ledger,
@@ -440,7 +441,8 @@ def test_v2_selection_keeps_all_mandatory_high_existing_cards_above_soft_cap() -
         minimum=60,
     )
 
-    assert selected == tuple(range(1, 72))
+    assert result.selected_existing_note_ids == (1,)
+    assert result.excluded_existing_note_ids == tuple(range(2, 72))
 
 
 def test_v2_selection_stops_ordinary_cards_at_target_of_65() -> None:
@@ -474,7 +476,7 @@ def test_v2_selection_stops_ordinary_cards_at_target_of_65() -> None:
         for note_id in range(1, 81)
     )
 
-    selected, excluded, generated = select_high_yield_v2(
+    result = select_high_yield_v2(
         classifications,
         fast_classifications=(),
         ledger=ledger,
@@ -485,9 +487,9 @@ def test_v2_selection_stops_ordinary_cards_at_target_of_65() -> None:
         minimum=60,
     )
 
-    assert selected == tuple(range(1, 66))
-    assert excluded == tuple(range(66, 81))
-    assert generated == ()
+    assert result.selected_existing_note_ids == (1,)
+    assert result.excluded_existing_note_ids == tuple(range(2, 81))
+    assert result.selected_generated_card_ids == ()
 
 
 def test_v2_selection_allows_mandatory_high_cards_through_70_without_overflow() -> None:
@@ -521,7 +523,7 @@ def test_v2_selection_allows_mandatory_high_cards_through_70_without_overflow() 
         for note_id in range(1, 71)
     )
 
-    selected, _, _ = select_high_yield_v2(
+    result = select_high_yield_v2(
         classifications,
         fast_classifications=(),
         ledger=ledger,
@@ -532,7 +534,7 @@ def test_v2_selection_allows_mandatory_high_cards_through_70_without_overflow() 
         minimum=60,
     )
 
-    assert selected == tuple(range(1, 71))
+    assert result.selected_existing_note_ids == (1,)
 
 
 def test_v2_selection_places_mandatory_existing_before_medium_generated_rows() -> None:
@@ -586,7 +588,7 @@ def test_v2_selection_places_mandatory_existing_before_medium_generated_rows() -
         for index in range(1, 65)
     )
 
-    selected, _, generated = select_high_yield_v2(
+    result = select_high_yield_v2(
         mandatory,
         fast_classifications=(),
         ledger=ledger,
@@ -597,9 +599,11 @@ def test_v2_selection_places_mandatory_existing_before_medium_generated_rows() -
         minimum=60,
     )
 
-    assert selected == tuple(range(1, 11))
-    assert generated == tuple(f"G{index:02d}" for index in range(1, 56))
-    assert len(selected) + len(generated) == 65
+    assert result.selected_existing_note_ids == (1,)
+    assert result.selected_generated_card_ids == tuple(
+        f"G{index:02d}" for index in range(1, 65)
+    )
+    assert len(result.selected_existing_note_ids) + len(result.selected_generated_card_ids) == 65
 
 
 def test_classifier_rejects_invented_ids_ungrounded_yes_and_partial_batch() -> None:
