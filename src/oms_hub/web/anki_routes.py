@@ -704,22 +704,37 @@ def issue_anki_overflow_acknowledgement(
     mandatory_generated = tuple(selection.get("mandatory_generated_card_ids", []))
     selected_notes = tuple(selection.get("selected_existing_note_ids", []))
     selected_generated = tuple(selection.get("selected_generated_card_ids", []))
-    requires_exact_generated_mandatory = (
-        job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V2
-    )
     if (
-        set(selected_notes) != set(mandatory_notes)
-        or (
-            requires_exact_generated_mandatory
-            and set(selected_generated) != set(mandatory_generated)
-        )
-        or set(payload.selected_existing_note_ids) != set(selected_notes)
-        or set(payload.selected_generated_card_ids) != set(selected_generated)
+        tuple(payload.selected_existing_note_ids) != selected_notes
+        or tuple(payload.selected_generated_card_ids) != selected_generated
     ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="overflow acknowledgement must bind the exact mandatory overflow set",
+            detail="overflow acknowledgement must bind the frozen full selection",
         )
+    if job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V2:
+        try:
+            snapshot = CardCentricReconciliationInput.model_validate(committed["snapshot"])
+            overflow = tuple(
+                item
+                for item in snapshot.selection_metadata
+                if item.selected_position > snapshot.cap
+            )
+            mandatory_notes = tuple(
+                int(item.identity.removeprefix("existing:"))
+                for item in overflow
+                if item.identity.startswith("existing:")
+            )
+            mandatory_generated = tuple(
+                item.identity.removeprefix("generated:")
+                for item in overflow
+                if item.identity.startswith("generated:")
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="persisted V2 selection cannot prove overflow scope",
+            ) from exc
     try:
         document = repository.issue_card_centric_overflow_acknowledgement(
             job_id,
@@ -818,20 +833,13 @@ async def build_anki_envelope(
         )
         selected_generated = tuple(card.card_id for card in gap_cards if card.selected)
         cap = int(selection.get("cap", 70))
-        mandatory_notes = tuple(selection.get("mandatory_note_ids", []))
-        mandatory_generated = tuple(selection.get("mandatory_generated_card_ids", []))
-        acknowledgement_generated = (
-            mandatory_generated
-            if job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V2
-            else selected_generated
-        )
         if len(selected_notes) + len(selected_generated) > cap and not (
             payload.overflow_acknowledgement
             and repository.validate_card_centric_overflow_acknowledgement(
                 job_id,
                 review_revision=job.review_revision,
-                selected_note_ids=mandatory_notes,
-                selected_generated_ids=acknowledgement_generated,
+                selected_note_ids=selected_notes,
+                selected_generated_ids=selected_generated,
                 cap=cap,
                 document=payload.overflow_acknowledgement,
             )

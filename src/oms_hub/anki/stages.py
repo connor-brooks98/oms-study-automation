@@ -2749,16 +2749,8 @@ class CurationServicesRunner:
                 self.repository.validate_card_centric_overflow_acknowledgement(
                     context.job.id,
                     review_revision=context.job.review_revision,
-                    selected_note_ids=tuple(
-                        selection_result.mandatory_note_ids
-                        if selection_result is not None
-                        else selection["mandatory_note_ids"]
-                    ),
-                    selected_generated_ids=tuple(
-                        selection_result.mandatory_generated_card_ids
-                        if selection_result is not None and is_v2
-                        else selected_generated_card_ids
-                    ),
+                    selected_note_ids=selected_nids,
+                    selected_generated_ids=selected_generated_card_ids,
                     cap=int(
                         selection_result.cap if selection_result is not None else selection["cap"]
                     ),

@@ -9,6 +9,7 @@ from oms_hub.anki.correction_contracts import (
     GeneratedCardIdentity,
     GeneratedFactResolution,
     GeneratedOutputSet,
+    GeneratedResolutionKind,
     SelectionMetadata,
 )
 from oms_hub.anki.gaps import GapValidationError, validate_gap_card_fields
@@ -279,6 +280,13 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
         passed,
         failed,
     )
+    _record(
+        "duplicate_coverage",
+        not strict_v2 or _duplicate_terminals_have_selected_coverage(snapshot, terminal),
+        "Duplicate terminals must name a selected identity that covers the duplicated fact",
+        passed,
+        failed,
+    )
     forbidden_by_fact = {
         fact_id: tuple(targets)
         for fact_id, targets in snapshot.forbidden_cloze_targets_by_fact.items()
@@ -367,17 +375,36 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
     mandatory_selected = set(snapshot.mandatory_nids) <= set(snapshot.selected_nids) and set(
         snapshot.mandatory_generated_card_ids
     ) <= set(snapshot.selected_generated_card_ids)
-    overflow_is_exactly_mandatory = set(snapshot.selected_nids) == set(
-        snapshot.mandatory_nids
-    ) and (
-        set(snapshot.selected_generated_card_ids) == set(snapshot.mandatory_generated_card_ids)
-        if snapshot.pipeline_contract_version == "card_centric_v2"
-        else True
+    ordered_metadata = tuple(
+        sorted(snapshot.selection_metadata, key=lambda item: item.selected_position)
+    )
+    overflow_metadata = tuple(
+        item for item in ordered_metadata if item.selected_position > snapshot.cap
+    )
+    v2_overflow_ready = (
+        strict_v2
+        and len(overflow_metadata) == total - snapshot.cap
+        and all(
+            item.mandatory
+            and item.overflow_reason is not None
+            and bool(item.overflow_reason.strip())
+            and item.manual_acknowledgement_required
+            for item in overflow_metadata
+        )
+    )
+    legacy_overflow_ready = (
+        mandatory_selected
+        and set(snapshot.selected_nids) == set(snapshot.mandatory_nids)
+        and (
+            set(snapshot.selected_generated_card_ids)
+            == set(snapshot.mandatory_generated_card_ids)
+            if snapshot.pipeline_contract_version == "card_centric_v1"
+            else False
+        )
     )
     overflow_ok = total <= snapshot.cap or (
-        mandatory_selected
-        and overflow_is_exactly_mandatory
-        and snapshot.overflow_acknowledgement is not None
+        snapshot.overflow_acknowledgement is not None
+        and (v2_overflow_ready or legacy_overflow_ready)
     )
     _record(
         "selection_cap",
@@ -618,6 +645,38 @@ def _forbidden_cloze_rows(
         if forbidden & answers:
             violations.append(card.card_id)
     return tuple(violations)
+
+
+def _duplicate_terminals_have_selected_coverage(
+    snapshot: CardCentricReconciliationInput,
+    terminal: tuple[GeneratedFactResolution, ...],
+) -> bool:
+    """A duplicate can resolve a fact only through current selected coverage."""
+    selected_notes = set(snapshot.selected_nids)
+    selected_generated = set(snapshot.selected_generated_card_ids)
+    for resolution in terminal:
+        if resolution.kind is not GeneratedResolutionKind.DUPLICATE_OF_EXISTING:
+            continue
+        duplicate = resolution.duplicate_of
+        if duplicate is None:  # pragma: no cover - frozen contract guarantees this
+            return False
+        concept_id, separator, _ = resolution.fact_id.rpartition("-M")
+        if not separator:
+            return False
+        if duplicate.existing_note_id is not None:
+            if (
+                duplicate.existing_note_id not in selected_notes
+                or concept_id
+                not in snapshot.covered_concept_ids_by_nid.get(duplicate.existing_note_id, ())
+            ):
+                return False
+        elif (
+            duplicate.generated_card_id not in selected_generated
+            or snapshot.generated_concept_id_by_card_id.get(duplicate.generated_card_id)
+            != concept_id
+        ):
+            return False
+    return True
 
 
 def _is_legacy_card_centric_snapshot(snapshot: CardCentricReconciliationInput) -> bool:
