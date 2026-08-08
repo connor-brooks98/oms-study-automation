@@ -93,13 +93,17 @@ class SerialOfficeConverter:
                     if result == ("ok", "") and process.exitcode == 0:
                         return
                     destination.unlink(missing_ok=True)
-                    error_type, _detail = result or ("OfficeConversionError", "")
+                    error_type, detail = result or ("OfficeConversionError", "")
                     if error_type == "OfficeUnavailableError":
                         raise OfficeUnavailableError(
                             "Microsoft Office conversion is available only on Windows"
                         )
+                    message = "Microsoft Office could not export the PDF"
+                    concise_detail = " ".join(detail.split())
+                    if concise_detail:
+                        message = f"{message} ({error_type}: {concise_detail})"
                     raise OfficeConversionError(
-                        "Microsoft Office could not export the PDF"
+                        message[:1000]
                     )
                 finally:
                     if process.is_alive():

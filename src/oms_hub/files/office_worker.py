@@ -16,6 +16,22 @@ def _force_disable_macros(application: Any) -> None:
         pass
 
 
+def _process_id_for_window(
+    window_handle: Any,
+    win32process: Any,
+    pywintypes: Any,
+) -> int:
+    """Resolve an Office HWND after coercing COM's integer to a PyHANDLE."""
+    handle = pywintypes.HANDLE(int(window_handle))
+    try:
+        _, process_id = win32process.GetWindowThreadProcessId(handle)
+        return int(process_id)
+    finally:
+        # HWND is borrowed from Office.  PyHANDLE normally calls CloseHandle,
+        # which is invalid for a USER handle that this process does not own.
+        handle.Detach()
+
+
 def convert_office_file(
     source: Path,
     destination: Path,
@@ -26,6 +42,7 @@ def convert_office_file(
             "Microsoft Office conversion is available only on Windows"
         )
     import pythoncom  # type: ignore[import-untyped]
+    import pywintypes  # type: ignore[import-untyped]
     import win32com.client  # type: ignore[import-untyped]
     import win32process  # type: ignore[import-untyped]
 
@@ -37,7 +54,11 @@ def convert_office_file(
             application = win32com.client.DispatchEx("PowerPoint.Application")
             application.DisplayAlerts = 1
             _force_disable_macros(application)
-            _, process_id = win32process.GetWindowThreadProcessId(application.HWND)
+            process_id = _process_id_for_window(
+                application.HWND,
+                win32process,
+                pywintypes,
+            )
             report_process(process_id)
             document = application.Presentations.Open(
                 str(source),
@@ -50,7 +71,11 @@ def convert_office_file(
             application.Visible = False
             application.DisplayAlerts = 0
             _force_disable_macros(application)
-            _, process_id = win32process.GetWindowThreadProcessId(application.Hwnd)
+            process_id = _process_id_for_window(
+                application.Hwnd,
+                win32process,
+                pywintypes,
+            )
             report_process(process_id)
             document = application.Documents.Open(str(source), ReadOnly=True)
             document.ExportAsFixedFormat(str(destination), 17)

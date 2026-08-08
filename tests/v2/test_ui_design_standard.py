@@ -339,6 +339,7 @@ def test_final_visual_corrections_preserve_locked_chrome() -> None:
 
     assert ".skip-link:focus-visible" in library_css
     assert "clip: rect(0, 0, 0, 0);" in library_css
+    assert "[hidden] { display: none !important; }" in library_css
     disclosure = library_css.split(".disclosure {", 1)[1].split("}", 1)[0]
     assert "border: 0;" in disclosure and "background: transparent;" in disclosure
     assert 'class="anki-advanced sh-card"' in anki

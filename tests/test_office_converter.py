@@ -1,10 +1,12 @@
 import os
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
 import oms_hub.files.office as office_module
+from oms_hub.files import office_worker
 from oms_hub.files.office import (
     OfficeConversionError,
     OfficeTimeoutError,
@@ -25,6 +27,95 @@ def _succeed(_source: Path, destination: Path, _report_process) -> None:
 def _exit_without_result(_source: Path, destination: Path, _report_process) -> None:
     destination.write_bytes(b"partial")
     os._exit(7)
+
+
+def _fail_with_detail(_source: Path, _destination: Path, _report_process) -> None:
+    raise TypeError("PowerPoint HWND was rejected\nby pywin32")
+
+
+def test_office_window_pid_coerces_integer_hwnd_to_pyhandle():
+    converted: list[int] = []
+    detached: list[int] = []
+
+    class FakeHandle:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def Detach(self) -> int:
+            detached.append(self.value)
+            return self.value
+
+    class FakePyWinTypes:
+        @staticmethod
+        def HANDLE(value: int) -> object:
+            converted.append(value)
+            return FakeHandle(value)
+
+    class FakeWin32Process:
+        @staticmethod
+        def GetWindowThreadProcessId(handle: object) -> tuple[int, int]:
+            assert isinstance(handle, FakeHandle)
+            assert handle.value == 987654
+            return (123, 4242)
+
+    assert (
+        office_worker._process_id_for_window(
+            987654,
+            FakeWin32Process,
+            FakePyWinTypes,
+        )
+        == 4242
+    )
+    assert converted == [987654]
+    assert detached == [987654]
+
+
+def test_office_window_pid_detaches_borrowed_hwnd_after_lookup_failure():
+    detached: list[int] = []
+
+    class FakeHandle:
+        def Detach(self) -> int:
+            detached.append(987654)
+            return 987654
+
+    class FakePyWinTypes:
+        @staticmethod
+        def HANDLE(_value: int) -> object:
+            return FakeHandle()
+
+    class FakeWin32Process:
+        @staticmethod
+        def GetWindowThreadProcessId(_handle: object) -> tuple[int, int]:
+            raise TypeError("lookup failed")
+
+    with pytest.raises(TypeError, match="lookup failed"):
+        office_worker._process_id_for_window(
+            987654,
+            FakeWin32Process,
+            FakePyWinTypes,
+        )
+
+    assert detached == [987654]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires pywin32")
+def test_windows_pyhandle_accepts_office_integer_hwnd():
+    import pywintypes  # type: ignore[import-untyped]
+
+    class FakeWin32Process:
+        @staticmethod
+        def GetWindowThreadProcessId(handle: object) -> tuple[int, int]:
+            assert int(handle) == 987654
+            return (123, 4242)
+
+    assert (
+        office_worker._process_id_for_window(
+            987654,
+            FakeWin32Process,
+            pywintypes,
+        )
+        == 4242
+    )
 
 
 def test_timeout_kills_owned_office_tree_cleans_partial_and_releases_lock(
@@ -66,6 +157,22 @@ def test_child_exit_without_result_is_retryable_and_cleans_partial(tmp_path):
     converter.worker = _succeed
     converter.convert(source, destination)
     assert destination.read_bytes() == b"pdf"
+
+
+def test_child_error_detail_is_preserved_for_job_diagnostics(tmp_path):
+    source = tmp_path / "lecture.pptx"
+    destination = tmp_path / "lecture.pdf"
+    source.write_bytes(b"pptx")
+    converter = SerialOfficeConverter(timeout_seconds=5, worker=_fail_with_detail)
+
+    with pytest.raises(OfficeConversionError) as error:
+        converter.convert(source, destination)
+
+    assert str(error.value) == (
+        "Microsoft Office could not export the PDF "
+        "(TypeError: PowerPoint HWND was rejected by pywin32)"
+    )
+    assert not destination.exists()
 
 
 def test_office_process_tree_termination_uses_windows_taskkill(monkeypatch):
