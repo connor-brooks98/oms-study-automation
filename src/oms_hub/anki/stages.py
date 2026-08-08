@@ -1338,6 +1338,7 @@ class CurationServicesRunner:
         _validate_semantic_dedupe_reviews(semantic_dedupe_reviews, generated)
         is_v2 = context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
         fast, fallback_ids = _card_fast_classifier(context) if is_v2 else (None, ())
+        selection_metadata_by_identity: dict[str, dict[str, object]] = {}
         if is_v2:
             assert fast is not None
             fallback_ids = _effective_v2_fallback_note_ids(fallback_ids, classifications)
@@ -1358,6 +1359,10 @@ class CurationServicesRunner:
             selected = selection_result.selected_existing_note_ids
             excluded = selection_result.excluded_existing_note_ids
             generated_ids = selection_result.selected_generated_card_ids
+            selection_metadata_by_identity = {
+                item.identity: item.model_dump(mode="json")
+                for item in selection_result.selection_metadata
+            }
         else:
             selected, excluded, generated_ids = select_high_yield(
                 classifications,
@@ -1389,6 +1394,7 @@ class CurationServicesRunner:
                 fallback_ids,
                 selected_set,
                 source,
+                selection_metadata_by_identity,
             )
             if fast is not None
             else tuple(
@@ -1449,7 +1455,11 @@ class CurationServicesRunner:
                         "fact_id": item.fact_id,
                         "source_passage_ids": list(item.source_passage_ids),
                         "reason": item.reason,
-                    }
+                    },
+                    "selection": selection_metadata_by_identity.get(
+                        f"generated:{item.card_id}",
+                        {"selected": False},
+                    ),
                 },
                 content_hash=hashlib.sha256(
                     f"{item.concept_id}\0{item.text}\0{item.extra}".encode()
@@ -1461,6 +1471,10 @@ class CurationServicesRunner:
         )
         if is_v2:
             selection_payload = selection_result.model_dump(mode="json")
+            selection_payload["selected_count"] = len(selected) + len(generated_ids)
+            selection_payload["selection_order"] = [
+                item.identity for item in selection_result.selection_metadata
+            ]
         else:
             selection_payload = {
                 "selected_existing_note_ids": list(selected),
@@ -3496,6 +3510,7 @@ def _v2_card_candidates(
     fallback_note_ids: Sequence[int],
     selected_note_ids: set[int],
     source: CardCentricSourceIndex,
+    selection_metadata_by_identity: Mapping[str, dict[str, object]] | None = None,
 ) -> tuple[Candidate, ...]:
     """Materialize scoped S4 terminals plus legitimate unscoped residuals."""
     cards = {
@@ -3517,6 +3532,7 @@ def _v2_card_candidates(
     else:
         pre_excluded_note_ids = tuple(fallback_note_ids)
     fallback = set(_unrecovered_s4a_exclusion_note_ids(pre_excluded_note_ids, classifications))
+    selection_metadata_by_identity = selection_metadata_by_identity or {}
     if needs_review_ids - set(thorough):
         raise PinnedInputChanged("v2 S4b NEEDS_REVIEW rows lack S4c terminal results")
     if set(thorough) & (set(fast) | fallback) or set(fast) & fallback:
@@ -3587,7 +3603,11 @@ def _v2_card_candidates(
                         "covered_concept_ids": list(concept_ids),
                         "flags": list(flags),
                         "selection_eligible": eligible,
-                    }
+                    },
+                    "selection": selection_metadata_by_identity.get(
+                        f"existing:{note_id}",
+                        {"selected": False},
+                    ),
                 },
                 scores={},
                 predicted_band=predicted_band,

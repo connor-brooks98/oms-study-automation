@@ -30,6 +30,7 @@ from oms_hub.anki.card_centric_contracts import (
 from oms_hub.anki.correction_contracts import (
     CanonicalJsonObject,
     DuplicateIdentity,
+    MarginalValueReason,
     PinnedLectureMetadata,
 )
 from oms_hub.anki.dedupe import SemanticDedupeIntegrityError
@@ -170,6 +171,62 @@ def _generated_dedupe_row(
         source_passage_ids=(passage_id,),
         evidence_ids=("a" * 64,),
     )
+
+
+def _selection_ledger(count: int, *, high_through: int = 0) -> CardConceptLedger:
+    return CardConceptLedger(
+        lecture_entity_count=count,
+        concepts=tuple(
+            CardConcept(
+                concept_id=f"C{index:02d}",
+                canonical_statement=f"Selection fact {index}.",
+                primary_entity=f"Selection {index}",
+                depth="deep" if index <= high_through else "medium",
+                emphasis_flag=False,
+                importance="high" if index <= high_through else "medium",
+            )
+            for index in range(1, count + 1)
+        ),
+    )
+
+
+def _selection_generated_rows(count: int, passage_id: str) -> tuple[GeneratedCardResolution, ...]:
+    return tuple(
+        GeneratedCardResolution(
+            card_id=f"G{index:02d}",
+            concept_id=f"C{index:02d}",
+            fact_id=f"C{index:02d}-M1",
+            text=f"{{{{c1::Selection fact {index}}}}}",
+            source_passage_ids=(passage_id,),
+            evidence_ids=(f"{index:064x}",),
+        )
+        for index in range(1, count + 1)
+    )
+
+
+def _selection_stage_context(
+    *,
+    ledger: CardConceptLedger,
+    generated: tuple[GeneratedCardResolution, ...],
+) -> tuple[CurationServicesRunner, SimpleNamespace, str]:
+    runner, context, passage_id = _dedupe_stage_fixture(_DedupeEmbedder([]))
+    context.job.pipeline_contract_version = PipelineContractVersion.CARD_CENTRIC_V2
+    context.prior_payloads[CurationStage.CARD_TAG_SCOPE] = {
+        "scope": TagScopeResult(
+            snapshot_id="dedupe-snapshot",
+            filters_sha256="f" * 64,
+            scoped_note_ids=(),
+            unscoped_note_ids=(),
+        ).model_dump(mode="json")
+    }
+    context.prior_payloads[CurationStage.CARD_LEDGER] = {
+        "ledger": ledger.model_dump(mode="json")
+    }
+    context.prior_payloads[CurationStage.DEDUPE] = {
+        "resolutions": [item.model_dump(mode="json") for item in generated],
+        "semantic_dedupe_reviews": [],
+    }
+    return runner, context, passage_id
 
 
 def _set_dedupe_existing(context: SimpleNamespace, note_id: int, passage_id: str) -> None:
@@ -329,6 +386,114 @@ def test_exhausted_semantic_dedupe_review_is_transportable_to_selection() -> Non
     assert selection.payload["semantic_review_required_card_ids"] == ["G01"]
     assert selection.payload["selected_generated_card_ids"] == []
     assert selection.payload["semantic_dedupe_reviews"] == [review.model_dump(mode="json")]
+
+
+def test_card_selection_v2_persists_exact_pending_overflow_metadata_and_flags() -> None:
+    runner, context, passage_id = _selection_stage_context(
+        ledger=_selection_ledger(72, high_through=71),
+        generated=(),
+    )
+    generated = tuple(
+        item.model_copy(update={"source_passage_ids": (passage_id,)})
+        for item in _selection_generated_rows(72, passage_id)
+    )
+    context.prior_payloads[CurationStage.DEDUPE]["resolutions"] = [
+        item.model_dump(mode="json") for item in reversed(generated)
+    ]
+
+    product = asyncio.run(runner._card_selection(context))
+
+    assert product.payload["selected_count"] == 71
+    assert product.payload["selected_generated_card_ids"] == [
+        f"G{index:02d}" for index in range(1, 72)
+    ]
+    assert product.payload["excluded_generated_card_ids"] == ["G72"]
+    assert product.payload["below_warning_floor"] is False
+    assert product.payload["overflow_acknowledgement"] is None
+    metadata = product.payload["selection_metadata"]
+    assert product.payload["selection_order"] == [item["identity"] for item in metadata]
+    assert [item["selected_position"] for item in metadata] == list(range(1, 72))
+    assert [item["marginal_value_reason"] for item in metadata[65:70]] == [
+        MarginalValueReason.ONLY_VALID_REQUIRED_FACT.value
+    ] * 5
+    assert metadata[-1]["mandatory"] is True
+    assert metadata[-1]["manual_acknowledgement_required"] is True
+    assert metadata[-1]["overflow_reason"]
+    selected_gap_cards = {card.card_id: card for card in product.gap_cards if card.selected}
+    assert set(selected_gap_cards) == {f"G{index:02d}" for index in range(1, 72)}
+    assert next(card for card in product.gap_cards if card.card_id == "G72").selected is False
+    assert selected_gap_cards["G01"].provenance["selection"]["selected_position"] == 1
+
+
+def test_card_selection_v2_preserves_a_supplied_overflow_acknowledgement(monkeypatch) -> None:
+    runner, context, passage_id = _selection_stage_context(
+        ledger=_selection_ledger(71, high_through=71),
+        generated=(),
+    )
+    generated = tuple(
+        item.model_copy(update={"source_passage_ids": (passage_id,)})
+        for item in _selection_generated_rows(71, passage_id)
+    )
+    context.prior_payloads[CurationStage.DEDUPE]["resolutions"] = [
+        item.model_dump(mode="json") for item in generated
+    ]
+    original = stages_module.select_high_yield_v2
+
+    def signed_selection(*args, **kwargs):
+        result = original(*args, **kwargs)
+        return result.model_copy(
+            update={
+                "overflow_acknowledgement": CanonicalJsonObject.from_mapping(
+                    {"signature": "fixture", "token": "fixture"}
+                )
+            }
+        )
+
+    monkeypatch.setattr(stages_module, "select_high_yield_v2", signed_selection)
+    product = asyncio.run(runner._card_selection(context))
+
+    assert product.payload["overflow_acknowledgement"] == {
+        "canonical_json": '{"signature":"fixture","token":"fixture"}'
+    }
+
+
+def test_card_selection_v2_keeps_short_decks_and_fallbacks_unselected() -> None:
+    fallback_card = CardRecord(
+        note_id=1,
+        content_sha256="1" * 64,
+        text="Fallback fixture",
+        extra="",
+        tags=(),
+        deck_names=("AnKing",),
+    )
+    runner, context, _ = _dedupe_stage_fixture(_DedupeEmbedder([]), cards=(fallback_card,))
+    context.job.pipeline_contract_version = PipelineContractVersion.CARD_CENTRIC_V2
+    context.prior_payloads[CurationStage.CARD_TAG_SCOPE] = {
+        "scope": TagScopeResult(
+            snapshot_id="dedupe-snapshot",
+            filters_sha256="f" * 64,
+            scoped_note_ids=(fallback_card.note_id,),
+            unscoped_note_ids=(),
+        ).model_dump(mode="json")
+    }
+    context.prior_payloads[CurationStage.CARD_LEDGER] = {
+        "ledger": _selection_ledger(1).model_dump(mode="json")
+    }
+    context.prior_payloads[CurationStage.DEDUPE] = {
+        "resolutions": [],
+        "semantic_dedupe_reviews": [],
+    }
+    context.prior_payloads[CurationStage.CARD_FAST_CLASSIFY]["fallback_note_ids"] = [
+        fallback_card.note_id
+    ]
+
+    product = asyncio.run(runner._card_selection(context))
+
+    assert product.payload["selected_count"] == 0
+    assert product.payload["below_warning_floor"] is True
+    assert product.payload["selection_metadata"] == []
+    assert product.payload["excluded_existing_note_ids"] == [fallback_card.note_id]
+    assert product.candidates[0].selected is False
 
 
 class ReadyRuntime:
