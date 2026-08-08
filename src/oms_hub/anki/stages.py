@@ -46,6 +46,12 @@ from oms_hub.anki.convergence import (
     ParaphraseExpansionService,
     update_growth,
 )
+from oms_hub.anki.correction_contracts import (
+    QUALITY_FIRST_MODEL_INSTRUCTION,
+    FactForbiddenClozeMap,
+    FactForbiddenClozeTargets,
+    PinnedLectureMetadata,
+)
 from oms_hub.anki.dedupe import DeduplicationService
 from oms_hub.anki.domain import (
     Candidate,
@@ -1156,6 +1162,17 @@ class CurationServicesRunner:
             if is_v2
             else _card_gap_prompt(self.prompts, version)
         )
+        if is_v2:
+            instruction = f"{instruction}\n\n{QUALITY_FIRST_MODEL_INSTRUCTION}"
+        # P1 will persist this S0 contract in the preflight artifact.  V2 must
+        # fail closed until that integration lands instead of reading a mutable
+        # live lecture title during an S7 request.
+        pinned_lecture = _pinned_card_v2_lecture_metadata(context) if is_v2 else None
+        lecture_title = (
+            pinned_lecture.title
+            if pinned_lecture is not None
+            else self.repository.lecture_title(context.job.lecture_id)
+        )
         output: list[GeneratedCardResolution] = []
         evidence_records: list[SourceEvidence] = []
         passages_by_id = {passage.passage_id: passage for passage in source.passages}
@@ -1170,67 +1187,70 @@ class CurationServicesRunner:
                     "statement": (
                         concept.fact_descriptions[index] if is_v2 else concept.canonical_statement
                     ),
-                    "forbidden_cloze_targets": (
-                        list(concept.forbidden_cloze_targets_by_fact[index])
-                        if is_v2 and index < len(concept.forbidden_cloze_targets_by_fact)
-                        else []
-                    ),
                 }
                 for index in range(fact_count)
             ]
+            forbidden_by_fact = FactForbiddenClozeMap(
+                facts=tuple(
+                    FactForbiddenClozeTargets(
+                        fact_id=fact["fact_id"],
+                        targets=(
+                            concept.forbidden_cloze_targets_by_fact[index]
+                            if index < len(concept.forbidden_cloze_targets_by_fact)
+                            else ()
+                        ),
+                    )
+                    for index, fact in enumerate(missing_facts)
+                )
+            )
+            generation_input: dict[str, object] = {
+                "concept": concept.model_dump(mode="json"),
+                "missing_facts": missing_facts,
+                "evidence_passages": [
+                    {
+                        "passage_id": passage.passage_id,
+                        "source_kind": passage.source_kind,
+                        "text": passage.text,
+                    }
+                    for passage in source.passages
+                    if is_v2 or passage.authority != "summary"
+                ],
+                "lecture_title": lecture_title,
+                "lecture_entity_count": ledger.lecture_entity_count,
+                "is_mechanism": concept.is_mechanism if is_v2 else False,
+                "existing_supports": [],
+            }
+            if is_v2:
+                generation_input["forbidden_cloze_targets_by_fact"] = [
+                    {
+                        "fact_id": fact["fact_id"],
+                        "targets": list(
+                            forbidden_by_fact.targets_by_fact_id.get(fact["fact_id"], ())
+                        ),
+                    }
+                    for fact in missing_facts
+                ]
+            else:
+                generation_input["forbidden_cloze_targets"] = list(
+                    ledger.forbidden_cloze_targets
+                )
             result = await asyncio.to_thread(
                 self.structured.generate_json,
                 instruction,
-                json.dumps(
-                    {
-                        "concept": concept.model_dump(mode="json"),
-                        "missing_facts": missing_facts,
-                        "evidence_passages": [
-                            {
-                                "passage_id": passage.passage_id,
-                                "source_kind": passage.source_kind,
-                                "text": passage.text,
-                            }
-                            for passage in source.passages
-                            if is_v2 or passage.authority != "summary"
-                        ],
-                        "lecture_title": self.repository.lecture_title(context.job.lecture_id),
-                        "lecture_entity_count": ledger.lecture_entity_count,
-                        "forbidden_cloze_targets": list(
-                            ledger.all_forbidden_targets
-                            if is_v2
-                            else ledger.forbidden_cloze_targets
-                        ),
-                        "is_mechanism": concept.is_mechanism if is_v2 else False,
-                        "existing_supports": [],
-                    },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ),
+                json.dumps(generation_input, sort_keys=True, separators=(",", ":")),
                 output_model=CardGapBatch,
                 provider=ProviderName(stage_model.provider),
                 model=stage_model.model,
                 options=GenerationOptions(cacheable_source_prefix=source.prefix),
             )
             expected = {fact["fact_id"] for fact in missing_facts}
-            returned = {item.fact_id for item in result.value.resolutions}
-            if returned != expected:
-                raise PinnedInputChanged(
-                    "card-centric gap output must resolve every requested fact"
-                )
-            for fact_id in expected:
-                matching = [item for item in result.value.resolutions if item.fact_id == fact_id]
-                unresolved = [item for item in matching if item.status == "unresolved"]
-                generated_rows = [item for item in matching if item.status == "generated"]
-                if unresolved and (len(unresolved) != 1 or generated_rows):
+            if is_v2:
+                _validate_card_gap_batch_v2(result.value, expected)
+            else:
+                returned = {item.fact_id for item in result.value.resolutions}
+                if returned != expected:
                     raise PinnedInputChanged(
-                        f"Fact {fact_id}: unresolved output must be one exclusive row"
-                    )
-                if not unresolved and not generated_rows:
-                    raise PinnedInputChanged(f"Fact {fact_id}: resolution is missing")
-                if len(generated_rows) > 1 and not all(item.split for item in generated_rows):
-                    raise PinnedInputChanged(
-                        f"Fact {fact_id}: repeated generated rows must all be split"
+                        "card-centric gap output must resolve every requested fact"
                     )
             for item in result.value.resolutions:
                 if item.status == "generated" and (
@@ -1284,6 +1304,7 @@ class CurationServicesRunner:
                         else ("UNRESOLVED",),
                         evidence_ids=evidence_ids,
                         split=item.split,
+                        split_index=item.split_index,
                         status=item.status,
                         reason=item.reason,
                     )
@@ -2341,6 +2362,7 @@ class CurationServicesRunner:
     ) -> StageProduct:
         ledger = _ledger(context)
         passages = _source_passages(context)
+        pinned_lecture = _pinned_card_v2_lecture_metadata(context)
         prompt_text, prompt_hash = _resolved_prompt(
             context,
             context.job.gap_prompt_version,
@@ -2414,15 +2436,25 @@ class CurationServicesRunner:
                     concept=concept,
                     missing_facts=missing_facts,
                     evidence=evidence,
-                    lecture_title=self.repository.lecture_title(context.job.lecture_id),
+                    lecture_title=pinned_lecture.title,
                     lecture_entity_count=ledger.lecture_entity_count,
-                    forbidden_cloze_targets=_forbidden_cloze_targets(
-                        lecture_title=self.repository.lecture_title(context.job.lecture_id),
-                        concept=concept,
-                        lecture_entity_count=ledger.lecture_entity_count,
+                    forbidden_cloze_targets_by_fact=FactForbiddenClozeMap(
+                        facts=tuple(
+                            FactForbiddenClozeTargets(
+                                fact_id=fact.fact_id,
+                                targets=_forbidden_cloze_targets(
+                                    lecture_title=pinned_lecture.title,
+                                    concept=concept,
+                                    lecture_entity_count=ledger.lecture_entity_count,
+                                ),
+                            )
+                            for fact in missing_facts
+                        )
                     ),
                     existing_supports=tuple(supporting_notes),
                     initial_tags=("OMS::Generated",),
+                    lecture_id=context.job.lecture_id,
+                    pinned_lecture_metadata=pinned_lecture,
                 ),
             )
             results.append(result)
@@ -3518,6 +3550,64 @@ _CARD_V2_PINNED_PROMPT_SCHEMAS = {
     "card-centric-classifier": "card_centric_classify_v1",
     "card-centric-gap-v2": "gap_cards_v2",
 }
+
+
+def _pinned_card_v2_lecture_metadata(context: StageContext) -> PinnedLectureMetadata:
+    """P1 integration hook for S0-pinned S7 lecture provider input.
+
+    P1 must write the serialized ``PinnedLectureMetadata`` under this exact
+    preflight key and include it in the S7 stage identity before v2 generation
+    can run.  Reading ``repository.lecture_title`` here would make one pinned
+    S7 artifact depend on mutable lecture state, so missing integration fails
+    closed.
+    """
+    raw = _payload(context, CurationStage.PREFLIGHT).get("pinned_lecture_metadata")
+    try:
+        metadata = PinnedLectureMetadata.model_validate(raw)
+    except (TypeError, ValueError) as exc:
+        raise PinnedInputChanged("P1 pinned lecture metadata is unavailable or malformed") from exc
+    if metadata.lecture_id != context.job.lecture_id:
+        raise PinnedInputChanged("P1 pinned lecture metadata names another lecture")
+    return metadata
+
+
+def _validate_card_gap_batch_v2(
+    batch: CardGapBatch,
+    expected_fact_ids: set[str],
+) -> None:
+    """Enforce strict new S7 terminal structures before stage persistence."""
+    returned_fact_ids = {item.fact_id for item in batch.resolutions}
+    if returned_fact_ids != expected_fact_ids:
+        raise PinnedInputChanged("card-centric v2 gap output must resolve every requested fact")
+    for fact_id in sorted(expected_fact_ids):
+        matching = [item for item in batch.resolutions if item.fact_id == fact_id]
+        unresolved = [item for item in matching if item.status == "unresolved"]
+        generated = [item for item in matching if item.status == "generated"]
+        if unresolved:
+            if len(unresolved) != 1 or generated:
+                raise PinnedInputChanged(
+                    f"Fact {fact_id}: unresolved output must be one exclusive row"
+                )
+            continue
+        if not generated:
+            raise PinnedInputChanged(f"Fact {fact_id}: resolution is missing")
+        if len(generated) == 1:
+            card = generated[0]
+            if card.split or card.split_index is not None:
+                raise PinnedInputChanged(
+                    f"Fact {fact_id}: unsplit output must omit split_index"
+                )
+            continue
+        indices = [card.split_index for card in generated]
+        if (
+            any(not card.split for card in generated)
+            or any(index is None for index in indices)
+            or sorted(index for index in indices if index is not None)
+            != list(range(1, len(generated) + 1))
+        ):
+            raise PinnedInputChanged(
+                f"Fact {fact_id}: split output requires sequential split_index values"
+            )
 
 
 def _pinned_card_v2_prompt(context: StageContext, prompt_id: str) -> str:

@@ -14,6 +14,8 @@ from oms_hub.anki.card_centric_contracts import (
     CardClassification,
     CardConcept,
     CardConceptLedger,
+    CardGapBatch,
+    CardGapOutput,
     CardRecord,
     ClassifierResult,
     ClassifierTelemetry,
@@ -22,6 +24,7 @@ from oms_hub.anki.card_centric_contracts import (
     SemanticPreFilterResult,
     TagScopeResult,
 )
+from oms_hub.anki.correction_contracts import CanonicalJsonObject, PinnedLectureMetadata
 from oms_hub.anki.domain import (
     Candidate,
     CurationStage,
@@ -57,6 +60,8 @@ from oms_hub.anki.v2_contracts import (
 )
 from oms_hub.llm.domain import DiagnosticSource, GeneratedText, LLMRequestError, ProviderName
 from oms_hub.llm.structured import StructuredJSONResult, StructuredOutputError
+
+_CARD_GAP_FILL_PASSAGE_ID = "SLD:12:0003:P:b6a235c8f012693e"
 
 
 class ReadyRuntime:
@@ -681,6 +686,241 @@ def test_v2_internal_prompt_rejects_a_malformed_pinned_snapshot() -> None:
 
     with pytest.raises(stages_module.PinnedInputChanged, match="snapshot is malformed"):
         _pinned_card_v2_prompt(context, "card-centric-fast-classifier")
+
+
+class CardGapFillStructuredService:
+    def __init__(self, batch: CardGapBatch) -> None:
+        self.batch = batch
+        self.instructions: list[str] = []
+        self.inputs: list[dict[str, object]] = []
+
+    def generate_json(
+        self,
+        instruction: str,
+        input_text: str,
+        *,
+        output_model: type[CardGapBatch],
+        provider: ProviderName,
+        model: str,
+        **_: object,
+    ) -> StructuredJSONResult[CardGapBatch]:
+        assert output_model is CardGapBatch
+        self.instructions.append(instruction)
+        self.inputs.append(json.loads(input_text))
+        return StructuredJSONResult(
+            value=self.batch,
+            raw_text=self.batch.model_dump_json(),
+            provider=provider,
+            model=model,
+            request_id="card-gap-fill-request",
+            input_tokens=30,
+            output_tokens=15,
+            cost_microusd=8,
+        )
+
+
+def _card_gap_fill_harness(
+    batch: CardGapBatch,
+) -> tuple[CurationServicesRunner, SimpleNamespace, CardGapFillStructuredService]:
+    passage = SourcePassage.create(
+        revision_id=7,
+        lecture_id=12,
+        artifact_id="slides-7",
+        source_kind=SourceKind.SLIDE,
+        locator="slide:3",
+        text="Alpha, beta, and gamma are grounded in this slide.",
+        slide_number=3,
+    )
+    source = build_source_index(
+        (passage,),
+        snapshot_id="source-index-1",
+        source_revision_hashes={7: "a" * 64},
+    )
+    ledger = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="Alpha, beta, and gamma are grounded.",
+                primary_entity="alpha",
+                aliases=("a",),
+                depth="deep",
+                emphasis_flag=True,
+                importance="high",
+                suggested_fact_count=3,
+                fact_descriptions=("Alpha.", "Beta.", "Gamma."),
+                forbidden_cloze_targets_by_fact=(("alpha",), ("beta",), ("gamma",)),
+            ),
+        ),
+    )
+    metadata = CanonicalJsonObject.from_mapping({"exam": "block-1"})
+    pinned = PinnedLectureMetadata(
+        lecture_id=12,
+        title="Pinned anemia title",
+        metadata=metadata,
+        metadata_sha256=hashlib.sha256(
+            json.dumps(
+                {
+                    "lecture_id": 12,
+                    "title": "Pinned anemia title",
+                    "metadata": metadata.as_dict(),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
+    )
+    prompt = "Pinned card gap prompt"
+    structured = CardGapFillStructuredService(batch)
+    runner = CurationServicesRunner.__new__(CurationServicesRunner)
+    runner.structured = structured
+    context = SimpleNamespace(
+        job=SimpleNamespace(
+            lecture_id=12,
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+            resolved_model_config=SimpleNamespace(
+                gap_fill_s7=SimpleNamespace(provider="openai", model="gpt-5.6-terra")
+            ),
+        ),
+        prior_payloads={
+            CurationStage.PREFLIGHT: {
+                "pinned_lecture_metadata": pinned.model_dump(mode="json"),
+                "prompt_snapshot": [
+                    {
+                        "id": "card-centric-gap-v2",
+                        "version": "2.0.0",
+                        "prompt_hash": hashlib.sha256(prompt.encode()).hexdigest()[:12],
+                        "content": prompt,
+                        "metadata": {
+                            "id": "card-centric-gap-v2",
+                            "version": "2.0.0",
+                            "schema": "gap_cards_v2",
+                            "response_format": "json",
+                        },
+                    }
+                ],
+            },
+            CurationStage.SOURCE_INDEX: {"source_index": source.model_dump(mode="json")},
+            CurationStage.CARD_LEDGER: {"ledger": ledger.model_dump(mode="json")},
+        },
+    )
+    return runner, context, structured
+
+
+def _generated_card_gap(
+    fact_id: str,
+    passage_id: str,
+    *,
+    split: bool = False,
+    split_index: int | None = None,
+) -> CardGapOutput:
+    return CardGapOutput(
+        fact_id=fact_id,
+        status="generated",
+        text="{{c1::<b>delta</b>}} is grounded.",
+        extra="Grounded explanation.",
+        note_type="AnKingOverhaul (AnKing Step Deck / AnKingMed)",
+        source_passage_ids=(passage_id,),
+        split=split,
+        split_index=split_index,
+    )
+
+
+def test_card_gap_fill_v2_uses_pinned_metadata_per_fact_targets_and_split_indices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch = CardGapBatch(
+        resolutions=(
+            _generated_card_gap("C01-M1", _CARD_GAP_FILL_PASSAGE_ID, split=True, split_index=1),
+            _generated_card_gap("C01-M1", _CARD_GAP_FILL_PASSAGE_ID, split=True, split_index=2),
+            _generated_card_gap("C01-M2", _CARD_GAP_FILL_PASSAGE_ID),
+            CardGapOutput(fact_id="C01-M3", status="unresolved", reason="No atomic card."),
+        )
+    )
+    runner, context, structured = _card_gap_fill_harness(batch)
+    monkeypatch.setattr(
+        stages_module,
+        "_merged_card_coverage",
+        lambda _: {"C01": {"status": "uncovered", "evidence": []}},
+    )
+
+    product = asyncio.run(runner._card_gap_fill(context))
+
+    assert len(structured.inputs) == 1
+    sent = structured.inputs[0]
+    assert [fact["fact_id"] for fact in sent["missing_facts"]] == [
+        "C01-M1",
+        "C01-M2",
+        "C01-M3",
+    ]
+    assert "forbidden_cloze_targets" not in sent
+    assert sent["forbidden_cloze_targets_by_fact"] == [
+        {"fact_id": "C01-M1", "targets": ["alpha"]},
+        {"fact_id": "C01-M2", "targets": ["beta"]},
+        {"fact_id": "C01-M3", "targets": ["gamma"]},
+    ]
+    assert sent["lecture_title"] == "Pinned anemia title"
+    assert "soft targets, not quotas" in structured.instructions[0]
+    assert [row["split_index"] for row in product.payload["resolutions"]] == [1, 2, None, None]
+
+
+@pytest.mark.parametrize(
+    "batch",
+    (
+        CardGapBatch(
+            resolutions=(
+                _generated_card_gap(
+                    "C01-M1", _CARD_GAP_FILL_PASSAGE_ID, split=True, split_index=1
+                ),
+                _generated_card_gap(
+                    "C01-M1", _CARD_GAP_FILL_PASSAGE_ID, split=True, split_index=3
+                ),
+                _generated_card_gap("C01-M2", _CARD_GAP_FILL_PASSAGE_ID),
+                CardGapOutput(fact_id="C01-M3", status="unresolved", reason="No atomic card."),
+            )
+        ),
+        CardGapBatch(
+            resolutions=(
+                _generated_card_gap("C01-M1", _CARD_GAP_FILL_PASSAGE_ID),
+                CardGapOutput(fact_id="C01-M1", status="unresolved", reason="Conflict."),
+                _generated_card_gap("C01-M2", _CARD_GAP_FILL_PASSAGE_ID),
+                CardGapOutput(fact_id="C01-M3", status="unresolved", reason="No atomic card."),
+            )
+        ),
+    ),
+)
+def test_card_gap_fill_v2_rejects_malformed_terminal_output(
+    monkeypatch: pytest.MonkeyPatch,
+    batch: CardGapBatch,
+) -> None:
+    runner, context, _ = _card_gap_fill_harness(batch)
+    monkeypatch.setattr(
+        stages_module,
+        "_merged_card_coverage",
+        lambda _: {"C01": {"status": "uncovered", "evidence": []}},
+    )
+
+    with pytest.raises(stages_module.PinnedInputChanged, match="exclusive|sequential"):
+        asyncio.run(runner._card_gap_fill(context))
+
+
+def test_card_gap_fill_v2_requires_p1_pinned_metadata_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch = CardGapBatch(
+        resolutions=(CardGapOutput(fact_id="C01-M1", status="unresolved", reason="No card."),)
+    )
+    runner, context, structured = _card_gap_fill_harness(batch)
+    context.prior_payloads[CurationStage.PREFLIGHT].pop("pinned_lecture_metadata")
+    monkeypatch.setattr(
+        stages_module,
+        "_merged_card_coverage",
+        lambda _: {"C01": {"status": "uncovered", "evidence": []}},
+    )
+
+    with pytest.raises(stages_module.PinnedInputChanged, match="P1 pinned lecture metadata"):
+        asyncio.run(runner._card_gap_fill(context))
+    assert structured.inputs == []
 
 
 def test_v2_residual_classifies_a_prefilter_fallback(monkeypatch) -> None:
@@ -1796,13 +2036,14 @@ def test_gap_stage_routes_on_audited_missing_facts_not_display_outcome() -> None
         note_type="AnKingOverhaul (AnKing Step Deck / AnKingMed)",
         source_passage_ids=(passage.source_id,),
         split=True,
+        split_index=1,
         image_needed=None,
     )
     structured = V2GapStageStructuredService(
         GapBatchV2(
             resolutions=(
                 generated,
-                generated.model_copy(),
+                generated.model_copy(update={"split_index": 2}),
             )
         )
     )
@@ -1811,6 +2052,23 @@ def test_gap_stage_routes_on_audited_missing_facts_not_display_outcome() -> None
     runner.repository = GapStageRepository()
     runner.companion = MultipleCompanionNotes(())
     runner.embedder = SimpleNamespace()
+    pinned_metadata = CanonicalJsonObject.from_mapping({"exam": "block-1"})
+    pinned = PinnedLectureMetadata(
+        lecture_id=12,
+        title="Iron Deficiency Anemia",
+        metadata=pinned_metadata,
+        metadata_sha256=hashlib.sha256(
+            json.dumps(
+                {
+                    "lecture_id": 12,
+                    "title": "Iron Deficiency Anemia",
+                    "metadata": pinned_metadata.as_dict(),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
+    )
     context = SimpleNamespace(
         job=SimpleNamespace(
             id="job-1",
@@ -1821,6 +2079,7 @@ def test_gap_stage_routes_on_audited_missing_facts_not_display_outcome() -> None
         ),
         prior_payloads={
             CurationStage.PREFLIGHT: {
+                "pinned_lecture_metadata": pinned.model_dump(mode="json"),
                 "prompt_snapshot": [
                     {
                         "id": "gap-card-generation",
@@ -1849,9 +2108,11 @@ def test_gap_stage_routes_on_audited_missing_facts_not_display_outcome() -> None
     assert len(structured.inputs) == 1
     sent = json.loads(structured.inputs[0])
     assert [fact["fact_id"] for fact in sent["missing_facts"]] == ["C01-M1"]
-    assert sent["forbidden_cloze_targets"] == [
-        "Iron Deficiency Anemia",
-        "iron deficiency",
+    assert sent["forbidden_cloze_targets_by_fact"] == [
+        {
+            "fact_id": "C01-M1",
+            "targets": ["Iron Deficiency Anemia", "iron deficiency"],
+        }
     ]
     assert product.gap_cards is not None
     assert len(product.gap_cards) == 1
