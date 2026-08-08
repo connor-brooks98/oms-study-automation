@@ -67,8 +67,42 @@ def test_pipe_allocation_failure_releases_global_lock(tmp_path, monkeypatch):
         raise OSError("no handles available")
 
     monkeypatch.setattr(converter._context, "Pipe", fail_pipe)
-    with pytest.raises(OSError, match="no handles available"):
+    with pytest.raises(OfficeConversionError) as error:
         converter.convert(source, destination)
+    assert isinstance(error.value.__cause__, OSError)
+    assert "no handles available" in str(error.value.__cause__)
+
+    monkeypatch.undo()
+    converter.convert(source, destination)
+    assert destination.read_bytes() == b"pdf"
+
+
+def test_process_start_failure_is_retryable_and_releases_global_lock(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "lecture.pptx"
+    destination = tmp_path / "lecture.pdf"
+    source.write_bytes(b"pptx")
+    converter = SerialOfficeConverter(timeout_seconds=5, worker=_succeed)
+
+    class StartFailureProcess:
+        def start(self) -> None:
+            raise OSError("process resources unavailable")
+
+        def is_alive(self) -> bool:
+            return False
+
+    monkeypatch.setattr(
+        converter._context,
+        "Process",
+        lambda **_kwargs: StartFailureProcess(),
+    )
+    with pytest.raises(OfficeConversionError) as error:
+        converter.convert(source, destination)
+    assert isinstance(error.value.__cause__, OSError)
+    assert "process resources unavailable" in str(error.value.__cause__)
+    assert not destination.exists()
 
     monkeypatch.undo()
     converter.convert(source, destination)

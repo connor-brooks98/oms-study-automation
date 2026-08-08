@@ -468,8 +468,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     try:
         retire_google_docs_credentials(resolved.data_dir, app.state.secrets)
     except KeyringError:
-        app.state.notebook_storage_migration_error = (
-            "NotebookLM credential store is unavailable; reconnect Google."
+        logger.warning(
+            "Legacy Google Docs credentials could not be retired; "
+            "continuing startup."
         )
     app.state.study_ai_settings = StudyAISettingsRepository(database)
     app.state.anki_repository = AnkiCurationRepository(database)

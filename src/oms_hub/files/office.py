@@ -91,6 +91,14 @@ class SerialOfficeConverter:
             finally:
                 receiver.close()
                 sender.close()
+        except OSError as error:
+            try:
+                destination.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise OfficeConversionError(
+                "Microsoft Office conversion process could not start"
+            ) from error
         finally:
             self._lock.release()
 
