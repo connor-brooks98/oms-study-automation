@@ -5,6 +5,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
+from oms_hub.anki.correction_contracts import PinnedLectureMetadata
 from oms_hub.anki.domain import CreateCurationJob, CurationStage, PipelineContractVersion
 from oms_hub.anki.models import AnkiCurationJobModel, AnkiReviewedReconciliationModel
 from oms_hub.anki.replay_inputs import PreparedStageReplayInputs, canonical_json, sha256_text
@@ -212,3 +213,21 @@ def test_v2_lecture_pin_survives_live_title_edits_and_legacy_first_prepare(tmp_p
             )
         ).all()
     assert all(row.lecture_metadata_sha256 is not None for row in rows)
+
+
+def test_unicode_v2_lecture_metadata_pin_validates_against_frozen_contract(tmp_path: Path) -> None:
+    repository, lecture_id = _repository(tmp_path)
+    with repository.database.session() as session:
+        lecture = session.get(LectureModel, lecture_id)
+        assert lecture is not None
+        lecture.subject = "Médecine Clínïque"
+        lecture.topic = "Anémie — mécanismes"
+        lecture.lecturer = "Prof. Łucía Nguyễn"
+
+    job = repository.create_job(_request(lecture_id))
+    prepared = repository.prepare_stage_replay_inputs(job.id, CurationStage.CARD_GAP_FILL)
+    pinned = PinnedLectureMetadata.model_validate(prepared.document["pinned_lecture"])
+
+    assert pinned.title == "Médecine Clínïque Exam 1 Lecture 4: Anémie — mécanismes"
+    assert pinned.metadata.as_dict()["lecturer"] == "Prof. Łucía Nguyễn"
+    assert len(pinned.metadata_sha256) == 64

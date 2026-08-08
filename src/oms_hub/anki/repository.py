@@ -31,6 +31,7 @@ from oms_hub.anki.correction_contracts import (
     A11HistorySnapshot,
     CanonicalJsonObject,
     PinnedLectureMetadata,
+    _sha,
 )
 from oms_hub.anki.domain import (
     AgentCommandType,
@@ -2624,7 +2625,7 @@ class AnkiCurationRepository:
             lecture_id=lecture.id,
             title=title,
             metadata=metadata,
-            metadata_sha256=_sha256_text(_canonical_json(document)),
+            metadata_sha256=_sha(document),
         )
 
     @classmethod
