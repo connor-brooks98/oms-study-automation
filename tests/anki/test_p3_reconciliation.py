@@ -141,6 +141,50 @@ def test_s9_conserves_unselected_valid_generation_without_a1_a2_failure() -> Non
     assert {"A1", "A2"} <= set(report.passed)
 
 
+def test_s9_adapts_only_prep3d_review_snapshots() -> None:
+    card = _generated("G1", "C01-M1", split=True)
+    legacy = _snapshot(
+        required=("C01-M1",),
+        canonical=(card,),
+        selected_generated=("G1",),
+    ).model_copy(
+        update={
+            "generated_cards": (card,),
+            "raw_generated_cards": (),
+            "terminal_resolutions": (),
+            "terminal_resolutions_provided": False,
+            "selection_metadata": (),
+            "selection_order": (),
+            "selected_count": None,
+            "below_warning_floor": None,
+        }
+    )
+
+    report = reconcile_card_centric(legacy)
+
+    assert not report.failed
+    assert report.can_render_envelope is True
+
+
+def test_s9_strict_snapshots_cannot_omit_the_raw_s7_rows() -> None:
+    card = _generated("G1", "C01-M1")
+    report = reconcile_card_centric(
+        _snapshot(
+            required=("C01-M1",),
+            canonical=(card,),
+            terminal=(
+                GeneratedFactResolution(
+                    fact_id="C01-M1",
+                    kind=GeneratedResolutionKind.GENERATED,
+                    generated_card_ids=("G1",),
+                ),
+            ),
+        )
+    )
+
+    assert "S7" in {finding.assertion_id for finding in report.failed}
+
+
 def test_s9_validates_unselected_raw_outputs_before_selection() -> None:
     canonical = (_generated("G1", "C01-M1"), _generated("G2", "C01-M2"))
     raw = (
