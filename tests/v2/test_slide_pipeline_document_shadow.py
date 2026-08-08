@@ -153,17 +153,26 @@ def test_exhausted_office_retries_retire_incomplete_revision(
     tmp_path: Path,
 ) -> None:
     class UnavailableConverter(PdfFixtureConverter):
-        def convert(self, source: Path, destination: Path) -> None:
-            del source, destination
-            raise OfficeUnavailableError("Office is unavailable")
+        available = False
 
+        def convert(self, source: Path, destination: Path) -> None:
+            if not self.available:
+                raise OfficeUnavailableError("Office is unavailable")
+            super().convert(source, destination)
+
+    converter = UnavailableConverter()
     pipeline, item_id = _slide_pipeline(
         tmp_path,
-        converter=UnavailableConverter(),
+        converter=converter,
     )
     started = datetime(2026, 8, 8, tzinfo=UTC)
     attempts = iter(
-        (started, started + timedelta(seconds=10), started + timedelta(seconds=30))
+        (
+            started,
+            started + timedelta(seconds=10),
+            started + timedelta(seconds=30),
+            started + timedelta(seconds=40),
+        )
     )
     worker = IngestionWorker(
         pipeline.repository,
@@ -183,6 +192,33 @@ def test_exhausted_office_retries_retire_incomplete_revision(
     assert retired.derived_sha256 is None
     assert retired not in pipeline.repository.list_proposed_revisions()
     assert pipeline.repository.require_item(item_id).state is UploadState.NEEDS_REVIEW
+
+    payload = pipeline.repository.require_item(item_id).staged_path.read_bytes()
+    retry_staged = tmp_path / "manual-retry.pptx"
+    retry_staged.write_bytes(payload)
+    retry_batch = pipeline.repository.create_batch(UploadKind.SLIDES)
+    pipeline.repository.add_item(
+        UploadKind.SLIDES,
+        StagedUpload(
+            batch_id=retry_batch,
+            item_id="manual-retry",
+            path=retry_staged,
+            sha256=hashlib.sha256(payload).hexdigest(),
+            size_bytes=len(payload),
+            original_filename="manual-retry.pptx",
+        ),
+    )
+    lecture_id = pipeline.repository.require_item(item_id).lecture_id
+    assert lecture_id is not None
+    pipeline.repository.set_manual_assignment("manual-retry", lecture_id)
+    converter.available = True
+
+    assert worker.run_once() is True
+    promoted = pipeline.repository.get_study_revision(revision.id)
+    assert promoted.current is True
+    assert promoted.state == "current"
+    assert pipeline.repository.require_item(item_id).state is UploadState.COMPLETE
+    assert pipeline.repository.require_item("manual-retry").state is UploadState.COMPLETE
 
 
 def test_exact_current_slide_repairs_filed_artifacts_without_state_transition(

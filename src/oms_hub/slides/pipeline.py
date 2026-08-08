@@ -152,6 +152,12 @@ class SlidePipeline:
                     (derived, destinations.icloud_pdf),
                 ],
             )
+            revision = self.repository.finish_revision(
+                item_id,
+                revision.id,
+                UploadState.COMPLETE,
+                current=False,
+            )
             self._mark_promoted(revision.lecture_id)
             return revision
         except Exception as error:
