@@ -72,3 +72,42 @@ Verification rerun from the corrected isolated S0 worktree:
 - `ruff check .`: passed;
 - `mypy src/oms_hub/anki`: passed for 46 source files;
 - `git diff --check`: passed.
+
+## Fresh-review correction rerun
+
+The fresh S0 review found two bounded blockers, both corrected on the same
+isolated foundation branch before any P1--P4 lane began:
+
+- worker-level `defer_job` and `fail_job` mutations now use atomic conditions
+  for exact owner, expected state, and unexpired lease; a worker that has lost
+  ownership or lease validity yields without failing or deferring the job;
+- the lifecycle fixture is importable through the repository's documented
+  `pytest` console entry point, not only through `python -m pytest`.
+
+Failure-first evidence was observed before the fixes: the new worker regression
+ended in `failed`, the expired `defer_job`/`fail_job` calls accepted no fencing
+timestamp, and the console-script lifecycle test failed collection with
+`ModuleNotFoundError: No module named 'tests'`.
+
+Exact zero-skip/zero-xfail S0 rerun commands and results:
+
+```text
+.venv/bin/pytest tests/anki/test_envelope.py tests/anki/test_pipeline.py tests/anki/test_reconciliation.py tests/anki/test_stages.py tests/anki/test_v2_contracts.py tests/anki/test_web.py tests/anki/test_worker.py tests/anki/test_anki_repository.py tests/anki/test_v2_correction_contracts.py tests/anki/test_v2_lifecycle_fixture.py -ra
+178 passed in 19.55s
+
+.venv/bin/pytest tests/anki -ra
+469 passed in 22.57s
+
+.venv/bin/ruff check .
+All checks passed!
+
+.venv/bin/mypy src/oms_hub/anki
+Success: no issues found in 46 source files
+
+git diff --check
+passed
+```
+
+The final pushed foundation tip is reported in the external S0 handoff after
+the verification commit is created and the remote ref is independently read
+back. P1--P4 remain blocked until a fresh reviewer approves that exact tip.

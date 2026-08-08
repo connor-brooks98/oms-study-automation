@@ -990,19 +990,40 @@ class AnkiCurationRepository:
         worker_id: str,
         safe_error: str,
         *,
+        expected_state: CurationState,
         available_at: datetime,
+        now: datetime,
     ) -> CurationJob:
+        if expected_state not in _CLAIMABLE_STATES:
+            raise ValueError("deferred job state must be claimable")
+        now_text = _aware_utc(now).isoformat()
         with self.database.session() as session:
-            stored = self._require_owned_job(
-                session,
-                job_id,
-                worker_id,
+            changed = session.execute(
+                update(AnkiCurationJobModel)
+                .where(
+                    AnkiCurationJobModel.id == str(job_id),
+                    AnkiCurationJobModel.lease_owner == worker_id,
+                    AnkiCurationJobModel.lease_expires_at.is_not(None),
+                    AnkiCurationJobModel.lease_expires_at > now_text,
+                    AnkiCurationJobModel.state == expected_state.value,
+                )
+                .values(
+                    error=safe_error[:1_000],
+                    available_at=_aware_utc(available_at).isoformat(),
+                    lease_owner=None,
+                    lease_expires_at=None,
+                )
             )
-            stored.error = safe_error[:1_000]
-            stored.available_at = _aware_utc(available_at).isoformat()
-            stored.lease_owner = None
-            stored.lease_expires_at = None
-            session.flush()
+            if cast(CursorResult[Any], changed).rowcount != 1:
+                stored = self._require_job_model(session, job_id)
+                if stored.state != expected_state.value:
+                    raise InvalidCurationTransition(
+                        f"job {job_id} is not in {expected_state.value}"
+                    )
+                self._require_active_stage_lease(stored, job_id, worker_id, now=now)
+                raise InvalidCurationTransition(f"job {job_id} is not claimable")
+            stored = self._require_job_model(session, job_id)
+            session.refresh(stored)
             return self._job(stored)
 
     def fail_job(
@@ -1010,19 +1031,41 @@ class AnkiCurationRepository:
         job_id: UUID,
         worker_id: str,
         safe_error: str,
+        *,
+        expected_state: CurationState,
+        now: datetime,
     ) -> CurationJob:
+        if expected_state not in _CLAIMABLE_STATES:
+            raise ValueError("failed job state must be claimable")
+        now_text = _aware_utc(now).isoformat()
         with self.database.session() as session:
-            stored = self._require_owned_job(
-                session,
-                job_id,
-                worker_id,
+            changed = session.execute(
+                update(AnkiCurationJobModel)
+                .where(
+                    AnkiCurationJobModel.id == str(job_id),
+                    AnkiCurationJobModel.lease_owner == worker_id,
+                    AnkiCurationJobModel.lease_expires_at.is_not(None),
+                    AnkiCurationJobModel.lease_expires_at > now_text,
+                    AnkiCurationJobModel.state == expected_state.value,
+                )
+                .values(
+                    state=CurationState.FAILED.value,
+                    error=safe_error[:1_000],
+                    available_at=None,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                )
             )
-            stored.state = CurationState.FAILED.value
-            stored.error = safe_error[:1_000]
-            stored.available_at = None
-            stored.lease_owner = None
-            stored.lease_expires_at = None
-            session.flush()
+            if cast(CursorResult[Any], changed).rowcount != 1:
+                stored = self._require_job_model(session, job_id)
+                if stored.state != expected_state.value:
+                    raise InvalidCurationTransition(
+                        f"job {job_id} is not in {expected_state.value}"
+                    )
+                self._require_active_stage_lease(stored, job_id, worker_id, now=now)
+                raise InvalidCurationTransition(f"job {job_id} is not claimable")
+            stored = self._require_job_model(session, job_id)
+            session.refresh(stored)
             return self._job(stored)
 
     def retry_job(self, job_id: UUID) -> CurationJob:
@@ -2368,20 +2411,6 @@ class AnkiCurationRepository:
         stored = session.get(AnkiCurationJobModel, str(job_id))
         if stored is None:
             raise KeyError(str(job_id))
-        return stored
-
-    @staticmethod
-    def _require_owned_job(
-        session: Session,
-        job_id: UUID,
-        worker_id: str,
-    ) -> AnkiCurationJobModel:
-        stored = AnkiCurationRepository._require_job_model(
-            session,
-            job_id,
-        )
-        if stored.lease_owner != worker_id:
-            raise InvalidCurationTransition(f"worker no longer owns job {job_id}")
         return stored
 
     @staticmethod

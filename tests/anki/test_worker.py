@@ -356,6 +356,14 @@ def test_expired_lease_cannot_commit_fail_or_renew_before_reclaim(
             )
             is not None
         )
+        with pytest.raises(InvalidCurationTransition, match="not in building_source_index"):
+            repository.fail_job(
+                job.id,
+                "worker-a",
+                "wrong-state failure",
+                expected_state=CurationState.BUILDING_SOURCE_INDEX,
+                now=started,
+            )
         runner = ControlledRunner()
         runner.entered = asyncio.Event()
         runner.release = asyncio.Event()
@@ -391,6 +399,23 @@ def test_expired_lease_cannot_commit_fail_or_renew_before_reclaim(
                 lease_owner="worker-a",
                 now=current[0],
             )
+        with pytest.raises(InvalidCurationTransition, match="lease expired"):
+            repository.defer_job(
+                job.id,
+                "worker-a",
+                "stale worker retry",
+                expected_state=CurationState.PREFLIGHT,
+                available_at=current[0] + timedelta(seconds=5),
+                now=current[0],
+            )
+        with pytest.raises(InvalidCurationTransition, match="lease expired"):
+            repository.fail_job(
+                job.id,
+                "worker-a",
+                "stale worker terminal failure",
+                expected_state=CurationState.PREFLIGHT,
+                now=current[0],
+            )
         runner.release.set()
         with pytest.raises(InvalidCurationTransition, match="lease expired"):
             await stale_run
@@ -398,6 +423,59 @@ def test_expired_lease_cannot_commit_fail_or_renew_before_reclaim(
         stage = repository.get_stage(job.id, CurationStage.PREFLIGHT)
         assert stage is not None and stage.state == "running"
         assert repository.list_stage_artifacts(job.id) == []
+
+    asyncio.run(scenario())
+
+
+def test_worker_losing_lease_before_reclaim_leaves_job_reclaimable(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        job = _create_job(repository)
+        started = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
+        current = [started]
+        runner = ControlledRunner()
+        runner.entered = asyncio.Event()
+        runner.release = asyncio.Event()
+        stale = AnkiCurationWorker(
+            repository,
+            CurationPipeline(
+                repository,
+                StageArtifactStore(tmp_path / "artifacts"),
+                runner,
+                input_validator=ControlledValidator(),
+            ),
+            worker_id="worker-a",
+            lease_seconds=3,
+            poll_seconds=0.01,
+            max_stage_attempts=3,
+            now=lambda: current[0],
+        )
+
+        stale_run = asyncio.create_task(stale.run_once())
+        await runner.entered.wait()
+        current[0] = started + timedelta(seconds=4)
+        runner.release.set()
+
+        assert await stale_run
+        after_expiry = repository.require_job(job.id)
+        assert after_expiry.state is CurationState.PREFLIGHT
+        assert after_expiry.error is None
+        assert after_expiry.lease_owner is None
+        stage = repository.get_stage(job.id, CurationStage.PREFLIGHT)
+        assert stage is not None and stage.state == "running"
+        assert repository.list_stage_artifacts(job.id) == []
+
+        replacement = _worker(
+            repository,
+            tmp_path,
+            ControlledRunner(),
+            worker_id="worker-b",
+            now=current[0],
+        )
+        assert await replacement.run_once()
+        assert repository.require_job(job.id).state is CurationState.BUILDING_SOURCE_INDEX
 
     asyncio.run(scenario())
 

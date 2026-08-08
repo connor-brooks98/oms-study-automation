@@ -1014,7 +1014,13 @@ def test_failed_curation_job_can_be_retried_through_api(
         expected_state=CurationState.PREFLIGHT,
         lease_owner="worker-1",
     )
-    repository.fail_job(created.id, "worker-1", "malformed output")
+    repository.fail_job(
+        created.id,
+        "worker-1",
+        "malformed output",
+        expected_state=CurationState.PREFLIGHT,
+        now=datetime.now(UTC),
+    )
 
     response = client.post(f"/api/anki/jobs/{created.id}/retry")
 
@@ -1114,7 +1120,13 @@ def test_failed_curation_job_can_be_removed_through_api(
         expected_state=CurationState.PREFLIGHT,
         lease_owner="worker-1",
     )
-    repository.fail_job(created.id, "worker-1", "malformed output")
+    repository.fail_job(
+        created.id,
+        "worker-1",
+        "malformed output",
+        expected_state=CurationState.PREFLIGHT,
+        now=datetime.now(UTC),
+    )
 
     page = client.get("/anki")
     document = HTMLParser(page.text)

@@ -742,6 +742,8 @@ def test_failed_job_can_retry_its_failed_stage_without_losing_artifacts(
         job.id,
         "worker-1",
         "provider returned malformed output",
+        expected_state=CurationState.PREFLIGHT,
+        now=now,
     )
 
     retried = repository.retry_job(job.id)
@@ -1063,7 +1065,13 @@ def test_failed_job_can_be_removed_from_the_run_list(tmp_path: Path) -> None:
         lease_owner="worker-1",
         now=now,
     )
-    repository.fail_job(job.id, "worker-1", "malformed output")
+    repository.fail_job(
+        job.id,
+        "worker-1",
+        "malformed output",
+        expected_state=CurationState.PREFLIGHT,
+        now=now,
+    )
 
     removed = repository.remove_failed_job(job.id)
 

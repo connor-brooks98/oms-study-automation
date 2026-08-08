@@ -166,6 +166,7 @@ class AnkiCurationWorker:
             if stage is not None:
                 attempts = stage.attempt_count
         safe = _safe_error(error)
+        handled_at = self.now()
         try:
             if _is_retryable(error) and attempts < self.max_stage_attempts:
                 delay = timedelta(
@@ -175,7 +176,9 @@ class AnkiCurationWorker:
                     job_id,
                     self.worker_id,
                     safe,
-                    available_at=self.now() + delay,
+                    expected_state=state,
+                    available_at=handled_at + delay,
+                    now=handled_at,
                 )
                 logger.warning(
                     "Anki curation job %s stage will retry: %s",
@@ -187,6 +190,8 @@ class AnkiCurationWorker:
                     job_id,
                     self.worker_id,
                     safe,
+                    expected_state=state,
+                    now=handled_at,
                 )
                 logger.error(
                     "Anki curation job %s stopped: %s",
@@ -195,8 +200,16 @@ class AnkiCurationWorker:
                 )
         except InvalidCurationTransition:
             latest = self.repository.require_job(job_id)
-            if latest.state is not CurationState.CANCELED:
-                raise
+            lease_expired = latest.lease_expires_at is None or datetime.fromisoformat(
+                latest.lease_expires_at
+            ) <= handled_at
+            if (
+                latest.state is CurationState.CANCELED
+                or latest.lease_owner != self.worker_id
+                or lease_expired
+            ):
+                return
+            raise
 
 
 def _is_retryable(error: Exception) -> bool:
