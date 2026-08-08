@@ -243,9 +243,7 @@ class SlidePipeline:
     ) -> None:
         if sha256_file(staged) != expected_sha256:
             raise ValueError("staged PowerPoint checksum mismatch")
-        if immutable.is_file():
-            if sha256_file(immutable) != expected_sha256:
-                raise ValueError("immutable PowerPoint checksum mismatch")
+        if immutable.is_file() and sha256_file(immutable) == expected_sha256:
             return
         copied_sha256 = verified_atomic_copy(staged, immutable)
         if copied_sha256 != expected_sha256:
@@ -274,7 +272,12 @@ class SlidePipeline:
         revision: StudyRevision,
         pairs: list[tuple[Path, Path]],
     ) -> StudyRevision:
-        self._validate_promotion_sources(revision)
+        try:
+            self._validate_promotion_sources(revision)
+        except PromotionSourceError:
+            if revision.state == "promoting":
+                self.promotion.restore_backups(pairs, revision.id)
+            raise
         if revision.state == "promoting":
             recovered = self.promotion.recover(
                 pairs,

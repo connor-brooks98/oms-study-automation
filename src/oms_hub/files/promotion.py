@@ -56,6 +56,18 @@ class PromotionCoordinator:
     ) -> None:
         remove_backups(pairs, revision_id)
 
+    def restore_backups(
+        self,
+        pairs: list[tuple[Path, Path]],
+        revision_id: int,
+    ) -> None:
+        try:
+            _roll_back_recovery(pairs, revision_id)
+        except OSError as error:
+            raise PromotionRecoveryError(
+                "slide file promotion recovery could not complete"
+            ) from error
+
     def backup_path(self, destination: Path, revision_id: int) -> Path:
         return backup_path(destination, revision_id)
 

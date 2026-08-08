@@ -1,4 +1,5 @@
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -15,13 +16,18 @@ def _force_disable_macros(application: Any) -> None:
         pass
 
 
-def convert_office_file(source: Path, destination: Path) -> None:
+def convert_office_file(
+    source: Path,
+    destination: Path,
+    report_process: Callable[[int], None],
+) -> None:
     if sys.platform != "win32":
         raise OfficeUnavailableError(
             "Microsoft Office conversion is available only on Windows"
         )
     import pythoncom  # type: ignore[import-untyped]
     import win32com.client  # type: ignore[import-untyped]
+    import win32process  # type: ignore[import-untyped]
 
     application: Any = None
     document: Any = None
@@ -31,6 +37,8 @@ def convert_office_file(source: Path, destination: Path) -> None:
             application = win32com.client.DispatchEx("PowerPoint.Application")
             application.DisplayAlerts = 1
             _force_disable_macros(application)
+            _, process_id = win32process.GetWindowThreadProcessId(application.HWND)
+            report_process(process_id)
             document = application.Presentations.Open(
                 str(source),
                 ReadOnly=True,
@@ -42,6 +50,8 @@ def convert_office_file(source: Path, destination: Path) -> None:
             application.Visible = False
             application.DisplayAlerts = 0
             _force_disable_macros(application)
+            _, process_id = win32process.GetWindowThreadProcessId(application.Hwnd)
+            report_process(process_id)
             document = application.Documents.Open(str(source), ReadOnly=True)
             document.ExportAsFixedFormat(str(destination), 17)
     finally:

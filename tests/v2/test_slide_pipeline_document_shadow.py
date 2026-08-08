@@ -557,8 +557,22 @@ def test_corrupt_immutable_artifact_terminates_promotion_recovery(
 ) -> None:
     pipeline, item_id = _slide_pipeline(tmp_path)
     original_promote = pipeline.promotion.promote
+    destinations = build_slide_destinations(
+        pipeline.settings,
+        LectureKey("Neuro", 1, 1, "Seizures"),
+    )
+    canonical = (destinations.source, destinations.pdf, destinations.icloud_pdf)
+    for destination in canonical:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"old")
 
-    def interrupt_promotion(_pairs, _revision_id, _commit):
+    def interrupt_promotion(pairs, revision_id, _commit):
+        for _, destination in pairs:
+            verified_atomic_copy(
+                destination,
+                pipeline.promotion.backup_path(destination, revision_id),
+            )
+        verified_atomic_copy(*pairs[0])
         raise SystemExit("simulated process interruption")
 
     monkeypatch.setattr(pipeline.promotion, "promote", interrupt_promotion)
@@ -570,8 +584,10 @@ def test_corrupt_immutable_artifact_terminates_promotion_recovery(
         tmp_path / "artifacts" / "v2" / "slides",
     )
     assert interrupted.state == "promoting"
+    assert canonical[0].read_bytes() != b"old"
     corrupted = getattr(interrupted, artifact_name)
     assert isinstance(corrupted, Path)
+    original_payload = pipeline.repository.require_item(item_id).staged_path.read_bytes()
     corrupted.write_bytes(b"corrupt immutable artifact")
     monkeypatch.setattr(pipeline.promotion, "promote", original_promote)
 
@@ -581,3 +597,31 @@ def test_corrupt_immutable_artifact_terminates_promotion_recovery(
     terminal = pipeline.repository.get_study_revision(interrupted.id)
     assert terminal.state == "failed"
     assert pipeline.repository.require_item(item_id).state is UploadState.FAILED
+    for destination in canonical:
+        assert destination.read_bytes() == b"old"
+        assert not pipeline.promotion.backup_path(destination, terminal.id).exists()
+
+    retry_path = tmp_path / f"retry-{artifact_name}.pptx"
+    retry_path.write_bytes(original_payload)
+    retry_batch = pipeline.repository.create_batch(UploadKind.SLIDES)
+    retry_id = f"retry-{artifact_name}"
+    pipeline.repository.add_item(
+        UploadKind.SLIDES,
+        StagedUpload(
+            batch_id=retry_batch,
+            item_id=retry_id,
+            path=retry_path,
+            sha256=hashlib.sha256(original_payload).hexdigest(),
+            size_bytes=len(original_payload),
+            original_filename="retry.pptx",
+        ),
+    )
+    lecture_id = pipeline.repository.require_item(item_id).lecture_id
+    assert lecture_id is not None
+    pipeline.repository.set_manual_assignment(retry_id, lecture_id)
+
+    repaired = pipeline.process(retry_id)
+
+    assert repaired.current is True
+    assert repaired.immutable_source_path.read_bytes() == original_payload
+    assert pipeline.repository.require_item(retry_id).state is UploadState.COMPLETE
