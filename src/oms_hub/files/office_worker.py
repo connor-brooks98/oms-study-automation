@@ -23,8 +23,13 @@ def _process_id_for_window(
 ) -> int:
     """Resolve an Office HWND after coercing COM's integer to a PyHANDLE."""
     handle = pywintypes.HANDLE(int(window_handle))
-    _, process_id = win32process.GetWindowThreadProcessId(handle)
-    return int(process_id)
+    try:
+        _, process_id = win32process.GetWindowThreadProcessId(handle)
+        return int(process_id)
+    finally:
+        # HWND is borrowed from Office.  PyHANDLE normally calls CloseHandle,
+        # which is invalid for a USER handle that this process does not own.
+        handle.Detach()
 
 
 def convert_office_file(
