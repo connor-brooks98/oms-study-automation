@@ -270,12 +270,17 @@ def test_exact_current_slide_repairs_filed_artifacts_without_state_transition(
 ) -> None:
     pipeline, item_id = _slide_pipeline(tmp_path)
     current = pipeline.process(item_id)
+    payload = current.immutable_source_path.read_bytes()
     damaged = getattr(current, artifact_name)
     assert isinstance(damaged, Path)
     damaged.write_bytes(b"corrupt filed artifact")
+    if artifact_name == "canonical_source_path":
+        current.immutable_source_path.write_bytes(b"corrupt immutable PowerPoint")
+    elif artifact_name == "canonical_derived_path":
+        assert current.immutable_derived_path is not None
+        current.immutable_derived_path.write_bytes(b"corrupt immutable PDF")
 
     staged = tmp_path / "repair-slide.pptx"
-    payload = current.immutable_source_path.read_bytes()
     staged.write_bytes(payload)
     batch_id = pipeline.repository.create_batch(UploadKind.SLIDES)
     pipeline.repository.add_item(

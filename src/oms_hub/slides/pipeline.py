@@ -69,7 +69,11 @@ class SlidePipeline:
         recovering_promotion = revision.state == "promoting"
         try:
             if revision.current:
-                revision = self._repair_current_revision(item_id, revision, derived)
+                revision = self._repair_current_revision(
+                    item.staged_path,
+                    revision,
+                    derived,
+                )
                 self._mark_promoted(revision.lecture_id)
                 return self.repository.complete_promoted_revision(
                     revision.id,
@@ -325,18 +329,29 @@ class SlidePipeline:
 
     def _repair_current_revision(
         self,
-        item_id: str,
+        staged: Path,
         revision: StudyRevision,
         derived: Path,
     ) -> StudyRevision:
-        if sha256_file(revision.immutable_source_path) != revision.source_sha256:
-            raise ValueError("immutable PowerPoint checksum mismatch")
-        if (
-            revision.derived_sha256 is None
-            or sha256_file(derived) != revision.derived_sha256
-        ):
-            raise ValueError("immutable PDF checksum mismatch")
-        validate_pdf(derived)
+        self._preserve_source(
+            staged,
+            revision.immutable_source_path,
+            revision.source_sha256,
+        )
+        derived_sha256 = self._ensure_pdf(
+            revision.immutable_source_path,
+            derived,
+            revision.derived_sha256,
+        )
+        if derived_sha256 != revision.derived_sha256:
+            pairs = self._persisted_promotion_pairs(revision, derived)
+            revision = self.repository.update_revision_paths(
+                revision.id,
+                derived_sha256=derived_sha256,
+                canonical_source_path=pairs[0][1],
+                canonical_derived_path=pairs[1][1],
+                icloud_path=pairs[2][1],
+            )
         return self.promotion.promote(
             self._persisted_promotion_pairs(revision, derived),
             revision.id,
