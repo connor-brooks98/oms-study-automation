@@ -1001,7 +1001,13 @@ def test_failed_curation_job_can_be_retried_through_api(
     )
     assert claimed is not None
     repository.start_stage(created.id, CurationStage.PREFLIGHT)
-    repository.fail_stage(created.id, CurationStage.PREFLIGHT, "malformed output")
+    repository.fail_stage(
+        created.id,
+        CurationStage.PREFLIGHT,
+        "malformed output",
+        expected_state=CurationState.PREFLIGHT,
+        lease_owner="worker-1",
+    )
     repository.fail_job(created.id, "worker-1", "malformed output")
 
     response = client.post(f"/api/anki/jobs/{created.id}/retry")
@@ -1041,6 +1047,8 @@ def test_blank_card_scope_retry_repairs_legacy_job_through_api(
         created.id,
         CurationStage.CARD_TAG_SCOPE,
         "tag scope has no resolved tokens",
+        expected_state=CurationState.QUEUED,
+        lease_owner=None,
     )
     with app.state.database.session() as session:
         stored = session.get(AnkiCurationJobModel, str(created.id))
@@ -1087,7 +1095,13 @@ def test_failed_curation_job_can_be_removed_through_api(
     )
     assert claimed is not None
     repository.start_stage(created.id, CurationStage.PREFLIGHT)
-    repository.fail_stage(created.id, CurationStage.PREFLIGHT, "malformed output")
+    repository.fail_stage(
+        created.id,
+        CurationStage.PREFLIGHT,
+        "malformed output",
+        expected_state=CurationState.PREFLIGHT,
+        lease_owner="worker-1",
+    )
     repository.fail_job(created.id, "worker-1", "malformed output")
 
     page = client.get("/anki")

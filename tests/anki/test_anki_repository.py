@@ -698,6 +698,8 @@ def test_stage_lifecycle_records_usage_and_safe_failure(tmp_path) -> None:
         job.id,
         CurationStage.RETRIEVAL_PASS_1,
         "index is unavailable",
+        expected_state=CurationState.QUEUED,
+        lease_owner=None,
     )
 
     assert running.attempt_count == 1
@@ -726,6 +728,8 @@ def test_failed_job_can_retry_its_failed_stage_without_losing_artifacts(
         job.id,
         CurationStage.PREFLIGHT,
         "provider returned malformed output",
+        expected_state=CurationState.PREFLIGHT,
+        lease_owner="worker-1",
     )
     repository.fail_job(
         job.id,
@@ -870,7 +874,13 @@ def test_known_blank_scope_card_centric_failure_repairs_and_rewinds_from_source_
         CurationState.CARD_SCOPING_TAGS,
     )
     repository.start_stage(job.id, CurationStage.CARD_TAG_SCOPE)
-    repository.fail_stage(job.id, CurationStage.CARD_TAG_SCOPE, "tag scope has no resolved tokens")
+    repository.fail_stage(
+        job.id,
+        CurationStage.CARD_TAG_SCOPE,
+        "tag scope has no resolved tokens",
+        expected_state=CurationState.CARD_SCOPING_TAGS,
+        lease_owner=None,
+    )
     repository.transition(
         job.id,
         CurationState.CARD_SCOPING_TAGS,
@@ -950,7 +960,13 @@ def test_blank_scope_repair_rejects_unresolved_metadata_without_mutation(
             )
         )
     repository.start_stage(job.id, CurationStage.CARD_TAG_SCOPE)
-    repository.fail_stage(job.id, CurationStage.CARD_TAG_SCOPE, "tag scope has no resolved tokens")
+    repository.fail_stage(
+        job.id,
+        CurationStage.CARD_TAG_SCOPE,
+        "tag scope has no resolved tokens",
+        expected_state=CurationState.FAILED,
+        lease_owner=None,
+    )
 
     with pytest.raises(ValueError, match="Could not resolve exactly one"):
         repository.retry_job(job.id)
@@ -994,7 +1010,13 @@ def test_nonblank_card_scope_is_not_rewound_by_a_matching_legacy_error(
     )
     repository.save_stage_artifact(job.id, artifact)
     repository.start_stage(job.id, CurationStage.CARD_TAG_SCOPE)
-    repository.fail_stage(job.id, CurationStage.CARD_TAG_SCOPE, "tag scope has no resolved tokens")
+    repository.fail_stage(
+        job.id,
+        CurationStage.CARD_TAG_SCOPE,
+        "tag scope has no resolved tokens",
+        expected_state=CurationState.QUEUED,
+        lease_owner=None,
+    )
     with repository.database.session() as session:
         stored = session.get(AnkiCurationJobModel, str(job.id))
         assert stored is not None
@@ -1020,7 +1042,13 @@ def test_failed_job_can_be_removed_from_the_run_list(tmp_path: Path) -> None:
     )
     assert claimed is not None
     repository.start_stage(job.id, CurationStage.PREFLIGHT)
-    repository.fail_stage(job.id, CurationStage.PREFLIGHT, "malformed output")
+    repository.fail_stage(
+        job.id,
+        CurationStage.PREFLIGHT,
+        "malformed output",
+        expected_state=CurationState.PREFLIGHT,
+        lease_owner="worker-1",
+    )
     repository.fail_job(job.id, "worker-1", "malformed output")
 
     removed = repository.remove_failed_job(job.id)

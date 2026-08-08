@@ -1316,9 +1316,19 @@ class AnkiCurationRepository:
         job_id: UUID,
         stage: CurationStage,
         safe_error: str,
+        *,
+        expected_state: CurationState,
+        lease_owner: str | None,
     ) -> JobStage:
         with self.database.session() as session:
+            job = self._require_job_model(session, job_id)
+            if job.state != expected_state.value:
+                raise InvalidCurationTransition(f"job {job_id} is not in {expected_state.value}")
+            if job.lease_owner != lease_owner:
+                raise InvalidCurationTransition(f"worker no longer owns job {job_id}")
             stored = self._require_stage(session, job_id, stage)
+            if stored.state != "running":
+                raise InvalidCurationTransition(f"stage {stage.value} is not running")
             stored.state = "failed"
             stored.finished_at = utc_now()
             stored.error = safe_error
@@ -1372,7 +1382,7 @@ class AnkiCurationRepository:
             self._validate_stage_artifact_for_commit(job, job_id, stage, artifact)
             if job.state != expected_state.value:
                 raise InvalidCurationTransition(f"job {job_id} is not in {expected_state.value}")
-            if lease_owner is not None and job.lease_owner != lease_owner:
+            if job.lease_owner != lease_owner:
                 raise InvalidCurationTransition(f"worker no longer owns job {job_id}")
             stored_stage = self._require_stage(session, job_id, stage)
             if stored_stage.state != "running":

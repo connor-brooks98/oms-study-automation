@@ -544,6 +544,8 @@ class CurationPipeline:
                 job_id,
                 definition.stage,
                 _safe_error(exc),
+                expected_state=definition.state,
+                lease_owner=lease_owner,
             )
             raise
         if started.attempt_count < 1:

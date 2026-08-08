@@ -21,7 +21,7 @@ from oms_hub.anki.pipeline import (
     StageProduct,
     pipeline_stages,
 )
-from oms_hub.anki.repository import AnkiCurationRepository
+from oms_hub.anki.repository import AnkiCurationRepository, InvalidCurationTransition
 from oms_hub.anki.semantic.store import SemanticSnapshotError
 from oms_hub.anki.worker import AnkiCurationWorker, _is_retryable
 from oms_hub.app import create_app
@@ -224,6 +224,67 @@ def test_two_workers_racing_claim_only_one_job(
         assert first_result
         assert not second_result
         assert runner.calls == [CurationStage.PREFLIGHT]
+
+    asyncio.run(scenario())
+
+
+def test_expired_worker_cannot_commit_or_fail_reclaimed_stage(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        job = _create_job(repository)
+        started = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
+        claimed_by_a = repository.claim_next_job(
+            started,
+            worker_id="worker-a",
+            lease_seconds=3,
+        )
+        assert claimed_by_a is not None
+
+        runner_a = ControlledRunner()
+        runner_a.entered = asyncio.Event()
+        runner_a.release = asyncio.Event()
+        pipeline_a = CurationPipeline(
+            repository,
+            StageArtifactStore(tmp_path / "artifacts"),
+            runner_a,
+            input_validator=ControlledValidator(),
+        )
+        stale_run = asyncio.create_task(
+            pipeline_a.run_stage(job.id, lease_owner="worker-a")
+        )
+        await runner_a.entered.wait()
+
+        claimed_by_b = repository.claim_next_job(
+            started + timedelta(seconds=4),
+            worker_id="worker-b",
+            lease_seconds=30,
+        )
+        assert claimed_by_b is not None
+        assert claimed_by_b.lease_owner == "worker-b"
+
+        runner_a.release.set()
+        with pytest.raises(InvalidCurationTransition, match="no longer owns"):
+            await stale_run
+
+        reclaimed_stage = repository.get_stage(job.id, CurationStage.PREFLIGHT)
+        assert reclaimed_stage is not None
+        assert reclaimed_stage.state == "running"
+        assert repository.require_job(job.id).lease_owner == "worker-b"
+        assert repository.list_stage_artifacts(job.id) == []
+
+        pipeline_b = CurationPipeline(
+            repository,
+            StageArtifactStore(tmp_path / "artifacts"),
+            ControlledRunner(),
+            input_validator=ControlledValidator(),
+        )
+        result = await pipeline_b.run_stage(job.id, lease_owner="worker-b")
+
+        assert result is not None
+        assert result.state is CurationState.BUILDING_SOURCE_INDEX
+        assert repository.get_stage(job.id, CurationStage.PREFLIGHT).state == "complete"  # type: ignore[union-attr]
 
     asyncio.run(scenario())
 
