@@ -49,8 +49,11 @@ from oms_hub.anki.convergence import (
 )
 from oms_hub.anki.correction_contracts import (
     QUALITY_FIRST_MODEL_INSTRUCTION,
+    DuplicateIdentity,
     FactForbiddenClozeMap,
     FactForbiddenClozeTargets,
+    GeneratedFactResolution,
+    GeneratedResolutionKind,
     PinnedLectureMetadata,
 )
 from oms_hub.anki.dedupe import DeduplicationService
@@ -1490,7 +1493,10 @@ class CurationServicesRunner:
         selection_payload["semantic_dedupe_reviews"] = [
             review.model_dump(mode="json") for review in semantic_dedupe_reviews
         ]
-        selection_payload["terminal_resolutions"] = _dedupe_terminal_resolutions(generated)
+        selection_payload["terminal_resolutions"] = _dedupe_terminal_resolutions(
+            generated,
+            semantic_dedupe_reviews,
+        )
         return StageProduct(
             kind="card_centric_selection",
             payload=selection_payload,
@@ -2804,7 +2810,10 @@ class CurationServicesRunner:
                 "semantic_dedupe_reviews": [
                     review.model_dump(mode="json") for review in semantic_dedupe_reviews
                 ],
-                "terminal_resolutions": _dedupe_terminal_resolutions(generated),
+                "terminal_resolutions": _dedupe_terminal_resolutions(
+                    generated,
+                    semantic_dedupe_reviews,
+                ),
             },
             blocking_error=_card_reconciliation_error(report),
         )
@@ -3343,40 +3352,72 @@ def _validate_semantic_dedupe_reviews(
 
 def _dedupe_terminal_resolutions(
     generated: Sequence[GeneratedCardResolution],
+    semantic_dedupe_reviews: Sequence[SemanticDedupeReview] = (),
 ) -> list[dict[str, Any]]:
-    """Persist only the three frozen terminal facts with exact duplicate links."""
-    resolutions: list[dict[str, Any]] = []
+    """Persist one frozen terminal fact per resolved fact.
+
+    A post-retry semantic review is deliberately non-terminal.  Omit its full
+    fact until manual review resolves it, rather than recording an incomplete
+    split set as generated or silently declaring it unique.
+    """
+    _validate_semantic_dedupe_reviews(semantic_dedupe_reviews, generated)
+    reviewed_fact_ids = {review.fact_id for review in semantic_dedupe_reviews}
+    rows_by_fact: dict[str, list[GeneratedCardResolution]] = {}
     for item in generated:
-        if item.status == "generated":
+        if item.fact_id not in reviewed_fact_ids:
+            rows_by_fact.setdefault(item.fact_id, []).append(item)
+
+    resolutions: list[GeneratedFactResolution] = []
+    for fact_id in sorted(rows_by_fact):
+        rows = rows_by_fact[fact_id]
+        statuses = {row.status for row in rows}
+        if len(statuses) != 1:
+            raise PinnedInputChanged("dedupe fact has conflicting terminal states")
+        status = rows[0].status
+        if status == "generated":
             resolutions.append(
-                {
-                    "fact_id": item.fact_id,
-                    "kind": "generated",
-                    "generated_card_ids": [item.card_id],
-                }
+                GeneratedFactResolution(
+                    fact_id=fact_id,
+                    kind=GeneratedResolutionKind.GENERATED,
+                    generated_card_ids=tuple(
+                        row.card_id
+                        for row in sorted(
+                            rows,
+                            key=lambda row: (
+                                row.split_index is None,
+                                row.split_index if row.split_index is not None else 0,
+                                row.card_id,
+                            ),
+                        )
+                    ),
+                )
             )
-        elif item.status == "unresolved":
+            continue
+        if len(rows) != 1:
+            raise PinnedInputChanged("dedupe fact has repeated non-split terminal states")
+        row = rows[0]
+        if status == "unresolved":
             resolutions.append(
-                {
-                    "fact_id": item.fact_id,
-                    "kind": "unresolved",
-                    "unresolved_reason": item.reason,
-                }
+                GeneratedFactResolution(
+                    fact_id=fact_id,
+                    kind=GeneratedResolutionKind.UNRESOLVED,
+                    unresolved_reason=row.reason,
+                )
             )
-        else:
-            duplicate_of: dict[str, Any]
-            if item.duplicate_of_existing_note_id is not None:
-                duplicate_of = {"existing_note_id": item.duplicate_of_existing_note_id}
-            else:
-                duplicate_of = {"generated_card_id": item.duplicate_of_generated_card_id}
-            resolutions.append(
-                {
-                    "fact_id": item.fact_id,
-                    "kind": "duplicate_of_existing",
-                    "duplicate_of": duplicate_of,
-                }
+            continue
+        duplicate_of = (
+            DuplicateIdentity(existing_note_id=row.duplicate_of_existing_note_id)
+            if row.duplicate_of_existing_note_id is not None
+            else DuplicateIdentity(generated_card_id=row.duplicate_of_generated_card_id)
+        )
+        resolutions.append(
+            GeneratedFactResolution(
+                fact_id=fact_id,
+                kind=GeneratedResolutionKind.DUPLICATE_OF_EXISTING,
+                duplicate_of=duplicate_of,
             )
-    return resolutions
+        )
+    return [resolution.model_dump(mode="json") for resolution in resolutions]
 
 
 def record_exhausted_semantic_dedupe_review(
@@ -3409,7 +3450,7 @@ def record_exhausted_semantic_dedupe_review(
     payload = dict(dedupe_payload)
     reviews = tuple(sorted((*existing, review), key=lambda item: item.card_id))
     payload["semantic_dedupe_reviews"] = [item.model_dump(mode="json") for item in reviews]
-    payload["terminal_resolutions"] = _dedupe_terminal_resolutions(generated)
+    payload["terminal_resolutions"] = _dedupe_terminal_resolutions(generated, reviews)
     return payload
 
 

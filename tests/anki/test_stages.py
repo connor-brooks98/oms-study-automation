@@ -30,6 +30,7 @@ from oms_hub.anki.card_centric_contracts import (
 from oms_hub.anki.correction_contracts import (
     CanonicalJsonObject,
     DuplicateIdentity,
+    GeneratedFactResolution,
     MarginalValueReason,
     PinnedLectureMetadata,
 )
@@ -45,6 +46,7 @@ from oms_hub.anki.domain import (
 from oms_hub.anki.gaps import GapBatchV2
 from oms_hub.anki.judgment import JudgmentCacheRecord
 from oms_hub.anki.normalize import NormalizedNote
+from oms_hub.anki.pipeline import PinnedInputChanged
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
 from oms_hub.anki.prompts import AnkiPromptLibrary, StaticPromptSynchronizer
 from oms_hub.anki.reconciliation import AssertionFinding, ReconciliationReport
@@ -269,13 +271,10 @@ def test_card_dedupe_v2_preserves_existing_duplicate_identity() -> None:
     assert result["status"] == "duplicate_of_existing"
     assert result["duplicate_of_existing_note_id"] == 41
     assert result["duplicate_of_generated_card_id"] is None
-    assert product.payload["terminal_resolutions"] == [
-        {
-            "fact_id": "C01-M1",
-            "kind": "duplicate_of_existing",
-            "duplicate_of": {"existing_note_id": 41},
-        }
-    ]
+    terminal = GeneratedFactResolution.model_validate(product.payload["terminal_resolutions"][0])
+    assert terminal.fact_id == "C01-M1"
+    assert terminal.kind == "duplicate_of_existing"
+    assert terminal.duplicate_of == DuplicateIdentity(existing_note_id=41)
 
 
 def test_card_dedupe_v2_preserves_generated_duplicate_card_identity() -> None:
@@ -289,11 +288,10 @@ def test_card_dedupe_v2_preserves_generated_duplicate_card_identity() -> None:
     assert result["status"] == "duplicate_of_existing"
     assert result["duplicate_of_existing_note_id"] is None
     assert result["duplicate_of_generated_card_id"] == "G01"
-    assert product.payload["terminal_resolutions"][1] == {
-        "fact_id": "C01-M2",
-        "kind": "duplicate_of_existing",
-        "duplicate_of": {"generated_card_id": "G01"},
-    }
+    terminal = GeneratedFactResolution.model_validate(product.payload["terminal_resolutions"][1])
+    assert terminal.fact_id == "C01-M2"
+    assert terminal.kind == "duplicate_of_existing"
+    assert terminal.duplicate_of == DuplicateIdentity(generated_card_id="G01")
 
 
 def test_card_dedupe_v2_propagates_provider_and_vector_integrity_failures() -> None:
@@ -379,13 +377,46 @@ def test_exhausted_semantic_dedupe_review_is_transportable_to_selection() -> Non
 
     assert _card_dedupe_reviews(context) == (review,)
     assert payload["semantic_dedupe_reviews"] == [review.model_dump(mode="json")]
-    assert payload["terminal_resolutions"] == [
-        {"fact_id": "C01-M1", "kind": "generated", "generated_card_ids": ["G01"]}
-    ]
+    assert payload["terminal_resolutions"] == []
     selection = asyncio.run(runner._card_selection(context))
     assert selection.payload["semantic_review_required_card_ids"] == ["G01"]
     assert selection.payload["selected_generated_card_ids"] == []
     assert selection.payload["semantic_dedupe_reviews"] == [review.model_dump(mode="json")]
+    assert selection.payload["terminal_resolutions"] == []
+
+
+def test_dedupe_terminal_resolutions_aggregate_split_cards_per_fact() -> None:
+    _, _, passage_id = _dedupe_stage_fixture(_DedupeEmbedder([]))
+    later = _generated_dedupe_row("G02", "C01-M1", "second split", passage_id).model_copy(
+        update={"split": True, "split_index": 2}
+    )
+    earlier = _generated_dedupe_row("G01", "C01-M1", "first split", passage_id).model_copy(
+        update={"split": True, "split_index": 1}
+    )
+
+    terminal = stages_module._dedupe_terminal_resolutions((later, earlier))
+
+    assert len(terminal) == 1
+    resolution = GeneratedFactResolution.model_validate(terminal[0])
+    assert resolution.fact_id == "C01-M1"
+    assert resolution.kind == "generated"
+    assert resolution.generated_card_ids == ("G01", "G02")
+
+
+def test_dedupe_terminal_resolutions_reject_mixed_fact_states() -> None:
+    _, _, passage_id = _dedupe_stage_fixture(_DedupeEmbedder([]))
+    generated = _generated_dedupe_row("G01", "C01-M1", "Alpha beta", passage_id)
+    unresolved = GeneratedCardResolution(
+        card_id="G02",
+        concept_id="C01",
+        fact_id="C01-M1",
+        source_passage_ids=(passage_id,),
+        status="unresolved",
+        reason="generation could not resolve the fact",
+    )
+
+    with pytest.raises(PinnedInputChanged, match="conflicting terminal states"):
+        stages_module._dedupe_terminal_resolutions((generated, unresolved))
 
 
 def test_card_selection_v2_persists_exact_pending_overflow_metadata_and_flags() -> None:
