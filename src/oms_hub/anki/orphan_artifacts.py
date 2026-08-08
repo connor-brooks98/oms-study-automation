@@ -167,6 +167,7 @@ def _matches_document(
     relative_path: str,
 ) -> bool:
     expected_path = f"{job_id}/{stage.value}/{evidence.content_sha256}.json"
+    recovery_product = document.get("recovery_product")
     return (
         document.get("artifact_version") == _ARTIFACT_SCHEMA_VERSION
         and document.get("job_id") == str(job_id)
@@ -178,6 +179,10 @@ def _matches_document(
         and relative_path == expected_path
         and isinstance(document.get("payload"), dict)
         and isinstance(document.get("metadata"), dict)
+        and isinstance(recovery_product, dict)
+        and recovery_product.get("kind") == document.get("kind")
+        and recovery_product.get("payload") == document.get("payload")
+        and recovery_product.get("metadata") == document.get("metadata")
     )
 
 

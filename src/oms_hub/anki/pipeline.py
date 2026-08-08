@@ -349,6 +349,7 @@ class StageArtifactStore:
         input_sha256: str,
         pipeline_contract_version: PipelineContractVersion = PipelineContractVersion.RETRIEVAL_V4,
         model_config_sha256: str = "",
+        replace_exact_invalid_uncommitted: bool = False,
     ) -> StageArtifact:
         if len(input_sha256) != 64:
             raise ValueError("stage input hash is invalid")
@@ -371,10 +372,21 @@ class StageArtifactStore:
         relative = Path(str(job_id)) / stage.value / f"{content_sha256}.json"
         destination = self.root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
+        needs_write = not destination.exists()
         if destination.exists():
-            if destination.read_bytes() != encoded:
-                raise ValueError("immutable stage artifact has conflicting content")
-        else:
+            existing = destination.read_bytes()
+            if existing != encoded:
+                if (
+                    not replace_exact_invalid_uncommitted
+                    or hashlib.sha256(existing).hexdigest() == content_sha256
+                ):
+                    raise ValueError("immutable stage artifact has conflicting content")
+                # The pipeline just confirmed that this exact deterministic
+                # content path has no committed stage artifact. The bytes do
+                # not match their content-addressed filename, so atomically
+                # replacing them is safe and permits a deterministic rerun.
+                needs_write = True
+        if needs_write:
             descriptor, temporary_name = tempfile.mkstemp(
                 prefix=f".{content_sha256}-",
                 suffix=".tmp",
@@ -609,6 +621,10 @@ class CurationPipeline:
                     input_sha256=input_sha256,
                     pipeline_contract_version=job.pipeline_contract_version,
                     model_config_sha256=job.model_config_sha256,
+                    replace_exact_invalid_uncommitted=not any(
+                        artifact.stage is definition.stage
+                        for artifact in self.repository.list_stage_artifacts(job_id)
+                    ),
                 )
             else:
                 artifact, product = recovered

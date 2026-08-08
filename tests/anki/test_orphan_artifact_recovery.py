@@ -51,6 +51,17 @@ class CountingRunner:
         )
 
 
+class StableRunner(CountingRunner):
+    async def run(self, context: StageContext) -> StageProduct:
+        self.calls += 1
+        self.contexts.append(context)
+        return StageProduct(
+            kind="preflight_report",
+            payload={"ready": True},
+            metadata={"runner": "stable"},
+        )
+
+
 @pytest.fixture
 def repository(tmp_path: Path) -> AnkiCurationRepository:
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
@@ -147,6 +158,38 @@ def test_valid_orphan_is_adopted_without_second_runner_call(
         assert stage is not None
         assert stage.cache_hits == 7
         assert repository.require_job(job.id).semantic_generation == "semantic-1"
+
+    asyncio.run(scenario())
+
+
+def test_corrupt_orphan_recomputes_when_runner_product_is_byte_identical(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        job = _claimed_job(repository)
+        store = StageArtifactStore(tmp_path / "artifacts")
+        runner = StableRunner()
+        input_sha256 = _stage_input_hash(job, CurationStage.PREFLIGHT, ())
+        manifest_path = (
+            tmp_path
+            / "artifacts"
+            / str(job.id)
+            / CurationStage.PREFLIGHT.value
+            / ".orphan"
+            / f"{input_sha256}.json"
+        )
+
+        await _crash_after_durable_write(repository, store, runner, job.id)
+        manifest = json.loads(manifest_path.read_bytes())
+        artifact_path = tmp_path / "artifacts" / manifest["artifact_relative_path"]
+        artifact_path.write_bytes(b"corrupt deterministic orphan")
+
+        result = await CurationPipeline(repository, store, runner).run_stage(job.id)
+
+        assert result is not None
+        assert runner.calls == 2
+        assert store.read(result.artifact, job=job) == {"ready": True}
 
     asyncio.run(scenario())
 
