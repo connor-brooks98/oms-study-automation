@@ -23,7 +23,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 18
+LATEST_SCHEMA_VERSION = 19
 
 
 def _ensure_column(
@@ -299,6 +299,20 @@ def _upgrade_published_quiz_display_order_v18(database: "Database") -> None:
     )
 
 
+def _upgrade_anki_replay_inputs_v19(database: "Database") -> None:
+    """Add durable v2 lecture pins and immutable per-stage replay documents."""
+    for name, definition in {
+        "lecture_title_snapshot": "TEXT",
+        "lecture_metadata_json": "TEXT",
+        "lecture_metadata_sha256": "VARCHAR(64)",
+    }.items():
+        _ensure_column(database, "anki_curation_jobs", name, definition)
+    # ``create_schema`` creates the new table on both clean installs and upgrades.
+    # Keep this explicit for installations whose metadata creation is customized.
+    if not inspect(database.engine).has_table("anki_stage_replay_inputs"):
+        database.create_schema()
+
+
 def _upgrade_gap_card_identity(database: "Database") -> None:
     if database.engine.dialect.name != "sqlite":
         return
@@ -438,6 +452,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_studio_history_v16(database)
     _upgrade_runtime_settings_v17(database)
     _upgrade_published_quiz_display_order_v18(database)
+    _upgrade_anki_replay_inputs_v19(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

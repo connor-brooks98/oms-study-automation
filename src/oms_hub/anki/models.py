@@ -29,6 +29,9 @@ class AnkiCurationJobModel(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     lecture_id: Mapped[int] = mapped_column(ForeignKey("lectures.id"))
+    lecture_title_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lecture_metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lecture_metadata_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     state: Mapped[str] = mapped_column(String(30), default="queued")
     attempts: Mapped[int] = mapped_column(default=0)
     target_deck: Mapped[str] = mapped_column(Text)
@@ -250,6 +253,20 @@ class AnkiReviewedReconciliationModel(Base):
     job_id: Mapped[str] = mapped_column(ForeignKey("anki_curation_jobs.id"))
     review_revision: Mapped[int]
     payload_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class AnkiStageReplayInputModel(Base):
+    """First-write-wins immutable replay inputs, one document per stage."""
+
+    __tablename__ = "anki_stage_replay_inputs"
+    __table_args__ = (UniqueConstraint("job_id", "stage"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("anki_curation_jobs.id"))
+    stage: Mapped[str] = mapped_column(String(30))
+    canonical_json: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
 
 

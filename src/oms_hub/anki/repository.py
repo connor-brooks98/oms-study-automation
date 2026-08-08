@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from oms_hub.anki.apply import ApplyOperationRecord
@@ -24,6 +25,12 @@ from oms_hub.anki.contracts import (
     ActionEnvelopeV2,
     canonical_payload_sha256,
     parse_action_envelope,
+)
+from oms_hub.anki.correction_contracts import (
+    A11HistoryEntry,
+    A11HistorySnapshot,
+    CanonicalJsonObject,
+    PinnedLectureMetadata,
 )
 from oms_hub.anki.domain import (
     AgentCommandType,
@@ -70,6 +77,7 @@ from oms_hub.anki.models import (
     AnkiReviewedReconciliationModel,
     AnkiSourceEvidenceModel,
     AnkiStageArtifactModel,
+    AnkiStageReplayInputModel,
     AnkiStageSettingModel,
     AnkiTagPatchModel,
 )
@@ -78,6 +86,7 @@ from oms_hub.anki.reconciliation import (
     reconcile_card_centric,
     selected_card_centric_coverage,
 )
+from oms_hub.anki.replay_inputs import PreparedStageReplayInputs, canonical_json
 from oms_hub.db import Database
 from oms_hub.llm.domain import ProviderName
 from oms_hub.models import LectureModel, utc_now
@@ -495,11 +504,24 @@ class AnkiCurationRepository:
             companion_generation=request.companion_generation,
         )
         with self.database.session() as session:
-            if session.get(LectureModel, request.lecture_id) is None:
+            lecture = session.get(LectureModel, request.lecture_id)
+            if lecture is None:
                 raise KeyError(request.lecture_id)
+            pinned_lecture = (
+                self._pinned_lecture_metadata(lecture)
+                if request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
+                else None
+            )
             stored = AnkiCurationJobModel(
                 id=str(uuid4()),
                 lecture_id=request.lecture_id,
+                lecture_title_snapshot=(None if pinned_lecture is None else pinned_lecture.title),
+                lecture_metadata_json=(
+                    None if pinned_lecture is None else pinned_lecture.metadata.canonical_json
+                ),
+                lecture_metadata_sha256=(
+                    None if pinned_lecture is None else pinned_lecture.metadata_sha256
+                ),
                 state=CurationState.QUEUED.value,
                 target_deck=request.target_deck,
                 target_tag=request.target_tag,
@@ -716,42 +738,66 @@ class AnkiCurationRepository:
             )
             return None if stored is None else cast(dict[str, Any], json.loads(stored.payload_json))
 
+    def prepare_stage_replay_inputs(
+        self, job_id: UUID, stage: CurationStage
+    ) -> PreparedStageReplayInputs:
+        """Atomically freeze and return the exact replay document for one stage.
+
+        The unique ``(job_id, stage)`` row is the first-write-wins boundary:
+        reviews or lecture edits committed after this method returns can never
+        modify the returned document or a later reload of it.
+        """
+        with self.database.session() as session:
+            job = self._require_job_model(session, job_id)
+            existing = session.scalar(
+                select(AnkiStageReplayInputModel).where(
+                    AnkiStageReplayInputModel.job_id == str(job_id),
+                    AnkiStageReplayInputModel.stage == stage.value,
+                )
+            )
+            if existing is not None:
+                return self._prepared_stage_replay_inputs(existing)
+
+            document = self._stage_replay_document(session, job, job_id, stage)
+            serialized = canonical_json(document)
+            prepared = AnkiStageReplayInputModel(
+                job_id=str(job_id),
+                stage=stage.value,
+                canonical_json=serialized,
+                sha256=_sha256_text(serialized),
+            )
+            try:
+                # A savepoint lets a competing first writer resolve to its
+                # already-committed immutable input rather than leaking a
+                # uniqueness exception to a retrying worker.
+                with session.begin_nested():
+                    session.add(prepared)
+                    session.flush()
+            except IntegrityError:
+                existing = session.scalar(
+                    select(AnkiStageReplayInputModel).where(
+                        AnkiStageReplayInputModel.job_id == str(job_id),
+                        AnkiStageReplayInputModel.stage == stage.value,
+                    )
+                )
+                if existing is None:  # pragma: no cover - database isolation-specific retry path
+                    raise
+                return self._prepared_stage_replay_inputs(existing)
+            return self._prepared_stage_replay_inputs(prepared)
+
     def card_centric_yes_rate_history(self, job_id: UUID, *, limit: int = 12) -> tuple[float, ...]:
-        """Return a bounded same-lecture v2 history for A11, newest first."""
+        """Return one latest valid reviewed revision per prior v2 job, newest first.
+
+        This compatibility reader is deliberately distinct-job based.  Replay
+        code must call :meth:`prepare_stage_replay_inputs` and use the frozen
+        reconciliation document instead of this live convenience reader.
+        """
         if limit < 1:
             raise ValueError("history limit must be positive")
         with self.database.session() as session:
             job = self._require_job_model(session, job_id)
-            rows = session.scalars(
-                select(AnkiReviewedReconciliationModel)
-                .join(
-                    AnkiCurationJobModel,
-                    AnkiCurationJobModel.id == AnkiReviewedReconciliationModel.job_id,
-                )
-                .where(
-                    AnkiCurationJobModel.lecture_id == job.lecture_id,
-                    AnkiCurationJobModel.pipeline_contract_version
-                    == PipelineContractVersion.CARD_CENTRIC_V2.value,
-                    AnkiReviewedReconciliationModel.job_id != str(job_id),
-                )
-                .order_by(AnkiReviewedReconciliationModel.id.desc())
-                .limit(limit)
-            ).all()
-        rates: list[float] = []
-        for row in rows:
-            try:
-                snapshot = cast(dict[str, Any], json.loads(row.payload_json))["snapshot"]
-                classifications = cast(list[dict[str, Any]], snapshot["classifications"])
-                if not classifications:
-                    continue
-                rate = sum(item.get("verdict") == "keep" for item in classifications) / len(
-                    classifications
-                )
-                if 0 <= rate <= 1:
-                    rates.append(rate)
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                continue
-        return tuple(rates)
+            history = self._a11_history_snapshot(session, job_id, job.lecture_id, limit=limit)
+            return tuple(entry.yes_rate for entry in history.entries)
 
     def persist_card_centric_overflow_acknowledgement(
         self, job_id: UUID, *, review_revision: int, document: dict[str, Any]
@@ -2550,6 +2596,167 @@ class AnkiCurationRepository:
         if stored is None:
             raise KeyError(f"{job_id}:{stage.value}")
         return stored
+
+    @staticmethod
+    def _pinned_lecture_metadata(lecture: LectureModel) -> PinnedLectureMetadata:
+        title = (
+            f"{lecture.subject} Exam {lecture.exam_number} "
+            f"Lecture {lecture.lecture_number}: {lecture.topic}"
+        )
+        metadata = CanonicalJsonObject.from_mapping(
+            {
+                "campus": lecture.campus,
+                "exam_date": lecture.exam_date,
+                "exam_number": lecture.exam_number,
+                "lecture_number": lecture.lecture_number,
+                "lecturer": lecture.lecturer,
+                "scheduled_start_utc": lecture.scheduled_start_utc,
+                "subject": lecture.subject,
+                "topic": lecture.topic,
+            }
+        )
+        document = {
+            "lecture_id": lecture.id,
+            "title": title,
+            "metadata": metadata.as_dict(),
+        }
+        return PinnedLectureMetadata(
+            lecture_id=lecture.id,
+            title=title,
+            metadata=metadata,
+            metadata_sha256=_sha256_text(_canonical_json(document)),
+        )
+
+    @classmethod
+    def _load_or_pin_v2_lecture_metadata(
+        cls, session: Session, job: AnkiCurationJobModel
+    ) -> PinnedLectureMetadata:
+        values = (
+            job.lecture_title_snapshot,
+            job.lecture_metadata_json,
+            job.lecture_metadata_sha256,
+        )
+        if all(value is None for value in values):
+            lecture = session.get(LectureModel, job.lecture_id)
+            if lecture is None:
+                raise KeyError(job.lecture_id)
+            pinned = cls._pinned_lecture_metadata(lecture)
+            # Compatibility behavior for rows written before schema v19: the
+            # first prepared bundle captures the live lecture exactly once.
+            job.lecture_title_snapshot = pinned.title
+            job.lecture_metadata_json = pinned.metadata.canonical_json
+            job.lecture_metadata_sha256 = pinned.metadata_sha256
+            session.flush()
+            return pinned
+        if any(value is None for value in values):
+            raise ValueError("stored pinned lecture metadata is incomplete")
+        try:
+            return PinnedLectureMetadata(
+                lecture_id=job.lecture_id,
+                title=cast(str, job.lecture_title_snapshot),
+                metadata=CanonicalJsonObject(canonical_json=cast(str, job.lecture_metadata_json)),
+                metadata_sha256=cast(str, job.lecture_metadata_sha256),
+            )
+        except ValueError as exc:
+            raise ValueError("stored pinned lecture metadata failed integrity checks") from exc
+
+    @classmethod
+    def _a11_history_snapshot(
+        cls,
+        session: Session,
+        job_id: UUID,
+        lecture_id: int,
+        *,
+        limit: int,
+    ) -> A11HistorySnapshot:
+        rows = session.execute(
+            select(AnkiReviewedReconciliationModel)
+            .join(
+                AnkiCurationJobModel,
+                AnkiCurationJobModel.id == AnkiReviewedReconciliationModel.job_id,
+            )
+            .where(
+                AnkiCurationJobModel.lecture_id == lecture_id,
+                AnkiCurationJobModel.pipeline_contract_version
+                == PipelineContractVersion.CARD_CENTRIC_V2.value,
+                AnkiReviewedReconciliationModel.job_id != str(job_id),
+            )
+            .order_by(
+                AnkiReviewedReconciliationModel.job_id,
+                AnkiReviewedReconciliationModel.review_revision.desc(),
+                AnkiReviewedReconciliationModel.id.desc(),
+            )
+        ).scalars()
+        latest_by_job: dict[str, A11HistoryEntry] = {}
+        for row in rows:
+            if row.job_id in latest_by_job:
+                continue
+            entry = cls._a11_history_entry(row)
+            if entry is not None:
+                latest_by_job[row.job_id] = entry
+        entries = tuple(
+            sorted(
+                latest_by_job.values(),
+                key=lambda entry: (entry.reviewed_at, str(entry.job_id)),
+                reverse=True,
+            )[:limit]
+        )
+        serialized_entries = [entry.model_dump(mode="json") for entry in entries]
+        return A11HistorySnapshot(
+            entries=entries,
+            snapshot_sha256=_sha256_text(_canonical_json(serialized_entries)),
+        )
+
+    @staticmethod
+    def _a11_history_entry(
+        row: AnkiReviewedReconciliationModel,
+    ) -> A11HistoryEntry | None:
+        try:
+            snapshot = cast(dict[str, Any], json.loads(row.payload_json))["snapshot"]
+            classifications = cast(list[dict[str, Any]], snapshot["classifications"])
+            if not classifications:
+                return None
+            rate = sum(item.get("verdict") == "keep" for item in classifications) / len(
+                classifications
+            )
+            return A11HistoryEntry(
+                job_id=UUID(row.job_id),
+                review_revision=row.review_revision,
+                yes_rate=rate,
+                reviewed_at=datetime.fromisoformat(row.created_at),
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    @classmethod
+    def _stage_replay_document(
+        cls,
+        session: Session,
+        job: AnkiCurationJobModel,
+        job_id: UUID,
+        stage: CurationStage,
+    ) -> dict[str, Any]:
+        document: dict[str, Any] = {"schema_version": 1, "stage": stage.value}
+        if job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V2.value:
+            document["pinned_lecture"] = cls._load_or_pin_v2_lecture_metadata(
+                session, job
+            ).model_dump(mode="json")
+            if stage is CurationStage.RECONCILIATION:
+                document["a11_history"] = cls._a11_history_snapshot(
+                    session, job_id, job.lecture_id, limit=12
+                ).model_dump(mode="json")
+        return document
+
+    @staticmethod
+    def _prepared_stage_replay_inputs(
+        stored: AnkiStageReplayInputModel,
+    ) -> PreparedStageReplayInputs:
+        return PreparedStageReplayInputs(
+            job_id=UUID(stored.job_id),
+            stage=CurationStage(stored.stage),
+            canonical_json=stored.canonical_json,
+            sha256=stored.sha256,
+        )
 
     @staticmethod
     def _job(stored: AnkiCurationJobModel) -> CurationJob:

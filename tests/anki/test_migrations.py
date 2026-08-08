@@ -139,6 +139,22 @@ def test_anki_migration_is_repeatable(tmp_path) -> None:
             ).scalar_one() == 0
 
 
+def test_schema_v19_adds_replay_input_persistence_on_clean_install(tmp_path) -> None:
+    with Database(f"sqlite:///{tmp_path / 'hub-v19.db'}") as database:
+        database.migrate()
+        inspector = inspect(database.engine)
+        job_columns = {
+            column["name"] for column in inspector.get_columns("anki_curation_jobs")
+        }
+
+        assert {
+            "lecture_title_snapshot",
+            "lecture_metadata_json",
+            "lecture_metadata_sha256",
+        } <= job_columns
+        assert "anki_stage_replay_inputs" in inspector.get_table_names()
+
+
 def test_schema_v6_upgrade_adds_v4_columns_without_losing_legacy_job(
     tmp_path,
 ) -> None:
@@ -230,10 +246,14 @@ def test_schema_v6_upgrade_adds_v4_columns_without_losing_legacy_job(
         "lease_owner",
         "lease_expires_at",
         "available_at",
+        "lecture_title_snapshot",
+        "lecture_metadata_json",
+        "lecture_metadata_sha256",
     } <= columns
     assert {
         "anki_source_evidence",
         "anki_stage_artifacts",
+        "anki_stage_replay_inputs",
         "anki_tag_patches",
     } <= tables
     assert row == (
