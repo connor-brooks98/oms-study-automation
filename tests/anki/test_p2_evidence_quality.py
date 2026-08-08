@@ -114,7 +114,7 @@ def test_s2b_audit_normalizes_unicode_boundaries_and_preserves_diagnostics() -> 
         "C02": (),
         "C03": (passage_id_by_text[phrase_slide.text],),
     }
-    assert audit.matched_slide_char_counts["C01"] == 40
+    assert audit.matched_slide_char_counts == {"C01": 47, "C02": 0, "C03": 44}
     assert audit.total_concepts == 3
     assert audit.evidence_poor_concept_ids == ("C01", "C02", "C03")
 

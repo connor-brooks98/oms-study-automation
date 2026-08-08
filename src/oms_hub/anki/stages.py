@@ -181,9 +181,9 @@ def _has_evidence_audit_term(
     )
 
 
-def _normalized_visible_character_count(value: str) -> int:
-    """Count normalized visible token characters, excluding formatting separators."""
-    return sum(len(token) for token in _evidence_audit_tokens(value))
+def _normalized_trimmed_character_count(value: str) -> int:
+    """Count an NFKC-normalized passage after trimming only its outer whitespace."""
+    return len(unicodedata.normalize("NFKC", value).strip())
 
 
 class PinnedCurationInputValidator:
@@ -580,7 +580,7 @@ class CurationServicesRunner:
                 passages.append(passage)
             matched[concept.concept_id] = [passage.passage_id for passage in passages]
             counts[concept.concept_id] = sum(
-                _normalized_visible_character_count(passage.text) for passage in passages
+                _normalized_trimmed_character_count(passage.text) for passage in passages
             )
         audit = CardEvidenceAudit(
             evidence_poor_concept_ids=tuple(
