@@ -1,11 +1,14 @@
 import json
 import os
+from pathlib import Path
 
+import pytest
 from cryptography.fernet import Fernet
 
 from oms_hub.study_generation.notebook_storage import (
     NOTEBOOK_STORAGE_KEY,
     EncryptedNotebookStorage,
+    NotebookStorageError,
     migrate_encrypted_notebook_storage,
 )
 
@@ -121,3 +124,56 @@ def test_missing_encrypted_session_is_a_noop(tmp_path):
         secrets,
     )
     assert secrets.values == {}
+
+
+def test_encrypted_session_does_not_overwrite_concurrent_plaintext(
+    tmp_path,
+    monkeypatch,
+):
+    secrets = MemorySecrets()
+    encrypted_path = tmp_path / "google" / "notebooklm-storage.enc"
+    plaintext_path = tmp_path / "google" / "notebooklm-storage.json"
+    with EncryptedNotebookStorage(encrypted_path, secrets).plaintext(
+        writable=True
+    ) as temporary_path:
+        temporary_path.write_bytes(b'{"session":"legacy"}')
+    real_link = os.link
+
+    def concurrent_writer(source: Path, destination: Path) -> None:
+        destination.write_bytes(b'{"session":"newer"}')
+        real_link(source, destination)
+
+    monkeypatch.setattr(os, "link", concurrent_writer)
+
+    assert not migrate_encrypted_notebook_storage(
+        encrypted_path,
+        plaintext_path,
+        secrets,
+    )
+    assert plaintext_path.read_bytes() == b'{"session":"newer"}'
+
+
+def test_migration_translates_filesystem_failure_to_storage_error(
+    tmp_path,
+    monkeypatch,
+):
+    secrets = MemorySecrets()
+    encrypted_path = tmp_path / "google" / "notebooklm-storage.enc"
+    plaintext_path = tmp_path / "google" / "notebooklm-storage.json"
+    with EncryptedNotebookStorage(encrypted_path, secrets).plaintext(
+        writable=True
+    ) as temporary_path:
+        temporary_path.write_bytes(b'{"session":"legacy"}')
+
+    def denied_link(_source: Path, _destination: Path) -> None:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(os, "link", denied_link)
+
+    with pytest.raises(NotebookStorageError, match="reconnect Google"):
+        migrate_encrypted_notebook_storage(
+            encrypted_path,
+            plaintext_path,
+            secrets,
+        )
+    assert not plaintext_path.exists()
