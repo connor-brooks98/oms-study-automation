@@ -245,6 +245,62 @@ def test_s9_preserves_actual_duplicate_identity_and_unresolved_terminal() -> Non
     assert {"A1", "A2"} <= set(report.passed)
 
 
+def test_s9_duplicate_terminals_require_selected_current_coverage() -> None:
+    duplicate = GeneratedFactResolution(
+        fact_id="C01-M1",
+        kind=GeneratedResolutionKind.DUPLICATE_OF_EXISTING,
+        duplicate_of=DuplicateIdentity(existing_note_id=999),
+    )
+    unselected = reconcile_card_centric(
+        _snapshot(required=("C01-M1",), terminal=(duplicate,))
+    )
+    wrong_concept = reconcile_card_centric(
+        _snapshot(required=("C01-M1",), terminal=(duplicate,)).model_copy(
+            update={
+                "terminal_resolutions": (
+                    duplicate.model_copy(
+                        update={"duplicate_of": DuplicateIdentity(existing_note_id=1)}
+                    ),
+                ),
+                "covered_concept_ids_by_nid": {note_id: ("C02",) for note_id in range(1, 11)},
+            }
+        )
+    )
+    correct_existing = reconcile_card_centric(
+        _snapshot(required=("C01-M1",), terminal=(
+            duplicate.model_copy(
+                update={"duplicate_of": DuplicateIdentity(existing_note_id=1)}
+            ),
+        ))
+    )
+    generated = _generated("G1", "C02-M1")
+    correct_generated = reconcile_card_centric(
+        _snapshot(
+            required=("C01-M1", "C02-M1"),
+            raw=(generated,),
+            canonical=(generated,),
+            terminal=(
+                GeneratedFactResolution(
+                    fact_id="C01-M1",
+                    kind=GeneratedResolutionKind.DUPLICATE_OF_EXISTING,
+                    duplicate_of=DuplicateIdentity(generated_card_id="G1"),
+                ),
+                GeneratedFactResolution(
+                    fact_id="C02-M1",
+                    kind=GeneratedResolutionKind.GENERATED,
+                    generated_card_ids=("G1",),
+                ),
+            ),
+            selected_generated=("G1",),
+        )
+    )
+
+    assert "duplicate_coverage" in {item.assertion_id for item in unselected.failed}
+    assert "duplicate_coverage" in {item.assertion_id for item in wrong_concept.failed}
+    assert "duplicate_coverage" in correct_existing.passed
+    assert "duplicate_coverage" in correct_generated.passed
+
+
 def test_s9_aggregates_sequential_split_ids_for_one_terminal_fact() -> None:
     cards = (
         _generated("G1", "C01-M1", split=True, split_index=1),

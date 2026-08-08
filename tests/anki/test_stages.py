@@ -795,8 +795,8 @@ def test_card_reconciliation_constructs_the_full_v2_s9_snapshot() -> None:
         {
             "job_id": context.job.id,
             "review_revision": 7,
-            "selected_note_ids": (),
-            "selected_generated_ids": (),
+            "selected_note_ids": selected_existing,
+            "selected_generated_ids": ("G1",),
             "cap": 70,
             "document": acknowledgement.as_dict(),
         }

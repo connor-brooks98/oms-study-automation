@@ -12,11 +12,22 @@ from uuid import UUID
 def selection_digest(
     selected_note_ids: tuple[int, ...],
     selected_generated_ids: tuple[str, ...],
+    *,
+    selection_order: tuple[str, ...] = (),
 ) -> str:
-    value = {
-        "existing": sorted(set(selected_note_ids)),
-        "generated": sorted(set(selected_generated_ids)),
-    }
+    if selection_order:
+        expected = {
+            *(f"existing:{note_id}" for note_id in selected_note_ids),
+            *(f"generated:{card_id}" for card_id in selected_generated_ids),
+        }
+        if len(selection_order) != len(expected) or set(selection_order) != expected:
+            raise ValueError("selection order must exactly bind the selected identities")
+        value: dict[str, object] = {"selection_order": list(selection_order)}
+    else:
+        value = {
+            "existing": sorted(set(selected_note_ids)),
+            "generated": sorted(set(selected_generated_ids)),
+        }
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -59,13 +70,20 @@ def issue_acknowledgement(
     cap: int,
     pipeline_contract_version: str,
     model_config_sha256: str,
+    selection_order: tuple[str, ...] = (),
 ) -> OverflowAcknowledgement:
-    if len(selected_note_ids) + len(selected_generated_ids) <= cap:
+    selected_count = len(selected_note_ids) + len(selected_generated_ids)
+    overflow_count = selected_count - cap
+    if overflow_count <= 0:
         raise ValueError("an overflow acknowledgement is not needed")
-    if mandatory_count != len(selected_note_ids) + len(selected_generated_ids):
-        raise ValueError("overflow acknowledgement requires every selected item mandatory")
+    if selection_order and mandatory_count != overflow_count:
+        raise ValueError("overflow acknowledgement count must equal the overflow slice")
     token = secrets.token_urlsafe(24)
-    digest = selection_digest(selected_note_ids, selected_generated_ids)
+    digest = selection_digest(
+        selected_note_ids,
+        selected_generated_ids,
+        selection_order=selection_order,
+    )
     payload = _acknowledgement_payload(
         token,
         job_id,
@@ -90,7 +108,10 @@ def issue_acknowledgement(
     )
 
 
-def verify_acknowledgement(secret: str, acknowledgement: OverflowAcknowledgement) -> bool:
+def verify_acknowledgement(
+    secret: str,
+    acknowledgement: OverflowAcknowledgement,
+) -> bool:
     payload = _acknowledgement_payload(
         acknowledgement.token,
         acknowledgement.job_id,

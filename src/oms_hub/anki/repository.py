@@ -605,17 +605,33 @@ class AnkiCurationRepository:
         mandatory_generated_ids: tuple[str, ...],
         cap: int,
     ) -> dict[str, Any]:
-        """Persist an HMAC-bound acknowledgement for an all-mandatory overflow."""
+        """Persist an HMAC acknowledgement bound to the frozen full selection."""
         with self.database.session() as session:
             job = self._require_job_model(session, job_id)
             if job.review_revision != review_revision:
                 raise ValueError("review revision is stale")
-            exact_generated_mandatory = (
-                set(selected_generated_ids) == set(mandatory_generated_ids)
-                if job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V2.value
-                else True
-            )
-            if set(selected_note_ids) != set(mandatory_note_ids) or not exact_generated_mandatory:
+            selection_order: tuple[str, ...] = ()
+            mandatory_count = len(selected_note_ids) + len(selected_generated_ids)
+            if job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V2.value:
+                (
+                    frozen_notes,
+                    frozen_generated,
+                    selection_order,
+                    overflow_notes,
+                    overflow_generated,
+                ) = self._v2_overflow_selection_proof(session, job_id, review_revision)
+                if (
+                    tuple(selected_note_ids) != frozen_notes
+                    or tuple(selected_generated_ids) != frozen_generated
+                    or set(mandatory_note_ids) != set(overflow_notes)
+                    or set(mandatory_generated_ids) != set(overflow_generated)
+                ):
+                    raise ValueError(
+                        "overflow acknowledgement must bind the frozen full selection "
+                        "and overflow slice"
+                    )
+                mandatory_count = len(overflow_notes) + len(overflow_generated)
+            elif set(selected_note_ids) != set(mandatory_note_ids):
                 raise ValueError(
                     "overflow acknowledgement must bind the exact mandatory overflow set"
                 )
@@ -637,10 +653,11 @@ class AnkiCurationRepository:
                 review_revision=review_revision,
                 selected_note_ids=selected_note_ids,
                 selected_generated_ids=selected_generated_ids,
-                mandatory_count=len(selected_note_ids) + len(selected_generated_ids),
+                mandatory_count=mandatory_count,
                 cap=cap,
                 pipeline_contract_version=job.pipeline_contract_version,
                 model_config_sha256=job.model_config_sha256,
+                selection_order=selection_order,
             )
             document = acknowledgement.document()
             session.add(
@@ -692,19 +709,101 @@ class AnkiCurationRepository:
                 )
             except (KeyError, TypeError, ValueError):
                 return False
+            selection_order: tuple[str, ...] = ()
+            mandatory_count = len(selected_note_ids) + len(selected_generated_ids)
+            if job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V2.value:
+                try:
+                    (
+                        frozen_notes,
+                        frozen_generated,
+                        selection_order,
+                        overflow_notes,
+                        overflow_generated,
+                    ) = self._v2_overflow_selection_proof(session, job_id, review_revision)
+                except (KeyError, TypeError, ValueError):
+                    return False
+                if (
+                    tuple(selected_note_ids) != frozen_notes
+                    or tuple(selected_generated_ids) != frozen_generated
+                ):
+                    return False
+                mandatory_count = len(overflow_notes) + len(overflow_generated)
             return (
                 persisted == document
                 and verify_acknowledgement(secret, acknowledgement)
                 and acknowledgement.job_id == job_id
                 and acknowledgement.review_revision == review_revision
                 and acknowledgement.selection_digest
-                == selection_digest(selected_note_ids, selected_generated_ids)
+                == selection_digest(
+                    selected_note_ids,
+                    selected_generated_ids,
+                    selection_order=selection_order,
+                )
                 and acknowledgement.mandatory_count
-                == len(selected_note_ids) + len(selected_generated_ids)
+                == mandatory_count
                 and acknowledgement.cap == cap
                 and acknowledgement.pipeline_contract_version == job.pipeline_contract_version
                 and acknowledgement.model_config_sha256 == job.model_config_sha256
             )
+
+    def _v2_overflow_selection_proof(
+        self,
+        session: Session,
+        job_id: UUID,
+        review_revision: int,
+    ) -> tuple[tuple[int, ...], tuple[str, ...], tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
+        """Derive the only V2 acknowledgement scope from persisted S9 metadata."""
+        stored = session.scalar(
+            select(AnkiReviewedReconciliationModel).where(
+                AnkiReviewedReconciliationModel.job_id == str(job_id),
+                AnkiReviewedReconciliationModel.review_revision == review_revision,
+            )
+        )
+        if stored is None:
+            raise ValueError("current reviewed reconciliation is unavailable")
+        payload = cast(dict[str, Any], json.loads(stored.payload_json))
+        snapshot = CardCentricReconciliationInput.model_validate(payload["snapshot"])
+        metadata = tuple(
+            sorted(snapshot.selection_metadata, key=lambda item: item.selected_position)
+        )
+        total = len(snapshot.selected_nids) + len(snapshot.selected_generated_card_ids)
+        expected_identities = {
+            *(f"existing:{note_id}" for note_id in snapshot.selected_nids),
+            *(f"generated:{card_id}" for card_id in snapshot.selected_generated_card_ids),
+        }
+        if (
+            total <= snapshot.cap
+            or len(metadata) != total
+            or [item.selected_position for item in metadata] != list(range(1, total + 1))
+            or {item.identity for item in metadata} != expected_identities
+        ):
+            raise ValueError("persisted V2 selection metadata cannot prove overflow scope")
+        overflow = tuple(item for item in metadata if item.selected_position > snapshot.cap)
+        if len(overflow) != total - snapshot.cap or any(
+            not item.mandatory
+            or not item.overflow_reason
+            or not item.overflow_reason.strip()
+            or not item.manual_acknowledgement_required
+            for item in overflow
+        ):
+            raise ValueError("persisted V2 overflow slice is not mandatory and review-ready")
+        overflow_notes = tuple(
+            int(item.identity.removeprefix("existing:"))
+            for item in overflow
+            if item.identity.startswith("existing:")
+        )
+        overflow_generated = tuple(
+            item.identity.removeprefix("generated:")
+            for item in overflow
+            if item.identity.startswith("generated:")
+        )
+        return (
+            snapshot.selected_nids,
+            snapshot.selected_generated_card_ids,
+            tuple(item.identity for item in metadata),
+            overflow_notes,
+            overflow_generated,
+        )
 
     def reviewed_reconciliation(self, job_id: UUID, review_revision: int) -> dict[str, Any] | None:
         with self.database.session() as session:
@@ -771,16 +870,11 @@ class AnkiCurationRepository:
                 raise ValueError("current reviewed reconciliation is unavailable")
             payload = cast(dict[str, Any], json.loads(stored.payload_json))
             snapshot = CardCentricReconciliationInput.model_validate(payload["snapshot"])
-            selected_generated_ids = (
-                snapshot.mandatory_generated_card_ids
-                if snapshot.pipeline_contract_version == "card_centric_v2"
-                else snapshot.selected_generated_card_ids
-            )
             if not self.validate_card_centric_overflow_acknowledgement(
                 job_id,
                 review_revision=review_revision,
-                selected_note_ids=snapshot.mandatory_nids,
-                selected_generated_ids=selected_generated_ids,
+                selected_note_ids=snapshot.selected_nids,
+                selected_generated_ids=snapshot.selected_generated_card_ids,
                 cap=snapshot.cap,
                 document=document,
             ):
@@ -828,19 +922,14 @@ class AnkiCurationRepository:
             if total <= snapshot.cap:
                 return envelope.overflow_acknowledgement_provenance == {"required": False}
             document = snapshot.overflow_acknowledgement
-            selected_generated_ids = (
-                snapshot.mandatory_generated_card_ids
-                if snapshot.pipeline_contract_version == "card_centric_v2"
-                else snapshot.selected_generated_card_ids
-            )
             return bool(
                 document
                 and document == envelope.overflow_acknowledgement_provenance
                 and self.validate_card_centric_overflow_acknowledgement(
                     UUID(row.job_id),
                     review_revision=envelope.review_revision,
-                    selected_note_ids=snapshot.mandatory_nids,
-                    selected_generated_ids=selected_generated_ids,
+                    selected_note_ids=snapshot.selected_nids,
+                    selected_generated_ids=snapshot.selected_generated_card_ids,
                     cap=snapshot.cap,
                     document=document,
                 )

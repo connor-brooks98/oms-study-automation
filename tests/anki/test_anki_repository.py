@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +12,12 @@ from oms_hub.anki.contracts import (
     ActionEnvelopeV2,
     SyncOperation,
     canonical_payload_sha256,
+)
+from oms_hub.anki.correction_contracts import (
+    EvidenceQuality,
+    MarginalValueReason,
+    SelectionMetadata,
+    SelectionTier,
 )
 from oms_hub.anki.domain import (
     ApplyState,
@@ -397,13 +404,162 @@ def test_v2_overflow_acknowledgement_rejects_nonmandatory_generated_cards(tmp_pa
     )
     selected = tuple(range(1, 72))
 
-    with pytest.raises(ValueError, match="exact mandatory overflow set"):
+    with pytest.raises(ValueError, match="current reviewed reconciliation is unavailable"):
         repository.issue_card_centric_overflow_acknowledgement(
             job.id,
             review_revision=job.review_revision,
             selected_note_ids=selected,
             selected_generated_ids=("G1",),
             mandatory_note_ids=selected,
+            mandatory_generated_ids=(),
+            cap=70,
+        )
+
+
+def test_v2_mixed_overflow_acknowledgement_binds_full_selection_and_overflow_slice(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+    )
+    selected = tuple(range(1, 72))
+    metadata = tuple(
+        SelectionMetadata(
+            identity=f"existing:{note_id}",
+            selected_position=note_id,
+            tier=SelectionTier.T1,
+            evidence_quality=EvidenceQuality.PRIMARY_SOURCE,
+            mandatory=note_id == 71,
+            marginal_value_reason=(
+                MarginalValueReason.ONLY_VALID_REQUIRED_FACT if 66 <= note_id <= 70 else None
+            ),
+            overflow_reason="required coverage" if note_id == 71 else None,
+            manual_acknowledgement_required=note_id == 71,
+        )
+        for note_id in selected
+    )
+    snapshot = CardCentricReconciliationInput(
+        pipeline_contract_version="card_centric_v2",
+        concept_ids=("C01",),
+        coverage={"C01": "covered"},
+        required_fact_ids=(),
+        uncovered_after_s5=(),
+        residual_ran_for=(),
+        generated_cards=(),
+        terminal_resolutions=(),
+        terminal_resolutions_provided=True,
+        unresolved_fact_ids=(),
+        expected_scoped_nids=selected,
+        classifications=tuple(AuditResolution(nid=note_id, verdict="keep") for note_id in selected),
+        eligible_yes_nids=selected,
+        selected_nids=selected,
+        selected_generated_card_ids=(),
+        generated_card_ids=(),
+        source_passage_ids=(),
+        forbidden_cloze_targets=(),
+        prompt_sync_stale=False,
+        untagged_rate=0,
+        mandatory_nids=(71,),
+        covered_concept_ids_by_nid={note_id: ("C01",) for note_id in selected},
+        selection_metadata=metadata,
+        selection_order=tuple(item.identity for item in metadata),
+        selected_count=71,
+        below_warning_floor=False,
+    )
+    with repository.database.session() as session:
+        session.add(
+            AnkiReviewedReconciliationModel(
+                job_id=str(job.id),
+                review_revision=job.review_revision,
+                payload_json=json.dumps({"snapshot": snapshot.model_dump(mode="json")}),
+            )
+        )
+    document = repository.issue_card_centric_overflow_acknowledgement(
+        job.id,
+        review_revision=job.review_revision,
+        selected_note_ids=selected,
+        selected_generated_ids=(),
+        mandatory_note_ids=(71,),
+        mandatory_generated_ids=(),
+        cap=70,
+    )
+
+    assert document["mandatory_count"] == 1
+    assert repository.validate_card_centric_overflow_acknowledgement(
+        job.id,
+        review_revision=job.review_revision,
+        selected_note_ids=selected,
+        selected_generated_ids=(),
+        cap=70,
+        document=document,
+    )
+    assert not repository.validate_card_centric_overflow_acknowledgement(
+        job.id,
+        review_revision=job.review_revision,
+        selected_note_ids=selected[:-1],
+        selected_generated_ids=(),
+        cap=70,
+        document=document,
+    )
+    assert not repository.validate_card_centric_overflow_acknowledgement(
+        job.id,
+        review_revision=job.review_revision + 1,
+        selected_note_ids=selected,
+        selected_generated_ids=(),
+        cap=70,
+        document=document,
+    )
+    assert not repository.validate_card_centric_overflow_acknowledgement(
+        job.id,
+        review_revision=job.review_revision,
+        selected_note_ids=selected,
+        selected_generated_ids=(),
+        cap=70,
+        document={**document, "signature": "forged"},
+    )
+    repository.persist_card_centric_overflow_acknowledgement(
+        job.id,
+        review_revision=job.review_revision,
+        document=document,
+    )
+    assert (
+        repository.reviewed_reconciliation(job.id, job.review_revision)["can_render_envelope"]
+        is True
+    )
+
+    nonmandatory = snapshot.model_copy(
+        update={
+            "selection_metadata": (
+                *metadata[:-1],
+                metadata[-1].model_copy(update={"mandatory": False}),
+            )
+        }
+    )
+    bad_job = repository.create_job(
+        replace(
+            _job_request(lecture_id, snapshot="snapshot-2"),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+    )
+    with repository.database.session() as session:
+        session.add(
+            AnkiReviewedReconciliationModel(
+                job_id=str(bad_job.id),
+                review_revision=bad_job.review_revision,
+                payload_json=json.dumps({"snapshot": nonmandatory.model_dump(mode="json")}),
+            )
+        )
+    with pytest.raises(ValueError, match="cards above 70 require mandatory"):
+        repository.issue_card_centric_overflow_acknowledgement(
+            bad_job.id,
+            review_revision=bad_job.review_revision,
+            selected_note_ids=selected,
+            selected_generated_ids=(),
+            mandatory_note_ids=(71,),
             mandatory_generated_ids=(),
             cap=70,
         )
