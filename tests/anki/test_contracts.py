@@ -124,7 +124,17 @@ def test_to_domain_uses_the_resolved_model_override() -> None:
     assert domain.model == "resolved-default-model"
 
 
-def test_v2_job_requires_the_approved_fast_classifier_destination() -> None:
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    (
+        ("openai", "gpt-5.2"),
+        ("anthropic", "claude-sonnet-5"),
+        ("gemini", "gemini-3-flash"),
+    ),
+)
+def test_v2_job_accepts_an_approved_persisted_fast_classifier_route(
+    provider: str, model: str
+) -> None:
     payload = _job_payload()
     payload["pipeline_contract_version"] = "card_centric_v2"
     config = ResolvedModelConfiguration.card_centric_v2_default(
@@ -132,18 +142,55 @@ def test_v2_job_requires_the_approved_fast_classifier_destination() -> None:
     ).canonical_document()
     config["fast_classify_s4b"] = {
         **config["fast_classify_s4b"],
-        "provider": "anthropic",
-        "model": "claude-haiku-5",
+        "provider": provider,
+        "model": model,
     }
     payload["resolved_model_config"] = config
 
     request = CreateCurationJobRequest.model_validate(payload)
 
-    with pytest.raises(ValueError, match="S4b must use openai gpt-4o-mini"):
+    domain = request.to_domain(model="claude-sonnet-5")
+
+    assert domain.resolved_model_config is not None
+    assert domain.resolved_model_config.fast_classify_s4b is not None
+    assert domain.resolved_model_config.fast_classify_s4b.provider == provider
+    assert domain.resolved_model_config.fast_classify_s4b.model == model
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "thinking_mode", "error"),
+    (
+        ("openrouter", "openai/gpt-4o-mini", "disabled", "S4b requires an approved provider"),
+        ("unsupported", "model", "disabled", "provider is unsupported"),
+        ("   ", "model", "disabled", "values cannot be blank"),
+        ("openai", "   ", "disabled", "values cannot be blank"),
+        ("gemini", "gemini-3-flash", "default", "S4b requires an approved provider"),
+        ("anthropic", "claude-sonnet-5", "enabled", "S4b requires an approved provider"),
+    ),
+)
+def test_v2_job_rejects_an_unapproved_fast_classifier_route(
+    provider: str, model: str, thinking_mode: str, error: str
+) -> None:
+    payload = _job_payload()
+    payload["pipeline_contract_version"] = "card_centric_v2"
+    config = ResolvedModelConfiguration.card_centric_v2_default(
+        "anthropic", "claude-sonnet-5"
+    ).canonical_document()
+    config["fast_classify_s4b"] = {
+        **config["fast_classify_s4b"],
+        "provider": provider,
+        "model": model,
+        "thinking_mode": thinking_mode,
+    }
+    payload["resolved_model_config"] = config
+
+    request = CreateCurationJobRequest.model_validate(payload)
+
+    with pytest.raises(ValueError, match=error):
         request.to_domain(model="claude-sonnet-5")
 
 
-def test_v2_job_accepts_the_default_approved_fast_classifier_destination() -> None:
+def test_v2_job_keeps_the_legacy_openai_fast_classifier_route_as_the_default() -> None:
     payload = _job_payload()
     payload["pipeline_contract_version"] = "card_centric_v2"
 

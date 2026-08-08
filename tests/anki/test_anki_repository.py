@@ -122,7 +122,7 @@ def test_card_centric_profile_persists_for_the_local_study_hub_user(tmp_path: Pa
     assert repository.card_centric_profile() == profile
 
 
-def test_repository_rejects_a_redirected_v2_fast_classifier(tmp_path: Path) -> None:
+def test_repository_rejects_an_unapproved_v2_fast_classifier_provider(tmp_path: Path) -> None:
     repository, lecture_id = _prepared_repository(tmp_path)
     approved = ResolvedModelConfiguration.card_centric_v2_default("anthropic", "claude-sonnet-5")
     redirected = replace(
@@ -132,7 +132,7 @@ def test_repository_rejects_a_redirected_v2_fast_classifier(tmp_path: Path) -> N
         ),
     )
 
-    with pytest.raises(ValueError, match="S4b must use openai gpt-4o-mini"):
+    with pytest.raises(ValueError, match="S4b requires an approved provider"):
         repository.create_job(
             replace(
                 _job_request(lecture_id),

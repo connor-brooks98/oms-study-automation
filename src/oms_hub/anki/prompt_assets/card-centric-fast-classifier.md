@@ -1,7 +1,6 @@
 ---
 id: card-centric-fast-classifier
 version: 2.0.0
-model: gpt-4o-mini
 temperature: 0
 max_tokens: 8000
 response_format: json

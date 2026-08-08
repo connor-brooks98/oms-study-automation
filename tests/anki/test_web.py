@@ -884,7 +884,7 @@ def test_create_job_rejects_oversized_model(
     assert response.status_code == 422
 
 
-def test_create_v2_job_rejects_a_redirected_fast_classifier_destination(
+def test_create_v2_job_rejects_an_unapproved_fast_classifier_provider(
     prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
 ) -> None:
     client, _, lecture_id, revision_id, _ = prepared_app
@@ -908,10 +908,10 @@ def test_create_v2_job_rejects_a_redirected_fast_classifier_destination(
     )
 
     assert response.status_code == 422
-    assert "S4b must use openai gpt-4o-mini" in response.json()["detail"]
+    assert "S4b requires an approved provider" in response.json()["detail"]
 
 
-def test_create_v2_job_accepts_the_fixed_default_fast_classifier_destination(
+def test_create_v2_job_accepts_the_legacy_default_fast_classifier_route(
     prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
 ) -> None:
     client, _, lecture_id, revision_id, _ = prepared_app

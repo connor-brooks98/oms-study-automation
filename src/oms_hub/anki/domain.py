@@ -108,11 +108,12 @@ class ResolvedStageModel:
 
 @dataclass(frozen=True, slots=True)
 class ResolvedClassifierExecution:
-    """Pinned S4b/S4c/S6 execution settings used by P1 replay identity.
+    """Frozen S4b/S4c/S6 execution settings exposed to the P1/I0 seam.
 
     ``None`` on the enclosing model configuration remains the compatibility
-    representation for documents written before P2-C.  New v2 configurations
-    persist this object so P1 can hash these values with the pinned prompt.
+    representation for documents written before P2-C.  P1/I0 owns persistence
+    in job canonical documents and preflight snapshots; P2-C only defines the
+    typed settings and the stage-artifact hook.
     """
 
     fast_batch_size: int = 60
@@ -161,9 +162,9 @@ class ResolvedModelConfiguration:
     residual_unlocked: bool = False
     # None deliberately preserves old v1/legacy persisted canonical documents.
     fast_classify_s4b: ResolvedStageModel | None = None
-    # P1/I0 will persist this additive field after its repository/request
-    # parser accepts it.  P2 keeps it out of canonical_document() meanwhile so
-    # existing persisted jobs continue to round-trip unchanged.
+    # P1/I0 owns persistence for this additive field. P2-C keeps it out of
+    # canonical_document() until that repository/request seam is implemented,
+    # so existing persisted jobs continue to round-trip unchanged.
     classifier_execution: ResolvedClassifierExecution | None = None
 
     def __post_init__(self) -> None:
@@ -242,18 +243,18 @@ class ResolvedModelConfiguration:
         return document
 
     def require_card_centric_v2_fast_classifier(self) -> None:
-        """Enforce the fixed, reviewed S4b destination for v2 jobs only."""
+        """Enforce the approved persisted S4b route for v2 jobs only."""
         stage = self.fast_classify_s4b
         if stage is None:
             raise ValueError("card-centric v2 requires a fast S4b model")
         if (
-            stage.provider != "openai"
-            or stage.model != "gpt-4o-mini"
+            stage.provider not in {"openai", "anthropic", "gemini"}
+            or not stage.model.strip()
             or stage.thinking_mode != "disabled"
-            or stage.fixture_validation_signature is not None
         ):
             raise ValueError(
-                "card-centric v2 S4b must use openai gpt-4o-mini with disabled thinking"
+                "card-centric v2 S4b requires an approved provider, a nonblank model, "
+                "and disabled thinking"
             )
 
 
