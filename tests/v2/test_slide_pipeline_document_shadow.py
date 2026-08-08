@@ -18,7 +18,7 @@ from oms_hub.document_processing.shadow import DocumentShadowEvaluator
 from oms_hub.domain import LectureKey
 from oms_hub.files.atomic import verified_atomic_copy
 from oms_hub.files.office import OfficeTimeoutError
-from oms_hub.ingestion.domain import StagedUpload, UploadKind
+from oms_hub.ingestion.domain import StagedUpload, UploadKind, UploadState
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.routing import build_slide_destinations
@@ -145,6 +145,53 @@ def test_transient_office_failure_keeps_revision_promotable_for_retry(
     assert revision.current is True
     assert revision.state == "current"
     assert converter.calls == 2
+
+
+def test_exact_current_slide_repairs_filed_artifacts_without_state_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline, item_id = _slide_pipeline(tmp_path)
+    current = pipeline.process(item_id)
+    assert current.canonical_derived_path is not None
+    current.canonical_derived_path.write_bytes(b"corrupt filed PDF")
+
+    staged = tmp_path / "repair-slide.pptx"
+    payload = current.immutable_source_path.read_bytes()
+    staged.write_bytes(payload)
+    batch_id = pipeline.repository.create_batch(UploadKind.SLIDES)
+    pipeline.repository.add_item(
+        UploadKind.SLIDES,
+        StagedUpload(
+            batch_id=batch_id,
+            item_id="repair-slide",
+            path=staged,
+            sha256=hashlib.sha256(payload).hexdigest(),
+            size_bytes=len(payload),
+            original_filename="repair-slide.pptx",
+        ),
+    )
+    pipeline.repository.set_manual_assignment("repair-slide", current.lecture_id)
+
+    def reject_state_transition(_revision_id: int) -> None:
+        raise AssertionError("current repair must not begin a state transition")
+
+    monkeypatch.setattr(
+        pipeline.repository,
+        "begin_study_promotion",
+        reject_state_transition,
+    )
+    repaired = pipeline.process("repair-slide")
+
+    assert repaired.id == current.id
+    assert repaired.current is True
+    assert repaired.state == "current"
+    assert pipeline.repository.require_item("repair-slide").state is UploadState.COMPLETE
+    assert current.immutable_derived_path is not None
+    assert (
+        current.canonical_derived_path.read_bytes()
+        == current.immutable_derived_path.read_bytes()
+    )
 
 
 def test_shadow_failure_does_not_fail_slide_filing(tmp_path: Path) -> None:

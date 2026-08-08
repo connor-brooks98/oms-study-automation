@@ -64,6 +64,10 @@ class SlidePipeline:
             raise ValueError("slide revision has no PDF destination")
         recovering_promotion = revision.state == "promoting"
         try:
+            if revision.current:
+                revision = self._repair_current_revision(item_id, revision, derived)
+                self._mark_promoted(revision.lecture_id)
+                return revision
             if recovering_promotion:
                 revision = self._promote_revision(
                     revision,
@@ -270,6 +274,31 @@ class SlidePipeline:
         except Exception:
             self.repository.reset_study_promotion(revision.id)
             raise
+
+    def _repair_current_revision(
+        self,
+        item_id: str,
+        revision: StudyRevision,
+        derived: Path,
+    ) -> StudyRevision:
+        if sha256_file(revision.immutable_source_path) != revision.source_sha256:
+            raise ValueError("immutable PowerPoint checksum mismatch")
+        if (
+            revision.derived_sha256 is None
+            or sha256_file(derived) != revision.derived_sha256
+        ):
+            raise ValueError("immutable PDF checksum mismatch")
+        validate_pdf(derived)
+        return self.promotion.promote(
+            self._persisted_promotion_pairs(revision, derived),
+            revision.id,
+            lambda: self.repository.finish_revision(
+                item_id,
+                revision.id,
+                UploadState.COMPLETE,
+                current=False,
+            ),
+        )
 
     @staticmethod
     def _persisted_promotion_pairs(
