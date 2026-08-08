@@ -6,7 +6,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Protocol
+from types import MappingProxyType
+from typing import Any, Protocol, cast
 from uuid import UUID
 
 from oms_hub.anki.domain import (
@@ -14,12 +15,17 @@ from oms_hub.anki.domain import (
     CurationJob,
     CurationStage,
     CurationState,
+    EvidenceSupport,
     GapCard,
     PipelineContractVersion,
+    RetrievalPass,
     SourceEvidence,
+    SourceKind,
+    SourceReference,
     StageArtifact,
     StageUsage,
 )
+from oms_hub.anki.orphan_artifacts import OrphanArtifactStore, product_snapshot
 from oms_hub.anki.repository import AnkiCurationRepository
 
 
@@ -262,6 +268,11 @@ class StageContext:
     input_sha256: str
     prior_artifacts: tuple[StageArtifact, ...]
     prior_payloads: Mapping[CurationStage, dict[str, Any]]
+    # I0 hook: S4c/S6/S7/S9 consumers receive this immutable, repository-prepared
+    # document through their existing StageContext argument; stages.py remains
+    # untouched until its owner consumes the named replay inputs.
+    replay_inputs: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    replay_inputs_sha256: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,6 +305,31 @@ class CurationInputValidator(Protocol):
     def validate(self, job_id: UUID) -> None: ...
 
 
+class _PreparedStageReplayInputs(Protocol):
+    """Structural P1-A seam; its concrete type intentionally remains repository-owned."""
+
+    job_id: UUID
+    stage: CurationStage
+    canonical_json: str
+    sha256: str
+
+    @property
+    def document(self) -> dict[str, Any]: ...
+
+
+class _ReplayInputRepository(Protocol):
+    def prepare_stage_replay_inputs(
+        self, job_id: UUID, stage: CurationStage
+    ) -> _PreparedStageReplayInputs: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _StageReplayInputs:
+    canonical_json: str
+    sha256: str
+    document: Mapping[str, Any]
+
+
 class _AllowPinnedInputs:
     def validate(self, job_id: UUID) -> None:
         del job_id
@@ -302,6 +338,7 @@ class _AllowPinnedInputs:
 class StageArtifactStore:
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.orphans = OrphanArtifactStore(root)
 
     def write(
         self,
@@ -318,14 +355,16 @@ class StageArtifactStore:
         if not product.kind.strip():
             raise ValueError("stage artifact kind cannot be blank")
         document = {
-            "artifact_version": 2,
+            "artifact_version": 3,
             "job_id": str(job_id),
             "stage": stage.value,
             "kind": product.kind,
             "pipeline_contract_version": pipeline_contract_version.value,
             "model_config_sha256": model_config_sha256,
+            "input_sha256": input_sha256,
             "payload": product.payload,
             "metadata": product.metadata,
+            "recovery_product": product_snapshot(product),
         }
         encoded = _canonical_json(document).encode("utf-8") + b"\n"
         content_sha256 = hashlib.sha256(encoded).hexdigest()
@@ -351,7 +390,7 @@ class StageArtifactStore:
                 _fsync_directory(destination.parent)
             finally:
                 temporary.unlink(missing_ok=True)
-        return StageArtifact(
+        artifact = StageArtifact(
             artifact_id=f"{stage.value}:{content_sha256}",
             stage=stage,
             kind=product.kind.strip(),
@@ -362,6 +401,35 @@ class StageArtifactStore:
             model_config_sha256=model_config_sha256,
             metadata=dict(product.metadata),
         )
+        self.orphans.record_complete(
+            artifact,
+            job_id=job_id,
+            artifact_schema_version=3,
+        )
+        return artifact
+
+    def recover_orphan(
+        self,
+        *,
+        job: CurationJob,
+        stage: CurationStage,
+        input_sha256: str,
+        committed_artifacts: Sequence[StageArtifact],
+    ) -> tuple[StageArtifact, StageProduct] | None:
+        recovered = self.orphans.recover(
+            job_id=job.id,
+            stage=stage,
+            input_sha256=input_sha256,
+            pipeline_contract_version=job.pipeline_contract_version,
+            model_config_sha256=job.model_config_sha256,
+            committed_artifacts=committed_artifacts,
+        )
+        if recovered is None:
+            return None
+        try:
+            return recovered.artifact, _stage_product_from_snapshot(recovered.product)
+        except (KeyError, TypeError, ValueError):
+            return None
 
     def read(
         self,
@@ -394,6 +462,7 @@ class StageArtifactStore:
         )
         artifact_version = document.get("artifact_version")
         is_v2 = type(artifact_version) is int and artifact_version == 2
+        is_v3 = type(artifact_version) is int and artifact_version == 3
         is_migrated_v1 = (
             type(artifact_version) is int
             and artifact_version == 1
@@ -403,7 +472,7 @@ class StageArtifactStore:
             and job.pipeline_contract_version is PipelineContractVersion.RETRIEVAL_V4
         )
         if (
-            not (is_v2 or is_migrated_v1)
+            not (is_v2 or is_v3 or is_migrated_v1)
             or document.get("stage") != artifact.stage.value
             or document.get("kind") != artifact.kind
             or document.get("metadata") != artifact.metadata
@@ -419,12 +488,13 @@ class StageArtifactStore:
                 and document["model_config_sha256"] != artifact.model_config_sha256
             )
             or (
-                is_v2
+                (is_v2 or is_v3)
                 and (
                     "pipeline_contract_version" not in document
                     or "model_config_sha256" not in document
                 )
             )
+            or (is_v3 and document.get("input_sha256") != artifact.input_sha256)
         ):
             raise PinnedInputChanged(
                 f"Committed artifact {artifact.artifact_id} has invalid provenance"
@@ -493,9 +563,15 @@ class CurationPipeline:
         )
         try:
             self.input_validator.validate(job_id)
+            replay_inputs = _prepare_stage_replay_inputs(
+                self.repository,
+                job,
+                definition.stage,
+            )
+            committed_artifacts = tuple(self.repository.list_stage_artifacts(job_id))
             prior_artifacts = tuple(
                 artifact
-                for artifact in self.repository.list_stage_artifacts(job_id)
+                for artifact in committed_artifacts
                 if artifact.stage is not definition.stage
             )
             prior_payloads = {
@@ -506,24 +582,36 @@ class CurationPipeline:
                 job,
                 definition.stage,
                 prior_artifacts,
+                replay_inputs=replay_inputs,
             )
-            product = await self.runner.run(
-                StageContext(
-                    job=job,
-                    stage=definition.stage,
-                    input_sha256=input_sha256,
-                    prior_artifacts=prior_artifacts,
-                    prior_payloads=prior_payloads,
-                )
-            )
-            artifact = self.artifacts.write(
-                job_id,
-                definition.stage,
-                product,
+            recovered = self.artifacts.recover_orphan(
+                job=job,
+                stage=definition.stage,
                 input_sha256=input_sha256,
-                pipeline_contract_version=job.pipeline_contract_version,
-                model_config_sha256=job.model_config_sha256,
+                committed_artifacts=committed_artifacts,
             )
+            if recovered is None:
+                product = await self.runner.run(
+                    StageContext(
+                        job=job,
+                        stage=definition.stage,
+                        input_sha256=input_sha256,
+                        prior_artifacts=prior_artifacts,
+                        prior_payloads=prior_payloads,
+                        replay_inputs=replay_inputs.document,
+                        replay_inputs_sha256=replay_inputs.sha256,
+                    )
+                )
+                artifact = self.artifacts.write(
+                    job_id,
+                    definition.stage,
+                    product,
+                    input_sha256=input_sha256,
+                    pipeline_contract_version=job.pipeline_contract_version,
+                    model_config_sha256=job.model_config_sha256,
+                )
+            else:
+                artifact, product = recovered
             target_state = (
                 CurationState.FAILED
                 if product.blocking_error is not None
@@ -576,37 +664,278 @@ def _stage_input_hash(
     job: CurationJob,
     stage: CurationStage,
     artifacts: Sequence[StageArtifact],
+    *,
+    replay_inputs: _StageReplayInputs | None = None,
 ) -> str:
-    return hashlib.sha256(
-        _canonical_json(
+    identity: dict[str, object] = {
+        "job_id": str(job.id),
+        "stage": stage.value,
+        "configuration_sha256": job.configuration_sha256,
+        "pipeline_contract_version": job.pipeline_contract_version.value,
+        "model_config_sha256": job.model_config_sha256,
+        "source_revision_ids": job.source_revision_ids,
+        "index_snapshot_id": job.index_snapshot_id,
+        "semantic_generation": job.semantic_generation,
+        "companion_generation": job.companion_generation,
+        "source_index_generation": job.source_index_generation,
+        "prompt_versions": {
+            "lcl": job.lcl_prompt_version,
+            "judgment": job.judgment_rubric_version,
+            "gap": job.gap_prompt_version,
+        },
+        "provider": job.provider,
+        "model": job.model,
+        "prior_artifacts": [
             {
-                "job_id": str(job.id),
-                "stage": stage.value,
-                "configuration_sha256": job.configuration_sha256,
-                "pipeline_contract_version": job.pipeline_contract_version.value,
-                "model_config_sha256": job.model_config_sha256,
-                "source_revision_ids": job.source_revision_ids,
-                "index_snapshot_id": job.index_snapshot_id,
-                "semantic_generation": job.semantic_generation,
-                "companion_generation": job.companion_generation,
-                "source_index_generation": job.source_index_generation,
-                "prompt_versions": {
-                    "lcl": job.lcl_prompt_version,
-                    "judgment": job.judgment_rubric_version,
-                    "gap": job.gap_prompt_version,
-                },
-                "provider": job.provider,
-                "model": job.model,
-                "prior_artifacts": [
-                    {
-                        "artifact_id": artifact.artifact_id,
-                        "content_sha256": artifact.content_sha256,
-                    }
-                    for artifact in artifacts
-                ],
+                "artifact_id": artifact.artifact_id,
+                "content_sha256": artifact.content_sha256,
             }
-        ).encode("utf-8")
-    ).hexdigest()
+            for artifact in artifacts
+        ],
+    }
+    # Leaving this key out preserves historical v1/legacy stage hashes exactly.
+    if replay_inputs is not None and replay_inputs.sha256:
+        identity["prepared_replay_inputs"] = {
+            "sha256": replay_inputs.sha256,
+            "canonical_json": replay_inputs.canonical_json,
+        }
+    return hashlib.sha256(_canonical_json(identity).encode("utf-8")).hexdigest()
+
+
+def _prepare_stage_replay_inputs(
+    repository: AnkiCurationRepository,
+    job: CurationJob,
+    stage: CurationStage,
+) -> _StageReplayInputs:
+    prepare = getattr(repository, "prepare_stage_replay_inputs", None)
+    if prepare is None:
+        if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2:
+            raise PinnedInputChanged("card-centric-v2 replay inputs are unavailable")
+        return _StageReplayInputs("", "", MappingProxyType({}))
+    prepared = cast(_ReplayInputRepository, repository).prepare_stage_replay_inputs(job.id, stage)
+    if prepared.job_id != job.id or prepared.stage is not stage:
+        raise PinnedInputChanged("prepared replay inputs are for a different job or stage")
+    canonical_json = prepared.canonical_json
+    sha256 = prepared.sha256
+    if len(sha256) != 64 or any(char not in "0123456789abcdef" for char in sha256):
+        raise PinnedInputChanged("prepared replay inputs have an invalid SHA-256")
+    if hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() != sha256:
+        raise PinnedInputChanged("prepared replay inputs SHA-256 does not match its document")
+    try:
+        document = prepared.document
+    except json.JSONDecodeError as exc:
+        raise PinnedInputChanged("prepared replay inputs are not valid JSON") from exc
+    if not isinstance(document, dict) or _canonical_json(document) != canonical_json:
+        raise PinnedInputChanged("prepared replay inputs are not canonical JSON")
+    return _StageReplayInputs(
+        canonical_json,
+        sha256,
+        _immutable_replay_document(document),
+    )
+
+
+def _immutable_replay_document(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    def freeze(item: Any) -> Any:
+        if isinstance(item, dict):
+            return MappingProxyType({key: freeze(value) for key, value in item.items()})
+        if isinstance(item, list):
+            return tuple(freeze(value) for value in item)
+        return item
+
+    return cast(Mapping[str, Any], freeze(dict(value)))
+
+
+def _stage_product_from_snapshot(snapshot: Mapping[str, Any]) -> StageProduct:
+    kind = _required_str(snapshot, "kind")
+    payload = _required_mapping(snapshot, "payload")
+    metadata = _required_mapping(snapshot, "metadata")
+    cache_hits = snapshot.get("cache_hits")
+    blocking_error = snapshot.get("blocking_error")
+    if type(cache_hits) is not int or (
+        blocking_error is not None and not isinstance(blocking_error, str)
+    ):
+        raise ValueError("orphan stage product has invalid scalar fields")
+    usage = _stage_usage_from_snapshot(snapshot.get("usage"))
+    candidates = _candidates_from_snapshot(snapshot.get("candidates"))
+    source_evidence = _source_evidence_from_snapshot(snapshot.get("source_evidence"))
+    gap_cards = _gap_cards_from_snapshot(snapshot.get("gap_cards"))
+    job_pins_raw = _required_mapping(snapshot, "job_pins")
+    job_pins = {key: _string_value(value) for key, value in job_pins_raw.items()}
+    return StageProduct(
+        kind=kind,
+        payload=payload,
+        metadata=metadata,
+        usage=usage,
+        cache_hits=cache_hits,
+        candidates=candidates,
+        source_evidence=source_evidence,
+        gap_cards=gap_cards,
+        job_pins=job_pins,
+        blocking_error=blocking_error,
+    )
+
+
+def _stage_usage_from_snapshot(value: object) -> StageUsage | None:
+    if value is None:
+        return None
+    item = _mapping(value)
+    request_id = _required_str(item, "request_id")
+    numeric = tuple(item.get(name) for name in ("input_tokens", "output_tokens", "cost_microusd"))
+    if any(type(number) is not int for number in numeric):
+        raise ValueError("orphan stage usage is invalid")
+    return StageUsage(request_id, *cast(tuple[int, int, int], numeric))
+
+
+def _candidates_from_snapshot(value: object) -> tuple[Candidate, ...] | None:
+    if value is None:
+        return None
+    candidates: list[Candidate] = []
+    for raw in _sequence(value):
+        item = _mapping(raw)
+        note_id = item.get("note_id")
+        confidence = item.get("confidence")
+        context_trap = item.get("context_trap")
+        selected = item.get("selected")
+        if (
+            type(note_id) is not int
+            or type(confidence) not in {int, float}
+            or type(context_trap) is not bool
+            or type(selected) is not bool
+        ):
+            raise ValueError("orphan candidate is invalid")
+        scores_raw = _required_mapping(item, "scores")
+        if any(type(score) not in {int, float} for score in scores_raw.values()):
+            raise ValueError("orphan candidate scores are invalid")
+        candidates.append(
+            Candidate(
+                note_id=note_id,
+                content_hash=_required_str(item, "content_hash"),
+                best_concept_id=_required_str(item, "best_concept_id"),
+                provenance=_required_mapping(item, "provenance"),
+                scores={key: float(cast(float, score)) for key, score in scores_raw.items()},
+                predicted_band=_required_str(item, "predicted_band"),
+                verdict=_required_str(item, "verdict"),
+                confidence=float(cast(float, confidence)),
+                reason=_required_str(item, "reason"),
+                context_trap=context_trap,
+                recall_direction=_required_str(item, "recall_direction"),
+                mnemonic_classification=_required_str(item, "mnemonic_classification"),
+                dedupe_disposition=_required_str(item, "dedupe_disposition"),
+                selected=selected,
+                retrieval_pass=RetrievalPass(_required_str(item, "retrieval_pass")),
+            )
+        )
+    return tuple(candidates)
+
+
+def _source_evidence_from_snapshot(value: object) -> tuple[SourceEvidence, ...] | None:
+    if value is None:
+        return None
+    evidence: list[SourceEvidence] = []
+    for raw in _sequence(value):
+        item = _mapping(raw)
+        evidence.append(
+            SourceEvidence(
+                evidence_id=_required_str(item, "evidence_id"),
+                concept_id=_required_str(item, "concept_id"),
+                support=EvidenceSupport(_required_str(item, "support")),
+                statement=_required_str(item, "statement"),
+                source_refs=_source_references_from_snapshot(item.get("source_refs")),
+                content_hash=_required_str(item, "content_hash"),
+            )
+        )
+    return tuple(evidence)
+
+
+def _gap_cards_from_snapshot(value: object) -> tuple[GapCard, ...] | None:
+    if value is None:
+        return None
+    cards: list[GapCard] = []
+    for raw in _sequence(value):
+        item = _mapping(raw)
+        revision = item.get("revision")
+        selected = item.get("selected")
+        source_note_id = item.get("source_note_id")
+        if (
+            type(revision) is not int
+            or type(selected) is not bool
+            or (source_note_id is not None and type(source_note_id) is not int)
+        ):
+            raise ValueError("orphan gap card is invalid")
+        cards.append(
+            GapCard(
+                concept_id=_required_str(item, "concept_id"),
+                text=_required_str(item, "text"),
+                extra=_required_str(item, "extra"),
+                revision=revision,
+                selected=selected,
+                image_state=_required_str(item, "image_state"),
+                media_filename=_optional_str(item.get("media_filename")),
+                source_note_id=source_note_id,
+                generated_image=_required_mapping(item, "generated_image"),
+                validation_state=_required_str(item, "validation_state"),
+                source_refs=_source_references_from_snapshot(item.get("source_refs")),
+                evidence_ids=tuple(
+                    _string_value(entry) for entry in _sequence(item.get("evidence_ids"))
+                ),
+                provenance=_required_mapping(item, "provenance"),
+                initial_tags=tuple(
+                    _string_value(entry) for entry in _sequence(item.get("initial_tags"))
+                ),
+                content_hash=_required_str(item, "content_hash"),
+                card_id=_required_str(item, "card_id"),
+            )
+        )
+    return tuple(cards)
+
+
+def _source_references_from_snapshot(value: object) -> tuple[SourceReference, ...]:
+    return tuple(
+        SourceReference(
+            source_kind=SourceKind(_required_str(item, "source_kind")),
+            revision_id=_required_int(item, "revision_id"),
+            locator=_required_str(item, "locator"),
+            content_hash=_required_str(item, "content_hash"),
+        )
+        for item in (_mapping(raw) for raw in _sequence(value))
+    )
+
+
+def _mapping(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise ValueError("orphan field is not a JSON object")
+    return dict(value)
+
+
+def _required_mapping(value: Mapping[str, Any], key: str) -> dict[str, Any]:
+    return _mapping(value.get(key))
+
+
+def _sequence(value: object) -> list[Any]:
+    if not isinstance(value, list):
+        raise ValueError("orphan field is not a JSON array")
+    return list(value)
+
+
+def _required_str(value: Mapping[str, Any], key: str) -> str:
+    return _string_value(value.get(key))
+
+
+def _optional_str(value: object) -> str | None:
+    return None if value is None else _string_value(value)
+
+
+def _string_value(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("orphan field is not a string")
+    return value
+
+
+def _required_int(value: Mapping[str, Any], key: str) -> int:
+    item = value.get(key)
+    if type(item) is not int:
+        raise ValueError("orphan field is not an integer")
+    return item
 
 
 def _canonical_json(value: object) -> str:
