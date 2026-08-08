@@ -1,13 +1,48 @@
 import json
 from pathlib import Path
+from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 
 from oms_hub.anki.domain import CreateCurationJob, CurationStage, PipelineContractVersion
 from oms_hub.anki.models import AnkiCurationJobModel, AnkiReviewedReconciliationModel
+from oms_hub.anki.replay_inputs import PreparedStageReplayInputs, canonical_json, sha256_text
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.db import Database
 from oms_hub.models import LectureModel
+
+
+@pytest.mark.parametrize("value", (float("nan"), float("inf"), float("-inf")))
+def test_replay_input_canonical_json_rejects_nonfinite_values(value: float) -> None:
+    with pytest.raises(ValueError, match="finite JSON"):
+        canonical_json({"value": value})
+
+
+@pytest.mark.parametrize("constant", ("NaN", "Infinity", "-Infinity"))
+def test_prepared_replay_inputs_reject_nonfinite_json_constants(constant: str) -> None:
+    serialized = f'{{"value":{constant}}}'
+
+    with pytest.raises(ValueError, match="finite JSON"):
+        PreparedStageReplayInputs(
+            job_id=uuid4(),
+            stage=CurationStage.RECONCILIATION,
+            canonical_json=serialized,
+            sha256=sha256_text(serialized),
+        )
+
+
+def test_prepared_replay_inputs_keep_finite_canonical_document_stable() -> None:
+    document = {"score": 0.5, "stage": "reconciliation"}
+    serialized = canonical_json(document)
+    prepared = PreparedStageReplayInputs(
+        job_id=uuid4(),
+        stage=CurationStage.RECONCILIATION,
+        canonical_json=serialized,
+        sha256=sha256_text(serialized),
+    )
+
+    assert canonical_json(prepared.document) == serialized
 
 
 def _repository(tmp_path: Path) -> tuple[AnkiCurationRepository, int]:

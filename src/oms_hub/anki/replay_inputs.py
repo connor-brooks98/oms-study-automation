@@ -11,11 +11,24 @@ from oms_hub.anki.domain import CurationStage
 
 def canonical_json(value: object) -> str:
     """Serialize one replay document in the only representation we persist."""
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    try:
+        return json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("replay inputs must be finite JSON values") from exc
 
 
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"replay inputs cannot contain non-finite JSON constant {value}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,9 +47,9 @@ class PreparedStageReplayInputs:
 
     def __post_init__(self) -> None:
         try:
-            value = json.loads(self.canonical_json)
+            value = json.loads(self.canonical_json, parse_constant=_reject_json_constant)
         except (TypeError, ValueError) as exc:
-            raise ValueError("prepared replay inputs must contain JSON") from exc
+            raise ValueError("prepared replay inputs must contain finite JSON") from exc
         if canonical_json(value) != self.canonical_json:
             raise ValueError("prepared replay inputs must use canonical JSON")
         if sha256_text(self.canonical_json) != self.sha256:
@@ -44,7 +57,7 @@ class PreparedStageReplayInputs:
 
     @property
     def document(self) -> dict[str, Any]:
-        value = json.loads(self.canonical_json)
+        value = json.loads(self.canonical_json, parse_constant=_reject_json_constant)
         if not isinstance(value, dict):  # pragma: no cover - repository always stores objects
             raise AssertionError("prepared replay input document is not an object")
         return value
