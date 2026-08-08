@@ -374,18 +374,21 @@ class SlidePipeline:
             )
 
     def _mark_promoted(self, lecture_id: int) -> None:
-        self.catalog.set_step_status(
-            lecture_id,
-            V2StepName.SLIDES_FILED,
-            StepStatus.COMPLETE,
-            "PowerPoint and PDF filed on the NUC",
-        )
-        self.catalog.set_step_status(
-            lecture_id,
-            V2StepName.ICLOUD_PDF_STAGED,
-            StepStatus.COMPLETE,
-            "PDF staged in iCloud",
-        )
+        details = {
+            V2StepName.SLIDES_VALIDATED: (
+                "Original PowerPoint preserved and checksum verified"
+            ),
+            V2StepName.PDF_CONVERTED: "Converted PDF validated",
+            V2StepName.SLIDES_FILED: "PowerPoint and PDF filed on the NUC",
+            V2StepName.ICLOUD_PDF_STAGED: "PDF staged in iCloud",
+        }
+        for step in SLIDE_PIPELINE_STEPS:
+            self.catalog.set_step_status(
+                lecture_id,
+                step,
+                StepStatus.COMPLETE,
+                details[step],
+            )
 
     def _mark_failed(self, lecture_id: int, detail: str) -> None:
         for step in SLIDE_PIPELINE_STEPS:

@@ -17,13 +17,14 @@ from oms_hub.document_processing.domain import (
     SourceSnapshot,
 )
 from oms_hub.document_processing.shadow import DocumentShadowEvaluator
-from oms_hub.domain import LectureKey
+from oms_hub.domain import LectureKey, StepStatus
 from oms_hub.files.atomic import verified_atomic_copy
 from oms_hub.files.office import OfficeTimeoutError, OfficeUnavailableError
 from oms_hub.files.promotion import PromotionRecoveryError, PromotionSourceError
 from oms_hub.ingestion.domain import StagedUpload, UploadKind, UploadState
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.ingestion.worker import IngestionWorker
+from oms_hub.progress import SLIDE_PIPELINE_STEPS
 from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.routing import build_slide_destinations
 from oms_hub.slides.pipeline import SlidePipeline
@@ -453,6 +454,11 @@ def test_interrupted_group_promotion_recovers_old_files_before_clean_retry(
         pipeline.repository.require_item("recovery-duplicate").state
         is UploadState.COMPLETE
     )
+    lecture = pipeline.catalog.get_lecture(recovered.lecture_id)
+    assert lecture is not None
+    step_statuses = {step.name: step.status for step in lecture.steps}
+    for step in SLIDE_PIPELINE_STEPS:
+        assert step_statuses[step.value] == StepStatus.COMPLETE.value
     for destination in canonical:
         assert not pipeline.promotion.backup_path(destination, recovered.id).exists()
 
