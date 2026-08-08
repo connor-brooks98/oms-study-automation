@@ -9,6 +9,7 @@ from oms_hub.files.office import (
     OfficeTimeoutError,
     OfficeUnavailableError,
 )
+from oms_hub.files.promotion import PromotionRecoveryError
 from oms_hub.ingestion.domain import IngestionJob, UploadKind, UploadState
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.llm.domain import DiagnosticSource, LLMRequestError
@@ -59,8 +60,12 @@ class IngestionWorker:
 
     def _handle_failure(self, job: IngestionJob, error: Exception) -> None:
         detail = self._concise_error(error)
-        if self._is_transient(error) and job.attempts < self.max_attempts:
-            delay = timedelta(seconds=5 * (2 ** (job.attempts - 1)))
+        recovery_pending = isinstance(error, PromotionRecoveryError)
+        if self._is_transient(error) and (
+            recovery_pending or job.attempts < self.max_attempts
+        ):
+            retry_exponent = min(max(job.attempts - 1, 0), 6)
+            delay = timedelta(seconds=5 * (2**retry_exponent))
             self.repository.retry_job(job, detail, delay=delay)
             logger.warning(
                 "V2 ingestion job %s will retry after attempt %s: %s",
@@ -74,6 +79,15 @@ class IngestionWorker:
             if isinstance(error, (TranscriptValidationError, ValueError))
             else UploadState.NEEDS_REVIEW
         )
+        if isinstance(
+            error,
+            (
+                OfficeConversionError,
+                OfficeTimeoutError,
+                OfficeUnavailableError,
+            ),
+        ):
+            self.repository.fail_incomplete_study_revision(job.upload_item_id)
         self.repository.fail_job(job, detail, state=failure_state)
         logger.error(
             "V2 ingestion job %s stopped after attempt %s: %s",
@@ -98,6 +112,7 @@ class IngestionWorker:
                 OfficeConversionError,
                 OfficeTimeoutError,
                 OfficeUnavailableError,
+                PromotionRecoveryError,
             ),
         )
 

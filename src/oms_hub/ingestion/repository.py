@@ -34,7 +34,30 @@ from oms_hub.models import (
 def _filed_artifact_matches(revision: StudyRevisionModel) -> bool:
     if not revision.canonical_derived_path or not revision.derived_sha256:
         return False
-    path = Path(revision.canonical_derived_path)
+    try:
+        derived = Path(revision.canonical_derived_path)
+        if not derived.is_file() or sha256_file(derived) != revision.derived_sha256:
+            return False
+        if revision.kind != UploadKind.SLIDES.value:
+            return True
+        if not revision.canonical_source_path or not revision.icloud_path:
+            return False
+        source = Path(revision.canonical_source_path)
+        icloud = Path(revision.icloud_path)
+        return (
+            source.is_file()
+            and sha256_file(source) == revision.source_sha256
+            and icloud.is_file()
+            and sha256_file(icloud) == revision.derived_sha256
+        )
+    except OSError:
+        return False
+
+
+def _immutable_derived_matches(revision: StudyRevisionModel) -> bool:
+    if not revision.immutable_derived_path or not revision.derived_sha256:
+        return False
+    path = Path(revision.immutable_derived_path)
     try:
         return path.is_file() and sha256_file(path) == revision.derived_sha256
     except OSError:
@@ -369,6 +392,8 @@ class IngestionRepository:
                     revision.immutable_derived_path = str(
                         revision_dir / "cleaned.txt"
                     )
+            elif revision.state == "failed" and not revision.current:
+                revision.state = "proposed"
             item.state = UploadState.PROCESSING.value
             item.error = None
             job = session.scalar(
@@ -551,9 +576,41 @@ class IngestionRepository:
             session.flush()
             return self._study_revision(revision)
 
+    def fail_incomplete_study_revision(self, item_id: str) -> None:
+        """Retire an unusable revision after its processing retries are exhausted."""
+        with self.database.session() as session:
+            item = session.get(UploadItemModel, item_id)
+            if item is None:
+                raise KeyError(item_id)
+            revision = session.scalar(
+                select(StudyRevisionModel).where(
+                    StudyRevisionModel.upload_item_id == item_id
+                )
+            )
+            if revision is None:
+                revision = session.scalar(
+                    select(StudyRevisionModel).where(
+                        StudyRevisionModel.lecture_id == item.lecture_id,
+                        StudyRevisionModel.kind == item.kind,
+                        StudyRevisionModel.source_sha256 == item.sha256,
+                    )
+                )
+            if (
+                revision is not None
+                and not revision.current
+                and revision.state in {"proposed", "promoting"}
+                and (
+                    not _immutable_derived_matches(revision)
+                    or revision.canonical_derived_path is None
+                )
+            ):
+                revision.state = "failed"
+
     def promote_study_revision(
         self,
         revision_id: int,
+        *,
+        complete_item: bool = True,
     ) -> StudyRevision:
         with self.database.session() as session:
             revision = session.get(StudyRevisionModel, revision_id)
@@ -575,7 +632,39 @@ class IngestionRepository:
             revision.current = True
             revision.state = "current"
             revision.promoted_at = utc_now()
+            if complete_item:
+                self._complete_revision_item(session, revision)
+            session.flush()
+            return self._study_revision(revision)
+
+    def complete_promoted_revision(
+        self,
+        revision_id: int,
+        item_id: str,
+    ) -> StudyRevision:
+        with self.database.session() as session:
+            revision = session.get(StudyRevisionModel, revision_id)
+            if revision is None:
+                raise KeyError(revision_id)
+            if not revision.current or revision.state != "current":
+                raise ValueError("revision promotion is not committed")
             self._complete_revision_item(session, revision)
+            if item_id != revision.upload_item_id:
+                item = session.get(UploadItemModel, item_id)
+                if item is None:
+                    raise KeyError(item_id)
+                item.state = UploadState.COMPLETE.value
+                item.error = None
+                job = session.scalar(
+                    select(IngestionJobModel).where(
+                        IngestionJobModel.upload_item_id == item_id,
+                        IngestionJobModel.action == "process",
+                    )
+                )
+                if job is not None:
+                    job.state = UploadState.COMPLETE.value
+                    job.error = None
+                self._sync_batch_state(session, item.batch_id)
             session.flush()
             return self._study_revision(revision)
 

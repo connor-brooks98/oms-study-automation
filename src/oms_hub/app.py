@@ -88,6 +88,10 @@ from oms_hub.study_generation.notebook_connection import (
     NotebookConnectionService,
     retire_google_docs_credentials,
 )
+from oms_hub.study_generation.notebook_storage import (
+    NotebookStorageError,
+    migrate_encrypted_notebook_storage,
+)
 from oms_hub.study_generation.outline import OutlineService
 from oms_hub.study_generation.path_picker import (
     SystemPromptDirectoryPicker,
@@ -460,7 +464,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else None
     )
     app.state.secrets = KeyringSecretStore()
-    retire_google_docs_credentials(resolved.data_dir, app.state.secrets)
+    app.state.notebook_storage_migration_error = None
+    try:
+        retire_google_docs_credentials(resolved.data_dir, app.state.secrets)
+    except KeyringError:
+        logger.warning(
+            "Legacy Google Docs credentials could not be retired; "
+            "continuing startup."
+        )
     app.state.study_ai_settings = StudyAISettingsRepository(database)
     app.state.anki_repository = AnkiCurationRepository(database)
     app.state.anki_tag_policy = TagPolicy(
@@ -516,11 +527,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         active_anki_prompt_directory,
     )
     notebook_storage_path = resolved.data_dir / "google" / "notebooklm-storage.json"
+    try:
+        app.state.notebook_storage_migrated = migrate_encrypted_notebook_storage(
+            notebook_storage_path.with_suffix(".enc"),
+            notebook_storage_path,
+            app.state.secrets,
+        )
+    except NotebookStorageError as error:
+        # NotebookLM is optional. Keep the encrypted rollback artifact and let
+        # the Hub start disconnected so Settings remains available to reconnect.
+        app.state.notebook_storage_migrated = False
+        app.state.notebook_storage_migration_error = str(error)
     app.state.notebook_auth = NotebookCLIAuth(notebook_storage_path)
     app.state.notebook_connection = NotebookConnectionService(
         app.state.generation_repository,
         app.state.notebook_auth,
     )
+    if app.state.notebook_storage_migration_error is not None:
+        app.state.notebook_connection.invalidate(
+            app.state.notebook_storage_migration_error
+        )
     app.state.prompt_path_picker = SystemPromptPathPicker()
     app.state.prompt_directory_picker = SystemPromptDirectoryPicker()
     app.state.upload_staging = StagingService(

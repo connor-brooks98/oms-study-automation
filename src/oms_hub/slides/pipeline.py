@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from oms_hub.config import Settings
@@ -8,8 +7,18 @@ from oms_hub.document_processing.router import ParserMode
 from oms_hub.document_processing.shadow import DocumentShadowEvaluator
 from oms_hub.domain import LectureKey, StepStatus, V2StepName
 from oms_hub.files.atomic import sha256_file, verified_atomic_copy
-from oms_hub.files.office import OfficeConverter
+from oms_hub.files.office import (
+    OfficeConversionError,
+    OfficeConverter,
+    OfficeTimeoutError,
+    OfficeUnavailableError,
+)
 from oms_hub.files.pdf import validate_pdf
+from oms_hub.files.promotion import (
+    PromotionCoordinator,
+    PromotionRecoveryError,
+    PromotionSourceError,
+)
 from oms_hub.ingestion.domain import (
     StudyRevision,
     UploadKind,
@@ -31,6 +40,7 @@ class SlidePipeline:
     ):
         self.settings = settings
         self.converter = converter
+        self.promotion = PromotionCoordinator()
         self.repository = IngestionRepository(database)
         self.catalog = CatalogRepository(database)
         self.document_evaluator = document_evaluator
@@ -56,7 +66,38 @@ class SlidePipeline:
         derived = revision.immutable_derived_path
         if derived is None:
             raise ValueError("slide revision has no PDF destination")
+        recovering_promotion = revision.state == "promoting"
         try:
+            if revision.current:
+                revision = self._repair_current_revision(
+                    item.staged_path,
+                    revision,
+                    derived,
+                )
+                self._mark_promoted(revision.lecture_id)
+                return self.repository.complete_promoted_revision(
+                    revision.id,
+                    item_id,
+                )
+            if recovering_promotion:
+                revision = self._promote_revision(
+                    revision,
+                    self._persisted_promotion_pairs(revision, derived),
+                )
+                self._mark_promoted(revision.lecture_id)
+                return self.repository.complete_promoted_revision(
+                    revision.id,
+                    item_id,
+                )
+            destinations = build_slide_destinations(
+                self.settings,
+                LectureKey(
+                    lecture.subject,
+                    lecture.exam_number,
+                    lecture.lecture_number,
+                    lecture.topic,
+                ),
+            )
             self._set_slide_steps(
                 revision.lecture_id,
                 StepStatus.RUNNING,
@@ -85,15 +126,6 @@ class SlidePipeline:
                 StepStatus.COMPLETE,
                 "Converted PDF validated",
             )
-            destinations = build_slide_destinations(
-                self.settings,
-                LectureKey(
-                    lecture.subject,
-                    lecture.exam_number,
-                    lecture.lecture_number,
-                    lecture.topic,
-                ),
-            )
             revision = self.repository.update_revision_paths(
                 revision.id,
                 derived_sha256=derived_sha256,
@@ -120,40 +152,46 @@ class SlidePipeline:
                     error="lecture replacement awaits approval",
                 )
 
-            self._promote_group(
+            revision = self._promote_revision(
+                revision,
                 [
                     (revision.immutable_source_path, destinations.source),
                     (derived, destinations.pdf),
                     (derived, destinations.icloud_pdf),
                 ],
+            )
+            self._mark_promoted(revision.lecture_id)
+            return self.repository.complete_promoted_revision(
                 revision.id,
-            )
-            self.catalog.set_step_status(
-                revision.lecture_id,
-                V2StepName.SLIDES_FILED,
-                StepStatus.COMPLETE,
-                "PowerPoint and PDF filed on the NUC",
-            )
-            self.catalog.set_step_status(
-                revision.lecture_id,
-                V2StepName.ICLOUD_PDF_STAGED,
-                StepStatus.COMPLETE,
-                "PDF staged in iCloud",
-            )
-            return self.repository.finish_revision(
                 item_id,
-                revision.id,
-                UploadState.COMPLETE,
-                current=True,
             )
         except Exception as error:
             self._mark_failed(revision.lecture_id, str(error))
+            revision_state = None
+            if isinstance(error, PromotionSourceError):
+                revision_state = "failed"
+            elif isinstance(error, PromotionRecoveryError):
+                revision_state = "promoting"
+            elif recovering_promotion:
+                stored = self.repository.get_study_revision(revision.id)
+                if stored.state in {"proposed", "promoting"}:
+                    revision_state = stored.state
+            elif isinstance(
+                error,
+                (
+                    OfficeConversionError,
+                    OfficeTimeoutError,
+                    OfficeUnavailableError,
+                ),
+            ):
+                revision_state = "proposed"
             self.repository.finish_revision(
                 item_id,
                 revision.id,
                 UploadState.FAILED,
                 current=False,
                 error=str(error),
+                revision_state=revision_state,
             )
             raise
 
@@ -206,9 +244,7 @@ class SlidePipeline:
     ) -> None:
         if sha256_file(staged) != expected_sha256:
             raise ValueError("staged PowerPoint checksum mismatch")
-        if immutable.is_file():
-            if sha256_file(immutable) != expected_sha256:
-                raise ValueError("immutable PowerPoint checksum mismatch")
+        if immutable.is_file() and sha256_file(immutable) == expected_sha256:
             return
         copied_sha256 = verified_atomic_copy(staged, immutable)
         if copied_sha256 != expected_sha256:
@@ -232,35 +268,112 @@ class SlidePipeline:
         validate_pdf(destination)
         return sha256_file(destination)
 
-    @staticmethod
-    def _promote_group(
+    def _promote_revision(
+        self,
+        revision: StudyRevision,
         pairs: list[tuple[Path, Path]],
-        revision_id: int,
-    ) -> None:
-        backups: dict[Path, Path | None] = {}
+    ) -> StudyRevision:
         try:
-            for _, destination in pairs:
-                if destination.exists():
-                    existing_backup = destination.with_name(
-                        f".{destination.name}.oms-backup-{revision_id}"
-                    )
-                    verified_atomic_copy(destination, existing_backup)
-                    backups[destination] = existing_backup
-                else:
-                    backups[destination] = None
-            for source, destination in pairs:
-                verified_atomic_copy(source, destination)
-        except Exception:
-            for destination, saved_path in backups.items():
-                if saved_path is not None and saved_path.exists():
-                    os.replace(saved_path, destination)
-                elif saved_path is None:
-                    destination.unlink(missing_ok=True)
+            self._validate_promotion_sources(revision)
+        except PromotionSourceError:
+            if revision.state == "promoting":
+                self.promotion.restore_backups(pairs, revision.id)
             raise
-        finally:
-            for saved_path in backups.values():
-                if saved_path is not None:
-                    saved_path.unlink(missing_ok=True)
+        if revision.state == "promoting":
+            recovered = self.promotion.recover(
+                pairs,
+                revision.id,
+                lambda: self.repository.promote_study_revision(
+                    revision.id,
+                    complete_item=False,
+                ),
+                lambda: self.repository.reset_study_promotion(revision.id),
+            )
+            if recovered is not None:
+                return recovered
+            revision = self.repository.get_study_revision(revision.id)
+        self.repository.begin_study_promotion(revision.id)
+        try:
+            return self.promotion.promote(
+                pairs,
+                revision.id,
+                lambda: self.repository.promote_study_revision(
+                    revision.id,
+                    complete_item=False,
+                ),
+            )
+        except PromotionRecoveryError:
+            raise
+        except Exception:
+            self.repository.reset_study_promotion(revision.id)
+            raise
+
+    @staticmethod
+    def _validate_promotion_sources(revision: StudyRevision) -> None:
+        derived = revision.immutable_derived_path
+        try:
+            if (
+                sha256_file(revision.immutable_source_path)
+                != revision.source_sha256
+                or derived is None
+                or revision.derived_sha256 is None
+                or sha256_file(derived) != revision.derived_sha256
+            ):
+                raise PromotionSourceError(
+                    "immutable promotion source checksum mismatch; upload the file again"
+                )
+        except OSError as error:
+            raise PromotionSourceError(
+                "immutable promotion source is unavailable; upload the file again"
+            ) from error
+
+    def _repair_current_revision(
+        self,
+        staged: Path,
+        revision: StudyRevision,
+        derived: Path,
+    ) -> StudyRevision:
+        self._preserve_source(
+            staged,
+            revision.immutable_source_path,
+            revision.source_sha256,
+        )
+        derived_sha256 = self._ensure_pdf(
+            revision.immutable_source_path,
+            derived,
+            revision.derived_sha256,
+        )
+        if derived_sha256 != revision.derived_sha256:
+            pairs = self._persisted_promotion_pairs(revision, derived)
+            revision = self.repository.update_revision_paths(
+                revision.id,
+                derived_sha256=derived_sha256,
+                canonical_source_path=pairs[0][1],
+                canonical_derived_path=pairs[1][1],
+                icloud_path=pairs[2][1],
+            )
+        return self.promotion.promote(
+            self._persisted_promotion_pairs(revision, derived),
+            revision.id,
+            lambda: revision,
+        )
+
+    @staticmethod
+    def _persisted_promotion_pairs(
+        revision: StudyRevision,
+        derived: Path,
+    ) -> list[tuple[Path, Path]]:
+        if (
+            revision.canonical_source_path is None
+            or revision.canonical_derived_path is None
+            or revision.icloud_path is None
+        ):
+            raise ValueError("promoting slide revision has incomplete canonical paths")
+        return [
+            (revision.immutable_source_path, revision.canonical_source_path),
+            (derived, revision.canonical_derived_path),
+            (derived, revision.icloud_path),
+        ]
 
     def _set_slide_steps(
         self,
@@ -274,6 +387,23 @@ class SlidePipeline:
                 step,
                 status,
                 detail,
+            )
+
+    def _mark_promoted(self, lecture_id: int) -> None:
+        details = {
+            V2StepName.SLIDES_VALIDATED: (
+                "Original PowerPoint preserved and checksum verified"
+            ),
+            V2StepName.PDF_CONVERTED: "Converted PDF validated",
+            V2StepName.SLIDES_FILED: "PowerPoint and PDF filed on the NUC",
+            V2StepName.ICLOUD_PDF_STAGED: "PDF staged in iCloud",
+        }
+        for step in SLIDE_PIPELINE_STEPS:
+            self.catalog.set_step_status(
+                lecture_id,
+                step,
+                StepStatus.COMPLETE,
+                details[step],
             )
 
     def _mark_failed(self, lecture_id: int, detail: str) -> None:

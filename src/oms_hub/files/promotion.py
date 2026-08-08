@@ -5,6 +5,14 @@ from pathlib import Path
 from oms_hub.files.atomic import sha256_file, verified_atomic_copy
 
 
+class PromotionRecoveryError(RuntimeError):
+    pass
+
+
+class PromotionSourceError(RuntimeError):
+    pass
+
+
 class PromotionCoordinator:
     def promote[T](
         self,
@@ -12,7 +20,13 @@ class PromotionCoordinator:
         revision_id: int,
         commit: Callable[[], T],
     ) -> T:
-        return promote_with_rollback(pairs, revision_id, commit)
+        _validate_sources(pairs)
+        try:
+            return promote_with_rollback(pairs, revision_id, commit)
+        except OSError as error:
+            raise PromotionRecoveryError(
+                "slide file promotion could not complete"
+            ) from error
 
     def recover[T](
         self,
@@ -21,7 +35,19 @@ class PromotionCoordinator:
         commit: Callable[[], T],
         reset: Callable[[], None],
     ) -> T | None:
-        return recover_promotion(pairs, revision_id, commit, reset)
+        source_hashes = _validate_sources(pairs)
+        try:
+            return recover_promotion(
+                pairs,
+                revision_id,
+                commit,
+                reset,
+                source_hashes,
+            )
+        except OSError as error:
+            raise PromotionRecoveryError(
+                "slide file promotion recovery could not complete"
+            ) from error
 
     def remove_backups(
         self,
@@ -29,6 +55,18 @@ class PromotionCoordinator:
         revision_id: int,
     ) -> None:
         remove_backups(pairs, revision_id)
+
+    def restore_backups(
+        self,
+        pairs: list[tuple[Path, Path]],
+        revision_id: int,
+    ) -> None:
+        try:
+            _roll_back_recovery(pairs, revision_id)
+        except OSError as error:
+            raise PromotionRecoveryError(
+                "slide file promotion recovery could not complete"
+            ) from error
 
     def backup_path(self, destination: Path, revision_id: int) -> Path:
         return backup_path(destination, revision_id)
@@ -50,18 +88,22 @@ def promote_with_rollback[T](
                 backups[destination] = None
         for source, destination in pairs:
             verified_atomic_copy(source, destination)
-        return commit()
-    except Exception:
+        result = commit()
+    except Exception as error:
+        rollback_error: OSError | None = None
         for destination, saved in backups.items():
-            if saved is not None and saved.exists():
-                os.replace(saved, destination)
-            elif saved is None:
-                destination.unlink(missing_ok=True)
+            try:
+                if saved is not None and saved.exists():
+                    os.replace(saved, destination)
+                elif saved is None:
+                    destination.unlink(missing_ok=True)
+            except OSError as restore_error:
+                rollback_error = rollback_error or restore_error
+        if rollback_error is not None:
+            raise rollback_error from error
         raise
-    finally:
-        for saved in backups.values():
-            if saved is not None:
-                saved.unlink(missing_ok=True)
+    remove_backups(pairs, revision_id)
+    return result
 
 
 def recover_promotion[T](
@@ -69,10 +111,12 @@ def recover_promotion[T](
     revision_id: int,
     commit: Callable[[], T],
     reset: Callable[[], None],
+    source_hashes: dict[Path, str] | None = None,
 ) -> T | None:
+    expected = source_hashes or _validate_sources(pairs)
     if all(
         destination.is_file()
-        and sha256_file(destination) == sha256_file(source)
+        and sha256_file(destination) == expected[source]
         for source, destination in pairs
     ):
         try:
@@ -92,15 +136,24 @@ def _roll_back_recovery(
     pairs: list[tuple[Path, Path]],
     revision_id: int,
 ) -> None:
-    for source, destination in pairs:
+    for _source, destination in pairs:
         saved = backup_path(destination, revision_id)
         if saved.exists():
             os.replace(saved, destination)
-        elif (
-            destination.is_file()
-            and sha256_file(destination) == sha256_file(source)
-        ):
-            destination.unlink()
+
+
+def _validate_sources(pairs: list[tuple[Path, Path]]) -> dict[Path, str]:
+    hashes: dict[Path, str] = {}
+    try:
+        for source, _destination in pairs:
+            if not source.is_file():
+                raise FileNotFoundError(source)
+            hashes[source] = sha256_file(source)
+    except OSError as error:
+        raise PromotionSourceError(
+            "immutable promotion source is unavailable; upload the file again"
+        ) from error
+    return hashes
 
 
 def remove_backups(
