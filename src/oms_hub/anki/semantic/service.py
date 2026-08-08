@@ -10,8 +10,10 @@ from oms_hub.anki.semantic.domain import (
     DocumentRecord,
     EmbeddingClient,
     FloatMatrix,
+    PinnedCentroidSimilarityResult,
     SemanticHit,
     SemanticRefreshResult,
+    SemanticSnapshot,
 )
 from oms_hub.anki.semantic.store import SemanticSnapshotStore
 
@@ -147,7 +149,15 @@ class SemanticIndexService:
             expected_dimensions=self.dimensions,
             expected_generation=expected_generation,
         )
+        if (
+            expected_generation is not None
+            and str(snapshot.manifest.generation) != expected_generation
+        ):
+            raise ValueError("pinned semantic generation is no longer active")
         eligible = None if eligible_note_ids is None else set(eligible_note_ids)
+        if expected_generation is not None and eligible is not None:
+            if eligible - set(snapshot.manifest.note_ids):
+                raise SemanticCoverageError("pinned semantic snapshot lacks eligible notes")
         selected_rows = [
             row
             for row, note_id in enumerate(snapshot.manifest.note_ids)
@@ -157,6 +167,8 @@ class SemanticIndexService:
             return [[] for _ in normalized_queries]
         query_vectors = await self._query_vectors(normalized_queries)
         matrix = snapshot.matrix[selected_rows].astype(np.float32)
+        if expected_generation is not None:
+            _validate_note_vectors(matrix, dimensions=self.dimensions)
         selected_note_ids = np.asarray(
             [snapshot.manifest.note_ids[row] for row in selected_rows],
             dtype=np.int64,
@@ -206,6 +218,66 @@ class SemanticIndexService:
         query_matrix = np.asarray(vectors, dtype=np.float32)
         scores = matrix @ query_matrix.T
         return {note_id: float(scores[index].max()) for index, note_id in enumerate(rows)}
+
+    async def pinned_centroid_similarity(
+        self,
+        concept_terms: Sequence[Sequence[str]],
+        *,
+        note_ids: Collection[int],
+        expected_generation: str,
+    ) -> PinnedCentroidSimilarityResult:
+        """Score pinned note vectors against normalized multi-term centroids."""
+        snapshot = self._pinned_snapshot(expected_generation)
+        requested_ids = set(note_ids)
+        if any(note_id <= 0 for note_id in requested_ids):
+            raise SemanticCoverageError("scoped semantic note IDs must be positive")
+        rows = {
+            note_id: row
+            for row, note_id in enumerate(snapshot.manifest.note_ids)
+            if note_id in requested_ids
+        }
+        if requested_ids - set(rows):
+            raise SemanticCoverageError("pinned semantic snapshot lacks scoped notes")
+        normalized_terms = [
+            tuple(normalize_semantic_text(term) for term in terms)
+            for terms in concept_terms
+        ]
+        if not normalized_terms or any(
+            not terms or any(not term for term in terms) for terms in normalized_terms
+        ):
+            raise ValueError("semantic concept terms cannot be blank")
+        query_vectors = await self._query_vectors(
+            tuple(term for terms in normalized_terms for term in terms)
+        )
+        centroids: list[FloatMatrix] = []
+        offset = 0
+        for terms in normalized_terms:
+            centroids.append(_normalized_centroid(query_vectors[offset : offset + len(terms)]))
+            offset += len(terms)
+        ordered_note_ids = tuple(sorted(rows))
+        matrix = snapshot.matrix[[rows[note_id] for note_id in ordered_note_ids]].astype(
+            np.float32
+        )
+        _validate_note_vectors(matrix, dimensions=self.dimensions)
+        centroid_matrix = np.asarray(centroids, dtype=np.float32)
+        scores = matrix @ centroid_matrix.T
+        if not np.isfinite(scores).all():
+            raise ValueError("pinned semantic scores are invalid")
+        return PinnedCentroidSimilarityResult(
+            scores={
+                note_id: float(scores[index].max())
+                for index, note_id in enumerate(ordered_note_ids)
+            },
+        )
+
+    def _pinned_snapshot(self, expected_generation: str) -> SemanticSnapshot:
+        snapshot = self.store.load(
+            expected_model=self.model,
+            expected_dimensions=self.dimensions,
+        )
+        if str(snapshot.manifest.generation) != expected_generation:
+            raise ValueError("pinned semantic generation is no longer active")
+        return snapshot
 
     async def _query_vectors(
         self,
@@ -292,3 +364,25 @@ def _normalized_rows(
     if np.any(norms == 0):
         raise ValueError("embedding rows cannot contain zero vectors")
     return (matrix / norms).astype(np.float32, copy=False)
+
+
+def _normalized_centroid(vectors: Sequence[FloatMatrix]) -> FloatMatrix:
+    matrix = np.asarray(vectors, dtype=np.float32)
+    if matrix.ndim != 2 or matrix.shape[0] < 1 or not np.isfinite(matrix).all():
+        raise ValueError("semantic centroid vectors are invalid")
+    norms = np.linalg.norm(matrix, axis=1)
+    if np.any(norms == 0):
+        raise ValueError("semantic centroid vectors cannot contain zero vectors")
+    normalized = matrix / norms[:, np.newaxis]
+    centroid = normalized.mean(axis=0)
+    centroid_norm = float(np.linalg.norm(centroid))
+    if not np.isfinite(centroid_norm) or centroid_norm == 0:
+        raise ValueError("semantic centroid is invalid")
+    return (centroid / centroid_norm).astype(np.float32, copy=False)
+
+
+def _validate_note_vectors(matrix: FloatMatrix, *, dimensions: int) -> None:
+    if matrix.ndim != 2 or matrix.shape[1] != dimensions or not np.isfinite(matrix).all():
+        raise ValueError("pinned semantic vectors are invalid")
+    if np.any(np.linalg.norm(matrix, axis=1) == 0):
+        raise ValueError("pinned semantic vectors cannot contain zero vectors")
