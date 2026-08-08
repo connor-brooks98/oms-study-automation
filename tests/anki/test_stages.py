@@ -501,6 +501,7 @@ def _fast_failure_harness(tmp_path: Path, mode: str):
 
     prompts = AnkiPromptCatalogService()
     fast_prompt = AnkiPromptLibrary(prompts.bundled_directory).load("card-centric-fast-classifier")
+    thorough_prompt = AnkiPromptLibrary(prompts.bundled_directory).load("card-centric-classifier")
     runner = CurationServicesRunner.__new__(CurationServicesRunner)
     runner.structured = FaultInjectingStructuredService()
     runner.prompts = AnkiPromptCatalogService(bundled_directory=tmp_path)
@@ -521,7 +522,14 @@ def _fast_failure_harness(tmp_path: Path, mode: str):
                         "prompt_hash": fast_prompt.prompt_hash,
                         "content": fast_prompt.content,
                         "metadata": fast_prompt.metadata.model_dump(mode="json", by_alias=True),
-                    }
+                    },
+                    {
+                        "id": thorough_prompt.metadata.id,
+                        "version": thorough_prompt.metadata.version,
+                        "prompt_hash": thorough_prompt.prompt_hash,
+                        "content": thorough_prompt.content,
+                        "metadata": thorough_prompt.metadata.model_dump(mode="json", by_alias=True),
+                    },
                 ]
             },
             CurationStage.SOURCE_INDEX: {
@@ -620,6 +628,7 @@ def test_v2_internal_prompts_are_read_only_from_the_pinned_preflight_snapshot() 
     prompt_specs = {
         "card-centric-ledger-v2": "lcl_v2",
         "card-centric-fast-classifier": "card_centric_fast_classify_v2",
+        "card-centric-classifier": "card_centric_classify_v1",
         "card-centric-gap-v2": "gap_cards_v2",
     }
     snapshot = []
@@ -754,6 +763,22 @@ def test_v2_residual_classifies_a_prefilter_fallback(monkeypatch) -> None:
             ),
         ),
         prior_payloads={
+            CurationStage.PREFLIGHT: {
+                "prompt_snapshot": [
+                    {
+                        "id": "card-centric-classifier",
+                        "version": "2.0.0",
+                        "prompt_hash": hashlib.sha256(b"Pinned classifier instruction").hexdigest()[:12],
+                        "content": "Pinned classifier instruction",
+                        "metadata": {
+                            "id": "card-centric-classifier",
+                            "version": "2.0.0",
+                            "schema": "card_centric_classify_v1",
+                            "response_format": "json",
+                        },
+                    }
+                ]
+            },
             CurationStage.SOURCE_INDEX: {
                 "source_index": source.model_dump(mode="json"),
                 "cards": [card.model_dump(mode="json")],

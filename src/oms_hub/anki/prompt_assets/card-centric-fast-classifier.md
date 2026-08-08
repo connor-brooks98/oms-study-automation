@@ -12,6 +12,12 @@ batch_size: 60
 
 # Card-centric v2 fast triage
 
+Optimize for the smallest set of the best-supported, highest-yield,
+nonredundant cards. Card counts are soft targets, not quotas. Do not invent
+facts, split one fact into unnecessary cards, preserve a weak card, or label a
+card eligible merely to reach a count. Prefer fewer excellent, grounded,
+nonredundant cards over more marginal cards.
+
 Return exactly one row per supplied note ID with `verdict` exactly
 `LIKELY_YES`, `NEEDS_REVIEW`, or `LIKELY_NO`, plus grounded concept IDs,
 supporting passage IDs, flags, and a concise reason. `LIKELY_YES` must cite a

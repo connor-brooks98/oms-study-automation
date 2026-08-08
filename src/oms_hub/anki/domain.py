@@ -1,3 +1,5 @@
+import hashlib
+import json
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -105,6 +107,51 @@ class ResolvedStageModel:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedClassifierExecution:
+    """Pinned S4b/S4c/S6 execution settings used by P1 replay identity.
+
+    ``None`` on the enclosing model configuration remains the compatibility
+    representation for documents written before P2-C.  New v2 configurations
+    persist this object so P1 can hash these values with the pinned prompt.
+    """
+
+    fast_batch_size: int = 60
+    fast_concurrency: int = 4
+    thorough_batch_size: int = 30
+    thorough_concurrency: int = 4
+    thorough_retry_attempts: int = 2
+    thinking_budget_tokens: int = 1024
+
+    def __post_init__(self) -> None:
+        if self.fast_batch_size != 60:
+            raise ValueError("card-centric v2 fast batch size must be 60")
+        if (
+            self.fast_concurrency < 1
+            or self.thorough_batch_size < 1
+            or self.thorough_concurrency < 1
+            or self.thorough_retry_attempts != 2
+            or self.thinking_budget_tokens < 1024
+        ):
+            raise ValueError("classifier execution configuration is invalid")
+
+    def canonical_document(self) -> dict[str, int]:
+        return {
+            "fast_batch_size": self.fast_batch_size,
+            "fast_concurrency": self.fast_concurrency,
+            "thorough_batch_size": self.thorough_batch_size,
+            "thorough_concurrency": self.thorough_concurrency,
+            "thorough_retry_attempts": self.thorough_retry_attempts,
+            "thinking_budget_tokens": self.thinking_budget_tokens,
+        }
+
+    def canonical_json(self) -> str:
+        return json.dumps(self.canonical_document(), sort_keys=True, separators=(",", ":"))
+
+    def generation_parameters_sha256(self) -> str:
+        return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedModelConfiguration:
     profile: str
     ledger_s2: ResolvedStageModel
@@ -114,6 +161,10 @@ class ResolvedModelConfiguration:
     residual_unlocked: bool = False
     # None deliberately preserves old v1/legacy persisted canonical documents.
     fast_classify_s4b: ResolvedStageModel | None = None
+    # P1/I0 will persist this additive field after its repository/request
+    # parser accepts it.  P2 keeps it out of canonical_document() meanwhile so
+    # existing persisted jobs continue to round-trip unchanged.
+    classifier_execution: ResolvedClassifierExecution | None = None
 
     def __post_init__(self) -> None:
         if not self.profile.strip():
@@ -162,7 +213,12 @@ class ResolvedModelConfiguration:
             base.gap_fill_s7,
             base.residual_unlocked,
             ResolvedStageModel("openai", "gpt-4o-mini", thinking_mode="disabled"),
+            ResolvedClassifierExecution(),
         )
+
+    def resolved_classifier_execution(self) -> ResolvedClassifierExecution:
+        """Return compatible defaults without rewriting legacy configuration."""
+        return self.classifier_execution or ResolvedClassifierExecution()
 
     def canonical_document(self) -> dict[str, Any]:
         def stage(value: ResolvedStageModel) -> dict[str, Any]:
