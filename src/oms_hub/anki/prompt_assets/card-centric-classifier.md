@@ -1,7 +1,6 @@
 ---
 id: card-centric-classifier
 version: 2.0.0
-model: claude-haiku
 temperature: 0
 max_tokens: 8000
 response_format: json

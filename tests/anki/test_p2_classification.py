@@ -206,6 +206,12 @@ def test_p2_s4b_batches_concurrently_and_aggregates_by_note_id() -> None:
         range(1, 62)
     )
     assert product.payload["degraded_batches"] == []
+    assert product.payload["classifier_execution"] == _classifier_generation_parameters(
+        "openai",
+        "gpt-4o-mini",
+        ResolvedClassifierExecution(),
+        prompt_id="card-centric-fast-classifier",
+    )
 
 
 def test_p2_s4b_degrades_the_entire_invalid_batch() -> None:

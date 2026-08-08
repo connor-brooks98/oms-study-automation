@@ -846,6 +846,14 @@ class CurationServicesRunner:
                 "fast_classifier": fast.model_dump(mode="json"),
                 "source_sha256": source.source_sha256,
                 "model_config": context.job.resolved_model_config.canonical_document(),
+                # This is P2-C's frozen artifact/config seam. P1/I0 owns
+                # persistence in preflight identity and canonical job documents.
+                "classifier_execution": _classifier_generation_parameters(
+                    stage_model.provider,
+                    stage_model.model,
+                    execution,
+                    prompt_id="card-centric-fast-classifier",
+                ),
                 "fast_count": len(fast.results),
                 "degraded_batches": degraded_batches,
                 "degraded_note_count": sum(len(batch["note_ids"]) for batch in degraded_batches),
@@ -924,8 +932,8 @@ class CurationServicesRunner:
                 "source_sha256": source.source_sha256,
                 "scoped_note_count": len(selected),
                 "thorough_count": len(selected),
-                # P1 includes this exact persisted payload and the pinned prompt
-                # snapshot in ResolvedStageModelIdentity.generation_parameters.
+                # P1/I0 will pair this frozen payload with the corresponding
+                # persisted prompt snapshot in replay identity.
                 "classifier_execution": _classifier_generation_parameters(
                     stage_model.provider,
                     stage_model.model,
@@ -3028,10 +3036,10 @@ def _classifier_generation_parameters(
     *,
     prompt_id: str | None,
 ) -> dict[str, Any]:
-    """P1 hook for ``ResolvedStageModelIdentity.generation_parameters``.
+    """Frozen P2-C hook for ``ResolvedStageModelIdentity.generation_parameters``.
 
-    P1 pairs this canonical payload with the corresponding immutable prompt
-    snapshot, whose content is hashed by ``ResolvedStageModelIdentity``.
+    P1/I0 owns pairing this canonical payload with the corresponding immutable
+    prompt snapshot, whose content is hashed by ``ResolvedStageModelIdentity``.
     """
     return {
         "provider": provider,
