@@ -107,6 +107,75 @@ def test_office_window_pid_calls_method_style_hwnd_accessor():
     assert calls == ["called"]
 
 
+def test_office_window_handle_uses_explicit_property_get_after_member_not_found():
+    class MemberNotFoundError(Exception):
+        hresult = -2147352573
+
+    class FakePythonCom:
+        DISP_E_MEMBERNOTFOUND = -2147352573
+        INVOKE_PROPERTYGET = 2
+
+    class FakeOleObject:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, ...]] = []
+
+        def GetIDsOfNames(self, lcid: int, name: str) -> int:
+            self.calls.append(("GetIDsOfNames", lcid, name))
+            return 42
+
+        def Invoke(
+            self,
+            dispid: int,
+            lcid: int,
+            invoke_type: int,
+            result_wanted: int,
+        ) -> int:
+            self.calls.append(
+                ("Invoke", dispid, lcid, invoke_type, result_wanted)
+            )
+            return 987654
+
+    class FakePowerPoint:
+        def __init__(self) -> None:
+            self._oleobj_ = FakeOleObject()
+
+        @staticmethod
+        def HWND() -> int:
+            raise MemberNotFoundError("Member not found.")
+
+    application = FakePowerPoint()
+
+    assert (
+        office_worker._window_handle_for_process_id(
+            application,
+            "HWND",
+            FakePythonCom,
+        )
+        == 987654
+    )
+    assert application._oleobj_.calls == [
+        ("GetIDsOfNames", 0, "HWND"),
+        ("Invoke", 42, 0, FakePythonCom.INVOKE_PROPERTYGET, 1),
+    ]
+
+
+def test_office_window_handle_reraises_non_member_not_found_errors():
+    class FakePythonCom:
+        DISP_E_MEMBERNOTFOUND = -2147352573
+
+    class FakePowerPoint:
+        @staticmethod
+        def HWND() -> int:
+            raise TypeError("unexpected COM wrapper failure")
+
+    with pytest.raises(TypeError, match="unexpected COM wrapper failure"):
+        office_worker._window_handle_for_process_id(
+            FakePowerPoint(),
+            "HWND",
+            FakePythonCom,
+        )
+
+
 def test_office_window_pid_detaches_borrowed_hwnd_after_lookup_failure():
     detached: list[int] = []
 
