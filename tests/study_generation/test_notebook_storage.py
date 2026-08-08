@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from cryptography.fernet import Fernet
+from keyring.errors import KeyringError
 
 from oms_hub.study_generation.notebook_storage import (
     NOTEBOOK_STORAGE_KEY,
@@ -176,4 +177,28 @@ def test_migration_translates_filesystem_failure_to_storage_error(
             plaintext_path,
             secrets,
         )
+    assert not plaintext_path.exists()
+
+
+def test_migration_translates_credential_store_failure_to_storage_error(
+    tmp_path,
+):
+    encrypted_path = tmp_path / "google" / "notebooklm-storage.enc"
+    plaintext_path = tmp_path / "google" / "notebooklm-storage.json"
+    encrypted_payload = b"encrypted-session"
+    encrypted_path.parent.mkdir(parents=True)
+    encrypted_path.write_bytes(encrypted_payload)
+
+    class UnavailableSecrets(MemorySecrets):
+        def get(self, key):
+            raise KeyringError("credential store unavailable")
+
+    with pytest.raises(NotebookStorageError, match="reconnect Google"):
+        migrate_encrypted_notebook_storage(
+            encrypted_path,
+            plaintext_path,
+            UnavailableSecrets(),
+        )
+
+    assert encrypted_path.read_bytes() == encrypted_payload
     assert not plaintext_path.exists()

@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
+from keyring.errors import KeyringError
 
 from oms_hub.security.secret_store import SecretStore
 
@@ -153,7 +154,7 @@ def migrate_encrypted_notebook_storage(
             part.unlink(missing_ok=True)
         _restrict_owner_only(plaintext_path, directory=False)
         return True
-    except OSError as error:
+    except (KeyringError, OSError) as error:
         raise NotebookStorageError(
             "NotebookLM storage could not be restored; reconnect Google."
         ) from error
