@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from pypdf import PdfWriter
 
+import oms_hub.files.promotion as promotion_module
 from oms_hub.config import Settings
 from oms_hub.db import Database
 from oms_hub.document_processing.domain import (
@@ -452,6 +453,59 @@ def test_interrupted_group_promotion_recovers_old_files_before_clean_retry(
         pipeline.repository.require_item("recovery-duplicate").state
         is UploadState.COMPLETE
     )
+    for destination in canonical:
+        assert not pipeline.promotion.backup_path(destination, recovered.id).exists()
+
+
+def test_initial_group_promotion_lock_preserves_backup_and_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline, item_id = _slide_pipeline(tmp_path)
+    destinations = build_slide_destinations(
+        pipeline.settings,
+        LectureKey("Neuro", 1, 1, "Seizures"),
+    )
+    canonical = (destinations.source, destinations.pdf, destinations.icloud_pdf)
+    for destination in canonical:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"old")
+
+    original_copy = promotion_module.verified_atomic_copy
+    original_replace = promotion_module.os.replace
+
+    def locked_copy(source: Path, destination: Path) -> str:
+        if destination == canonical[1]:
+            raise OSError("destination is locked")
+        return original_copy(source, destination)
+
+    def locked_restore(source: Path, destination: Path) -> None:
+        if destination == canonical[1]:
+            raise OSError("rollback destination is locked")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(promotion_module, "verified_atomic_copy", locked_copy)
+    monkeypatch.setattr(promotion_module.os, "replace", locked_restore)
+    worker = IngestionWorker(pipeline.repository, pipeline, pipeline)
+
+    assert worker.run_once() is True
+    assert pipeline.repository.require_item(item_id).state is UploadState.QUEUED
+    interrupted = pipeline.repository.begin_revision(
+        item_id,
+        tmp_path / "artifacts" / "v2" / "slides",
+    )
+    assert interrupted.state == "promoting"
+    assert pipeline.promotion.backup_path(canonical[1], interrupted.id).is_file()
+
+    monkeypatch.setattr(promotion_module, "verified_atomic_copy", original_copy)
+    monkeypatch.setattr(promotion_module.os, "replace", original_replace)
+    recovered = pipeline.process(item_id)
+
+    assert recovered.current is True
+    assert pipeline.repository.require_item(item_id).state is UploadState.COMPLETE
+    assert canonical[0].read_bytes() == recovered.immutable_source_path.read_bytes()
+    assert canonical[1].read_bytes() == recovered.immutable_derived_path.read_bytes()
+    assert canonical[2].read_bytes() == recovered.immutable_derived_path.read_bytes()
     for destination in canonical:
         assert not pipeline.promotion.backup_path(destination, recovered.id).exists()
 

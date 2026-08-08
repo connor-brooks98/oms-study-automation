@@ -21,7 +21,12 @@ class PromotionCoordinator:
         commit: Callable[[], T],
     ) -> T:
         _validate_sources(pairs)
-        return promote_with_rollback(pairs, revision_id, commit)
+        try:
+            return promote_with_rollback(pairs, revision_id, commit)
+        except OSError as error:
+            raise PromotionRecoveryError(
+                "slide file promotion could not complete"
+            ) from error
 
     def recover[T](
         self,
@@ -71,18 +76,22 @@ def promote_with_rollback[T](
                 backups[destination] = None
         for source, destination in pairs:
             verified_atomic_copy(source, destination)
-        return commit()
-    except Exception:
+        result = commit()
+    except Exception as error:
+        rollback_error: OSError | None = None
         for destination, saved in backups.items():
-            if saved is not None and saved.exists():
-                os.replace(saved, destination)
-            elif saved is None:
-                destination.unlink(missing_ok=True)
+            try:
+                if saved is not None and saved.exists():
+                    os.replace(saved, destination)
+                elif saved is None:
+                    destination.unlink(missing_ok=True)
+            except OSError as restore_error:
+                rollback_error = rollback_error or restore_error
+        if rollback_error is not None:
+            raise rollback_error from error
         raise
-    finally:
-        for saved in backups.values():
-            if saved is not None:
-                saved.unlink(missing_ok=True)
+    remove_backups(pairs, revision_id)
+    return result
 
 
 def recover_promotion[T](
