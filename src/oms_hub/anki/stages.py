@@ -982,15 +982,16 @@ class CurationServicesRunner:
             for alias in (concept.aliases or (concept.primary_entity,))
         )
         queries = tuple(query for _, query in query_specs)
-        semantic_generation = getattr(context.job, "semantic_generation", None)
-        if hasattr(context.job, "semantic_generation") and semantic_generation is None:
-            raise PinnedInputChanged("card-centric v2 job has no pinned semantic generation")
         search_kwargs: dict[str, Any] = {
             "eligible_note_ids": set(cards),
             "limit": 12,
         }
-        if semantic_generation is not None:
-            search_kwargs["expected_generation"] = semantic_generation
+        if is_v2:
+            semantic_generation = getattr(context.job, "semantic_generation", None)
+            if hasattr(context.job, "semantic_generation") and semantic_generation is None:
+                raise PinnedInputChanged("card-centric v2 job has no pinned semantic generation")
+            if semantic_generation is not None:
+                search_kwargs["expected_generation"] = semantic_generation
         hits = await self.semantic.search(queries, **search_kwargs)
         audit: list[dict[str, Any]] = []
         hit_ids: set[int] = set()

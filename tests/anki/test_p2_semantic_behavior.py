@@ -323,6 +323,97 @@ def test_residual_audits_borderline_band_and_binds_semantic_generation(monkeypat
     ]
 
 
+def test_v1_residual_search_omits_generation_pin_when_absent_or_none(monkeypatch) -> None:
+    passage = SourcePassage.create(
+        revision_id=1,
+        lecture_id=1,
+        artifact_id="slides",
+        source_kind=SourceKind.SLIDE,
+        locator="slide:1",
+        text="evidence",
+        slide_number=1,
+    )
+    source = build_source_index(
+        (passage,), snapshot_id="snapshot", source_revision_hashes={1: "c" * 64}
+    )
+    card = _card(1)
+    scope = TagScopeResult(
+        snapshot_id="snapshot",
+        filters_sha256="b" * 64,
+        scoped_note_ids=(),
+        unscoped_note_ids=(1,),
+    )
+    ledger = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="fact",
+                primary_entity="Primary",
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+            ),
+        ),
+    )
+    seen_search_kwargs: list[dict[str, object]] = []
+
+    class FakeSemantic:
+        async def search(self, _queries, **kwargs):
+            seen_search_kwargs.append(kwargs)
+            return [[SemanticHit(note_id=1, score=0.9, content_hash=card.content_sha256)]]
+
+    async def fake_classify(_self, cards, **_kwargs):
+        assert tuple(item.note_id for item in cards) == (1,)
+        return ClassifierResult(results=(), telemetry=_telemetry())
+
+    monkeypatch.setattr(stages_module.CardCentricClassifier, "classify", fake_classify)
+    monkeypatch.setattr(stages_module, "_card_classifier_prompt", lambda _catalog: "fixture")
+    runner = stages_module.CurationServicesRunner.__new__(stages_module.CurationServicesRunner)
+    runner.semantic = FakeSemantic()
+    runner.structured = SimpleNamespace(generator=SimpleNamespace())
+    runner.prompts = SimpleNamespace()
+    shared_payloads = {
+        CurationStage.SOURCE_INDEX: {
+            "source_index": source.model_dump(mode="json"),
+            "cards": [card.model_dump(mode="json")],
+        },
+        CurationStage.CARD_LEDGER: {"ledger": ledger.model_dump(mode="json")},
+        CurationStage.CARD_COVERAGE: {
+            "coverage": {"C01": {"status": "uncovered", "evidence": []}}
+        },
+        CurationStage.CARD_TAG_SCOPE: {
+            "scope": scope.model_dump(mode="json"),
+            "residual_mode": "gaps_only",
+        },
+    }
+    for job in (
+        SimpleNamespace(
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+            resolved_model_config=SimpleNamespace(
+                residual_s6=SimpleNamespace(provider="openai", model="fixture")
+            ),
+        ),
+        SimpleNamespace(
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+            semantic_generation=None,
+            resolved_model_config=SimpleNamespace(
+                residual_s6=SimpleNamespace(provider="openai", model="fixture")
+            ),
+        ),
+    ):
+        asyncio.run(
+            runner._card_residual(
+                SimpleNamespace(job=job, prior_payloads=shared_payloads)
+            )
+        )
+
+    assert seen_search_kwargs == [
+        {"eligible_note_ids": {1}, "limit": 12},
+        {"eligible_note_ids": {1}, "limit": 12},
+    ]
+
+
 def test_unrecovered_s4a_exclusions_never_enter_selection_fallback_contract() -> None:
     assert stages_module._effective_v2_fallback_note_ids((11,), ()) == ()
     assert stages_module._unrecovered_s4a_exclusion_note_ids((11,), ()) == (11,)
