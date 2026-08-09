@@ -83,6 +83,37 @@ def test_cp1252_transcript_is_rejected_before_any_job_is_created(tmp_path: Path)
     assert _ready(app) == []
 
 
+def test_manifest_descriptor_rejection_is_structured_and_not_durable(tmp_path: Path) -> None:
+    client, app = _client(tmp_path)
+    slot_id = str(uuid4())
+
+    response = client.post(
+        "/api/upload-manifests",
+        json={
+            "kind": "transcripts",
+            "files": [
+                {
+                    "slot_id": slot_id,
+                    "filename": "wrong.pdf",
+                    "size_bytes": 4,
+                    "sha256": hashlib.sha256(b"nope").hexdigest(),
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["errors"] == [
+        {
+            "slot_id": slot_id,
+            "filename": "wrong.pdf",
+            "code": "validation_failed",
+            "detail": "transcripts uploads require .txt",
+        }
+    ]
+    assert _counts(app) == (0, 0, 0)
+
+
 def test_mixed_multipart_and_chunk_slots_finalize_one_parent_batch(tmp_path: Path) -> None:
     client, app = _client(tmp_path)
     small = b"Small UTF-8 transcript."

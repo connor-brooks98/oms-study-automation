@@ -167,13 +167,31 @@ def upload_files(
     return _finalize_manifest(request, manifest_id)
 
 
-@router.post("/api/upload-manifests", status_code=201)
+@router.post("/api/upload-manifests", status_code=201, response_model=None)
 def create_manifest(
     payload: ManifestCreate,
     request: Request,
-) -> dict[str, object]:
+) -> dict[str, object] | JSONResponse:
     _require_lecture(request, payload.lecture_id)
-    return _create_manifest(_staging(request), payload.kind, payload.files, payload.lecture_id)
+    try:
+        return _create_manifest(
+            _staging(request), payload.kind, payload.files, payload.lecture_id
+        )
+    except HTTPException as error:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "errors": [
+                    {
+                        "slot_id": file.slot_id,
+                        "filename": file.filename,
+                        "code": "validation_failed",
+                        "detail": str(error.detail),
+                    }
+                    for file in payload.files
+                ]
+            },
+        )
 
 
 @router.post(
