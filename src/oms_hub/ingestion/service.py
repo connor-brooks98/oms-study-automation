@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from xml.etree import ElementTree
@@ -12,7 +13,7 @@ from oms_hub.ingestion.domain import (
 )
 from oms_hub.ingestion.matcher import UploadMatcher
 from oms_hub.ingestion.repository import IngestionRepository
-from oms_hub.ingestion.staging import StagingService
+from oms_hub.ingestion.staging import StagingService, UploadRejected
 from oms_hub.repositories import CatalogRepository
 
 _MAX_EVIDENCE_MEMBER = 1024 * 1024
@@ -79,6 +80,27 @@ class IngestionService:
                 raise ValueError("upload is not awaiting confirmation")
             self.staging.discard_file(item.staged_path)
             return self.repository.mark_discarded(item_id)
+
+    def collect_staging(
+        self,
+        now: datetime | None = None,
+        *,
+        terminal_retention: timedelta = timedelta(hours=24),
+    ) -> int:
+        """Safe idempotent hook for startup/periodic runtime ownership."""
+        current = now or datetime.now(UTC)
+        removed = self.staging.collect_expired(current)
+        for path in self.repository.terminal_staging_paths_before(
+            current - terminal_retention
+        ):
+            try:
+                self.staging.discard_file(path)
+            except UploadRejected:
+                # Missing files and paths outside staging are not cleanup
+                # candidates; a future collection remains safe/idempotent.
+                continue
+            removed += 1
+        return removed
 
     def _complete_match_steps(
         self,

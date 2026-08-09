@@ -1,11 +1,12 @@
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
@@ -348,7 +349,81 @@ class IngestionRepository:
                     item.state = UploadState.QUEUED.value
                     item.error = job.error
                     self._sync_batch_state(session, item.batch_id)
-            return len(jobs)
+            recovered = len(jobs)
+            cleaning = session.scalars(
+                select(StudyRevisionModel).where(
+                    StudyRevisionModel.kind == UploadKind.TRANSCRIPTS.value,
+                    StudyRevisionModel.state == "cleaning",
+                )
+            ).all()
+            for revision in cleaning:
+                item = session.get(UploadItemModel, revision.upload_item_id)
+                if item is None:
+                    revision.state = "failed"
+                    recovered += 1
+                    continue
+                current = session.scalar(
+                    select(StudyRevisionModel.id).where(
+                        StudyRevisionModel.lecture_id == revision.lecture_id,
+                        StudyRevisionModel.kind == UploadKind.TRANSCRIPTS.value,
+                        StudyRevisionModel.current.is_(True),
+                    )
+                )
+                if current is not None:
+                    revision.state = "proposed"
+                    item.state = UploadState.AWAITING_CONFIRMATION.value
+                    item.error = "a first transcript completed while this upload was recovering"
+                    self._sync_batch_state(session, item.batch_id)
+                    recovered += 1
+                    continue
+                job = session.scalar(
+                    select(IngestionJobModel).where(
+                        IngestionJobModel.upload_item_id == item.id,
+                        IngestionJobModel.action == "process",
+                    )
+                )
+                if job is None:
+                    self._enqueue(session, item.id, "process")
+                    item.state = UploadState.QUEUED.value
+                    self._sync_batch_state(session, item.batch_id)
+                    recovered += 1
+            return recovered
+
+    def terminal_staging_paths_before(self, cutoff: datetime) -> list[Path]:
+        """Return only paths whose database state proves cleanup is safe."""
+        protected_states = {
+            UploadState.UPLOADING.value,
+            UploadState.MATCHING.value,
+            UploadState.QUEUED.value,
+            UploadState.PROCESSING.value,
+            UploadState.AWAITING_CONFIRMATION.value,
+            UploadState.QUARANTINED.value,
+            UploadState.NEEDS_REVIEW.value,
+        }
+        safe_states = {
+            UploadState.COMPLETE.value,
+            UploadState.DISCARDED.value,
+            UploadState.FAILED.value,
+        }
+        with self.database.session() as session:
+            items = session.scalars(select(UploadItemModel)).all()
+            revisions = session.scalars(select(StudyRevisionModel)).all()
+            revision_by_item = {revision.upload_item_id: revision for revision in revisions}
+            paths: list[Path] = []
+            for item in items:
+                if item.state in protected_states or item.state not in safe_states:
+                    continue
+                if datetime.fromisoformat(item.updated_at).astimezone(UTC) > cutoff:
+                    continue
+                revision = revision_by_item.get(item.id)
+                if revision is not None and revision.state in {
+                    "proposed",
+                    "promoting",
+                    "cleaning",
+                }:
+                    continue
+                paths.append(Path(item.staged_path))
+            return paths
 
     def retry_job(
         self,
@@ -428,6 +503,7 @@ class IngestionRepository:
                 )
                 session.add(revision)
                 session.flush()
+            if not revision.immutable_source_path:
                 revision_dir = immutable_root / str(revision.id)
                 extension = Path(item.original_filename).suffix.casefold()
                 revision.immutable_source_path = str(
@@ -793,6 +869,22 @@ class IngestionRepository:
                 created_at=batch.created_at,
                 updated_at=batch.updated_at,
                 items=items,
+                lifecycle=(
+                    "active"
+                    if any(
+                        item.state
+                        in {
+                            UploadState.UPLOADING,
+                            UploadState.MATCHING,
+                            UploadState.QUEUED,
+                            UploadState.PROCESSING,
+                            UploadState.AWAITING_CONFIRMATION,
+                        }
+                        for item in items
+                    )
+                    else "terminal"
+                ),
+                outcome=batch.state,
             )
 
     def _stored_item(self, item: UploadItemModel) -> StoredUploadItem:
@@ -942,7 +1034,49 @@ class IngestionRepository:
             item.state = UploadState.AWAITING_CONFIRMATION.value
             item.error = None
             return
+        if item.kind == UploadKind.TRANSCRIPTS.value:
+            if not self._reserve_first_transcript(session, item):
+                item.state = UploadState.AWAITING_CONFIRMATION.value
+                item.error = "another first transcript is being cleaned"
+                return
         self._enqueue(session, item.id, "process")
+
+    def _reserve_first_transcript(
+        self,
+        session: Session,
+        item: UploadItemModel,
+    ) -> bool:
+        """Durably claim first-cleaning ownership via the partial index.
+
+        Production enforcement is supplied by the coordinated migration:
+        one ``cleaning`` transcript revision per lecture.  The nested
+        transaction makes a unique-index conflict a normal intake decision
+        without rolling back the rest of the manifest transaction.
+        """
+        existing = session.scalar(
+            select(StudyRevisionModel).where(
+                StudyRevisionModel.upload_item_id == item.id
+            )
+        )
+        if existing is not None:
+            return existing.state == "cleaning"
+        try:
+            with session.begin_nested():
+                session.add(
+                    StudyRevisionModel(
+                        upload_item_id=item.id,
+                        lecture_id=item.lecture_id,
+                        kind=UploadKind.TRANSCRIPTS.value,
+                        source_sha256=item.sha256,
+                        immutable_source_path="",
+                        state="cleaning",
+                        current=False,
+                    )
+                )
+                session.flush()
+        except IntegrityError:
+            return False
+        return True
 
     def _sync_batch_state(
         self,

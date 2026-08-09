@@ -186,6 +186,9 @@ def cancel_manifest(manifest_id: str, request: Request) -> None:
 
 @router.get("/api/upload-batches/{batch_id}")
 def batch_status(batch_id: str, request: Request) -> JSONResponse:
+    # This is an idempotent opportunistic hook.  Runtime startup/periodic
+    # ownership is supplied by lane B/integration through collect_staging().
+    _ingestion(request).collect_staging()
     batch = _repository(request).get_batch(batch_id)
     if batch is None:
         raise HTTPException(404, "upload batch not found")

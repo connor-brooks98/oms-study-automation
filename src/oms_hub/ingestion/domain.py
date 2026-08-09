@@ -128,12 +128,16 @@ class UploadBatch:
     created_at: str
     updated_at: str
     items: tuple[UploadItem, ...]
+    lifecycle: str = "active"
+    outcome: str = "uploading"
 
     def public_dict(self) -> dict[str, object]:
         return {
             "id": self.id,
             "kind": self.kind.value,
             "state": self.state.value,
+            "lifecycle": self.lifecycle,
+            "outcome": self.outcome,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "items": [
