@@ -199,6 +199,17 @@ def test_rendered_card_centric_v2_gap_prompt_is_complete_and_fact_scoped() -> No
     )
 
 
+def test_card_centric_v2_ledger_prompt_preserves_quality_first_sizing_policy() -> None:
+    assets = Path(__file__).parents[2] / "src" / "oms_hub" / "anki" / "prompt_assets"
+    prompt = AnkiPromptLibrary(assets).load("card-centric-ledger-v2")
+
+    assert prompt.metadata.version == "2.0.1"
+    assert "smallest set of the best-supported, highest-yield," in prompt.content
+    assert "60 as a warning floor, 65 as the ordinary target,\nand 70 as a soft cap" in prompt.content
+    assert "never pad\ncoverage merely to reach a count" in prompt.content
+    assert "unique, grounded, high-value\nfact solely because the ordinary target" in prompt.content
+
+
 @pytest.mark.parametrize(
     "prompt_id",
     ("card-centric-gap-v1", "lecture-concept-ledger", "gap-card-generation"),
