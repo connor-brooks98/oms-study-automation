@@ -102,3 +102,56 @@ test("only authoritative lifecycle terminal state stops polling", () => {
     true,
   );
 });
+
+test("stalled polling/request has an explicit timeout while failed outcome stays active", async () => {
+  assert.equal(
+    uploads.batchIsTerminal({ lifecycle: "active", outcome: "failed" }),
+    false,
+  );
+  const stalled = async (_url, options) => new Promise((_resolve, reject) => {
+    options.signal.addEventListener("abort", () => {
+      reject(new DOMException("Aborted", "AbortError"));
+    });
+  });
+
+  await assert.rejects(
+    uploads.requestWithTimeout(stalled, "/api/upload-batches/test", {}, 1),
+    /Upload request timed out\./,
+  );
+});
+
+test("cancellation aborts the in-flight request without becoming a timeout", async () => {
+  const controller = new AbortController();
+  const pending = uploads.requestWithTimeout(
+    async (_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => {
+        reject(new DOMException("Cancelled", "AbortError"));
+      });
+    }),
+    "/api/upload-manifests/test",
+    { signal: controller.signal },
+    1000,
+  );
+  controller.abort();
+
+  await assert.rejects(pending, (error) => error.name === "AbortError");
+});
+
+test("selection locks and serialized errors are rendered as safe text inputs", () => {
+  assert.equal(uploads.selectionIsLocked(null), false);
+  assert.equal(uploads.selectionIsLocked({ controller: {} }), true);
+  assert.equal(
+    uploads.itemErrorText({ error: "transcript is not UTF-8" }),
+    "transcript is not UTF-8",
+  );
+  assert.equal(uploads.itemErrorText({ error: null }), "");
+  assert.equal(
+    uploads.rejectionDetail({
+      errors: [
+        { filename: "one.txt", detail: "bad encoding" },
+        { filename: "two.txt", detail: "too large" },
+      ],
+    }, "fallback"),
+    "one.txt: bad encoding two.txt: too large",
+  );
+});

@@ -14,7 +14,7 @@ from oms_hub.ingestion.matcher import UploadMatcher
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.ingestion.service import IngestionService
 from oms_hub.ingestion.staging import StagingService
-from oms_hub.models import UploadItemModel
+from oms_hub.models import StudyRevisionModel, UploadItemModel
 from oms_hub.repositories import CatalogRepository, LectureInput
 
 
@@ -129,14 +129,41 @@ def test_cleanup_keeps_active_paths_and_removes_old_complete_paths(tmp_path: Pat
     complete_path = _add_item(
         repository, service.staging.root, batch_id, "complete", lecture_id
     )
+    quarantined_path = _add_item(
+        repository, service.staging.root, batch_id, "quarantined", lecture_id
+    )
+    review_path = _add_item(
+        repository, service.staging.root, batch_id, "review", lecture_id
+    )
     with repository.database.session() as session:
         complete = session.get(UploadItemModel, "complete")
+        quarantined = session.get(UploadItemModel, "quarantined")
+        review = session.get(UploadItemModel, "review")
         assert complete is not None
+        assert quarantined is not None
+        assert review is not None
         complete.state = UploadState.COMPLETE.value
+        quarantined.state = UploadState.QUARANTINED.value
+        review.state = UploadState.NEEDS_REVIEW.value
         complete.updated_at = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+        quarantined.updated_at = complete.updated_at
+        review.updated_at = complete.updated_at
+        session.add(
+            StudyRevisionModel(
+                upload_item_id="review",
+                lecture_id=lecture_id,
+                kind=UploadKind.TRANSCRIPTS.value,
+                source_sha256="f" * 64,
+                immutable_source_path="",
+                state="proposed",
+                current=False,
+            )
+        )
 
     removed = service.collect_staging(datetime.now(UTC))
 
     assert removed == 1
     assert active_path.exists()
     assert not complete_path.exists()
+    assert quarantined_path.exists()
+    assert review_path.exists()

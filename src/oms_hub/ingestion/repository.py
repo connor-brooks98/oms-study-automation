@@ -32,6 +32,12 @@ from oms_hub.models import (
 )
 
 
+class TranscriptAdmissionPending(RuntimeError):
+    """A durable cleaning owner exists; retry without making an LLM call."""
+
+    pass
+
+
 def _filed_artifact_matches(revision: StudyRevisionModel) -> bool:
     if not revision.canonical_derived_path or not revision.derived_sha256:
         return False
@@ -257,7 +263,12 @@ class IngestionRepository:
             if item.state == UploadState.AWAITING_CONFIRMATION.value:
                 item.state = UploadState.QUEUED.value
                 item.error = None
-                self._enqueue(session, item.id, "process")
+                action = (
+                    "confirmed_process"
+                    if item.kind == UploadKind.TRANSCRIPTS.value
+                    else "process"
+                )
+                self._enqueue(session, item.id, action)
                 self._sync_batch_state(session, item.batch_id)
             elif item.state not in {
                 UploadState.QUEUED.value,
@@ -379,7 +390,7 @@ class IngestionRepository:
                 orphan_job = session.scalar(
                     select(IngestionJobModel).where(
                         IngestionJobModel.upload_item_id == item.id,
-                        IngestionJobModel.action == "process",
+                        IngestionJobModel.action.in_(("process", "confirmed_process")),
                     )
                 )
                 if orphan_job is None:
@@ -503,6 +514,13 @@ class IngestionRepository:
                 )
                 session.add(revision)
                 session.flush()
+            if item.kind == UploadKind.TRANSCRIPTS.value:
+                claimed = self._claim_transcript_cleaning(session, item)
+                if claimed is None:
+                    raise TranscriptAdmissionPending(
+                        "another transcript cleaning admission is active"
+                    )
+                revision = claimed
             if not revision.immutable_source_path:
                 revision_dir = immutable_root / str(revision.id)
                 extension = Path(item.original_filename).suffix.casefold()
@@ -526,13 +544,13 @@ class IngestionRepository:
                 revision.state = "proposed"
             item.state = UploadState.PROCESSING.value
             item.error = None
-            job = session.scalar(
+            jobs = session.scalars(
                 select(IngestionJobModel).where(
                     IngestionJobModel.upload_item_id == item_id,
-                    IngestionJobModel.action == "process",
+                    IngestionJobModel.action.in_(("process", "confirmed_process")),
                 )
-            )
-            if job is not None:
+            ).all()
+            for job in jobs:
                 if job.state != UploadState.PROCESSING.value:
                     job.attempts += 1
                 job.state = UploadState.PROCESSING.value
@@ -696,7 +714,7 @@ class IngestionRepository:
             job = session.scalar(
                 select(IngestionJobModel).where(
                     IngestionJobModel.upload_item_id == item_id,
-                    IngestionJobModel.action == "process",
+                    IngestionJobModel.action.in_(("process", "confirmed_process")),
                 )
             )
             if job is not None:
@@ -788,7 +806,7 @@ class IngestionRepository:
                 job = session.scalar(
                     select(IngestionJobModel).where(
                         IngestionJobModel.upload_item_id == item_id,
-                        IngestionJobModel.action == "process",
+                        IngestionJobModel.action.in_(("process", "confirmed_process")),
                     )
                 )
                 if job is not None:
@@ -957,7 +975,7 @@ class IngestionRepository:
         job = session.scalar(
             select(IngestionJobModel).where(
                 IngestionJobModel.upload_item_id == item.id,
-                IngestionJobModel.action == "process",
+                IngestionJobModel.action.in_(("process", "confirmed_process")),
             )
         )
         if job is not None:
@@ -1053,30 +1071,45 @@ class IngestionRepository:
         transaction makes a unique-index conflict a normal intake decision
         without rolling back the rest of the manifest transaction.
         """
+        return self._claim_transcript_cleaning(session, item) is not None
+
+    def _claim_transcript_cleaning(
+        self,
+        session: Session,
+        item: UploadItemModel,
+    ) -> StudyRevisionModel | None:
         existing = session.scalar(
             select(StudyRevisionModel).where(
                 StudyRevisionModel.upload_item_id == item.id
             )
         )
         if existing is not None:
-            return existing.state == "cleaning"
+            if existing.state == "cleaning":
+                return existing
+            try:
+                with session.begin_nested():
+                    existing.state = "cleaning"
+                    existing.current = False
+                    session.flush()
+            except IntegrityError:
+                return None
+            return existing
         try:
             with session.begin_nested():
-                session.add(
-                    StudyRevisionModel(
-                        upload_item_id=item.id,
-                        lecture_id=item.lecture_id,
-                        kind=UploadKind.TRANSCRIPTS.value,
-                        source_sha256=item.sha256,
-                        immutable_source_path="",
-                        state="cleaning",
-                        current=False,
-                    )
+                created = StudyRevisionModel(
+                    upload_item_id=item.id,
+                    lecture_id=item.lecture_id,
+                    kind=UploadKind.TRANSCRIPTS.value,
+                    source_sha256=item.sha256,
+                    immutable_source_path="",
+                    state="cleaning",
+                    current=False,
                 )
+                session.add(created)
                 session.flush()
         except IntegrityError:
-            return False
-        return True
+            return None
+        return created
 
     def _sync_batch_state(
         self,

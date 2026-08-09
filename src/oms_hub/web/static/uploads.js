@@ -31,6 +31,46 @@
 
   const batchIsTerminal = (batch) => batch.lifecycle === "terminal";
 
+  const selectionIsLocked = (activeSubmission) => Boolean(activeSubmission);
+
+  const itemErrorText = (item) => item.error || "";
+
+  const rejectionDetail = (payload, fallback) => {
+    if (payload?.detail) return payload.detail;
+    if (Array.isArray(payload?.errors)) {
+      return payload.errors.map((error) => (
+        `${error.filename || "Upload"}: ${error.detail || "rejected"}`
+      )).join(" ");
+    }
+    return fallback;
+  };
+
+  const requestWithTimeout = async (
+    fetchImpl,
+    url,
+    options = {},
+    timeoutMs = 120000,
+  ) => {
+    const controller = new AbortController();
+    const external = options.signal;
+    const cancel = () => controller.abort();
+    external?.addEventListener("abort", cancel, { once: true });
+    let timedOut = false;
+    const timer = root.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      return await fetchImpl(url, { ...options, signal: controller.signal });
+    } catch (error) {
+      if (timedOut) throw new Error("Upload request timed out.");
+      throw error;
+    } finally {
+      root.clearTimeout(timer);
+      external?.removeEventListener("abort", cancel);
+    }
+  };
+
   const chunkFinalizeUrl = (sessionId, lectureId) => (
     `/api/upload-chunks/${encodeURIComponent(sessionId)}/finalize${
       lectureId ? `?lecture_id=${encodeURIComponent(lectureId)}` : ""
@@ -97,7 +137,7 @@
     };
 
     const showFiles = (files) => {
-      if (activeSubmission) return;
+      if (selectionIsLocked(activeSubmission)) return;
       chosenFiles = Array.from(files);
       selected.replaceChildren();
       chosenFiles.forEach((file) => {
@@ -144,10 +184,10 @@
         name.textContent = item.original_filename;
         state.textContent = itemStateLabel(item);
         row.append(name, state);
-        if (item.error) {
+        if (itemErrorText(item)) {
           const error = documentRef.createElement("span");
           error.className = "upload-item-error";
-          error.textContent = item.error;
+          error.textContent = itemErrorText(item);
           row.append(error);
         }
         items.append(row);
@@ -168,26 +208,9 @@
       return true;
     };
 
-    const fetchWithTimeout = async (url, options = {}, timeoutMs = 120000) => {
-      const controller = new AbortController();
-      const external = options.signal;
-      const cancel = () => controller.abort();
-      external?.addEventListener("abort", cancel, { once: true });
-      let timedOut = false;
-      const timer = root.setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-      }, timeoutMs);
-      try {
-        return await fetchImpl(url, { ...options, signal: controller.signal });
-      } catch (error) {
-        if (timedOut) throw new Error("Upload request timed out.");
-        throw error;
-      } finally {
-        root.clearTimeout(timer);
-        external?.removeEventListener("abort", cancel);
-      }
-    };
+    const fetchWithTimeout = (url, options = {}, timeoutMs = 120000) => (
+      requestWithTimeout(fetchImpl, url, options, timeoutMs)
+    );
 
     const pollBatch = async (batchId, signal, deadline) => {
       let delay = 750;
@@ -244,7 +267,7 @@
         } else {
           reject(
             new Error(
-              request.response?.detail || "Upload was rejected.",
+              rejectionDetail(request.response, "Upload was rejected."),
             ),
           );
         }
@@ -339,12 +362,12 @@
         signal,
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail || "Upload could not start.");
+      if (!response.ok) throw new Error(rejectionDetail(payload, "Upload could not start."));
       return payload.manifest_id;
     };
 
     browse.addEventListener("click", () => {
-      if (!activeSubmission) input.click();
+      if (!selectionIsLocked(activeSubmission)) input.click();
     });
     input.addEventListener("change", () => showFiles(input.files));
     ["dragenter", "dragover"].forEach((name) => {
@@ -360,7 +383,7 @@
       });
     });
     zone.addEventListener("drop", (event) => {
-      if (activeSubmission) return;
+      if (selectionIsLocked(activeSubmission)) return;
       input.files = event.dataTransfer.files;
       showFiles(input.files);
     });
@@ -477,6 +500,10 @@
     csrfToken,
     batchIsTerminal,
     freezeManifest,
+    itemErrorText,
+    rejectionDetail,
+    requestWithTimeout,
+    selectionIsLocked,
     formatLecture,
     initialize,
     nextConfirmation,

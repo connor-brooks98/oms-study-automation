@@ -3,12 +3,16 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier, Lock
 
+import pytest
 from sqlalchemy import text
 
 from oms_hub.config import Settings
 from oms_hub.db import Database
 from oms_hub.ingestion.domain import StagedUpload, UploadKind, UploadState
-from oms_hub.ingestion.repository import IngestionRepository
+from oms_hub.ingestion.matcher import UploadMatcher
+from oms_hub.ingestion.repository import IngestionRepository, TranscriptAdmissionPending
+from oms_hub.ingestion.service import IngestionService
+from oms_hub.ingestion.staging import StagingService
 from oms_hub.llm.domain import CleanResult, ProviderName
 from oms_hub.models import IngestionJobModel, StudyRevisionModel
 from oms_hub.repositories import CatalogRepository, LectureInput
@@ -152,3 +156,49 @@ def test_recovery_requeues_orphaned_cleaning_owner(tmp_path: Path) -> None:
         )
         assert revision is not None
         assert session.get(StudyRevisionModel, revision).state == "cleaning"  # type: ignore[union-attr]
+
+
+def test_confirmed_loser_cannot_bypass_cleaning_admission(tmp_path: Path) -> None:
+    database, repository, lecture_id = _prepared(tmp_path)
+    _add(repository, tmp_path, "winner")
+    _add(repository, tmp_path, "loser")
+    repository.set_manual_assignment("winner", lecture_id)
+    repository.set_manual_assignment("loser", lecture_id)
+    assert repository.require_item("winner").state is UploadState.QUEUED
+    assert repository.require_item("loser").state is UploadState.AWAITING_CONFIRMATION
+
+    service = IngestionService(
+        repository,
+        CatalogRepository(database),
+        UploadMatcher(),
+        StagingService(tmp_path / "staging", 1_000_000, 2_000_000),
+    )
+    confirmed = service.confirm_processing("loser")
+    assert confirmed.state is UploadState.QUEUED
+    assert repository.count_jobs("loser", "confirmed_process") == 1
+
+    cleaner = CountingCleaner()
+    pipeline = TranscriptPipeline(
+        database,
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path / "data",
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+            study_root=tmp_path / "study",
+            transcript_min_clean_ratio=0.1,
+            transcript_max_clean_ratio=2.0,
+        ),
+        FixedPrompt(),
+        cleaner,
+    )
+    with pytest.raises(TranscriptAdmissionPending):
+        pipeline.process("loser")
+    assert cleaner.calls == 0
+
+    pipeline.process("winner")
+    assert cleaner.calls == 1
+
+    replacement = pipeline.process("loser")
+    assert cleaner.calls == 2
+    assert replacement.current is False
+    assert repository.require_item("loser").state is UploadState.NEEDS_REVIEW

@@ -219,6 +219,16 @@ class StagingService:
         for path in root.glob("*"):
             path.unlink(missing_ok=True)
         root.rmdir()
+        chunk_root = self._chunk_root()
+        if chunk_root.exists():
+            for session_path in chunk_root.glob("*.json"):
+                try:
+                    session = self._load_session(session_path.stem)
+                except UploadRejected:
+                    continue
+                if session.manifest_owned and session.batch_id == manifest_id:
+                    self._chunk_path(session.id).unlink(missing_ok=True)
+                    session_path.unlink(missing_ok=True)
 
     def stage_file(
         self,
@@ -318,6 +328,7 @@ class StagingService:
             expires_at=(
                 datetime.now(UTC) + timedelta(hours=self.session_hours)
             ).isoformat(),
+            manifest_owned=False,
         )
         chunk_root = self._chunk_root()
         chunk_root.mkdir(parents=True, exist_ok=True)
@@ -342,6 +353,7 @@ class StagingService:
             expected_sha256=slot.sha256,
             received=0,
             expires_at=(datetime.now(UTC) + timedelta(hours=self.session_hours)).isoformat(),
+            manifest_owned=True,
         )
         chunk_root = self._chunk_root()
         chunk_root.mkdir(parents=True, exist_ok=True)
@@ -376,6 +388,7 @@ class StagingService:
             expected_sha256=session.expected_sha256,
             received=received,
             expires_at=session.expires_at,
+            manifest_owned=session.manifest_owned,
         )
         self._write_session(updated)
         return received
@@ -390,13 +403,11 @@ class StagingService:
         if digest != session.expected_sha256:
             raise UploadRejected("chunk upload checksum mismatch")
         self._validate_content(session.kind, source)
-        manifest_path = self._manifest_file_path(session.batch_id, session.item_id)
-        is_manifest = self._manifest_root(session.batch_id).is_dir()
-        ready = (
-            manifest_path
-            if is_manifest
-            else self._batch_root(session.batch_id) / f"{session.item_id}.ready"
-        )
+        if session.manifest_owned:
+            self._manifest_slot(self.get_manifest(session.batch_id), session.item_id)
+            ready = self._manifest_file_path(session.batch_id, session.item_id)
+        else:
+            ready = self._batch_root(session.batch_id) / f"{session.item_id}.ready"
         source.replace(ready)
         self._session_path(session.id).unlink(missing_ok=True)
         return StagedUpload(
@@ -576,6 +587,7 @@ class StagingService:
                     "expected_sha256": session.expected_sha256,
                     "received": session.received,
                     "expires_at": session.expires_at,
+                    "manifest_owned": session.manifest_owned,
                 },
                 sort_keys=True,
             ),
@@ -599,6 +611,7 @@ class StagingService:
             expected_sha256=str(raw["expected_sha256"]),
             received=int(raw["received"]),
             expires_at=str(raw["expires_at"]),
+            manifest_owned=bool(raw.get("manifest_owned", False)),
         )
 
     def _require_active(self, session: ChunkSession) -> None:

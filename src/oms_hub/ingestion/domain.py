@@ -64,6 +64,7 @@ class ChunkSession:
     expected_sha256: str
     received: int
     expires_at: str
+    manifest_owned: bool = False
 
 
 @dataclass(frozen=True, slots=True)

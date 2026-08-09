@@ -177,3 +177,41 @@ def test_mixed_multipart_and_chunk_slots_finalize_one_parent_batch(tmp_path: Pat
     assert batch.status_code == 200
     assert len(batch.json()["items"]) == 2
     assert _counts(app) == (1, 2, 0)
+
+
+def test_cancelled_manifest_chunk_can_never_fall_back_to_legacy_batch(tmp_path: Path) -> None:
+    client, app = _client(tmp_path)
+    payload = b"cancelled transcript"
+    slot_id = str(uuid4())
+    created = client.post(
+        "/api/upload-manifests",
+        json={
+            "kind": "transcripts",
+            "files": [{
+                "slot_id": slot_id,
+                "filename": "cancelled.txt",
+                "size_bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }],
+        },
+    )
+    manifest_id = created.json()["manifest_id"]
+    session = client.post(
+        "/api/upload-chunks",
+        json={
+            "kind": "transcripts",
+            "filename": "cancelled.txt",
+            "total_size": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "manifest_id": manifest_id,
+            "slot_id": slot_id,
+        },
+    )
+    session_id = session.json()["session_id"]
+    assert client.delete(f"/api/upload-manifests/{manifest_id}").status_code == 204
+
+    stale = client.post(f"/api/upload-chunks/{session_id}/finalize")
+
+    assert stale.status_code == 422
+    assert _counts(app) == (0, 0, 0)
+    assert _ready(app) == []
