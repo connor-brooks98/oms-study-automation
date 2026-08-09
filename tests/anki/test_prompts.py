@@ -205,7 +205,10 @@ def test_card_centric_v2_ledger_prompt_preserves_quality_first_sizing_policy() -
 
     assert prompt.metadata.version == "2.0.1"
     assert "smallest set of the best-supported, highest-yield," in prompt.content
-    assert "60 as a warning floor, 65 as the ordinary target,\nand 70 as a soft cap" in prompt.content
+    assert (
+        "60 as a warning floor, 65 as the ordinary target,\nand 70 as a soft cap"
+        in prompt.content
+    )
     assert "never pad\ncoverage merely to reach a count" in prompt.content
     assert "unique, grounded, high-value\nfact solely because the ordinary target" in prompt.content
 
