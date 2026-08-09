@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -185,6 +186,32 @@ def lifecycle_preflight() -> dict[str, Any]:
             }
             for prompt in prompts.prompts
         ]
+    }
+
+
+def lifecycle_empty_a11_history() -> dict[str, Any]:
+    """P1-compatible empty distinct-job A11 snapshot."""
+    entries: list[dict[str, object]] = []
+    return {
+        "entries": entries,
+        "snapshot_sha256": hashlib.sha256(
+            json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    }
+
+
+def lifecycle_pinned_lecture() -> dict[str, Any]:
+    """P1-compatible pinned lecture metadata for the deterministic lifecycle lecture."""
+    metadata = {"exam_number": 1, "lecture_number": 1, "subject": "Heme", "topic": "Synthesis"}
+    canonical_metadata = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
+    payload = {"lecture_id": 12, "title": "Heme Exam 1 Lecture 1: Synthesis", "metadata": metadata}
+    return {
+        "lecture_id": 12,
+        "title": payload["title"],
+        "metadata": {"canonical_json": canonical_metadata},
+        "metadata_sha256": hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
     }
 
 

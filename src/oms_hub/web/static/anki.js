@@ -166,8 +166,39 @@
       belowFloorWarning: selection.below_warning_floor === true
         ? `Fewer than ${floor} cards were selected. This is allowed when fewer cards meet grounding and quality requirements; do not add weak, redundant, or ungrounded cards to reach a count.`
         : "",
+      selectionMetadataState: selection.selection_metadata_state || "unavailable",
     };
   };
+
+  const reviewSelectionDisplay = (surface) => {
+    const selection = surface?.selection || {};
+    const metadataState = selection.selection_metadata_state || "unavailable";
+    const metadata = metadataState === "complete" && Array.isArray(selection.selection_metadata)
+      ? selection.selection_metadata
+      : [];
+    const acknowledgement = selection.overflow_acknowledgement || {};
+    return {
+      metadataState,
+      metadataNotice: metadataState === "complete"
+        ? ""
+        : "Current selection metadata is incomplete or unavailable; marginal and overflow reasons are pending reconstruction.",
+      selectionReasons: metadata
+        .filter((item) => Number(item.selected_position) >= 66)
+        .map((item) => {
+          const position = Number(item.selected_position);
+          if (position <= 70) {
+            return `Card ${position} (${item.identity}, ${item.tier}): marginal value — ${readableState(item.marginal_value_reason)}`;
+          }
+          return `Card ${position} (${item.identity}, ${item.tier}): mandatory ${item.mandatory === true ? "yes" : "no"}; overflow reason — ${item.overflow_reason || "not recorded"}; signed acknowledgement ${acknowledgement.signed === true ? "recorded" : "pending"}.`;
+        }),
+    };
+  };
+
+  const reviewSurfaceDetails = (surface) => ({
+    evidenceQuality: Array.isArray(surface?.evidence_quality) ? surface.evidence_quality : [],
+    duplicates: Array.isArray(surface?.duplicate_resolutions) ? surface.duplicate_resolutions : [],
+    acknowledgement: surface?.selection?.overflow_acknowledgement || {},
+  });
 
   const reviewSurfaceList = (documentRef, selector, heading, entries, format) => {
     const container = documentRef.querySelector(selector);
@@ -192,14 +223,12 @@
     belowFloor.textContent = display.belowFloorWarning;
     belowFloor.hidden = !display.belowFloorWarning;
 
-    const evidenceQuality = Array.isArray(surface.evidence_quality)
-      ? surface.evidence_quality
-      : [];
+    const details = reviewSurfaceDetails(surface);
     reviewSurfaceList(
       documentRef,
       "[data-review-evidence-quality]",
       "Evidence quality",
-      evidenceQuality,
+      details.evidenceQuality,
       (item) => `${item.identity}: ${readableState(item.evidence_quality)}`,
     );
 
@@ -233,35 +262,20 @@
       reviewSurfaceList(documentRef, "[data-review-s2b-diagnostic]", "", [], (value) => value);
     }
 
-    const metadata = Array.isArray(surface.selection?.selection_metadata)
-      ? surface.selection.selection_metadata
-      : [];
-    const acknowledgement = surface.selection?.overflow_acknowledgement || {};
-    const selectionReasons = metadata
-      .filter((item) => Number(item.selected_position) >= 66)
-      .map((item) => {
-        const position = Number(item.selected_position);
-        if (position <= 70) {
-          return `Card ${position} (${item.identity}, ${item.tier}): marginal value — ${readableState(item.marginal_value_reason)}`;
-        }
-        return `Card ${position} (${item.identity}, ${item.tier}): mandatory ${item.mandatory === true ? "yes" : "no"}; overflow reason — ${item.overflow_reason || "not recorded"}; signed acknowledgement ${acknowledgement.signed === true ? "recorded" : "pending"}.`;
-      });
+    const selectionDisplay = reviewSelectionDisplay(surface);
     reviewSurfaceList(
       documentRef,
       "[data-review-selection-reasons]",
-      "Selection reasons beyond the ordinary target",
-      selectionReasons,
+      selectionDisplay.metadataNotice || "Selection reasons beyond the ordinary target",
+      selectionDisplay.metadataNotice ? [selectionDisplay.metadataNotice] : selectionDisplay.selectionReasons,
       (value) => value,
     );
 
-    const duplicates = Array.isArray(surface.duplicate_resolutions)
-      ? surface.duplicate_resolutions
-      : [];
     reviewSurfaceList(
       documentRef,
       "[data-review-duplicates]",
       "Duplicate resolutions",
-      duplicates,
+      details.duplicates,
       (item) => `${item.card_id || item.fact_id}: duplicate of ${item.duplicate_of_existing_note_id ? `existing note ${item.duplicate_of_existing_note_id}` : `generated card ${item.duplicate_of_generated_card_id}`}`,
     );
   };
@@ -1896,6 +1910,8 @@
     statusTone,
     reconciliationDisplay,
     reviewSurfaceDisplay,
+    reviewSelectionDisplay,
+    reviewSurfaceDetails,
     reviewViews,
     renderProcessing,
     renderSourceChoices,

@@ -114,6 +114,74 @@ test("review defaults to only selected final changes and combines candidates", (
   assert.deepEqual(views.candidates.map((item) => item.note_id), [1, 2, 3]);
 });
 
+test("review surface keeps below-floor guidance quality-first", () => {
+  const display = anki.reviewSurfaceDisplay({
+    selection: {
+      selected_count: 59,
+      warning_floor: 60,
+      ordinary_target: 65,
+      soft_cap: 70,
+      below_warning_floor: true,
+      selection_metadata_state: "incomplete",
+    },
+  });
+
+  assert.equal(display.visible, true);
+  assert.match(display.sizing, /60 is a warning floor/);
+  assert.match(display.belowFloorWarning, /do not add weak, redundant, or ungrounded cards/);
+  assert.equal(display.selectionMetadataState, "incomplete");
+});
+
+test("review surface exposes only complete current marginal and overflow reasons", () => {
+  const complete = anki.reviewSelectionDisplay({
+    selection: {
+      selection_metadata_state: "complete",
+      overflow_acknowledgement: { signed: true },
+      selection_metadata: [{
+        identity: "note:66",
+        selected_position: 66,
+        tier: "T2",
+        marginal_value_reason: "only_valid_required_fact",
+      }, {
+        identity: "note:71",
+        selected_position: 71,
+        tier: "T1",
+        mandatory: true,
+        overflow_reason: "required fact",
+      }],
+    },
+  });
+
+  assert.deepEqual(complete.selectionReasons, [
+    "Card 66 (note:66, T2): marginal value — Only Valid Required Fact",
+    "Card 71 (note:71, T1): mandatory yes; overflow reason — required fact; signed acknowledgement recorded.",
+  ]);
+  assert.equal(complete.metadataNotice, "");
+
+  const incomplete = anki.reviewSelectionDisplay({
+    selection: {
+      selection_metadata_state: "incomplete",
+      selection_metadata: [{ selected_position: 71, overflow_reason: "stale" }],
+    },
+  });
+  assert.deepEqual(incomplete.selectionReasons, []);
+  assert.match(incomplete.metadataNotice, /incomplete or unavailable/);
+});
+
+test("review surface preserves evidence-quality and duplicate resolution details", () => {
+  const details = anki.reviewSurfaceDetails({
+    evidence_quality: [{ identity: "note:42", evidence_quality: "primary_source" }],
+    duplicate_resolutions: [{ card_id: "CC-1", duplicate_of_existing_note_id: 42 }],
+    selection: { overflow_acknowledgement: { signed: false, state: "pending" } },
+  });
+
+  assert.deepEqual(details.evidenceQuality, [
+    { identity: "note:42", evidence_quality: "primary_source" },
+  ]);
+  assert.deepEqual(details.duplicates, [{ card_id: "CC-1", duplicate_of_existing_note_id: 42 }]);
+  assert.deepEqual(details.acknowledgement, { signed: false, state: "pending" });
+});
+
 test("candidate search includes note id text extra and hidden tags", () => {
   const candidate = {
     note_id: 42,

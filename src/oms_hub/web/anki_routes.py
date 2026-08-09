@@ -1409,12 +1409,17 @@ def _review_surface_payload(
     coverage = _committed_stage_payload(request, job.id, CurationStage.CARD_COVERAGE)
     selection = _committed_stage_payload(request, job.id, CurationStage.CARD_SELECTION)
     dedupe = _committed_stage_payload(request, job.id, CurationStage.DEDUPE)
-    current_metadata = _current_selection_metadata(selection, reconciliation)
+    current_metadata, metadata_state = _current_selection_metadata(selection, reconciliation)
     return {
         "evidence_quality": _review_evidence_quality(coverage, current_metadata),
         "s2b_diagnostic": _s2b_diagnostic(evidence_audit),
         "selection": _selection_review_surface(
-            _repository(request), job, selection, reconciliation, current_metadata
+            _repository(request),
+            job,
+            selection,
+            reconciliation,
+            current_metadata,
+            metadata_state,
         ),
         "duplicate_resolutions": _duplicate_resolutions(dedupe),
     }
@@ -1463,6 +1468,25 @@ def _s2b_diagnostic(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     return diagnostic or None
 
 
+def _canonical_selection_identity(value: object) -> str | None:
+    """Normalize persisted selection identities across v2 and legacy forms."""
+    if isinstance(value, int) and value > 0:
+        return f"existing:{value}"
+    if not isinstance(value, str):
+        return None
+    if value.isdigit() and int(value) > 0:
+        return f"existing:{value}"
+    if value.startswith("note:") and value[5:].isdigit() and int(value[5:]) > 0:
+        return f"existing:{value[5:]}"
+    if value.startswith("existing:") and value[9:].isdigit() and int(value[9:]) > 0:
+        return f"existing:{value[9:]}"
+    if value.startswith("generated:") and value[10:].strip():
+        return f"generated:{value[10:]}"
+    if value.startswith("card:") and value[5:].strip():
+        return f"generated:{value[5:]}"
+    return None
+
+
 def _review_evidence_quality(
     coverage: dict[str, Any] | None,
     selection_metadata: list[dict[str, Any]],
@@ -1482,17 +1506,20 @@ def _review_evidence_quality(
                 quality = record.get("evidence_quality")
                 if quality not in _EVIDENCE_QUALITY_VALUES:
                     continue
+                identity = _canonical_selection_identity(record.get("note_id"))
+                if identity is None:
+                    continue
                 values.append(
                     {
-                        "identity": f"note:{record.get('note_id')}",
+                        "identity": identity,
                         "concept_id": concept_id,
                         "evidence_quality": quality,
                     }
                 )
     for item in selection_metadata:
         quality = item.get("evidence_quality")
-        identity = item.get("identity")
-        if quality not in _EVIDENCE_QUALITY_VALUES or not isinstance(identity, str):
+        identity = _canonical_selection_identity(item.get("identity"))
+        if quality not in _EVIDENCE_QUALITY_VALUES or identity is None:
             continue
         values.append({"identity": identity, "evidence_quality": quality})
     unique: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1509,6 +1536,7 @@ def _selection_review_surface(
     selection: dict[str, Any] | None,
     reconciliation: dict[str, Any] | None,
     current_metadata: list[dict[str, Any]],
+    metadata_state: str,
 ) -> dict[str, Any] | None:
     if selection is None:
         return None
@@ -1548,6 +1576,10 @@ def _selection_review_surface(
             else None
         ),
         "selection_metadata": current_metadata,
+        # Metadata is selection-relative.  A reviewed selection that cannot
+        # carry a complete current ordering must not inherit S9's former
+        # positions or marginal/overflow reasons.
+        "selection_metadata_state": metadata_state,
         "overflow_acknowledgement": acknowledgement_state,
         "acknowledgement_satisfied": (
             selected_count is not None
@@ -1561,14 +1593,17 @@ def _selection_review_surface(
 def _current_selection_metadata(
     selection: dict[str, Any] | None,
     reconciliation: dict[str, Any] | None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], str]:
     if selection is None:
-        return []
+        return [], "unavailable"
     reconciliation_selection = (reconciliation or {}).get("selection")
-    current_selection = (
-        reconciliation_selection if isinstance(reconciliation_selection, dict) else selection
+    has_reviewed_selection = isinstance(reconciliation_selection, dict)
+    current_selection: dict[str, Any] = (
+        cast(dict[str, Any], reconciliation_selection) if has_reviewed_selection else selection
     )
-    metadata = current_selection.get("selection_metadata", selection.get("selection_metadata", []))
+    # Deliberately do not fall back from a reviewed selection to the original
+    # S9 metadata.  The reviewer may have changed membership or order.
+    metadata = current_selection.get("selection_metadata", [])
     existing = current_selection.get("selected_existing_note_ids", [])
     generated = current_selection.get("selected_generated_card_ids", [])
     if (
@@ -1576,28 +1611,34 @@ def _current_selection_metadata(
         or not isinstance(existing, list)
         or not isinstance(generated, list)
     ):
-        return []
+        return [], "unavailable"
     selected_identities = {
-        *(
-            identity
-            for note_id in existing
-            if isinstance(note_id, int)
-            for identity in (str(note_id), f"note:{note_id}")
-        ),
-        *(
-            identity
-            for card_id in generated
-            if isinstance(card_id, str)
-            for identity in (card_id, f"card:{card_id}", f"generated:{card_id}")
-        ),
+        *(_canonical_selection_identity(note_id) for note_id in existing),
+        *(_canonical_selection_identity(f"generated:{card_id}") for card_id in generated),
     }
-    return [
-        item
-        for item in metadata
-        if isinstance(item, dict)
-        and isinstance(item.get("identity"), str)
-        and item["identity"] in selected_identities
-    ]
+    selected_identities.discard(None)
+
+    normalized: list[dict[str, Any]] = []
+    for item in metadata:
+        if not isinstance(item, dict):
+            continue
+        identity = _canonical_selection_identity(item.get("identity"))
+        if identity not in selected_identities:
+            continue
+        normalized.append({**item, "identity": identity})
+    identities = [item["identity"] for item in normalized]
+    positions = [item.get("selected_position") for item in normalized]
+    complete = (
+        len(normalized) == len(selected_identities)
+        and set(identities) == selected_identities
+        and len(set(identities)) == len(identities)
+        and all(isinstance(position, int) and position > 0 for position in positions)
+        and len(set(positions)) == len(positions)
+        and set(positions) == set(range(1, len(selected_identities) + 1))
+    )
+    if complete:
+        return sorted(normalized, key=lambda item: int(item["selected_position"])), "complete"
+    return [], "incomplete" if has_reviewed_selection else "unavailable"
 
 
 def _overflow_acknowledgement_state(

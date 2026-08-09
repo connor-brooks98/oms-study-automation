@@ -113,16 +113,20 @@ class CardCentricV2LifecycleHarness:
         job: CurationJob,
         stage: CurationStage,
         prior_payloads: Mapping[CurationStage, dict[str, Any]],
+        replay_inputs: Mapping[str, Any] | None = None,
+        replay_inputs_sha256: str = "",
     ) -> StageProduct:
-        product = await self.runner.run(
-            StageContext(
-                job=job,
-                stage=stage,
-                input_sha256="f" * 64,
-                prior_artifacts=(),
-                prior_payloads=prior_payloads,
-            )
-        )
+        context_kwargs: dict[str, Any] = {
+            "job": job,
+            "stage": stage,
+            "input_sha256": "f" * 64,
+            "prior_artifacts": (),
+            "prior_payloads": prior_payloads,
+        }
+        if "replay_inputs" in StageContext.__dataclass_fields__:
+            context_kwargs["replay_inputs"] = replay_inputs or {}
+            context_kwargs["replay_inputs_sha256"] = replay_inputs_sha256
+        product = await self.runner.run(StageContext(**context_kwargs))
         self.products[stage] = product
         return product
 

@@ -3,21 +3,30 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 
 import numpy as np
 
+from oms_hub.anki.card_centric import select_high_yield_v2
 from oms_hub.anki.card_centric_contracts import (
+    CardCentricSourceIndex,
     CardClassification,
+    CardConcept,
+    CardConceptLedger,
     ClassifierResult,
     ClassifierTelemetry,
     FastCardClassification,
     FastClassificationResult,
     GeneratedCardResolution,
 )
-from oms_hub.anki.domain import CurationStage
+from oms_hub.anki.domain import CreateCurationJob, CurationStage, PipelineContractVersion
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
+from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.anki.stages import CurationServicesRunner
+from oms_hub.db import Database
 from oms_hub.llm.structured import StructuredTextService
+from oms_hub.models import LectureModel
 from tests.anki.fixtures.card_centric_v2_lifecycle import (
     CardCentricV2LifecycleHarness,
     DeterministicEmbeddingClient,
@@ -26,12 +35,83 @@ from tests.anki.fixtures.card_centric_v2_lifecycle import (
 from tests.anki.fixtures.card_centric_v2_lifecycle_data import (
     LifecycleRepository,
     LifecycleSemanticService,
+    lifecycle_empty_a11_history,
     lifecycle_job,
     lifecycle_ledger,
+    lifecycle_pinned_lecture,
     lifecycle_preflight,
     lifecycle_source_payload,
     payloads,
 )
+
+
+def _s9_snapshot(*, generated_cards: tuple, selected_generated: tuple[str, ...]):
+    """Build a minimal real S9 input while keeping tests focused on one invariant."""
+    from oms_hub.anki.reconciliation import CardCentricReconciliationInput
+
+    return CardCentricReconciliationInput(
+        pipeline_contract_version="card_centric_v2",
+        concept_ids=("C01",),
+        coverage={"C01": "covered"},
+        required_fact_ids=(),
+        uncovered_after_s5=(),
+        residual_ran_for=(),
+        generated_cards=generated_cards,
+        canonical_generated_cards=generated_cards,
+        unresolved_fact_ids=(),
+        expected_scoped_nids=(),
+        classifications=(),
+        eligible_yes_nids=(),
+        selected_nids=(),
+        selected_generated_card_ids=selected_generated,
+        generated_card_ids=tuple(item.card_id for item in generated_cards),
+        source_passage_ids=(),
+        forbidden_cloze_targets=(),
+        prompt_sync_stale=False,
+        untagged_rate=0,
+        generated_concept_id_by_card_id={item.card_id: "C01" for item in generated_cards},
+        mandatory_generated_card_ids=selected_generated,
+    )
+
+
+def _normalized_selection_result(
+    result: object,
+) -> tuple[tuple[int, ...], tuple[int, ...], tuple[str, ...], tuple[dict[str, object], ...]]:
+    """Normalize S0's selector tuple and P3's metadata-bearing selection result."""
+    if isinstance(result, tuple) and len(result) == 3:
+        selected_existing, excluded_existing, selected_generated = result
+        return tuple(selected_existing), tuple(excluded_existing), tuple(selected_generated), ()
+    raw_metadata = result.selection_metadata  # type: ignore[attr-defined]
+    metadata = tuple(
+        item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
+        for item in raw_metadata
+    )
+    return (
+        tuple(result.selected_existing_note_ids),  # type: ignore[attr-defined]
+        tuple(result.excluded_existing_note_ids),  # type: ignore[attr-defined]
+        tuple(result.selected_generated_card_ids),  # type: ignore[attr-defined]
+        metadata,
+    )
+
+
+def _independent_ledger(count: int, *, mandatory: bool, low: bool = False) -> CardConceptLedger:
+    """Build distinct independently selectable concept coverage for selector boundaries."""
+    return CardConceptLedger(
+        lecture_entity_count=count,
+        concepts=tuple(
+            CardConcept(
+                concept_id=f"C{index:02d}",
+                canonical_statement=f"Independent fact {index}.",
+                primary_entity=f"independent entity {index}",
+                depth="deep" if mandatory else "surface" if low else "medium",
+                emphasis_flag=mandatory,
+                importance="high" if mandatory else "low" if low else "medium",
+                fact_descriptions=(f"Independent fact {index}.",),
+                forbidden_cloze_targets_by_fact=((),),
+            )
+            for index in range(1, count + 1)
+        ),
+    )
 
 
 class _UniqueEmbeddings:
@@ -77,8 +157,8 @@ def _runner(
     return CardCentricV2LifecycleHarness(runner), generator
 
 
-def test_continuous_real_handler_lifecycle_reaches_review_with_envelope_eligibility() -> None:
-    """Every v2 handler receives the preceding production product payload unchanged."""
+def test_m13_real_handlers_use_the_persisted_resolved_model_routes() -> None:
+    """M-13/D18: S2, S4c, and S7 use the job's pinned routes and retain their model document."""
 
     async def scenario() -> None:
         source = lifecycle_source_payload()
@@ -159,7 +239,7 @@ def test_continuous_real_handler_lifecycle_reaches_review_with_envelope_eligibil
                 },
             ]
         }
-        harness, _ = _runner(
+        harness, generator = _runner(
             [ledger.model_dump(mode="json"), fast, thorough, gap], embedder=_UniqueEmbeddings()
         )
         harness.runner.semantic = _NoResidualHits()
@@ -197,8 +277,78 @@ def test_continuous_real_handler_lifecycle_reaches_review_with_envelope_eligibil
         assert reconciliation.blocking_error is None
         assert reconciliation.payload["failed"] == []
         assert reconciliation.payload["can_render_envelope"] is True
+        routes = job.resolved_model_config
+        assert [(call[2].value, call[3]) for call in generator.calls] == [
+            (routes.ledger_s2.provider, routes.ledger_s2.model),
+            (routes.fast_classify_s4b.provider, routes.fast_classify_s4b.model),
+            (routes.classify_s4.provider, routes.classify_s4.model),
+            (routes.gap_fill_s7.provider, routes.gap_fill_s7.model),
+        ]
+        assert products[CurationStage.CARD_LEDGER].payload["provenance"] == {
+            "provider": routes.ledger_s2.provider,
+            "model": routes.ledger_s2.model,
+            "request_id": "fixture-001",
+            "cache_prefix_sha256": products[CurationStage.CARD_LEDGER].payload["provenance"][
+                "cache_prefix_sha256"
+            ],
+        }
+        assert (
+            products[CurationStage.CARD_CLASSIFY].payload["model_config"]
+            == routes.canonical_document()
+        )
+        assert (
+            products[CurationStage.CARD_FAST_CLASSIFY].payload["model_config"]
+            == routes.canonical_document()
+        )
 
     asyncio.run(scenario())
+
+
+def test_m13_repository_reload_preserves_resolved_model_document_and_hash(tmp_path) -> None:
+    """M-13/D18: persisted S2/S4c/S7 routes reload with their canonical configuration hash."""
+    database = Database(f"sqlite:///{tmp_path / 'models.db'}")
+    database.migrate()
+    try:
+        with database.session() as session:
+            lecture = LectureModel(
+                subject="Heme",
+                exam_number=1,
+                lecture_number=1,
+                topic="Synthesis",
+                lecturer="Fixture",
+            )
+            session.add(lecture)
+            session.flush()
+            lecture_id = lecture.id
+        repository = AnkiCurationRepository(database)
+        resolved = lifecycle_job().resolved_model_config
+        job = repository.create_job(
+            CreateCurationJob(
+                lecture_id=lecture_id,
+                block_id=None,
+                source_revision_ids=(1,),
+                deck_allowlist=("Medical",),
+                tag_allowlist=("heme",),
+                instruction_text="",
+                target_deck="OMS::Heme",
+                target_tag="fixture",
+                index_snapshot_id="fixture-snapshot",
+                lcl_prompt_version="lecture-concept-ledger",
+                judgment_rubric_version="coverage-rubric",
+                gap_prompt_version="gap-card-generation",
+                provider="anthropic",
+                model="fixture-model",
+                pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+                resolved_model_config=resolved,
+            )
+        )
+        reloaded = repository.require_job(job.id)
+        canonical = json.dumps(resolved.canonical_document(), sort_keys=True, separators=(",", ":"))
+
+        assert reloaded.resolved_model_config.canonical_document() == resolved.canonical_document()
+        assert reloaded.model_config_sha256 == hashlib.sha256(canonical.encode()).hexdigest()
+    finally:
+        database.close()
 
 
 def test_s6_mid_band_has_explicit_disposition_expected_red_p2_m8() -> None:
@@ -391,7 +541,9 @@ def test_real_handlers_s7_split_generation_and_s8_unique_resolutions() -> None:
     asyncio.run(scenario())
 
 
-def test_real_handler_s9_preserves_selected_fact_artifacts_and_review_eligibility() -> None:
+def test_l1_real_handler_s9_constructs_holistic_reconciliation_snapshot() -> None:
+    """L-1: S9 constructs every reconciliation-contract field from upstream artifacts."""
+
     async def scenario() -> None:
         source = lifecycle_source_payload()
         slide_id = next(
@@ -484,11 +636,32 @@ def test_real_handler_s9_preserves_selected_fact_artifacts_and_review_eligibilit
             "C02-M3",
         }
         assert snapshot["selected_generated_card_ids"] == ["G1", "G2", "G3", "G4"]
+        assert snapshot["canonical_unresolved_fact_ids"] == []
+        assert [item["nid"] for item in snapshot["classifications"]] == list(range(1, 11))
+        assert snapshot["selected_nids"] == list(range(1, 11))
+        from oms_hub.anki.reconciliation import CardCentricReconciliationInput
+
+        assert set(snapshot) == set(CardCentricReconciliationInput.model_fields)
+        assert snapshot["concept_ids"] == ["C01", "C02"]
+        assert snapshot["coverage"] == {"C01": "covered", "C02": "covered"}
+        assert snapshot["required_fact_ids"] == ["C02-M1", "C02-M2", "C02-M3"]
+        assert snapshot["uncovered_after_s5"] == ["C02"]
+        assert snapshot["residual_ran_for"] == ["C02"]
+        assert snapshot["generated_card_ids"] == ["G1", "G2", "G3", "G4"]
+        assert snapshot["expected_scoped_nids"] == list(range(1, 11))
+        assert snapshot["eligible_yes_nids"] == list(range(1, 11))
+        assert snapshot["source_passage_ids"] == [
+            passage["passage_id"] for passage in source["source_index"]["passages"]
+        ]
+        assert snapshot["prompt_sync_stale"] is False
+        assert snapshot["untagged_rate"] == 0.0
 
     asyncio.run(scenario())
 
 
-def test_real_handler_s8_preserves_duplicate_identity() -> None:
+def test_expected_red_p3_h3_s8_duplicate_identity_survives_into_s9_audit() -> None:
+    """P3 H-3: S8 duplicate terminal status survives S9 audit, never an intentional gap."""
+
     async def scenario() -> None:
         source = lifecycle_source_payload()
         slide_id = next(
@@ -508,6 +681,15 @@ def test_real_handler_s8_preserves_duplicate_identity() -> None:
                     reason="Grounded existing coverage.",
                     covered_concept_ids=("C01",),
                     supporting_passage_ids=(slide_id,),
+                ),
+                *(
+                    CardClassification(
+                        note_id=note_id,
+                        verdict="NO",
+                        primary_subject="fixture",
+                        reason="Not relevant.",
+                    )
+                    for note_id in range(2, 11)
                 ),
             ),
             telemetry=ClassifierTelemetry(
@@ -548,6 +730,41 @@ def test_real_handler_s8_preserves_duplicate_identity() -> None:
         assert resolution["status"] == "duplicate_of_existing"
         assert resolution["duplicate_of_existing_note_id"] == 1
         assert resolution["duplicate_of_generated_card_id"] is None
+
+        # H-3 preserves the S8 terminal duplicate in the canonical S9 audit even
+        # though it is not selectable as a generated card.
+        prior[CurationStage.DEDUPE] = product.payload
+        prior[CurationStage.CARD_COVERAGE] = {
+            "coverage": {
+                "C01": {"status": "covered", "evidence": []},
+                "C02": {"status": "uncovered", "evidence": []},
+            }
+        }
+        prior[CurationStage.CARD_RESIDUAL] = {
+            "classifier": None,
+            "uncovered_concept_ids": ["C02"],
+        }
+        scope = await harness.invoke(
+            job=lifecycle_job(), stage=CurationStage.CARD_TAG_SCOPE, prior_payloads=prior
+        )
+        prior[CurationStage.CARD_TAG_SCOPE] = scope.payload
+        selection = await harness.invoke(
+            job=lifecycle_job(), stage=CurationStage.CARD_SELECTION, prior_payloads=prior
+        )
+        prior[CurationStage.CARD_SELECTION] = selection.payload
+        s9 = await harness.invoke(
+            job=lifecycle_job(),
+            stage=CurationStage.RECONCILIATION,
+            prior_payloads=prior,
+            replay_inputs={"a11_history": lifecycle_empty_a11_history()},
+            replay_inputs_sha256="a" * 64,
+        )
+
+        assert selection.payload["selected_generated_card_ids"] == []
+        canonical = s9.payload["snapshot"]["canonical_generated_cards"]
+        assert canonical == [resolution]
+        assert canonical[0]["status"] == "duplicate_of_existing"
+        assert canonical[0].get("status") != "intentional_gap"
 
     asyncio.run(scenario())
 
@@ -745,9 +962,9 @@ def test_selection_orders_t1_t2_t3_positions_expected_red_p3_m11() -> None:
         )
 
         expected = [
-            {"identity": "card:G-T1", "selected_position": 1, "tier": "T1"},
-            {"identity": "card:G-T2", "selected_position": 2, "tier": "T2"},
-            {"identity": "note:1", "selected_position": 3, "tier": "T3"},
+            {"identity": "generated:G-T1", "selected_position": 1, "tier": "T1"},
+            {"identity": "generated:G-T2", "selected_position": 2, "tier": "T2"},
+            {"identity": "existing:1", "selected_position": 3, "tier": "T3"},
         ]
         raw_metadata = selection.payload.get("selection_metadata", [])
         actual = [
@@ -771,7 +988,7 @@ def test_selection_orders_t1_t2_t3_positions_expected_red_p3_m11() -> None:
 
 
 def test_selection_keeps_only_best_redundant_coverage_expected_red_p3_h5() -> None:
-    """P3 H-5: a soft target cannot retain duplicate coverage as padding."""
+    """P3 H-5: selection exposes quality-first nonredundancy rather than count padding."""
 
     async def scenario() -> None:
         source = lifecycle_source_payload()
@@ -821,6 +1038,13 @@ def test_selection_keeps_only_best_redundant_coverage_expected_red_p3_h5() -> No
             job=lifecycle_job(), stage=CurationStage.CARD_SELECTION, prior_payloads=prior
         )
 
+        assert selection.payload["selection_metadata"] == [
+            {
+                "identity": "note:1",
+                "selected_position": 1,
+                "reason": "best_nonredundant_coverage",
+            }
+        ], "P3 H-5: Selection lacks quality-first nonredundant coverage evidence"
         assert selection.payload["selected_existing_note_ids"] == [1]
 
     asyncio.run(scenario())
@@ -910,3 +1134,445 @@ def test_s7_split_rows_expose_sequential_index_expected_red_p3_h8() -> None:
     )
 
     assert hasattr(resolution, "split_index")
+
+
+def test_h2_generated_oversupply_is_carried_from_selection_to_s9_pending_overflow() -> None:
+    """H-2: ten mandatory existing cards leave only target capacity for generated facts."""
+    from oms_hub.anki.reconciliation import GeneratedResolution, reconcile_card_centric
+
+    source = lifecycle_source_payload()
+    source_index = CardCentricSourceIndex.model_validate(source["source_index"])
+    mandatory_ledger = _independent_ledger(10, mandatory=True)
+    ledger = CardConceptLedger(
+        lecture_entity_count=11,
+        concepts=(
+            *mandatory_ledger.concepts,
+            CardConcept(
+                concept_id="C11",
+                canonical_statement="Independent low-priority generated fact coverage.",
+                primary_entity="independent generated entity",
+                depth="surface",
+                emphasis_flag=False,
+                importance="low",
+                fact_descriptions=("Independent low-priority generated fact coverage.",),
+                forbidden_cloze_targets_by_fact=((),),
+            ),
+        ),
+    )
+    generated = tuple(
+        GeneratedCardResolution(
+            card_id=f"G-{number:03d}",
+            concept_id="C11",
+            fact_id=f"C11-M{number}",
+            text=f"Generated {{{{c1::value-{number}}}}}.",
+            source_passage_ids=(source_index.passages[0].passage_id,),
+            evidence_ids=(f"E-{number}",),
+        )
+        for number in range(1, 65)
+    )
+    existing = tuple(
+        CardClassification(
+            note_id=note_id,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="Mandatory high-priority existing coverage.",
+            covered_concept_ids=(f"C{note_id:02d}",),
+            supporting_passage_ids=(source_index.passages[0].passage_id,),
+        )
+        for note_id in range(1, 11)
+    )
+    selection_result = select_high_yield_v2(
+        existing,
+        fast_classifications=(),
+        ledger=ledger,
+        source_index=source_index,
+        generated_cards=generated,
+    )
+    notes, _excluded, selected, _metadata = _normalized_selection_result(selection_result)
+    selection_updates: dict[str, object] = {}
+    if hasattr(selection_result, "selection_metadata"):
+        raw_metadata = selection_result.selection_metadata  # type: ignore[attr-defined]
+        selection_updates = {
+            "selection_metadata": raw_metadata,
+            "selection_order": tuple(
+                item.identity
+                for item in sorted(raw_metadata, key=lambda item: item.selected_position)
+            ),
+            "selected_count": len(notes) + len(selected),
+            "below_warning_floor": selection_result.below_warning_floor,  # type: ignore[attr-defined]
+            "mandatory_nids": selection_result.mandatory_note_ids,  # type: ignore[attr-defined]
+            "mandatory_generated_card_ids": (  # type: ignore[attr-defined]
+                selection_result.mandatory_generated_card_ids
+            ),
+        }
+    s9_generated = tuple(
+        GeneratedResolution(card_id=item.card_id, fact_id=item.fact_id, text=item.text)
+        for item in generated
+    )
+    terminal_updates: dict[str, object] = {}
+    try:
+        from oms_hub.anki.correction_contracts import (
+            GeneratedFactResolution,
+            GeneratedResolutionKind,
+        )
+    except ImportError:
+        # S0 has not yet introduced the immutable terminal map.  Its legacy
+        # A1/A2 path still checks the same canonical generated rows below.
+        pass
+    else:
+        terminal_updates = {
+            "raw_generated_cards": s9_generated,
+            "terminal_resolutions": tuple(
+                GeneratedFactResolution(
+                    fact_id=item.fact_id,
+                    kind=GeneratedResolutionKind.GENERATED,
+                    generated_card_ids=(item.card_id,),
+                )
+                for item in generated
+            ),
+            "terminal_resolutions_provided": True,
+        }
+    concept_ids = tuple(concept.concept_id for concept in ledger.concepts)
+    snapshot = _s9_snapshot(generated_cards=s9_generated, selected_generated=selected).model_copy(
+        update={
+            "cap": 70,
+            "concept_ids": concept_ids,
+            "coverage": {concept_id: "covered" for concept_id in concept_ids},
+            "required_fact_ids": tuple(item.fact_id for item in generated),
+            "selected_nids": notes,
+            "eligible_yes_nids": notes,
+            "covered_concept_ids_by_nid": {note_id: (f"C{note_id:02d}",) for note_id in notes},
+            "generated_concept_id_by_card_id": {item.card_id: "C11" for item in generated},
+            **terminal_updates,
+            **selection_updates,
+        }
+    )
+    report = reconcile_card_centric(snapshot)
+
+    assert set(notes) == set(range(1, 11))
+    assert 0 < len(selected) < len(generated)
+    assert len(snapshot.canonical_generated_cards) == 64
+    assert set(snapshot.generated_card_ids) - set(snapshot.selected_generated_card_ids)
+    assert report.failed == ()
+    assert not {item.assertion_id for item in report.failed} & {"A1", "A2"}
+    assert report.can_render_envelope is True
+
+
+def test_expected_red_p3_h9_a5_validates_unselected_generated_output() -> None:
+    """P3 H-9: A5/A5b must reject malformed or forbidden unselected S7/S8 output too."""
+    from oms_hub.anki.reconciliation import GeneratedResolution, reconcile_card_centric
+
+    invalid = GeneratedCardResolution(
+        card_id="unselected-forbidden",
+        concept_id="C01",
+        fact_id="C01-M1",
+        text="This blanks {{c1::mitochondria}}.",
+        source_passage_ids=("SLD:fixture:P:001",),
+        evidence_ids=("evidence-1",),
+    )
+    snapshot = _s9_snapshot(generated_cards=(), selected_generated=()).model_copy(
+        update={
+            "canonical_generated_cards": (
+                GeneratedResolution(
+                    card_id=invalid.card_id,
+                    fact_id=invalid.fact_id,
+                    text=invalid.text,
+                ),
+            ),
+            "forbidden_cloze_targets": ("mitochondria",),
+        }
+    )
+    report = reconcile_card_centric(snapshot)
+
+    assert "A5" in {item.assertion_id for item in report.failed}, (
+        "P3 H-9: S9 currently validates only selected generated_cards and leaves canonical "
+        "unselected generated output outside A5/A5b"
+    )
+
+
+def test_expected_red_p3_h6_h9_a5_uses_fact_local_forbidden_targets_for_unselected_rows() -> None:
+    """P3 H-6/H-9: A5 validates every canonical fact against only that fact's targets."""
+    from oms_hub.anki.reconciliation import GeneratedResolution, reconcile_card_centric
+
+    # M1 forbids mitochondria; M2 forbids glycine.  Glycine in M1 is valid and
+    # must not be contaminated by M2's local prohibition.
+    allowed = GeneratedResolution(
+        card_id="fact-a-allowed",
+        fact_id="C01-M1",
+        text="This fact keeps {{c1::glycine}} visible.",
+    )
+    forbidden_a = GeneratedResolution(
+        card_id="fact-a-forbidden",
+        fact_id="C01-M1",
+        text="This fact blanks {{c1::mitochondria}}.",
+    )
+    forbidden_b = GeneratedResolution(
+        card_id="fact-b-forbidden",
+        fact_id="C02-M1",
+        text="This fact blanks {{c1::glycine}}.",
+    )
+    base = _s9_snapshot(generated_cards=(), selected_generated=()).model_copy(
+        update={
+            "forbidden_cloze_targets_by_fact": {
+                "C01-M1": ("mitochondria",),
+                "C02-M1": ("glycine",),
+            }
+        }
+    )
+    allowed_report = reconcile_card_centric(
+        base.model_copy(update={"canonical_generated_cards": (allowed,)})
+    )
+    fact_a_report = reconcile_card_centric(
+        base.model_copy(update={"canonical_generated_cards": (forbidden_a,)})
+    )
+    fact_b_report = reconcile_card_centric(
+        base.model_copy(update={"canonical_generated_cards": (forbidden_b,)})
+    )
+    assert "A5" not in {item.assertion_id for item in allowed_report.failed}
+    assert "A5" in {item.assertion_id for item in fact_a_report.failed}
+    assert "A5" in {item.assertion_id for item in fact_b_report.failed}
+
+
+def test_h6_s7_provider_input_keeps_forbidden_cloze_targets_per_fact() -> None:
+    """P3 H-6: S7 must send each fact only its own forbidden-cloze targets."""
+
+    async def scenario() -> None:
+        import json
+
+        source = lifecycle_source_payload()
+        ledger = lifecycle_ledger().model_copy(
+            update={
+                "concepts": (
+                    lifecycle_ledger().concepts[0],
+                    lifecycle_ledger()
+                    .concepts[1]
+                    .model_copy(
+                        update={
+                            "forbidden_cloze_targets_by_fact": (
+                                ("glycine",),
+                                ("mitochondria",),
+                                ("succinyl-CoA",),
+                            )
+                        }
+                    ),
+                )
+            }
+        )
+        gap = {
+            "resolutions": [
+                {
+                    "fact_id": f"C02-M{number}",
+                    "status": "unresolved",
+                    "reason": "fixture",
+                    "text": "",
+                    "extra": "",
+                    "note_type": "Cloze",
+                    "source_passage_ids": [],
+                }
+                for number in range(1, 4)
+            ]
+        }
+        harness, generator = _runner([gap])
+        prior = payloads(source=source, preflight=lifecycle_preflight())
+        prior[CurationStage.CARD_LEDGER] = {"ledger": ledger.model_dump(mode="json")}
+        prior[CurationStage.CARD_COVERAGE] = {
+            "coverage": {
+                "C01": {"status": "covered", "evidence": []},
+                "C02": {"status": "uncovered", "evidence": []},
+            }
+        }
+        prior[CurationStage.CARD_CLASSIFY] = {
+            "classifier": ClassifierResult(
+                results=(),
+                telemetry=ClassifierTelemetry(
+                    batch_count=0,
+                    cache_prefix_sha256="a" * 64,
+                    cache_mode="ordinary_prefix",
+                    provider="anthropic",
+                    model="fixture-model",
+                    request_ids=(),
+                    batches=(),
+                ),
+            ).model_dump(mode="json")
+        }
+        prior[CurationStage.CARD_RESIDUAL] = {"classifier": None}
+        prior[CurationStage.CARD_FAST_CLASSIFY] = {
+            "fast_classifier": FastClassificationResult(results=()).model_dump(mode="json"),
+            "fallback_note_ids": [],
+        }
+
+        product = await harness.invoke(
+            job=lifecycle_job(),
+            stage=CurationStage.CARD_GAP_FILL,
+            prior_payloads=prior,
+            replay_inputs={"pinned_lecture": lifecycle_pinned_lecture()},
+            replay_inputs_sha256="b" * 64,
+        )
+        request = json.loads(generator.calls[0][1])
+
+        assert product.payload["resolutions"]
+        assert [item["forbidden_cloze_targets"] for item in request["missing_facts"]] == [
+            ["glycine"],
+            ["mitochondria"],
+            ["succinyl-CoA"],
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_h5_selection_keeps_quality_first_lower_bound_without_padding() -> None:
+    """H-5: a grounded 10-card selection stays below 60 instead of manufacturing quota cards."""
+    source = CardCentricSourceIndex.model_validate(lifecycle_source_payload()["source_index"])
+    slide_id = next(
+        passage.passage_id for passage in source.passages if passage.authority == "slide"
+    )
+    ledger = _independent_ledger(10, mandatory=False)
+    classifications = tuple(
+        CardClassification(
+            note_id=note_id,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="grounded",
+            covered_concept_ids=(f"C{note_id:02d}",),
+            supporting_passage_ids=(slide_id,),
+        )
+        for note_id in range(1, 11)
+    )
+    selected, excluded, generated, _metadata = _normalized_selection_result(
+        select_high_yield_v2(
+            classifications,
+            fast_classifications=(),
+            ledger=ledger,
+            source_index=source,
+            generated_cards=(),
+        )
+    )
+
+    assert len(selected) == 10
+    assert set(selected) == set(range(1, 11))
+    assert excluded == ()
+    assert generated == ()
+
+
+def test_h5_ordinary_eligible_candidates_stop_at_the_65_target() -> None:
+    """H-5: ordinary eligible candidates stop at 65; count never justifies positions 66-70."""
+    source = CardCentricSourceIndex.model_validate(lifecycle_source_payload()["source_index"])
+    slide_id = next(
+        passage.passage_id for passage in source.passages if passage.authority == "slide"
+    )
+    ledger = _independent_ledger(80, mandatory=False, low=True)
+    ordinary = tuple(
+        CardClassification(
+            note_id=note_id,
+            verdict="YES",
+            primary_subject="ordinary fixture",
+            reason="Grounded ordinary coverage.",
+            covered_concept_ids=(f"C{note_id:02d}",),
+            supporting_passage_ids=(slide_id,),
+        )
+        for note_id in range(1, 81)
+    )
+
+    selected, _excluded, generated, _metadata = _normalized_selection_result(
+        select_high_yield_v2(
+            ordinary,
+            fast_classifications=(),
+            ledger=ledger,
+            source_index=source,
+            generated_cards=(),
+        )
+    )
+
+    assert len(selected) == 65
+    assert generated == ()
+
+
+def test_expected_red_p3_h5_positions_66_to_70_require_governed_marginal_reasons() -> None:
+    """P3 H-5: 66-70 are explicit exceptions, never blank, unsupported, or count-based reasons."""
+    allowed = {
+        "only_valid_required_fact",
+        "unique_emphasized_distinction",
+        "validated_necessary_split",
+    }
+    source = CardCentricSourceIndex.model_validate(lifecycle_source_payload()["source_index"])
+    slide_id = next(
+        passage.passage_id for passage in source.passages if passage.authority == "slide"
+    )
+    ledger = _independent_ledger(70, mandatory=True)
+    mandatory = tuple(
+        CardClassification(
+            note_id=note_id,
+            verdict="YES",
+            primary_subject="required fixture",
+            reason="Grounded required high-value coverage.",
+            covered_concept_ids=(f"C{note_id:02d}",),
+            supporting_passage_ids=(slide_id,),
+        )
+        for note_id in range(1, 71)
+    )
+    _selected, _excluded, _generated, raw_selection_metadata = _normalized_selection_result(
+        select_high_yield_v2(
+            mandatory,
+            fast_classifications=(),
+            ledger=ledger,
+            source_index=source,
+            generated_cards=(),
+        )
+    )
+
+    marginal = [
+        item for item in raw_selection_metadata if item.get("selected_position") in range(66, 71)
+    ]
+    assert [item["selected_position"] for item in marginal] == list(range(66, 71))
+    assert all(item.get("marginal_value_reason") in allowed for item in marginal)
+
+
+def test_expected_red_p3_h5_dominance_excludes_no_better_subset_coverage() -> None:
+    """P3 H-5: a no-better subset candidate cannot displace clearer atomic coverage."""
+    source = CardCentricSourceIndex.model_validate(lifecycle_source_payload()["source_index"])
+    slide_id = next(
+        passage.passage_id for passage in source.passages if passage.authority == "slide"
+    )
+    clearer_atomic = CardClassification(
+        note_id=1,
+        verdict="YES",
+        primary_subject="heme synthesis mechanism",
+        reason="Grounded atomic coverage with direct slide support.",
+        covered_concept_ids=("C01", "C02"),
+        supporting_passage_ids=(slide_id,),
+    )
+    dominated_subset = CardClassification(
+        note_id=2,
+        verdict="YES",
+        primary_subject="heme synthesis",
+        reason="Grounded subset coverage with no additional evidence.",
+        covered_concept_ids=("C01",),
+        supporting_passage_ids=(slide_id,),
+    )
+
+    selected, excluded, generated, _metadata = _normalized_selection_result(
+        select_high_yield_v2(
+            (clearer_atomic, dominated_subset),
+            fast_classifications=(),
+            ledger=lifecycle_ledger(),
+            source_index=source,
+            generated_cards=(),
+        )
+    )
+
+    assert selected == (1,)
+    assert excluded == (2,)
+    assert generated == ()
+
+
+def test_s9_reconciliation_is_deterministic_for_identical_frozen_input() -> None:
+    """A frozen S9 snapshot yields byte-for-byte equivalent report data on replay."""
+    from oms_hub.anki.reconciliation import reconcile_card_centric
+
+    snapshot = _s9_snapshot(generated_cards=(), selected_generated=()).model_copy(
+        update={"coverage": {"C01": "intentional_gap"}}
+    )
+    first = reconcile_card_centric(snapshot).model_dump(mode="json")
+    second = reconcile_card_centric(snapshot).model_dump(mode="json")
+
+    assert first == second

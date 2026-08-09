@@ -1,6 +1,7 @@
 """P4-B replay, durability, and lease fault matrix for card_centric_v2."""
 
 import asyncio
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -28,12 +29,12 @@ from oms_hub.anki.domain import (
     PipelineContractVersion,
     SourceKind,
 )
+from oms_hub.anki.models import AnkiReviewedReconciliationModel
 from oms_hub.anki.pipeline import (
     CurationPipeline,
     PinnedInputChanged,
     StageArtifactStore,
     StageProduct,
-    _stage_input_hash,
 )
 from oms_hub.anki.prompts import AnkiPromptLibrary, StaticPromptSynchronizer
 from oms_hub.anki.repository import AnkiCurationRepository, InvalidCurationTransition
@@ -237,7 +238,39 @@ def test_expected_red_p1_m4_adopts_exact_orphan_without_second_provider_call(
                 now=started,
             )
             artifacts = StageArtifactStore(tmp_path / "artifacts")
-            stage_input_sha256 = _stage_input_hash(job, CurationStage.PREFLIGHT, ())
+            prepare = getattr(repository, "prepare_stage_replay_inputs", None)
+            assert callable(prepare), (
+                "P1 M-4: orphan adoption must use the frozen prepared replay-input identity"
+            )
+            prepared = prepare(job.id, CurationStage.PREFLIGHT)
+            assert prepared.sha256 == hashlib.sha256(prepared.canonical_json.encode()).hexdigest()
+            identity = {
+                "job_id": str(job.id),
+                "stage": CurationStage.PREFLIGHT.value,
+                "configuration_sha256": job.configuration_sha256,
+                "pipeline_contract_version": job.pipeline_contract_version.value,
+                "model_config_sha256": job.model_config_sha256,
+                "source_revision_ids": job.source_revision_ids,
+                "index_snapshot_id": job.index_snapshot_id,
+                "semantic_generation": job.semantic_generation,
+                "companion_generation": job.companion_generation,
+                "source_index_generation": job.source_index_generation,
+                "prompt_versions": {
+                    "lcl": job.lcl_prompt_version,
+                    "judgment": job.judgment_rubric_version,
+                    "gap": job.gap_prompt_version,
+                },
+                "provider": job.provider,
+                "model": job.model,
+                "prior_artifacts": [],
+                "prepared_replay_inputs": {
+                    "sha256": prepared.sha256,
+                    "canonical_json": prepared.canonical_json,
+                },
+            }
+            stage_input_sha256 = hashlib.sha256(
+                json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
             orphan = artifacts.write(
                 job.id,
                 CurationStage.PREFLIGHT,
@@ -556,3 +589,136 @@ def test_missing_pinned_prompt_blocks_rather_than_using_live_prompt() -> None:
 
     with pytest.raises(PinnedInputChanged, match="unavailable or duplicated"):
         _pinned_card_v2_prompt(context, "card-centric-gap-v2")
+
+
+def test_expected_red_m15_preflight_reports_actionable_missing_v2_prompt(tmp_path: Path) -> None:
+    """P2 M-15: preflight reports the missing prompt ID, searched path, and remediation."""
+    from shutil import copytree
+
+    from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
+    from oms_hub.anki.prompts import AnkiPromptConfigurationError, AnkiPromptLibrary
+
+    copytree(AnkiPromptLibrary().root, tmp_path, dirs_exist_ok=True)
+    (tmp_path / "card-centric-ledger-v2.md").unlink()
+
+    runner = CurationServicesRunner.__new__(CurationServicesRunner)
+    runner.runtime = _ReadyRuntime()
+    runner.prompt_sync = StaticPromptSynchronizer()
+    runner.prompts = AnkiPromptCatalogService(bundled_directory=tmp_path)
+    runner.source_extractor = _RequiredSources()
+    context = SimpleNamespace(
+        job=SimpleNamespace(
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+            lcl_prompt_version="lecture-concept-ledger",
+            judgment_rubric_version="coverage-rubric",
+            gap_prompt_version="gap-card-generation",
+            source_revision_ids=(1, 2, 3),
+            summary_outline_id=None,
+        )
+    )
+
+    with pytest.raises(AnkiPromptConfigurationError) as raised:
+        asyncio.run(runner._preflight(context))
+
+    missing_path = tmp_path / "card-centric-ledger-v2.md"
+    message = str(raised.value).casefold()
+    assert "card-centric-ledger-v2" in message
+    assert str(missing_path).casefold() in message
+    assert "restore" in message
+    assert "configure" in message
+
+
+def test_expected_red_m1_a11_history_is_distinct_bounded_and_frozen_after_s9_input(
+    tmp_path: Path,
+) -> None:
+    """P1 M-1/D16: A11 uses 12 distinct latest-job rates and freezes its S9 replay input."""
+    database = Database(f"sqlite:///{tmp_path / 'history.db'}")
+    database.migrate()
+    try:
+        with database.session() as session:
+            lecture = LectureModel(
+                subject="Heme",
+                exam_number=1,
+                lecture_number=1,
+                topic="Synthesis",
+                lecturer="Fixture",
+            )
+            session.add(lecture)
+            session.flush()
+            lecture_id = lecture.id
+        repository = AnkiCurationRepository(database)
+
+        def create_job() -> object:
+            return repository.create_job(
+                CreateCurationJob(
+                    lecture_id=lecture_id,
+                    block_id=None,
+                    source_revision_ids=(1,),
+                    deck_allowlist=("AnKing",),
+                    tag_allowlist=("#heme",),
+                    instruction_text="",
+                    target_deck="OMS::Heme",
+                    target_tag="fixture",
+                    index_snapshot_id="fixture-snapshot",
+                    lcl_prompt_version="lecture-concept-ledger",
+                    judgment_rubric_version="coverage-rubric",
+                    gap_prompt_version="gap-card-generation",
+                    provider="openai",
+                    model="fixture",
+                    pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+                )
+            )
+
+        current = create_job()
+        prior = [create_job() for _ in range(13)]
+
+        def payload(rate: float) -> str:
+            keeps = round(rate * 100)
+            return json.dumps(
+                {
+                    "snapshot": {
+                        "classifications": [
+                            {"verdict": "keep" if index < keeps else "drop"} for index in range(100)
+                        ]
+                    }
+                }
+            )
+
+        with database.session() as session:
+            for index, job in enumerate(prior, 1):
+                session.add(
+                    AnkiReviewedReconciliationModel(
+                        job_id=str(job.id), review_revision=1, payload_json=payload(index / 100)
+                    )
+                )
+            # The latest revision is authoritative for this job; revision 1 must not count twice.
+            session.add(
+                AnkiReviewedReconciliationModel(
+                    job_id=str(prior[-1].id), review_revision=2, payload_json=payload(0.0)
+                )
+            )
+        prepare = getattr(repository, "prepare_stage_replay_inputs", None)
+        assert callable(prepare), (
+            "P1 M-1/D16: repository must prepare and freeze A11 history for S9 replay"
+        )
+        before_replay = prepare(current.id, CurationStage.RECONCILIATION)
+        entries = before_replay.document["a11_history"]["entries"]
+        assert len(entries) == 12
+        assert len({entry["job_id"] for entry in entries}) == 12
+        assert (
+            before_replay.sha256
+            == hashlib.sha256(before_replay.canonical_json.encode()).hexdigest()
+        )
+        with database.session() as session:
+            session.add(
+                AnkiReviewedReconciliationModel(
+                    job_id=str(prior[-1].id), review_revision=3, payload_json=payload(1.0)
+                )
+            )
+        after_later_review = prepare(current.id, CurationStage.RECONCILIATION)
+
+        assert after_later_review.canonical_json == before_replay.canonical_json
+        assert after_later_review.document == before_replay.document
+        assert after_later_review.sha256 == before_replay.sha256
+    finally:
+        database.close()

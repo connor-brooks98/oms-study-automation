@@ -90,6 +90,7 @@ def _save_reviewed_selection(
     review_revision: int = 0,
     selected_existing_note_ids: list[int],
     acknowledgement: dict[str, Any] | None = None,
+    selection_metadata: list[dict[str, Any]] | None = None,
 ) -> None:
     with app.state.database.session() as session:
         session.add(
@@ -103,6 +104,11 @@ def _save_reviewed_selection(
                             "selected_existing_note_ids": selected_existing_note_ids,
                             "selected_generated_card_ids": [],
                             "overflow_acknowledgement": acknowledgement,
+                            **(
+                                {"selection_metadata": selection_metadata}
+                                if selection_metadata is not None
+                                else {}
+                            ),
                         },
                     }
                 ),
@@ -216,12 +222,11 @@ def test_review_api_uses_current_s9_selection_for_below_floor_warning(
     )
     surface = payload["review_surface"]
     assert surface["evidence_quality"] == [
-        {"identity": "note:1", "evidence_quality": "primary_source"},
         {
-            "identity": "note:42",
+            "identity": "existing:42",
             "concept_id": "C01",
             "evidence_quality": "primary_source",
-        },
+        }
     ]
     assert surface["s2b_diagnostic"] == {
         "evidence_poor_concept_ids": ["C02"],
@@ -245,6 +250,8 @@ def test_review_api_uses_current_s9_selection_for_below_floor_warning(
     assert selection["selected_existing_note_ids"] == list(range(1, 60))
     assert selection["selected_count"] == 59
     assert selection["below_warning_floor"] is True
+    assert selection["selection_metadata"] == []
+    assert selection["selection_metadata_state"] == "incomplete"
     assert selection["overflow_acknowledgement"] == {
         "signed": False,
         "state": "pending",
@@ -252,7 +259,7 @@ def test_review_api_uses_current_s9_selection_for_below_floor_warning(
     }
 
 
-def test_review_api_surfaces_marginal_reasons_only_for_consistent_66_to_70_selection(
+def test_review_api_marks_original_marginal_reasons_incomplete_after_reviewer_reselection(
     review_surface_app: tuple[TestClient, Any, int, int, FakeGateway],
 ) -> None:
     client, app, job_id = _review_surface(review_surface_app)
@@ -286,16 +293,95 @@ def test_review_api_surfaces_marginal_reasons_only_for_consistent_66_to_70_selec
 
     surface = response.json()["review_surface"]
     assert surface["evidence_quality"] == [
-        {"identity": "note:42", "concept_id": "C01", "evidence_quality": "primary_source"},
-        {"identity": "note:66", "evidence_quality": "summary_grounded"},
-        {"identity": "note:70", "evidence_quality": "fast_pass"},
+        {"identity": "existing:42", "concept_id": "C01", "evidence_quality": "primary_source"}
     ]
     selection = surface["selection"]
     assert selection["selected_count"] == 70
     assert selection["below_warning_floor"] is False
-    assert [item["marginal_value_reason"] for item in selection["selection_metadata"]] == [
-        "only_valid_required_fact",
-        "validated_necessary_split",
+    assert selection["selection_metadata"] == []
+    assert selection["selection_metadata_state"] == "incomplete"
+
+
+def test_review_api_uses_complete_current_selection_metadata_without_borrowing_s9_positions(
+    review_surface_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    """P4 review surface: current metadata is valid only when it covers current S9 exactly."""
+    client, app, job_id = _review_surface(review_surface_app)
+    _save_surface_artifacts(
+        app,
+        job_id,
+        selection_metadata=[
+            {
+                "identity": "note:70",
+                "selected_position": 70,
+                "tier": "T4",
+                "evidence_quality": "fast_pass",
+                "marginal_value_reason": "stale_s9_reason",
+            }
+        ],
+    )
+    selected = list(range(1, 71))
+    current_metadata = [
+        {
+            "identity": f"existing:{note_id}",
+            "selected_position": note_id,
+            "tier": "T1",
+            "evidence_quality": "primary_source",
+            **({"marginal_value_reason": "current_required_fact"} if note_id == 70 else {}),
+        }
+        for note_id in selected
+    ]
+    _save_reviewed_selection(
+        app,
+        job_id,
+        selected_existing_note_ids=selected,
+        selection_metadata=current_metadata,
+    )
+
+    selection = client.get(f"/api/anki/jobs/{job_id}/review").json()["review_surface"]["selection"]
+
+    assert selection["selection_metadata_state"] == "complete"
+    assert selection["selection_metadata"][-1]["identity"] == "existing:70"
+    assert selection["selection_metadata"][-1]["marginal_value_reason"] == "current_required_fact"
+
+
+def test_review_api_canonicalizes_existing_metadata_and_deduplicates_evidence_quality(
+    review_surface_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    """P4 review API treats legacy note IDs and P3 existing IDs as one current identity."""
+    client, app, job_id = _review_surface(review_surface_app)
+    _save_surface_artifacts(
+        app,
+        job_id,
+        selection_metadata=[
+            {
+                "identity": "note:42",
+                "selected_position": 1,
+                "tier": "T3",
+                "evidence_quality": "primary_source",
+            }
+        ],
+    )
+    _save_reviewed_selection(
+        app,
+        job_id,
+        selected_existing_note_ids=[42],
+        selection_metadata=[
+            {
+                "identity": "existing:42",
+                "selected_position": 1,
+                "tier": "T3",
+                "evidence_quality": "primary_source",
+            }
+        ],
+    )
+
+    surface = client.get(f"/api/anki/jobs/{job_id}/review").json()["review_surface"]
+
+    assert surface["selection"]["selection_metadata_state"] == "complete"
+    assert surface["selection"]["selection_metadata"][0]["identity"] == "existing:42"
+    assert surface["evidence_quality"] == [
+        {"identity": "existing:42", "concept_id": "C01", "evidence_quality": "primary_source"}
     ]
 
 
@@ -336,7 +422,7 @@ def test_review_api_omits_metadata_for_deselected_marginal_and_overflow_identiti
     assert surface["selection"]["selected_count"] == 69
     assert surface["selection"]["selection_metadata"] == []
     assert surface["evidence_quality"] == [
-        {"identity": "note:42", "concept_id": "C01", "evidence_quality": "primary_source"}
+        {"identity": "existing:42", "concept_id": "C01", "evidence_quality": "primary_source"}
     ]
 
 
