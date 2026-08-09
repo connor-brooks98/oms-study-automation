@@ -1,6 +1,4 @@
-import asyncio
 import logging
-import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -62,8 +60,11 @@ from oms_hub.llm.openrouter import MedicalAccuracyGate, OpenRouterProvider
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.llm.service import LLMService
 from oms_hub.llm.structured import StructuredTextService
+from oms_hub.migrations import LATEST_SCHEMA_VERSION
+from oms_hub.public_boundary import classify_public_path
 from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import expanded_path
+from oms_hub.runtime import WorkerSupervisor, configure_application_logging
 from oms_hub.runtime_settings import RuntimeSettingsRepository
 from oms_hub.security.access import (
     AccessIdentityForbidden,
@@ -76,7 +77,7 @@ from oms_hub.security.csrf import (
     browser_csrf_required,
     origin_is_allowed,
 )
-from oms_hub.security.rate_limit import PublicQuizRateLimiter
+from oms_hub.security.rate_limit import PublicQuizRateLimiter, public_client_identifier
 from oms_hub.security.secret_store import KeyringSecretStore
 from oms_hub.slides.pipeline import SlidePipeline
 from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
@@ -132,23 +133,8 @@ from oms_hub.web.settings_routes import api_router as settings_api_router
 from oms_hub.web.settings_routes import router as settings_router
 from oms_hub.web.studio_routes import router as studio_router
 from oms_hub.web.upload_routes import router as upload_router
-from oms_hub.workers import SyncWorker
 
 logger = logging.getLogger(__name__)
-
-
-def _run_sync_worker(
-    stop: threading.Event,
-    worker: SyncWorker,
-    name: str,
-) -> None:
-    while not stop.is_set():
-        try:
-            worked = worker.run_once()
-        except Exception:
-            logger.exception("%s worker failed", name)
-            worked = False
-        stop.wait(0.5 if worked else 5.0)
 
 
 @asynccontextmanager
@@ -156,39 +142,11 @@ async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
     anki_worker = getattr(app.state, "anki_curation_worker", None)
     if anki_worker is not None:
         await anki_worker.start()
-    sync_workers = tuple(
-        (name, getattr(app.state, name, None))
-        for name in (
-            "ingestion_worker",
-            "generation_worker",
-            "studio_worker",
-        )
-    )
-    active_sync_workers = tuple(
-        (name, worker) for name, worker in sync_workers if worker is not None
-    )
-    for _name, sync_worker in active_sync_workers:
-        recover = getattr(sync_worker, "recover_interrupted_jobs", None)
-        if callable(recover):
-            recover()
-    stop = threading.Event()
-    threads = tuple(
-        threading.Thread(
-            target=_run_sync_worker,
-            args=(stop, sync_worker, name),
-            name=f"oms-{name}",
-            daemon=True,
-        )
-        for name, sync_worker in active_sync_workers
-    )
-    for thread in threads:
-        thread.start()
-    app.state.worker_threads = threads
+    app.state.worker_supervisor.start()
     try:
         yield
     finally:
-        stop.set()
-        await asyncio.gather(*(asyncio.to_thread(thread.join, 10) for thread in threads))
+        app.state.worker_supervisor.stop()
         if anki_worker is not None:
             await anki_worker.stop()
         embedder = getattr(app.state, "anki_embedder", None)
@@ -212,10 +170,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     database.migrate()
     runtime_settings = RuntimeSettingsRepository(database, base_settings)
     resolved = runtime_settings.effective_settings()
+    log_path = configure_application_logging(resolved.data_dir)
     app = FastAPI(
         title="OMS II Study Automation Hub",
         version=__version__,
         lifespan=_app_lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
     allowed_hosts = ["127.0.0.1", "localhost", "testserver"]
     if resolved.public_hostname:
@@ -229,6 +191,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     csrf = CsrfProtector.from_data_dir(resolved.data_dir)
     app.state.csrf = csrf
     app.state.public_quiz_rate_limiter = PublicQuizRateLimiter()
+    app.state.application_log_path = log_path
     access_values = (
         resolved.cloudflare_access_issuer,
         resolved.cloudflare_access_audience,
@@ -256,10 +219,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         is_public = bool(resolved.public_hostname and host == resolved.public_hostname)
         is_agent_host = bool(resolved.anki_agent_hostname and host == resolved.anki_agent_hostname)
         is_agent_path = request.url.path.startswith("/agent/v1/")
-        is_public_quiz = request.url.path in {
-            "/public/quizzes",
-            "/public/practice-questions",
-        } or request.url.path.startswith("/public/quizzes/")
+        public_path = classify_public_path(request.url.path)
 
         def harden(response: Response) -> Response:
             response.headers["Content-Security-Policy"] = (
@@ -283,7 +243,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 response.status_code in {401, 403, 503}
                 or "text/html" in content_type
                 or request.url.path.startswith("/artifacts/")
-                or is_public_quiz
+                or public_path.is_public
             ):
                 response.headers.setdefault("Cache-Control", "no-store")
             if is_public:
@@ -351,8 +311,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             request.state.agent_id = agent_id
             return harden(await call_next(request))
+        if public_path.is_public:
+            client_id = public_client_identifier(
+                request.headers.get("x-forwarded-for"),
+                request.client.host if request.client is not None else None,
+            )
+            decision = request.app.state.public_quiz_rate_limiter.check(
+                client_id,
+                public_path.category or "general",
+            )
+            if not decision.allowed:
+                limited_response = JSONResponse(
+                    {"detail": "public request rate limit exceeded"},
+                    status_code=429,
+                )
+                limited_response.headers["Retry-After"] = str(
+                    decision.retry_after_seconds
+                )
+                return harden(limited_response)
         if is_public:
-            if not is_public_quiz:
+            if not public_path.is_public:
                 verifier = request.app.state.access_verifier
                 if verifier is None:
                     return harden(
@@ -437,7 +415,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             csrf_token = csrf.issue()
         assert csrf_token is not None
         request.state.csrf_token = csrf_token
-        response = await call_next(request)
+        response: Response = await call_next(request)
         if request.cookies.get(csrf.cookie_name) != csrf_token:
             response.set_cookie(
                 csrf.cookie_name,
@@ -659,6 +637,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.studio_quiz_image_service,
         app.state.quiz_import_worker,
     )
+    app.state.worker_supervisor = WorkerSupervisor(
+        {
+            "ingestion_worker": app.state.ingestion_worker,
+            "generation_worker": app.state.generation_worker,
+            "studio_worker": app.state.studio_worker,
+        }
+    )
     app.state.anki_curation_worker = None
     app.state.anki_embedder = None
     app.state.anki_companion_index = None
@@ -796,11 +781,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(published_quiz_router)
     app.include_router(public_quiz_router)
 
-    @app.get("/health")
-    def health() -> dict[str, str]:
-        return {
+    def health_payload(status: str, reason: str | None = None) -> dict[str, object]:
+        payload: dict[str, object] = {
             "service": "oms-study-automation",
-            "status": "ok",
+            "status": status,
             "version": __version__,
             "deployment_root": (
                 str(resolved.deployment_root)
@@ -809,5 +793,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
             "build_revision": resolved.build_revision or "unreported",
         }
+        if reason is not None:
+            payload["reason"] = reason
+        return payload
+
+    @app.get("/health/live")
+    def health_live() -> dict[str, object]:
+        return health_payload("ok")
+
+    def readiness_response() -> JSONResponse:
+        workers = app.state.worker_supervisor.snapshot()
+        try:
+            with database.engine.connect() as connection:
+                schema_version = connection.exec_driver_sql(
+                    "SELECT version FROM schema_version WHERE id = 1"
+                ).scalar_one_or_none()
+        except Exception:
+            payload = health_payload("not_ready", "database_unavailable")
+            payload["workers"] = workers
+            return JSONResponse(
+                payload,
+                status_code=503,
+            )
+        if (
+            not isinstance(schema_version, int)
+            or isinstance(schema_version, bool)
+            or schema_version != LATEST_SCHEMA_VERSION
+        ):
+            payload = health_payload("not_ready", "schema_outdated")
+            payload["workers"] = workers
+            return JSONResponse(payload, status_code=503)
+        ready, reason = app.state.worker_supervisor.ready()
+        if not ready:
+            payload = health_payload("not_ready", reason)
+            payload["workers"] = workers
+            return JSONResponse(payload, status_code=503)
+        payload = health_payload("ok")
+        payload["workers"] = workers
+        return JSONResponse(payload)
+
+    @app.get("/health/ready")
+    def health_ready() -> JSONResponse:
+        return readiness_response()
+
+    @app.get("/health")
+    def health() -> JSONResponse:
+        return readiness_response()
 
     return app

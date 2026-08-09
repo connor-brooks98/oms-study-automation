@@ -148,7 +148,7 @@ def public_client_identifier(
     forwarded_address: str | None,
     peer_address: str | None,
 ) -> str:
-    if forwarded_address:
+    if forwarded_address and "," not in forwarded_address:
         candidate = forwarded_address.strip()
         try:
             return str(ip_address(candidate))

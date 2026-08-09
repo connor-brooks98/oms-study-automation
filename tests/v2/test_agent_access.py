@@ -108,7 +108,8 @@ def _heartbeat() -> dict[str, object]:
 def test_dashboard_access_matrix_and_agent_host_isolation(tmp_path) -> None:
     client, _ = _prepared_client(tmp_path)
 
-    assert client.get("/health").status_code == 200
+    assert client.get("/health/live").status_code == 200
+    assert client.get("/health").status_code == 503
     assert client.get(
         "/anki",
         headers={
