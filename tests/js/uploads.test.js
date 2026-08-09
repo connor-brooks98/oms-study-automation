@@ -230,25 +230,44 @@ test("manifest cancellation reconciles a committed batch instead of claiming suc
   assert.deepEqual(cancelled, { finalized: false, batchId: null });
 });
 
-test("finalized cancellation fetches and renders authoritative batch state", async () => {
-  let captured;
-  let rendered;
-  const batch = { lifecycle: "terminal", outcome: "complete", items: [] };
-
+test("finalized cancellation polls active lifecycle until terminal and renders errors", async () => {
+  const states = [
+    {
+      lifecycle: "active",
+      outcome: "failed",
+      items: [{ id: "one", error: "retrying" }],
+    },
+    {
+      lifecycle: "terminal",
+      outcome: "failed",
+      items: [{ id: "one", error: "processing failed" }],
+    },
+  ];
+  const rendered = [];
+  let pollCall;
   const result = await uploads.reconcileFinalizedBatch(
-    async (url, options) => {
-      captured = { url, options };
-      return { ok: true, json: async () => batch };
+    async (batchId, signal, deadline) => {
+      pollCall = { batchId, signal, deadline };
+      return uploads.pollUntilTerminal(
+        async () => states.shift(),
+        (batch) => { rendered.push(batch); },
+        signal,
+        deadline,
+        async () => false,
+        async () => {},
+      );
     },
     "batch-1",
-    { Accept: "application/json" },
-    (value) => { rendered = value; },
+    1000,
   );
 
-  assert.equal(captured.url, "/api/upload-batches/batch-1");
-  assert.equal(captured.options.cache, "no-store");
-  assert.deepEqual(rendered, batch);
-  assert.deepEqual(result, batch);
+  assert.equal(pollCall.batchId, "batch-1");
+  assert.equal(pollCall.signal.aborted, false);
+  assert.ok(pollCall.deadline > Date.now());
+  assert.equal(rendered.length, 2);
+  assert.equal(rendered[0].items[0].error, "retrying");
+  assert.equal(rendered[1].items[0].error, "processing failed");
+  assert.equal(result.lifecycle, "terminal");
 });
 
 test("duplicate-dialog Escape aborts an active submission and keeps modal dismissals explicit", () => {

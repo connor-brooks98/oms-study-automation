@@ -161,23 +161,51 @@
     return { finalized: false, batchId: null };
   };
 
-  const reconcileFinalizedBatch = async (
-    fetchImpl,
-    batchId,
-    headers,
+  const pollUntilTerminal = async (
+    readBatch,
     render,
-    timeoutMs = 5000,
+    signal,
+    deadline,
+    onAwaiting = async () => false,
+    sleep = (delay) => new Promise((resolve) => root.setTimeout(resolve, delay)),
   ) => {
-    const response = await requestWithTimeout(
-      fetchImpl,
-      `/api/upload-batches/${encodeURIComponent(batchId)}`,
-      { headers, cache: "no-store" },
-      timeoutMs,
-    );
-    if (!response.ok) throw new Error("Could not read finalized upload status.");
-    const batch = await response.json();
-    render(batch);
-    return batch;
+    let delay = 750;
+    while (Date.now() < deadline) {
+      if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+      const batch = await readBatch(signal);
+      render(batch);
+      if (batchIsTerminal(batch)) return batch;
+      if (await onAwaiting(batch)) {
+        delay = 750;
+        continue;
+      }
+      await sleep(delay);
+      delay = Math.min(delay * 1.7, 8000);
+    }
+    throw new Error("Upload status timed out before a terminal result.");
+  };
+
+  const reconcileFinalizedBatch = async (
+    poll,
+    batchId,
+    timeoutMs = 120000,
+  ) => {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = root.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      return await poll(batchId, controller.signal, Date.now() + timeoutMs);
+    } catch (error) {
+      if (timedOut) {
+        throw new Error("Upload status timed out before a terminal result.");
+      }
+      throw error;
+    } finally {
+      root.clearTimeout(timer);
+    }
   };
 
   const waitForDecision = async (signal, deadline, setResume, onRejected) => {
@@ -219,6 +247,7 @@
     let pausedItem = null;
     let pausedBatchId = null;
     let resumeDecision = null;
+    let decisionSignal = null;
     let activeSubmission = null;
 
     const csrfHeaders = (headers = {}) => ({
@@ -308,40 +337,44 @@
       pausedItem = null;
       pausedBatchId = null;
       resumeDecision = null;
+      decisionSignal = null;
     };
 
     const fetchWithTimeout = (url, options = {}, timeoutMs = 120000) => (
       requestWithTimeout(fetchImpl, url, options, timeoutMs)
     );
 
-    const pollBatch = async (batchId, signal, deadline) => {
-      let delay = 750;
-      while (Date.now() < deadline) {
-        if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+    const pollBatch = (batchId, signal, deadline) => pollUntilTerminal(
+      async (pollSignal) => {
         const response = await fetchWithTimeout(`/api/upload-batches/${batchId}`, {
           headers: { Accept: "application/json" },
           cache: "no-store",
-          signal,
+          signal: pollSignal,
         });
         if (!response.ok) throw new Error("Could not read upload status.");
-        const batch = await response.json();
-        renderBatch(batch);
+        return response.json();
+      },
+      renderBatch,
+      signal,
+      deadline,
+      async (batch) => {
         if (showConfirmation(batch, batchId)) {
-          await waitForDecision(
-            signal,
-            deadline,
-            (resume) => { resumeDecision = resume; },
-            clearPausedDecision,
-          );
-          delay = 750;
-          continue;
+          decisionSignal = signal;
+          try {
+            await waitForDecision(
+              signal,
+              deadline,
+              (resume) => { resumeDecision = resume; },
+              clearPausedDecision,
+            );
+          } finally {
+            decisionSignal = null;
+          }
+          return true;
         }
-        if (batchIsTerminal(batch)) return batch;
-        await new Promise((resolve) => root.setTimeout(resolve, delay));
-        delay = Math.min(delay * 1.7, 8000);
-      }
-      throw new Error("Upload status timed out before a terminal result.");
-    };
+        return false;
+      },
+    );
 
     const multipartUpload = (manifestId, slots, signal) => new Promise((resolve, reject) => {
       const body = new FormData();
@@ -512,7 +545,7 @@
             pausedItem.id,
             decision,
             csrfToken(documentRef),
-            activeSubmission?.controller.signal,
+            decisionSignal || activeSubmission?.controller.signal,
           );
           const resume = resumeDecision;
           pausedItem = null;
@@ -593,10 +626,8 @@
                 clearPausedDecision();
                 try {
                   await reconcileFinalizedBatch(
-                    fetchImpl,
+                    pollBatch,
                     cancelled.batchId,
-                    { Accept: "application/json" },
-                    renderBatch,
                   );
                   status.textContent = "Upload was already finalized.";
                 } catch (_reconcileError) {
@@ -636,6 +667,7 @@
     handleDecisionDialogCancel,
     cancelManifest,
     reconcileFinalizedBatch,
+    pollUntilTerminal,
     waitForDecision,
     freezeManifest,
     itemErrorText,
