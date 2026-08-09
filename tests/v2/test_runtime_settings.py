@@ -4,6 +4,7 @@ from sqlalchemy import inspect, select
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.db import Database
+from oms_hub.migrations import LATEST_SCHEMA_VERSION
 from oms_hub.models import RuntimeSettingAuditModel, RuntimeSettingModel, SchemaVersionModel
 
 
@@ -31,7 +32,7 @@ def test_runtime_settings_fresh_database_and_repeat_migration_are_additive(tmp_p
     tables = set(inspect(database.engine).get_table_names())
     assert {"runtime_settings", "runtime_setting_audit"} <= tables
     with database.session() as session:
-        assert session.get(SchemaVersionModel, 1).version == 18
+        assert session.get(SchemaVersionModel, 1).version == LATEST_SCHEMA_VERSION
     database.close()
 
 
