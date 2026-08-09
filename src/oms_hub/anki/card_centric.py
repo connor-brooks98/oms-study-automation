@@ -623,6 +623,7 @@ class _QualitySelectionCandidate:
     tier: SelectionTier
     evidence_quality: EvidenceQuality
     coverage: frozenset[tuple[str, str]]
+    concept_coverage: frozenset[str]
     priority: int
     mandatory: bool
     duplicate_target: bool
@@ -730,6 +731,11 @@ def select_high_yield_v2(
                 tier=tier,
                 evidence_quality=evidence_quality(generated_row.source_passage_ids),
                 coverage=frozenset({("fact", generated_row.fact_id)}),
+                concept_coverage=frozenset(
+                    {generated_row.concept_id}
+                    if generated_row.concept_id in concepts
+                    else set()
+                ),
                 priority=tier_priority,
                 # An S8 terminal can name a prior generated card.  As with a
                 # named existing note, only an independently eligible generated
@@ -781,6 +787,11 @@ def select_high_yield_v2(
                 tier=tier,
                 evidence_quality=evidence_quality(classification.supporting_passage_ids),
                 coverage=coverage,
+                concept_coverage=frozenset(
+                    concept_id
+                    for concept_id in classification.covered_concept_ids
+                    if concept_id in concepts
+                ),
                 priority=tier_priority,
                 duplicate_target=classification.note_id in duplicate_target_note_ids,
                 # S8's terminal duplicate identity is a conservation contract:
@@ -810,6 +821,11 @@ def select_high_yield_v2(
                 tier=SelectionTier.T6,
                 evidence_quality=EvidenceQuality.FAST_PASS,
                 coverage=coverage,
+                concept_coverage=frozenset(
+                    concept_id
+                    for concept_id in fast_classification.grounded_concept_ids
+                    if concept_id in concepts
+                ),
                 priority=covered_priority(fast_classification.grounded_concept_ids),
                 # S8 may name either a thorough or independently eligible fast
                 # classification.  Eligibility remains unchanged; once eligible,
@@ -860,6 +876,7 @@ def select_high_yield_v2(
 
     selected: list[_QualitySelectionCandidate] = []
     selected_coverage: set[tuple[str, str]] = set()
+    selected_concept_coverage: set[str] = set()
     selected_identities: set[str] = set()
     for tier in SelectionTier:
         tier_candidates = [candidate for candidate in selectable if candidate.tier is tier]
@@ -870,13 +887,25 @@ def select_high_yield_v2(
             )
             tier_candidates.remove(candidate)
             count = len(selected)
-            remaining_duplicate_targets = len(duplicate_target_identities - selected_identities)
-            # Reserve capacity for S8's named targets before the soft cap.  This
-            # replaces ordinary ranked cards when possible instead of producing
-            # overflow merely because a lower tier is processed later.
+            remaining_duplicate_targets = tuple(
+                target_candidate
+                for target_candidate in selectable
+                if target_candidate.identity in duplicate_target_identities
+                and target_candidate.identity not in selected_identities
+            )
+            # Reserve capacity only by replacing coverage that is already
+            # selected or that the pending exact targets will also cover.  A
+            # later S8 identity must never evict unique selected coverage just
+            # to remain below the soft cap; that genuine conflict is mandatory
+            # overflow and retains the normal acknowledgement requirement.
             if (
                 not candidate.mandatory
-                and count >= cap - remaining_duplicate_targets
+                and count >= cap - len(remaining_duplicate_targets)
+                and _redundant_with_duplicate_targets(
+                    candidate,
+                    selected_concept_coverage,
+                    remaining_duplicate_targets,
+                )
             ):
                 continue
             if tier is SelectionTier.T6 and count >= minimum and not candidate.mandatory:
@@ -895,6 +924,7 @@ def select_high_yield_v2(
             selected.append(candidate)
             selected_identities.add(candidate.identity)
             selected_coverage.update(candidate.coverage)
+            selected_concept_coverage.update(candidate.concept_coverage)
 
     metadata = tuple(
         SelectionMetadata(
@@ -979,6 +1009,18 @@ def _candidate_static_key(
         len(candidate.coverage),
         candidate.identity,
     )
+
+
+def _redundant_with_duplicate_targets(
+    candidate: _QualitySelectionCandidate,
+    selected_concept_coverage: set[str],
+    pending_duplicate_targets: Sequence[_QualitySelectionCandidate],
+) -> bool:
+    """Whether withholding a candidate preserves all selected concept coverage."""
+    covered_by_selected_or_targets = set(selected_concept_coverage)
+    for target in pending_duplicate_targets:
+        covered_by_selected_or_targets.update(target.concept_coverage)
+    return candidate.concept_coverage <= covered_by_selected_or_targets
 
 
 def _candidate_quality_key(candidate: _QualitySelectionCandidate) -> tuple[int, int, int, int]:

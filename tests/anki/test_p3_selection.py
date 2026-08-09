@@ -10,10 +10,19 @@ from oms_hub.anki.card_centric_contracts import (
     GeneratedCardResolution,
 )
 from oms_hub.anki.correction_contracts import (
+    DuplicateIdentity,
+    GeneratedFactResolution,
+    GeneratedResolutionKind,
     MarginalValueReason,
     SelectionTier,
 )
 from oms_hub.anki.domain import SourceKind
+from oms_hub.anki.reconciliation import (
+    AuditResolution,
+    CardCentricReconciliationInput,
+    GeneratedResolution,
+    reconcile_card_centric,
+)
 from oms_hub.anki.sources import SourcePassage
 
 
@@ -285,6 +294,107 @@ def _generated_duplicate_target(
     )
 
 
+def _strict_duplicate_selection_report(
+    *,
+    source: CardCentricSourceIndex,
+    ledger: CardConceptLedger,
+    generated_rows: tuple[GeneratedCardResolution, ...],
+    selection,
+    classifications: tuple[CardClassification, ...] = (),
+    fast_classifications: tuple[FastCardClassification, ...] = (),
+) -> object:
+    """Freeze a real selector result into strict S9 inputs for boundary tests."""
+    canonical = tuple(row for row in generated_rows if row.status == "generated")
+    selected_generated = set(selection.selected_generated_card_ids)
+    terminals: list[GeneratedFactResolution] = [
+        GeneratedFactResolution(
+            fact_id=row.fact_id,
+            kind=GeneratedResolutionKind.GENERATED,
+            generated_card_ids=(row.card_id,),
+        )
+        for row in canonical
+    ]
+    for row in generated_rows:
+        if row.status != "duplicate_of_existing":
+            continue
+        duplicate_of = (
+            DuplicateIdentity(existing_note_id=row.duplicate_of_existing_note_id)
+            if row.duplicate_of_existing_note_id is not None
+            else DuplicateIdentity(generated_card_id=row.duplicate_of_generated_card_id)
+        )
+        terminals.append(
+            GeneratedFactResolution(
+                fact_id=row.fact_id,
+                kind=GeneratedResolutionKind.DUPLICATE_OF_EXISTING,
+                duplicate_of=duplicate_of,
+            )
+        )
+
+    def as_s9(row: GeneratedCardResolution) -> GeneratedResolution:
+        return GeneratedResolution(
+            card_id=row.card_id,
+            fact_id=row.fact_id,
+            text=row.text,
+            split=row.split,
+            split_index=row.split_index,
+        )
+
+    note_coverage = {
+        row.note_id: row.covered_concept_ids for row in classifications
+    } | {
+        row.note_id: row.grounded_concept_ids for row in fast_classifications
+    }
+    audit_note_ids = tuple(sorted(note_coverage))
+    snapshot = CardCentricReconciliationInput(
+        pipeline_contract_version="card_centric_v2",
+        concept_ids=tuple(concept.concept_id for concept in ledger.concepts),
+        coverage={concept.concept_id: "covered" for concept in ledger.concepts},
+        required_fact_ids=tuple(row.fact_id for row in terminals),
+        uncovered_after_s5=tuple(concept.concept_id for concept in ledger.concepts),
+        residual_ran_for=tuple(concept.concept_id for concept in ledger.concepts),
+        generated_cards=tuple(
+            as_s9(row) for row in canonical if row.card_id in selected_generated
+        ),
+        raw_generated_cards=tuple(as_s9(row) for row in generated_rows),
+        canonical_generated_cards=tuple(as_s9(row) for row in canonical),
+        terminal_resolutions=tuple(terminals),
+        terminal_resolutions_provided=True,
+        canonical_unresolved_fact_ids=(),
+        unresolved_fact_ids=(),
+        expected_scoped_nids=audit_note_ids,
+        classifications=tuple(
+            AuditResolution(nid=note_id, verdict="keep") for note_id in audit_note_ids
+        ),
+        eligible_yes_nids=audit_note_ids,
+        selected_nids=selection.selected_existing_note_ids,
+        selected_generated_card_ids=selection.selected_generated_card_ids,
+        generated_card_ids=tuple(row.card_id for row in canonical),
+        source_passage_ids=tuple(passage.passage_id for passage in source.passages),
+        forbidden_cloze_targets=(),
+        prompt_sync_stale=False,
+        untagged_rate=0,
+        mandatory_nids=selection.mandatory_note_ids,
+        mandatory_generated_card_ids=selection.mandatory_generated_card_ids,
+        covered_concept_ids_by_nid=note_coverage,
+        generated_concept_id_by_card_id={
+            row.card_id: row.concept_id for row in canonical
+        },
+        overflow_acknowledgement=(
+            {"acknowledged_by": "reviewer"}
+            if selection.overflow_acknowledgement is not None
+            else None
+        ),
+        selection_metadata=selection.selection_metadata,
+        selection_order=tuple(item.identity for item in selection.selection_metadata),
+        selected_count=(
+            len(selection.selected_existing_note_ids)
+            + len(selection.selected_generated_card_ids)
+        ),
+        below_warning_floor=selection.below_warning_floor,
+    )
+    return reconcile_card_centric(snapshot)
+
+
 def test_fast_duplicate_target_is_conserved_after_warning_floor() -> None:
     source = _source()
     passage_id = source.passages[0].passage_id
@@ -352,22 +462,22 @@ def test_duplicate_targets_reserve_soft_cap_then_use_mandatory_overflow() -> Non
     source = _source()
     passage_id = source.passages[0].passage_id
     target = _duplicate_target(
-        card_id="G71",
-        concept_id="C71",
+        card_id="D70",
+        concept_id="C70",
         note_id=99,
         passage_id=passage_id,
     )
     fast = FastCardClassification(
         note_id=99,
         verdict="LIKELY_YES",
-        grounded_concept_ids=("C71",),
+        grounded_concept_ids=("C70",),
         supporting_passage_ids=(passage_id,),
         reason="eligible fast S8 duplicate target",
     )
     reserved = select_high_yield_v2(
         (),
         fast_classifications=(fast,),
-        ledger=_ledger(71),
+        ledger=_ledger(70),
         source_index=source,
         generated_cards=(*(_generated(index, passage_id) for index in range(1, 71)), target),
     )
@@ -380,7 +490,7 @@ def test_duplicate_targets_reserve_soft_cap_then_use_mandatory_overflow() -> Non
     overflow = select_high_yield_v2(
         (),
         fast_classifications=(fast,),
-        ledger=_ledger(71, high=set(range(1, 71))),
+        ledger=_ledger(70, high=set(range(1, 71))),
         source_index=source,
         generated_cards=(*(_generated(index, passage_id) for index in range(1, 71)), target),
         overflow_acknowledgement={
@@ -468,27 +578,34 @@ def test_generated_duplicate_target_is_conserved_at_65_and_70() -> None:
     assert at_65.selection_metadata[-1].selected_position == 65
     assert at_65.mandatory_generated_card_ids == ("G65",)
 
-    target_at_71 = _generated(71, passage_id)
+    target_at_70 = GeneratedCardResolution(
+        card_id="G71",
+        concept_id="C70",
+        fact_id="C70-M2",
+        text="{{c1::Duplicate target for C70}}",
+        source_passage_ids=(passage_id,),
+        evidence_ids=("E-G71",),
+    )
     at_70 = select_high_yield_v2(
         (),
         fast_classifications=(),
-        ledger=_ledger(71, low={71}),
+        ledger=_ledger(70),
         source_index=source,
         generated_cards=(
             *(_generated(index, passage_id) for index in range(1, 71)),
-            target_at_71,
+            target_at_70,
             _generated_duplicate_target(
                 card_id="D71",
-                concept_id="C71",
-                fact_id="C71-M2",
-                target_card_id=target_at_71.card_id,
+                concept_id="C70",
+                fact_id="C70-M3",
+                target_card_id=target_at_70.card_id,
                 passage_id=passage_id,
             ),
         ),
     )
 
-    assert at_70.selection_metadata[-1].identity == "generated:G71"
-    assert at_70.selection_metadata[-1].selected_position == 70
+    assert "G71" in at_70.selected_generated_card_ids
+    assert len(at_70.selection_metadata) == 70
     assert "G70" in at_70.excluded_generated_card_ids
 
 
@@ -574,6 +691,163 @@ def test_multiple_equivalent_generated_duplicate_targets_are_all_conserved() -> 
 
     assert result.selected_generated_card_ids == ("G-target-a", "G-target-b")
     assert result.mandatory_generated_card_ids == ("G-target-a", "G-target-b")
+
+
+def test_existing_duplicate_target_replaces_only_redundant_coverage_before_cap() -> None:
+    source = _source()
+    passage_id = source.passages[0].passage_id
+    duplicate = _duplicate_target(
+        card_id="D70",
+        concept_id="C70",
+        note_id=99,
+        passage_id=passage_id,
+    ).model_copy(update={"fact_id": "C70-M2"})
+    fast = FastCardClassification(
+        note_id=99,
+        verdict="LIKELY_YES",
+        grounded_concept_ids=("C70",),
+        supporting_passage_ids=(passage_id,),
+        reason="exact target covers the same ordinary concept",
+    )
+    generated = (*(_generated(index, passage_id) for index in range(1, 71)), duplicate)
+    selection = select_high_yield_v2(
+        (),
+        fast_classifications=(fast,),
+        ledger=_ledger(70),
+        source_index=source,
+        generated_cards=generated,
+    )
+    report = _strict_duplicate_selection_report(
+        source=source,
+        ledger=_ledger(70),
+        generated_rows=generated,
+        selection=selection,
+        fast_classifications=(fast,),
+    )
+
+    assert selection.selected_existing_note_ids == (99,)
+    assert "G70" in selection.excluded_generated_card_ids
+    assert len(selection.selection_metadata) == 70
+    assert report.failed == ()
+
+
+def test_existing_duplicate_target_keeps_unique_coverage_and_overflows() -> None:
+    source = _source()
+    passage_id = source.passages[0].passage_id
+    duplicate = _duplicate_target(
+        card_id="D71",
+        concept_id="C71",
+        note_id=99,
+        passage_id=passage_id,
+    )
+    fast = FastCardClassification(
+        note_id=99,
+        verdict="LIKELY_YES",
+        grounded_concept_ids=("C71",),
+        supporting_passage_ids=(passage_id,),
+        reason="exact target has distinct required coverage",
+    )
+    generated = (*(_generated(index, passage_id) for index in range(1, 71)), duplicate)
+    selection = select_high_yield_v2(
+        (),
+        fast_classifications=(fast,),
+        ledger=_ledger(71),
+        source_index=source,
+        generated_cards=generated,
+        overflow_acknowledgement={
+            "acknowledged_at": "2026-08-09T00:00:00Z",
+            "acknowledged_by": "reviewer",
+            "reason": "unique coverage must not be evicted",
+        },
+    )
+    report = _strict_duplicate_selection_report(
+        source=source,
+        ledger=_ledger(71),
+        generated_rows=generated,
+        selection=selection,
+        fast_classifications=(fast,),
+    )
+
+    assert "G70" in selection.selected_generated_card_ids
+    assert selection.selection_metadata[-1].identity == "existing:99"
+    assert selection.selection_metadata[-1].manual_acknowledgement_required is True
+    assert report.failed == ()
+
+
+def test_generated_duplicate_target_boundaries_preserve_strict_s9_coverage() -> None:
+    source = _source()
+    passage_id = source.passages[0].passage_id
+    redundant_target = GeneratedCardResolution(
+        card_id="G71",
+        concept_id="C70",
+        fact_id="C70-M2",
+        text="{{c1::Generated redundant target}}",
+        source_passage_ids=(passage_id,),
+        evidence_ids=("E-G71",),
+    )
+    redundant = (
+        *(_generated(index, passage_id) for index in range(1, 71)),
+        redundant_target,
+        _generated_duplicate_target(
+            card_id="D71",
+            concept_id="C70",
+            fact_id="C70-M3",
+            target_card_id="G71",
+            passage_id=passage_id,
+        ),
+    )
+    safe_selection = select_high_yield_v2(
+        (),
+        fast_classifications=(),
+        ledger=_ledger(70),
+        source_index=source,
+        generated_cards=redundant,
+    )
+    safe_report = _strict_duplicate_selection_report(
+        source=source,
+        ledger=_ledger(70),
+        generated_rows=redundant,
+        selection=safe_selection,
+    )
+
+    unique_target = _generated(71, passage_id)
+    unique = (
+        *(_generated(index, passage_id) for index in range(1, 71)),
+        unique_target,
+        _generated_duplicate_target(
+            card_id="D72",
+            concept_id="C71",
+            fact_id="C71-M2",
+            target_card_id=unique_target.card_id,
+            passage_id=passage_id,
+        ),
+    )
+    overflow_selection = select_high_yield_v2(
+        (),
+        fast_classifications=(),
+        ledger=_ledger(71, low={71}),
+        source_index=source,
+        generated_cards=unique,
+        overflow_acknowledgement={
+            "acknowledged_at": "2026-08-09T00:00:00Z",
+            "acknowledged_by": "reviewer",
+            "reason": "unique generated coverage must not be evicted",
+        },
+    )
+    overflow_report = _strict_duplicate_selection_report(
+        source=source,
+        ledger=_ledger(71, low={71}),
+        generated_rows=unique,
+        selection=overflow_selection,
+    )
+
+    assert "G70" in safe_selection.excluded_generated_card_ids
+    assert "G71" in safe_selection.selected_generated_card_ids
+    assert safe_report.failed == ()
+    assert "G70" in overflow_selection.selected_generated_card_ids
+    assert overflow_selection.selection_metadata[-1].identity == "generated:G71"
+    assert overflow_selection.selection_metadata[-1].manual_acknowledgement_required is True
+    assert overflow_report.failed == ()
 
 
 def test_summary_evidence_with_unknown_id_does_not_upgrade_to_primary() -> None:
