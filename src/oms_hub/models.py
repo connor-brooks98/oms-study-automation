@@ -413,12 +413,24 @@ class StudioSourceOperationModel(Base):
                 "('queued', 'executing', 'reconciling', 'deleting')"
             ),
         ),
+        Index(
+            "ix_studio_source_operations_scope_active",
+            "subject_key",
+            "exam_number",
+            unique=True,
+            sqlite_where=text(
+                "subject_key IS NOT NULL AND exam_number IS NOT NULL AND state IN "
+                "('queued', 'executing', 'reconciling', 'deleting')"
+            ),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     source_id: Mapped[str] = mapped_column(ForeignKey("studio_sources.id"))
     operation_kind: Mapped[str] = mapped_column(String(20))
     state: Mapped[str] = mapped_column(String(30), default="queued")
+    subject_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    exam_number: Mapped[int | None] = mapped_column(nullable=True)
     notebook_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     remote_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     baseline_remote_ids_json: Mapped[str] = mapped_column(Text, default="[]")

@@ -126,8 +126,12 @@ def test_windows_installer_fails_closed_after_every_install_native_command() -> 
             'Assert-NativeCommandSucceeded -Operation "pip upgrade"',
         ),
         (
-            '-m pip install -e $ProjectRoot',
+            '-m pip install -e $EditableInstallTarget',
             'Assert-NativeCommandSucceeded -Operation "editable Study Hub installation"',
+        ),
+        (
+            '-c "import anydoc"',
+            'Assert-NativeCommandSucceeded -Operation "Anydoc document parser import check"',
         ),
         (
             'oms-hub.exe" validate-config',
@@ -137,6 +141,7 @@ def test_windows_installer_fails_closed_after_every_install_native_command() -> 
     for invocation, check in expected_checks:
         assert script.index(invocation) < script.index(check)
     assert "failed with native exit code $LASTEXITCODE" in script
+    assert '$EditableInstallTarget = "${ProjectRoot}[document-processing]"' in script
 
 
 def test_windows_installer_backup_is_integrity_checked_and_atomically_complete() -> None:

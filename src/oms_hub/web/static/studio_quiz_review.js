@@ -72,7 +72,12 @@
     });
     const focus = Array.from(page.querySelectorAll?.("[data-focus-key]") || [])
       .find((element) => element.dataset.focusKey === state.focusKey);
-    if (focus?.focus) focus.focus({ preventScroll: true });
+    if (!state.focusKey) return;
+    if (focus?.focus && !focus.disabled && focus.isConnected !== false) {
+      focus.focus({ preventScroll: true });
+      return;
+    }
+    page.focus?.({ preventScroll: true });
   };
 
   const text = (documentRef, tagName, value, className = "") => {
@@ -422,7 +427,8 @@
   const api = {
     blockersText, canPublish, questionAnchor, issueSummary, groupIssues, hasImageReviewIssues,
     shouldRenderNoCandidateEmpty, normalizedEditPayload,
-    candidateSelectionPayload, candidateSelectionUrl, initialize, render, reviewErrorMessage,
+    candidateSelectionPayload, candidateSelectionUrl, captureRenderState,
+    restoreRenderState, initialize, render, reviewErrorMessage,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) root.document.addEventListener("DOMContentLoaded", () => initialize(root.document), { once: true });

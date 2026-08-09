@@ -50,6 +50,7 @@
     <div class="course-list">
       {% for course in courses %}
       {% set course_index = loop.index %}
+      {% set course_is_first = loop.first %}
       <section class="course-card sh-card" style="--sh-hue: {{ course.hue }}" data-course-key="{{ course.key }}">
         <button class="disclosure course-button" type="button" data-focus-key="course:{{ course.key }}" aria-expanded="{{ 'true' if loop.first else 'false' }}" aria-controls="course-{{ loop.index }}">
           <span><span class="sh-subject-dot" aria-hidden="true"></span> {{ course.name }}</span>
@@ -58,11 +59,11 @@
         <div id="course-{{ loop.index }}" class="course-content" {% if not loop.first %}hidden{% endif %}>
           {% for exam in course.exams %}
           <section class="exam-card sh-card" data-exam-key="{{ course.key }}:{{ exam.number }}">
-            <button class="disclosure exam-button" type="button" data-focus-key="exam:{{ course.key }}:{{ exam.number }}" aria-expanded="{{ 'true' if loop.first else 'false' }}" aria-controls="course-{{ course_index }}-exam-{{ loop.index }}">
+            <button class="disclosure exam-button" type="button" data-focus-key="exam:{{ course.key }}:{{ exam.number }}" aria-expanded="{{ 'true' if course_is_first and loop.first else 'false' }}" aria-controls="course-{{ course_index }}-exam-{{ loop.index }}">
               <span>Exam {{ exam.number }} <span data-exam-count>{{ exam.quiz_count }} quiz{{ '' if exam.quiz_count == 1 else 'zes' }}</span></span>
               <span class="chevron sh-disclose" aria-hidden="true">▸</span>
             </button>
-            <div id="course-{{ course_index }}-exam-{{ loop.index }}" class="lecture-list" {% if not loop.first %}hidden{% endif %}>
+            <div id="course-{{ course_index }}-exam-{{ loop.index }}" class="lecture-list" {% if not course_is_first or not loop.first %}hidden{% endif %}>
               {% for row in exam.quizzes %}
               <article class="lecture-row sh-row" data-quiz-row data-quiz-token="{{ row.token }}" data-quiz-version="{{ row.version }}" {% if management_mode %}data-quiz-order-row data-order-url="/api/published-quizzes/{{ row.token }}/order"{% endif %}>
                 {% if management_mode %}

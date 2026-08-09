@@ -23,7 +23,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 20
+LATEST_SCHEMA_VERSION = 21
 
 
 def _ensure_column(
@@ -307,6 +307,82 @@ def _upgrade_studio_source_operation_claims_v20(database: "Database") -> None:
     )
 
 
+def _upgrade_studio_source_scope_fence_v21(database: "Database") -> None:
+    """Reserve a logical notebook before any remote source mutation begins."""
+    _ensure_column(
+        database,
+        "studio_source_operations",
+        "subject_key",
+        "VARCHAR(100)",
+    )
+    _ensure_column(
+        database,
+        "studio_source_operations",
+        "exam_number",
+        "INTEGER",
+    )
+    if database.engine.dialect.name != "sqlite":
+        return
+    if not inspect(database.engine).has_table("studio_source_operations"):
+        return
+    active_states = "('queued', 'executing', 'reconciling', 'deleting')"
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE studio_source_operations SET "
+                "subject_key=(SELECT subject_key FROM studio_sources "
+                "WHERE studio_sources.id=studio_source_operations.source_id), "
+                "exam_number=(SELECT exam_number FROM studio_sources "
+                "WHERE studio_sources.id=studio_source_operations.source_id) "
+                "WHERE subject_key IS NULL OR exam_number IS NULL"
+            )
+        )
+        active = connection.execute(
+            text(
+                "SELECT id, source_id, subject_key, exam_number "
+                "FROM studio_source_operations "
+                f"WHERE state IN {active_states} "
+                "AND subject_key IS NOT NULL AND exam_number IS NOT NULL "
+                "ORDER BY created_at, id"
+            )
+        ).mappings()
+        retained_by_scope: dict[tuple[str, int], str] = {}
+        for operation in active:
+            scope = (operation["subject_key"], operation["exam_number"])
+            retained_id = retained_by_scope.setdefault(scope, operation["id"])
+            if retained_id == operation["id"]:
+                continue
+            message = (
+                "migration notebook-scope conflict; manual review is required; "
+                f"retained operation {retained_id}"
+            )
+            connection.execute(
+                text(
+                    "UPDATE studio_source_operations SET state='needs_review', "
+                    "lease_owner=NULL, lease_expires_at=NULL, "
+                    "diagnostic_source='migration', error=:error WHERE id=:id"
+                ),
+                {"id": operation["id"], "error": message},
+            )
+            connection.execute(
+                text(
+                    "UPDATE studio_sources SET state='needs_review', "
+                    "next_attempt_at=NULL, diagnostic_source='migration', "
+                    "error=:error WHERE id=:id"
+                ),
+                {"id": operation["source_id"], "error": message},
+            )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ix_studio_source_operations_scope_active "
+                "ON studio_source_operations(subject_key, exam_number) "
+                "WHERE subject_key IS NOT NULL AND exam_number IS NOT NULL "
+                f"AND state IN {active_states}"
+            )
+        )
+
+
 def _upgrade_quiz_import_v15(database: "Database") -> None:
     """Add durable direct-import provenance without disturbing older workflows."""
     source_columns = {
@@ -522,6 +598,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_studio_durability_v19(database)
     _upgrade_transcript_cleaning_reservation_v20(database)
     _upgrade_studio_source_operation_claims_v20(database)
+    _upgrade_studio_source_scope_fence_v21(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

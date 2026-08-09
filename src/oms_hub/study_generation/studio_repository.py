@@ -59,6 +59,7 @@ from oms_hub.study_generation.studio_domain import (
 )
 
 _ACTIVE_LABEL_INDEX = "ix_studio_runs_active_label"
+_ACTIVE_SOURCE_SCOPE_INDEX = "ix_studio_source_operations_scope_active"
 
 
 class NotebookMutationBusy(RuntimeError):
@@ -93,6 +94,18 @@ def _is_active_notebook_conflict(error: IntegrityError) -> bool:
         or (
             "UNIQUE constraint failed" in message
             and "studio_source_operations.notebook_id" in message
+        )
+    )
+
+
+def _is_active_source_scope_conflict(error: IntegrityError) -> bool:
+    message = str(error.orig)
+    return (
+        _ACTIVE_SOURCE_SCOPE_INDEX in message
+        or (
+            "UNIQUE constraint failed" in message
+            and "studio_source_operations.subject_key" in message
+            and "studio_source_operations.exam_number" in message
         )
     )
 
@@ -242,48 +255,69 @@ class StudioRepository:
 
     def claim_next(self, now: datetime | None = None) -> StudioSource | None:
         now = now or datetime.now(UTC)
-        with self.database.session() as session:
-            model = session.scalar(
-                select(StudioSourceModel)
-                .where(
-                    StudioSourceModel.purpose == StudioSourcePurpose.NOTEBOOK.value,
-                    StudioSourceModel.state == StudioSourceState.PENDING.value,
-                    or_(
-                        StudioSourceModel.next_attempt_at.is_(None),
-                        StudioSourceModel.next_attempt_at <= now.isoformat(),
-                    ),
+        try:
+            with self.database.session() as session:
+                active_scope = (
+                    select(StudioSourceOperationModel.id)
+                    .where(
+                        StudioSourceOperationModel.subject_key
+                        == StudioSourceModel.subject_key,
+                        StudioSourceOperationModel.exam_number
+                        == StudioSourceModel.exam_number,
+                        StudioSourceOperationModel.state.in_(
+                            {"queued", "executing", "reconciling", "deleting"}
+                        ),
+                    )
+                    .exists()
                 )
-                .order_by(StudioSourceModel.created_at, StudioSourceModel.id)
-                .limit(1)
-            )
-            if model is None:
+                model = session.scalar(
+                    select(StudioSourceModel)
+                    .where(
+                        StudioSourceModel.purpose == StudioSourcePurpose.NOTEBOOK.value,
+                        StudioSourceModel.state == StudioSourceState.PENDING.value,
+                        ~active_scope,
+                        or_(
+                            StudioSourceModel.next_attempt_at.is_(None),
+                            StudioSourceModel.next_attempt_at <= now.isoformat(),
+                        ),
+                    )
+                    .order_by(StudioSourceModel.created_at, StudioSourceModel.id)
+                    .limit(1)
+                )
+                if model is None:
+                    return None
+                result = session.execute(
+                    update(StudioSourceModel)
+                    .where(
+                        StudioSourceModel.id == model.id,
+                        StudioSourceModel.state == StudioSourceState.PENDING.value,
+                    )
+                    .values(
+                        state=StudioSourceState.ATTACHING.value,
+                        attempts=StudioSourceModel.attempts + 1,
+                        error=None,
+                        next_attempt_at=None,
+                    )
+                )
+                if cast(CursorResult[Any], result).rowcount != 1:
+                    return None
+                session.add(
+                    StudioSourceOperationModel(
+                        id=str(uuid4()),
+                        source_id=model.id,
+                        operation_kind="add",
+                        state="queued",
+                        subject_key=model.subject_key,
+                        exam_number=model.exam_number,
+                    )
+                )
+                session.flush()
+                session.refresh(model)
+                return self._domain(model)
+        except IntegrityError as error:
+            if _is_active_source_scope_conflict(error):
                 return None
-            result = session.execute(
-                update(StudioSourceModel)
-                .where(
-                    StudioSourceModel.id == model.id,
-                    StudioSourceModel.state == StudioSourceState.PENDING.value,
-                )
-                .values(
-                    state=StudioSourceState.ATTACHING.value,
-                    attempts=StudioSourceModel.attempts + 1,
-                    error=None,
-                    next_attempt_at=None,
-                )
-            )
-            if cast(CursorResult[Any], result).rowcount != 1:
-                return None
-            session.add(
-                StudioSourceOperationModel(
-                    id=str(uuid4()),
-                    source_id=model.id,
-                    operation_kind="add",
-                    state="queued",
-                )
-            )
-            session.flush()
-            session.refresh(model)
-            return self._domain(model)
+            raise
 
     def claim_next_source_operation(
         self, now: datetime | None = None
@@ -595,6 +629,7 @@ class StudioRepository:
                 id=str(uuid4()), source_id=source_id, operation_kind="delete",
                 state="deleting", notebook_id=source.remote_notebook_id,
                 remote_source_id=source.remote_source_id,
+                subject_key=source.subject_key, exam_number=source.exam_number,
             ))
             try:
                 session.flush()

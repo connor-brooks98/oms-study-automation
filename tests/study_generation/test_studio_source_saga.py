@@ -219,7 +219,7 @@ def test_only_one_worker_can_claim_a_queued_source_operation(tmp_path: Path) -> 
     assert competing_repository.claim_next_source_operation() is None
 
 
-def test_same_notebook_add_defers_without_remote_effect_then_proceeds(
+def test_logical_notebook_scope_is_reserved_before_remote_preparation(
     tmp_path: Path,
 ) -> None:
     repository = _repository(tmp_path)
@@ -228,6 +228,34 @@ def test_same_notebook_add_defers_without_remote_effect_then_proceeds(
     second_path.write_text("second", encoding="utf-8")
     second = repository.create_source(
         "Neuro", 1, StudioSourceType.TEXT, "Second", payload_path=second_path
+    )
+
+    assert repository.claim_next().id == first.id  # type: ignore[union-attr]
+    competing_repository = StudioRepository(repository.database)
+
+    assert competing_repository.claim_next() is None
+    waiting = competing_repository.get(second.id)
+    assert waiting is not None
+    assert waiting.state is StudioSourceState.PENDING
+    assert waiting.attempts == 0
+
+    other_scope_path = tmp_path / "other-scope.txt"
+    other_scope_path.write_text("other", encoding="utf-8")
+    other_scope = competing_repository.create_source(
+        "Cardio", 1, StudioSourceType.TEXT, "Other scope", payload_path=other_scope_path
+    )
+    assert competing_repository.claim_next().id == other_scope.id  # type: ignore[union-attr]
+
+
+def test_same_notebook_add_defers_without_remote_effect_then_proceeds(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    first = _source(repository, tmp_path)
+    second_path = tmp_path / "second.txt"
+    second_path.write_text("second", encoding="utf-8")
+    second = repository.create_source(
+        "Cardio", 1, StudioSourceType.TEXT, "Second", payload_path=second_path
     )
 
     assert repository.claim_next() is not None

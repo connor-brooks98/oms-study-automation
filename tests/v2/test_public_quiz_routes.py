@@ -107,6 +107,32 @@ def test_public_library_groups_only_published_quizzes(tmp_path):
     assert "Unpublished lecture" not in response.text
 
 
+def test_public_library_only_expands_first_course_and_its_first_exam(tmp_path):
+    app, _ = _published_app(tmp_path)
+    cardio_lecture_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Cardio", 1, 1, "Arrhythmias", "", None)
+    )
+    cardio_job = app.state.generation_repository.queue(
+        cardio_lecture_id,
+        GenerationKind.QUIZ,
+    )
+    app.state.generation_repository.publish_quiz(
+        cardio_lecture_id,
+        cardio_job.id,
+        _quiz("Cardio quiz"),
+    )
+
+    response = TestClient(app).get("/public/quizzes")
+
+    assert response.status_code == 200
+    assert response.text.count('class="course-card sh-card"') == 2
+    assert response.text.count('aria-expanded="true"') == 2
+    first_course = response.text.index('class="course-card sh-card"')
+    second_course = response.text.index('class="course-card sh-card"', first_course + 1)
+    assert 'aria-expanded="true"' not in response.text[second_course:]
+    assert 'class="lecture-list" hidden' in response.text[second_course:]
+
+
 def test_public_library_is_read_only_and_private_library_keeps_management(tmp_path):
     app, published = _published_app(tmp_path)
 

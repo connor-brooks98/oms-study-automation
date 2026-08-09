@@ -41,7 +41,17 @@ def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
         column["name"]
         for column in inspect(database.engine).get_columns("studio_source_operations")
     }
-    assert {"lease_owner", "lease_expires_at"} <= operation_columns
+    assert {
+        "lease_owner",
+        "lease_expires_at",
+        "subject_key",
+        "exam_number",
+    } <= operation_columns
+    operation_indexes = {
+        index["name"]
+        for index in inspect(database.engine).get_indexes("studio_source_operations")
+    }
+    assert "ix_studio_source_operations_scope_active" in operation_indexes
     revision_indexes = {
         index["name"]
         for index in inspect(database.engine).get_indexes("study_revisions")
@@ -54,7 +64,7 @@ def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
     assert version == LATEST_SCHEMA_VERSION
 
 
-def test_v20_transcript_cleaning_reservation_index_upgrades_idempotently(
+def test_v21_reservation_indexes_and_operation_scope_upgrade_idempotently(
     tmp_path: Path,
 ) -> None:
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
@@ -63,11 +73,18 @@ def test_v20_transcript_cleaning_reservation_index_upgrades_idempotently(
         connection.execute(
             text("DROP INDEX uq_study_revisions_transcript_cleaning_lecture")
         )
+        connection.execute(text("DROP INDEX ix_studio_source_operations_scope_active"))
         connection.execute(text("ALTER TABLE studio_source_operations DROP COLUMN lease_owner"))
         connection.execute(
             text("ALTER TABLE studio_source_operations DROP COLUMN lease_expires_at")
         )
-        connection.execute(text("UPDATE schema_version SET version=19 WHERE id=1"))
+        connection.execute(
+            text("ALTER TABLE studio_source_operations DROP COLUMN subject_key")
+        )
+        connection.execute(
+            text("ALTER TABLE studio_source_operations DROP COLUMN exam_number")
+        )
+        connection.execute(text("UPDATE schema_version SET version=20 WHERE id=1"))
 
     database.migrate()
     database.migrate()
@@ -86,7 +103,70 @@ def test_v20_transcript_cleaning_reservation_index_upgrades_idempotently(
         column["name"]
         for column in inspect(database.engine).get_columns("studio_source_operations")
     }
-    assert {"lease_owner", "lease_expires_at"} <= operation_columns
+    assert {
+        "lease_owner",
+        "lease_expires_at",
+        "subject_key",
+        "exam_number",
+    } <= operation_columns
+    operation_indexes = {
+        index["name"]
+        for index in inspect(database.engine).get_indexes("studio_source_operations")
+    }
+    assert "ix_studio_source_operations_scope_active" in operation_indexes
+
+
+def test_v21_scope_upgrade_fails_closed_on_duplicate_active_operations(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    with database.engine.begin() as connection:
+        connection.execute(text("DROP INDEX ix_studio_source_operations_scope_active"))
+        connection.execute(
+            text(
+                "INSERT INTO studio_sources "
+                "(id, subject, subject_key, exam_number, source_type, title, purpose, "
+                "import_attach_to_notebook, state, attempts, converted_from_pptx, "
+                "created_at, updated_at) VALUES "
+                "('source-1', 'Neuro', 'neuro', 1, 'text', 'First', 'notebook', "
+                "0, 'attaching', 1, 0, '2026-08-09T00:00:00+00:00', "
+                "'2026-08-09T00:00:00+00:00'), "
+                "('source-2', 'Neuro', 'neuro', 1, 'text', 'Second', 'notebook', "
+                "0, 'attaching', 1, 0, '2026-08-09T00:00:01+00:00', "
+                "'2026-08-09T00:00:01+00:00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO studio_source_operations "
+                "(id, source_id, operation_kind, state, subject_key, exam_number, "
+                "baseline_remote_ids_json, attempts, created_at, updated_at) VALUES "
+                "('operation-1', 'source-1', 'add', 'queued', 'neuro', 1, '[]', 0, "
+                "'2026-08-09T00:00:00+00:00', '2026-08-09T00:00:00+00:00'), "
+                "('operation-2', 'source-2', 'add', 'queued', 'neuro', 1, '[]', 0, "
+                "'2026-08-09T00:00:01+00:00', '2026-08-09T00:00:01+00:00')"
+            )
+        )
+        connection.execute(text("UPDATE schema_version SET version=20 WHERE id=1"))
+
+    database.migrate()
+    database.migrate()
+
+    with database.engine.connect() as connection:
+        operations = connection.execute(
+            text("SELECT id, state FROM studio_source_operations ORDER BY id")
+        ).all()
+        second_source = connection.execute(
+            text(
+                "SELECT state, diagnostic_source, error FROM studio_sources "
+                "WHERE id='source-2'"
+            )
+        ).one()
+    assert operations == [("operation-1", "queued"), ("operation-2", "needs_review")]
+    assert second_source.state == "needs_review"
+    assert second_source.diagnostic_source == "migration"
+    assert "retained operation operation-1" in second_source.error
 
 
 def test_existing_generation_jobs_gain_later_optional_columns(tmp_path):

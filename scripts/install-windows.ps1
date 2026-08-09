@@ -403,8 +403,11 @@ if ($PSCmdlet.ShouldProcess($ProjectRoot, "Install Study Hub V2")) {
   }
   & "$ProjectRoot\.venv\Scripts\python.exe" -m pip install --upgrade pip
   Assert-NativeCommandSucceeded -Operation "pip upgrade"
-  & "$ProjectRoot\.venv\Scripts\python.exe" -m pip install -e $ProjectRoot
+  $EditableInstallTarget = "${ProjectRoot}[document-processing]"
+  & "$ProjectRoot\.venv\Scripts\python.exe" -m pip install -e $EditableInstallTarget
   Assert-NativeCommandSucceeded -Operation "editable Study Hub installation"
+  & "$ProjectRoot\.venv\Scripts\python.exe" -c "import anydoc"
+  Assert-NativeCommandSucceeded -Operation "Anydoc document parser import check"
   New-Item -ItemType Directory -Force -Path $EffectiveDataRoot, $BackupRoot | Out-Null
   & icacls.exe $EffectiveDataRoot /grant "${TaskIdentity}:(OI)(CI)M" /T /C | Out-Null
   if ($LASTEXITCODE -ne 0) {

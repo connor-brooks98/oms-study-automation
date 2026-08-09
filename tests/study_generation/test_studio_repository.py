@@ -551,7 +551,7 @@ def test_delayed_source_operation_does_not_starve_later_work(tmp_path: Path) -> 
     assert repository.claim_next_source_operation(now=datetime.now(UTC)) is None
 
     second = repository.create_source(
-        "Neuro", 1, StudioSourceType.TEXT, "Second source"
+        "Cardio", 1, StudioSourceType.TEXT, "Second source"
     )
     assert repository.claim_next() is not None
     later_operation = repository.claim_next_source_operation(now=datetime.now(UTC))
@@ -659,7 +659,7 @@ def test_recovery_preserves_queued_and_reconciling_operation_backoff(
         stored.next_attempt_at = queued_retry_at
 
     reconciling_source = repository.create_source(
-        "Neuro", 1, StudioSourceType.TEXT, "Reconciling source"
+        "Cardio", 1, StudioSourceType.TEXT, "Reconciling source"
     )
     assert repository.claim_next() is not None
     claimed = repository.claim_next_source_operation()

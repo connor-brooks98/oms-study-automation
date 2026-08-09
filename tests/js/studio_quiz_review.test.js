@@ -175,6 +175,22 @@ test("issue disclosures and keyed focus survive a clean review refresh", () => {
   assert.equal(documentRef.activeElement, restored.children[0]);
 });
 
+test("render-state recovery uses the page when the keyed control became disabled", () => {
+  const page = new Element("main");
+  const candidate = new Element("button");
+  candidate.dataset.focusKey = "question:q1:candidate:candidate-1";
+  candidate.disabled = true;
+  page.append(candidate);
+  documentRef.activeElement = null;
+
+  review.restoreRenderState(page, {
+    openKeys: new Set(),
+    focusKey: candidate.dataset.focusKey,
+  });
+
+  assert.equal(documentRef.activeElement, page);
+});
+
 test("a successful q2-style authoritative refresh retains an unrelated dirty q1 editor", () => {
   const { page, questions } = reviewPage();
   const initial = {
