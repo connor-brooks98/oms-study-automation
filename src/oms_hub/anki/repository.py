@@ -843,43 +843,6 @@ class AnkiCurationRepository:
             )
             return None if stored is None else cast(dict[str, Any], json.loads(stored.payload_json))
 
-    def card_centric_yes_rate_history(self, job_id: UUID, *, limit: int = 12) -> tuple[float, ...]:
-        """Return a bounded same-lecture v2 history for A11, newest first."""
-        if limit < 1:
-            raise ValueError("history limit must be positive")
-        with self.database.session() as session:
-            job = self._require_job_model(session, job_id)
-            rows = session.scalars(
-                select(AnkiReviewedReconciliationModel)
-                .join(
-                    AnkiCurationJobModel,
-                    AnkiCurationJobModel.id == AnkiReviewedReconciliationModel.job_id,
-                )
-                .where(
-                    AnkiCurationJobModel.lecture_id == job.lecture_id,
-                    AnkiCurationJobModel.pipeline_contract_version
-                    == PipelineContractVersion.CARD_CENTRIC_V2.value,
-                    AnkiReviewedReconciliationModel.job_id != str(job_id),
-                )
-                .order_by(AnkiReviewedReconciliationModel.id.desc())
-                .limit(limit)
-            ).all()
-        rates: list[float] = []
-        for row in rows:
-            try:
-                snapshot = cast(dict[str, Any], json.loads(row.payload_json))["snapshot"]
-                classifications = cast(list[dict[str, Any]], snapshot["classifications"])
-                if not classifications:
-                    continue
-                rate = sum(item.get("verdict") == "keep" for item in classifications) / len(
-                    classifications
-                )
-                if 0 <= rate <= 1:
-                    rates.append(rate)
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                continue
-        return tuple(rates)
-
     def persist_card_centric_overflow_acknowledgement(
         self, job_id: UUID, *, review_revision: int, document: dict[str, Any]
     ) -> None:

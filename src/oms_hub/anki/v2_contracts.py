@@ -240,7 +240,7 @@ def adapt_legacy_split_indices(
                 f"partial split indices require recomputation: fact_id={fact_id}"
             )
         explicit = [index for index in indices if index is not None]
-        if sorted(explicit) != list(range(1, len(group) + 1)):
+        if explicit != list(range(1, len(group) + 1)):
             raise LegacySplitIndexRecomputationRequired(
                 f"invalid split indices require recomputation: fact_id={fact_id}"
             )

@@ -46,6 +46,7 @@ from oms_hub.anki.convergence import (
 )
 from oms_hub.anki.correction_contracts import (
     WARNING_FLOOR,
+    A11HistorySnapshot,
     DuplicateIdentity,
     FactForbiddenClozeMap,
     FactForbiddenClozeTargets,
@@ -2430,7 +2431,7 @@ class CurationServicesRunner:
                         target
                         for concept in ledger.concepts
                         for target in _forbidden_cloze_targets(
-                            lecture_title=self.repository.lecture_title(context.job.lecture_id),
+                            lecture_title=pinned_lecture.title,
                             concept=concept,
                             lecture_entity_count=ledger.lecture_entity_count,
                         )
@@ -2760,9 +2761,7 @@ class CurationServicesRunner:
             ),
             semantic_review_required_card_ids=selected_review_ids,
             historical_yes_rates=(
-                tuple(self.repository.card_centric_yes_rate_history(context.job.id))
-                if is_v2 and hasattr(self.repository, "card_centric_yes_rate_history")
-                else ()
+                _pinned_card_v2_a11_history(context) if is_v2 else ()
             ),
             t6_selected_nids=tuple(
                 note_id
@@ -3608,15 +3607,14 @@ _CARD_V2_PINNED_PROMPT_SCHEMAS = {
 
 
 def _pinned_card_v2_lecture_metadata(context: StageContext) -> PinnedLectureMetadata:
-    """P1 integration hook for S0-pinned S7 lecture provider input.
+    """Consume P1's immutable, stage-identity-bound lecture document.
 
-    P1 must write the serialized ``PinnedLectureMetadata`` under this exact
-    preflight key and include it in the S7 stage identity before v2 generation
-    can run.  Reading ``repository.lecture_title`` here would make one pinned
-    S7 artifact depend on mutable lecture state, so missing integration fails
-    closed.
+    P1 prepares ``replay_inputs["pinned_lecture"]`` before hashing the stage.
+    Reading either the mutable repository title or a second preflight copy would
+    let the provider input diverge from that identity, so missing integration
+    fails closed.
     """
-    raw = _payload(context, CurationStage.PREFLIGHT).get("pinned_lecture_metadata")
+    raw = _card_v2_replay_input(context, "pinned_lecture")
     try:
         metadata = PinnedLectureMetadata.model_validate(raw)
     except (TypeError, ValueError) as exc:
@@ -3624,6 +3622,23 @@ def _pinned_card_v2_lecture_metadata(context: StageContext) -> PinnedLectureMeta
     if metadata.lecture_id != context.job.lecture_id:
         raise PinnedInputChanged("P1 pinned lecture metadata names another lecture")
     return metadata
+
+
+def _pinned_card_v2_a11_history(context: StageContext) -> tuple[float, ...]:
+    """Consume the distinct-job A11 window frozen into P1's S9 identity."""
+    raw = _card_v2_replay_input(context, "a11_history")
+    try:
+        history = A11HistorySnapshot.model_validate(raw)
+    except (TypeError, ValueError) as exc:
+        raise PinnedInputChanged("P1 frozen A11 history is unavailable or malformed") from exc
+    return tuple(entry.yes_rate for entry in history.entries)
+
+
+def _card_v2_replay_input(context: StageContext, key: str) -> object:
+    replay_inputs = getattr(context, "replay_inputs", None)
+    if not isinstance(replay_inputs, Mapping):
+        return None
+    return replay_inputs.get(key)
 
 
 def _validate_card_gap_batch_v2(
@@ -3657,8 +3672,7 @@ def _validate_card_gap_batch_v2(
         if (
             any(not card.split for card in generated)
             or any(index is None for index in indices)
-            or sorted(index for index in indices if index is not None)
-            != list(range(1, len(generated) + 1))
+            or indices != list(range(1, len(generated) + 1))
         ):
             raise PinnedInputChanged(
                 f"Fact {fact_id}: split output requires sequential split_index values"

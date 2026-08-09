@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -30,6 +31,8 @@ from oms_hub.anki.card_centric_contracts import (
     TagScopeResult,
 )
 from oms_hub.anki.correction_contracts import (
+    A11HistoryEntry,
+    A11HistorySnapshot,
     CanonicalJsonObject,
     DuplicateIdentity,
     EvidenceQuality,
@@ -543,6 +546,7 @@ def test_card_reconciliation_constructs_the_full_v2_s9_snapshot() -> None:
     class SnapshotRepository:
         def __init__(self) -> None:
             self.acknowledgement_calls: list[dict[str, object]] = []
+            self.history_calls: list[object] = []
 
         def validate_card_centric_overflow_acknowledgement(
             self,
@@ -553,8 +557,8 @@ def test_card_reconciliation_constructs_the_full_v2_s9_snapshot() -> None:
             return True
 
         def card_centric_yes_rate_history(self, job_id: object) -> tuple[float, ...]:
-            assert job_id
-            return ()
+            self.history_calls.append(job_id)
+            return (0.99,)
 
     cards = tuple(_card_record(note_id, ()) for note_id in range(1, 11))
     runner, context, passage_id = _dedupe_stage_fixture(_DedupeEmbedder([]), cards=cards)
@@ -563,6 +567,21 @@ def test_card_reconciliation_constructs_the_full_v2_s9_snapshot() -> None:
     context.job.pipeline_contract_version = PipelineContractVersion.CARD_CENTRIC_V2
     context.job.id = uuid4()
     context.job.review_revision = 7
+    history_entry = A11HistoryEntry(
+        job_id=uuid4(),
+        review_revision=3,
+        yes_rate=0.25,
+        reviewed_at=datetime(2026, 8, 8, tzinfo=UTC),
+    )
+    history_payload = [history_entry.model_dump(mode="json")]
+    context.replay_inputs = {
+        "a11_history": A11HistorySnapshot(
+            entries=(history_entry,),
+            snapshot_sha256=hashlib.sha256(
+                json.dumps(history_payload, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+        ).model_dump(mode="json")
+    }
     ledger = CardConceptLedger(
         lecture_entity_count=4,
         forbidden_cloze_targets=("global-only",),
@@ -785,6 +804,8 @@ def test_card_reconciliation_constructs_the_full_v2_s9_snapshot() -> None:
     assert snapshot["selected_count"] == 11
     assert snapshot["below_warning_floor"] is True
     assert snapshot["semantic_review_required_card_ids"] == ["G5"]
+    assert snapshot["historical_yes_rates"] == [0.25]
+    assert repository.history_calls == []
     assert snapshot["source_passage_ids"] == [passage_id]
     assert snapshot["classifications"] == [
         {"nid": note_id, "verdict": "keep"} for note_id in selected_existing
@@ -1519,9 +1540,9 @@ def _card_gap_fill_harness(
                 gap_fill_s7=SimpleNamespace(provider="openai", model="gpt-5.6-terra")
             ),
         ),
+        replay_inputs={"pinned_lecture": pinned.model_dump(mode="json")},
         prior_payloads={
             CurationStage.PREFLIGHT: {
-                "pinned_lecture_metadata": pinned.model_dump(mode="json"),
                 "prompt_snapshot": [
                     {
                         "id": "card-centric-gap-v2",
@@ -1618,6 +1639,18 @@ def test_card_gap_fill_v2_uses_pinned_metadata_per_fact_targets_and_split_indice
         ),
         CardGapBatch(
             resolutions=(
+                _generated_card_gap(
+                    "C01-M1", _CARD_GAP_FILL_PASSAGE_ID, split=True, split_index=2
+                ),
+                _generated_card_gap(
+                    "C01-M1", _CARD_GAP_FILL_PASSAGE_ID, split=True, split_index=1
+                ),
+                _generated_card_gap("C01-M2", _CARD_GAP_FILL_PASSAGE_ID),
+                CardGapOutput(fact_id="C01-M3", status="unresolved", reason="No atomic card."),
+            )
+        ),
+        CardGapBatch(
+            resolutions=(
                 _generated_card_gap("C01-M1", _CARD_GAP_FILL_PASSAGE_ID),
                 CardGapOutput(fact_id="C01-M1", status="unresolved", reason="Conflict."),
                 _generated_card_gap("C01-M2", _CARD_GAP_FILL_PASSAGE_ID),
@@ -1648,7 +1681,10 @@ def test_card_gap_fill_v2_requires_p1_pinned_metadata_hook(
         resolutions=(CardGapOutput(fact_id="C01-M1", status="unresolved", reason="No card."),)
     )
     runner, context, structured = _card_gap_fill_harness(batch)
-    context.prior_payloads[CurationStage.PREFLIGHT].pop("pinned_lecture_metadata")
+    stale_preflight_value = context.replay_inputs.pop("pinned_lecture")
+    context.prior_payloads[CurationStage.PREFLIGHT]["pinned_lecture_metadata"] = (
+        stale_preflight_value
+    )
     monkeypatch.setattr(
         stages_module,
         "_merged_card_coverage",
@@ -2697,7 +2733,7 @@ class GapStageRepository:
 
     def lecture_title(self, lecture_id: int) -> str:
         assert lecture_id == 12
-        return "Iron Deficiency Anemia"
+        raise AssertionError("v2 gap generation must not read a mutable live lecture title")
 
     def list_source_evidence(self, job_id: object) -> list[object]:
         del job_id
@@ -2796,9 +2832,9 @@ def test_gap_stage_routes_on_audited_missing_facts_not_display_outcome() -> None
             provider="openai",
             model="gpt-5.6-terra",
         ),
+        replay_inputs={"pinned_lecture": pinned.model_dump(mode="json")},
         prior_payloads={
             CurationStage.PREFLIGHT: {
-                "pinned_lecture_metadata": pinned.model_dump(mode="json"),
                 "prompt_snapshot": [
                     {
                         "id": "gap-card-generation",
@@ -2832,6 +2868,10 @@ def test_gap_stage_routes_on_audited_missing_facts_not_display_outcome() -> None
             "fact_id": "C01-M1",
             "targets": ["Iron Deficiency Anemia", "iron deficiency"],
         }
+    ]
+    assert product.payload["forbidden_cloze_targets"] == [
+        "Iron Deficiency Anemia",
+        "iron deficiency",
     ]
     assert product.gap_cards is not None
     assert len(product.gap_cards) == 1

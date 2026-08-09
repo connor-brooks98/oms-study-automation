@@ -371,8 +371,7 @@ class V2GapGenerationService:
                     if (
                         any(not card.split for card in generated)
                         or any(index is None for index in indices)
-                        or sorted(index for index in indices if index is not None)
-                        != list(range(1, len(generated) + 1))
+                        or indices != list(range(1, len(generated) + 1))
                     ):
                         raise GapValidationError(
                             "split generated rows require sequential split_index values from one: "

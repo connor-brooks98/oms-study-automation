@@ -145,6 +145,33 @@ def test_fact_scope_split_sequence_and_terminal_resolutions_are_conserved() -> N
             ),
         )
 
+    with pytest.raises(ValidationError, match="sequential"):
+        GeneratedOutputSet(
+            required_fact_ids=("C01:M1",),
+            canonical_all_generated=(
+                GeneratedCardIdentity(
+                    card_id="G01",
+                    fact_id="C01:M1",
+                    split=True,
+                    split_index=2,
+                ),
+                GeneratedCardIdentity(
+                    card_id="G02",
+                    fact_id="C01:M1",
+                    split=True,
+                    split_index=1,
+                ),
+            ),
+            selected_generated_card_ids=(),
+            resolutions=(
+                GeneratedFactResolution(
+                    fact_id="C01:M1",
+                    kind=GeneratedResolutionKind.GENERATED,
+                    generated_card_ids=("G01", "G02"),
+                ),
+            ),
+        )
+
 
 def test_generated_outputs_reject_missing_and_cross_fact_resolutions() -> None:
     card = GeneratedCardIdentity(card_id="G01", fact_id="C01:M2")

@@ -240,7 +240,7 @@ class GeneratedOutputSet(FrozenCorrectionContract):
         for cards in cards_by_fact.values():
             if len(cards) == 1 and not cards[0].split:
                 continue
-            indices = sorted(card.split_index for card in cards if card.split_index is not None)
+            indices = [card.split_index for card in cards]
             if len(indices) != len(cards) or indices != list(range(1, len(cards) + 1)):
                 raise ValueError("split_index values must be sequential from one per fact")
         return self
