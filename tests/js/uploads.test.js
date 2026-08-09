@@ -270,6 +270,38 @@ test("finalized cancellation polls active lifecycle until terminal and renders e
   assert.equal(result.lifecycle, "terminal");
 });
 
+test("recovered confirmation Escape aborts the fresh reconciliation controller", async () => {
+  const original = new AbortController();
+  original.abort();
+  let recovery = null;
+  let fresh = null;
+  const pending = uploads.reconcileFinalizedBatch(
+    async (_batchId, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        reject(new DOMException("Cancelled", "AbortError"));
+      });
+    }),
+    "batch-1",
+    1000,
+    (controller) => {
+      recovery = controller;
+      if (controller) fresh = controller;
+    },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  let prevented = false;
+  uploads.handleDecisionDialogCancel(
+    { preventDefault: () => { prevented = true; } },
+    uploads.cancellationOwner({ controller: original }, recovery),
+  );
+
+  await assert.rejects(pending, (error) => error.name === "AbortError");
+  assert.equal(prevented, true);
+  assert.equal(original.signal.aborted, true);
+  assert.equal(fresh.signal.aborted, true);
+  assert.equal(recovery, null);
+});
+
 test("duplicate-dialog Escape aborts an active submission and keeps modal dismissals explicit", () => {
   const controller = new AbortController();
   let prevented = false;

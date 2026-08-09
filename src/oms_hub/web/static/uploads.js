@@ -189,8 +189,10 @@
     poll,
     batchId,
     timeoutMs = 120000,
+    onController = () => {},
   ) => {
     const controller = new AbortController();
+    onController(controller);
     let timedOut = false;
     const timer = root.setTimeout(() => {
       timedOut = true;
@@ -205,8 +207,13 @@
       throw error;
     } finally {
       root.clearTimeout(timer);
+      onController(null);
     }
   };
+
+  const cancellationOwner = (activeSubmission, recoveryController) => (
+    recoveryController ? { controller: recoveryController } : activeSubmission
+  );
 
   const waitForDecision = async (signal, deadline, setResume, onRejected) => {
     const decision = createDecisionWait(signal, deadline);
@@ -248,6 +255,7 @@
     let pausedBatchId = null;
     let resumeDecision = null;
     let decisionSignal = null;
+    let recoveryController = null;
     let activeSubmission = null;
 
     const csrfHeaders = (headers = {}) => ({
@@ -528,7 +536,10 @@
 
     if (dialog) {
       dialog.addEventListener("cancel", (event) => {
-        handleDecisionDialogCancel(event, activeSubmission);
+        handleDecisionDialogCancel(
+          event,
+          cancellationOwner(activeSubmission, recoveryController),
+        );
       });
       dialog.addEventListener("click", (event) => {
         if (event.target === dialog) event.preventDefault();
@@ -628,6 +639,8 @@
                   await reconcileFinalizedBatch(
                     pollBatch,
                     cancelled.batchId,
+                    120000,
+                    (controller) => { recoveryController = controller; },
                   );
                   status.textContent = "Upload was already finalized.";
                 } catch (_reconcileError) {
@@ -667,6 +680,7 @@
     handleDecisionDialogCancel,
     cancelManifest,
     reconcileFinalizedBatch,
+    cancellationOwner,
     pollUntilTerminal,
     waitForDecision,
     freezeManifest,
