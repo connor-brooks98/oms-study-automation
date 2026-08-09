@@ -1143,7 +1143,8 @@ class IngestionRepository:
             try:
                 with session.begin_nested():
                     existing.state = "cleaning"
-                    existing.current = False
+                    # Exact-current repairs retain authority while retrying;
+                    # only replacement revisions begin non-current.
                     session.flush()
             except IntegrityError:
                 return None

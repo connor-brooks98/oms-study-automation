@@ -293,6 +293,30 @@ test("ambiguous finalize failures reconcile committed outcomes but preserve 422 
   assert.equal(uploads.isDefinitiveFinalizationRejection(500), false);
 });
 
+test("ambiguous finalize retries finalizing status before polling committed batch", async () => {
+  let calls = 0;
+  const outcome = await uploads.reconcileAmbiguousFinalization(
+    async () => {
+      calls += 1;
+      return calls === 1
+        ? { status: 409, ok: false, json: async () => ({}) }
+        : { status: 409, ok: false, json: async () => ({ batch_id: "batch-2" }) };
+    },
+    "manifest-2",
+    {},
+    async (batchId, signal) => {
+      assert.equal(batchId, "batch-2");
+      assert.equal(signal.aborted, false);
+      return { lifecycle: "terminal", items: [] };
+    },
+    1000,
+    () => {},
+    async () => {},
+  );
+  assert.equal(calls, 2);
+  assert.equal(outcome.finalized, true);
+});
+
 test("recovered confirmation Escape aborts the fresh reconciliation controller", async () => {
   const original = new AbortController();
   original.abort();

@@ -196,10 +196,11 @@ class IngestionService:
         )
 
     def _transcript_text(self, path: Path) -> tuple[str, str]:
-        raw = path.read_bytes()[:8192]
         from oms_hub.ingestion.staging import decode_utf8_transcript
 
-        text = decode_utf8_transcript(raw)
+        # Validate the complete stream before taking display evidence.  A raw
+        # byte slice can split a valid UTF-8 code point at its boundary.
+        text = decode_utf8_transcript(path.read_bytes())
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         title = lines[0] if lines else ""
         return title[:500], " ".join(lines[:20])[:2000]

@@ -146,17 +146,18 @@
     if (activeSubmission) activeSubmission.controller.abort();
   };
 
-  const cancelManifest = async (fetchImpl, manifestId, headers) => {
+  const cancelManifest = async (fetchImpl, manifestId, headers, signal) => {
     const response = await requestWithTimeout(
       fetchImpl,
       `/api/upload-manifests/${encodeURIComponent(manifestId)}`,
-      { method: "DELETE", headers, keepalive: true },
+      { method: "DELETE", headers, keepalive: true, signal },
       5000,
     );
     const payload = response.status === 204 ? {} : await response.json();
     if (response.status === 409 && payload.batch_id) {
       return { finalized: true, batchId: payload.batch_id };
     }
+    if (response.status === 409) return { finalized: false, finalizing: true };
     if (!response.ok) throw new Error("Upload cancellation could not be confirmed.");
     return { finalized: false, batchId: null };
   };
@@ -220,11 +221,29 @@
     manifestId,
     headers,
     poll,
+    timeoutMs = 120000,
+    onController = () => {},
+    sleep = (delay) => new Promise((resolve) => root.setTimeout(resolve, delay)),
   ) => {
-    const outcome = await cancelManifest(fetchImpl, manifestId, headers);
-    if (!outcome.finalized) return outcome;
-    await reconcileFinalizedBatch(poll, outcome.batchId);
-    return outcome;
+    const controller = new AbortController();
+    onController(controller);
+    const deadline = Date.now() + timeoutMs;
+    try {
+      while (Date.now() < deadline) {
+        const outcome = await cancelManifest(
+          fetchImpl, manifestId, headers, controller.signal,
+        );
+        if (outcome.finalized) {
+          await poll(outcome.batchId, controller.signal, deadline);
+          return outcome;
+        }
+        if (!outcome.finalizing) return outcome;
+        await sleep(250);
+      }
+      throw new Error("Upload finalization outcome timed out.");
+    } finally {
+      onController(null);
+    }
   };
 
   const cancellationOwner = (activeSubmission, recoveryController) => (
@@ -690,6 +709,8 @@
                 activeSubmission.manifestId,
                 csrfHeaders(),
                 pollBatch,
+                120000,
+                (controller) => { recoveryController = controller; },
               );
               if (outcome.finalized) {
                 clearPausedDecision();

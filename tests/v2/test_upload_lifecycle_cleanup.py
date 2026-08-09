@@ -4,6 +4,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 from oms_hub.db import Database
 from oms_hub.ingestion.domain import (
     StagedUpload,
@@ -14,7 +16,7 @@ from oms_hub.ingestion.domain import (
 from oms_hub.ingestion.matcher import UploadMatcher
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.ingestion.service import IngestionService
-from oms_hub.ingestion.staging import StagingService
+from oms_hub.ingestion.staging import StagingService, UploadRejected
 from oms_hub.models import StudyRevisionModel, UploadItemModel
 from oms_hub.repositories import CatalogRepository, LectureInput
 
@@ -199,6 +201,20 @@ def test_expired_pending_manifest_marks_postcommit_batch_finalized(tmp_path: Pat
     assert service.staging.finalized_manifest_outcome(manifest.id) == {
         "batch_id": batch_id
     }
+
+
+def test_matching_evidence_decodes_complete_utf8_before_text_truncation(tmp_path: Path) -> None:
+    _, service, _ = _prepared(tmp_path)
+    path = tmp_path / "boundary.txt"
+    path.write_bytes((b"a" * 8191) + "€ transcript".encode())
+
+    title, opening = service._transcript_text(path)
+
+    assert title.startswith("a")
+    assert opening
+    path.write_bytes(b"H\x82art failure")
+    with pytest.raises(UploadRejected, match="not UTF-8"):
+        service._transcript_text(path)
 
 
 def test_expired_temporary_manifest_is_collected(tmp_path: Path) -> None:
