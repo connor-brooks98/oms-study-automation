@@ -1343,7 +1343,12 @@ class CurationServicesRunner:
         selection_metadata_by_identity: dict[str, dict[str, object]] = {}
         if is_v2:
             assert fast is not None
-            fallback_ids = _effective_v2_fallback_note_ids(fallback_ids, classifications)
+            # P2 prevents these IDs from being a selection fallback.  P3 still
+            # needs their terminal identities for the immutable candidate and
+            # exclusion audit, and its selector excludes them explicitly.
+            fallback_ids = _unrecovered_s4a_exclusion_note_ids(
+                fallback_ids, classifications
+            )
             selection_result = select_high_yield_v2(
                 classifications,
                 fast_classifications=fast.results,

@@ -10,7 +10,6 @@ from oms_hub.anki.card_centric_contracts import (
     GeneratedCardResolution,
 )
 from oms_hub.anki.correction_contracts import (
-    EvidenceQuality,
     MarginalValueReason,
     SelectionTier,
 )
@@ -217,7 +216,12 @@ def test_summary_evidence_with_unknown_id_does_not_upgrade_to_primary() -> None:
         generated_cards=(),
     )
 
-    assert result.selection_metadata[0].evidence_quality is EvidenceQuality.SUMMARY_GROUNDED
+    # P2's shared v2 eligibility predicate rejects a classifier row containing
+    # an unknown source identity.  The selector must preserve that integrity
+    # boundary rather than silently treating the unknown citation as grounded.
+    assert result.selected_existing_note_ids == ()
+    assert result.excluded_existing_note_ids == (10,)
+    assert result.selection_metadata == ()
 
 
 def test_selector_never_pads_and_excludes_fallbacks_and_semantic_review_cards() -> None:
