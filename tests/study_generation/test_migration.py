@@ -23,6 +23,7 @@ def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
         "outline_outputs",
         "quiz_outputs",
         "published_quizzes",
+        "studio_source_operations",
     } <= names
     source_columns = {
         column["name"]
@@ -31,6 +32,11 @@ def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
         )
     }
     assert "display_title" in source_columns
+    studio_source_columns = {
+        column["name"]
+        for column in inspect(database.engine).get_columns("studio_sources")
+    }
+    assert {"import_role", "import_attach_to_notebook"} <= studio_source_columns
     with database.session() as session:
         version = session.execute(
             text("SELECT version FROM schema_version WHERE id = 1")
@@ -251,3 +257,34 @@ def test_v15_migration_backfills_existing_quiz_and_studio_rows_idempotently(
         column["name"] for column in inspect(database.engine).get_columns("studio_runs")
     }
     assert "history_hidden_at" in run_columns
+
+
+def test_active_label_migration_repairs_legacy_duplicates_before_index(tmp_path: Path) -> None:
+    database = _v14_database(tmp_path)
+    with database.engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO studio_runs (id, subject, subject_key, exam_number, "
+            "destination_subject, destination_subject_key, destination_exam_number, "
+            "label, label_key, prompt, state, stage, attempts, created_at, updated_at) VALUES "
+            "('first', 'Neuro', 'neuro', 1, 'Neuro', 'neuro', 1, 'Duplicate', 'duplicate', "
+            "'', 'queued', 'validate', 0, '2026-01-01T00:00:00+00:00', "
+            "'2026-01-01T00:00:00+00:00'), "
+            "('later', 'Neuro', 'neuro', 1, 'Neuro', 'neuro', 1, 'Duplicate', 'duplicate', "
+            "'', 'running', 'chat', 0, '2026-01-02T00:00:00+00:00', '2026-01-02T00:00:00+00:00')"
+        ))
+    database.migrate()
+    database.migrate()
+    with database.engine.connect() as connection:
+        rows = connection.execute(text(
+            "SELECT id, state, diagnostic_source, error FROM studio_runs "
+            "WHERE id IN ('first', 'later') ORDER BY id"
+        )).all()
+        index_names = {
+            index[1]
+            for index in connection.execute(text("PRAGMA index_list('studio_runs')"))
+        }
+    assert rows == [
+        ("first", "queued", None, None),
+        ("later", "failed", "migration", "migration active-label conflict; retained run first"),
+    ]
+    assert "ix_studio_runs_active_label" in index_names

@@ -776,65 +776,110 @@ class GenerationRepository:
     ) -> PublishedQuizRecord:
         self._validate_accuracy(quiz)
         with self.database.session() as session:
+            return self._publish_studio_quiz_in_session(session, run_id, quiz)
+
+    def publish_and_complete_studio_run(
+        self,
+        run_id: str,
+        quiz: NativeQuiz,
+        notebook_id: str,
+        raw_response: str,
+    ) -> PublishedQuizRecord:
+        """Atomically publish a generated Studio quiz and complete its run.
+
+        The same-run branch also repairs the historical split-commit state: an
+        active publication already owned by the run is adopted, not duplicated.
+        """
+        self._validate_accuracy(quiz)
+        with self.database.session() as session:
             run = session.get(StudioRunModel, run_id)
             if run is None:
                 raise ValueError("Studio run was removed")
-            model = None
-            if run.supersedes_run_id:
-                model = session.scalar(
-                    select(PublishedQuizModel).where(
-                        PublishedQuizModel.studio_run_id == run.supersedes_run_id
-                    )
+            owned = session.scalar(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id == run_id,
+                    PublishedQuizModel.active.is_(True),
                 )
-            if model is None:
-                duplicate = session.scalar(
-                    select(PublishedQuizModel).where(
-                        PublishedQuizModel.studio_run_id.is_not(None),
-                        PublishedQuizModel.destination_subject_key == run.destination_subject_key,
-                        PublishedQuizModel.destination_exam_number == run.destination_exam_number,
-                        PublishedQuizModel.label_key == run.label_key,
-                        PublishedQuizModel.active.is_(True),
-                    )
-                )
-                if duplicate is not None:
-                    raise ValueError(
-                        "a published Studio quiz already uses this label for that exam"
-                    )
-                model = PublishedQuizModel(
-                    token=secrets.token_hex(32),
-                    lecture_id=None,
-                    job_id=None,
-                    studio_run_id=run.id,
-                    destination_subject=run.destination_subject,
-                    destination_subject_key=run.destination_subject_key,
-                    destination_exam_number=run.destination_exam_number,
-                    label=run.label,
-                    label_key=run.label_key,
-                    title=quiz.title,
-                    payload_json=serialize_native_quiz(quiz),
-                    content_kind=run.content_kind,
-                    version=1,
-                    active=True,
-                )
-                model.display_order = self._next_display_order(session, model)
-                session.add(model)
+            )
+            if owned is None:
+                created = self._publish_studio_quiz_in_session(session, run_id, quiz)
+                # The helper returns a domain value, so reacquire the persisted row.
+                published = session.get(PublishedQuizModel, created.token)
+                assert published is not None
             else:
-                previous = session.get(StudioRunModel, run.supersedes_run_id)
-                if previous is not None:
-                    previous.published_token = None
-                model.studio_run_id = run.id
-                model.destination_subject = run.destination_subject
-                model.destination_subject_key = run.destination_subject_key
-                model.destination_exam_number = run.destination_exam_number
-                model.label = run.label
-                model.label_key = run.label_key
-                model.title = quiz.title
-                model.payload_json = serialize_native_quiz(quiz)
-                model.content_kind = run.content_kind
-                model.version += 1
-                model.active = True
+                published = owned
+            run.state = StudioRunState.COMPLETE.value
+            run.stage = StudioRunStage.COMPLETE.value
+            run.notebook_id = notebook_id
+            run.raw_response = raw_response
+            run.published_token = published.token
+            run.error = None
+            run.next_attempt_at = None
             session.flush()
-            return self._published_quiz(model)
+            return self._published_quiz(published)
+
+    def _publish_studio_quiz_in_session(
+        self, session: Session, run_id: str, quiz: NativeQuiz
+    ) -> PublishedQuizRecord:
+        run = session.get(StudioRunModel, run_id)
+        if run is None:
+            raise ValueError("Studio run was removed")
+        model = None
+        if run.supersedes_run_id:
+            model = session.scalar(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id == run.supersedes_run_id
+                )
+            )
+        if model is None:
+            duplicate = session.scalar(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id.is_not(None),
+                    PublishedQuizModel.destination_subject_key == run.destination_subject_key,
+                    PublishedQuizModel.destination_exam_number == run.destination_exam_number,
+                    PublishedQuizModel.label_key == run.label_key,
+                    PublishedQuizModel.active.is_(True),
+                )
+            )
+            if duplicate is not None:
+                raise ValueError(
+                    "a published Studio quiz already uses this label for that exam"
+                )
+            model = PublishedQuizModel(
+                token=secrets.token_hex(32),
+                lecture_id=None,
+                job_id=None,
+                studio_run_id=run.id,
+                destination_subject=run.destination_subject,
+                destination_subject_key=run.destination_subject_key,
+                destination_exam_number=run.destination_exam_number,
+                label=run.label,
+                label_key=run.label_key,
+                title=quiz.title,
+                payload_json=serialize_native_quiz(quiz),
+                content_kind=run.content_kind,
+                version=1,
+                active=True,
+            )
+            model.display_order = self._next_display_order(session, model)
+            session.add(model)
+        else:
+            previous = session.get(StudioRunModel, run.supersedes_run_id)
+            if previous is not None:
+                previous.published_token = None
+            model.studio_run_id = run.id
+            model.destination_subject = run.destination_subject
+            model.destination_subject_key = run.destination_subject_key
+            model.destination_exam_number = run.destination_exam_number
+            model.label = run.label
+            model.label_key = run.label_key
+            model.title = quiz.title
+            model.payload_json = serialize_native_quiz(quiz)
+            model.content_kind = run.content_kind
+            model.version += 1
+            model.active = True
+        session.flush()
+        return self._published_quiz(model)
 
     def publish_reviewed_studio_quiz(
         self,

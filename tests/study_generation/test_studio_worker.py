@@ -52,7 +52,18 @@ class _RaisingGateway:
     def ask_studio(self, subject, exam_number, prompt, remote_source_ids):
         raise self.error
 
-    def attach_studio_source(self, subject, exam_number, source_type, title, **kwargs):
+    def prepare_studio_source_add(self, subject, exam_number):
+        raise self.error
+
+    def add_studio_source_to_notebook(
+        self, notebook_id, source_type, title, **kwargs
+    ):
+        raise self.error
+
+    def list_studio_source_ids(self, notebook_id):
+        raise self.error
+
+    def delete_studio_source(self, notebook_id, source_id):
         raise self.error
 
 
@@ -149,8 +160,7 @@ def test_sqlite_busy_source_attach_failure_is_retried(tmp_path: Path) -> None:
     assert worker.run_once() is True
 
     source = repository.list_sources()[0]
-    assert source.state.value == "pending"
-    assert source.next_attempt_at is not None
+    assert source.state is StudioSourceState.ATTACHING
 
 
 def test_non_busy_source_attach_failure_is_not_retried(tmp_path: Path) -> None:

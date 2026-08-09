@@ -1,0 +1,212 @@
+from pathlib import Path
+
+import pytest
+from sqlalchemy.exc import IntegrityError
+
+from oms_hub.db import Database
+from oms_hub.llm.domain import DiagnosticSource
+from oms_hub.study_generation.notebook_errors import (
+    NotebookGatewayError,
+    NotebookSourceNotFoundError,
+)
+from oms_hub.study_generation.studio_domain import StudioSourceState, StudioSourceType
+from oms_hub.study_generation.studio_repository import StudioRepository
+from oms_hub.study_generation.studio_worker import StudioWorker
+
+
+class _Connection:
+    def invalidate(self, diagnostic: str) -> None:
+        pass
+
+
+class _SagaGateway:
+    def __init__(self, effect: str) -> None:
+        self.effect = effect
+        self.remote_ids: set[str] = {"baseline"}
+        self.add_calls = 0
+        self.delete_calls = 0
+
+    def prepare_studio_source_add(self, subject: str, exam_number: int):
+        return "notebook-1", frozenset(self.remote_ids)
+
+    def add_studio_source_to_notebook(self, notebook_id, source_type, title, **kwargs):
+        self.add_calls += 1
+        if self.effect == "zero":
+            raise _network_error()
+        if self.effect == "one":
+            self.remote_ids.add("remote-1")
+            raise _network_error()
+        if self.effect == "multiple":
+            self.remote_ids.update({"remote-1", "remote-2"})
+            raise _network_error()
+        self.remote_ids.add("remote-success")
+        return "remote-success"
+
+    def list_studio_source_ids(self, notebook_id):
+        return frozenset(self.remote_ids)
+
+    def delete_studio_source(self, notebook_id, source_id):
+        self.delete_calls += 1
+        if self.effect == "delete_crash":
+            self.effect = "delete_missing"
+            raise _network_error()
+        if self.effect == "delete_missing":
+            raise NotebookSourceNotFoundError()
+        return True
+
+
+def _network_error() -> NotebookGatewayError:
+    return NotebookGatewayError(
+        "NotebookLM outcome is unknown.",
+        source=DiagnosticSource.NETWORK,
+        retryable=True,
+    )
+
+
+def _repository(tmp_path: Path) -> StudioRepository:
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    return StudioRepository(database)
+
+
+def _source(repository: StudioRepository, tmp_path: Path):
+    payload = tmp_path / "notes.txt"
+    payload.write_text("durable notes", encoding="utf-8")
+    return repository.create_source(
+        "Neuro",
+        1,
+        StudioSourceType.TEXT,
+        "Notes",
+        payload_path=payload,
+    )
+
+
+def _worker(repository: StudioRepository, gateway: _SagaGateway) -> StudioWorker:
+    return StudioWorker(repository, gateway, object(), _Connection())  # type: ignore[arg-type]
+
+
+def test_interrupted_add_with_one_delta_is_adopted_without_duplicate(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    source = _source(repository, tmp_path)
+    gateway = _SagaGateway("one")
+    worker = _worker(repository, gateway)
+
+    assert worker.run_once() is True
+    assert repository.get(source.id).state is StudioSourceState.ATTACHING  # type: ignore[union-attr]
+    assert worker.run_once() is True
+
+    attached = repository.get(source.id)
+    assert attached is not None
+    assert attached.state is StudioSourceState.ATTACHED
+    assert attached.remote_source_id == "remote-1"
+    assert gateway.add_calls == 1
+
+
+def test_interrupted_add_with_zero_delta_is_the_only_retry_path(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    source = _source(repository, tmp_path)
+    gateway = _SagaGateway("zero")
+    worker = _worker(repository, gateway)
+
+    assert worker.run_once() is True
+    assert worker.run_once() is True
+    assert gateway.add_calls == 1
+
+    gateway.effect = "success"
+    assert worker.run_once() is True
+    attached = repository.get(source.id)
+    assert attached is not None
+    assert attached.state is StudioSourceState.ATTACHED
+    assert gateway.add_calls == 2
+
+
+def test_interrupted_add_with_multiple_deltas_stops_for_review(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    source = _source(repository, tmp_path)
+    gateway = _SagaGateway("multiple")
+    worker = _worker(repository, gateway)
+
+    assert worker.run_once() is True
+    assert worker.run_once() is True
+    reviewed = repository.get(source.id)
+    assert reviewed is not None
+    assert reviewed.state is StudioSourceState.NEEDS_REVIEW
+    assert gateway.add_calls == 1
+    assert worker.run_once() is False
+
+
+def test_delete_remote_not_found_is_terminal_success(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    source = _source(repository, tmp_path)
+    repository.complete(source.id, "notebook-1", "remote-1")
+    queued = repository.queue_source_delete(source.id)
+    assert queued.state is StudioSourceState.DELETING
+
+    gateway = _SagaGateway("delete_missing")
+    assert _worker(repository, gateway).run_once() is True
+    deleted = repository.get(source.id)
+    assert deleted is not None
+    assert deleted.state is StudioSourceState.DELETED
+    assert gateway.delete_calls == 1
+
+
+def test_interrupted_delete_retries_and_converges_on_remote_not_found(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    source = _source(repository, tmp_path)
+    repository.complete(source.id, "notebook-1", "remote-1")
+    repository.queue_source_delete(source.id)
+    gateway = _SagaGateway("delete_crash")
+    worker = _worker(repository, gateway)
+
+    assert worker.run_once() is True
+    assert repository.get(source.id).state is StudioSourceState.DELETING  # type: ignore[union-attr]
+    assert worker.run_once() is True
+    assert repository.get(source.id).state is StudioSourceState.DELETED  # type: ignore[union-attr]
+    assert gateway.delete_calls == 2
+
+
+def test_only_one_nonterminal_operation_can_own_a_notebook(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    first = _source(repository, tmp_path)
+    second_path = tmp_path / "second.txt"
+    second_path.write_text("second", encoding="utf-8")
+    repository.create_source(
+        "Neuro", 1, StudioSourceType.TEXT, "Second", payload_path=second_path
+    )
+
+    assert repository.claim_next() is not None
+    first_claim = repository.claim_next_source_operation()
+    assert first_claim is not None
+    repository.record_attach_baseline(first_claim[0].id, "notebook-1", {"baseline"})
+    assert repository.claim_next() is not None
+    second_claim = repository.claim_next_source_operation()
+    assert second_claim is not None
+
+    with pytest.raises(IntegrityError):
+        repository.record_attach_baseline(
+            second_claim[0].id,
+            "notebook-1",
+            {"baseline"},
+        )
+    assert repository.get(first.id).state is StudioSourceState.ATTACHING  # type: ignore[union-attr]
+
+
+def test_delete_waits_while_the_notebook_has_an_active_add(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    active = _source(repository, tmp_path)
+    deleting_path = tmp_path / "deleting.txt"
+    deleting_path.write_text("delete me", encoding="utf-8")
+    deleting = repository.create_source(
+        "Neuro", 1, StudioSourceType.TEXT, "Deleting", payload_path=deleting_path
+    )
+    repository.complete(deleting.id, "notebook-1", "remote-delete")
+
+    assert repository.claim_next() is not None
+    claimed = repository.claim_next_source_operation()
+    assert claimed is not None and claimed[1].id == active.id
+    repository.record_attach_baseline(claimed[0].id, "notebook-1", {"baseline"})
+
+    with pytest.raises(ValueError, match="pending source mutation"):
+        repository.queue_source_delete(deleting.id)
+    stored = repository.get(deleting.id)
+    assert stored is not None and stored.state is StudioSourceState.ATTACHED

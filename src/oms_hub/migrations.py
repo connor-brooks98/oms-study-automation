@@ -23,7 +23,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 18
+LATEST_SCHEMA_VERSION = 19
 
 
 def _ensure_column(
@@ -216,6 +216,43 @@ def _upgrade_studio_run_active_label_index(database: "Database") -> None:
     if not inspector.has_table("studio_runs"):
         return
     with database.engine.begin() as connection:
+        # Older Studio databases can contain multiple active rows from before
+        # the partial index existed.  Repair them deterministically before
+        # creating the guard, otherwise the upgrade itself prevents startup.
+        duplicates = connection.execute(
+            text(
+                "SELECT destination_subject_key, destination_exam_number, label_key "
+                "FROM studio_runs WHERE state IN ('queued', 'running', 'retrying') "
+                "GROUP BY destination_subject_key, destination_exam_number, label_key "
+                "HAVING COUNT(*) > 1"
+            )
+        ).mappings().all()
+        for group in duplicates:
+            rows = connection.execute(
+                text(
+                    "SELECT id FROM studio_runs WHERE destination_subject_key=:subject "
+                    "AND destination_exam_number=:exam AND label_key=:label "
+                    "AND state IN ('queued', 'running', 'retrying') "
+                    "ORDER BY created_at, id"
+                ),
+                {
+                    "subject": group["destination_subject_key"],
+                    "exam": group["destination_exam_number"],
+                    "label": group["label_key"],
+                },
+            ).mappings().all()
+            retained_id = rows[0]["id"]
+            for row in rows[1:]:
+                connection.execute(
+                    text(
+                        "UPDATE studio_runs SET state='failed', next_attempt_at=NULL, "
+                        "diagnostic_source='migration', error=:error WHERE id=:id"
+                    ),
+                    {
+                        "id": row["id"],
+                        "error": f"migration active-label conflict; retained run {retained_id}",
+                    },
+                )
         connection.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_studio_runs_active_label "
@@ -224,6 +261,17 @@ def _upgrade_studio_run_active_label_index(database: "Database") -> None:
                 "WHERE state IN ('queued', 'running', 'retrying')"
             )
         )
+
+
+def _upgrade_studio_durability_v19(database: "Database") -> None:
+    """Add additive local-import defaults and external-source operation journal."""
+    _ensure_column(database, "studio_sources", "import_role", "VARCHAR(40)")
+    _ensure_column(
+        database,
+        "studio_sources",
+        "import_attach_to_notebook",
+        "BOOLEAN NOT NULL DEFAULT 0",
+    )
 
 
 def _upgrade_quiz_import_v15(database: "Database") -> None:
@@ -438,6 +486,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_studio_history_v16(database)
     _upgrade_runtime_settings_v17(database)
     _upgrade_published_quiz_display_order_v18(database)
+    _upgrade_studio_durability_v19(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

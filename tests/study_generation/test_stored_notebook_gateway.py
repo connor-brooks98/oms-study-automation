@@ -279,6 +279,44 @@ def test_gateway_translates_expired_storage_into_safe_auth_error(tmp_path):
     assert "accounts.google.com" not in str(error.value)
 
 
+def test_studio_saga_gateway_snapshots_then_adds_to_known_notebook(tmp_path):
+    events = []
+    repository = FakeRepository(events)
+    client = FakeClient([FakeRemote("existing", "Existing")], events)
+    gateway = _gateway(tmp_path, client, repository)
+    payload = tmp_path / "notes.pdf"
+    payload.write_bytes(b"pdf")
+
+    notebook_id, baseline = gateway.prepare_studio_source_add("Neuro", 1)
+    remote_id = gateway.add_studio_source_to_notebook(
+        notebook_id,
+        "file",
+        "Notes",
+        path=payload,
+    )
+
+    assert notebook_id == "nb-1"
+    assert baseline == frozenset({"existing"})
+    assert remote_id == "new-1"
+    assert gateway.list_studio_source_ids("nb-1") == frozenset(
+        {"existing", "new-1"}
+    )
+
+
+def test_studio_saga_gateway_treats_remote_not_found_delete_as_success(tmp_path):
+    events = []
+    repository = FakeRepository(events)
+    client = FakeClient([], events)
+
+    async def missing(notebook_id, source_id):
+        raise RuntimeError("remote source not found")
+
+    client.sources.delete = missing
+    gateway = _gateway(tmp_path, client, repository)
+
+    assert gateway.delete_studio_source("nb-1", "missing") is False
+
+
 def test_changed_revision_binds_replacement_before_old_and_legacy_delete(tmp_path):
     events = []
     old = FakeRemote("remote-old", "Lecture 02 - Disease")

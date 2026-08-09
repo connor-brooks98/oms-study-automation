@@ -11,6 +11,7 @@ from oms_hub.document_processing.snapshots import URLSnapshotService
 from oms_hub.files.atomic import verified_atomic_write
 from oms_hub.study_generation.native_quiz import studio_quiz_prompt
 from oms_hub.study_generation.practice_domain import (
+    ImportSourceRole,
     ImportSourceSelection,
     QuizContentKind,
     StudioSourcePurpose,
@@ -50,6 +51,9 @@ class StudioService:
         title: str,
         filename: str,
         payload: bytes,
+        *,
+        role: ImportSourceRole = ImportSourceRole.QUESTIONS,
+        attach_to_notebook: bool = False,
     ) -> StudioSource:
         filename_path = Path(filename)
         if not title.strip():
@@ -67,6 +71,8 @@ class StudioService:
             title,
             original_filename=filename_path.name,
             purpose=StudioSourcePurpose.LOCAL_IMPORT,
+            import_role=role,
+            import_attach_to_notebook=attach_to_notebook,
         )
         path = self.payload_root / source.id / f"original{suffix}"
         try:
@@ -87,6 +93,9 @@ class StudioService:
         exam_number: int,
         title: str,
         text: str,
+        *,
+        role: ImportSourceRole = ImportSourceRole.QUESTIONS,
+        attach_to_notebook: bool = False,
     ) -> StudioSource:
         subject, title = self._validate_scope_and_title(subject, exam_number, title)
         payload = text.encode("utf-8")
@@ -100,6 +109,8 @@ class StudioService:
             StudioSourceType.TEXT,
             title,
             purpose=StudioSourcePurpose.LOCAL_IMPORT,
+            import_role=role,
+            import_attach_to_notebook=attach_to_notebook,
         )
         path = self.payload_root / source.id / "pasted.txt"
         try:
@@ -120,6 +131,9 @@ class StudioService:
         exam_number: int,
         title: str,
         url: str,
+        *,
+        role: ImportSourceRole = ImportSourceRole.QUESTIONS,
+        attach_to_notebook: bool = False,
     ) -> StudioSource:
         subject, title = self._validate_scope_and_title(subject, exam_number, title)
         source = self.repository.create_source(
@@ -129,6 +143,8 @@ class StudioService:
             title,
             source_url=url.strip(),
             purpose=StudioSourcePurpose.LOCAL_IMPORT,
+            import_role=role,
+            import_attach_to_notebook=attach_to_notebook,
         )
         try:
             snapshot = self.url_snapshot_service.fetch(source.id, title, url)

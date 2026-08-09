@@ -41,6 +41,17 @@ class NotebookAuthenticationError(NotebookGatewayError):
         )
 
 
+class NotebookSourceNotFoundError(NotebookGatewayError):
+    """The requested remote source is already absent."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "NotebookLM source was already removed.",
+            source=DiagnosticSource.SOURCE_PROCESSING,
+            retryable=False,
+        )
+
+
 def translate_notebook_error(
     error: BaseException,
 ) -> NotebookGatewayError | None:

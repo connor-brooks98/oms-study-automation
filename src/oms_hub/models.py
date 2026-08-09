@@ -374,6 +374,8 @@ class StudioSourceModel(Base):
     payload_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     purpose: Mapped[str] = mapped_column(String(30), default="notebook")
+    import_role: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    import_attach_to_notebook: Mapped[bool] = mapped_column(default=False)
     snapshot_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     media_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     final_url: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -385,6 +387,38 @@ class StudioSourceModel(Base):
     remote_notebook_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     remote_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     converted_from_pptx: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class StudioSourceOperationModel(Base):
+    """Durable command journal for externally-visible Studio source mutations."""
+
+    __tablename__ = "studio_source_operations"
+    __table_args__ = (
+        Index("ix_studio_source_operations_poll", "state", "created_at"),
+        Index("ix_studio_source_operations_source", "source_id", "created_at"),
+        Index(
+            "ix_studio_source_operations_notebook_active",
+            "notebook_id",
+            unique=True,
+            sqlite_where=text(
+                "notebook_id IS NOT NULL AND state IN "
+                "('queued', 'executing', 'reconciling', 'deleting')"
+            ),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source_id: Mapped[str] = mapped_column(ForeignKey("studio_sources.id"))
+    operation_kind: Mapped[str] = mapped_column(String(20))
+    state: Mapped[str] = mapped_column(String(30), default="queued")
+    notebook_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    remote_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    baseline_remote_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    attempts: Mapped[int] = mapped_column(default=0)
+    diagnostic_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
     updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
 

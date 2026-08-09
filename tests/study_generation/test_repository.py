@@ -1,6 +1,8 @@
 import json
 from datetime import UTC, datetime
 
+import pytest
+
 from oms_hub.db import Database
 from oms_hub.models import (
     PublishedQuizMediaModel,
@@ -235,9 +237,11 @@ def test_replacement_studio_publication_uses_the_successor_content_kind(tmp_path
 
     try:
         original = repository.publish_studio_quiz("exam-review-run", _quiz("Review Set"))
-        replacement = repository.publish_studio_quiz(
+        replacement = repository.publish_and_complete_studio_run(
             "practice-successor-run",
             _quiz("Practice Questions"),
+            "notebook-1",
+            "raw response",
         )
 
         assert replacement.token == original.token
@@ -246,6 +250,65 @@ def test_replacement_studio_publication_uses_the_successor_content_kind(tmp_path
         assert repository.published_quizzes(
             frozenset({QuizContentKind.PRACTICE_QUESTIONS})
         ) == (replacement,)
+        with repository.database.session() as session:
+            predecessor = session.get(StudioRunModel, "exam-review-run")
+            successor = session.get(StudioRunModel, "practice-successor-run")
+            assert predecessor is not None and predecessor.published_token is None
+            assert successor is not None and successor.state == "complete"
+            assert successor.published_token == original.token
+    finally:
+        repository.database.engine.dispose()
+
+
+def test_atomic_studio_publication_rolls_back_if_completion_cannot_finish(
+    tmp_path, monkeypatch
+):
+    repository, _ = prepared_repository(tmp_path)
+    with repository.database.session() as session:
+        session.add(StudioRunModel(
+            id="atomic-run", subject="Neuro", subject_key="neuro", exam_number=1,
+            destination_subject="Neuro", destination_subject_key="neuro",
+            destination_exam_number=1, label="Atomic", label_key="atomic", prompt="",
+            state="running", stage="publish",
+        ))
+    original = repository._publish_studio_quiz_in_session
+
+    def publish_then_crash(session, run_id, quiz):
+        original(session, run_id, quiz)
+        raise RuntimeError("crash after publication mutation")
+
+    monkeypatch.setattr(repository, "_publish_studio_quiz_in_session", publish_then_crash)
+    try:
+        with pytest.raises(RuntimeError, match="crash"):
+            repository.publish_and_complete_studio_run("atomic-run", _quiz("Atomic"), "nb", "raw")
+        with repository.database.session() as session:
+            run = session.get(StudioRunModel, "atomic-run")
+            assert run is not None and run.state == "running"
+            assert session.query(PublishedQuizModel).count() == 0
+    finally:
+        repository.database.engine.dispose()
+
+
+def test_atomic_studio_publication_adopts_historical_split_state(tmp_path):
+    repository, _ = prepared_repository(tmp_path)
+    with repository.database.session() as session:
+        session.add(StudioRunModel(
+            id="split-run", subject="Neuro", subject_key="neuro", exam_number=1,
+            destination_subject="Neuro", destination_subject_key="neuro",
+            destination_exam_number=1, label="Split", label_key="split", prompt="",
+            state="running", stage="publish",
+        ))
+    try:
+        original = repository.publish_studio_quiz("split-run", _quiz("Split"))
+        replayed = repository.publish_and_complete_studio_run(
+            "split-run", _quiz("Changed"), "nb", "raw"
+        )
+        assert replayed.token == original.token
+        assert replayed.version == original.version
+        with repository.database.session() as session:
+            run = session.get(StudioRunModel, "split-run")
+            assert run is not None
+            assert run.state == "complete" and run.published_token == original.token
     finally:
         repository.database.engine.dispose()
 

@@ -21,6 +21,7 @@ from oms_hub.study_generation.practice_domain import (
     QuestionSourceRef,
 )
 from oms_hub.study_generation.quiz_import_worker import _document_json
+from oms_hub.study_generation.studio_domain import StudioSourceState, StudioSourceType
 
 
 def _client(tmp_path) -> TestClient:
@@ -127,6 +128,58 @@ def _direct_review_run(client: TestClient, *, run_id: str = "direct-run") -> str
     return run_id
 
 
+def test_missing_review_artifacts_use_one_recovery_envelope(tmp_path) -> None:
+    client = _client(tmp_path)
+    run_id = "missing-review"
+    with client.app.state.database.session() as session:
+        session.add(StudioRunModel(
+            id=run_id, subject="Neuro", subject_key="neuro", exam_number=1,
+            destination_subject="Neuro", destination_subject_key="neuro",
+            destination_exam_number=1, label="Missing", label_key="missing", prompt="",
+            workflow_kind="direct_import", content_kind="practice_questions",
+            state="awaiting_review", stage="review",
+        ))
+    responses = [
+        client.get(f"/studio/runs/{run_id}/review"),
+        client.get(f"/studio/runs/{run_id}/review/data"),
+        client.patch(
+            f"/studio/runs/{run_id}/questions/question-1",
+            json={"stem": "Edited"},
+            headers=_csrf_headers(client),
+        ),
+        client.post(
+            f"/studio/runs/{run_id}/questions/question-1/verify-answer",
+            headers=_csrf_headers(client),
+        ),
+        client.post(
+            f"/studio/runs/{run_id}/questions/question-1/image-selection",
+            json={"image_candidate_id": None},
+            headers=_csrf_headers(client),
+        ),
+        client.get(
+            f"/studio/runs/{run_id}/questions/question-1/candidates/missing/preview"
+        ),
+        client.get(f"/studio/runs/{run_id}/preview"),
+        client.get(f"/studio/runs/{run_id}/preview/content"),
+        client.get(f"/studio/runs/{run_id}/preview/media/missing"),
+        client.post(
+            f"/studio/runs/{run_id}/preview/answer",
+            json={"question_id": "q1", "choice_id": "c1"},
+        ),
+    ]
+    expected = {
+        "error": {
+            "code": "review_artifact_unavailable",
+            "message": "Review data is unavailable for this import run.",
+            "recovery": "Return to Quiz Builder and rerun the import.",
+        }
+    }
+    assert all(
+        response.status_code == 409 and response.json() == expected
+        for response in responses
+    )
+
+
 def test_queue_import_accepts_separate_question_and_answer_sources(tmp_path) -> None:
     client = _client(tmp_path)
     questions = _ready_import_source(client, "Questions", "questions.html")
@@ -151,6 +204,63 @@ def test_queue_import_accepts_separate_question_and_answer_sources(tmp_path) -> 
 
     assert response.status_code == 202
     assert response.json()["state"] == "queued"
+
+
+def test_sources_expose_safe_persisted_import_defaults(tmp_path) -> None:
+    client = _client(tmp_path)
+    created = client.post(
+        "/studio/import/sources/text",
+        data={
+            "subject": "Neuro", "exam_number": "1", "title": "Reference", "text": "facts",
+            "role": "supporting_reference", "attach_to_notebook": "true",
+        },
+        headers=_csrf_headers(client),
+    )
+    assert created.status_code == 202
+    sources = client.get("/studio/sources", params={"subject_key": "neuro", "exam_number": 1})
+    assert sources.status_code == 200
+    record = sources.json()["sources"][0]
+    assert record["purpose"] == "local_import"
+    assert record["import_defaults"] == {
+        "role": "supporting_reference", "attach_to_notebook": True
+    }
+
+    invalid = client.post(
+        "/studio/import/sources/text",
+        data={
+            "subject": "Neuro", "exam_number": "1", "title": "Questions", "text": "facts",
+            "role": "questions", "attach_to_notebook": "true",
+        },
+        headers=_csrf_headers(client),
+    )
+    assert invalid.status_code == 422
+
+
+def test_remote_source_delete_is_queued_before_any_worker_effect(tmp_path) -> None:
+    client = _client(tmp_path)
+    source = client.app.state.studio_repository.create_source(
+        "Neuro",
+        1,
+        StudioSourceType.TEXT,
+        "Remote notes",
+    )
+    client.app.state.studio_repository.complete(
+        source.id,
+        "notebook-1",
+        "remote-1",
+    )
+
+    response = client.delete(
+        f"/studio/sources/{source.id}",
+        headers=_csrf_headers(client),
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"id": source.id, "state": "deleting"}
+    stored = client.app.state.studio_repository.get(source.id)
+    assert stored is not None
+    assert stored.state is StudioSourceState.DELETING
+    assert stored.remote_source_id == "remote-1"
 
 
 def test_import_endpoints_require_csrf_and_reject_invalid_source_ids(tmp_path) -> None:

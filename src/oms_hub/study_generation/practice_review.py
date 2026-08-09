@@ -35,6 +35,14 @@ if TYPE_CHECKING:
 _ARTIFACT_KEY = "review:questions"
 
 
+class ReviewArtifactUnavailable(RuntimeError):
+    """A direct-import run lost the artifacts required to reconstruct review."""
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__("Review data is unavailable for this import run.")
+        self.run_id = run_id
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewQuestion:
     draft: QuestionDraft
@@ -255,7 +263,7 @@ class PracticeReviewService:
             return _questions_from_json(stored.payload_json)
         normalized = self.repository.run_artifact(run_id, "normalized")
         if normalized is None:
-            raise KeyError(run_id)
+            raise ReviewArtifactUnavailable(run_id)
         questions = self._initialize_image_requirements(
             run_id,
             _drafts_from_json(normalized.payload_json),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from oms_hub.db import is_sqlite_busy
@@ -17,12 +18,14 @@ from oms_hub.study_generation.notebook import StoredNotebookLMGateway
 from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
     NotebookGatewayError,
+    NotebookSourceNotFoundError,
 )
 from oms_hub.study_generation.quiz_images import StudioQuizImageService
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.studio_domain import (
     StudioRunStage,
     StudioSource,
+    StudioSourceOperation,
     StudioSourceType,
 )
 from oms_hub.study_generation.studio_repository import StudioRepository
@@ -58,9 +61,22 @@ class StudioWorker:
         return self.repository.recover_interrupted_jobs()
 
     def run_once(self) -> bool:
+        claimed_operation = self.repository.claim_next_source_operation()
+        if claimed_operation is not None:
+            self._run_source_operation(*claimed_operation)
+            return True
         source = self.repository.claim_next()
         if source is not None:
-            self._run_source(source)
+            claimed_operation = self.repository.claim_next_source_operation()
+            if claimed_operation is None:
+                self.repository.fail(
+                    source.id,
+                    DiagnosticSource.STUDY_HUB.value,
+                    "durable source operation could not be claimed",
+                    retry=False,
+                )
+                return True
+            self._run_source_operation(*claimed_operation)
             return True
         run = self.repository.claim_next_run()
         if run is None:
@@ -185,15 +201,11 @@ class StudioWorker:
             return True
         try:
             self.repository.set_run_stage(run.id, StudioRunStage.PUBLISH)
-            published = self.publisher.publish_studio_quiz(
+            self.publisher.publish_and_complete_studio_run(
                 run.id,
                 quiz,
-            )
-            self.repository.complete_published_run(
-                run.id,
                 notebook_id,
                 answer,
-                published.token,
             )
         except Exception as error:  # noqa: BLE001 - durable publication boundary
             self.repository.mark_run_attempt_error(
@@ -217,41 +229,41 @@ class StudioWorker:
                 )
         return True
 
-    def _run_source(self, source: StudioSource) -> None:
+    def _run_source_operation(
+        self,
+        operation: StudioSourceOperation,
+        source: StudioSource,
+    ) -> None:
+        if operation.operation_kind == "delete":
+            self._run_delete_operation(operation)
+            return
+        if operation.state == "reconciling":
+            self._reconcile_add_operation(operation)
+            return
+
+        remote_effect_started = False
         try:
-            path = source.payload_path
-            converted = False
-            if source.source_type in {
-                StudioSourceType.FILE,
-                StudioSourceType.TEXT,
-            } and (path is None or not path.is_file()):
-                raise ValueError("stored Studio source payload is missing")
-            if source.source_type is StudioSourceType.FILE and path is not None:
-                if path.suffix.casefold() == ".pptx":
-                    converted_path = path.with_name("converted.pdf")
-                    self.converter.convert(path, converted_path)
-                    inspect_pdf(converted_path)
-                    path = converted_path
-                    converted = True
-                elif path.suffix.casefold() == ".pdf":
-                    inspect_pdf(path)
-            text = (
-                path.read_text(encoding="utf-8")
-                if source.source_type is StudioSourceType.TEXT and path
-                else None
-            )
-            notebook_id, remote_id = self.gateway.attach_studio_source(
+            path, text, converted = self._prepare_source_payload(source)
+            notebook_id, baseline = self.gateway.prepare_studio_source_add(
                 source.subject,
                 source.exam_number,
+            )
+            self.repository.record_attach_baseline(
+                operation.id,
+                notebook_id,
+                set(baseline),
+            )
+            remote_effect_started = True
+            remote_id = self.gateway.add_studio_source_to_notebook(
+                notebook_id,
                 source.source_type.value,
                 source.title,
                 path=path,
                 text=text,
                 url=source.source_url,
             )
-            self.repository.complete(
-                source.id,
-                notebook_id,
+            self.repository.complete_attach_operation(
+                operation.id,
                 remote_id,
                 converted=converted,
                 payload_path=path,
@@ -259,16 +271,111 @@ class StudioWorker:
         except NotebookGatewayError as error:
             if isinstance(error, NotebookAuthenticationError):
                 self.connection.invalidate(str(error))
-            self.repository.fail(
-                source.id,
+            if remote_effect_started:
+                self.repository.mark_attach_reconciling(
+                    operation.id,
+                    error.source.value,
+                    str(error),
+                )
+            else:
+                self.repository.fail_attach_preparation(
+                    operation.id,
+                    error.source.value,
+                    str(error),
+                    retry=error.retryable,
+                )
+        except Exception as error:  # noqa: BLE001 - durable worker boundary
+            if remote_effect_started:
+                self.repository.mark_attach_reconciling(
+                    operation.id,
+                    DiagnosticSource.STUDY_HUB.value,
+                    str(error),
+                )
+            else:
+                self.repository.fail_attach_preparation(
+                    operation.id,
+                    DiagnosticSource.STUDY_HUB.value,
+                    str(error),
+                    retry=is_sqlite_busy(error),
+                )
+
+    def _reconcile_add_operation(self, operation: StudioSourceOperation) -> None:
+        if not operation.notebook_id:
+            self.repository.fail_attach_preparation(
+                operation.id,
+                DiagnosticSource.STUDY_HUB.value,
+                "durable source operation is missing its notebook",
+                retry=False,
+            )
+            return
+        try:
+            remote_ids = self.gateway.list_studio_source_ids(operation.notebook_id)
+            self.repository.reconcile_attach_operation(operation.id, set(remote_ids))
+        except NotebookGatewayError as error:
+            if isinstance(error, NotebookAuthenticationError):
+                self.connection.invalidate(str(error))
+            self.repository.mark_attach_reconciling(
+                operation.id,
                 error.source.value,
                 str(error),
-                retry=error.retryable,
             )
-        except Exception as error:  # noqa: BLE001 - durable worker boundary
-            self.repository.fail(
-                source.id,
-                "study_hub",
+        except Exception as error:  # noqa: BLE001 - durable reconciliation boundary
+            self.repository.mark_attach_reconciling(
+                operation.id,
+                DiagnosticSource.STUDY_HUB.value,
                 str(error),
-                retry=is_sqlite_busy(error),
             )
+
+    def _run_delete_operation(self, operation: StudioSourceOperation) -> None:
+        if not operation.notebook_id or not operation.remote_source_id:
+            self.repository.complete_delete_operation(operation.id)
+            return
+        try:
+            self.gateway.delete_studio_source(
+                operation.notebook_id,
+                operation.remote_source_id,
+            )
+            self.repository.complete_delete_operation(operation.id)
+        except NotebookSourceNotFoundError:
+            self.repository.complete_delete_operation(operation.id)
+        except NotebookGatewayError as error:
+            if isinstance(error, NotebookAuthenticationError):
+                self.connection.invalidate(str(error))
+            self.repository.retry_delete_operation(
+                operation.id,
+                error.source.value,
+                str(error),
+            )
+        except Exception as error:  # noqa: BLE001 - durable deletion boundary
+            self.repository.retry_delete_operation(
+                operation.id,
+                DiagnosticSource.STUDY_HUB.value,
+                str(error),
+            )
+
+    def _prepare_source_payload(
+        self,
+        source: StudioSource,
+    ) -> tuple[Path | None, str | None, bool]:
+        path = source.payload_path
+        converted = False
+        if source.source_type in {
+            StudioSourceType.FILE,
+            StudioSourceType.TEXT,
+        } and (path is None or not path.is_file()):
+            raise ValueError("stored Studio source payload is missing")
+        if source.source_type is StudioSourceType.FILE and path is not None:
+            if path.suffix.casefold() == ".pptx":
+                converted_path = path.with_name("converted.pdf")
+                self.converter.convert(path, converted_path)
+                inspect_pdf(converted_path)
+                path = converted_path
+                converted = True
+            elif path.suffix.casefold() == ".pdf":
+                inspect_pdf(path)
+        text = (
+            path.read_text(encoding="utf-8")
+            if source.source_type is StudioSourceType.TEXT and path
+            else None
+        )
+        return path, text, converted

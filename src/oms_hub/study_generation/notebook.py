@@ -316,6 +316,48 @@ class StoredNotebookLMGateway:
             ),
         )
 
+    def prepare_studio_source_add(
+        self,
+        subject: str,
+        exam_number: int,
+    ) -> tuple[str, frozenset[str]]:
+        """Resolve the notebook and snapshot its sources before a durable add."""
+        return cast(
+            tuple[str, frozenset[str]],
+            _run(self._prepare_studio_source_add(subject, exam_number)),
+        )
+
+    def add_studio_source_to_notebook(
+        self,
+        notebook_id: str,
+        source_type: str,
+        title: str,
+        *,
+        path: Path | None = None,
+        text: str | None = None,
+        url: str | None = None,
+    ) -> str:
+        """Perform the effect only after the caller commits its operation intent."""
+        return cast(
+            str,
+            _run(
+                self._add_studio_source_to_notebook(
+                    notebook_id,
+                    source_type,
+                    title,
+                    path=path,
+                    text=text,
+                    url=url,
+                )
+            ),
+        )
+
+    def list_studio_source_ids(self, notebook_id: str) -> frozenset[str]:
+        return cast(
+            frozenset[str],
+            _run(self._list_studio_source_ids(notebook_id)),
+        )
+
     def ask_studio(
         self,
         subject: str,
@@ -347,12 +389,18 @@ class StoredNotebookLMGateway:
             ),
         )
 
-    def delete_studio_source(self, notebook_id: str, source_id: str) -> None:
-        _run(self._delete_studio_source(notebook_id, source_id))
+    def delete_studio_source(self, notebook_id: str, source_id: str) -> bool:
+        return cast(bool, _run(self._delete_studio_source(notebook_id, source_id)))
 
-    async def _delete_studio_source(self, notebook_id: str, source_id: str) -> None:
+    async def _delete_studio_source(self, notebook_id: str, source_id: str) -> bool:
         async with self._with_client() as client:
-            await client.sources.delete(notebook_id, source_id)
+            try:
+                await client.sources.delete(notebook_id, source_id)
+            except Exception as error:
+                if _is_remote_source_not_found(error):
+                    return False
+                raise
+        return True
 
     async def _ask_studio(
         self,
@@ -439,29 +487,62 @@ class StoredNotebookLMGateway:
             token = _active_client.set(client)
             try:
                 notebook = await self._ensure_notebook(subject, exam_number)
-                if source_type == "file" and path is not None:
-                    remote = await client.sources.add_file(
-                        notebook.id,
-                        path,
-                        wait=True,
-                        title=title,
-                    )
-                elif source_type == "text" and text is not None:
-                    remote = await client.sources.add_text(
-                        notebook.id,
-                        title,
-                        text,
-                        wait=True,
-                    )
-                elif source_type == "url" and url is not None:
-                    remote = await client.sources.add_url(notebook.id, url, wait=True)
-                else:
-                    raise ValueError("Studio source payload is incomplete")
-                if not _remote_ready(remote):
-                    raise SourceIsolationError("NotebookLM source did not become ready")
-                return notebook.id, str(remote.id)
+                remote_id = await self._add_studio_source_to_notebook(
+                    notebook.id,
+                    source_type,
+                    title,
+                    path=path,
+                    text=text,
+                    url=url,
+                )
+                return notebook.id, remote_id
             finally:
                 _active_client.reset(token)
+
+    async def _prepare_studio_source_add(
+        self,
+        subject: str,
+        exam_number: int,
+    ) -> tuple[str, frozenset[str]]:
+        notebook = await self._ensure_notebook(subject, exam_number)
+        return notebook.id, await self._list_studio_source_ids(notebook.id)
+
+    async def _list_studio_source_ids(self, notebook_id: str) -> frozenset[str]:
+        async with self._with_client() as client:
+            return frozenset(str(source.id) for source in await client.sources.list(notebook_id))
+
+    async def _add_studio_source_to_notebook(
+        self,
+        notebook_id: str,
+        source_type: str,
+        title: str,
+        *,
+        path: Path | None,
+        text: str | None,
+        url: str | None,
+    ) -> str:
+        async with self._with_client() as client:
+            if source_type == "file" and path is not None:
+                remote = await client.sources.add_file(
+                    notebook_id,
+                    path,
+                    wait=True,
+                    title=title,
+                )
+            elif source_type == "text" and text is not None:
+                remote = await client.sources.add_text(
+                    notebook_id,
+                    title,
+                    text,
+                    wait=True,
+                )
+            elif source_type == "url" and url is not None:
+                remote = await client.sources.add_url(notebook_id, url, wait=True)
+            else:
+                raise ValueError("Studio source payload is incomplete")
+            if not _remote_ready(remote):
+                raise SourceIsolationError("NotebookLM source did not become ready")
+            return str(remote.id)
 
     async def _generate(
         self,
@@ -760,6 +841,14 @@ def _contains_hedge(value: str) -> bool:
             "appears to be",
         )
     )
+
+
+def _is_remote_source_not_found(error: BaseException) -> bool:
+    status = getattr(error, "status_code", None) or getattr(error, "status", None)
+    if status == 404:
+        return True
+    message = str(error).casefold()
+    return "not found" in message or "does not exist" in message
 
 
 def _validate_revision_source(
