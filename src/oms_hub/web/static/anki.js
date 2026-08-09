@@ -534,14 +534,14 @@
     );
     link.append(dot, description, state, time);
     row.append(link);
-    if (canRetryCuration(job.state)) {
+    if (canRetryCuration(job)) {
       const actions = element(documentRef, "span", "anki-job-actions");
-      actions.setAttribute("aria-label", "Failed run actions");
+      actions.setAttribute("aria-label", "Interrupted run actions");
       const retry = element(documentRef, "button", "anki-icon-button sh-iconbtn");
       retry.type = "button";
       retry.dataset.retryQueuedJob = "";
-      retry.setAttribute("aria-label", "Retry failed run");
-      retry.title = "Retry failed run";
+      retry.setAttribute("aria-label", "Retry interrupted run");
+      retry.title = "Retry interrupted run";
       retry.append(element(documentRef, "span", "", "↻"));
       retry.firstChild.setAttribute("aria-hidden", "true");
       const remove = element(
@@ -551,8 +551,8 @@
       );
       remove.type = "button";
       remove.dataset.removeFailedJob = "";
-      remove.setAttribute("aria-label", "Remove failed run");
-      remove.title = "Remove failed run";
+      remove.setAttribute("aria-label", "Remove interrupted run");
+      remove.title = "Remove interrupted run";
       remove.append(element(documentRef, "span", "", "×"));
       remove.firstChild.setAttribute("aria-hidden", "true");
       actions.append(retry, remove);

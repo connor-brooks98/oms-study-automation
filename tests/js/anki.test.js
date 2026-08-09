@@ -467,10 +467,14 @@ test("collectSourceRevisionIds reads the hidden inputs rendered for ready source
   );
 });
 
-test("only failed curation jobs expose pipeline retry", () => {
-  assert.equal(anki.canRetryCuration("failed"), true);
-  assert.equal(anki.canRetryCuration("judging_pass_1"), false);
-  assert.equal(anki.canRetryCuration("complete"), false);
+test("failed and explicitly held curation jobs expose pipeline retry", () => {
+  assert.equal(anki.canRetryCuration({ state: "failed" }), true);
+  assert.equal(
+    anki.canRetryCuration({ state: "ready_for_review", can_retry: true }),
+    true,
+  );
+  assert.equal(anki.canRetryCuration({ state: "judging_pass_1" }), false);
+  assert.equal(anki.canRetryCuration({ state: "complete" }), false);
 });
 
 test("audit and coverage recompute advance processing progress", () => {
@@ -656,6 +660,7 @@ test("refreshed failed-run actions keep the shared icon button classes", () => {
     {
       id: 7,
       state: "failed",
+      can_retry: true,
       lecture_id: 2,
       target_deck: "Study Hub::Neuro",
       updated_at: "2026-08-07T14:00:00",
