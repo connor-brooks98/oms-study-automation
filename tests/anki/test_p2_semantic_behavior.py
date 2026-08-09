@@ -22,6 +22,7 @@ from oms_hub.anki.semantic.domain import (
     DocumentRecord,
     InputType,
     PinnedCentroidSimilarityResult,
+    SemanticGenerationMismatchError,
     SemanticHit,
 )
 from oms_hub.anki.semantic.service import (
@@ -178,7 +179,7 @@ def test_generation_aware_search_rejects_a_replacement_snapshot(tmp_path) -> Non
         service = _semantic_service(tmp_path, embedder)
         generation = await service.refresh([_record(1, "stored")])
 
-        with pytest.raises(ValueError, match="generation is no longer active"):
+        with pytest.raises(SemanticGenerationMismatchError, match="no longer active"):
             await service.search(
                 ("query",),
                 eligible_note_ids=(1,),
