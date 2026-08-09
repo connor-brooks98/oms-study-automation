@@ -1,13 +1,13 @@
 ---
 id: card-centric-gap-v2
-version: 2.0.2
+version: 2.0.3
 model: claude-sonnet-4-6
 temperature: 0.2
 max_tokens: 8000
 response_format: json
 schema: gap_cards_v2
 includes:
-  - _shared/source-authority.md
+  - _shared/source-authority-card-centric-v2.md
   - _shared/card-house-rules.md
 ---
 
@@ -36,9 +36,5 @@ to pad a count; split only when one grounded fact cannot be tested atomically.
 
 Use only the `forbidden_cloze_targets_by_fact` row matching the card's
 `fact_id`. Never flatten, union, or globalize targets belonging to unrelated
-facts. Prefer supplied primary passages, but summary-only support is allowed
-when it is the best available supplied evidence: cite the honest `SUM:` passage
-and preserve `summary_grounded` downstream. Never upgrade summary support to
-primary authority or inherit emphasis from it. When `is_mechanism` is true,
-test the causal chain atomically. Generated cards must be valid Cloze notes with
-concise, source-grounded Extra fields.
+facts. When `is_mechanism` is true, test the causal chain atomically. Generated
+cards must be valid Cloze notes with concise, source-grounded Extra fields.

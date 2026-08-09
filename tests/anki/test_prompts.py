@@ -154,7 +154,8 @@ def test_rendered_card_centric_v2_gap_prompt_is_complete_and_fact_scoped() -> No
     assets = Path(__file__).parents[2] / "src" / "oms_hub" / "anki" / "prompt_assets"
     prompt = AnkiPromptLibrary(assets).load("card-centric-gap-v2")
 
-    assert prompt.metadata.version == "2.0.2"
+    assert prompt.metadata.version == "2.0.3"
+    assert prompt.prompt_hash == "00a5387c909e"
     assert prompt.prompt_hash == hashlib.sha256(prompt.content.encode()).hexdigest()[:12]
     assert "Return every requested fact ID M1 through MN." in prompt.content
     assert "one unresolved row" in prompt.content
@@ -185,6 +186,22 @@ def test_rendered_card_centric_v2_gap_prompt_is_complete_and_fact_scoped() -> No
         "A generated card may not cite a summary passage as its sole evidence."
         not in prompt.content
     )
+
+
+@pytest.mark.parametrize(
+    "prompt_id",
+    ("card-centric-gap-v1", "lecture-concept-ledger", "gap-card-generation"),
+)
+def test_existing_generation_prompts_retain_strict_summary_authority(
+    prompt_id: str,
+) -> None:
+    assets = Path(__file__).parents[2] / "src" / "oms_hub" / "anki" / "prompt_assets"
+    prompt = AnkiPromptLibrary(assets).load(prompt_id)
+
+    assert "A card may not be kept on summary support alone." in prompt.content
+    assert "A generated card may not cite a summary passage as its sole evidence." in prompt.content
+    assert "Summary-only support is allowed" not in prompt.content
+    assert "`summary_grounded` downstream" not in prompt.content
 
 
 def test_git_sync_fast_forwards_nuc_prompt_checkout(tmp_path: Path) -> None:
