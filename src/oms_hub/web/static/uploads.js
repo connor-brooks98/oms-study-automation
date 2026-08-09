@@ -74,14 +74,39 @@
     }
   };
 
-  const createDecisionWait = (signal) => {
+  const createDecisionWait = (signal, deadline = Infinity) => {
     let resume;
     const promise = new Promise((resolve, reject) => {
-      resume = () => resolve();
-      const abort = () => reject(new DOMException("Cancelled", "AbortError"));
+      let timer = null;
+      let settled = false;
+      const settle = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        if (timer !== null) root.clearTimeout(timer);
+        callback(value);
+      };
+      const abort = () => settle(
+        reject, new DOMException("Cancelled", "AbortError"),
+      );
+      if (signal.aborted) {
+        abort();
+        return;
+      }
+      resume = () => settle(resolve);
       signal.addEventListener("abort", abort, { once: true });
+      if (Number.isFinite(deadline)) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          settle(reject, new Error("Upload status timed out before a terminal result."));
+        } else {
+          timer = root.setTimeout(() => {
+            settle(reject, new Error("Upload status timed out before a terminal result."));
+          }, remaining);
+        }
+      }
     });
-    return { promise, resume: () => resume() };
+    return { promise, resume: () => resume?.() };
   };
 
   const chunkFinalizeUrl = (sessionId, lectureId) => (
@@ -95,20 +120,30 @@
     itemId,
     decision,
     token,
+    signal,
+    timeoutMs = 120000,
   ) => {
-    const response = await fetchImpl(
+    const response = await requestWithTimeout(
+      fetchImpl,
       `/api/upload-items/${encodeURIComponent(itemId)}/${decision}`,
       {
         method: "POST",
         headers: { "X-CSRF-Token": token },
         cache: "no-store",
+        signal,
       },
+      timeoutMs,
     );
     const payload = await response.json();
     if (!response.ok) {
       throw new Error(payload.detail || "Study Hub rejected the decision.");
     }
     return payload;
+  };
+
+  const handleDecisionDialogCancel = (event, activeSubmission) => {
+    event.preventDefault();
+    if (activeSubmission) activeSubmission.controller.abort();
   };
 
   const initialize = (documentRef, fetchImpl) => {
@@ -238,7 +273,7 @@
         const batch = await response.json();
         renderBatch(batch);
         if (showConfirmation(batch, batchId)) {
-          const decision = createDecisionWait(signal);
+          const decision = createDecisionWait(signal, deadline);
           resumeDecision = decision.resume;
           try {
             await decision.promise;
@@ -407,7 +442,7 @@
 
     if (dialog) {
       dialog.addEventListener("cancel", (event) => {
-        event.preventDefault();
+        handleDecisionDialogCancel(event, activeSubmission);
       });
       dialog.addEventListener("click", (event) => {
         if (event.target === dialog) event.preventDefault();
@@ -424,6 +459,7 @@
             pausedItem.id,
             decision,
             csrfToken(documentRef),
+            activeSubmission?.controller.signal,
           );
           const resume = resumeDecision;
           pausedItem = null;
@@ -523,6 +559,7 @@
     csrfToken,
     batchIsTerminal,
     createDecisionWait,
+    handleDecisionDialogCancel,
     freezeManifest,
     itemErrorText,
     rejectionDetail,

@@ -543,7 +543,9 @@ class IngestionRepository:
                 session.add(revision)
                 session.flush()
             if item.kind == UploadKind.TRANSCRIPTS.value:
-                claimed = self._claim_transcript_cleaning(session, item)
+                claimed = self._claim_transcript_cleaning(
+                    session, item, source_revision=revision
+                )
                 if claimed is None:
                     raise TranscriptAdmissionPending(
                         "another transcript cleaning admission is active"
@@ -729,7 +731,11 @@ class IngestionRepository:
                 raise KeyError(revision_id)
             item.state = state.value
             item.error = error
-            if not revision.current or current:
+            if revision.state == "cleaning" and revision.current and not current:
+                # Exact-current repair failed.  The existing current revision
+                # remains authoritative; only the repairing item needs review.
+                revision.state = "current"
+            elif not revision.current or current:
                 revision.state = revision_state or (
                     "current"
                     if current
@@ -1122,6 +1128,8 @@ class IngestionRepository:
         self,
         session: Session,
         item: UploadItemModel,
+        *,
+        source_revision: StudyRevisionModel | None = None,
     ) -> StudyRevisionModel | None:
         existing = session.scalar(
             select(StudyRevisionModel).where(
@@ -1139,6 +1147,22 @@ class IngestionRepository:
             except IntegrityError:
                 return None
             return existing
+        if source_revision is not None:
+            if source_revision.state == "cleaning":
+                return None
+            try:
+                with session.begin_nested():
+                    # A corrupt/missing filed exact-current artifact is
+                    # repaired by this upload.  Transfer the revision owner
+                    # before the paid call so the durable row identifies the
+                    # actual repairing item while retaining current safety.
+                    source_revision.upload_item_id = item.id
+                    source_revision.state = "cleaning"
+                    source_revision.current = True
+                    session.flush()
+            except IntegrityError:
+                return None
+            return source_revision
         try:
             with session.begin_nested():
                 created = StudyRevisionModel(

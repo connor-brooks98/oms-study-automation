@@ -417,6 +417,7 @@ class StagingService:
             sha256=digest,
             size_bytes=session.total_size,
             original_filename=session.filename,
+            manifest_owned=session.manifest_owned,
         )
 
     def discard_file(self, path: Path) -> None:

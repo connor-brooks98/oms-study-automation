@@ -51,6 +51,7 @@ class StagedUpload:
     sha256: str
     size_bytes: int
     original_filename: str
+    manifest_owned: bool = False
 
 
 @dataclass(frozen=True, slots=True)

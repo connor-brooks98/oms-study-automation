@@ -148,6 +148,63 @@ test("cancellation while waiting for duplicate confirmation rejects promptly", a
   );
 });
 
+test("duplicate confirmation wait rejects an already-aborted submission", async () => {
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(
+    uploads.createDecisionWait(controller.signal).promise,
+    (error) => error.name === "AbortError",
+  );
+});
+
+test("duplicate confirmation wait respects the overall polling deadline", async () => {
+  const controller = new AbortController();
+  const decision = uploads.createDecisionWait(controller.signal, Date.now() + 1);
+
+  await assert.rejects(
+    decision.promise,
+    /Upload status timed out before a terminal result\./,
+  );
+});
+
+test("decision POST shares the active abort signal and bounded timeout", async () => {
+  let captured;
+  const stalled = async (_url, options) => {
+    captured = options;
+    return new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => {
+        reject(new DOMException("Timed out", "AbortError"));
+      });
+    });
+  };
+
+  await assert.rejects(
+    uploads.postDecision(stalled, "paused", "confirm", "csrf", undefined, 1),
+    /Upload request timed out\./,
+  );
+  assert.equal(captured.method, "POST");
+  assert.equal(captured.headers["X-CSRF-Token"], "csrf");
+});
+
+test("duplicate-dialog Escape aborts an active submission and keeps modal dismissals explicit", () => {
+  const controller = new AbortController();
+  let prevented = false;
+  uploads.handleDecisionDialogCancel(
+    { preventDefault: () => { prevented = true; } },
+    { controller },
+  );
+  assert.equal(prevented, true);
+  assert.equal(controller.signal.aborted, true);
+
+  let inactivePrevented = false;
+  uploads.handleDecisionDialogCancel(
+    { preventDefault: () => { inactivePrevented = true; } },
+    null,
+  );
+  assert.equal(inactivePrevented, true);
+});
+
 test("selection locks and serialized errors are rendered as safe text inputs", () => {
   assert.equal(uploads.selectionIsLocked(null), false);
   assert.equal(uploads.selectionIsLocked({ controller: {} }), true);

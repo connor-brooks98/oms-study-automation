@@ -272,6 +272,8 @@ def create_chunk_session(
     payload: ChunkCreate,
     request: Request,
 ) -> dict[str, object]:
+    if (payload.manifest_id is None) != (payload.slot_id is None):
+        raise HTTPException(422, "manifest_id and slot_id must be supplied together")
     try:
         session = (
             _staging(request).begin_manifest_chunks(payload.manifest_id, payload.slot_id)
@@ -323,7 +325,12 @@ def finalize_chunks(
         raise HTTPException(422, str(error)) from error
     # A manifest-owned chunk is now staged but not durable. Legacy chunk
     # callers retain their historical one-file finalization behaviour.
-    if _staging(request)._manifest_root(staged.batch_id).is_dir():
+    if staged.manifest_owned:
+        try:
+            manifest = _staging(request).get_manifest(staged.batch_id)
+            _staging(request)._manifest_slot(manifest, staged.item_id)
+        except UploadRejected as error:
+            raise HTTPException(422, "upload manifest was cancelled") from error
         return {"manifest_id": staged.batch_id, "item_id": staged.item_id}
     batch = _repository(request).get_batch(staged.batch_id)
     inferred_kind = (

@@ -18,7 +18,7 @@ from oms_hub.ingestion.worker import IngestionWorker
 from oms_hub.llm.domain import CleanResult, ProviderName
 from oms_hub.models import IngestionJobModel, StudyRevisionModel
 from oms_hub.repositories import CatalogRepository, LectureInput
-from oms_hub.transcripts.pipeline import TranscriptPipeline
+from oms_hub.transcripts.pipeline import TranscriptPipeline, TranscriptValidationError
 from oms_hub.transcripts.prompt import ApprovedPrompt
 
 
@@ -68,8 +68,9 @@ def _add(
     repository: IngestionRepository,
     root: Path,
     item_id: str,
+    payload: bytes | None = None,
 ) -> None:
-    payload = f"{item_id} transcript with enough facts.".encode()
+    payload = payload or f"{item_id} transcript with enough facts.".encode()
     path = root / f"{item_id}.txt"
     path.write_bytes(payload)
     batch_id = repository.create_batch(UploadKind.TRANSCRIPTS)
@@ -83,6 +84,26 @@ def _add(
             len(payload),
             path.name,
         ),
+    )
+
+
+def _pipeline(
+    database: Database,
+    tmp_path: Path,
+    cleaner: CountingCleaner,
+) -> TranscriptPipeline:
+    return TranscriptPipeline(
+        database,
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path / "data",
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+            study_root=tmp_path / "study",
+            transcript_min_clean_ratio=0.1,
+            transcript_max_clean_ratio=2.0,
+        ),
+        FixedPrompt(),
+        cleaner,
     )
 
 
@@ -132,6 +153,71 @@ def test_concurrent_first_transcripts_allow_one_paid_cleaner_call(tmp_path: Path
 
     assert cleaner.calls == 1
     assert repository.require_item(waiting[0]).state is UploadState.AWAITING_CONFIRMATION
+
+
+def test_exact_current_transcript_repair_reuses_owner_and_restores_filed_artifact(
+    tmp_path: Path,
+) -> None:
+    database, repository, lecture_id = _prepared(tmp_path)
+    payload = b"Same transcript with enough facts to preserve and repair."
+    _add(repository, tmp_path, "original", payload)
+    repository.set_manual_assignment("original", lecture_id)
+    cleaner = CountingCleaner()
+    pipeline = _pipeline(database, tmp_path, cleaner)
+    original = pipeline.process("original")
+    assert original.canonical_derived_path is not None
+    Path(original.canonical_derived_path).write_text("corrupt", encoding="utf-8")
+
+    _add(repository, tmp_path, "repair", payload)
+    repository.set_manual_assignment("repair", lecture_id)
+    assert repository.require_item("repair").state is UploadState.QUEUED
+
+    repaired = pipeline.process("repair")
+
+    assert repaired.id == original.id
+    assert repaired.state == "current"
+    assert repaired.current is True
+    assert repository.require_item("repair").state is UploadState.COMPLETE
+    assert (
+        Path(repaired.canonical_derived_path or "").read_text(encoding="utf-8")
+        == payload.decode()
+    )
+    # The immutable cleaned artifact was still sound, so filing repair did not
+    # need a second paid cleaning call or an admission-pending retry.
+    assert cleaner.calls == 1
+
+
+def test_failed_exact_current_repair_releases_cleaning_admission(tmp_path: Path) -> None:
+    database, repository, lecture_id = _prepared(tmp_path)
+    payload = b"Same transcript with enough facts to preserve and repair."
+    _add(repository, tmp_path, "original", payload)
+    repository.set_manual_assignment("original", lecture_id)
+    cleaner = CountingCleaner()
+    pipeline = _pipeline(database, tmp_path, cleaner)
+    original = pipeline.process("original")
+    assert original.immutable_derived_path is not None
+    assert original.canonical_derived_path is not None
+    Path(original.immutable_derived_path).write_text("corrupt", encoding="utf-8")
+    Path(original.canonical_derived_path).write_text("corrupt", encoding="utf-8")
+
+    _add(repository, tmp_path, "failed-repair", payload)
+    repository.set_manual_assignment("failed-repair", lecture_id)
+    with pytest.raises(TranscriptValidationError):
+        pipeline.process("failed-repair")
+
+    with database.session() as session:
+        revision = session.get(StudyRevisionModel, original.id)
+        assert revision is not None
+        assert revision.state == "current"
+        assert revision.current is True
+        assert revision.upload_item_id == "failed-repair"
+
+    # A subsequent repair can reclaim the released row; it sees validation
+    # failure rather than an infinite admission-pending conflict.
+    _add(repository, tmp_path, "retry-repair", payload)
+    repository.set_manual_assignment("retry-repair", lecture_id)
+    with pytest.raises(TranscriptValidationError):
+        pipeline.process("retry-repair")
 
 
 def test_recovery_requeues_orphaned_cleaning_owner(tmp_path: Path) -> None:

@@ -215,3 +215,80 @@ def test_cancelled_manifest_chunk_can_never_fall_back_to_legacy_batch(tmp_path: 
     assert stale.status_code == 422
     assert _counts(app) == (0, 0, 0)
     assert _ready(app) == []
+
+
+def test_chunk_session_rejects_partial_manifest_ownership_pair(tmp_path: Path) -> None:
+    client, _app = _client(tmp_path)
+    payload = b"partial manifest pair"
+    request = {
+        "kind": "transcripts",
+        "filename": "partial.txt",
+        "total_size": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+    only_manifest = client.post(
+        "/api/upload-chunks",
+        json={**request, "manifest_id": str(uuid4())},
+    )
+    only_slot = client.post(
+        "/api/upload-chunks",
+        json={**request, "slot_id": str(uuid4())},
+    )
+
+    assert only_manifest.status_code == 422
+    assert only_slot.status_code == 422
+    assert only_manifest.json()["detail"] == "manifest_id and slot_id must be supplied together"
+
+
+def test_manifest_delete_after_chunk_staging_never_uses_legacy_finalize(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    client, app = _client(tmp_path)
+    payload = b"manifest finalization race"
+    slot_id = str(uuid4())
+    created = client.post(
+        "/api/upload-manifests",
+        json={
+            "kind": "transcripts",
+            "files": [{
+                "slot_id": slot_id,
+                "filename": "race.txt",
+                "size_bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }],
+        },
+    )
+    manifest_id = created.json()["manifest_id"]
+    started = client.post(
+        "/api/upload-chunks",
+        json={
+            "kind": "transcripts",
+            "filename": "race.txt",
+            "total_size": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "manifest_id": manifest_id,
+            "slot_id": slot_id,
+        },
+    )
+    session_id = started.json()["session_id"]
+    appended = client.put(
+        f"/api/upload-chunks/{session_id}?offset=0", content=payload
+    )
+    assert appended.status_code == 200
+
+    staging = app.state.upload_staging  # type: ignore[attr-defined]
+    finalize = staging.finalize_chunks
+
+    def finalize_then_delete(session_id: str) -> object:
+        staged = finalize(session_id)
+        staging.discard_manifest(staged.batch_id)
+        return staged
+
+    monkeypatch.setattr(staging, "finalize_chunks", finalize_then_delete)
+    raced = client.post(f"/api/upload-chunks/{session_id}/finalize")
+
+    assert raced.status_code == 422
+    assert _counts(app) == (0, 0, 0)
+    assert _ready(app) == []
