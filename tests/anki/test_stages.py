@@ -1599,7 +1599,7 @@ def test_card_gap_fill_v2_uses_pinned_metadata_per_fact_targets_and_split_indice
         {"fact_id": "C01-M3", "targets": ["gamma"]},
     ]
     assert sent["lecture_title"] == "Pinned anemia title"
-    assert "soft targets, not quotas" in structured.instructions[0]
+    assert structured.instructions == ["Pinned card gap prompt"]
     assert [row["split_index"] for row in product.payload["resolutions"]] == [1, 2, None, None]
 
 

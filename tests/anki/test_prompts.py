@@ -161,6 +161,29 @@ def test_gap_generation_prompt_is_quality_first_and_forbids_padding() -> None:
     assert "forbidden_cloze_targets_by_fact" in prompt
 
 
+def test_rendered_card_centric_v2_gap_prompt_is_complete_and_fact_scoped() -> None:
+    assets = Path(__file__).parents[2] / "src" / "oms_hub" / "anki" / "prompt_assets"
+    prompt = AnkiPromptLibrary(assets).load("card-centric-gap-v2")
+
+    assert prompt.metadata.version == "2.0.1"
+    assert prompt.prompt_hash == hashlib.sha256(prompt.content.encode()).hexdigest()[:12]
+    assert "Return every requested fact ID M1 through MN." in prompt.content
+    assert "one unresolved row" in prompt.content
+    assert "one unsplit generated row with `split: false` and no `split_index`" in prompt.content
+    assert "sequential `split_index` values 1 through N" in prompt.content
+    assert "Never return both generated and unresolved rows for the same fact." in prompt.content
+    assert (
+        "Use only the `forbidden_cloze_targets_by_fact` row matching the card's"
+        in prompt.content
+    )
+    assert "Never flatten, union, or globalize targets belonging to unrelated" in prompt.content
+    assert "When only legacy `forbidden_cloze_targets[]` is supplied" in prompt.content
+    assert "smallest set of the best-supported, highest-yield," in prompt.content
+    assert "Counts are soft targets, never quotas." in prompt.content
+    assert "split one fact into unnecessary cards" in prompt.content
+    assert "label a card eligible merely to reach a count" in prompt.content
+
+
 def test_git_sync_fast_forwards_nuc_prompt_checkout(tmp_path: Path) -> None:
     seed, remote, nuc = _prompt_repositories(tmp_path)
     prompt = seed / "coverage-rubric.md"
