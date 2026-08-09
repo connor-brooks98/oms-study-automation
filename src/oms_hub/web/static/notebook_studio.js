@@ -12,7 +12,7 @@
   };
 
   const hasActiveSources = (sources) => sources.some(
-    (source) => source.state === "pending" || source.state === "attaching",
+    (source) => ["pending", "attaching", "deleting"].includes(source.state),
   );
 
   const hasActiveRuns = (runs) => runs.some(
@@ -358,17 +358,19 @@
   };
 
   const hydrateImportSources = (documentRef, list, sources) => {
-    const existing = new Map();
-    Array.from(list.querySelectorAll?.("[data-import-source-row]") || []).forEach((row) => {
-      const sourceId = row.dataset.sourceId;
-      if (existing.has(sourceId)) row.remove?.();
-      else existing.set(sourceId, row);
-    });
-    sources.filter((source) => (
+    const readyImports = sources.filter((source) => (
       source.state === "ready"
       && source.purpose === "local_import"
       && source.import_defaults
-    )).forEach((source) => {
+    ));
+    const readyImportIds = new Set(readyImports.map((source) => source.id));
+    const existing = new Set();
+    Array.from(list.querySelectorAll?.("[data-import-source-row]") || []).forEach((row) => {
+      const sourceId = row.dataset.sourceId;
+      if (existing.has(sourceId) || !readyImportIds.has(sourceId)) row.remove?.();
+      else existing.add(sourceId);
+    });
+    readyImports.forEach((source) => {
       if (existing.has(source.id)) return;
       const defaults = source.import_defaults;
       appendImportSource(
@@ -378,7 +380,7 @@
         defaults.role || "questions",
         importRoleAllowsNotebook(defaults.role) && Boolean(defaults.attach_to_notebook),
       );
-      existing.set(source.id, true);
+      existing.add(source.id);
     });
   };
 

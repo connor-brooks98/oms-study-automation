@@ -121,6 +121,11 @@ test("workflow panel state remains deterministic", () => {
   assert.deepEqual(studio.workflowPanelState("import"), { generate: false, import: true });
 });
 
+test("durable source deletion remains active until a terminal source response", () => {
+  assert.equal(studio.hasActiveSources([{ state: "deleting" }]), true);
+  assert.equal(studio.hasActiveSources([{ state: "deleted" }]), false);
+});
+
 test("workflow tabs receive the locked segmented active state", () => {
   const generate = new Element("button");
   generate.className = "button sh-btn";
@@ -223,6 +228,23 @@ test("only ready local-import sources hydrate into import rows", () => {
   ]);
 
   assert.deepEqual(list.querySelectorAll("[data-import-source-row]").map((row) => row.dataset.sourceId), ["ready"]);
+});
+
+test("import hydration prunes stale scoped rows while retaining authoritative rows", () => {
+  const list = new Element("ul");
+  const source = (id) => ({
+    id, title: id, state: "ready", purpose: "local_import",
+    import_defaults: { role: "questions", attach_to_notebook: false },
+  });
+  studio.hydrateImportSources(documentRef, list, [source("exam-1"), source("shared")]);
+  const shared = list.querySelectorAll("[data-import-source-row]")
+    .find((row) => row.dataset.sourceId === "shared");
+
+  studio.hydrateImportSources(documentRef, list, [source("shared")]);
+
+  const rows = list.querySelectorAll("[data-import-source-row]");
+  assert.deepEqual(rows.map((row) => row.dataset.sourceId), ["shared"]);
+  assert.equal(rows[0], shared);
 });
 
 test("forbidden import roles never serialize a programmatically checked NotebookLM attachment", () => {

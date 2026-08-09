@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -5,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 
 from oms_hub.db import Database
 from oms_hub.llm.domain import DiagnosticSource
+from oms_hub.models import StudioSourceModel
 from oms_hub.study_generation.notebook_errors import (
     NotebookGatewayError,
     NotebookSourceNotFoundError,
@@ -35,6 +37,9 @@ class _SagaGateway:
             raise _network_error()
         if self.effect == "one":
             self.remote_ids.add("remote-1")
+            raise _network_error()
+        if self.effect == "one_after_zero":
+            self.remote_ids.add("remote-final")
             raise _network_error()
         if self.effect == "multiple":
             self.remote_ids.update({"remote-1", "remote-2"})
@@ -85,6 +90,13 @@ def _worker(repository: StudioRepository, gateway: _SagaGateway) -> StudioWorker
     return StudioWorker(repository, gateway, object(), _Connection())  # type: ignore[arg-type]
 
 
+def _make_source_retry_due(repository: StudioRepository, source_id: str) -> None:
+    with repository.database.session() as session:
+        source = session.get(StudioSourceModel, source_id)
+        assert source is not None
+        source.next_attempt_at = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+
+
 def test_interrupted_add_with_one_delta_is_adopted_without_duplicate(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     source = _source(repository, tmp_path)
@@ -93,6 +105,7 @@ def test_interrupted_add_with_one_delta_is_adopted_without_duplicate(tmp_path: P
 
     assert worker.run_once() is True
     assert repository.get(source.id).state is StudioSourceState.ATTACHING  # type: ignore[union-attr]
+    _make_source_retry_due(repository, source.id)
     assert worker.run_once() is True
 
     attached = repository.get(source.id)
@@ -109,14 +122,42 @@ def test_interrupted_add_with_zero_delta_is_the_only_retry_path(tmp_path: Path) 
     worker = _worker(repository, gateway)
 
     assert worker.run_once() is True
+    _make_source_retry_due(repository, source.id)
     assert worker.run_once() is True
     assert gateway.add_calls == 1
 
     gateway.effect = "success"
+    _make_source_retry_due(repository, source.id)
     assert worker.run_once() is True
     attached = repository.get(source.id)
     assert attached is not None
     assert attached.state is StudioSourceState.ATTACHED
+    assert gateway.add_calls == 2
+
+
+def test_final_zero_delta_retry_reconciles_one_remote_delta_without_a_fourth_add(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    source = _source(repository, tmp_path)
+    gateway = _SagaGateway("zero")
+    worker = _worker(repository, gateway)
+
+    assert worker.run_once() is True
+    _make_source_retry_due(repository, source.id)
+    assert worker.run_once() is True
+    assert gateway.add_calls == 1
+
+    gateway.effect = "one_after_zero"
+    _make_source_retry_due(repository, source.id)
+    assert worker.run_once() is True
+    _make_source_retry_due(repository, source.id)
+    assert worker.run_once() is True
+
+    attached = repository.get(source.id)
+    assert attached is not None
+    assert attached.state is StudioSourceState.ATTACHED
+    assert attached.remote_source_id == "remote-final"
     assert gateway.add_calls == 2
 
 
@@ -127,6 +168,7 @@ def test_interrupted_add_with_multiple_deltas_stops_for_review(tmp_path: Path) -
     worker = _worker(repository, gateway)
 
     assert worker.run_once() is True
+    _make_source_retry_due(repository, source.id)
     assert worker.run_once() is True
     reviewed = repository.get(source.id)
     assert reviewed is not None
@@ -160,6 +202,7 @@ def test_interrupted_delete_retries_and_converges_on_remote_not_found(tmp_path: 
 
     assert worker.run_once() is True
     assert repository.get(source.id).state is StudioSourceState.DELETING  # type: ignore[union-attr]
+    _make_source_retry_due(repository, source.id)
     assert worker.run_once() is True
     assert repository.get(source.id).state is StudioSourceState.DELETED  # type: ignore[union-attr]
     assert gateway.delete_calls == 2

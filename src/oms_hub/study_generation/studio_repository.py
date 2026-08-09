@@ -268,15 +268,26 @@ class StudioRepository:
             session.refresh(model)
             return self._domain(model)
 
-    def claim_next_source_operation(self) -> tuple[StudioSourceOperation, StudioSource] | None:
+    def claim_next_source_operation(
+        self, now: datetime | None = None
+    ) -> tuple[StudioSourceOperation, StudioSource] | None:
         """Claim one durable external mutation; normal Studio worker owns execution."""
+        now = now or datetime.now(UTC)
         with self.database.session() as session:
             operation = session.scalar(
                 select(StudioSourceOperationModel)
+                .join(
+                    StudioSourceModel,
+                    StudioSourceModel.id == StudioSourceOperationModel.source_id,
+                )
                 .where(
                     StudioSourceOperationModel.state.in_(
                         {"queued", "reconciling", "deleting"}
-                    )
+                    ),
+                    or_(
+                        StudioSourceModel.next_attempt_at.is_(None),
+                        StudioSourceModel.next_attempt_at <= now.isoformat(),
+                    ),
                 )
                 .order_by(StudioSourceOperationModel.created_at, StudioSourceOperationModel.id)
                 .limit(1)
@@ -295,6 +306,7 @@ class StudioRepository:
                 # Baseline acquisition follows; no remote add can happen while queued.
                 source.state = StudioSourceState.ATTACHING.value
             operation.attempts += 1
+            source.next_attempt_at = None
             session.flush()
             return self._operation_domain(operation), self._domain(source)
 
@@ -315,6 +327,8 @@ class StudioRepository:
         operation_id: str,
         diagnostic_source: str,
         error: str,
+        *,
+        during_reconciliation: bool = False,
     ) -> None:
         """Preserve an ambiguous add for list-and-delta reconciliation."""
         with self.database.session() as session:
@@ -324,6 +338,21 @@ class StudioRepository:
             operation.state = "reconciling"
             operation.diagnostic_source = diagnostic_source
             operation.error = error[:1000]
+            source = session.get(StudioSourceModel, operation.source_id)
+            if source is None:
+                raise KeyError(operation.source_id)
+            source.diagnostic_source = diagnostic_source
+            source.error = error[:1000]
+            if during_reconciliation and operation.attempts >= 3:
+                operation.state = "needs_review"
+                operation.error = (
+                    "remote add outcome could not be reconciled; manual review is required"
+                )
+                source.state = StudioSourceState.NEEDS_REVIEW.value
+                source.next_attempt_at = None
+                source.error = operation.error
+            else:
+                source.next_attempt_at = self._source_operation_retry_at(operation.attempts)
 
     def fail_attach_preparation(
         self,
@@ -348,9 +377,11 @@ class StudioRepository:
             if retry and operation.attempts < 3:
                 operation.state = "queued"
                 source.state = StudioSourceState.ATTACHING.value
+                source.next_attempt_at = self._source_operation_retry_at(operation.attempts)
             else:
                 operation.state = "failed"
                 source.state = StudioSourceState.FAILED.value
+                source.next_attempt_at = None
 
     def complete_attach_operation(
         self, operation_id: str, remote_source_id: str, *, converted: bool = False,
@@ -403,12 +434,14 @@ class StudioRepository:
                     operation.notebook_id = None
                     operation.baseline_remote_ids_json = "[]"
                     operation.error = None
+                    source.next_attempt_at = self._source_operation_retry_at(operation.attempts)
                     return "retry"
                 source.state = StudioSourceState.FAILED.value
                 source.diagnostic_source = operation.diagnostic_source
                 source.error = "NotebookLM source add did not produce a remote source"
                 operation.state = "failed"
                 operation.error = source.error
+                source.next_attempt_at = None
                 return "failed"
             source.state = StudioSourceState.NEEDS_REVIEW.value
             source.next_attempt_at = None
@@ -429,6 +462,19 @@ class StudioRepository:
             operation.state = "deleting"
             operation.diagnostic_source = diagnostic_source
             operation.error = error[:1000]
+            source = session.get(StudioSourceModel, operation.source_id)
+            if source is None:
+                raise KeyError(operation.source_id)
+            source.diagnostic_source = diagnostic_source
+            source.error = error[:1000]
+            if operation.attempts < 3:
+                source.next_attempt_at = self._source_operation_retry_at(operation.attempts)
+            else:
+                operation.state = "needs_review"
+                operation.error = "remote delete could not be confirmed; manual review is required"
+                source.state = StudioSourceState.NEEDS_REVIEW.value
+                source.next_attempt_at = None
+                source.error = operation.error
 
     def queue_source_delete(self, source_id: str) -> StudioSource:
         with self.database.session() as session:
@@ -532,19 +578,30 @@ class StudioRepository:
 
     def recover_interrupted_jobs(self) -> int:
         with self.database.session() as session:
-            operations = session.scalars(
+            active_operations = session.scalars(
                 select(StudioSourceOperationModel).where(
-                    StudioSourceOperationModel.state.in_({"executing", "deleting"})
+                    StudioSourceOperationModel.state.in_(
+                        {"queued", "executing", "reconciling", "deleting"}
+                    )
                 )
             ).all()
-            for operation in operations:
-                operation.state = "reconciling" if operation.operation_kind == "add" else "deleting"
+            interrupted_operations = [
+                operation
+                for operation in active_operations
+                if operation.state == "executing"
+            ]
+            for operation in interrupted_operations:
+                operation.state = (
+                    "reconciling" if operation.operation_kind == "add" else "deleting"
+                )
             source_models = session.scalars(
                 select(StudioSourceModel).where(
                     StudioSourceModel.state == StudioSourceState.ATTACHING.value
                 )
             ).all()
-            operation_source_ids = {operation.source_id for operation in operations}
+            operation_source_ids = {
+                operation.source_id for operation in active_operations
+            }
             for source_model in source_models:
                 if source_model.id not in operation_source_ids:
                     source_model.state = StudioSourceState.NEEDS_REVIEW.value
@@ -556,7 +613,7 @@ class StudioRepository:
                 run_model.state = StudioRunState.QUEUED.value
                 run_model.error = "requeued after an interrupted Hub process"
                 run_model.next_attempt_at = None
-            return len(source_models) + len(operations) + len(run_models)
+            return len(source_models) + len(interrupted_operations) + len(run_models)
 
     def queue_run(
         self,
@@ -1551,6 +1608,12 @@ class StudioRepository:
             model.diagnostic_source,
             model.error,
         )
+
+    @staticmethod
+    def _source_operation_retry_at(attempts: int) -> str:
+        return (
+            datetime.now(UTC) + timedelta(seconds=min(30, 5 * (2 ** max(0, attempts - 1))))
+        ).isoformat()
 
     @staticmethod
     def _run_domain(

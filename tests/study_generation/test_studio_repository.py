@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from oms_hub.models import (
     PublishedQuizModel,
     StudioRunModel,
     StudioSourceModel,
+    StudioSourceOperationModel,
 )
 from oms_hub.study_generation.domain import (
     NativeQuiz,
@@ -520,3 +522,180 @@ def test_queue_run_does_not_mislabel_a_genuine_fk_violation(
         )
 
     assert "already in use" not in str(excinfo.value)
+
+
+def _claim_add_operation(
+    repository: StudioRepository,
+    source_id: str,
+):
+    claimed_source = repository.claim_next()
+    assert claimed_source is not None
+    assert claimed_source.id == source_id
+    claimed = repository.claim_next_source_operation()
+    assert claimed is not None
+    return claimed
+
+
+def test_delayed_source_operation_does_not_starve_later_work(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    first = repository.create_source(
+        "Neuro", 1, StudioSourceType.TEXT, "First source"
+    )
+    operation, _ = _claim_add_operation(repository, first.id)
+    repository.record_attach_baseline(operation.id, "notebook-1", set())
+    repository.mark_attach_reconciling(operation.id, "notebook", "list unavailable")
+
+    delayed = repository.get(first.id)
+    assert delayed is not None
+    assert delayed.next_attempt_at is not None
+    assert repository.claim_next_source_operation(now=datetime.now(UTC)) is None
+
+    second = repository.create_source(
+        "Neuro", 1, StudioSourceType.TEXT, "Second source"
+    )
+    assert repository.claim_next() is not None
+    later_operation = repository.claim_next_source_operation(now=datetime.now(UTC))
+    assert later_operation is not None
+    assert later_operation[1].id == second.id
+
+    later_run = _queued_run(repository, label="Later queued run")
+    claimed_run = repository.claim_next_run()
+    assert claimed_run is not None
+    assert claimed_run.id == later_run.id
+
+
+def test_persistent_add_reconciliation_needs_review_after_bounded_attempts(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    source = repository.create_source("Neuro", 1, StudioSourceType.TEXT, "Source")
+    operation, _ = _claim_add_operation(repository, source.id)
+    repository.record_attach_baseline(operation.id, "notebook-1", set())
+
+    future = datetime.now(UTC) + timedelta(minutes=1)
+    for _ in range(2):
+        repository.mark_attach_reconciling(
+            operation.id,
+            "notebook",
+            "list unavailable",
+            during_reconciliation=True,
+        )
+        assert repository.claim_next_source_operation(now=datetime.now(UTC)) is None
+        claimed = repository.claim_next_source_operation(now=future)
+        assert claimed is not None
+        operation, _ = claimed
+
+    repository.mark_attach_reconciling(
+        operation.id,
+        "notebook",
+        "list unavailable",
+        during_reconciliation=True,
+    )
+
+    stored = repository.get(source.id)
+    assert stored is not None
+    assert stored.state is StudioSourceState.NEEDS_REVIEW
+    assert stored.next_attempt_at is None
+    with repository.database.session() as session:
+        stored_operation = session.get(StudioSourceOperationModel, operation.id)
+        assert stored_operation is not None
+        assert stored_operation.state == "needs_review"
+    assert repository.claim_next_source_operation(now=future + timedelta(days=1)) is None
+    later_run = _queued_run(repository, label="Run after terminal add reconciliation")
+    claimed_run = repository.claim_next_run()
+    assert claimed_run is not None
+    assert claimed_run.id == later_run.id
+
+
+def test_persistent_delete_failures_become_needs_review_without_starving_runs(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    source = repository.create_source("Neuro", 1, StudioSourceType.TEXT, "Attached")
+    repository.complete(source.id, "notebook-1", "remote-1")
+    repository.queue_source_delete(source.id)
+
+    operation_claim = repository.claim_next_source_operation()
+    assert operation_claim is not None
+    operation, _ = operation_claim
+    repository.retry_delete_operation(operation.id, "notebook", "delete unavailable")
+    assert repository.claim_next_source_operation(now=datetime.now(UTC)) is None
+
+    later_run = _queued_run(repository, label="Run after delayed delete")
+    claimed_run = repository.claim_next_run()
+    assert claimed_run is not None
+    assert claimed_run.id == later_run.id
+
+    future = datetime.now(UTC) + timedelta(minutes=1)
+    for _ in range(2):
+        claimed = repository.claim_next_source_operation(now=future)
+        assert claimed is not None
+        operation, _ = claimed
+        repository.retry_delete_operation(operation.id, "notebook", "delete unavailable")
+
+    stored = repository.get(source.id)
+    assert stored is not None
+    assert stored.state is StudioSourceState.NEEDS_REVIEW
+    assert stored.next_attempt_at is None
+    with repository.database.session() as session:
+        stored_operation = session.get(StudioSourceOperationModel, operation.id)
+        assert stored_operation is not None
+        assert stored_operation.state == "needs_review"
+    assert repository.claim_next_source_operation(now=future + timedelta(days=1)) is None
+
+
+def test_recovery_preserves_queued_and_reconciling_operation_backoff(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    queued_source = repository.create_source(
+        "Neuro", 1, StudioSourceType.TEXT, "Queued source"
+    )
+    assert repository.claim_next() is not None
+    queued_retry_at = (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
+    with repository.database.session() as session:
+        stored = session.get(StudioSourceModel, queued_source.id)
+        assert stored is not None
+        stored.next_attempt_at = queued_retry_at
+
+    reconciling_source = repository.create_source(
+        "Neuro", 1, StudioSourceType.TEXT, "Reconciling source"
+    )
+    assert repository.claim_next() is not None
+    claimed = repository.claim_next_source_operation()
+    assert claimed is not None
+    operation, source = claimed
+    assert source.id == reconciling_source.id
+    repository.record_attach_baseline(operation.id, "notebook-1", set())
+    repository.mark_attach_reconciling(operation.id, "notebook", "list unavailable")
+
+    before_recovery = repository.get(reconciling_source.id)
+    assert before_recovery is not None
+    assert before_recovery.next_attempt_at is not None
+    repository.recover_interrupted_jobs()
+
+    queued_after = repository.get(queued_source.id)
+    reconciling_after = repository.get(reconciling_source.id)
+    assert queued_after is not None
+    assert reconciling_after is not None
+    assert queued_after.state is StudioSourceState.ATTACHING
+    assert queued_after.next_attempt_at == queued_retry_at
+    assert reconciling_after.state is StudioSourceState.ATTACHING
+    assert reconciling_after.next_attempt_at == before_recovery.next_attempt_at
+    with repository.database.session() as session:
+        states = dict(
+            session.execute(
+                text(
+                    "SELECT source_id, state FROM studio_source_operations "
+                    "WHERE source_id IN (:queued_source_id, :reconciling_source_id)"
+                ),
+                {
+                    "queued_source_id": queued_source.id,
+                    "reconciling_source_id": reconciling_source.id,
+                },
+            ).all()
+        )
+    assert states == {
+        queued_source.id: "queued",
+        reconciling_source.id: "reconciling",
+    }

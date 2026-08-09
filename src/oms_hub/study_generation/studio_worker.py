@@ -318,12 +318,14 @@ class StudioWorker:
                 operation.id,
                 error.source.value,
                 str(error),
+                during_reconciliation=True,
             )
         except Exception as error:  # noqa: BLE001 - durable reconciliation boundary
             self.repository.mark_attach_reconciling(
                 operation.id,
                 DiagnosticSource.STUDY_HUB.value,
                 str(error),
+                during_reconciliation=True,
             )
 
     def _run_delete_operation(self, operation: StudioSourceOperation) -> None:

@@ -163,6 +163,34 @@ def test_sqlite_busy_source_attach_failure_is_retried(tmp_path: Path) -> None:
     assert source.state is StudioSourceState.ATTACHING
 
 
+def test_delayed_source_operation_does_not_starve_queued_studio_run(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    repository = StudioRepository(database)
+    delayed = repository.create_source(
+        "Neuro", 1, StudioSourceType.TEXT, "Delayed source"
+    )
+    assert repository.claim_next() is not None
+    operation_claim = repository.claim_next_source_operation()
+    assert operation_claim is not None
+    operation, _ = operation_claim
+    repository.record_attach_baseline(operation.id, "notebook-1", set())
+    repository.mark_attach_reconciling(operation.id, "notebook", "list unavailable")
+    run = _queued_run(repository)
+
+    worker = StudioWorker(
+        repository,
+        _RaisingGateway(_sqlite_busy_error()),
+        object(),
+        _FakeConnection(),
+    )
+
+    assert worker.run_once() is True
+    assert repository.get(delayed.id).state is StudioSourceState.ATTACHING
+    assert repository.get_run(run.id).state is StudioRunState.RETRYING
+
+
 def test_non_busy_source_attach_failure_is_not_retried(tmp_path: Path) -> None:
     database = _database(tmp_path)
     repository = StudioRepository(database)
