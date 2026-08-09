@@ -675,22 +675,17 @@
           const manifestId = activeSubmission?.manifestId;
           if (manifestId) {
             try {
-              const cancelled = await cancelManifest(
-                fetchImpl, manifestId, csrfHeaders(),
+              const cancelled = await reconcileAmbiguousFinalization(
+                fetchImpl,
+                manifestId,
+                csrfHeaders(),
+                pollBatch,
+                120000,
+                (controller) => { recoveryController = controller; },
               );
               if (cancelled.finalized) {
                 clearPausedDecision();
-                try {
-                  await reconcileFinalizedBatch(
-                    pollBatch,
-                    cancelled.batchId,
-                    120000,
-                    (controller) => { recoveryController = controller; },
-                  );
-                  status.textContent = "Upload was already finalized.";
-                } catch (_reconcileError) {
-                  status.textContent = "Upload finalized; status could not be refreshed.";
-                }
+                status.textContent = "Upload was already finalized.";
                 return;
               }
             } catch (_cancelError) {

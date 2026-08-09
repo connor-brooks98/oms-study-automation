@@ -317,6 +317,21 @@ test("ambiguous finalize retries finalizing status before polling committed batc
   assert.equal(outcome.finalized, true);
 });
 
+test("cancel outcome reconciliation reports an explicit timeout while finalizing", async () => {
+  await assert.rejects(
+    uploads.reconcileAmbiguousFinalization(
+      async () => ({ status: 409, ok: false, json: async () => ({}) }),
+      "manifest-timeout",
+      {},
+      async () => ({ lifecycle: "terminal", items: [] }),
+      0,
+      () => {},
+      async () => {},
+    ),
+    /Upload finalization outcome timed out\./,
+  );
+});
+
 test("recovered confirmation Escape aborts the fresh reconciliation controller", async () => {
   const original = new AbortController();
   original.abort();
