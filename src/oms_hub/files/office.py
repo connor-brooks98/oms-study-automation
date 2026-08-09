@@ -38,6 +38,7 @@ class OfficeConverter(Protocol):
 
 OfficeProcessReporter = Callable[[int], None]
 OfficeWorker = Callable[[Path, Path, OfficeProcessReporter], None]
+OfficeAdmissionReporter = Callable[[str], None]
 
 
 class SerialOfficeConverter:
@@ -48,10 +49,13 @@ class SerialOfficeConverter:
         timeout_seconds: float = 180,
         worker: OfficeWorker = convert_office_file,
         admission_timeout_seconds: float | None = None,
+        admission_reporter: OfficeAdmissionReporter | None = None,
     ) -> None:
         self.timeout_seconds = timeout_seconds
         self.worker = worker
         self.admission_timeout_seconds = _admission_timeout(admission_timeout_seconds)
+        self.admission_reporter = admission_reporter
+        self.admission_state = "idle"
         self._context = multiprocessing.get_context("spawn")
 
     def convert(self, source: Path, destination: Path) -> None:
@@ -59,14 +63,21 @@ class SerialOfficeConverter:
         if suffix not in {".ppt", ".pptx", ".doc", ".docx"}:
             raise OfficeConversionError(f"unsupported Office source type: {suffix}")
         deadline = time.monotonic() + self.admission_timeout_seconds
-        if not self._lock.acquire(timeout=self.admission_timeout_seconds):
-            raise OfficeAdmissionTimeoutError(
-                "Office conversion admission timed out while waiting for the "
-                "in-process automation slot"
-            )
+        if not self._lock.acquire(blocking=False):
+            self._report_admission("waiting")
+            remaining = max(0.0, deadline - time.monotonic())
+            if not self._lock.acquire(timeout=remaining):
+                raise OfficeAdmissionTimeoutError(
+                    "Office conversion admission timed out while waiting for the "
+                    "in-process automation slot"
+                )
         cross_process_lock: _WindowsOfficeLock | None = None
         try:
-            cross_process_lock = _WindowsOfficeLock.acquire_until(deadline)
+            cross_process_lock = _WindowsOfficeLock.acquire_until(
+                deadline,
+                self._report_admission,
+            )
+            self._report_admission("admitted")
             destination.parent.mkdir(parents=True, exist_ok=True)
             receiver, sender = self._context.Pipe(duplex=False)
             try:
@@ -143,6 +154,16 @@ class SerialOfficeConverter:
                 cross_process_lock.release()
             self._lock.release()
 
+    def _report_admission(self, state: str) -> None:
+        self.admission_state = state
+        if self.admission_reporter is None:
+            return
+        try:
+            self.admission_reporter(state)
+        except Exception:
+            # Observability cannot alter an Office conversion outcome.
+            pass
+
 
 def _admission_timeout(value: float | None) -> float:
     configured = value
@@ -165,7 +186,11 @@ class _WindowsOfficeLock:
         self._stream = stream
 
     @classmethod
-    def acquire_until(cls, deadline: float) -> _WindowsOfficeLock:
+    def acquire_until(
+        cls,
+        deadline: float,
+        report_admission: OfficeAdmissionReporter | None = None,
+    ) -> _WindowsOfficeLock:
         if sys.platform != "win32":
             return cls(None)
         import msvcrt
@@ -178,6 +203,7 @@ class _WindowsOfficeLock:
         stream.seek(0)
         stream.write(b"\0")
         stream.flush()
+        waiting_reported = False
         while True:
             try:
                 stream.seek(0)
@@ -188,6 +214,9 @@ class _WindowsOfficeLock:
                 )
                 return cls(stream)
             except OSError as error:
+                if not waiting_reported and report_admission is not None:
+                    report_admission("waiting")
+                    waiting_reported = True
                 if time.monotonic() >= deadline:
                     stream.close()
                     raise OfficeAdmissionTimeoutError(

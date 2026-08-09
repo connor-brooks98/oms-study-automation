@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 import oms_hub.artifacts as artifacts_module
@@ -162,3 +164,67 @@ def test_dual_journal_and_restore_failure_keeps_backup_without_journal_path(
     assert isinstance(error.restore_error, OSError)
     assert isinstance(error.journal_error, OSError)
     assert backup.read_bytes() == b"old"
+
+
+def test_approve_does_not_reset_recovery_required_promotion(monkeypatch, tmp_path):
+    revision = SimpleNamespace(id=47, state="proposed")
+    reset_calls: list[int] = []
+    service = ArtifactService.__new__(ArtifactService)
+    service.repository = SimpleNamespace(
+        get_study_revision=lambda _revision_id: revision,
+        begin_study_promotion=lambda _revision_id: revision,
+        reset_study_promotion=reset_calls.append,
+    )
+    monkeypatch.setattr(service, "_approval_pairs", lambda _revision: [])
+    recovery_error = ArtifactRecoveryError(
+        "manual recovery required",
+        backup_paths=(tmp_path / "current-backup.pdf",),
+        recovery_journal_path=tmp_path / "recovery.json",
+        original_error=RuntimeError("promotion failed"),
+        restore_error=OSError("restore failed"),
+    )
+
+    def fail_promotion(*_args):
+        raise recovery_error
+
+    monkeypatch.setattr(service, "_promote_with_rollback", fail_promotion)
+
+    with pytest.raises(ArtifactRecoveryError) as raised:
+        service.approve(47)
+
+    assert raised.value is recovery_error
+    assert reset_calls == []
+
+
+def test_crash_recovery_restores_every_destination_before_backup_cleanup(tmp_path):
+    revision = SimpleNamespace(id=48)
+    service = ArtifactService.__new__(ArtifactService)
+    reset_calls: list[int] = []
+    service.repository = SimpleNamespace(reset_study_promotion=reset_calls.append)
+    first_source = tmp_path / "first-immutable.pdf"
+    second_source = tmp_path / "second-immutable.pdf"
+    first_destination = tmp_path / "first-current.pdf"
+    second_destination = tmp_path / "second-current.pdf"
+    first_source.write_bytes(b"first-new")
+    second_source.write_bytes(b"second-new")
+    first_destination.write_bytes(b"first-new")
+    second_destination.write_bytes(b"partial")
+    first_backup = ArtifactService._backup_path(first_destination, revision.id)
+    second_backup = ArtifactService._backup_path(second_destination, revision.id)
+    first_backup.write_bytes(b"first-old")
+    second_backup.write_bytes(b"second-old")
+
+    recovered = service._recover_promotion(
+        revision,
+        [
+            (first_source, first_destination),
+            (second_source, second_destination),
+        ],
+    )
+
+    assert recovered is False
+    assert reset_calls == [revision.id]
+    assert first_destination.read_bytes() == b"first-old"
+    assert second_destination.read_bytes() == b"second-old"
+    assert not first_backup.exists()
+    assert not second_backup.exists()

@@ -443,10 +443,12 @@ def test_office_admission_waits_for_an_in_process_conversion_slot(tmp_path):
     source = tmp_path / "lecture.pptx"
     destination = tmp_path / "lecture.pdf"
     source.write_bytes(b"pptx")
+    admission_events: list[str] = []
     converter = SerialOfficeConverter(
         timeout_seconds=5,
         worker=_succeed,
         admission_timeout_seconds=1,
+        admission_reporter=admission_events.append,
     )
     assert SerialOfficeConverter._lock.acquire(blocking=False)
     release = threading.Timer(0.05, SerialOfficeConverter._lock.release)
@@ -456,6 +458,8 @@ def test_office_admission_waits_for_an_in_process_conversion_slot(tmp_path):
     finally:
         release.join()
     assert destination.read_bytes() == b"pdf"
+    assert admission_events == ["waiting", "admitted"]
+    assert converter.admission_state == "admitted"
 
 
 def test_office_admission_timeout_is_distinct_from_conversion_failure(tmp_path):

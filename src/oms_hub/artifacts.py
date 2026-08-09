@@ -122,6 +122,11 @@ class ArtifactService:
                 revision.id,
                 lambda: self.repository.promote_study_revision(revision.id),
             )
+        except ArtifactRecoveryError:
+            # Retained backups mean this revision is still in the recovery
+            # state.  Resetting it to proposed would allow a retry to replace
+            # the only verified recovery copy.
+            raise
         except Exception:
             self.repository.reset_study_promotion(revision.id)
             raise
@@ -436,17 +441,83 @@ class ArtifactService:
             self.repository.promote_study_revision(revision.id)
             self._remove_promotion_backups(pairs, revision.id)
             return True
-        for source, destination in pairs:
-            backup = self._backup_path(destination, revision.id)
-            if backup.exists():
-                os.replace(backup, destination)
-            elif (
-                destination.is_file()
-                and sha256_file(destination) == sha256_file(source)
-            ):
-                destination.unlink()
+        try:
+            self._restore_interrupted_promotion(pairs, revision.id)
+        except Exception as restore_error:
+            raise ArtifactRecoveryError(
+                "interrupted artifact promotion could not be verified and "
+                "restored; retain the backup paths",
+                backup_paths=self._existing_backup_paths(pairs, revision.id),
+                recovery_journal_path=self._existing_journal_path(
+                    pairs,
+                    revision.id,
+                ),
+                original_error=ArtifactConflict(
+                    "interrupted artifact promotion requires recovery"
+                ),
+                restore_error=restore_error,
+            ) from restore_error
         self.repository.reset_study_promotion(revision.id)
+        self._remove_promotion_backups(pairs, revision.id)
         return False
+
+    @classmethod
+    def _restore_interrupted_promotion(
+        cls,
+        pairs: list[tuple[Path, Path]],
+        revision_id: int,
+    ) -> None:
+        """Restore an interrupted promotion without consuming its backups."""
+        for source, destination in pairs:
+            backup = cls._backup_path(destination, revision_id)
+            if backup.is_file():
+                expected_sha256 = sha256_file(backup)
+                verified_atomic_copy(backup, destination)
+                if (
+                    not destination.is_file()
+                    or sha256_file(destination) != expected_sha256
+                ):
+                    raise OSError(
+                        "interrupted promotion restore verification failed: "
+                        f"{destination}"
+                    )
+            elif destination.is_file() and sha256_file(destination) == sha256_file(source):
+                destination.unlink()
+                if destination.exists():
+                    raise OSError(
+                        "interrupted promotion destination remained: "
+                        f"{destination}"
+                    )
+            elif destination.exists():
+                raise OSError(
+                    "interrupted promotion has no verified backup for: "
+                    f"{destination}"
+                )
+
+    @classmethod
+    def _existing_backup_paths(
+        cls,
+        pairs: list[tuple[Path, Path]],
+        revision_id: int,
+    ) -> tuple[Path, ...]:
+        return tuple(
+            backup
+            for _source, destination in pairs
+            if (backup := cls._backup_path(destination, revision_id)).is_file()
+        )
+
+    @classmethod
+    def _existing_journal_path(
+        cls,
+        pairs: list[tuple[Path, Path]],
+        revision_id: int,
+    ) -> Path | None:
+        if not pairs:
+            return None
+        journal_path = pairs[0][1].with_name(
+            f".oms-promotion-{revision_id}.recovery.json"
+        )
+        return journal_path if journal_path.is_file() else None
 
     @classmethod
     def _remove_promotion_backups(

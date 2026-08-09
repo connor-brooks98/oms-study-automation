@@ -26,6 +26,8 @@ class _WorkerState:
     start_count: int = 0
     heartbeat_at: float | None = None
     last_work_at: float | None = None
+    active_started_at: float | None = None
+    current_error: str | None = None
     last_error: str | None = None
 
 
@@ -60,7 +62,8 @@ class WorkerSupervisor:
                 try:
                     state.worker.recover_interrupted_jobs()
                 except Exception as error:  # noqa: BLE001 - health records a safe boundary
-                    state.last_error = type(error).__name__
+                    state.current_error = type(error).__name__
+                    state.last_error = state.current_error
                     logging.getLogger(__name__).exception(
                         "%s worker recovery failed", state.name
                     )
@@ -95,6 +98,8 @@ class WorkerSupervisor:
                     "alive": bool(state.thread is not None and state.thread.is_alive()),
                     "heartbeat_age_seconds": _age(now, state.heartbeat_at),
                     "last_work_age_seconds": _age(now, state.last_work_at),
+                    "active_work_age_seconds": _age(now, state.active_started_at),
+                    "current_error": state.current_error,
                     "last_error": state.last_error,
                 }
                 for name, state in self._workers.items()
@@ -103,7 +108,14 @@ class WorkerSupervisor:
     def ready(self) -> tuple[bool, str | None]:
         now = self._clock()
         with self._lock:
-            if set(self._workers) != {"generation_worker", "ingestion_worker", "studio_worker"}:
+            expected_workers = {
+                "generation_worker",
+                "ingestion_worker",
+                "studio_worker",
+            }
+            if expected_workers - set(self._workers):
+                return False, "worker_missing"
+            if set(self._workers) - expected_workers:
                 return False, "worker_configuration"
             for state in self._workers.values():
                 if state.start_count == 0:
@@ -112,28 +124,46 @@ class WorkerSupervisor:
                     return False, "worker_duplicate"
                 if state.thread is None or not state.thread.is_alive():
                     return False, "worker_dead"
+                if state.current_error is not None:
+                    return False, "worker_error"
                 if (
-                    state.heartbeat_at is None
-                    or now - state.heartbeat_at > self._heartbeat_timeout_seconds
+                    state.active_started_at is None
+                    and (
+                        state.heartbeat_at is None
+                        or now - state.heartbeat_at > self._heartbeat_timeout_seconds
+                    )
                 ):
                     return False, "worker_stale"
-                if state.last_error is not None:
-                    return False, "worker_error"
         return True, None
 
     def _run(self, state: _WorkerState) -> None:
         while not self._stop.is_set():
-            try:
-                worked = state.worker.run_once()
-            except Exception as error:  # noqa: BLE001 - health records a safe boundary
-                state.last_error = type(error).__name__
-                logging.getLogger(__name__).exception("%s worker failed", state.name)
-                worked = False
-            finally:
-                state.heartbeat_at = self._clock()
+            worked = self._run_cycle(state)
             if worked:
-                state.last_work_at = self._clock()
+                with self._lock:
+                    state.last_work_at = self._clock()
             self._stop.wait(0.5 if worked else 5.0)
+
+    def _run_cycle(self, state: _WorkerState) -> bool:
+        with self._lock:
+            state.active_started_at = self._clock()
+        try:
+            worked = state.worker.run_once()
+        except Exception as error:  # noqa: BLE001 - health records a safe boundary
+            error_name = type(error).__name__
+            with self._lock:
+                state.current_error = error_name
+                state.last_error = error_name
+            logging.getLogger(__name__).exception("%s worker failed", state.name)
+            worked = False
+        else:
+            with self._lock:
+                state.current_error = None
+        finally:
+            with self._lock:
+                state.active_started_at = None
+                state.heartbeat_at = self._clock()
+        return worked
 
 
 def configure_application_logging(data_dir: Path) -> Path:

@@ -87,8 +87,38 @@ def test_release_builder_is_deterministic_and_excludes_untracked_files(tmp_path)
             assert planted.name not in archive.namelist()
 
 
-@pytest.mark.parametrize("commit", ["62c6d5f", "not-a-commit", "f" * 40])
+@pytest.mark.parametrize("commit", ["62c6d5f", "HEAD", "not-a-commit", "f" * 40])
 def test_release_builder_rejects_nonexact_or_unresolved_commit(tmp_path, commit):
     builder = load_builder()
     with pytest.raises((ValueError, subprocess.CalledProcessError)):
         builder.build_releases(Path(__file__).parents[2], tmp_path, "20260726", commit)
+
+
+def test_release_builder_rejects_symlink_entries_in_the_selected_tree(tmp_path):
+    builder = load_builder()
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", repository], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", repository, "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", repository, "config", "user.name", "Release Test"],
+        check=True,
+    )
+    (repository / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    (repository / "linked.txt").symlink_to("tracked.txt")
+    subprocess.run(["git", "-C", repository, "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", repository, "commit", "-m", "symlink fixture"],
+        check=True,
+        capture_output=True,
+    )
+    commit = subprocess.check_output(
+        ["git", "-C", repository, "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+
+    with pytest.raises(ValueError, match="symbolic link"):
+        builder.build_releases(repository, tmp_path / "output", "20260726", commit)

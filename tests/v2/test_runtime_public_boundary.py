@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -41,6 +42,30 @@ class _Worker:
         return False
 
 
+class _BlockingWorker(_Worker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def run_once(self) -> bool:
+        self.started.set()
+        self.release.wait(timeout=5)
+        return False
+
+
+class _FailsThenSucceedsWorker(_Worker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def run_once(self) -> bool:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("transient")
+        return False
+
+
 def test_supervisor_owns_one_worker_of_each_kind_and_reports_metadata() -> None:
     names = ("ingestion_worker", "generation_worker", "studio_worker")
     workers = {name: _Worker() for name in names}
@@ -56,6 +81,56 @@ def test_supervisor_owns_one_worker_of_each_kind_and_reports_metadata() -> None:
     assert all(item["thread_id"] is not None for item in snapshot.values())
     assert all(item["start_count"] == 1 for item in snapshot.values())
     assert all(worker.recoveries == 1 for worker in workers.values())
+
+
+def test_active_long_running_work_does_not_become_stale() -> None:
+    clock = _Clock()
+    blocking = [_BlockingWorker() for _ in range(3)]
+    workers = {
+        "ingestion_worker": blocking[0],
+        "generation_worker": blocking[1],
+        "studio_worker": blocking[2],
+    }
+    supervisor = WorkerSupervisor(workers, heartbeat_timeout_seconds=10, clock=clock)
+
+    supervisor.start()
+    assert all(worker.started.wait(timeout=1) for worker in blocking)
+    clock.advance(11)
+    ready, reason = supervisor.ready()
+    snapshot = supervisor.snapshot()
+    for worker in blocking:
+        worker.release.set()
+    supervisor.stop()
+
+    assert ready is True and reason is None
+    assert snapshot["ingestion_worker"]["active_work_age_seconds"] == 11
+
+
+def test_successful_cycle_clears_current_error_but_retains_error_history() -> None:
+    clock = _Clock()
+    worker = _FailsThenSucceedsWorker()
+    supervisor = _supervisor_with_real_state(clock)
+    state = next(iter(supervisor._workers.values()))
+    state.worker = worker
+
+    assert supervisor._run_cycle(state) is False
+    assert state.current_error == state.last_error == "RuntimeError"
+    assert supervisor._run_cycle(state) is False
+
+    assert state.current_error is None
+    assert state.last_error == "RuntimeError"
+    assert supervisor.ready() == (True, None)
+
+
+def test_supervisor_reports_missing_expected_worker() -> None:
+    supervisor = WorkerSupervisor(
+        {
+            "ingestion_worker": _Worker(),
+            "generation_worker": _Worker(),
+        }
+    )
+
+    assert supervisor.ready() == (False, "worker_missing")
 
 
 class _Clock:
@@ -125,6 +200,7 @@ def test_supervisor_classifies_unhealthy_real_worker_state(
         state.heartbeat_at = clock() - 11
     else:
         assert scenario == "error"
+        state.current_error = "RuntimeError"
         state.last_error = "RuntimeError"
 
     ready, reason = supervisor.ready()
@@ -138,6 +214,7 @@ def test_readiness_endpoint_maps_real_supervisor_state_without_raw_errors(tmp_pa
     app = create_app(_settings(tmp_path))
     app.state.worker_supervisor = _supervisor_with_real_state(clock)
     first_state = next(iter(app.state.worker_supervisor._workers.values()))
+    first_state.current_error = "RuntimeError"
     first_state.last_error = "RuntimeError"
 
     response = TestClient(app).get("/health/ready")
