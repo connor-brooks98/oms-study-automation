@@ -244,6 +244,183 @@ def test_selector_preserves_exact_existing_duplicate_target_over_equivalent_cove
     assert result.mandatory_note_ids == (11,)
 
 
+def _duplicate_target(
+    *,
+    card_id: str,
+    concept_id: str,
+    note_id: int,
+    passage_id: str,
+) -> GeneratedCardResolution:
+    return GeneratedCardResolution(
+        card_id=card_id,
+        concept_id=concept_id,
+        fact_id=f"{concept_id}-M1",
+        text="{{c1::Duplicate fact}}",
+        source_passage_ids=(passage_id,),
+        evidence_ids=(f"E-{card_id}",),
+        status="duplicate_of_existing",
+        duplicate_of_existing_note_id=note_id,
+        reason=f"Semantic duplicate of existing note {note_id}.",
+    )
+
+
+def test_fast_duplicate_target_is_conserved_after_warning_floor() -> None:
+    source = _source()
+    passage_id = source.passages[0].passage_id
+    target = _duplicate_target(
+        card_id="G61",
+        concept_id="C61",
+        note_id=99,
+        passage_id=passage_id,
+    )
+    result = select_high_yield_v2(
+        (),
+        fast_classifications=(
+            FastCardClassification(
+                note_id=99,
+                verdict="LIKELY_YES",
+                grounded_concept_ids=("C61",),
+                supporting_passage_ids=(passage_id,),
+                reason="eligible fast S8 duplicate target",
+            ),
+        ),
+        ledger=_ledger(61),
+        source_index=source,
+        generated_cards=(*(_generated(index, passage_id) for index in range(1, 61)), target),
+    )
+
+    assert result.selected_existing_note_ids == (99,)
+    assert result.mandatory_note_ids == (99,)
+    assert result.selection_metadata[-1].selected_position == 61
+    assert result.selection_metadata[-1].tier is SelectionTier.T6
+
+
+def test_thorough_duplicate_target_has_governed_marginal_reason_after_65() -> None:
+    source = _source()
+    passage_id = source.passages[0].passage_id
+    target = _duplicate_target(
+        card_id="G66",
+        concept_id="C66",
+        note_id=66,
+        passage_id=passage_id,
+    )
+    result = select_high_yield_v2(
+        (
+            CardClassification(
+                note_id=66,
+                verdict="YES",
+                primary_subject="fixture",
+                reason="exact S8 duplicate target with low ordinary value",
+                covered_concept_ids=("C66",),
+                supporting_passage_ids=(passage_id,),
+            ),
+        ),
+        fast_classifications=(),
+        ledger=_ledger(66, low={66}),
+        source_index=source,
+        generated_cards=(*(_generated(index, passage_id) for index in range(1, 66)), target),
+    )
+
+    selected = result.selection_metadata[-1]
+    assert result.selected_existing_note_ids == (66,)
+    assert selected.selected_position == 66
+    assert selected.marginal_value_reason is MarginalValueReason.ONLY_VALID_REQUIRED_FACT
+
+
+def test_duplicate_targets_reserve_soft_cap_then_use_mandatory_overflow() -> None:
+    source = _source()
+    passage_id = source.passages[0].passage_id
+    target = _duplicate_target(
+        card_id="G71",
+        concept_id="C71",
+        note_id=99,
+        passage_id=passage_id,
+    )
+    fast = FastCardClassification(
+        note_id=99,
+        verdict="LIKELY_YES",
+        grounded_concept_ids=("C71",),
+        supporting_passage_ids=(passage_id,),
+        reason="eligible fast S8 duplicate target",
+    )
+    reserved = select_high_yield_v2(
+        (),
+        fast_classifications=(fast,),
+        ledger=_ledger(71),
+        source_index=source,
+        generated_cards=(*(_generated(index, passage_id) for index in range(1, 71)), target),
+    )
+
+    assert len(reserved.selection_metadata) == 70
+    assert reserved.selection_metadata[-1].identity == "existing:99"
+    assert reserved.selection_metadata[-1].selected_position == 70
+    assert "G70" in reserved.excluded_generated_card_ids
+
+    overflow = select_high_yield_v2(
+        (),
+        fast_classifications=(fast,),
+        ledger=_ledger(71, high=set(range(1, 71))),
+        source_index=source,
+        generated_cards=(*(_generated(index, passage_id) for index in range(1, 71)), target),
+        overflow_acknowledgement={
+            "acknowledged_at": "2026-08-09T00:00:00Z",
+            "acknowledged_by": "reviewer",
+            "reason": "S8 duplicate target conservation",
+        },
+    )
+
+    assert len(overflow.selection_metadata) == 71
+    assert overflow.selection_metadata[-1].identity == "existing:99"
+    assert overflow.selection_metadata[-1].mandatory is True
+    assert overflow.selection_metadata[-1].manual_acknowledgement_required is True
+    assert overflow.overflow_acknowledgement is not None
+
+
+def test_multiple_equivalent_duplicate_targets_are_all_conserved() -> None:
+    source = _source()
+    passage_id = source.passages[0].passage_id
+    targets = (
+        _duplicate_target(
+            card_id="G1a",
+            concept_id="C01",
+            note_id=10,
+            passage_id=passage_id,
+        ),
+        _duplicate_target(
+            card_id="G1b",
+            concept_id="C01",
+            note_id=11,
+            passage_id=passage_id,
+        ),
+    )
+    result = select_high_yield_v2(
+        (),
+        fast_classifications=(
+            FastCardClassification(
+                note_id=10,
+                verdict="LIKELY_YES",
+                grounded_concept_ids=("C01",),
+                supporting_passage_ids=(passage_id,),
+                reason="first exact target",
+            ),
+            FastCardClassification(
+                note_id=11,
+                verdict="LIKELY_YES",
+                grounded_concept_ids=("C01",),
+                supporting_passage_ids=(passage_id,),
+                reason="second exact target",
+            ),
+        ),
+        ledger=_ledger(1),
+        source_index=source,
+        generated_cards=targets,
+    )
+
+    assert result.selected_existing_note_ids == (10, 11)
+    assert result.mandatory_note_ids == (10, 11)
+    assert result.excluded_existing_note_ids == ()
+
+
 def test_summary_evidence_with_unknown_id_does_not_upgrade_to_primary() -> None:
     source = _source()
     summary_id = next(

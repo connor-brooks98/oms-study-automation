@@ -979,6 +979,134 @@ def test_duplicate_target_identity_survives_selection_into_reconciliation() -> N
     assert "duplicate_coverage" in report.passed
 
 
+def test_fast_equivalent_duplicate_targets_survive_selection_into_s9() -> None:
+    """S8 fast-terminal targets remain exact selected identities through S9."""
+    source = lifecycle_source_payload(card_count=11)
+    source_index = CardCentricSourceIndex.model_validate(source["source_index"])
+    primary_id = next(
+        passage.passage_id for passage in source_index.passages if passage.authority == "slide"
+    )
+    ledger = _independent_ledger(10, mandatory=False)
+    terminals = (
+        GeneratedCardResolution(
+            card_id="G-fast-duplicate-1",
+            concept_id="C01",
+            fact_id="C01-M1",
+            text="{{c1::First duplicate fact}}",
+            source_passage_ids=(primary_id,),
+            evidence_ids=("E-fast-duplicate-1",),
+            status="duplicate_of_existing",
+            duplicate_of_existing_note_id=10,
+            reason="Semantic duplicate of existing fast note 10.",
+        ),
+        GeneratedCardResolution(
+            card_id="G-fast-duplicate-2",
+            concept_id="C01",
+            fact_id="C01-M2",
+            text="{{c1::Second duplicate fact}}",
+            source_passage_ids=(primary_id,),
+            evidence_ids=("E-fast-duplicate-2",),
+            status="duplicate_of_existing",
+            duplicate_of_existing_note_id=11,
+            reason="Semantic duplicate of existing fast note 11.",
+        ),
+    )
+    classifications = tuple(
+        CardClassification(
+            note_id=note_id,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="Independent grounded coverage.",
+            covered_concept_ids=(f"C{note_id + 1:02d}",),
+            supporting_passage_ids=(primary_id,),
+        )
+        for note_id in range(1, 10)
+    )
+    fast_classifications = (
+        FastCardClassification(
+            note_id=10,
+            verdict="LIKELY_YES",
+            grounded_concept_ids=("C01",),
+            supporting_passage_ids=(primary_id,),
+            reason="First exact fast target.",
+        ),
+        FastCardClassification(
+            note_id=11,
+            verdict="LIKELY_YES",
+            grounded_concept_ids=("C01",),
+            supporting_passage_ids=(primary_id,),
+            reason="Second exact fast target.",
+        ),
+    )
+    selection = select_high_yield_v2(
+        classifications,
+        fast_classifications=fast_classifications,
+        ledger=ledger,
+        source_index=source_index,
+        generated_cards=terminals,
+    )
+    snapshot = CardCentricReconciliationInput(
+        pipeline_contract_version="card_centric_v2",
+        concept_ids=tuple(concept.concept_id for concept in ledger.concepts),
+        coverage={concept.concept_id: "covered" for concept in ledger.concepts},
+        required_fact_ids=("C01-M1", "C01-M2"),
+        uncovered_after_s5=("C01",),
+        residual_ran_for=("C01",),
+        generated_cards=(),
+        raw_generated_cards=(),
+        canonical_generated_cards=(),
+        terminal_resolutions=(
+            GeneratedFactResolution(
+                fact_id="C01-M1",
+                kind=GeneratedResolutionKind.DUPLICATE_OF_EXISTING,
+                duplicate_of=DuplicateIdentity(existing_note_id=10),
+            ),
+            GeneratedFactResolution(
+                fact_id="C01-M2",
+                kind=GeneratedResolutionKind.DUPLICATE_OF_EXISTING,
+                duplicate_of=DuplicateIdentity(existing_note_id=11),
+            ),
+        ),
+        terminal_resolutions_provided=True,
+        canonical_unresolved_fact_ids=(),
+        unresolved_fact_ids=(),
+        expected_scoped_nids=tuple(range(1, 12)),
+        classifications=tuple(
+            AuditResolution(nid=note_id, verdict="keep") for note_id in range(1, 12)
+        ),
+        eligible_yes_nids=tuple(range(1, 12)),
+        selected_nids=selection.selected_existing_note_ids,
+        selected_generated_card_ids=(),
+        generated_card_ids=(),
+        source_passage_ids=tuple(passage.passage_id for passage in source_index.passages),
+        forbidden_cloze_targets=(),
+        prompt_sync_stale=False,
+        untagged_rate=0,
+        mandatory_nids=selection.mandatory_note_ids,
+        covered_concept_ids_by_nid={
+            **{
+                classification.note_id: classification.covered_concept_ids
+                for classification in classifications
+            },
+            **{
+                classification.note_id: classification.grounded_concept_ids
+                for classification in fast_classifications
+            },
+        },
+        selection_metadata=selection.selection_metadata,
+        selection_order=tuple(item.identity for item in selection.selection_metadata),
+        selected_count=len(selection.selected_existing_note_ids),
+        below_warning_floor=selection.below_warning_floor,
+    )
+
+    report = reconcile_card_centric(snapshot)
+
+    assert selection.selected_existing_note_ids == tuple(range(1, 12))
+    assert selection.mandatory_note_ids == (10, 11)
+    assert report.failed == ()
+    assert "duplicate_coverage" in report.passed
+
+
 def test_selection_never_pads_with_unclassified_s4a_fallback_expected_red_p3_h1() -> None:
     """P3 H-1: an unrecovered S4a exclusion cannot be selected merely below 60."""
 

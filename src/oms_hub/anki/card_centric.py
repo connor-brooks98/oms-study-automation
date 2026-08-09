@@ -625,6 +625,7 @@ class _QualitySelectionCandidate:
     coverage: frozenset[tuple[str, str]]
     priority: int
     mandatory: bool
+    duplicate_target: bool
     split: bool
     flag_count: int
 
@@ -724,6 +725,7 @@ def select_high_yield_v2(
                 coverage=frozenset({("fact", generated_row.fact_id)}),
                 priority=tier_priority,
                 mandatory=tier_priority == 0,
+                duplicate_target=False,
                 split=generated_row.split,
                 flag_count=0,
             )
@@ -769,6 +771,7 @@ def select_high_yield_v2(
                 evidence_quality=evidence_quality(classification.supporting_passage_ids),
                 coverage=coverage,
                 priority=tier_priority,
+                duplicate_target=classification.note_id in duplicate_target_note_ids,
                 # S8's terminal duplicate identity is a conservation contract:
                 # selecting an equivalent card is insufficient for S9 because
                 # the exact named existing target proves the duplicate outcome.
@@ -797,7 +800,11 @@ def select_high_yield_v2(
                 evidence_quality=EvidenceQuality.FAST_PASS,
                 coverage=coverage,
                 priority=covered_priority(fast_classification.grounded_concept_ids),
-                mandatory=False,
+                # S8 may name either a thorough or independently eligible fast
+                # classification.  Eligibility remains unchanged; once eligible,
+                # the exact target identity is conserved through S9.
+                mandatory=fast_classification.note_id in duplicate_target_note_ids,
+                duplicate_target=fast_classification.note_id in duplicate_target_note_ids,
                 split=False,
                 flag_count=len(fast_classification.flags),
             )
@@ -836,9 +843,13 @@ def select_high_yield_v2(
         )
     ]
     selectable = _without_dominated_candidates(selectable)
+    duplicate_target_identities = {
+        candidate.identity for candidate in selectable if candidate.duplicate_target
+    }
 
     selected: list[_QualitySelectionCandidate] = []
     selected_coverage: set[tuple[str, str]] = set()
+    selected_identities: set[str] = set()
     for tier in SelectionTier:
         tier_candidates = [candidate for candidate in selectable if candidate.tier is tier]
         while tier_candidates:
@@ -848,15 +859,30 @@ def select_high_yield_v2(
             )
             tier_candidates.remove(candidate)
             count = len(selected)
-            if tier is SelectionTier.T6 and count >= minimum:
+            remaining_duplicate_targets = len(duplicate_target_identities - selected_identities)
+            # Reserve capacity for S8's named targets before the soft cap.  This
+            # replaces ordinary ranked cards when possible instead of producing
+            # overflow merely because a lower tier is processed later.
+            if (
+                not candidate.mandatory
+                and count >= cap - remaining_duplicate_targets
+            ):
+                continue
+            if tier is SelectionTier.T6 and count >= minimum and not candidate.mandatory:
                 break
             marginal_reason = _marginal_reason(candidate, selected_coverage, concepts)
-            if count >= target and count < cap and marginal_reason is None:
+            if (
+                count >= target
+                and count < cap
+                and marginal_reason is None
+                and not candidate.mandatory
+            ):
                 continue
             if count >= cap:
                 if not candidate.mandatory:
                     continue
             selected.append(candidate)
+            selected_identities.add(candidate.identity)
             selected_coverage.update(candidate.coverage)
 
     metadata = tuple(
@@ -981,7 +1007,7 @@ def _without_dominated_candidates(
 ) -> list[_QualitySelectionCandidate]:
     kept: list[_QualitySelectionCandidate] = []
     for candidate in candidates:
-        if candidate.split:
+        if candidate.split or candidate.duplicate_target:
             kept.append(candidate)
             continue
         quality = _candidate_quality_key(candidate)
@@ -1007,6 +1033,11 @@ def _marginal_reason(
     selected_coverage: set[tuple[str, str]],
     concepts: dict[str, CardConcept],
 ) -> MarginalValueReason | None:
+    # The S8 terminal requires this exact selected identity for S9 duplicate
+    # conservation even if another card covers the same concept.  It is therefore
+    # a governed required-fact reason at positions 66-70.
+    if candidate.duplicate_target:
+        return MarginalValueReason.ONLY_VALID_REQUIRED_FACT
     if candidate.split:
         return MarginalValueReason.VALIDATED_NECESSARY_SPLIT
     uncovered = candidate.coverage - selected_coverage
