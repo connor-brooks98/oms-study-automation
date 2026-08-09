@@ -336,6 +336,53 @@ def test_blocking_stage_commits_report_and_fails_job(
     asyncio.run(scenario())
 
 
+def test_pending_overflow_reconciliation_reaches_review_without_envelope_authority(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+) -> None:
+    class PendingOverflowRunner(RecordingRunner):
+        async def run(self, context: StageContext) -> StageProduct:
+            self.calls.append(context.stage)
+            if context.stage is CurationStage.RECONCILIATION:
+                return StageProduct(
+                    kind="card_centric_reconciliation",
+                    payload={
+                        "can_render_envelope": False,
+                        "failed": [
+                            {
+                                "assertion_id": "selection_cap",
+                                "message": "Selection requires a signed acknowledgement",
+                            }
+                        ],
+                    },
+                )
+            return StageProduct(
+                kind=f"{context.stage.value}_result",
+                payload={"stage": context.stage.value},
+            )
+
+    async def scenario() -> None:
+        job = _claimed_card_job(repository)
+        pipeline = CurationPipeline(
+            repository,
+            StageArtifactStore(tmp_path / "artifacts"),
+            PendingOverflowRunner(),
+            input_validator=MutableInputValidator(),
+        )
+
+        while repository.require_job(job.id).state is not CurationState.READY_FOR_REVIEW:
+            result = await pipeline.run_stage(job.id)
+            assert result is not None
+
+        reconciled = repository.get_stage(job.id, CurationStage.RECONCILIATION)
+
+        assert reconciled is not None
+        assert reconciled.state == "complete"
+        assert repository.require_job(job.id).state is CurationState.READY_FOR_REVIEW
+
+    asyncio.run(scenario())
+
+
 def test_complete_pipeline_commits_one_immutable_artifact_per_stage(
     repository: AnkiCurationRepository,
     tmp_path: Path,

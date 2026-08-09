@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Sequence
@@ -34,12 +35,14 @@ from oms_hub.anki.domain import (
     PipelineContractVersion,
     ResolvedModelConfiguration,
     RetrievalPass,
+    ReviewChangeSet,
     SourceEvidence,
     SourceKind,
     SourceReference,
     StageArtifact,
 )
-from oms_hub.anki.models import AnkiCurationJobModel, AnkiReviewedReconciliationModel
+from oms_hub.anki.models import AnkiCurationJobModel
+from oms_hub.anki.pipeline import CurationPipeline, StageArtifactStore, StageContext, StageProduct
 from oms_hub.anki.reconciliation import (
     AuditResolution,
     CardCentricReconciliationInput,
@@ -493,6 +496,7 @@ def _ready_job(
     *,
     pipeline_contract_version: PipelineContractVersion = PipelineContractVersion.RETRIEVAL_V4,
     resolved_model_config: ResolvedModelConfiguration | None = None,
+    through_pipeline: bool = False,
 ) -> UUID:
     repository: AnkiCurationRepository = app.state.anki_repository
     job = repository.create_job(
@@ -581,15 +585,41 @@ def _ready_job(
             ),
         ),
     )
-    with app.state.database.session() as session:
-        stored = session.get(AnkiCurationJobModel, str(job.id))
-        assert stored is not None
-        stored.state = CurationState.READY_FOR_REVIEW.value
+    if through_pipeline:
+        class ReadyRunner:
+            async def run(self, context: StageContext) -> StageProduct:
+                return StageProduct(
+                    kind=f"{context.stage.value}_result",
+                    payload={"stage": context.stage.value},
+                )
+
+        repository.transition(job.id, CurationState.QUEUED, CurationState.PREFLIGHT)
+        artifacts = StageArtifactStore(
+            Path(app.state.database.engine.url.database).parent / "pipeline-artifacts"
+        )
+        pipeline = CurationPipeline(repository, artifacts, ReadyRunner())
+
+        async def advance() -> None:
+            while repository.require_job(job.id).state is not CurationState.READY_FOR_REVIEW:
+                result = await pipeline.run_stage(job.id)
+                assert result is not None
+
+        asyncio.run(advance())
+    else:
+        with app.state.database.session() as session:
+            stored = session.get(AnkiCurationJobModel, str(job.id))
+            assert stored is not None
+            stored.state = CurationState.READY_FOR_REVIEW.value
     return job.id
 
 
-def test_v2_mixed_overflow_envelope_accepts_database_order_not_frozen_order(
+@pytest.mark.parametrize(
+    "version",
+    (PipelineContractVersion.CARD_CENTRIC_V1, PipelineContractVersion.CARD_CENTRIC_V2),
+)
+def test_mixed_overflow_lifecycle_accepts_database_order_not_frozen_order(
     prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+    version: PipelineContractVersion,
 ) -> None:
     client, app, lecture_id, revision_id, gateway = prepared_app
     repository: AnkiCurationRepository = app.state.anki_repository
@@ -597,10 +627,13 @@ def test_v2_mixed_overflow_envelope_accepts_database_order_not_frozen_order(
         app,
         lecture_id,
         revision_id,
-        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
-        resolved_model_config=ResolvedModelConfiguration.card_centric_v2_default(
-            "anthropic", "claude-sonnet-5"
+        pipeline_contract_version=version,
+        resolved_model_config=(
+            ResolvedModelConfiguration.card_centric_v2_default("anthropic", "claude-sonnet-5")
+            if version is PipelineContractVersion.CARD_CENTRIC_V2
+            else None
         ),
+        through_pipeline=True,
     )
     frozen_existing = (2, 1, *range(3, 71))
     database_existing = tuple(range(1, 71))
@@ -667,7 +700,7 @@ def test_v2_mixed_overflow_envelope_accepts_database_order_not_frozen_order(
         for position, identity in enumerate(identities, start=1)
     )
     snapshot = CardCentricReconciliationInput(
-        pipeline_contract_version="card_centric_v2",
+        pipeline_contract_version=version.value,
         concept_ids=("C01",),
         coverage={"C01": "covered"},
         required_fact_ids=("C01-M1",),
@@ -683,7 +716,7 @@ def test_v2_mixed_overflow_envelope_accepts_database_order_not_frozen_order(
                 generated_card_ids=("G1",),
             ),
         ),
-        terminal_resolutions_provided=True,
+        terminal_resolutions_provided=version is PipelineContractVersion.CARD_CENTRIC_V2,
         unresolved_fact_ids=(),
         expected_scoped_nids=frozen_existing,
         classifications=tuple(
@@ -697,37 +730,43 @@ def test_v2_mixed_overflow_envelope_accepts_database_order_not_frozen_order(
         forbidden_cloze_targets=(),
         prompt_sync_stale=False,
         untagged_rate=0,
-        mandatory_generated_card_ids=("G1",),
+        mandatory_nids=(
+            () if version is PipelineContractVersion.CARD_CENTRIC_V2 else frozen_existing
+        ),
+        mandatory_generated_card_ids=(
+            ("G1",) if version is PipelineContractVersion.CARD_CENTRIC_V2 else ()
+        ),
         covered_concept_ids_by_nid={note_id: ("C01",) for note_id in frozen_existing},
         generated_concept_id_by_card_id={"G1": "C01"},
-        selection_metadata=metadata,
-        selection_order=tuple(item.identity for item in metadata),
-        selected_count=71,
-        below_warning_floor=False,
+        selection_metadata=metadata if version is PipelineContractVersion.CARD_CENTRIC_V2 else (),
+        selection_order=(
+            tuple(item.identity for item in metadata)
+            if version is PipelineContractVersion.CARD_CENTRIC_V2
+            else ()
+        ),
+        selected_count=71 if version is PipelineContractVersion.CARD_CENTRIC_V2 else None,
+        below_warning_floor=False if version is PipelineContractVersion.CARD_CENTRIC_V2 else None,
     )
     with app.state.database.session() as session:
         stored = session.get(AnkiCurationJobModel, str(job_id))
         assert stored is not None
-        stored.gap_prompt_version = "card-centric-gap-v2"
-        session.add(
-            AnkiReviewedReconciliationModel(
-                job_id=str(job_id),
-                review_revision=0,
-                payload_json=json.dumps(
-                    {
-                        "contract_version": "card_centric_s9_v1",
-                        "snapshot": snapshot.model_dump(mode="json"),
-                        "selection": {
-                            "selected_existing_note_ids": list(frozen_existing),
-                            "selected_generated_card_ids": ["G1"],
-                            "mandatory_note_ids": [],
-                            "mandatory_generated_card_ids": ["G1"],
-                            "cap": 70,
-                        },
-                    }
-                ),
-            )
+        stored.gap_prompt_version = (
+            "card-centric-gap-v2"
+            if version is PipelineContractVersion.CARD_CENTRIC_V2
+            else "gap-v1"
         )
+    saved = repository.save_review(
+        job_id,
+        ReviewChangeSet(
+            expected_revision=0,
+            candidate_selections={note_id: True for note_id in database_existing},
+        ),
+        card_centric_snapshot=snapshot.model_dump(mode="json"),
+    )
+    assert saved.revision == 1
+    reviewed_before_ack = repository.reviewed_reconciliation(job_id, saved.revision)
+    assert reviewed_before_ack is not None
+    assert reviewed_before_ack["can_render_envelope"] is False
     repository.record_agent_heartbeat(
         agent_id="anki-agent",
         heartbeat_at="2026-08-05T18:00:00+00:00",
@@ -736,10 +775,16 @@ def test_v2_mixed_overflow_envelope_accepts_database_order_not_frozen_order(
         health={"status": "ok"},
     )
 
+    unsigned = client.post(
+        f"/api/anki/jobs/{job_id}/envelope",
+        json={"review_revision": saved.revision},
+    )
+    assert unsigned.status_code == 409
+
     tampered = client.post(
         f"/api/anki/jobs/{job_id}/overflow-acknowledgement",
         json={
-            "review_revision": 0,
+            "review_revision": saved.revision,
             "selected_existing_note_ids": [*database_existing[:-1], 999],
             "selected_generated_card_ids": ["G1"],
         },
@@ -749,16 +794,17 @@ def test_v2_mixed_overflow_envelope_accepts_database_order_not_frozen_order(
     issued = client.post(
         f"/api/anki/jobs/{job_id}/overflow-acknowledgement",
         json={
-            "review_revision": 0,
+            "review_revision": saved.revision,
             "selected_existing_note_ids": list(database_existing),
             "selected_generated_card_ids": ["G1"],
         },
     )
     assert issued.status_code == 200
     document = issued.json()
+    assert repository.reviewed_reconciliation(job_id, saved.revision)["can_render_envelope"] is True
     built = client.post(
         f"/api/anki/jobs/{job_id}/envelope",
-        json={"review_revision": 0, "overflow_acknowledgement": document},
+        json={"review_revision": saved.revision, "overflow_acknowledgement": document},
     )
 
     assert built.status_code == 201

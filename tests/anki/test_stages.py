@@ -54,7 +54,14 @@ from oms_hub.anki.normalize import NormalizedNote
 from oms_hub.anki.pipeline import PinnedInputChanged
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
 from oms_hub.anki.prompts import AnkiPromptLibrary, StaticPromptSynchronizer
-from oms_hub.anki.reconciliation import AssertionFinding, ReconciliationReport
+from oms_hub.anki.reconciliation import (
+    AssertionFinding,
+    AuditResolution,
+    CardCentricReconciliationInput,
+    GeneratedResolution,
+    ReconciliationReport,
+    reconcile_card_centric,
+)
 from oms_hub.anki.semantic.domain import FloatMatrix, InputType, SemanticHit
 from oms_hub.anki.semantic.voyage import VoyageEmbeddingError
 from oms_hub.anki.sources import SourcePassage
@@ -3006,3 +3013,135 @@ def test_card_reconciliation_error_includes_every_failed_finding() -> None:
         "or generated output"
     )
     assert stages_module._card_reconciliation_error(passed) is None
+
+
+@pytest.mark.parametrize("version", ("card_centric_v1", "card_centric_v2"))
+def test_card_reconciliation_pending_mandatory_overflow_is_reviewable(version: str) -> None:
+    selected = tuple(range(1, 71))
+    generated = GeneratedResolution(
+        card_id="G1",
+        fact_id="C01-M1",
+        text="The supported finding is {{c1::present}}.",
+    )
+    identities = [*(f"existing:{note_id}" for note_id in selected), "generated:G1"]
+    metadata = tuple(
+        SelectionMetadata(
+            identity=identity,
+            selected_position=position,
+            tier=SelectionTier.T1,
+            evidence_quality=EvidenceQuality.PRIMARY_SOURCE,
+            mandatory=position == 71,
+            marginal_value_reason=(
+                MarginalValueReason.ONLY_VALID_REQUIRED_FACT if 66 <= position <= 70 else None
+            ),
+            overflow_reason="required fixture coverage" if position == 71 else None,
+            manual_acknowledgement_required=position == 71,
+        )
+        for position, identity in enumerate(identities, start=1)
+    )
+    snapshot = CardCentricReconciliationInput(
+        pipeline_contract_version=version,
+        concept_ids=("C01",),
+        coverage={"C01": "covered"},
+        required_fact_ids=("C01-M1",),
+        uncovered_after_s5=(),
+        residual_ran_for=(),
+        generated_cards=(generated,),
+        raw_generated_cards=(generated,),
+        canonical_generated_cards=(generated,),
+        terminal_resolutions=(
+            GeneratedFactResolution(
+                fact_id="C01-M1",
+                kind="generated",
+                generated_card_ids=("G1",),
+            ),
+        ),
+        terminal_resolutions_provided=version == "card_centric_v2",
+        unresolved_fact_ids=(),
+        expected_scoped_nids=selected,
+        classifications=tuple(AuditResolution(nid=note_id, verdict="keep") for note_id in selected),
+        eligible_yes_nids=selected,
+        selected_nids=selected,
+        selected_generated_card_ids=("G1",),
+        generated_card_ids=("G1",),
+        source_passage_ids=(),
+        forbidden_cloze_targets=(),
+        prompt_sync_stale=False,
+        untagged_rate=0,
+        mandatory_nids=selected if version == "card_centric_v1" else (),
+        mandatory_generated_card_ids=("G1",) if version == "card_centric_v2" else (),
+        covered_concept_ids_by_nid={note_id: ("C01",) for note_id in selected},
+        generated_concept_id_by_card_id={"G1": "C01"},
+        selection_metadata=metadata if version == "card_centric_v2" else (),
+        selection_order=tuple(item.identity for item in metadata)
+        if version == "card_centric_v2"
+        else (),
+        selected_count=71 if version == "card_centric_v2" else None,
+        below_warning_floor=False if version == "card_centric_v2" else None,
+    )
+
+    report = reconcile_card_centric(snapshot)
+
+    assert report.can_render_envelope is False
+    assert {finding.assertion_id for finding in report.failed} == {"selection_cap"}
+    assert stages_module._card_reconciliation_error(report, snapshot) is None
+
+
+def test_card_reconciliation_nonmandatory_or_other_failure_overflow_stays_blocking() -> None:
+    selected = tuple(range(1, 72))
+    metadata = tuple(
+        SelectionMetadata(
+            identity=f"existing:{note_id}",
+            selected_position=note_id,
+            tier=SelectionTier.T1,
+            evidence_quality=EvidenceQuality.PRIMARY_SOURCE,
+            mandatory=note_id == 71,
+            marginal_value_reason=(
+                MarginalValueReason.ONLY_VALID_REQUIRED_FACT if 66 <= note_id <= 70 else None
+            ),
+            overflow_reason="required fixture coverage" if note_id == 71 else None,
+            manual_acknowledgement_required=note_id == 71,
+        )
+        for note_id in selected
+    )
+    snapshot = CardCentricReconciliationInput(
+        pipeline_contract_version="card_centric_v2",
+        concept_ids=("C01",),
+        coverage={"C01": "covered"},
+        required_fact_ids=(),
+        uncovered_after_s5=(),
+        residual_ran_for=(),
+        generated_cards=(),
+        terminal_resolutions=(),
+        terminal_resolutions_provided=True,
+        unresolved_fact_ids=(),
+        expected_scoped_nids=selected,
+        classifications=tuple(AuditResolution(nid=note_id, verdict="keep") for note_id in selected),
+        eligible_yes_nids=selected,
+        selected_nids=selected,
+        selected_generated_card_ids=(),
+        generated_card_ids=(),
+        source_passage_ids=(),
+        forbidden_cloze_targets=(),
+        prompt_sync_stale=False,
+        untagged_rate=0,
+        mandatory_nids=(71,),
+        covered_concept_ids_by_nid={note_id: ("C01",) for note_id in selected},
+        selection_metadata=metadata,
+        selection_order=tuple(item.identity for item in metadata),
+        selected_count=71,
+        below_warning_floor=False,
+    )
+    nonmandatory = snapshot.model_copy(
+        update={
+            "selection_metadata": (
+                *metadata[:-1],
+                metadata[-1].model_copy(update={"mandatory": False}),
+            )
+        }
+    )
+    other_failure = snapshot.model_copy(update={"eligible_yes_nids": selected[:-1]})
+
+    for candidate in (nonmandatory, other_failure):
+        report = reconcile_card_centric(candidate)
+        assert stages_module._card_reconciliation_error(report, candidate) is not None

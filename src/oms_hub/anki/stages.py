@@ -49,6 +49,7 @@ from oms_hub.anki.convergence import (
     update_growth,
 )
 from oms_hub.anki.correction_contracts import (
+    WARNING_FLOOR,
     DuplicateIdentity,
     FactForbiddenClozeMap,
     FactForbiddenClozeTargets,
@@ -2950,7 +2951,7 @@ class CurationServicesRunner:
                     semantic_dedupe_reviews,
                 ),
             },
-            blocking_error=_card_reconciliation_error(report),
+            blocking_error=_card_reconciliation_error(report, snapshot),
         )
 
     async def _reconciliation(
@@ -4736,11 +4737,62 @@ def _reconciliation_metrics(
     }
 
 
-def _card_reconciliation_error(report: ReconciliationReport) -> str | None:
+def _card_reconciliation_error(
+    report: ReconciliationReport,
+    snapshot: CardCentricReconciliationInput | None = None,
+) -> str | None:
     if report.can_render_envelope:
+        return None
+    if snapshot is not None and _reviewable_pending_overflow(report, snapshot):
         return None
     findings = " | ".join(f"{finding.assertion_id}: {finding.message}" for finding in report.failed)
     return "Card-centric reconciliation failed: " + findings
+
+
+def _reviewable_pending_overflow(
+    report: ReconciliationReport,
+    snapshot: CardCentricReconciliationInput,
+) -> bool:
+    """Allow review to obtain a required signature, never permit issuance early."""
+    total = len(snapshot.selected_nids) + len(snapshot.selected_generated_card_ids)
+    if (
+        total <= snapshot.cap
+        or snapshot.overflow_acknowledgement is not None
+        or {finding.assertion_id for finding in report.failed} != {"selection_cap"}
+        or not {
+            "selection_mandatory",
+            "selection_conservation",
+            "selection_metadata",
+        } <= set(report.passed)
+    ):
+        return False
+    if snapshot.pipeline_contract_version == "card_centric_v1":
+        return set(snapshot.selected_nids) == set(snapshot.mandatory_nids)
+    if snapshot.pipeline_contract_version != "card_centric_v2":  # pragma: no cover - model bound
+        return False
+    metadata = tuple(sorted(snapshot.selection_metadata, key=lambda item: item.selected_position))
+    expected_identities = {
+        *(f"existing:{note_id}" for note_id in snapshot.selected_nids),
+        *(f"generated:{card_id}" for card_id in snapshot.selected_generated_card_ids),
+    }
+    overflow = tuple(item for item in metadata if item.selected_position > snapshot.cap)
+    return (
+        len(metadata) == total
+        and len(expected_identities) == total
+        and {item.identity for item in metadata} == expected_identities
+        and [item.selected_position for item in metadata] == list(range(1, total + 1))
+        and tuple(item.identity for item in metadata) == snapshot.selection_order
+        and snapshot.selected_count == total
+        and snapshot.below_warning_floor == (total < WARNING_FLOOR)
+        and len(overflow) == total - snapshot.cap
+        and all(
+            item.mandatory
+            and item.overflow_reason is not None
+            and bool(item.overflow_reason.strip())
+            and item.manual_acknowledgement_required
+            for item in overflow
+        )
+    )
 
 
 def _proposal_payload(proposal: GapCardProposal) -> dict[str, Any]:
