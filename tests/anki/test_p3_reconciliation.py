@@ -363,6 +363,36 @@ def test_s9_unsigned_and_signed_mandatory_overflow_have_distinct_issuance_result
     assert signed.can_render_envelope is True
 
 
+def test_s9_v1_signed_mixed_overflow_binds_selected_generated_gap_card() -> None:
+    selected = tuple(range(1, 72))
+    generated = _generated("G1", "C01-M1")
+    base = _snapshot(
+        required=("C01-M1",),
+        raw=(generated,),
+        canonical=(generated,),
+        terminal=(
+            GeneratedFactResolution(
+                fact_id="C01-M1",
+                kind=GeneratedResolutionKind.GENERATED,
+                generated_card_ids=("G1",),
+            ),
+        ),
+        selected_nids=selected,
+        selected_generated=("G1",),
+        mandatory_nids=selected,
+    ).model_copy(update={"pipeline_contract_version": "card_centric_v1"})
+
+    unsigned = reconcile_card_centric(base)
+    signed = reconcile_card_centric(
+        base.model_copy(update={"overflow_acknowledgement": {"token": "server-issued"}})
+    )
+
+    assert "selection_cap" in {finding.assertion_id for finding in unsigned.failed}
+    assert unsigned.can_render_envelope is False
+    assert "selection_cap" in signed.passed
+    assert signed.can_render_envelope is True
+
+
 def test_s9_semantic_review_is_nonterminal_and_blocks_issuance() -> None:
     card = _generated("G1", "C01-M1")
     report = reconcile_card_centric(
