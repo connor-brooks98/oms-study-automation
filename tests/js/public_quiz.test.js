@@ -410,6 +410,53 @@ test("Question Information remains open through same-question interactions", asy
   assert.equal(app.querySelector("[data-question-information]").open, false, "submission preserves a closed disclosure state");
 });
 
+test("Question Information stays open after submission and navigation by stable question ID", async () => {
+  const { documentRef, app } = buildQuizApp();
+  const fetchImpl = async (url) => ({
+    ok: true,
+    async json() {
+      if (url === "/mock/answer") {
+        return { correct: true, correct_choice_id: "c1", rationale: "Because." };
+      }
+      return {
+        token: "tok",
+        version: 1,
+        questions: [
+          {
+            id: "q1",
+            stem: "First question?",
+            area: "First area",
+            choices: [{ id: "c1", text: "One" }],
+          },
+          {
+            id: "q2",
+            stem: "Second question?",
+            area: "Second area",
+            choices: [{ id: "c1", text: "Two" }],
+          },
+        ],
+      };
+    },
+  });
+
+  await quiz.initialize(documentRef, fetchImpl);
+  let information = app.querySelector("[data-question-information]");
+  information.open = true;
+  information._listeners.toggle[0]();
+  app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
+  await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
+  information = app.querySelector("[data-question-information]");
+  assert.equal(information.dataset.questionInformation, "q1");
+  assert.equal(information.open, true, "submission preserves an open disclosure");
+
+  app.querySelector('[data-focus-key="forward"]')._listeners.click[0]();
+  assert.equal(app.querySelector("[data-question-information]").dataset.questionInformation, "q2");
+  app.querySelector('[data-focus-key="back"]')._listeners.click[0]();
+  information = app.querySelector("[data-question-information]");
+  assert.equal(information.dataset.questionInformation, "q1");
+  assert.equal(information.open, true, "returning to the stable question ID restores its disclosure state");
+});
+
 test("safe storage falls back to memory when getter, reads, or writes are denied", async () => {
   const getterDenied = {};
   Object.defineProperty(getterDenied, "localStorage", { get() { throw new Error("denied"); } });

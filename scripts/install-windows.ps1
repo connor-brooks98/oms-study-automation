@@ -161,11 +161,10 @@ function Get-ConflictingHubProcesses {
     $Process = $Pending.Dequeue()
     $ProcessId = [int]$Process.ProcessId
     if (-not $Seen.Add($ProcessId)) { continue }
-    # The console launcher starts the actual app as a Python child. Traverse
-    # only this positively identified same-root tree and select Hub/Python nodes.
-    if ([string]$Process.Name -ieq "oms-hub.exe" -or [string]$Process.Name -ieq "python.exe") {
-      $Selected.Add($Process)
-    }
+    # The same-root launcher positively identifies the process tree. Every
+    # descendant belongs to that tree and must stop before editable install,
+    # including helpers whose executable name is neither Hub nor Python.
+    $Selected.Add($Process)
     $ChildKey = [string]$ProcessId
     if ($ChildrenByParent.ContainsKey($ChildKey)) {
       foreach ($Child in $ChildrenByParent[$ChildKey]) {

@@ -23,7 +23,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 19
+LATEST_SCHEMA_VERSION = 20
 
 
 def _ensure_column(
@@ -274,6 +274,39 @@ def _upgrade_studio_durability_v19(database: "Database") -> None:
     )
 
 
+def _upgrade_transcript_cleaning_reservation_v20(database: "Database") -> None:
+    """Fence one paid first-transcript cleaning owner per lecture."""
+    if database.engine.dialect.name != "sqlite":
+        return
+    if not inspect(database.engine).has_table("study_revisions"):
+        return
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_study_revisions_transcript_cleaning_lecture "
+                "ON study_revisions(lecture_id) "
+                "WHERE kind='transcripts' AND state='cleaning'"
+            )
+        )
+
+
+def _upgrade_studio_source_operation_claims_v20(database: "Database") -> None:
+    """Add recoverable compare-and-swap leases for external source mutations."""
+    _ensure_column(
+        database,
+        "studio_source_operations",
+        "lease_owner",
+        "VARCHAR(100)",
+    )
+    _ensure_column(
+        database,
+        "studio_source_operations",
+        "lease_expires_at",
+        "VARCHAR(40)",
+    )
+
+
 def _upgrade_quiz_import_v15(database: "Database") -> None:
     """Add durable direct-import provenance without disturbing older workflows."""
     source_columns = {
@@ -487,6 +520,8 @@ def migrate_database(database: "Database") -> None:
     _upgrade_runtime_settings_v17(database)
     _upgrade_published_quiz_display_order_v18(database)
     _upgrade_studio_durability_v19(database)
+    _upgrade_transcript_cleaning_reservation_v20(database)
+    _upgrade_studio_source_operation_claims_v20(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

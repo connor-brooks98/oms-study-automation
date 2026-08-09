@@ -42,6 +42,19 @@ class _Worker:
         return False
 
 
+class _Maintenance:
+    def __init__(self, *outcomes: int | Exception) -> None:
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def __call__(self) -> int:
+        outcome = self.outcomes[min(self.calls, len(self.outcomes) - 1)]
+        self.calls += 1
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
 class _BlockingWorker(_Worker):
     def __init__(self) -> None:
         super().__init__()
@@ -94,6 +107,62 @@ def test_supervisor_owns_one_worker_of_each_kind_and_reports_metadata() -> None:
     assert all(item["thread_id"] is not None for item in snapshot.values())
     assert all(item["start_count"] == 1 for item in snapshot.values())
     assert all(worker.recoveries == 1 for worker in workers.values())
+
+
+def test_ingestion_maintenance_runs_at_startup_and_reports_cleanup() -> None:
+    names = ("ingestion_worker", "generation_worker", "studio_worker")
+    workers = {name: _Worker() for name in names}
+    cleanup = _Maintenance(4)
+    supervisor = WorkerSupervisor(
+        workers,
+        maintenance_tasks={"ingestion_worker": cleanup},
+    )
+
+    supervisor.start()
+    snapshot = supervisor.snapshot()["ingestion_worker"]
+    supervisor.stop()
+
+    assert cleanup.calls == 1
+    assert snapshot["maintenance_runs"] == 1
+    assert snapshot["maintenance_removed"] == 4
+    assert snapshot["maintenance_error"] is None
+
+
+def test_ingestion_maintenance_repeats_after_interval() -> None:
+    clock = _Clock()
+    cleanup = _Maintenance(1, 2)
+    supervisor = _supervisor_with_real_state(clock)
+    state = supervisor._workers["ingestion_worker"]
+    state.maintenance = cleanup
+    supervisor._maintenance_interval_seconds = 10
+
+    assert supervisor._run_cycle(state) is True
+    clock.advance(9)
+    assert supervisor._run_cycle(state) is False
+    clock.advance(1)
+    assert supervisor._run_cycle(state) is True
+
+    assert cleanup.calls == 2
+    assert state.maintenance_runs == 2
+    assert state.maintenance_removed == 2
+
+
+def test_ingestion_maintenance_failure_is_visible_to_readiness() -> None:
+    clock = _Clock()
+    cleanup = _Maintenance(RuntimeError("cleanup"), 0)
+    supervisor = _supervisor_with_real_state(clock)
+    state = supervisor._workers["ingestion_worker"]
+    state.maintenance = cleanup
+    supervisor._maintenance_interval_seconds = 10
+
+    assert supervisor._run_cycle(state) is False
+    assert supervisor.ready() == (False, "worker_maintenance_error")
+    assert state.maintenance_error == "RuntimeError"
+
+    clock.advance(10)
+    assert supervisor._run_cycle(state) is False
+    assert state.maintenance_error is None
+    assert supervisor.ready() == (True, None)
 
 
 def test_active_long_running_work_does_not_become_stale() -> None:
@@ -409,12 +478,17 @@ def test_public_trailing_slash_bypasses_access_and_docs_are_disabled_under_csp(t
     ) as client:
         quiz_response = client.get("/public/quizzes/")
         practice_response = client.get("/public/practice-questions/")
-    local = TestClient(app).get("/docs")
+    with TestClient(app) as local_client:
+        documentation_responses = {
+            path: local_client.get(path)
+            for path in ("/docs", "/redoc", "/openapi.json")
+        }
 
     assert quiz_response.status_code == 307
     assert practice_response.status_code == 307
-    assert local.status_code == 404
-    assert "script-src 'self'" in local.headers["content-security-policy"]
+    for response in documentation_responses.values():
+        assert response.status_code == 404
+        assert "script-src 'self'" in response.headers["content-security-policy"]
 
 
 def test_limiter_rejects_before_public_repository_or_hashing_work(tmp_path) -> None:
@@ -438,7 +512,7 @@ def test_public_client_identity_rejects_forwarded_chains() -> None:
     assert public_client_identifier("203.0.113.9, 198.51.100.2", "127.0.0.1") == "127.0.0.1"
 
 
-def test_application_logging_is_bounded_and_not_duplicated(tmp_path) -> None:
+def test_application_logging_is_bounded_and_not_duplicated(tmp_path, caplog) -> None:
     first = create_app(_settings(tmp_path))
     second = create_app(_settings(tmp_path))
     handlers = [
@@ -455,3 +529,6 @@ def test_application_logging_is_bounded_and_not_duplicated(tmp_path) -> None:
     ]
     file_handler = next(handler for handler in handlers if handler.get_name() == "oms-hub-file")
     assert file_handler.maxBytes > 0 and file_handler.backupCount > 0
+    with caplog.at_level(__import__("logging").ERROR, logger="oms_hub.test_observer"):
+        __import__("logging").getLogger("oms_hub.test_observer").error("observer sentinel")
+    assert "observer sentinel" in caplog.messages

@@ -28,7 +28,10 @@ from oms_hub.study_generation.studio_domain import (
     StudioSourceOperation,
     StudioSourceType,
 )
-from oms_hub.study_generation.studio_repository import StudioRepository
+from oms_hub.study_generation.studio_repository import (
+    NotebookMutationBusy,
+    StudioRepository,
+)
 
 if TYPE_CHECKING:
     from oms_hub.study_generation.quiz_import_worker import QuizImportWorker
@@ -268,6 +271,8 @@ class StudioWorker:
                 converted=converted,
                 payload_path=path,
             )
+        except NotebookMutationBusy:
+            self.repository.defer_attach_for_notebook(operation.id)
         except NotebookGatewayError as error:
             if isinstance(error, NotebookAuthenticationError):
                 self.connection.invalidate(str(error))

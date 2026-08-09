@@ -49,15 +49,6 @@ class CountingCleaner:
 def _prepared(tmp_path: Path) -> tuple[Database, IngestionRepository, int]:
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
     database.migrate()
-    with database.engine.begin() as connection:
-        connection.execute(
-            text(
-                "CREATE UNIQUE INDEX "
-                "uq_study_revisions_transcript_cleaning_lecture "
-                "ON study_revisions(lecture_id) "
-                "WHERE kind='transcripts' AND state='cleaning'"
-            )
-        )
     lecture_id = CatalogRepository(database).upsert_lecture(
         LectureInput("Cardiology", 1, 7, "Heart Failure", "Dr Test", None)
     )

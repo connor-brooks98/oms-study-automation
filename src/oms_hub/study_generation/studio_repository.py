@@ -61,6 +61,10 @@ from oms_hub.study_generation.studio_domain import (
 _ACTIVE_LABEL_INDEX = "ix_studio_runs_active_label"
 
 
+class NotebookMutationBusy(RuntimeError):
+    """A different durable operation currently owns this remote notebook."""
+
+
 def _is_active_label_conflict(error: IntegrityError) -> bool:
     """Return True only when ``error`` is the active-label uniqueness index.
 
@@ -82,9 +86,22 @@ def _is_active_label_conflict(error: IntegrityError) -> bool:
     )
 
 
+def _is_active_notebook_conflict(error: IntegrityError) -> bool:
+    message = str(error.orig)
+    return (
+        "ix_studio_source_operations_notebook_active" in message
+        or (
+            "UNIQUE constraint failed" in message
+            and "studio_source_operations.notebook_id" in message
+        )
+    )
+
+
 class StudioRepository:
     def __init__(self, database: Database):
         self.database = database
+        self._operation_owner = str(uuid4())
+        self._operation_lease = timedelta(minutes=30)
 
     def create_source(
         self,
@@ -285,6 +302,11 @@ class StudioRepository:
                         {"queued", "reconciling", "deleting"}
                     ),
                     or_(
+                        StudioSourceOperationModel.lease_owner.is_(None),
+                        StudioSourceOperationModel.lease_expires_at.is_(None),
+                        StudioSourceOperationModel.lease_expires_at <= now.isoformat(),
+                    ),
+                    or_(
                         StudioSourceModel.next_attempt_at.is_(None),
                         StudioSourceModel.next_attempt_at <= now.isoformat(),
                     ),
@@ -294,10 +316,33 @@ class StudioRepository:
             )
             if operation is None:
                 return None
+            claimed_state = operation.state
+            result = session.execute(
+                update(StudioSourceOperationModel)
+                .where(
+                    StudioSourceOperationModel.id == operation.id,
+                    StudioSourceOperationModel.state == claimed_state,
+                    or_(
+                        StudioSourceOperationModel.lease_owner.is_(None),
+                        StudioSourceOperationModel.lease_expires_at.is_(None),
+                        StudioSourceOperationModel.lease_expires_at <= now.isoformat(),
+                    ),
+                )
+                .values(
+                    lease_owner=self._operation_owner,
+                    lease_expires_at=(now + self._operation_lease).isoformat(),
+                    attempts=StudioSourceOperationModel.attempts + 1,
+                )
+            )
+            if cast(CursorResult[Any], result).rowcount != 1:
+                return None
+            session.refresh(operation)
             source = session.get(StudioSourceModel, operation.source_id)
             if source is None:
                 operation.state = "failed"
                 operation.error = "Studio source was removed before operation execution"
+                operation.lease_owner = None
+                operation.lease_expires_at = None
                 return None
             if operation.operation_kind == "delete":
                 operation.state = "deleting"
@@ -305,7 +350,6 @@ class StudioRepository:
             elif operation.state == "queued":
                 # Baseline acquisition follows; no remote add can happen while queued.
                 source.state = StudioSourceState.ATTACHING.value
-            operation.attempts += 1
             source.next_attempt_at = None
             session.flush()
             return self._operation_domain(operation), self._domain(source)
@@ -313,14 +357,50 @@ class StudioRepository:
     def record_attach_baseline(
         self, operation_id: str, notebook_id: str, baseline_remote_ids: set[str]
     ) -> None:
+        try:
+            with self.database.session() as session:
+                operation = session.get(StudioSourceOperationModel, operation_id)
+                if operation is None or operation.operation_kind != "add":
+                    raise KeyError(operation_id)
+                if operation.lease_owner != self._operation_owner:
+                    raise ValueError("durable source operation lease was lost")
+                operation.notebook_id = notebook_id
+                operation.baseline_remote_ids_json = json.dumps(
+                    sorted(baseline_remote_ids)
+                )
+                operation.state = "executing"
+                operation.error = None
+                operation.lease_owner = None
+                operation.lease_expires_at = None
+                session.flush()
+        except IntegrityError as error:
+            if _is_active_notebook_conflict(error):
+                raise NotebookMutationBusy(
+                    "Notebook already has a pending source mutation"
+                ) from error
+            raise
+
+    def defer_attach_for_notebook(self, operation_id: str) -> None:
+        """Release a pre-effect claim without consuming a remote attempt."""
         with self.database.session() as session:
             operation = session.get(StudioSourceOperationModel, operation_id)
             if operation is None or operation.operation_kind != "add":
                 raise KeyError(operation_id)
-            operation.notebook_id = notebook_id
-            operation.baseline_remote_ids_json = json.dumps(sorted(baseline_remote_ids))
-            operation.state = "executing"
+            source = session.get(StudioSourceModel, operation.source_id)
+            if source is None:
+                raise KeyError(operation.source_id)
+            operation.state = "queued"
+            operation.notebook_id = None
+            operation.baseline_remote_ids_json = "[]"
+            operation.attempts = max(0, operation.attempts - 1)
+            operation.lease_owner = None
+            operation.lease_expires_at = None
             operation.error = None
+            source.state = StudioSourceState.ATTACHING.value
+            source.next_attempt_at = (
+                datetime.now(UTC) + timedelta(seconds=5)
+            ).isoformat()
+            source.error = None
 
     def mark_attach_reconciling(
         self,
@@ -338,6 +418,8 @@ class StudioRepository:
             operation.state = "reconciling"
             operation.diagnostic_source = diagnostic_source
             operation.error = error[:1000]
+            operation.lease_owner = None
+            operation.lease_expires_at = None
             source = session.get(StudioSourceModel, operation.source_id)
             if source is None:
                 raise KeyError(operation.source_id)
@@ -372,6 +454,8 @@ class StudioRepository:
                 raise KeyError(operation.source_id)
             operation.diagnostic_source = diagnostic_source
             operation.error = error[:1000]
+            operation.lease_owner = None
+            operation.lease_expires_at = None
             source.diagnostic_source = diagnostic_source
             source.error = error[:1000]
             if retry and operation.attempts < 3:
@@ -404,6 +488,8 @@ class StudioRepository:
             operation.remote_source_id = remote_source_id
             operation.state = "completed"
             operation.error = None
+            operation.lease_owner = None
+            operation.lease_expires_at = None
             session.flush()
             return self._domain(source)
 
@@ -417,6 +503,8 @@ class StudioRepository:
                 raise KeyError(operation.source_id)
             baseline = set(json.loads(operation.baseline_remote_ids_json))
             delta = remote_ids - baseline
+            operation.lease_owner = None
+            operation.lease_expires_at = None
             if len(delta) == 1:
                 remote_id = next(iter(delta))
                 source.state = StudioSourceState.ATTACHED.value
@@ -462,6 +550,8 @@ class StudioRepository:
             operation.state = "deleting"
             operation.diagnostic_source = diagnostic_source
             operation.error = error[:1000]
+            operation.lease_owner = None
+            operation.lease_expires_at = None
             source = session.get(StudioSourceModel, operation.source_id)
             if source is None:
                 raise KeyError(operation.source_id)
@@ -525,6 +615,8 @@ class StudioRepository:
             source.remote_source_id = None
             operation.state = "completed"
             operation.error = None
+            operation.lease_owner = None
+            operation.lease_expires_at = None
             session.flush()
             return self._domain(source)
 
@@ -594,6 +686,9 @@ class StudioRepository:
                 operation.state = (
                     "reconciling" if operation.operation_kind == "add" else "deleting"
                 )
+            for operation in active_operations:
+                operation.lease_owner = None
+                operation.lease_expires_at = None
             source_models = session.scalars(
                 select(StudioSourceModel).where(
                     StudioSourceModel.state == StudioSourceState.ATTACHING.value

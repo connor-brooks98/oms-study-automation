@@ -30,6 +30,11 @@ class _WorkerState:
     recovery_error: str | None = None
     current_error: str | None = None
     last_error: str | None = None
+    maintenance: Callable[[], int] | None = None
+    maintenance_runs: int = 0
+    maintenance_at: float | None = None
+    maintenance_removed: int = 0
+    maintenance_error: str | None = None
 
 
 class WorkerSupervisor:
@@ -41,18 +46,31 @@ class WorkerSupervisor:
         *,
         heartbeat_timeout_seconds: float = 30.0,
         active_work_timeout_seconds: float = 900.0,
+        maintenance_tasks: Mapping[str, Callable[[], int]] | None = None,
+        maintenance_interval_seconds: float = 300.0,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         if active_work_timeout_seconds <= 0:
             raise ValueError("active_work_timeout_seconds must be positive")
+        if maintenance_interval_seconds <= 0:
+            raise ValueError("maintenance_interval_seconds must be positive")
+        unknown_maintenance = set(maintenance_tasks or {}) - set(workers)
+        if unknown_maintenance:
+            raise ValueError("maintenance task must belong to a configured worker")
         self._workers = {
-            name: _WorkerState(name, worker) for name, worker in sorted(workers.items())
+            name: _WorkerState(
+                name,
+                worker,
+                maintenance=(maintenance_tasks or {}).get(name),
+            )
+            for name, worker in sorted(workers.items())
         }
         self._heartbeat_timeout_seconds = heartbeat_timeout_seconds
         self._active_work_timeout_seconds = active_work_timeout_seconds
+        self._maintenance_interval_seconds = maintenance_interval_seconds
         self._clock = clock
         self._stop = threading.Event()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def start(self) -> None:
         """Recover once, then start exactly one thread for every expected worker."""
@@ -74,6 +92,8 @@ class WorkerSupervisor:
                     )
                 else:
                     state.recovery_error = None
+                if state.maintenance is not None:
+                    self._run_maintenance(state)
                 state.heartbeat_at = self._clock()
                 state.thread = threading.Thread(
                     target=self._run,
@@ -110,6 +130,10 @@ class WorkerSupervisor:
                     "recovery_error": state.recovery_error,
                     "current_error": state.current_error,
                     "last_error": state.last_error,
+                    "maintenance_runs": state.maintenance_runs,
+                    "maintenance_age_seconds": _age(now, state.maintenance_at),
+                    "maintenance_removed": state.maintenance_removed,
+                    "maintenance_error": state.maintenance_error,
                 }
                 for name, state in self._workers.items()
             }
@@ -137,6 +161,8 @@ class WorkerSupervisor:
                     return False, "worker_recovery_error"
                 if state.current_error is not None:
                     return False, "worker_error"
+                if state.maintenance_error is not None:
+                    return False, "worker_maintenance_error"
                 if (
                     state.active_started_at is not None
                     and now - state.active_started_at > self._active_work_timeout_seconds
@@ -161,6 +187,16 @@ class WorkerSupervisor:
             self._stop.wait(0.5 if worked else 5.0)
 
     def _run_cycle(self, state: _WorkerState) -> bool:
+        maintenance_worked = False
+        if (
+            state.maintenance is not None
+            and (
+                state.maintenance_at is None
+                or self._clock() - state.maintenance_at
+                >= self._maintenance_interval_seconds
+            )
+        ):
+            maintenance_worked = self._run_maintenance(state) > 0
         with self._lock:
             state.active_started_at = self._clock()
         try:
@@ -179,7 +215,31 @@ class WorkerSupervisor:
             with self._lock:
                 state.active_started_at = None
                 state.heartbeat_at = self._clock()
-        return worked
+        return worked or maintenance_worked
+
+    def _run_maintenance(self, state: _WorkerState) -> int:
+        assert state.maintenance is not None
+        removed = 0
+        try:
+            removed = state.maintenance()
+        except Exception as error:  # noqa: BLE001 - readiness exposes safe telemetry
+            error_name = type(error).__name__
+            with self._lock:
+                state.maintenance_runs += 1
+                state.maintenance_at = self._clock()
+                state.maintenance_removed = 0
+                state.maintenance_error = error_name
+                state.last_error = error_name
+            logging.getLogger(__name__).exception(
+                "%s maintenance failed", state.name
+            )
+            return 0
+        with self._lock:
+            state.maintenance_runs += 1
+            state.maintenance_at = self._clock()
+            state.maintenance_removed = removed
+            state.maintenance_error = None
+        return removed
 
 
 def configure_application_logging(data_dir: Path) -> Path:
@@ -189,7 +249,10 @@ def configure_application_logging(data_dir: Path) -> Path:
     log_path = log_dir / "oms-study-hub.log"
     application_logger = logging.getLogger("oms_hub")
     application_logger.setLevel(logging.INFO)
-    application_logger.propagate = False
+    # Keep child records visible to process-level observers such as Uvicorn and
+    # pytest's capture handler.  The local console sink is filtered whenever
+    # the root logger already owns a console sink, preventing duplicate output.
+    application_logger.propagate = True
     for handler in tuple(application_logger.handlers):
         if handler.get_name().startswith("oms-hub-"):
             application_logger.removeHandler(handler)
@@ -208,9 +271,22 @@ def configure_application_logging(data_dir: Path) -> Path:
     console_handler = logging.StreamHandler()
     console_handler.set_name("oms-hub-console")
     console_handler.setFormatter(formatter)
+    console_handler.addFilter(_ConsoleFallbackFilter())
     application_logger.addHandler(file_handler)
     application_logger.addHandler(console_handler)
     return log_path
+
+
+class _ConsoleFallbackFilter(logging.Filter):
+    """Emit locally only when the process root has no non-file stream sink."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        del record
+        return not any(
+            isinstance(handler, logging.StreamHandler)
+            and not isinstance(handler, logging.FileHandler)
+            for handler in logging.getLogger().handlers
+        )
 
 
 def _age(now: float, then: float | None) -> float | None:

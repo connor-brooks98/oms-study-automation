@@ -3,7 +3,7 @@ import json
 import logging
 from io import BytesIO
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
@@ -19,7 +19,11 @@ from oms_hub.ingestion.domain import (
 )
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.ingestion.service import IngestionService
-from oms_hub.ingestion.staging import StagingService, UploadRejected
+from oms_hub.ingestion.staging import (
+    StagingService,
+    UploadManifestRejected,
+    UploadRejected,
+)
 from oms_hub.repositories import CatalogRepository
 
 router = APIRouter()
@@ -67,13 +71,15 @@ class ChunkCreate(BaseModel):
 class ManifestFile(BaseModel):
     slot_id: str
     filename: str
-    size_bytes: int = Field(ge=1)
+    size_bytes: int
     sha256: str
 
 
 class ManifestCreate(BaseModel):
     kind: UploadKind
-    files: list[ManifestFile]
+    # Member descriptors are normalized inside the route so every malformed
+    # member can participate in the same structured error envelope.
+    files: list[Any]
     lecture_id: int | None = None
 
 
@@ -129,21 +135,12 @@ def upload_files(
                 raise AssertionError("manifest response is missing its identifier")
             manifest_id = created_id
         except HTTPException as error:
+            if isinstance(error.detail, dict):
+                return JSONResponse(status_code=422, content=error.detail)
             return JSONResponse(
                 status_code=422,
                 content={
                     "errors": [
-                        {
-                            "slot_id": slot.slot_id,
-                            "filename": slot.filename,
-                            "code": "validation_failed",
-                            "detail": str(error.detail),
-                        }
-                        for slot in slots
-                        if Path(slot.filename).suffix.casefold()
-                        != (".pptx" if kind is UploadKind.SLIDES else ".txt")
-                    ]
-                    or [
                         {
                             "slot_id": slot.slot_id,
                             "filename": slot.filename,
@@ -175,11 +172,14 @@ def create_manifest(
     request: Request,
 ) -> dict[str, object] | JSONResponse:
     _require_lecture(request, payload.lecture_id)
+    files = [_normalize_manifest_file(file) for file in payload.files]
     try:
         return _create_manifest(
-            _staging(request), payload.kind, payload.files, payload.lecture_id
+            _staging(request), payload.kind, files, payload.lecture_id
         )
     except HTTPException as error:
+        if isinstance(error.detail, dict):
+            return JSONResponse(status_code=422, content=error.detail)
         return JSONResponse(
             status_code=422,
             content={
@@ -190,7 +190,7 @@ def create_manifest(
                         "code": "validation_failed",
                         "detail": str(error.detail),
                     }
-                    for file in payload.files
+                    for file in files
                 ]
             },
         )
@@ -290,18 +290,12 @@ def create_chunk_session(
     payload: ChunkCreate,
     request: Request,
 ) -> dict[str, object]:
-    if (payload.manifest_id is None) != (payload.slot_id is None):
-        raise HTTPException(422, "manifest_id and slot_id must be supplied together")
+    if payload.manifest_id is None or payload.slot_id is None:
+        raise HTTPException(422, "manifest_id and slot_id are required")
     try:
-        session = (
-            _staging(request).begin_manifest_chunks(payload.manifest_id, payload.slot_id)
-            if payload.manifest_id is not None and payload.slot_id is not None
-            else _staging(request).begin_chunks(
-                payload.kind,
-                payload.filename,
-                payload.total_size,
-                payload.sha256,
-            )
+        session = _staging(request).begin_manifest_chunks(
+            payload.manifest_id,
+            payload.slot_id,
         )
     except UploadRejected as error:
         raise HTTPException(422, str(error)) from error
@@ -341,27 +335,14 @@ def finalize_chunks(
         staged = _staging(request).finalize_chunks(session_id)
     except UploadRejected as error:
         raise HTTPException(422, str(error)) from error
-    # A manifest-owned chunk is now staged but not durable. Legacy chunk
-    # callers retain their historical one-file finalization behaviour.
-    if staged.manifest_owned:
-        try:
-            manifest = _staging(request).get_manifest(staged.batch_id)
-            _staging(request)._manifest_slot(manifest, staged.item_id)
-        except UploadRejected as error:
-            raise HTTPException(422, "upload manifest was cancelled") from error
-        return {"manifest_id": staged.batch_id, "item_id": staged.item_id}
-    batch = _repository(request).get_batch(staged.batch_id)
-    inferred_kind = (
-        UploadKind.TRANSCRIPTS
-        if staged.original_filename.casefold().endswith(".txt")
-        else UploadKind.SLIDES
-    )
-    if batch is None:
-        # Older chunk sessions had no manifest and no durable batch until now.
-        _repository(request).create_batch(inferred_kind, staged.batch_id)
-    _repository(request).add_item(batch.kind if batch else inferred_kind, staged)
-    _assign_or_match(request, staged.item_id, lecture_id)
-    return {"batch_id": staged.batch_id, "item_id": staged.item_id}
+    if not staged.manifest_owned:
+        raise HTTPException(422, "chunk session is not owned by an upload manifest")
+    try:
+        manifest = _staging(request).get_manifest(staged.batch_id)
+        _staging(request)._manifest_slot(manifest, staged.item_id)
+    except UploadRejected as error:
+        raise HTTPException(422, "upload manifest was cancelled") from error
+    return {"manifest_id": staged.batch_id, "item_id": staged.item_id}
 
 
 def _upload_size_and_hash(upload: UploadFile) -> tuple[int, str]:
@@ -396,6 +377,8 @@ def _create_manifest(
             ],
             lecture_id,
         )
+    except UploadManifestRejected as error:
+        raise HTTPException(422, detail={"errors": error.errors}) from error
     except UploadRejected as error:
         raise HTTPException(422, str(error)) from error
     return {
@@ -489,12 +472,22 @@ def _finalize_manifest(
             decisions=decisions,
         )
     except Exception:
+        reverted = False
         try:
-            if moved:
-                staging.revert_promoted_manifest(manifest_id, batch_id, moved)
+            # This is deliberately safe with an empty moved list: promotion
+            # can fail after moving files but before returning that list.
+            staging.revert_promoted_manifest(manifest_id, batch_id, moved)
+            reverted = True
+        except Exception:  # noqa: BLE001 - retain pending recovery locator
+            logger.exception(
+                "manifest rollback requires recovery: %s -> %s",
+                manifest_id,
+                batch_id,
+            )
         finally:
             staging.release_manifest_finalization(manifest_id)
-            staging.clear_manifest_finalization_outcome(manifest_id)
+            if reverted:
+                staging.clear_manifest_finalization_outcome(manifest_id)
         raise
     # The repository transaction is the durable acceptance boundary.  Cleanup
     # and catalog progress are recoverable side effects and must never hide a
@@ -519,6 +512,26 @@ def _finalize_manifest(
 def _require_lecture(request: Request, lecture_id: int | None) -> None:
     if lecture_id is not None and _catalog(request).get_lecture(lecture_id) is None:
         raise HTTPException(404, "lecture was not found")
+
+
+def _normalize_manifest_file(value: object) -> ManifestFile:
+    """Turn any JSON member shape into a safely rejectable descriptor."""
+    if not isinstance(value, dict):
+        value = {}
+    slot_id = value.get("slot_id")
+    filename = value.get("filename")
+    size_bytes = value.get("size_bytes")
+    sha256 = value.get("sha256")
+    return ManifestFile(
+        slot_id=slot_id if isinstance(slot_id, str) else "",
+        filename=filename if isinstance(filename, str) else "",
+        size_bytes=(
+            size_bytes
+            if isinstance(size_bytes, int) and not isinstance(size_bytes, bool)
+            else 0
+        ),
+        sha256=sha256 if isinstance(sha256, str) else "",
+    )
 
 
 def _assign_or_match(

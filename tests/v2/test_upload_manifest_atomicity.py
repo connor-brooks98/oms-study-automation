@@ -52,7 +52,9 @@ def test_multipart_manifest_is_atomic_when_valid_precedes_invalid(tmp_path: Path
     )
 
     assert response.status_code == 422
-    assert response.json()["errors"][0]["filename"] == "invalid.pdf"
+    assert [error["filename"] for error in response.json()["errors"]] == [
+        "invalid.pdf"
+    ]
     assert _counts(app) == (0, 0, 0)
     assert _ready(app) == []
 
@@ -69,7 +71,9 @@ def test_multipart_manifest_is_atomic_when_invalid_precedes_valid(tmp_path: Path
     )
 
     assert response.status_code == 422
-    assert response.json()["errors"][0]["filename"] == "invalid.pdf"
+    assert [error["filename"] for error in response.json()["errors"]] == [
+        "invalid.pdf"
+    ]
     assert _counts(app) == (0, 0, 0)
     assert _ready(app) == []
 
@@ -117,6 +121,120 @@ def test_manifest_descriptor_rejection_is_structured_and_not_durable(tmp_path: P
         }
     ]
     assert _counts(app) == (0, 0, 0)
+
+
+def test_manifest_descriptor_errors_name_only_each_rejected_member(tmp_path: Path) -> None:
+    client, app = _client(tmp_path)
+    valid_slot = str(uuid4())
+    wrong_type_slot = str(uuid4())
+    bad_hash_slot = str(uuid4())
+
+    response = client.post(
+        "/api/upload-manifests",
+        json={
+            "kind": "transcripts",
+            "files": [
+                {
+                    "slot_id": valid_slot,
+                    "filename": "valid.txt",
+                    "size_bytes": 5,
+                    "sha256": hashlib.sha256(b"valid").hexdigest(),
+                },
+                {
+                    "slot_id": wrong_type_slot,
+                    "filename": "wrong.pdf",
+                    "size_bytes": 4,
+                    "sha256": hashlib.sha256(b"nope").hexdigest(),
+                },
+                {
+                    "slot_id": bad_hash_slot,
+                    "filename": "bad-hash.txt",
+                    "size_bytes": 4,
+                    "sha256": "not-a-sha",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["errors"] == [
+        {
+            "slot_id": wrong_type_slot,
+            "filename": "wrong.pdf",
+            "code": "validation_failed",
+            "detail": "transcripts uploads require .txt",
+        },
+        {
+            "slot_id": bad_hash_slot,
+            "filename": "bad-hash.txt",
+            "code": "validation_failed",
+            "detail": "invalid SHA-256 checksum",
+        },
+    ]
+    assert _counts(app) == (0, 0, 0)
+
+
+def test_manifest_descriptor_shape_errors_share_the_member_error_envelope(
+    tmp_path: Path,
+) -> None:
+    client, app = _client(tmp_path)
+    valid_slot = str(uuid4())
+    zero_slot = str(uuid4())
+
+    response = client.post(
+        "/api/upload-manifests",
+        json={
+            "kind": "transcripts",
+            "files": [
+                {
+                    "slot_id": valid_slot,
+                    "filename": "valid.txt",
+                    "size_bytes": 5,
+                    "sha256": hashlib.sha256(b"valid").hexdigest(),
+                },
+                {
+                    "slot_id": zero_slot,
+                    "filename": "empty.txt",
+                    "size_bytes": 0,
+                    "sha256": hashlib.sha256(b"").hexdigest(),
+                },
+                {
+                    "slot_id": "not-a-uuid",
+                    "filename": "bad-slot.txt",
+                    "size_bytes": 4,
+                    "sha256": hashlib.sha256(b"data").hexdigest(),
+                },
+                {"filename": 17, "size_bytes": "unknown"},
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["errors"] == [
+        {
+            "slot_id": zero_slot,
+            "filename": "empty.txt",
+            "code": "validation_failed",
+            "detail": "declared file size exceeds upload limit",
+        },
+        {
+            "slot_id": "not-a-uuid",
+            "filename": "bad-slot.txt",
+            "code": "validation_failed",
+            "detail": "invalid manifest slot identifier",
+        },
+        {
+            "slot_id": "",
+            "filename": "",
+            "code": "validation_failed",
+            "detail": "invalid manifest slot identifier",
+        },
+    ]
+    assert _counts(app) == (0, 0, 0)
+    manifest_root = app.state.upload_staging.root / "manifests"  # type: ignore[attr-defined]
+    assert not manifest_root.exists() or not any(
+        path.is_dir() for path in manifest_root.iterdir()
+    )
 
 
 def test_mixed_multipart_and_chunk_slots_finalize_one_parent_batch(tmp_path: Path) -> None:
@@ -243,7 +361,27 @@ def test_chunk_session_rejects_partial_manifest_ownership_pair(tmp_path: Path) -
 
     assert only_manifest.status_code == 422
     assert only_slot.status_code == 422
-    assert only_manifest.json()["detail"] == "manifest_id and slot_id must be supplied together"
+    assert only_manifest.json()["detail"] == "manifest_id and slot_id are required"
+    assert only_slot.json()["detail"] == "manifest_id and slot_id are required"
+
+
+def test_chunk_session_without_parent_manifest_is_rejected(tmp_path: Path) -> None:
+    client, app = _client(tmp_path)
+    payload = b"parentless chunk"
+
+    response = client.post(
+        "/api/upload-chunks",
+        json={
+            "kind": "transcripts",
+            "filename": "parentless.txt",
+            "total_size": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "manifest_id and slot_id are required"
+    assert _counts(app) == (0, 0, 0)
 
 
 def test_manifest_delete_after_chunk_staging_never_uses_legacy_finalize(
@@ -381,6 +519,81 @@ def test_finalize_claim_rejects_cancel_during_move_and_reverts_without_orphans(
     assert _counts(app) == (0, 0, 0)
     assert _ready(app) == []
     assert client.delete(f"/api/upload-manifests/{manifest_id}").status_code == 204
+
+
+def test_failed_manifest_rollback_retains_locator_until_cleanup_reconciles(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    client, app = _client(tmp_path)
+    payloads = [b"first rollback member", b"second rollback member"]
+    slot_ids = [str(uuid4()), str(uuid4())]
+    created = client.post(
+        "/api/upload-manifests",
+        json={
+            "kind": "transcripts",
+            "files": [
+                {
+                    "slot_id": slot_id,
+                    "filename": f"member-{index}.txt",
+                    "size_bytes": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                }
+                for index, (slot_id, payload) in enumerate(
+                    zip(slot_ids, payloads, strict=True), start=1
+                )
+            ],
+        },
+    )
+    manifest_id = created.json()["manifest_id"]
+    assert client.post(
+        "/uploads/transcripts",
+        data={"manifest_id": manifest_id, "slot_ids": slot_ids},
+        files=[
+            ("files", (f"member-{index}.txt", payload))
+            for index, payload in enumerate(payloads, start=1)
+        ],
+    ).status_code == 202
+    staging = app.state.upload_staging  # type: ignore[attr-defined]
+
+    def fail_finalization(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("database finalization failed")
+
+    def fail_midway_rollback(
+        rollback_manifest_id: str,
+        _batch_id: str,
+        uploads: list[object],
+    ) -> None:
+        first = uploads[0]
+        first.path.replace(  # type: ignore[attr-defined]
+            staging._manifest_file_path(rollback_manifest_id, first.item_id)  # type: ignore[attr-defined]
+        )
+        raise OSError("rollback device unavailable")
+
+    monkeypatch.setattr(app.state.ingestion_repository, "finalize_batch", fail_finalization)  # type: ignore[attr-defined]
+    monkeypatch.setattr(staging, "revert_promoted_manifest", fail_midway_rollback)
+
+    with pytest.raises(RuntimeError, match="database finalization failed"):
+        client.post(f"/api/upload-manifests/{manifest_id}/finalize")
+
+    outcome = staging._manifest_finalization_outcome(manifest_id)
+    assert outcome is not None and outcome["state"] == "pending"
+    assert _counts(app) == (0, 0, 0)
+    assert len(_ready(app)) == 1
+    assert (staging.root / "manifests" / manifest_id).is_dir()
+    assert not (staging.root / "manifests" / f"{manifest_id}.claim").exists()
+
+    old = (datetime.now(UTC) - timedelta(hours=25)).timestamp()
+    os.utime(staging.root / "manifests" / manifest_id, (old, old))
+    os.utime(
+        staging.root / "manifests" / f"{manifest_id}.finalized",
+        (old, old),
+    )
+    app.state.ingestion_service.collect_staging(datetime.now(UTC))  # type: ignore[attr-defined]
+
+    assert staging._manifest_finalization_outcome(manifest_id) is None
+    assert not (staging.root / "manifests" / manifest_id).exists()
+    assert _ready(app) == []
 
 
 def test_finalize_owned_manifest_returns_conflict_to_cancel_request(tmp_path: Path) -> None:

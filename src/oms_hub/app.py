@@ -655,7 +655,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "ingestion_worker": app.state.ingestion_worker,
             "generation_worker": app.state.generation_worker,
             "studio_worker": app.state.studio_worker,
-        }
+        },
+        maintenance_tasks={
+            "ingestion_worker": app.state.ingestion_service.collect_staging,
+        },
     )
     app.state.anki_curation_worker = None
     app.state.anki_embedder = None

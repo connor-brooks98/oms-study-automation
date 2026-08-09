@@ -164,6 +164,12 @@ class StudyRevisionModel(Base):
     __table_args__ = (
         UniqueConstraint("upload_item_id"),
         UniqueConstraint("lecture_id", "kind", "source_sha256"),
+        Index(
+            "uq_study_revisions_transcript_cleaning_lecture",
+            "lecture_id",
+            unique=True,
+            sqlite_where=text("kind='transcripts' AND state='cleaning'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -417,6 +423,8 @@ class StudioSourceOperationModel(Base):
     remote_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     baseline_remote_ids_json: Mapped[str] = mapped_column(Text, default="[]")
     attempts: Mapped[int] = mapped_column(default=0)
+    lease_owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    lease_expires_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     diagnostic_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)

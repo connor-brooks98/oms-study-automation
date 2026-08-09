@@ -24,6 +24,14 @@ class UploadRejected(ValueError):
     pass
 
 
+class UploadManifestRejected(UploadRejected):
+    """Structured descriptor failures for a manifest that was never created."""
+
+    def __init__(self, errors: list[dict[str, str]]):
+        super().__init__("upload manifest is invalid")
+        self.errors = errors
+
+
 def decode_utf8_transcript(raw: bytes) -> str:
     """The single admission decoder for staged, matched, and processed text."""
     try:
@@ -63,18 +71,43 @@ class StagingService:
             raise UploadRejected("at least one file is required")
         total = 0
         seen: set[str] = set()
+        errors: list[dict[str, str]] = []
         for slot in slots:
-            if slot.id in seen:
-                raise UploadRejected("manifest slot identifiers must be unique")
-            seen.add(slot.id)
-            self._validate_filename(kind, slot.filename)
-            if slot.size_bytes < 1 or slot.size_bytes > self.max_file_bytes:
-                raise UploadRejected("declared file size exceeds upload limit")
+            detail: str | None = None
+            try:
+                UUID(slot.id)
+            except ValueError:
+                detail = "invalid manifest slot identifier"
+            if detail is None and slot.id in seen:
+                detail = "manifest slot identifiers must be unique"
+            if detail is None:
+                seen.add(slot.id)
+            if detail is None:
+                try:
+                    self._validate_filename(kind, slot.filename)
+                except UploadRejected as error:
+                    detail = str(error)
+            if (
+                detail is None
+                and (slot.size_bytes < 1 or slot.size_bytes > self.max_file_bytes)
+            ):
+                detail = "declared file size exceeds upload limit"
             total += slot.size_bytes
-            if total > self.max_batch_bytes:
-                raise UploadRejected("batch exceeds upload limit")
-            if not _SHA256.fullmatch(slot.sha256):
-                raise UploadRejected("invalid SHA-256 checksum")
+            if detail is None and total > self.max_batch_bytes:
+                detail = "batch exceeds upload limit"
+            if detail is None and not _SHA256.fullmatch(slot.sha256):
+                detail = "invalid SHA-256 checksum"
+            if detail is not None:
+                errors.append(
+                    {
+                        "slot_id": slot.id,
+                        "filename": slot.filename,
+                        "code": "validation_failed",
+                        "detail": detail,
+                    }
+                )
+        if errors:
+            raise UploadManifestRejected(errors)
         manifest = UploadManifest(str(uuid4()), kind, lecture_id, tuple(slots))
         root = self._manifest_root(manifest.id)
         root.mkdir(parents=True, exist_ok=False)
@@ -290,10 +323,19 @@ class StagingService:
         # defensively so a cleanup fault cannot strand batch-owned .ready
         # files merely because temporary metadata disappeared.
         self._manifest_root(manifest_id).mkdir(parents=True, exist_ok=True)
+        restored_ids: set[str] = set()
         for upload in uploads:
             if upload.path.exists():
                 upload.path.replace(self._manifest_file_path(manifest_id, upload.item_id))
+            restored_ids.add(upload.item_id)
         batch_root = self._batch_root(batch_id)
+        # If promotion itself failed before returning its moved list, recover
+        # every batch-owned file by its stable manifest slot identifier.
+        for ready in batch_root.glob("*.ready"):
+            if ready.stem not in restored_ids:
+                ready.replace(self._manifest_file_path(manifest_id, ready.stem))
+        if not batch_root.exists():
+            return
         for child in batch_root.glob("*"):
             child.unlink(missing_ok=True)
         batch_root.rmdir()

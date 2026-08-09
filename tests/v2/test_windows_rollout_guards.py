@@ -65,8 +65,37 @@ def test_windows_installer_guard_covers_same_root_tree_but_not_unrelated_python(
     # process outside this deployment cannot be selected merely for being Python.
     assert "if ($IsHubLauncher -and $IsExpectedRoot)" in script
     assert "if ($IsPython -and $IsExpectedRoot -and $HasHubCommandLine" in script
-    assert "same-root tree" in script
+    assert "positively identifies the process tree" in script
     assert "generic Python processes from another deployment" in script
+
+
+def test_windows_installer_selects_every_descendant_of_verified_launcher() -> None:
+    script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+
+    # Behavioral topology: the verified launcher owns a Python child which
+    # owns a non-Python helper. An unrelated process is not descended from the
+    # launcher and therefore remains outside the stop set.
+    parents = {101: 1, 102: 101, 103: 102, 999: 1}
+    pending = [101]
+    selected: set[int] = set()
+    while pending:
+        process_id = pending.pop(0)
+        if process_id in selected:
+            continue
+        selected.add(process_id)
+        pending.extend(
+            child_id
+            for child_id, parent_id in parents.items()
+            if parent_id == process_id
+        )
+
+    assert selected == {101, 102, 103}
+    assert "descendant belongs to that tree" in script
+    assert "$Selected.Add($Process)" in script
+    selection_start = script.index("while ($Pending.Count -gt 0)")
+    selection_end = script.index("foreach ($Process in $Processes)", selection_start)
+    selection_block = script[selection_start:selection_end]
+    assert "-or [string]$Process.Name -ieq" not in selection_block
 
 
 def test_windows_installer_resolves_config_stops_tree_and_backs_up_before_pip() -> None:

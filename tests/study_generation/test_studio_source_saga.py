@@ -2,7 +2,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 
 from oms_hub.db import Database
 from oms_hub.llm.domain import DiagnosticSource
@@ -208,12 +207,26 @@ def test_interrupted_delete_retries_and_converges_on_remote_not_found(tmp_path: 
     assert gateway.delete_calls == 2
 
 
-def test_only_one_nonterminal_operation_can_own_a_notebook(tmp_path: Path) -> None:
+def test_only_one_worker_can_claim_a_queued_source_operation(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    source = _source(repository, tmp_path)
+
+    assert repository.claim_next() is not None
+    first_claim = repository.claim_next_source_operation()
+    assert first_claim is not None and first_claim[1].id == source.id
+
+    competing_repository = StudioRepository(repository.database)
+    assert competing_repository.claim_next_source_operation() is None
+
+
+def test_same_notebook_add_defers_without_remote_effect_then_proceeds(
+    tmp_path: Path,
+) -> None:
     repository = _repository(tmp_path)
     first = _source(repository, tmp_path)
     second_path = tmp_path / "second.txt"
     second_path.write_text("second", encoding="utf-8")
-    repository.create_source(
+    second = repository.create_source(
         "Neuro", 1, StudioSourceType.TEXT, "Second", payload_path=second_path
     )
 
@@ -221,17 +234,32 @@ def test_only_one_nonterminal_operation_can_own_a_notebook(tmp_path: Path) -> No
     first_claim = repository.claim_next_source_operation()
     assert first_claim is not None
     repository.record_attach_baseline(first_claim[0].id, "notebook-1", {"baseline"})
+    repository.mark_attach_reconciling(
+        first_claim[0].id,
+        DiagnosticSource.NETWORK.value,
+        "remote outcome is pending reconciliation",
+    )
     assert repository.claim_next() is not None
-    second_claim = repository.claim_next_source_operation()
-    assert second_claim is not None
+    gateway = _SagaGateway("success")
+    worker = _worker(repository, gateway)
 
-    with pytest.raises(IntegrityError):
-        repository.record_attach_baseline(
-            second_claim[0].id,
-            "notebook-1",
-            {"baseline"},
-        )
+    assert worker.run_once() is True
+    waiting = repository.get(second.id)
+    assert waiting is not None
+    assert waiting.state is StudioSourceState.ATTACHING
+    assert waiting.next_attempt_at is not None
+    assert gateway.add_calls == 0
     assert repository.get(first.id).state is StudioSourceState.ATTACHING  # type: ignore[union-attr]
+
+    repository.complete_attach_operation(first_claim[0].id, "remote-first")
+    _make_source_retry_due(repository, second.id)
+    assert worker.run_once() is True
+
+    attached = repository.get(second.id)
+    assert attached is not None
+    assert attached.state is StudioSourceState.ATTACHED
+    assert attached.remote_source_id == "remote-success"
+    assert gateway.add_calls == 1
 
 
 def test_delete_waits_while_the_notebook_has_an_active_add(tmp_path: Path) -> None:

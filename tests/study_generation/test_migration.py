@@ -37,11 +37,56 @@ def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
         for column in inspect(database.engine).get_columns("studio_sources")
     }
     assert {"import_role", "import_attach_to_notebook"} <= studio_source_columns
+    operation_columns = {
+        column["name"]
+        for column in inspect(database.engine).get_columns("studio_source_operations")
+    }
+    assert {"lease_owner", "lease_expires_at"} <= operation_columns
+    revision_indexes = {
+        index["name"]
+        for index in inspect(database.engine).get_indexes("study_revisions")
+    }
+    assert "uq_study_revisions_transcript_cleaning_lecture" in revision_indexes
     with database.session() as session:
         version = session.execute(
             text("SELECT version FROM schema_version WHERE id = 1")
         ).scalar_one()
     assert version == LATEST_SCHEMA_VERSION
+
+
+def test_v20_transcript_cleaning_reservation_index_upgrades_idempotently(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("DROP INDEX uq_study_revisions_transcript_cleaning_lecture")
+        )
+        connection.execute(text("ALTER TABLE studio_source_operations DROP COLUMN lease_owner"))
+        connection.execute(
+            text("ALTER TABLE studio_source_operations DROP COLUMN lease_expires_at")
+        )
+        connection.execute(text("UPDATE schema_version SET version=19 WHERE id=1"))
+
+    database.migrate()
+    database.migrate()
+
+    with database.engine.connect() as connection:
+        index_sql = connection.execute(
+            text(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name="
+                "'uq_study_revisions_transcript_cleaning_lecture'"
+            )
+        ).scalar_one()
+    assert "UNIQUE INDEX" in index_sql
+    assert "ON study_revisions(lecture_id)" in index_sql
+    assert "kind='transcripts' AND state='cleaning'" in index_sql
+    operation_columns = {
+        column["name"]
+        for column in inspect(database.engine).get_columns("studio_source_operations")
+    }
+    assert {"lease_owner", "lease_expires_at"} <= operation_columns
 
 
 def test_existing_generation_jobs_gain_later_optional_columns(tmp_path):
