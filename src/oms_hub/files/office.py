@@ -1,11 +1,15 @@
+from __future__ import annotations
+
 import multiprocessing
+import os
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
 from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Protocol
+from typing import Any, BinaryIO, Protocol
 
 from oms_hub.files.office_worker import convert_office_file
 
@@ -19,6 +23,12 @@ class OfficeTimeoutError(RuntimeError):
 
 
 class OfficeConversionError(RuntimeError):
+    pass
+
+
+class OfficeAdmissionTimeoutError(OfficeConversionError):
+    """The bounded wait for the single Office automation slot expired."""
+
     pass
 
 
@@ -37,18 +47,26 @@ class SerialOfficeConverter:
         self,
         timeout_seconds: float = 180,
         worker: OfficeWorker = convert_office_file,
+        admission_timeout_seconds: float | None = None,
     ) -> None:
         self.timeout_seconds = timeout_seconds
         self.worker = worker
+        self.admission_timeout_seconds = _admission_timeout(admission_timeout_seconds)
         self._context = multiprocessing.get_context("spawn")
 
     def convert(self, source: Path, destination: Path) -> None:
         suffix = source.suffix.casefold()
         if suffix not in {".ppt", ".pptx", ".doc", ".docx"}:
             raise OfficeConversionError(f"unsupported Office source type: {suffix}")
-        if not self._lock.acquire(blocking=False):
-            raise OfficeConversionError("another Office conversion is already running")
+        deadline = time.monotonic() + self.admission_timeout_seconds
+        if not self._lock.acquire(timeout=self.admission_timeout_seconds):
+            raise OfficeAdmissionTimeoutError(
+                "Office conversion admission timed out while waiting for the "
+                "in-process automation slot"
+            )
+        cross_process_lock: _WindowsOfficeLock | None = None
         try:
+            cross_process_lock = _WindowsOfficeLock.acquire_until(deadline)
             destination.parent.mkdir(parents=True, exist_ok=True)
             receiver, sender = self._context.Pipe(duplex=False)
             try:
@@ -121,7 +139,79 @@ class SerialOfficeConverter:
                 "Microsoft Office conversion process could not start"
             ) from error
         finally:
+            if cross_process_lock is not None:
+                cross_process_lock.release()
             self._lock.release()
+
+
+def _admission_timeout(value: float | None) -> float:
+    configured = value
+    if configured is None:
+        configured = float(os.environ.get("OMS_HUB_OFFICE_ADMISSION_TIMEOUT_SECONDS", "120"))
+    if configured <= 0:
+        raise ValueError("Office admission timeout must be greater than zero")
+    return configured
+
+
+class _WindowsOfficeLock:
+    """A process-wide lock for Windows Office automation only.
+
+    Windows runs obtain a one-byte advisory lock in the shared temp directory.
+    Other platforms retain only the class-level thread lock so macOS tests do
+    not depend on Windows locking APIs.
+    """
+
+    def __init__(self, stream: BinaryIO | None) -> None:
+        self._stream = stream
+
+    @classmethod
+    def acquire_until(cls, deadline: float) -> _WindowsOfficeLock:
+        if sys.platform != "win32":
+            return cls(None)
+        import msvcrt
+        import tempfile
+
+        windows_msvcrt: Any = msvcrt
+
+        lock_path = Path(tempfile.gettempdir()) / "oms-study-hub-office.lock"
+        stream = lock_path.open("a+b")
+        stream.seek(0)
+        stream.write(b"\0")
+        stream.flush()
+        while True:
+            try:
+                stream.seek(0)
+                windows_msvcrt.locking(
+                    stream.fileno(),
+                    windows_msvcrt.LK_NBLCK,
+                    1,
+                )
+                return cls(stream)
+            except OSError as error:
+                if time.monotonic() >= deadline:
+                    stream.close()
+                    raise OfficeAdmissionTimeoutError(
+                        "Office conversion admission timed out while waiting for "
+                        "the cross-process automation slot"
+                    ) from error
+                time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+
+    def release(self) -> None:
+        if self._stream is None:
+            return
+        import msvcrt
+
+        windows_msvcrt: Any = msvcrt
+        stream = self._stream
+        try:
+            stream.seek(0)
+            windows_msvcrt.locking(
+                stream.fileno(),
+                windows_msvcrt.LK_UNLCK,
+                1,
+            )
+        finally:
+            stream.close()
 
 
 def _run_child(

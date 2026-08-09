@@ -1,3 +1,4 @@
+import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,6 +33,27 @@ class ArtifactNotFound(ArtifactError):
 
 class ArtifactConflict(ArtifactError):
     pass
+
+
+class ArtifactRecoveryError(ArtifactError):
+    """Rollback did not complete; retained paths can be used for recovery."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        backup_paths: tuple[Path, ...],
+        recovery_journal_path: Path | None,
+        original_error: BaseException,
+        restore_error: BaseException,
+        journal_error: BaseException | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.backup_paths = backup_paths
+        self.recovery_journal_path = recovery_journal_path
+        self.original_error = original_error
+        self.restore_error = restore_error
+        self.journal_error = journal_error
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,17 +325,103 @@ class ArtifactService:
             for source, destination in pairs:
                 verified_atomic_copy(source, destination)
             commit()
-        except Exception:
-            for destination, saved_path in backups.items():
-                if saved_path is not None and saved_path.exists():
-                    os.replace(saved_path, destination)
-                elif saved_path is None:
-                    destination.unlink(missing_ok=True)
-            raise
-        finally:
+        except Exception as promotion_error:
+            journal_path: Path | None = None
+            journal_error: Exception | None = None
+            try:
+                journal_path = ArtifactService._write_recovery_journal(
+                    pairs,
+                    backups,
+                    revision_id,
+                )
+            except Exception as error:
+                journal_error = error
+            try:
+                ArtifactService._restore_backups(backups)
+            except Exception as restore_error:
+                backup_paths = tuple(
+                    path
+                    for path in backups.values()
+                    if path is not None and path.exists()
+                )
+                raise ArtifactRecoveryError(
+                    "artifact promotion failed and verified rollback could not complete; "
+                    "retain the recovery journal and backup paths",
+                    backup_paths=backup_paths,
+                    recovery_journal_path=journal_path,
+                    original_error=promotion_error,
+                    restore_error=restore_error,
+                    journal_error=journal_error,
+                ) from promotion_error
             for saved_path in backups.values():
                 if saved_path is not None:
                     saved_path.unlink(missing_ok=True)
+            if journal_path is not None:
+                journal_path.unlink(missing_ok=True)
+            if journal_error is not None:
+                raise promotion_error from journal_error
+            raise
+        else:
+            for saved_path in backups.values():
+                if saved_path is not None:
+                    saved_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _restore_backups(backups: dict[Path, Path | None]) -> None:
+        """Restore every destination without consuming a backup until all verify."""
+        for destination, saved_path in backups.items():
+            if saved_path is not None:
+                if not saved_path.is_file():
+                    raise OSError(f"artifact backup is missing: {saved_path}")
+                expected_sha256 = sha256_file(saved_path)
+                verified_atomic_copy(saved_path, destination)
+                if not destination.is_file() or sha256_file(destination) != expected_sha256:
+                    raise OSError(f"artifact backup restore verification failed: {destination}")
+            else:
+                destination.unlink(missing_ok=True)
+                if destination.exists():
+                    raise OSError(f"artifact destination remained after rollback: {destination}")
+
+    @staticmethod
+    def _write_recovery_journal(
+        pairs: list[tuple[Path, Path]],
+        backups: dict[Path, Path | None],
+        revision_id: int,
+    ) -> Path:
+        if not pairs:
+            raise OSError("artifact promotion has no destinations")
+        journal_path = pairs[0][1].with_name(
+            f".oms-promotion-{revision_id}.recovery.json"
+        )
+        entries = [
+            {
+                "backup_path": str(backups[destination])
+                if backups.get(destination) is not None
+                else None,
+                "backup_created": destination in backups,
+                "destination_path": str(destination),
+            }
+            for _source, destination in pairs
+        ]
+        temporary = journal_path.with_name(f".{journal_path.name}.partial")
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            temporary.write_text(
+                json.dumps(
+                    {
+                        "entries": entries,
+                        "revision_id": revision_id,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temporary, journal_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return journal_path
 
     def _recover_promotion(
         self,

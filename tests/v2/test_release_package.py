@@ -1,6 +1,11 @@
+import hashlib
 import importlib.util
+import json
+import subprocess
 import zipfile
 from pathlib import Path
+
+import pytest
 
 
 def load_builder():
@@ -16,8 +21,12 @@ def load_builder():
 def test_release_builder_creates_secret_safe_hotfix_and_source_archives(tmp_path):
     builder = load_builder()
     root = Path(__file__).parents[2]
+    commit = subprocess.check_output(
+        ["git", "-C", root, "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
 
-    hotfix, source = builder.build_releases(root, tmp_path, "20260726")
+    hotfix, source = builder.build_releases(root, tmp_path, "20260726", commit)
 
     with zipfile.ZipFile(hotfix) as archive:
         hotfix_names = set(archive.namelist())
@@ -44,3 +53,42 @@ def test_release_builder_creates_secret_safe_hotfix_and_source_archives(tmp_path
         assert not any(name.endswith(("hub.db", ".pyc")) for name in lowered)
         assert not any("__pycache__" in name for name in lowered)
         assert not any("gpt key" in name for name in lowered)
+
+    with zipfile.ZipFile(source) as archive:
+        manifest = json.loads(archive.read("RELEASE-MANIFEST.json"))
+    assert manifest["commit_sha"] == commit
+    assert manifest["tree_sha"] == subprocess.check_output(
+        ["git", "-C", root, "rev-parse", f"{commit}^{{tree}}"],
+        text=True,
+    ).strip()
+    assert all(len(entry["sha256"]) == 64 for entry in manifest["files"])
+
+
+def test_release_builder_is_deterministic_and_excludes_untracked_files(tmp_path):
+    builder = load_builder()
+    root = Path(__file__).parents[2]
+    commit = subprocess.check_output(
+        ["git", "-C", root, "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+    planted = root / "arbitrary-untracked-release-secret.bin"
+    planted.write_bytes(b"not part of the reviewed commit")
+    try:
+        first = builder.build_releases(root, tmp_path / "first", "20260726", commit)
+        second = builder.build_releases(root, tmp_path / "second", "20260726", commit)
+    finally:
+        planted.unlink(missing_ok=True)
+
+    for first_path, second_path in zip(first, second, strict=True):
+        assert hashlib.sha256(first_path.read_bytes()).digest() == hashlib.sha256(
+            second_path.read_bytes()
+        ).digest()
+        with zipfile.ZipFile(first_path) as archive:
+            assert planted.name not in archive.namelist()
+
+
+@pytest.mark.parametrize("commit", ["62c6d5f", "not-a-commit", "f" * 40])
+def test_release_builder_rejects_nonexact_or_unresolved_commit(tmp_path, commit):
+    builder = load_builder()
+    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+        builder.build_releases(Path(__file__).parents[2], tmp_path, "20260726", commit)
