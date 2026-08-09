@@ -198,6 +198,19 @@ def test_three_fact_generation_uses_per_fact_targets_and_sequential_splits() -> 
     with pytest.raises(GapValidationError, match="sequential split_index"):
         V2GapGenerationService._validate(invalid, request)
 
+    out_of_order = batch.model_copy(
+        update={
+            "resolutions": (
+                _generated("C01-M1", source_id, split=True, split_index=2),
+                _generated("C01-M1", source_id, split=True, split_index=1),
+                _generated("C01-M2", source_id),
+                UnresolvedGapV2(fact_id="C01-M3", reason="No atomic grounded card."),
+            )
+        }
+    )
+    with pytest.raises(GapValidationError, match="sequential split_index"):
+        V2GapGenerationService._validate(out_of_order, request)
+
 
 def test_legacy_split_adapter_is_stable_and_rejects_ambiguous_partial_indices() -> None:
     source_id = _evidence().source_id
@@ -219,6 +232,13 @@ def test_legacy_split_adapter_is_stable_and_rejects_ambiguous_partial_indices() 
             (
                 _generated("C01-M2", source_id),
                 _generated("C01-M2", source_id),
+            )
+        )
+    with pytest.raises(LegacySplitIndexRecomputationRequired, match="invalid split indices"):
+        adapt_legacy_split_indices(
+            (
+                _generated("C01-M3", source_id, split=True, split_index=2),
+                _generated("C01-M3", source_id, split=True, split_index=1),
             )
         )
 
