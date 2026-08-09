@@ -18,6 +18,7 @@ from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.study_generation.domain import GenerationKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.service import revision_readiness_problem
+from oms_hub.web.lecture_labels import lecture_label
 from oms_hub.web.schemas import LectureApi, StepApi
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -222,6 +223,14 @@ def lecture_detail(request: Request, lecture_id: int) -> HTMLResponse:
 @router.get("/review", response_class=HTMLResponse)
 def review(request: Request) -> HTMLResponse:
     repository = _repo(request)
+    proposed_revisions = IngestionRepository(
+        request.app.state.database
+    ).list_proposed_revisions()
+    proposed_revision_labels = {
+        revision.id: lecture_label(lecture.subject, lecture.lecture_number)
+        for revision in proposed_revisions
+        if (lecture := repository.get_lecture(revision.lecture_id)) is not None
+    }
     lectures = [
         item
         for item in repository.list_lectures()
@@ -237,9 +246,8 @@ def review(request: Request) -> HTMLResponse:
             "lectures": lectures,
             "lecture_hues": {lecture.id: _course_hue(lecture.subject) for lecture in lectures},
             "import_issues": repository.list_import_issues(),
-            "proposed_revisions": IngestionRepository(
-                request.app.state.database
-            ).list_proposed_revisions(),
+            "proposed_revisions": proposed_revisions,
+            "proposed_revision_labels": proposed_revision_labels,
         },
     )
 

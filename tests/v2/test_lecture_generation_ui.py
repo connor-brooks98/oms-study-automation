@@ -198,7 +198,6 @@ def test_review_uses_course_relative_human_label_for_proposed_revisions(tmp_path
     assert "Promotion was interrupted." in recovery_page.text
     assert "Resume recovery" in recovery_page.text
     assert "Keep current file" not in recovery_page.text
-
 def test_lecture_upload_page_targets_the_selected_lecture(tmp_path):
     app = create_app(
         Settings(

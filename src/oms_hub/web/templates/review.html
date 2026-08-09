@@ -16,7 +16,7 @@
     <article class="card sh-card review-card">
       <div>
         <p class="mono-label">{{ revision.kind.value }} · Revision {{ revision.id }}</p>
-        <h3>Lecture {{ revision.lecture_id }}</h3>
+        <h3>{{ proposed_revision_labels.get(revision.id, "Lecture unavailable") }}</h3>
       </div>
       <div class="review-actions">
         {% if revision.kind.value == "slides" %}
