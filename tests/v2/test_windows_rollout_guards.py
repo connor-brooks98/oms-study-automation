@@ -24,6 +24,10 @@ def test_windows_revision_capture_preserves_the_complete_git_hash() -> None:
         assert "$Revision = @(& $Git.Source" in script
         assert "([string]$Revision[0]).Trim()" in script
 
+    installer = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+    assert '"^[0-9a-fA-F]{40}$"' in installer
+    assert "Git is required to establish exact build provenance." in installer
+
 
 def test_windows_installer_replaces_old_root_task_action_and_verifies_it() -> None:
     script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
@@ -37,7 +41,7 @@ def test_windows_installer_replaces_old_root_task_action_and_verifies_it() -> No
     assert "does not target $ExpectedProjectRoot" in script
 
 
-def test_windows_installer_stops_only_stale_old_root_hub_processes() -> None:
+def test_windows_installer_stops_and_verifies_only_same_root_hub_processes() -> None:
     script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
 
     assert "Get-CimInstance Win32_Process" in script
@@ -50,27 +54,61 @@ def test_windows_installer_stops_only_stale_old_root_hub_processes() -> None:
     assert "Get-Process -Id $Process.ProcessId -ErrorAction SilentlyContinue" in script
     assert "Stop-Process -Id $Process.ProcessId -Force" in script
     assert "Stop-Process -Name python" not in script
-    assert "old-root oms-hub.exe remains" in script
+    assert "same-root Study Hub process" in script
 
 
-def test_windows_installer_guard_covers_old_hub_tree_but_not_unrelated_python() -> None:
+def test_windows_installer_guard_covers_same_root_tree_but_not_unrelated_python() -> None:
     script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
 
-    # A stale oms-hub.exe seeds its descendant traversal. An orphaned old-venv
-    # Python process needs an explicit OMS Hub command-line match. Therefore an
-    # unrelated system Python process is not selected merely for being Python.
-    assert "if ($IsHubLauncher -and -not $IsExpectedRoot)" in script
-    assert "if ($IsPython -and -not $IsExpectedRoot -and $HasHubCommandLine" in script
-    assert "select only Hub/Python nodes" in script
-    assert "unrelated tools" in script
+    # A same-root oms-hub.exe seeds descendant traversal. An orphaned same-root
+    # Python process additionally needs an OMS Hub command-line match. A Python
+    # process outside this deployment cannot be selected merely for being Python.
+    assert "if ($IsHubLauncher -and $IsExpectedRoot)" in script
+    assert "if ($IsPython -and $IsExpectedRoot -and $HasHubCommandLine" in script
+    assert "same-root tree" in script
+    assert "generic Python processes from another deployment" in script
+
+
+def test_windows_installer_resolves_config_stops_tree_and_backs_up_before_pip() -> None:
+    script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+
+    config = script.index("$EffectiveDataRootValue = Get-EffectiveSetting")
+    stop = script.index("Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot")
+    backup = script.index('"--source", $DatabasePath')
+    complete = script.index("$BackupComplete = $true")
+    pip = script.index('-m pip install --upgrade pip')
+
+    assert config < stop < backup < complete < pip
+    assert 'Get-EffectiveSetting `\n  -Name "OMS_HUB_DATABASE_URL"' in script
+    assert "Resolve-SqliteDatabasePath" in script
+    assert "Verified rollback backup was not completed; installation is blocked." in script
+
+
+def test_windows_installer_backup_is_integrity_checked_and_atomically_complete() -> None:
+    installer = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+    helper = (ROOT / "scripts" / "backup-sqlite.py").read_text(encoding="utf-8")
+
+    assert "source_connection.backup(destination_connection)" in helper
+    assert 'PRAGMA integrity_check' in helper
+    assert '"--destination", $BackupDatabasePath' in installer
+    assert "Artifact backup checksum mismatch" in installer
+    assert "backup-manifest.json" in installer
+    assert "Get-FileHash" in installer
+    assert "backup-complete.json" in installer
+    assert installer.index("backup-manifest.json.sha256") < installer.index(
+        "$BackupComplete = $true"
+    )
 
 
 def test_windows_installer_polls_local_health_for_expected_root_and_revision() -> None:
     script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
 
     assert "Assert-StartedHubProvenance" in script
+    assert 'http://127.0.0.1:$Port/health/ready' in script
     assert "deployment_root" in script
     assert "build_revision" in script
+    assert '@("generation_worker", "ingestion_worker", "studio_worker")' in script
+    assert "[int]$Worker.start_count -ne 1" in script
     assert "Study Hub did not start from the expected root/build" in script
     assert "port ${Port}: $LastFailure" in script
     assert "port $Port: $LastFailure" not in script
