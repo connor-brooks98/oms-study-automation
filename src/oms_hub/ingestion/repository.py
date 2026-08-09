@@ -243,13 +243,18 @@ class IngestionRepository:
 
     def count_jobs(self, item_id: str, action: str) -> int:
         with self.database.session() as session:
+            actions = (
+                ("process", "confirmed_process")
+                if action == "process"
+                else (action,)
+            )
             return int(
                 session.scalar(
                     select(func.count())
                     .select_from(IngestionJobModel)
                     .where(
                         IngestionJobModel.upload_item_id == item_id,
-                        IngestionJobModel.action == action,
+                        IngestionJobModel.action.in_(actions),
                     )
                 )
                 or 0
