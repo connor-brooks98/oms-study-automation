@@ -639,7 +639,7 @@ test("failed-run actions use CSRF-protected retry and remove endpoints", async (
   );
 });
 
-test("refreshed failed-run actions keep the shared icon button classes", () => {
+test("failed jobs expose retry and removal while retry holds expose retry only", () => {
   class Node {
     constructor() {
       this.dataset = {};
@@ -676,6 +676,24 @@ test("refreshed failed-run actions keep the shared icon button classes", () => {
   );
   assert.equal(retry.dataset.retryQueuedJob, "");
   assert.equal(remove.dataset.removeFailedJob, "");
+
+  const heldRow = anki.jobRow(
+    { createElement: () => new Node() },
+    {
+      id: 8,
+      state: "ready_for_review",
+      can_retry: true,
+      lecture_id: 2,
+      target_deck: "Study Hub::Neuro",
+      updated_at: "2026-08-07T14:00:00",
+    },
+  );
+  const heldActions = heldRow.children[1];
+
+  assert.equal(heldActions.children.length, 1);
+  assert.equal(heldActions.children[0].className, "anki-icon-button sh-iconbtn");
+  assert.equal(heldActions.children[0].dataset.retryQueuedJob, "");
+  assert.equal(heldActions.children[0].dataset.removeFailedJob, undefined);
 });
 
 // -- Minimal fake DOM sufficient to drive initializeReview --

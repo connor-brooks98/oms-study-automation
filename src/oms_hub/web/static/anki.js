@@ -544,18 +544,21 @@
       retry.title = "Retry interrupted run";
       retry.append(element(documentRef, "span", "", "↻"));
       retry.firstChild.setAttribute("aria-hidden", "true");
-      const remove = element(
-        documentRef,
-        "button",
-        "anki-icon-button sh-iconbtn sh-btn--danger is-danger",
-      );
-      remove.type = "button";
-      remove.dataset.removeFailedJob = "";
-      remove.setAttribute("aria-label", "Remove interrupted run");
-      remove.title = "Remove interrupted run";
-      remove.append(element(documentRef, "span", "", "×"));
-      remove.firstChild.setAttribute("aria-hidden", "true");
-      actions.append(retry, remove);
+      actions.append(retry);
+      if (job.state === "failed") {
+        const remove = element(
+          documentRef,
+          "button",
+          "anki-icon-button sh-iconbtn sh-btn--danger is-danger",
+        );
+        remove.type = "button";
+        remove.dataset.removeFailedJob = "";
+        remove.setAttribute("aria-label", "Remove failed run");
+        remove.title = "Remove failed run";
+        remove.append(element(documentRef, "span", "", "×"));
+        remove.firstChild.setAttribute("aria-hidden", "true");
+        actions.append(remove);
+      }
       row.append(actions);
     }
     return row;
@@ -899,7 +902,7 @@
       if (message) {
         message.textContent = removing
           ? "Removing the failed run…"
-          : "Retrying the failed run…";
+          : "Retrying the interrupted stage…";
       }
       try {
         await runFailedJobAction(
@@ -912,7 +915,7 @@
         if (message) {
           message.textContent = removing
             ? "Failed run removed."
-            : "Failed run returned to the queue.";
+            : "Curation run returned to the queue.";
         }
       } catch (error) {
         if (message) message.textContent = error.message;
