@@ -731,6 +731,66 @@ def test_existing_duplicate_target_replaces_only_redundant_coverage_before_cap()
     assert report.failed == ()
 
 
+def test_late_existing_duplicate_target_replaces_early_redundancy_deterministically() -> None:
+    source = _source()
+    passage_id = source.passages[0].passage_id
+    duplicate = _duplicate_target(
+        card_id="D71",
+        concept_id="C01",
+        note_id=99,
+        passage_id=passage_id,
+    ).model_copy(update={"fact_id": "C01-M2"})
+    fast = FastCardClassification(
+        note_id=99,
+        verdict="LIKELY_YES",
+        grounded_concept_ids=("C01",),
+        supporting_passage_ids=(passage_id,),
+        reason="later exact target covers early ordinary coverage",
+    )
+    early_rows = (*(_generated(index, passage_id) for index in range(1, 71)), duplicate)
+    late_rows = (
+        _generated(1, passage_id).model_copy(update={"card_id": "G99"}),
+        *(_generated(index, passage_id) for index in range(2, 71)),
+        duplicate,
+    )
+    early = select_high_yield_v2(
+        (),
+        fast_classifications=(fast,),
+        ledger=_ledger(70),
+        source_index=source,
+        generated_cards=early_rows,
+    )
+    late = select_high_yield_v2(
+        (),
+        fast_classifications=(fast,),
+        ledger=_ledger(70),
+        source_index=source,
+        generated_cards=late_rows,
+    )
+    early_report = _strict_duplicate_selection_report(
+        source=source,
+        ledger=_ledger(70),
+        generated_rows=early_rows,
+        selection=early,
+        fast_classifications=(fast,),
+    )
+    late_report = _strict_duplicate_selection_report(
+        source=source,
+        ledger=_ledger(70),
+        generated_rows=late_rows,
+        selection=late,
+        fast_classifications=(fast,),
+    )
+
+    assert len(early.selection_metadata) == len(late.selection_metadata) == 70
+    assert "G01" in early.excluded_generated_card_ids
+    assert "G99" in late.excluded_generated_card_ids
+    assert early.selection_metadata[-1].identity == "existing:99"
+    assert late.selection_metadata[-1].identity == "existing:99"
+    assert early_report.failed == ()
+    assert late_report.failed == ()
+
+
 def test_existing_duplicate_target_keeps_unique_coverage_and_overflows() -> None:
     source = _source()
     passage_id = source.passages[0].passage_id
@@ -843,6 +903,9 @@ def test_generated_duplicate_target_boundaries_preserve_strict_s9_coverage() -> 
 
     assert "G70" in safe_selection.excluded_generated_card_ids
     assert "G71" in safe_selection.selected_generated_card_ids
+    # Generated exact targets are mandatory in their own tier, so identity
+    # ordering cannot delay them behind an equivalent ordinary generated card.
+    assert safe_selection.selection_metadata[0].identity == "generated:G71"
     assert safe_report.failed == ()
     assert "G70" in overflow_selection.selected_generated_card_ids
     assert overflow_selection.selection_metadata[-1].identity == "generated:G71"

@@ -921,6 +921,25 @@ def select_high_yield_v2(
             if count >= cap:
                 if not candidate.mandatory:
                     continue
+                if candidate.duplicate_target:
+                    replacement = _selected_duplicate_target_replacement(
+                        selected,
+                        candidate,
+                        remaining_duplicate_targets,
+                    )
+                    if replacement is not None:
+                        selected.remove(replacement)
+                        selected_identities.remove(replacement.identity)
+                        selected_coverage = {
+                            coverage
+                            for selected_candidate in selected
+                            for coverage in selected_candidate.coverage
+                        }
+                        selected_concept_coverage = {
+                            concept_id
+                            for selected_candidate in selected
+                            for concept_id in selected_candidate.concept_coverage
+                        }
             selected.append(candidate)
             selected_identities.add(candidate.identity)
             selected_coverage.update(candidate.coverage)
@@ -1021,6 +1040,34 @@ def _redundant_with_duplicate_targets(
     for target in pending_duplicate_targets:
         covered_by_selected_or_targets.update(target.concept_coverage)
     return candidate.concept_coverage <= covered_by_selected_or_targets
+
+
+def _selected_duplicate_target_replacement(
+    selected: Sequence[_QualitySelectionCandidate],
+    target: _QualitySelectionCandidate,
+    pending_duplicate_targets: Sequence[_QualitySelectionCandidate],
+) -> _QualitySelectionCandidate | None:
+    """Find the least-preferred selected card safely replaceable by an S8 target."""
+    replacements = []
+    for candidate in selected:
+        if candidate.mandatory:
+            continue
+        other_concepts = {
+            concept_id
+            for other in selected
+            if other.identity != candidate.identity
+            for concept_id in other.concept_coverage
+        }
+        other_concepts.update(target.concept_coverage)
+        other_concepts.update(
+            concept_id
+            for pending in pending_duplicate_targets
+            if pending.identity != target.identity
+            for concept_id in pending.concept_coverage
+        )
+        if candidate.concept_coverage <= other_concepts:
+            replacements.append(candidate)
+    return max(replacements, key=_candidate_static_key, default=None)
 
 
 def _candidate_quality_key(candidate: _QualitySelectionCandidate) -> tuple[int, int, int, int]:
