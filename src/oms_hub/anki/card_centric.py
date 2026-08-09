@@ -827,11 +827,11 @@ def select_high_yield_v2(
                     if concept_id in concepts
                 ),
                 priority=covered_priority(fast_classification.grounded_concept_ids),
-                # S8 may name either a thorough or independently eligible fast
-                # classification.  Eligibility remains unchanged; once eligible,
-                # the exact target identity is conserved through S9.
-                mandatory=fast_classification.note_id in duplicate_target_note_ids,
-                duplicate_target=fast_classification.note_id in duplicate_target_note_ids,
+                # Fast-pass rows are T6 only.  Never let an incoming S8
+                # duplicate target elevate one: historical or malformed
+                # artifacts must not bypass the warning-floor policy.
+                mandatory=False,
+                duplicate_target=False,
                 split=False,
                 flag_count=len(fast_classification.flags),
             )

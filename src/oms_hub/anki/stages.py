@@ -2161,10 +2161,10 @@ class CurationServicesRunner:
             for item in _all_card_classifications(context)
             if selection_eligible_v2(item, source)
         }
-        fast, _ = _card_fast_classifier(context)
-        existing_ids.update(
-            item.note_id for item in fast.results if fast_selection_eligible_v2(item, source)
-        )
+        # Only independently eligible thorough classifications can terminate a
+        # recovery card as an existing-note duplicate.  Fast-pass LIKELY_YES
+        # rows remain a below-floor T6 selection fallback; treating one as an
+        # S8 terminal target would let it bypass that quality boundary.
         existing_notes = tuple(
             _normalized_card_note(cards[note_id])
             for note_id in sorted(existing_ids)

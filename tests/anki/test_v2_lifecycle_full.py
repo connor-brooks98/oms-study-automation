@@ -1010,36 +1010,24 @@ def test_duplicate_target_identity_survives_selection_into_reconciliation() -> N
     assert "duplicate_coverage" in report.passed
 
 
-def test_fast_equivalent_duplicate_targets_survive_selection_into_s9() -> None:
-    """S8 fast-terminal targets remain exact selected identities through S9."""
-    source = lifecycle_source_payload(card_count=11)
+def test_fast_only_duplicate_terminal_does_not_promote_target_after_floor() -> None:
+    """Malformed fast-only duplicate terminals cannot bypass the T6 floor."""
+    source = lifecycle_source_payload(card_count=61)
     source_index = CardCentricSourceIndex.model_validate(source["source_index"])
     primary_id = next(
         passage.passage_id for passage in source_index.passages if passage.authority == "slide"
     )
-    ledger = _independent_ledger(10, mandatory=False)
-    terminals = (
+    terminal = (
         GeneratedCardResolution(
-            card_id="G-fast-duplicate-1",
-            concept_id="C01",
-            fact_id="C01-M1",
-            text="{{c1::First duplicate fact}}",
+            card_id="G-fast-duplicate",
+            concept_id="C61",
+            fact_id="C61-M1",
+            text="{{c1::Fast-only duplicate fact}}",
             source_passage_ids=(primary_id,),
-            evidence_ids=("E-fast-duplicate-1",),
+            evidence_ids=("E-fast-duplicate",),
             status="duplicate_of_existing",
-            duplicate_of_existing_note_id=10,
-            reason="Semantic duplicate of existing fast note 10.",
-        ),
-        GeneratedCardResolution(
-            card_id="G-fast-duplicate-2",
-            concept_id="C01",
-            fact_id="C01-M2",
-            text="{{c1::Second duplicate fact}}",
-            source_passage_ids=(primary_id,),
-            evidence_ids=("E-fast-duplicate-2",),
-            status="duplicate_of_existing",
-            duplicate_of_existing_note_id=11,
-            reason="Semantic duplicate of existing fast note 11.",
+            duplicate_of_existing_note_id=61,
+            reason="Semantic duplicate of existing fast note 61.",
         ),
     )
     classifications = tuple(
@@ -1048,94 +1036,33 @@ def test_fast_equivalent_duplicate_targets_survive_selection_into_s9() -> None:
             verdict="YES",
             primary_subject="fixture",
             reason="Independent grounded coverage.",
-            covered_concept_ids=(f"C{note_id + 1:02d}",),
+            covered_concept_ids=(f"C{note_id:02d}",),
             supporting_passage_ids=(primary_id,),
         )
-        for note_id in range(1, 10)
+        for note_id in range(1, 61)
     )
     fast_classifications = (
         FastCardClassification(
-            note_id=10,
+            note_id=61,
             verdict="LIKELY_YES",
-            grounded_concept_ids=("C01",),
+            grounded_concept_ids=("C61",),
             supporting_passage_ids=(primary_id,),
-            reason="First exact fast target.",
-        ),
-        FastCardClassification(
-            note_id=11,
-            verdict="LIKELY_YES",
-            grounded_concept_ids=("C01",),
-            supporting_passage_ids=(primary_id,),
-            reason="Second exact fast target.",
+            reason="Fast-only historical S8 target.",
         ),
     )
     selection = select_high_yield_v2(
         classifications,
         fast_classifications=fast_classifications,
-        ledger=ledger,
+        ledger=_independent_ledger(61, mandatory=False),
         source_index=source_index,
-        generated_cards=terminals,
-    )
-    snapshot = CardCentricReconciliationInput(
-        pipeline_contract_version="card_centric_v2",
-        concept_ids=tuple(concept.concept_id for concept in ledger.concepts),
-        coverage={concept.concept_id: "covered" for concept in ledger.concepts},
-        required_fact_ids=("C01-M1", "C01-M2"),
-        uncovered_after_s5=("C01",),
-        residual_ran_for=("C01",),
-        generated_cards=(),
-        raw_generated_cards=(),
-        canonical_generated_cards=(),
-        terminal_resolutions=(
-            GeneratedFactResolution(
-                fact_id="C01-M1",
-                kind=GeneratedResolutionKind.DUPLICATE_OF_EXISTING,
-                duplicate_of=DuplicateIdentity(existing_note_id=10),
-            ),
-            GeneratedFactResolution(
-                fact_id="C01-M2",
-                kind=GeneratedResolutionKind.DUPLICATE_OF_EXISTING,
-                duplicate_of=DuplicateIdentity(existing_note_id=11),
-            ),
-        ),
-        terminal_resolutions_provided=True,
-        canonical_unresolved_fact_ids=(),
-        unresolved_fact_ids=(),
-        expected_scoped_nids=tuple(range(1, 12)),
-        classifications=tuple(
-            AuditResolution(nid=note_id, verdict="keep") for note_id in range(1, 12)
-        ),
-        eligible_yes_nids=tuple(range(1, 12)),
-        selected_nids=selection.selected_existing_note_ids,
-        selected_generated_card_ids=(),
-        generated_card_ids=(),
-        source_passage_ids=tuple(passage.passage_id for passage in source_index.passages),
-        forbidden_cloze_targets=(),
-        prompt_sync_stale=False,
-        untagged_rate=0,
-        mandatory_nids=selection.mandatory_note_ids,
-        covered_concept_ids_by_nid={
-            **{
-                classification.note_id: classification.covered_concept_ids
-                for classification in classifications
-            },
-            **{
-                classification.note_id: classification.grounded_concept_ids
-                for classification in fast_classifications
-            },
-        },
-        selection_metadata=selection.selection_metadata,
-        selection_order=tuple(item.identity for item in selection.selection_metadata),
-        selected_count=len(selection.selected_existing_note_ids),
-        below_warning_floor=selection.below_warning_floor,
+        generated_cards=terminal,
     )
 
-    report = reconcile_card_centric(snapshot)
-
-    assert selection.selected_existing_note_ids == tuple(range(1, 12))
-    assert selection.mandatory_note_ids == (10, 11)
-    assert report.failed == ()
-    assert "duplicate_coverage" in report.passed
+    assert set(selection.selected_existing_note_ids) == set(range(1, 61))
+    assert len(selection.selected_existing_note_ids) == 60
+    assert 61 in selection.excluded_existing_note_ids
+    assert selection.mandatory_note_ids == ()
+    assert all(item.identity != "existing:61" for item in selection.selection_metadata)
 
 
 def test_selection_never_pads_with_unclassified_s4a_fallback_expected_red_p3_h1() -> None:
@@ -1280,8 +1207,10 @@ def test_fast_only_concept_gets_terminal_replacement_after_floor_before_s9() -> 
                 {
                     "fact_id": "C61-M1",
                     "status": "generated",
-                    "text": "Independent entity 61 has {{c1::terminal coverage}}.",
-                    "extra": "Fast-only replacement.",
+                    # This is an exact semantic match for note 1, whose only
+                    # classification is fast-pass LIKELY_YES below.
+                    "text": "Heme synthesis begins in {{c1::mitochondria}}.",
+                    "extra": "Fixture card.",
                     "note_type": "Cloze",
                     "source_passage_ids": [slide_id],
                 }
@@ -1300,14 +1229,14 @@ def test_fast_only_concept_gets_terminal_replacement_after_floor_before_s9() -> 
             "classifier": ClassifierResult(
                 results=tuple(
                     CardClassification(
-                        note_id=index + 1,
+                        note_id=index,
                         verdict="YES",
                         primary_subject=f"independent entity {index}",
                         reason="Grounded ordinary coverage.",
-                        covered_concept_ids=(f"C{index:02d}",),
+                        covered_concept_ids=(f"C{index - 1:02d}",),
                         supporting_passage_ids=(slide_id,),
                     )
-                    for index in range(1, 61)
+                    for index in range(2, 62)
                 ),
                 telemetry=ClassifierTelemetry(
                     batch_count=0,
@@ -1365,6 +1294,11 @@ def test_fast_only_concept_gets_terminal_replacement_after_floor_before_s9() -> 
             job=job, stage=CurationStage.DEDUPE, prior_payloads=prior
         )
         prior[CurationStage.DEDUPE] = deduped.payload
+        resolution = deduped.payload["resolutions"][0]
+        assert resolution["status"] == "generated"
+        assert resolution["duplicate_of_existing_note_id"] is None
+        assert resolution["duplicate_of_generated_card_id"] is None
+        generated_card_id = resolution["card_id"]
         selection = await harness.invoke(
             job=job, stage=CurationStage.CARD_SELECTION, prior_payloads=prior
         )
@@ -1375,8 +1309,17 @@ def test_fast_only_concept_gets_terminal_replacement_after_floor_before_s9() -> 
 
         assert selection.payload["selected_count"] == 61
         assert 1 not in selection.payload["selected_existing_note_ids"]
+        assert selection.payload["selected_generated_card_ids"] == [generated_card_id]
+        terminal = reconciliation.payload["snapshot"]["terminal_resolutions"]
+        assert len(terminal) == 1
+        assert terminal[0]["fact_id"] == "C61-M1"
+        assert terminal[0]["kind"] == "generated"
+        assert terminal[0]["generated_card_ids"] == [generated_card_id]
+        assert terminal[0]["duplicate_of"] is None
         assert reconciliation.payload["failed"] == []
         assert reconciliation.blocking_error is None
+        assert "A4" in reconciliation.payload["passed"]
+        assert "duplicate_coverage" in reconciliation.payload["passed"]
 
     asyncio.run(scenario())
 

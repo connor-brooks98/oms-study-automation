@@ -273,6 +273,19 @@ def _duplicate_target(
     )
 
 
+def _thorough_duplicate_target(
+    *, note_id: int, concept_id: str, passage_id: str
+) -> CardClassification:
+    return CardClassification(
+        note_id=note_id,
+        verdict="YES",
+        primary_subject="fixture",
+        reason="independently eligible thorough S8 duplicate target",
+        covered_concept_ids=(concept_id,),
+        supporting_passage_ids=(passage_id,),
+    )
+
+
 def _generated_duplicate_target(
     *,
     card_id: str,
@@ -395,7 +408,7 @@ def _strict_duplicate_selection_report(
     return reconcile_card_centric(snapshot)
 
 
-def test_fast_duplicate_target_is_conserved_after_warning_floor() -> None:
+def test_fast_duplicate_target_is_not_mandatory_after_warning_floor() -> None:
     source = _source()
     passage_id = source.passages[0].passage_id
     target = _duplicate_target(
@@ -412,7 +425,7 @@ def test_fast_duplicate_target_is_conserved_after_warning_floor() -> None:
                 verdict="LIKELY_YES",
                 grounded_concept_ids=("C61",),
                 supporting_passage_ids=(passage_id,),
-                reason="eligible fast S8 duplicate target",
+                reason="fast-only historical S8 duplicate target",
             ),
         ),
         ledger=_ledger(61),
@@ -420,10 +433,10 @@ def test_fast_duplicate_target_is_conserved_after_warning_floor() -> None:
         generated_cards=(*(_generated(index, passage_id) for index in range(1, 61)), target),
     )
 
-    assert result.selected_existing_note_ids == (99,)
-    assert result.mandatory_note_ids == (99,)
-    assert result.selection_metadata[-1].selected_position == 61
-    assert result.selection_metadata[-1].tier is SelectionTier.T6
+    assert result.selected_existing_note_ids == ()
+    assert result.mandatory_note_ids == ()
+    assert 99 in result.excluded_existing_note_ids
+    assert all(item.identity != "existing:99" for item in result.selection_metadata)
 
 
 def test_thorough_duplicate_target_has_governed_marginal_reason_after_65() -> None:
@@ -467,16 +480,12 @@ def test_duplicate_targets_reserve_soft_cap_then_use_mandatory_overflow() -> Non
         note_id=99,
         passage_id=passage_id,
     )
-    fast = FastCardClassification(
-        note_id=99,
-        verdict="LIKELY_YES",
-        grounded_concept_ids=("C70",),
-        supporting_passage_ids=(passage_id,),
-        reason="eligible fast S8 duplicate target",
+    thorough = _thorough_duplicate_target(
+        note_id=99, concept_id="C70", passage_id=passage_id
     )
     reserved = select_high_yield_v2(
-        (),
-        fast_classifications=(fast,),
+        (thorough,),
+        fast_classifications=(),
         ledger=_ledger(70),
         source_index=source,
         generated_cards=(*(_generated(index, passage_id) for index in range(1, 71)), target),
@@ -488,8 +497,8 @@ def test_duplicate_targets_reserve_soft_cap_then_use_mandatory_overflow() -> Non
     assert "G70" in reserved.excluded_generated_card_ids
 
     overflow = select_high_yield_v2(
-        (),
-        fast_classifications=(fast,),
+        (thorough,),
+        fast_classifications=(),
         ledger=_ledger(70, high=set(range(1, 71))),
         source_index=source,
         generated_cards=(*(_generated(index, passage_id) for index in range(1, 71)), target),
@@ -525,23 +534,15 @@ def test_multiple_equivalent_duplicate_targets_are_all_conserved() -> None:
         ),
     )
     result = select_high_yield_v2(
-        (),
-        fast_classifications=(
-            FastCardClassification(
-                note_id=10,
-                verdict="LIKELY_YES",
-                grounded_concept_ids=("C01",),
-                supporting_passage_ids=(passage_id,),
-                reason="first exact target",
+        (
+            _thorough_duplicate_target(
+                note_id=10, concept_id="C01", passage_id=passage_id
             ),
-            FastCardClassification(
-                note_id=11,
-                verdict="LIKELY_YES",
-                grounded_concept_ids=("C01",),
-                supporting_passage_ids=(passage_id,),
-                reason="second exact target",
+            _thorough_duplicate_target(
+                note_id=11, concept_id="C01", passage_id=passage_id
             ),
         ),
+        fast_classifications=(),
         ledger=_ledger(1),
         source_index=source,
         generated_cards=targets,
@@ -702,17 +703,13 @@ def test_existing_duplicate_target_replaces_only_redundant_coverage_before_cap()
         note_id=99,
         passage_id=passage_id,
     ).model_copy(update={"fact_id": "C70-M2"})
-    fast = FastCardClassification(
-        note_id=99,
-        verdict="LIKELY_YES",
-        grounded_concept_ids=("C70",),
-        supporting_passage_ids=(passage_id,),
-        reason="exact target covers the same ordinary concept",
+    thorough = _thorough_duplicate_target(
+        note_id=99, concept_id="C70", passage_id=passage_id
     )
     generated = (*(_generated(index, passage_id) for index in range(1, 71)), duplicate)
     selection = select_high_yield_v2(
-        (),
-        fast_classifications=(fast,),
+        (thorough,),
+        fast_classifications=(),
         ledger=_ledger(70),
         source_index=source,
         generated_cards=generated,
@@ -722,7 +719,7 @@ def test_existing_duplicate_target_replaces_only_redundant_coverage_before_cap()
         ledger=_ledger(70),
         generated_rows=generated,
         selection=selection,
-        fast_classifications=(fast,),
+        classifications=(thorough,),
     )
 
     assert selection.selected_existing_note_ids == (99,)
@@ -740,12 +737,8 @@ def test_late_existing_duplicate_target_replaces_early_redundancy_deterministica
         note_id=99,
         passage_id=passage_id,
     ).model_copy(update={"fact_id": "C01-M2"})
-    fast = FastCardClassification(
-        note_id=99,
-        verdict="LIKELY_YES",
-        grounded_concept_ids=("C01",),
-        supporting_passage_ids=(passage_id,),
-        reason="later exact target covers early ordinary coverage",
+    thorough = _thorough_duplicate_target(
+        note_id=99, concept_id="C01", passage_id=passage_id
     )
     early_rows = (*(_generated(index, passage_id) for index in range(1, 71)), duplicate)
     late_rows = (
@@ -754,15 +747,15 @@ def test_late_existing_duplicate_target_replaces_early_redundancy_deterministica
         duplicate,
     )
     early = select_high_yield_v2(
-        (),
-        fast_classifications=(fast,),
+        (thorough,),
+        fast_classifications=(),
         ledger=_ledger(70),
         source_index=source,
         generated_cards=early_rows,
     )
     late = select_high_yield_v2(
-        (),
-        fast_classifications=(fast,),
+        (thorough,),
+        fast_classifications=(),
         ledger=_ledger(70),
         source_index=source,
         generated_cards=late_rows,
@@ -772,14 +765,14 @@ def test_late_existing_duplicate_target_replaces_early_redundancy_deterministica
         ledger=_ledger(70),
         generated_rows=early_rows,
         selection=early,
-        fast_classifications=(fast,),
+        classifications=(thorough,),
     )
     late_report = _strict_duplicate_selection_report(
         source=source,
         ledger=_ledger(70),
         generated_rows=late_rows,
         selection=late,
-        fast_classifications=(fast,),
+        classifications=(thorough,),
     )
 
     assert len(early.selection_metadata) == len(late.selection_metadata) == 70
@@ -800,17 +793,13 @@ def test_existing_duplicate_target_keeps_unique_coverage_and_overflows() -> None
         note_id=99,
         passage_id=passage_id,
     )
-    fast = FastCardClassification(
-        note_id=99,
-        verdict="LIKELY_YES",
-        grounded_concept_ids=("C71",),
-        supporting_passage_ids=(passage_id,),
-        reason="exact target has distinct required coverage",
+    thorough = _thorough_duplicate_target(
+        note_id=99, concept_id="C71", passage_id=passage_id
     )
     generated = (*(_generated(index, passage_id) for index in range(1, 71)), duplicate)
     selection = select_high_yield_v2(
-        (),
-        fast_classifications=(fast,),
+        (thorough,),
+        fast_classifications=(),
         ledger=_ledger(71),
         source_index=source,
         generated_cards=generated,
@@ -825,7 +814,7 @@ def test_existing_duplicate_target_keeps_unique_coverage_and_overflows() -> None
         ledger=_ledger(71),
         generated_rows=generated,
         selection=selection,
-        fast_classifications=(fast,),
+        classifications=(thorough,),
     )
 
     assert "G70" in selection.selected_generated_card_ids
