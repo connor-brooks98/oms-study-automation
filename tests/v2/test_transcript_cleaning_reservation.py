@@ -1,5 +1,6 @@
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier, Lock
 
@@ -8,11 +9,12 @@ from sqlalchemy import text
 
 from oms_hub.config import Settings
 from oms_hub.db import Database
-from oms_hub.ingestion.domain import StagedUpload, UploadKind, UploadState
+from oms_hub.ingestion.domain import IngestionJob, StagedUpload, UploadKind, UploadState
 from oms_hub.ingestion.matcher import UploadMatcher
 from oms_hub.ingestion.repository import IngestionRepository, TranscriptAdmissionPending
 from oms_hub.ingestion.service import IngestionService
 from oms_hub.ingestion.staging import StagingService
+from oms_hub.ingestion.worker import IngestionWorker
 from oms_hub.llm.domain import CleanResult, ProviderName
 from oms_hub.models import IngestionJobModel, StudyRevisionModel
 from oms_hub.repositories import CatalogRepository, LectureInput
@@ -202,3 +204,71 @@ def test_confirmed_loser_cannot_bypass_cleaning_admission(tmp_path: Path) -> Non
     assert cleaner.calls == 2
     assert replacement.current is False
     assert repository.require_item("loser").state is UploadState.NEEDS_REVIEW
+
+
+def test_cleaning_admission_contention_retries_past_normal_attempt_cap(
+    tmp_path: Path,
+) -> None:
+    database, repository, lecture_id = _prepared(tmp_path)
+    _add(repository, tmp_path, "winner")
+    _add(repository, tmp_path, "loser")
+    repository.set_manual_assignment("winner", lecture_id)
+    repository.set_manual_assignment("loser", lecture_id)
+    IngestionService(
+        repository,
+        CatalogRepository(database),
+        UploadMatcher(),
+        StagingService(tmp_path / "staging", 1_000_000, 2_000_000),
+    ).confirm_processing("loser")
+    with database.session() as session:
+        stored = session.scalar(
+            text("SELECT id FROM ingestion_jobs WHERE upload_item_id='loser'")
+        )
+        assert stored is not None
+    job = IngestionJob(
+        id=stored,
+        upload_item_id="loser",
+        kind=UploadKind.TRANSCRIPTS,
+        action="confirmed_process",
+        attempts=IngestionWorker.max_attempts,
+        claimed_at=datetime.now(UTC),
+    )
+    worker = IngestionWorker(repository, object(), object())
+
+    worker._handle_failure(job, TranscriptAdmissionPending("winner owns cleaning"))
+
+    assert repository.require_item("loser").state is UploadState.QUEUED
+    assert repository.count_jobs("loser", "confirmed_process") == 1
+
+
+def test_recovery_parks_cleaning_owner_when_a_current_revision_exists(
+    tmp_path: Path,
+) -> None:
+    database, repository, lecture_id = _prepared(tmp_path)
+    _add(repository, tmp_path, "owner")
+    _add(repository, tmp_path, "current")
+    repository.set_manual_assignment("owner", lecture_id)
+    with database.session() as session:
+        session.add(
+            StudyRevisionModel(
+                upload_item_id="current",
+                lecture_id=lecture_id,
+                kind=UploadKind.TRANSCRIPTS.value,
+                source_sha256="e" * 64,
+                immutable_source_path=str(tmp_path / "current.txt"),
+                state="current",
+                current=True,
+            )
+        )
+
+    repository.recover_interrupted_jobs()
+
+    assert repository.require_item("owner").state is UploadState.AWAITING_CONFIRMATION
+    assert repository.claim_next_job(datetime.now(UTC)) is None
+    IngestionService(
+        repository,
+        CatalogRepository(database),
+        UploadMatcher(),
+        StagingService(tmp_path / "staging", 1_000_000, 2_000_000),
+    ).confirm_processing("owner")
+    assert repository.claim_next_job(datetime.now(UTC)) is not None

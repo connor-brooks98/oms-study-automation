@@ -63,7 +63,10 @@ class IngestionWorker:
 
     def _handle_failure(self, job: IngestionJob, error: Exception) -> None:
         detail = self._concise_error(error)
-        recovery_pending = isinstance(error, PromotionRecoveryError)
+        recovery_pending = isinstance(
+            error,
+            (PromotionRecoveryError, TranscriptAdmissionPending),
+        )
         if self._is_transient(error) and (
             recovery_pending or job.attempts < self.max_attempts
         ):

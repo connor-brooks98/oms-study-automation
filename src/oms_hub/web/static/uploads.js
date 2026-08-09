@@ -53,6 +53,9 @@
   ) => {
     const controller = new AbortController();
     const external = options.signal;
+    if (external?.aborted) {
+      throw new DOMException("Cancelled", "AbortError");
+    }
     const cancel = () => controller.abort();
     external?.addEventListener("abort", cancel, { once: true });
     let timedOut = false;
@@ -225,8 +228,13 @@
         const batch = await response.json();
         renderBatch(batch);
         if (showConfirmation(batch, batchId)) {
-          await new Promise((resolve) => {
+          await new Promise((resolve, reject) => {
             resumeDecision = resolve;
+            const abort = () => {
+              resumeDecision = null;
+              reject(new DOMException("Cancelled", "AbortError"));
+            };
+            signal.addEventListener("abort", abort, { once: true });
           });
           delay = 750;
           continue;
@@ -470,7 +478,9 @@
           { method: "POST", headers: csrfHeaders(), signal: controller.signal },
         );
         const result = await finalized.json();
-        if (!finalized.ok) throw new Error(result.detail || result.errors?.[0]?.detail || "Upload was rejected.");
+        if (!finalized.ok) {
+          throw new Error(rejectionDetail(result, "Upload was rejected."));
+        }
         setProgress(100);
         await pollBatch(result.batch_id, controller.signal, deadline);
       } catch (error) {
@@ -481,6 +491,10 @@
               method: "DELETE", headers: csrfHeaders(), keepalive: true,
             }).catch(() => {});
           }
+          if (dialog?.open) dialog.close();
+          pausedItem = null;
+          pausedBatchId = null;
+          resumeDecision = null;
           status.textContent = "Upload cancelled.";
         } else status.textContent = error instanceof Error
           ? error.message

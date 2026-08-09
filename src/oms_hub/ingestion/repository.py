@@ -389,6 +389,17 @@ class IngestionRepository:
                     revision.state = "proposed"
                     item.state = UploadState.AWAITING_CONFIRMATION.value
                     item.error = "a first transcript completed while this upload was recovering"
+                    for job in session.scalars(
+                        select(IngestionJobModel).where(
+                            IngestionJobModel.upload_item_id == item.id,
+                            IngestionJobModel.action.in_(
+                                ("process", "confirmed_process")
+                            ),
+                        )
+                    ):
+                        job.state = UploadState.AWAITING_CONFIRMATION.value
+                        job.next_attempt_at = None
+                        job.error = item.error
                     self._sync_batch_state(session, item.batch_id)
                     recovered += 1
                     continue
