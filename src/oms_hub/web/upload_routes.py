@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 from io import BytesIO
 from pathlib import Path
 from typing import Annotated, cast
@@ -22,6 +23,7 @@ from oms_hub.ingestion.staging import StagingService, UploadRejected
 from oms_hub.repositories import CatalogRepository
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 templates = Jinja2Templates(
     directory=str(Path(__file__).parent / "templates")
 )
@@ -494,14 +496,23 @@ def _finalize_manifest(
             staging.release_manifest_finalization(manifest_id)
             staging.clear_manifest_finalization_outcome(manifest_id)
         raise
-    staging.complete_manifest_finalization(manifest_id, batch_id)
-    if manifest.lecture_id is not None:
-        for _ in moved:
-            service._complete_match_steps(manifest.lecture_id, manifest.kind)
-    else:
-        for decision in decisions.values():
-            if decision.lecture_id is not None:
-                service._complete_match_steps(decision.lecture_id, manifest.kind)
+    # The repository transaction is the durable acceptance boundary.  Cleanup
+    # and catalog progress are recoverable side effects and must never hide a
+    # committed batch from the caller.
+    try:
+        staging.complete_manifest_finalization(manifest_id, batch_id)
+    except Exception:  # noqa: BLE001 - recovery hook reconciles pending state
+        logger.exception("post-commit manifest cleanup failed: %s", manifest_id)
+    try:
+        if manifest.lecture_id is not None:
+            for _ in moved:
+                service._complete_match_steps(manifest.lecture_id, manifest.kind)
+        else:
+            for decision in decisions.values():
+                if decision.lecture_id is not None:
+                    service._complete_match_steps(decision.lecture_id, manifest.kind)
+    except Exception:  # noqa: BLE001 - accepted upload remains authoritative
+        logger.exception("post-commit catalog progress failed: %s", batch_id)
     return {"batch_id": batch_id}
 
 

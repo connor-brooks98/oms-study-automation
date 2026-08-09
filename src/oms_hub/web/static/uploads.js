@@ -211,6 +211,22 @@
     }
   };
 
+  const isDefinitiveFinalizationRejection = (status) => (
+    Number.isInteger(status) && status >= 400 && status < 500
+  );
+
+  const reconcileAmbiguousFinalization = async (
+    fetchImpl,
+    manifestId,
+    headers,
+    poll,
+  ) => {
+    const outcome = await cancelManifest(fetchImpl, manifestId, headers);
+    if (!outcome.finalized) return outcome;
+    await reconcileFinalizedBatch(poll, outcome.batchId);
+    return outcome;
+  };
+
   const cancellationOwner = (activeSubmission, recoveryController) => (
     recoveryController ? { controller: recoveryController } : activeSubmission
   );
@@ -598,7 +614,9 @@
       const snapshot = freezeManifest(chosenFiles);
       const controller = new AbortController();
       const deadline = Date.now() + (20 * 60 * 1000);
-      activeSubmission = { controller, manifestId: null };
+      activeSubmission = {
+        controller, manifestId: null, finalizeStarted: false, definitiveFinalizationRejection: false,
+      };
       input.disabled = true;
       browse.disabled = true;
       zone.setAttribute("aria-disabled", "true");
@@ -615,12 +633,16 @@
           status.textContent = `Uploading ${slot.filename}…`;
           await chunkUpload(manifestId, slot, controller.signal);
         }
+        activeSubmission.finalizeStarted = true;
         const finalized = await fetchWithTimeout(
           `/api/upload-manifests/${encodeURIComponent(manifestId)}/finalize`,
           { method: "POST", headers: csrfHeaders(), signal: controller.signal },
         );
         const result = await finalized.json();
         if (!finalized.ok) {
+          activeSubmission.definitiveFinalizationRejection = isDefinitiveFinalizationRejection(
+            finalized.status,
+          );
           throw new Error(rejectionDetail(result, "Upload was rejected."));
         }
         setProgress(100);
@@ -657,6 +679,29 @@
           clearPausedDecision();
           status.textContent = "Upload cancelled.";
         } else {
+          if (
+            activeSubmission?.finalizeStarted
+            && !activeSubmission.definitiveFinalizationRejection
+            && activeSubmission?.manifestId
+          ) {
+            try {
+              const outcome = await reconcileAmbiguousFinalization(
+                fetchImpl,
+                activeSubmission.manifestId,
+                csrfHeaders(),
+                pollBatch,
+              );
+              if (outcome.finalized) {
+                clearPausedDecision();
+                status.textContent = "Upload was already finalized.";
+                return;
+              }
+            } catch (_reconcileError) {
+              clearPausedDecision();
+              status.textContent = "Upload finalization outcome could not be confirmed.";
+              return;
+            }
+          }
           clearPausedDecision();
           status.textContent = error instanceof Error
             ? error.message
@@ -680,6 +725,8 @@
     handleDecisionDialogCancel,
     cancelManifest,
     reconcileFinalizedBatch,
+    reconcileAmbiguousFinalization,
+    isDefinitiveFinalizationRejection,
     cancellationOwner,
     pollUntilTerminal,
     waitForDecision,

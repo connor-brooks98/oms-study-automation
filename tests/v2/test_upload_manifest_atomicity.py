@@ -1,4 +1,6 @@
 import hashlib
+import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -10,6 +12,7 @@ from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.ingestion.staging import UploadRejected
 from oms_hub.models import IngestionJobModel, UploadBatchModel, UploadItemModel
+from oms_hub.repositories import LectureInput
 
 
 def _client(tmp_path: Path) -> tuple[TestClient, object]:
@@ -550,3 +553,81 @@ def test_pending_finalization_outcome_rejects_cancel_without_false_success(
     assert cancelled.status_code == 409
     assert cancelled.json()["detail"] == "upload manifest finalization is unresolved"
     assert _counts(app) == (0, 0, 0)
+
+
+def test_postcommit_cleanup_failure_still_returns_accepted_batch(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    client, app = _client(tmp_path)
+    payload = b"accepted despite cleanup fault"
+    slot_id = str(uuid4())
+    created = client.post(
+        "/api/upload-manifests",
+        json={"kind": "transcripts", "files": [{
+            "slot_id": slot_id, "filename": "cleanup.txt", "size_bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }]},
+    )
+    manifest_id = created.json()["manifest_id"]
+    assert client.post(
+        "/uploads/transcripts",
+        data={"manifest_id": manifest_id, "slot_ids": slot_id},
+        files=[("files", ("cleanup.txt", payload))],
+    ).status_code == 202
+    staging = app.state.upload_staging  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        staging, "complete_manifest_finalization",
+        lambda *_args: (_ for _ in ()).throw(OSError("cleanup unavailable")),
+    )
+
+    finalized = client.post(f"/api/upload-manifests/{manifest_id}/finalize")
+
+    assert finalized.status_code == 202
+    assert _counts(app) == (1, 1, 0)
+    assert staging._manifest_finalization_outcome(manifest_id) is not None
+    old = (datetime.now(UTC) - timedelta(hours=25)).timestamp()
+    for path in (
+        staging.root / "manifests" / manifest_id,
+        staging.root / "manifests" / f"{manifest_id}.claim",
+        staging.root / "manifests" / f"{manifest_id}.finalized",
+    ):
+        os.utime(path, (old, old))
+    app.state.ingestion_service.collect_staging(datetime.now(UTC))  # type: ignore[attr-defined]
+    assert staging.finalized_manifest_outcome(manifest_id) == {
+        "batch_id": finalized.json()["batch_id"]
+    }
+
+
+def test_postcommit_catalog_failure_still_returns_accepted_batch(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    client, app = _client(tmp_path)
+    lecture_id = app.state.catalog_repository.upsert_lecture(  # type: ignore[attr-defined]
+        LectureInput("Cardiology", 1, 8, "Arrhythmia", "Dr Test", None)
+    )
+    payload = b"accepted despite catalog fault"
+    slot_id = str(uuid4())
+    created = client.post(
+        "/api/upload-manifests",
+        json={"kind": "transcripts", "lecture_id": lecture_id, "files": [{
+            "slot_id": slot_id, "filename": "catalog.txt", "size_bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }]},
+    )
+    manifest_id = created.json()["manifest_id"]
+    assert client.post(
+        "/uploads/transcripts",
+        data={"manifest_id": manifest_id, "slot_ids": slot_id},
+        files=[("files", ("catalog.txt", payload))],
+    ).status_code == 202
+    monkeypatch.setattr(
+        app.state.ingestion_service, "_complete_match_steps",  # type: ignore[attr-defined]
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("catalog unavailable")),
+    )
+
+    finalized = client.post(f"/api/upload-manifests/{manifest_id}/finalize")
+
+    assert finalized.status_code == 202
+    assert _counts(app) == (1, 1, 1)

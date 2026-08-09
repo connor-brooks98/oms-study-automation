@@ -270,6 +270,29 @@ test("finalized cancellation polls active lifecycle until terminal and renders e
   assert.equal(result.lifecycle, "terminal");
 });
 
+test("ambiguous finalize failures reconcile committed outcomes but preserve 422 rejection", async () => {
+  let polled = 0;
+  const committed = await uploads.reconcileAmbiguousFinalization(
+    async () => ({
+      status: 409,
+      ok: false,
+      json: async () => ({ batch_id: "batch-1" }),
+    }),
+    "manifest-1",
+    {},
+    async (batchId) => {
+      polled += 1;
+      assert.equal(batchId, "batch-1");
+      return { lifecycle: "terminal", items: [] };
+    },
+  );
+
+  assert.equal(committed.finalized, true);
+  assert.equal(polled, 1);
+  assert.equal(uploads.isDefinitiveFinalizationRejection(422), true);
+  assert.equal(uploads.isDefinitiveFinalizationRejection(500), false);
+});
+
 test("recovered confirmation Escape aborts the fresh reconciliation controller", async () => {
   const original = new AbortController();
   original.abort();
