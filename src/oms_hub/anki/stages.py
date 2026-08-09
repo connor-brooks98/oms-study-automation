@@ -400,6 +400,7 @@ class CurationServicesRunner:
                     (
                         "card-centric-ledger-v2",
                         "card-centric-fast-classifier",
+                        "card-centric-classifier",
                         "card-centric-gap-v2",
                     )
                 )
