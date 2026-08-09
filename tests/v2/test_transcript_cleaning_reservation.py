@@ -265,10 +265,38 @@ def test_recovery_parks_cleaning_owner_when_a_current_revision_exists(
 
     assert repository.require_item("owner").state is UploadState.AWAITING_CONFIRMATION
     assert repository.claim_next_job(datetime.now(UTC)) is None
-    IngestionService(
+    service = IngestionService(
         repository,
         CatalogRepository(database),
         UploadMatcher(),
         StagingService(tmp_path / "staging", 1_000_000, 2_000_000),
-    ).confirm_processing("owner")
-    assert repository.claim_next_job(datetime.now(UTC)) is not None
+    )
+    service.confirm_processing("owner")
+    with database.session() as session:
+        jobs = session.scalars(
+            text("SELECT id FROM ingestion_jobs WHERE upload_item_id='owner'")
+        ).all()
+    assert len(jobs) == 1
+    claimed = repository.claim_next_job(datetime.now(UTC))
+    assert claimed is not None
+    assert claimed.action == "confirmed_process"
+    pipeline = TranscriptPipeline(
+        database,
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path / "data",
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+            study_root=tmp_path / "study",
+            transcript_min_clean_ratio=0.1,
+            transcript_max_clean_ratio=2.0,
+        ),
+        FixedPrompt(),
+        CountingCleaner(),
+    )
+    pipeline.process("owner")
+    with database.session() as session:
+        states = session.scalars(
+            text("SELECT state FROM ingestion_jobs WHERE upload_item_id='owner'")
+        ).all()
+    assert len(states) == 1
+    assert states[0] not in {"queued", "processing"}

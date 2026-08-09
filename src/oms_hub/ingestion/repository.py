@@ -1,4 +1,5 @@
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -36,6 +37,9 @@ class TranscriptAdmissionPending(RuntimeError):
     """A durable cleaning owner exists; retry without making an LLM call."""
 
     pass
+
+
+_LOGICAL_PROCESS_ACTIONS = ("process", "confirmed_process")
 
 
 def _filed_artifact_matches(revision: StudyRevisionModel) -> bool:
@@ -461,6 +465,10 @@ class IngestionRepository:
     ) -> None:
         with self.database.session() as session:
             stored = session.get(IngestionJobModel, job.id)
+            if job.action in _LOGICAL_PROCESS_ACTIONS:
+                stored = self._consolidate_logical_process_jobs(
+                    session, job.upload_item_id, action=job.action
+                )
             item = session.get(UploadItemModel, job.upload_item_id)
             if stored is None or item is None:
                 raise KeyError(job.id)
@@ -486,6 +494,10 @@ class IngestionRepository:
             raise ValueError("job failure state is invalid")
         with self.database.session() as session:
             stored = session.get(IngestionJobModel, job.id)
+            if job.action in _LOGICAL_PROCESS_ACTIONS:
+                stored = self._consolidate_logical_process_jobs(
+                    session, job.upload_item_id, action=job.action
+                )
             item = session.get(UploadItemModel, job.upload_item_id)
             if stored is None or item is None:
                 raise KeyError(job.id)
@@ -727,13 +739,8 @@ class IngestionRepository:
                 )
                 revision.current = current
                 revision.promoted_at = utc_now() if current else None
-            job = session.scalar(
-                select(IngestionJobModel).where(
-                    IngestionJobModel.upload_item_id == item_id,
-                    IngestionJobModel.action.in_(("process", "confirmed_process")),
-                )
-            )
-            if job is not None:
+            jobs = self._logical_process_jobs(session, item_id)
+            for job in jobs:
                 job.state = state.value
                 job.error = error
             self._sync_batch_state(session, item.batch_id)
@@ -819,13 +826,7 @@ class IngestionRepository:
                     raise KeyError(item_id)
                 item.state = UploadState.COMPLETE.value
                 item.error = None
-                job = session.scalar(
-                    select(IngestionJobModel).where(
-                        IngestionJobModel.upload_item_id == item_id,
-                        IngestionJobModel.action.in_(("process", "confirmed_process")),
-                    )
-                )
-                if job is not None:
+                for job in self._logical_process_jobs(session, item_id):
                     job.state = UploadState.COMPLETE.value
                     job.error = None
                 self._sync_batch_state(session, item.batch_id)
@@ -988,13 +989,7 @@ class IngestionRepository:
             raise ValueError("revision upload item is missing")
         item.state = UploadState.COMPLETE.value
         item.error = None
-        job = session.scalar(
-            select(IngestionJobModel).where(
-                IngestionJobModel.upload_item_id == item.id,
-                IngestionJobModel.action.in_(("process", "confirmed_process")),
-            )
-        )
-        if job is not None:
+        for job in self._logical_process_jobs(session, item.id):
             job.state = UploadState.COMPLETE.value
             job.error = None
         self._sync_batch_state(session, item.batch_id)
@@ -1005,10 +1000,14 @@ class IngestionRepository:
         item_id: str,
         action: str,
     ) -> None:
-        stored = session.scalar(
-            select(IngestionJobModel).where(
-                IngestionJobModel.upload_item_id == item_id,
-                IngestionJobModel.action == action,
+        stored = (
+            self._consolidate_logical_process_jobs(session, item_id, action=action)
+            if action in _LOGICAL_PROCESS_ACTIONS
+            else session.scalar(
+                select(IngestionJobModel).where(
+                    IngestionJobModel.upload_item_id == item_id,
+                    IngestionJobModel.action == action,
+                )
             )
         )
         if stored is None:
@@ -1020,8 +1019,38 @@ class IngestionRepository:
                 )
             )
         else:
+            if action in _LOGICAL_PROCESS_ACTIONS:
+                stored.action = action
             stored.state = UploadState.QUEUED.value
             stored.error = None
+
+    def _logical_process_jobs(
+        self, session: Session, item_id: str
+    ) -> Sequence[IngestionJobModel]:
+        return session.scalars(
+            select(IngestionJobModel)
+            .where(
+                IngestionJobModel.upload_item_id == item_id,
+                IngestionJobModel.action.in_(_LOGICAL_PROCESS_ACTIONS),
+            )
+            .order_by(IngestionJobModel.id)
+        ).all()
+
+    def _consolidate_logical_process_jobs(
+        self,
+        session: Session,
+        item_id: str,
+        *,
+        action: str,
+    ) -> IngestionJobModel | None:
+        jobs = self._logical_process_jobs(session, item_id)
+        if not jobs:
+            return None
+        retained = jobs[0]
+        retained.action = action
+        for duplicate in jobs[1:]:
+            session.delete(duplicate)
+        return retained
 
     def _enqueue_unless_current_duplicate(
         self,
