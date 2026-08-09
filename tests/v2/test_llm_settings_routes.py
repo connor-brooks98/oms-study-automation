@@ -143,6 +143,36 @@ def test_openrouter_generic_test_uses_its_saved_card_model_not_accuracy_assignme
     )
 
 
+def test_openrouter_generic_model_change_preserves_accuracy_assignment(tmp_path):
+    client, app, _ = prepared_client(tmp_path)
+    app.state.llm_settings.set_assignment(
+        LLMTask.ACCURACY_REVIEW,
+        ProviderName.GEMINI,
+        "gemini/assigned-model",
+    )
+    app.state.llm_settings.record_test(
+        ProviderName.OPENROUTER,
+        state="failed",
+        tested_at="2026-08-09T00:00:00+00:00",
+        diagnostic_source="provider_model",
+        diagnostic_message="stale model diagnostic",
+    )
+
+    response = client.post(
+        "/settings/ai/openrouter/model",
+        json={"model": "openrouter/card-model"},
+    )
+
+    assert response.status_code == 200
+    preference = app.state.llm_settings.get(ProviderName.OPENROUTER)
+    assert preference.model == "openrouter/card-model"
+    assert preference.last_test_state is None
+    assert preference.diagnostic_message is None
+    assignment = app.state.llm_settings.assignment(LLMTask.ACCURACY_REVIEW)
+    assert assignment.provider is ProviderName.GEMINI
+    assert assignment.model == "gemini/assigned-model"
+
+
 def test_accuracy_gate_has_a_distinct_non_provider_endpoint(tmp_path):
     client, _, _ = prepared_client(tmp_path)
 

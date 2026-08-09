@@ -355,11 +355,11 @@ test("title edit sends a trimmed PATCH and preserves the page after success", as
     },
   });
   assert.equal(reloads, 0);
-  assert.equal(titleForm.saveButton.disabled, true);
+  assert.equal(titleForm.saveButton.disabled, false);
   assert.equal(documentRef.resetMessage.textContent, "Quiz title updated.");
 });
 
-test("rename applies the authoritative title in place and restores the edit control focus", () => {
+test("rename applies the authoritative title in place and focuses an enabled title input", () => {
   const display = new FakeLibraryElement();
   const input = new FakeLibraryElement();
   input.value = "Old title";
@@ -367,8 +367,10 @@ test("rename applies the authoritative title in place and restores the edit cont
   const reset = new FakeLibraryElement();
   reset.dataset.resetQuiz = "";
   const save = new FakeLibraryElement();
+  save.disabled = true;
+  input.disabled = false;
   let focused = false;
-  save.focus = () => { focused = true; };
+  input.focus = () => { focused = true; };
   const documentRef = {
     querySelectorAll(selector) {
       assert.equal(selector, '[data-quiz-title-for="tok1"]');
@@ -376,7 +378,7 @@ test("rename applies the authoritative title in place and restores the edit cont
     },
   };
 
-  library.applyRenamedTitle(documentRef, "tok1", "Authoritative title", save);
+  library.applyRenamedTitle(documentRef, "tok1", "Authoritative title", input);
 
   assert.equal(display.textContent, "Authoritative title");
   assert.equal(input.value, "Authoritative title");
@@ -384,11 +386,12 @@ test("rename applies the authoritative title in place and restores the edit cont
   assert.equal(focused, true);
 });
 
-test("unpublish uses authoritative counts, prunes empty shells, and focuses a neighbor", () => {
+test("unpublish uses authoritative counts, prunes empty shells, and focuses a surviving row control", () => {
   const count = { textContent: "2 quizzes" };
   const exam = { removed: false, querySelector: () => count, remove() { this.removed = true; } };
   const course = { removed: false, querySelector: () => count, remove() { this.removed = true; } };
-  const neighbor = { focused: false, focus() { this.focused = true; } };
+  const neighborLink = { focused: false, focus() { this.focused = true; } };
+  const neighbor = { querySelector() { return neighborLink; } };
   const row = {
     removed: false,
     nextElementSibling: neighbor,
@@ -413,7 +416,7 @@ test("unpublish uses authoritative counts, prunes empty shells, and focuses a ne
   assert.equal(row.removed, true);
   assert.equal(exam.removed, true);
   assert.equal(course.removed, true);
-  assert.equal(neighbor.focused, true);
+  assert.equal(neighborLink.focused, true);
 });
 
 test("library controls and direction sequences preserve management payloads", async () => {

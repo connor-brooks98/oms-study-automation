@@ -137,6 +137,57 @@ def test_dashboard_only_exposes_the_first_course_and_exam_by_default(tmp_path):
     assert 'id="course-2" hidden' in neuro
 
 
+def test_review_uses_course_relative_human_label_for_proposed_revisions(tmp_path):
+    app = create_app(
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path,
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        )
+    )
+    app.state.catalog_repository.upsert_lecture(
+        LectureInput("Placeholder", 1, 1, "First", "", None)
+    )
+    lecture_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("MSK", 1, 7, "Shoulder", "", None)
+    )
+    source = tmp_path / "proposed.pptx"
+    source.write_bytes(b"proposed source")
+    batch_id = app.state.ingestion_repository.create_batch(UploadKind.SLIDES)
+    app.state.ingestion_repository.add_item(
+        UploadKind.SLIDES,
+        StagedUpload(
+            batch_id=batch_id,
+            item_id="proposed-label",
+            path=source,
+            sha256=hashlib.sha256(b"proposed source").hexdigest(),
+            size_bytes=len(b"proposed source"),
+            original_filename="proposed.pptx",
+        ),
+    )
+    with app.state.database.session() as session:
+        revision = StudyRevisionModel(
+            upload_item_id="proposed-label",
+            lecture_id=lecture_id,
+            kind=UploadKind.SLIDES.value,
+            source_sha256=hashlib.sha256(b"proposed source").hexdigest(),
+            immutable_source_path=str(source),
+            state="proposed",
+            current=False,
+        )
+        session.add(revision)
+        session.flush()
+        revision_id = revision.id
+
+    page = TestClient(app).get("/review")
+
+    assert page.status_code == 200
+    assert "MSK Lecture 07" in page.text
+    assert "Lecture 2</h3>" not in page.text
+    assert f"Revision {revision_id}" in page.text
+    assert f"/artifacts/{revision_id}/pdf" in page.text
+
+
 def test_lecture_upload_page_targets_the_selected_lecture(tmp_path):
     app = create_app(
         Settings(

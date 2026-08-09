@@ -119,17 +119,17 @@
   };
 
   const firstFocusable = (container) => (
-    container?.querySelector?.("[data-remove-quiz], [data-title-input], .exam-button, .course-button")
+    container?.querySelector?.("[data-focus-key], a[href], button:not([disabled]), input:not([disabled])")
     || null
   );
 
   const applyUnpublish = (documentRef, row, response) => {
-    const exam = documentRef.querySelector?.(`[data-exam-key="${response.exam_key}"]`)
-      || row.closest?.("[data-exam-key]");
-    const course = documentRef.querySelector?.(`[data-course-key="${response.course_key}"]`)
-      || row.closest?.("[data-course-key]");
-    const fallback = row.nextElementSibling
-      || row.previousElementSibling
+    const exam = row.closest?.("[data-exam-key]")
+      || documentRef.querySelector?.(`[data-exam-key="${response.exam_key}"]`);
+    const course = row.closest?.("[data-course-key]")
+      || documentRef.querySelector?.(`[data-course-key="${response.course_key}"]`);
+    const fallback = firstFocusable(row.nextElementSibling)
+      || firstFocusable(row.previousElementSibling)
       || firstFocusable(exam)
       || firstFocusable(course)
       || documentRef.querySelector?.("[data-quiz-library]");
@@ -318,7 +318,13 @@
           });
           if (!response.ok) throw new Error(await errorMessage(response, "Quiz title could not be updated."));
           const renamed = await response.json();
-          applyRenamedTitle(documentRef, renamed.token, renamed.title, saveButton);
+          saveButton.disabled = false;
+          applyRenamedTitle(
+            documentRef,
+            renamed.token,
+            renamed.title,
+            form.querySelector("[data-title-input]"),
+          );
           report(documentRef, "Quiz title updated.");
         } catch (error) {
           saveButton.disabled = false;

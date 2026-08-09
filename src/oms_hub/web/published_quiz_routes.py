@@ -40,7 +40,7 @@ def _normalized_subject(value: str) -> str:
 
 
 def _library_scope(request: Request, token: str) -> dict[str, object]:
-    """Return the current library scope using the same catalog reads as its UI."""
+    """Capture the immutable identity needed to read a changed library scope."""
     repository = _repository(request)
     published = repository.published_quiz(token)
     if published is None:
@@ -61,8 +61,22 @@ def _library_scope(request: Request, token: str) -> dict[str, object]:
         else frozenset({QuizContentKind.LECTURE_QUIZ, QuizContentKind.EXAM_REVIEW})
     )
     subject_key = _normalized_subject(subject)
-    course_count = 0
-    exam_count = 0
+    return {
+        "course_key": subject_key,
+        "exam_number": exam_number,
+        "exam_key": f"{subject_key}:{exam_number}",
+        "content_kinds": kinds,
+    }
+
+
+def _library_counts(request: Request, scope: dict[str, object]) -> dict[str, int]:
+    """Read the post-mutation scope rather than deriving counts from stale data."""
+    repository = _repository(request)
+    catalog = request.app.state.catalog_repository
+    subject_key = cast(str, scope["course_key"])
+    exam_number = cast(int, scope["exam_number"])
+    kinds = cast(frozenset[QuizContentKind], scope["content_kinds"])
+    course_count = exam_count = 0
     for candidate in repository.published_quizzes(kinds):
         candidate_lecture = (
             catalog.get_lecture(candidate.lecture_id)
@@ -84,16 +98,7 @@ def _library_scope(request: Request, token: str) -> dict[str, object]:
         course_count += 1
         if candidate_exam == exam_number:
             exam_count += 1
-    return {
-        "course_key": subject_key,
-        "exam_number": exam_number,
-        "exam_key": f"{subject_key}:{exam_number}",
-        # The scope is read before the mutation to retain its identity; the
-        # authoritative response describes the state after this one quiz is
-        # unpublished.
-        "course_quiz_count": course_count - 1,
-        "exam_quiz_count": exam_count - 1,
-    }
+    return {"course_quiz_count": course_count, "exam_quiz_count": exam_count}
 
 
 @router.delete("/{token}")
@@ -105,7 +110,12 @@ def unpublish_quiz(request: Request, token: _PublishedQuizToken) -> JSONResponse
     except KeyError as error:
         raise HTTPException(404, "published quiz was not found") from error
     return JSONResponse(
-        {"token": unpublished, "state": "unpublished", **scope}
+        {
+            "token": unpublished,
+            "state": "unpublished",
+            **{key: value for key, value in scope.items() if key != "content_kinds"},
+            **_library_counts(request, scope),
+        }
     )
 
 

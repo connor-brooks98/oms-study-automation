@@ -377,12 +377,37 @@ test("Question Information remains open through same-question interactions", asy
   app.querySelector('[data-focus-key="strike-c2"]'). _listeners.click[0]();
   information = app.querySelector("[data-question-information]");
   assert.equal(information.open, true, "elimination preserves disclosure state");
+  const stem = findByClass(app, "quiz-question");
+  documentRef.getSelection = () => ({
+    rangeCount: 1,
+    getRangeAt() {
+      return {
+        collapsed: false,
+        commonAncestorContainer: stem,
+        startContainer: stem,
+        startOffset: 0,
+        cloneRange() {
+          return { selectNodeContents() {}, setEnd() {}, toString() { return ""; } };
+        },
+        toString() { return "Question"; },
+      };
+    },
+  });
+  app.querySelector('[data-focus-key="tool-highlight"]')._listeners.click[0]();
+  assert.equal(app.querySelector("[data-question-information]").open, true, "highlighting preserves disclosure state");
+  app.querySelector('[data-focus-key="tool-clear"]')._listeners.click[0]();
+  assert.equal(app.querySelector("[data-question-information]").open, true, "clearing highlights preserves disclosure state");
   const flag = findByClass(app, "quiz-flag-select");
   flag.value = "want_to_review";
   flag._listeners.change[0]();
   assert.equal(app.querySelector("[data-question-information]").open, true, "flagging does not recreate disclosure");
+  information = app.querySelector("[data-question-information]");
+  information.open = false;
+  information._listeners.toggle[0]();
+  app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
+  assert.equal(app.querySelector("[data-question-information]").open, false, "a user-closed disclosure remains closed");
   await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
-  assert.equal(app.querySelector("[data-question-information]").open, true, "submission preserves disclosure state");
+  assert.equal(app.querySelector("[data-question-information]").open, false, "submission preserves a closed disclosure state");
 });
 
 test("safe storage falls back to memory when getter, reads, or writes are denied", async () => {
@@ -403,6 +428,14 @@ test("safe storage falls back to memory when getter, reads, or writes are denied
   Object.defineProperty(documentRef, "defaultView", { get() { throw new Error("denied"); } });
   await quiz.initialize(documentRef, async () => ({ ok: true, async json() { return content; } }));
   assert.notEqual(app.textContent, "This quiz could not be loaded.");
+
+  const interaction = buildQuizApp();
+  interaction.documentRef.defaultView = {
+    localStorage: { getItem() { return null; }, setItem() { throw new Error("denied"); } },
+  };
+  await quiz.initialize(interaction.documentRef, async () => ({ ok: true, async json() { return content; } }));
+  interaction.app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
+  assert.notEqual(interaction.app.textContent, "This quiz could not be loaded.");
 });
 
 test("initialize renders the could-not-load state when the response body is not valid JSON", async () => {
