@@ -153,7 +153,7 @@
       { method: "DELETE", headers, keepalive: true },
       5000,
     );
-    const payload = await response.json();
+    const payload = response.status === 204 ? {} : await response.json();
     if (response.status === 409 && payload.batch_id) {
       return { finalized: true, batchId: payload.batch_id };
     }

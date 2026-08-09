@@ -478,3 +478,35 @@ def test_post_commit_cancel_returns_authoritative_finalized_batch(tmp_path: Path
     assert cancelled.status_code == 409
     assert cancelled.json()["batch_id"] == finalized.json()["batch_id"]
     assert _counts(app) == (1, 1, 0)
+
+
+def test_pending_finalization_outcome_rejects_cancel_without_false_success(
+    tmp_path: Path,
+) -> None:
+    client, app = _client(tmp_path)
+    payload = b"pending manifest outcome"
+    slot_id = str(uuid4())
+    created = client.post(
+        "/api/upload-manifests",
+        json={
+            "kind": "transcripts",
+            "files": [{
+                "slot_id": slot_id,
+                "filename": "pending.txt",
+                "size_bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }],
+        },
+    )
+    manifest_id = created.json()["manifest_id"]
+    staging = app.state.upload_staging  # type: ignore[attr-defined]
+    staging.claim_manifest_finalization(manifest_id)
+    staging.record_manifest_finalization(manifest_id, str(uuid4()))
+    staging._discard_manifest_data(manifest_id)
+    staging.release_manifest_finalization(manifest_id)
+
+    cancelled = client.delete(f"/api/upload-manifests/{manifest_id}")
+
+    assert cancelled.status_code == 409
+    assert cancelled.json()["detail"] == "upload manifest finalization is unresolved"
+    assert _counts(app) == (0, 0, 0)

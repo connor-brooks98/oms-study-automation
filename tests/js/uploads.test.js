@@ -217,7 +217,11 @@ test("manifest cancellation reconciles a committed batch instead of claiming suc
     { "X-CSRF-Token": "csrf" },
   );
   const cancelled = await uploads.cancelManifest(
-    async () => ({ status: 204, ok: true, json: async () => ({}) }),
+    async () => ({
+      status: 204,
+      ok: true,
+      json: async () => { throw new Error("204 response has no JSON body"); },
+    }),
     "manifest-2",
     { "X-CSRF-Token": "csrf" },
   );
