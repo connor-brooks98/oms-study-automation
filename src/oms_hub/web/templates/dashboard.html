@@ -20,6 +20,7 @@
   <div class="course-list">
     {% for course in courses %}
     {% set course_id = "course-" ~ loop.index %}
+    {% set course_is_first = loop.first %}
     <section class="course-group sh-card" data-course="{{ course.name }}" style="--course-hue: {{ course.hue }}; --sh-hue: {{ course.hue }}">
       <button class="course-toggle" type="button" data-disclosure data-storage-key="course:{{ course.name }}" aria-expanded="{{ 'true' if loop.first else 'false' }}" aria-controls="{{ course_id }}">
         <span class="chevron sh-disclose" aria-hidden="true">▸</span>
@@ -31,12 +32,12 @@
         {% for exam in course.exams %}
         {% set exam_id = course_id ~ "-exam-" ~ exam.number %}
         <section class="exam-group" data-exam="{{ exam.number }}">
-          <button class="exam-toggle" type="button" data-disclosure data-storage-key="exam:{{ course.name }}:{{ exam.number }}" aria-expanded="{{ 'true' if loop.first else 'false' }}" aria-controls="{{ exam_id }}">
+          <button class="exam-toggle" type="button" data-disclosure data-storage-key="exam:{{ course.name }}:{{ exam.number }}" aria-expanded="{{ 'true' if course_is_first and loop.first else 'false' }}" aria-controls="{{ exam_id }}">
             <span class="chevron sh-disclose" aria-hidden="true">▸</span>
             <span>Exam {{ exam.number }}</span>
             <span class="exam-count">{{ exam.lectures|length }} lectures</span>
           </button>
-          <div class="lecture-list" id="{{ exam_id }}" {% if not loop.first %}hidden{% endif %}>
+          <div class="lecture-list" id="{{ exam_id }}" {% if not (course_is_first and loop.first) %}hidden{% endif %}>
             {% for row in exam.lectures %}
             <a class="lecture-row sh-row" href="/lectures/{{ row.lecture.id }}">
               <span class="status-dot sh-dot {% if row.status == 'complete' %}sh-dot--ok{% elif row.status == 'processing' %}sh-dot--info{% elif row.status == 'needs_review' %}sh-dot--warn{% elif row.status in ('failed', 'quarantined') %}sh-dot--err{% endif %} status-{{ row.status }}" aria-hidden="true"></span>

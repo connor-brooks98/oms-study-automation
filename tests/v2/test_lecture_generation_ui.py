@@ -113,6 +113,30 @@ def test_dashboard_has_separate_slide_and_transcript_uploads(tmp_path):
     assert "+ Upload transcript" in page.text
 
 
+def test_dashboard_only_exposes_the_first_course_and_exam_by_default(tmp_path):
+    app = create_app(
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path,
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        )
+    )
+    app.state.catalog_repository.upsert_lecture(
+        LectureInput("MSK", 1, 7, "Shoulder", "", None)
+    )
+    app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 1, 1, "Brain", "", None)
+    )
+
+    page = TestClient(app).get("/")
+
+    assert page.status_code == 200
+    assert page.text.count('aria-expanded="true"') == 2
+    neuro = page.text[page.text.index('data-course="Neuro"'):]
+    assert 'aria-expanded="false"' in neuro
+    assert 'id="course-2" hidden' in neuro
+
+
 def test_lecture_upload_page_targets_the_selected_lecture(tmp_path):
     app = create_app(
         Settings(
