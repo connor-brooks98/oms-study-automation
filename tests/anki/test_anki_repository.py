@@ -426,21 +426,22 @@ def test_v2_mixed_overflow_acknowledgement_binds_full_selection_and_overflow_sli
             pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
         )
     )
-    selected = tuple(range(1, 72))
+    selected = (2, 1, *range(3, 72))
+    storage_order = tuple(sorted(selected))
     metadata = tuple(
         SelectionMetadata(
             identity=f"existing:{note_id}",
-            selected_position=note_id,
+            selected_position=position,
             tier=SelectionTier.T1,
             evidence_quality=EvidenceQuality.PRIMARY_SOURCE,
-            mandatory=note_id == 71,
+            mandatory=position == 71,
             marginal_value_reason=(
-                MarginalValueReason.ONLY_VALID_REQUIRED_FACT if 66 <= note_id <= 70 else None
+                MarginalValueReason.ONLY_VALID_REQUIRED_FACT if 66 <= position <= 70 else None
             ),
-            overflow_reason="required coverage" if note_id == 71 else None,
-            manual_acknowledgement_required=note_id == 71,
+            overflow_reason="required coverage" if position == 71 else None,
+            manual_acknowledgement_required=position == 71,
         )
-        for note_id in selected
+        for position, note_id in enumerate(selected, start=1)
     )
     snapshot = CardCentricReconciliationInput(
         pipeline_contract_version="card_centric_v2",
@@ -481,18 +482,28 @@ def test_v2_mixed_overflow_acknowledgement_binds_full_selection_and_overflow_sli
     document = repository.issue_card_centric_overflow_acknowledgement(
         job.id,
         review_revision=job.review_revision,
-        selected_note_ids=selected,
+        selected_note_ids=storage_order,
         selected_generated_ids=(),
         mandatory_note_ids=(71,),
         mandatory_generated_ids=(),
         cap=70,
     )
+    with pytest.raises(ValueError, match="frozen full selection"):
+        repository.issue_card_centric_overflow_acknowledgement(
+            job.id,
+            review_revision=job.review_revision,
+            selected_note_ids=(storage_order[0], storage_order[0], *storage_order[2:]),
+            selected_generated_ids=(),
+            mandatory_note_ids=(71,),
+            mandatory_generated_ids=(),
+            cap=70,
+        )
 
     assert document["mandatory_count"] == 1
     assert repository.validate_card_centric_overflow_acknowledgement(
         job.id,
         review_revision=job.review_revision,
-        selected_note_ids=selected,
+        selected_note_ids=storage_order,
         selected_generated_ids=(),
         cap=70,
         document=document,
@@ -500,7 +511,7 @@ def test_v2_mixed_overflow_acknowledgement_binds_full_selection_and_overflow_sli
     assert not repository.validate_card_centric_overflow_acknowledgement(
         job.id,
         review_revision=job.review_revision,
-        selected_note_ids=selected[:-1],
+        selected_note_ids=storage_order[:-1],
         selected_generated_ids=(),
         cap=70,
         document=document,
@@ -508,7 +519,7 @@ def test_v2_mixed_overflow_acknowledgement_binds_full_selection_and_overflow_sli
     assert not repository.validate_card_centric_overflow_acknowledgement(
         job.id,
         review_revision=job.review_revision + 1,
-        selected_note_ids=selected,
+        selected_note_ids=storage_order,
         selected_generated_ids=(),
         cap=70,
         document=document,
@@ -516,10 +527,26 @@ def test_v2_mixed_overflow_acknowledgement_binds_full_selection_and_overflow_sli
     assert not repository.validate_card_centric_overflow_acknowledgement(
         job.id,
         review_revision=job.review_revision,
-        selected_note_ids=selected,
+        selected_note_ids=storage_order,
         selected_generated_ids=(),
         cap=70,
         document={**document, "signature": "forged"},
+    )
+    assert not repository.validate_card_centric_overflow_acknowledgement(
+        job.id,
+        review_revision=job.review_revision,
+        selected_note_ids=(storage_order[0], storage_order[0], *storage_order[2:]),
+        selected_generated_ids=(),
+        cap=70,
+        document=document,
+    )
+    assert not repository.validate_card_centric_overflow_acknowledgement(
+        job.id,
+        review_revision=job.review_revision,
+        selected_note_ids=storage_order,
+        selected_generated_ids=(),
+        cap=69,
+        document=document,
     )
     repository.persist_card_centric_overflow_acknowledgement(
         job.id,
@@ -529,6 +556,26 @@ def test_v2_mixed_overflow_acknowledgement_binds_full_selection_and_overflow_sli
     assert (
         repository.reviewed_reconciliation(job.id, job.review_revision)["can_render_envelope"]
         is True
+    )
+    with repository.database.session() as session:
+        reviewed = session.scalar(
+            select(AnkiReviewedReconciliationModel).where(
+                AnkiReviewedReconciliationModel.job_id == str(job.id),
+                AnkiReviewedReconciliationModel.review_revision == job.review_revision,
+            )
+        )
+        assert reviewed is not None
+        payload = json.loads(reviewed.payload_json)
+        order = payload["snapshot"]["selection_order"]
+        payload["snapshot"]["selection_order"] = [order[1], order[0], *order[2:]]
+        reviewed.payload_json = json.dumps(payload)
+    assert not repository.validate_card_centric_overflow_acknowledgement(
+        job.id,
+        review_revision=job.review_revision,
+        selected_note_ids=storage_order,
+        selected_generated_ids=(),
+        cap=70,
+        document=document,
     )
 
     nonmandatory = snapshot.model_copy(
@@ -557,7 +604,7 @@ def test_v2_mixed_overflow_acknowledgement_binds_full_selection_and_overflow_sli
         repository.issue_card_centric_overflow_acknowledgement(
             bad_job.id,
             review_revision=bad_job.review_revision,
-            selected_note_ids=selected,
+        selected_note_ids=storage_order,
             selected_generated_ids=(),
             mandatory_note_ids=(71,),
             mandatory_generated_ids=(),

@@ -441,6 +441,19 @@ def _aware_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+def _same_unique_identity_set(
+    provided: Sequence[object],
+    frozen: Sequence[object],
+) -> bool:
+    """Accept storage/request ordering changes, never identity duplication or drift."""
+    return (
+        len(provided) == len(frozen)
+        and len(provided) == len(set(provided))
+        and len(frozen) == len(set(frozen))
+        and set(provided) == set(frozen)
+    )
+
+
 class AnkiCurationRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -640,14 +653,18 @@ class AnkiCurationRepository:
                     frozen_notes,
                     frozen_generated,
                     selection_order,
+                    frozen_cap,
                     overflow_notes,
                     overflow_generated,
                 ) = self._v2_overflow_selection_proof(session, job_id, review_revision)
                 if (
-                    tuple(selected_note_ids) != frozen_notes
-                    or tuple(selected_generated_ids) != frozen_generated
-                    or set(mandatory_note_ids) != set(overflow_notes)
-                    or set(mandatory_generated_ids) != set(overflow_generated)
+                    not _same_unique_identity_set(selected_note_ids, frozen_notes)
+                    or not _same_unique_identity_set(selected_generated_ids, frozen_generated)
+                    or not _same_unique_identity_set(mandatory_note_ids, overflow_notes)
+                    or not _same_unique_identity_set(
+                        mandatory_generated_ids, overflow_generated
+                    )
+                    or cap != frozen_cap
                 ):
                     raise ValueError(
                         "overflow acknowledgement must bind the frozen full selection "
@@ -740,14 +757,16 @@ class AnkiCurationRepository:
                         frozen_notes,
                         frozen_generated,
                         selection_order,
+                        frozen_cap,
                         overflow_notes,
                         overflow_generated,
                     ) = self._v2_overflow_selection_proof(session, job_id, review_revision)
                 except (KeyError, TypeError, ValueError):
                     return False
                 if (
-                    tuple(selected_note_ids) != frozen_notes
-                    or tuple(selected_generated_ids) != frozen_generated
+                    not _same_unique_identity_set(selected_note_ids, frozen_notes)
+                    or not _same_unique_identity_set(selected_generated_ids, frozen_generated)
+                    or cap != frozen_cap
                 ):
                     return False
                 mandatory_count = len(overflow_notes) + len(overflow_generated)
@@ -774,7 +793,14 @@ class AnkiCurationRepository:
         session: Session,
         job_id: UUID,
         review_revision: int,
-    ) -> tuple[tuple[int, ...], tuple[str, ...], tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
+    ) -> tuple[
+        tuple[int, ...],
+        tuple[str, ...],
+        tuple[str, ...],
+        int,
+        tuple[int, ...],
+        tuple[str, ...],
+    ]:
         """Derive the only V2 acknowledgement scope from persisted S9 metadata."""
         stored = session.scalar(
             select(AnkiReviewedReconciliationModel).where(
@@ -799,6 +825,7 @@ class AnkiCurationRepository:
             or len(metadata) != total
             or [item.selected_position for item in metadata] != list(range(1, total + 1))
             or {item.identity for item in metadata} != expected_identities
+            or tuple(item.identity for item in metadata) != snapshot.selection_order
         ):
             raise ValueError("persisted V2 selection metadata cannot prove overflow scope")
         overflow = tuple(item for item in metadata if item.selected_position > snapshot.cap)
@@ -823,7 +850,8 @@ class AnkiCurationRepository:
         return (
             snapshot.selected_nids,
             snapshot.selected_generated_card_ids,
-            tuple(item.identity for item in metadata),
+            snapshot.selection_order,
+            snapshot.cap,
             overflow_notes,
             overflow_generated,
         )
