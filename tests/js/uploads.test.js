@@ -74,3 +74,31 @@ test("large lecture uploads retain their selected lecture at finalize", () => {
     "/api/upload-chunks/session-1/finalize",
   );
 });
+
+test("submission freezes the picker manifest before mutable selection changes", () => {
+  const first = { name: "first.txt", size: 10 };
+  const second = { name: "second.txt", size: 20 };
+  const frozen = uploads.freezeManifest([first, second], (() => {
+    let next = 0;
+    return () => `slot-${next++}`;
+  })());
+
+  first.name = "mutated.txt";
+
+  assert.equal(Object.isFrozen(frozen), true);
+  assert.equal(frozen.length, 2);
+  assert.equal(frozen[0].slotId, "slot-0");
+  assert.equal(frozen[0].filename, "first.txt");
+  assert.equal(frozen[1].filename, "second.txt");
+});
+
+test("only authoritative lifecycle terminal state stops polling", () => {
+  assert.equal(
+    uploads.batchIsTerminal({ lifecycle: "active", outcome: "failed" }),
+    false,
+  );
+  assert.equal(
+    uploads.batchIsTerminal({ lifecycle: "terminal", outcome: "failed" }),
+    true,
+  );
+});

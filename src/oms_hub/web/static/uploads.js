@@ -20,6 +20,17 @@
       && item.duplicate_warning,
   ) || null;
 
+  const freezeManifest = (files, createId = () => crypto.randomUUID()) => (
+    Object.freeze(Array.from(files, (file) => Object.freeze({
+      file,
+      slotId: createId(),
+      filename: file.name,
+      size: file.size,
+    })))
+  );
+
+  const batchIsTerminal = (batch) => batch.lifecycle === "terminal";
+
   const chunkFinalizeUrl = (sessionId, lectureId) => (
     `/api/upload-chunks/${encodeURIComponent(sessionId)}/finalize${
       lectureId ? `?lecture_id=${encodeURIComponent(lectureId)}` : ""
@@ -73,6 +84,7 @@
     let pausedItem = null;
     let pausedBatchId = null;
     let resumeDecision = null;
+    let activeSubmission = null;
 
     const csrfHeaders = (headers = {}) => ({
       ...headers,
@@ -85,6 +97,7 @@
     };
 
     const showFiles = (files) => {
+      if (activeSubmission) return;
       chosenFiles = Array.from(files);
       selected.replaceChildren();
       chosenFiles.forEach((file) => {
@@ -131,9 +144,15 @@
         name.textContent = item.original_filename;
         state.textContent = itemStateLabel(item);
         row.append(name, state);
+        if (item.error) {
+          const error = documentRef.createElement("span");
+          error.className = "upload-item-error";
+          error.textContent = item.error;
+          row.append(error);
+        }
         items.append(row);
       });
-      status.textContent = `Batch ${batch.state.replaceAll("_", " ")}.`;
+      status.textContent = `Batch ${batch.outcome.replaceAll("_", " ")}.`;
     };
 
     const showConfirmation = (batch, batchId) => {
@@ -149,19 +168,35 @@
       return true;
     };
 
-    const pollBatch = async (batchId) => {
+    const fetchWithTimeout = async (url, options = {}, timeoutMs = 120000) => {
+      const controller = new AbortController();
+      const external = options.signal;
+      const cancel = () => controller.abort();
+      external?.addEventListener("abort", cancel, { once: true });
+      let timedOut = false;
+      const timer = root.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs);
+      try {
+        return await fetchImpl(url, { ...options, signal: controller.signal });
+      } catch (error) {
+        if (timedOut) throw new Error("Upload request timed out.");
+        throw error;
+      } finally {
+        root.clearTimeout(timer);
+        external?.removeEventListener("abort", cancel);
+      }
+    };
+
+    const pollBatch = async (batchId, signal, deadline) => {
       let delay = 750;
-      const terminal = new Set([
-        "complete",
-        "discarded",
-        "quarantined",
-        "needs_review",
-        "failed",
-      ]);
-      for (let attempt = 0; attempt < 12; attempt += 1) {
-        const response = await fetchImpl(`/api/upload-batches/${batchId}`, {
+      while (Date.now() < deadline) {
+        if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+        const response = await fetchWithTimeout(`/api/upload-batches/${batchId}`, {
           headers: { Accept: "application/json" },
           cache: "no-store",
+          signal,
         });
         if (!response.ok) throw new Error("Could not read upload status.");
         const batch = await response.json();
@@ -173,17 +208,20 @@
           delay = 750;
           continue;
         }
-        if (terminal.has(batch.state)) return batch;
+        if (batchIsTerminal(batch)) return batch;
         await new Promise((resolve) => root.setTimeout(resolve, delay));
         delay = Math.min(delay * 1.7, 8000);
       }
-      status.textContent = "Files are queued on the NUC. You can leave this page.";
-      return null;
+      throw new Error("Upload status timed out before a terminal result.");
     };
 
-    const multipartUpload = (files) => new Promise((resolve, reject) => {
+    const multipartUpload = (manifestId, slots, signal) => new Promise((resolve, reject) => {
       const body = new FormData();
-      files.forEach((file) => body.append("files", file));
+      slots.forEach((slot) => {
+        body.append("files", slot.file);
+        body.append("slot_ids", slot.slotId);
+      });
+      body.append("manifest_id", manifestId);
       if (lectureId) body.append("lecture_id", lectureId);
       const request = new XMLHttpRequest();
       request.open("POST", `/uploads/${kind}`);
@@ -192,6 +230,9 @@
         csrfToken(documentRef),
       );
       request.responseType = "json";
+      request.timeout = 120000;
+      const abort = () => request.abort();
+      signal.addEventListener("abort", abort, { once: true });
       request.upload.addEventListener("progress", (event) => {
         if (event.lengthComputable) {
           setProgress((event.loaded / event.total) * 100);
@@ -212,6 +253,14 @@
         "error",
         () => reject(new Error("Upload connection failed.")),
       );
+      request.addEventListener(
+        "abort",
+        () => reject(new DOMException("Cancelled", "AbortError")),
+      );
+      request.addEventListener(
+        "timeout",
+        () => reject(new Error("Upload request timed out.")),
+      );
       request.send(body);
     });
 
@@ -225,8 +274,9 @@
         .join("");
     };
 
-    const chunkUpload = async (file) => {
-      const created = await fetchImpl("/api/upload-chunks", {
+    const chunkUpload = async (manifestId, slot, signal) => {
+      const file = slot.file;
+      const created = await fetchWithTimeout("/api/upload-chunks", {
         method: "POST",
         headers: csrfHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
@@ -234,7 +284,10 @@
           filename: file.name,
           total_size: file.size,
           sha256: await sha256(file),
+          manifest_id: manifestId,
+          slot_id: slot.slotId,
         }),
+        signal,
       });
       if (!created.ok) {
         throw new Error(
@@ -245,9 +298,9 @@
       let offset = 0;
       while (offset < file.size) {
         const chunk = file.slice(offset, offset + chunkSize);
-        const response = await fetchImpl(
+        const response = await fetchWithTimeout(
           `/api/upload-chunks/${session.session_id}?offset=${offset}`,
-          { method: "PUT", headers: csrfHeaders(), body: chunk },
+          { method: "PUT", headers: csrfHeaders(), body: chunk, signal },
         );
         if (!response.ok) {
           throw new Error(
@@ -257,9 +310,9 @@
         offset = (await response.json()).received;
         setProgress((offset / file.size) * 100);
       }
-      const finalized = await fetchImpl(
+      const finalized = await fetchWithTimeout(
         chunkFinalizeUrl(session.session_id, lectureId),
-        { method: "POST", headers: csrfHeaders() },
+        { method: "POST", headers: csrfHeaders(), signal },
       );
       if (!finalized.ok) {
         throw new Error(
@@ -269,7 +322,30 @@
       return finalized.json();
     };
 
-    browse.addEventListener("click", () => input.click());
+    const createManifest = async (slots, signal) => {
+      const files = [];
+      for (const slot of slots) {
+        files.push({
+          slot_id: slot.slotId,
+          filename: slot.filename,
+          size_bytes: slot.size,
+          sha256: await sha256(slot.file),
+        });
+      }
+      const response = await fetchWithTimeout("/api/upload-manifests", {
+        method: "POST",
+        headers: csrfHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ kind, lecture_id: lectureId || null, files }),
+        signal,
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || "Upload could not start.");
+      return payload.manifest_id;
+    };
+
+    browse.addEventListener("click", () => {
+      if (!activeSubmission) input.click();
+    });
     input.addEventListener("change", () => showFiles(input.files));
     ["dragenter", "dragover"].forEach((name) => {
       zone.addEventListener(name, (event) => {
@@ -284,6 +360,7 @@
       });
     });
     zone.addEventListener("drop", (event) => {
+      if (activeSubmission) return;
       input.files = event.dataTransfer.files;
       showFiles(input.files);
     });
@@ -336,32 +413,61 @@
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (activeSubmission) {
+        activeSubmission.controller.abort();
+        return;
+      }
       if (!chosenFiles.length) {
         status.textContent = "Choose at least one file.";
         input.focus();
         return;
       }
-      submit.disabled = true;
+      const snapshot = freezeManifest(chosenFiles);
+      const controller = new AbortController();
+      const deadline = Date.now() + (20 * 60 * 1000);
+      activeSubmission = { controller, manifestId: null };
+      input.disabled = true;
+      browse.disabled = true;
+      zone.setAttribute("aria-disabled", "true");
+      submit.textContent = "Cancel upload";
       status.textContent = "Uploading to the NUC…";
       items.replaceChildren();
       try {
-        if (chosenFiles.some((file) => file.size > chunkThreshold)) {
-          for (let index = 0; index < chosenFiles.length; index += 1) {
-            status.textContent = `Uploading ${chosenFiles[index].name}…`;
-            const result = await chunkUpload(chosenFiles[index]);
-            await pollBatch(result.batch_id);
-          }
-        } else {
-          const result = await multipartUpload(chosenFiles);
-          setProgress(100);
-          await pollBatch(result.batch_id);
+        const manifestId = await createManifest(snapshot, controller.signal);
+        activeSubmission.manifestId = manifestId;
+        const small = snapshot.filter((slot) => slot.size <= chunkThreshold);
+        const large = snapshot.filter((slot) => slot.size > chunkThreshold);
+        if (small.length) await multipartUpload(manifestId, small, controller.signal);
+        for (const slot of large) {
+          status.textContent = `Uploading ${slot.filename}…`;
+          await chunkUpload(manifestId, slot, controller.signal);
         }
+        const finalized = await fetchWithTimeout(
+          `/api/upload-manifests/${encodeURIComponent(manifestId)}/finalize`,
+          { method: "POST", headers: csrfHeaders(), signal: controller.signal },
+        );
+        const result = await finalized.json();
+        if (!finalized.ok) throw new Error(result.detail || result.errors?.[0]?.detail || "Upload was rejected.");
+        setProgress(100);
+        await pollBatch(result.batch_id, controller.signal, deadline);
       } catch (error) {
-        status.textContent = error instanceof Error
+        if (error instanceof DOMException && error.name === "AbortError") {
+          const manifestId = activeSubmission?.manifestId;
+          if (manifestId) {
+            fetchImpl(`/api/upload-manifests/${encodeURIComponent(manifestId)}`, {
+              method: "DELETE", headers: csrfHeaders(), keepalive: true,
+            }).catch(() => {});
+          }
+          status.textContent = "Upload cancelled.";
+        } else status.textContent = error instanceof Error
           ? error.message
           : "Upload failed.";
       } finally {
-        submit.disabled = false;
+        activeSubmission = null;
+        input.disabled = false;
+        browse.disabled = false;
+        zone.removeAttribute("aria-disabled");
+        submit.textContent = "Upload files";
       }
     });
   };
@@ -369,6 +475,8 @@
   const api = {
     chunkFinalizeUrl,
     csrfToken,
+    batchIsTerminal,
+    freezeManifest,
     formatLecture,
     initialize,
     nextConfirmation,

@@ -69,6 +69,20 @@ def test_multipart_manifest_is_atomic_when_invalid_precedes_valid(tmp_path: Path
     assert _ready(app) == []
 
 
+def test_cp1252_transcript_is_rejected_before_any_job_is_created(tmp_path: Path) -> None:
+    client, app = _client(tmp_path)
+
+    response = client.post(
+        "/uploads/transcripts",
+        files=[("files", ("legacy.txt", b"H\x82art failure transcript"))],
+    )
+
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["detail"] == "transcript is not UTF-8"
+    assert _counts(app) == (0, 0, 0)
+    assert _ready(app) == []
+
+
 def test_mixed_multipart_and_chunk_slots_finalize_one_parent_batch(tmp_path: Path) -> None:
     client, app = _client(tmp_path)
     small = b"Small UTF-8 transcript."
