@@ -610,7 +610,7 @@ test("assignment row disables its controls while a save request is in flight", a
   assert.equal(keyState.classList.contains("sh-pill--ok"), true);
 });
 
-test("assignment row accuracy gate toggle posts to the existing gate route", async () => {
+test("assignment row accuracy gate toggle posts to the distinct gate route", async () => {
   const documentRef = new FakeDocument();
   const row = buildAssignmentRow(documentRef, {
     task: "accuracy_review",
@@ -625,7 +625,7 @@ test("assignment row accuracy gate toggle posts to the existing gate route", asy
     if (url === "/api/settings/providers/openrouter/models") {
       return { ok: true, json: async () => ({ models: ["openrouter/auto"], source: "fallback" }) };
     }
-    if (url === "/settings/ai/openrouter/gate") {
+    if (url === "/settings/accuracy-gate") {
       posted.push(JSON.parse(options.body));
       return { ok: true, json: async () => ({ enabled: true }) };
     }

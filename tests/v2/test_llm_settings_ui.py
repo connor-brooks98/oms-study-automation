@@ -133,6 +133,18 @@ def test_settings_renders_external_script(tmp_path):
     )
 
 
+def test_notebook_connect_copy_truthfully_describes_the_nuc_profile(tmp_path):
+    client, _, _ = prepared_client(tmp_path)
+
+    response = client.get("/settings")
+
+    assert (
+        "Connect opens/reuses a persistent browser profile on the Study Hub NUC"
+        in response.text
+    )
+    assert "Connect opens a browser window on the Study Hub device." not in response.text
+
+
 def test_settings_renders_five_secret_safe_task_assignment_rows(tmp_path):
     client, _, secrets = prepared_client(tmp_path)
     secrets.set("openai-api-key", "sentinel-secret")
