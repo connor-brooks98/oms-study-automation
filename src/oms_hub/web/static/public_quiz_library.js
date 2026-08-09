@@ -104,7 +104,9 @@
 
   const applyRenamedTitle = (documentRef, token, title, focusTarget) => {
     documentRef.querySelectorAll?.(`[data-quiz-title-for="${token}"]`).forEach((surface) => {
-      if (surface.dataset?.resetQuiz !== undefined) {
+      if (surface.dataset?.quizDragHandle !== undefined) {
+        surface.setAttribute?.("aria-label", `Reorder ${title}. Use Arrow Up or Arrow Down.`);
+      } else if (surface.dataset?.resetQuiz !== undefined) {
         surface.setAttribute?.("aria-label", `Restart ${title}`);
         surface.setAttribute?.("title", `Restart ${title}`);
       } else if (surface.tagName === "SUMMARY") {

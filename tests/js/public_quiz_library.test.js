@@ -364,8 +364,18 @@ test("rename applies the authoritative title in place and focuses an enabled tit
   const input = new FakeLibraryElement();
   input.value = "Old title";
   input.dataset.titleInput = "";
-  const reset = new FakeLibraryElement();
-  reset.dataset.resetQuiz = "";
+  const namedSurface = (dataset, tagName) => ({
+    dataset,
+    tagName,
+    attributes: {},
+    setAttribute(name, value) { this.attributes[name] = value; },
+  });
+  const reset = namedSurface({ resetQuiz: "" });
+  const overflow = namedSurface({}, "SUMMARY");
+  overflow.attributes.title = "More actions";
+  const dragHandle = namedSurface({ quizDragHandle: "" });
+  dragHandle.attributes.title = "Reorder quiz";
+  dragHandle.textContent = "⠿";
   const save = new FakeLibraryElement();
   save.disabled = true;
   input.disabled = false;
@@ -374,7 +384,7 @@ test("rename applies the authoritative title in place and focuses an enabled tit
   const documentRef = {
     querySelectorAll(selector) {
       assert.equal(selector, '[data-quiz-title-for="tok1"]');
-      return [display, input, reset];
+      return [display, input, reset, overflow, dragHandle];
     },
   };
 
@@ -382,7 +392,13 @@ test("rename applies the authoritative title in place and focuses an enabled tit
 
   assert.equal(display.textContent, "Authoritative title");
   assert.equal(input.value, "Authoritative title");
-  assert.equal(reset.attributes?.title, undefined);
+  assert.equal(reset.attributes["aria-label"], "Restart Authoritative title");
+  assert.equal(reset.attributes.title, "Restart Authoritative title");
+  assert.equal(overflow.attributes["aria-label"], "More actions for Authoritative title");
+  assert.equal(dragHandle.attributes["aria-label"], "Reorder Authoritative title. Use Arrow Up or Arrow Down.");
+  assert.equal(dragHandle.attributes.title, "Reorder quiz");
+  assert.equal(dragHandle.textContent, "⠿");
+  assert.equal(input.disabled, false);
   assert.equal(focused, true);
 });
 
