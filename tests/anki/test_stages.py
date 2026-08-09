@@ -11,8 +11,13 @@ import pytest
 
 import oms_hub.anki.stages as stages_module
 from oms_hub.anki.audit import AuditBatchV2, AuditCacheRecord
-from oms_hub.anki.card_centric import build_snapshot_census, build_source_index
+from oms_hub.anki.card_centric import (
+    build_snapshot_census,
+    build_source_index,
+    select_high_yield_v2,
+)
 from oms_hub.anki.card_centric_contracts import (
+    CardCentricSourceIndex,
     CardClassification,
     CardConcept,
     CardConceptLedger,
@@ -105,6 +110,20 @@ class _DedupeEmbedder:
     ) -> FloatMatrix:
         assert input_type == "document"
         return self.result  # type: ignore[return-value]
+
+
+class _OrthogonalDedupeEmbedder:
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        input_type: InputType,
+    ) -> FloatMatrix:
+        assert input_type == "document"
+        return [
+            [1.0 if row == column else 0.0 for column in range(len(texts))]
+            for row in range(len(texts))
+        ]  # type: ignore[return-value]
 
 
 class _FailingDedupeEmbedder:
@@ -307,6 +326,92 @@ def test_card_dedupe_v2_preserves_generated_duplicate_card_identity() -> None:
     assert terminal.fact_id == "C01-M2"
     assert terminal.kind == "duplicate_of_existing"
     assert terminal.duplicate_of == DuplicateIdentity(generated_card_id="G01")
+
+
+def test_real_s8_generated_duplicate_target_survives_selection_into_s9() -> None:
+    """S8's generated-card identity remains selected through S9 reconciliation."""
+    runner, context, passage_id = _dedupe_stage_fixture(_OrthogonalDedupeEmbedder())
+    first = _generated_dedupe_row("G01", "C01-M1", "{{c1::Alpha}} beta", passage_id)
+    second = _generated_dedupe_row("G02", "C01-M2", "{{c1::Alpha}} beta", passage_id)
+    other_generated = tuple(
+        _generated_dedupe_row(
+            f"G{index:02d}",
+            f"C{index - 1:02d}-M1",
+            f"{{{{c1::Independent {index}}}}}",
+            passage_id,
+        ).model_copy(update={"concept_id": f"C{index - 1:02d}"})
+        for index in range(3, 12)
+    )
+
+    s8 = asyncio.run(runner._card_dedupe_v2(context, {}, (first, second, *other_generated)))
+    deduped = tuple(
+        GeneratedCardResolution.model_validate(row) for row in s8.payload["resolutions"]
+    )
+    source_index = CardCentricSourceIndex.model_validate(
+        context.prior_payloads[CurationStage.SOURCE_INDEX]["source_index"]
+    )
+    selection = select_high_yield_v2(
+        (),
+        fast_classifications=(),
+        ledger=_selection_ledger(10),
+        source_index=source_index,
+        generated_cards=deduped,
+    )
+    canonical = tuple(row for row in deduped if row.status == "generated")
+
+    def as_s9_card(row: GeneratedCardResolution) -> GeneratedResolution:
+        return GeneratedResolution(
+            card_id=row.card_id,
+            fact_id=row.fact_id,
+            text=row.text,
+            split=row.split,
+            split_index=row.split_index,
+        )
+
+    snapshot = CardCentricReconciliationInput(
+        pipeline_contract_version="card_centric_v2",
+        concept_ids=tuple(f"C{index:02d}" for index in range(1, 11)),
+        coverage={f"C{index:02d}": "covered" for index in range(1, 11)},
+        required_fact_ids=tuple(row["fact_id"] for row in s8.payload["terminal_resolutions"]),
+        uncovered_after_s5=tuple(f"C{index:02d}" for index in range(1, 11)),
+        residual_ran_for=tuple(f"C{index:02d}" for index in range(1, 11)),
+        generated_cards=tuple(as_s9_card(row) for row in canonical),
+        raw_generated_cards=tuple(as_s9_card(row) for row in deduped),
+        canonical_generated_cards=tuple(as_s9_card(row) for row in canonical),
+        terminal_resolutions=tuple(
+            GeneratedFactResolution.model_validate(row)
+            for row in s8.payload["terminal_resolutions"]
+        ),
+        terminal_resolutions_provided=True,
+        canonical_unresolved_fact_ids=(),
+        unresolved_fact_ids=(),
+        expected_scoped_nids=(),
+        classifications=(),
+        eligible_yes_nids=(),
+        selected_nids=(),
+        selected_generated_card_ids=selection.selected_generated_card_ids,
+        generated_card_ids=tuple(row.card_id for row in canonical),
+        source_passage_ids=(passage_id,),
+        forbidden_cloze_targets=(),
+        prompt_sync_stale=False,
+        untagged_rate=0,
+        mandatory_nids=(),
+        mandatory_generated_card_ids=selection.mandatory_generated_card_ids,
+        generated_concept_id_by_card_id={
+            row.card_id: row.concept_id for row in canonical
+        },
+        selection_metadata=selection.selection_metadata,
+        selection_order=tuple(item.identity for item in selection.selection_metadata),
+        selected_count=len(selection.selected_generated_card_ids),
+        below_warning_floor=selection.below_warning_floor,
+    )
+
+    report = reconcile_card_centric(snapshot)
+
+    assert "G01" in selection.selected_generated_card_ids
+    assert selection.mandatory_generated_card_ids == ("G01",)
+    assert report.failed == ()
+    assert "duplicate_coverage" in report.passed
 
 
 def test_card_dedupe_v2_propagates_provider_and_vector_integrity_failures() -> None:

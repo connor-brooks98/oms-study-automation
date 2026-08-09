@@ -264,6 +264,27 @@ def _duplicate_target(
     )
 
 
+def _generated_duplicate_target(
+    *,
+    card_id: str,
+    concept_id: str,
+    fact_id: str,
+    target_card_id: str,
+    passage_id: str,
+) -> GeneratedCardResolution:
+    return GeneratedCardResolution(
+        card_id=card_id,
+        concept_id=concept_id,
+        fact_id=fact_id,
+        text="{{c1::Duplicate generated fact}}",
+        source_passage_ids=(passage_id,),
+        evidence_ids=(f"E-{card_id}",),
+        status="duplicate_of_existing",
+        duplicate_of_generated_card_id=target_card_id,
+        reason=f"Semantic duplicate of generated card {target_card_id}.",
+    )
+
+
 def test_fast_duplicate_target_is_conserved_after_warning_floor() -> None:
     source = _source()
     passage_id = source.passages[0].passage_id
@@ -419,6 +440,140 @@ def test_multiple_equivalent_duplicate_targets_are_all_conserved() -> None:
     assert result.selected_existing_note_ids == (10, 11)
     assert result.mandatory_note_ids == (10, 11)
     assert result.excluded_existing_note_ids == ()
+
+
+def test_generated_duplicate_target_is_conserved_at_65_and_70() -> None:
+    source = _source()
+    passage_id = source.passages[0].passage_id
+    target_at_65 = _generated(65, passage_id)
+    at_65 = select_high_yield_v2(
+        (),
+        fast_classifications=(),
+        ledger=_ledger(65, low={65}),
+        source_index=source,
+        generated_cards=(
+            *(_generated(index, passage_id) for index in range(1, 65)),
+            target_at_65,
+            _generated_duplicate_target(
+                card_id="D65",
+                concept_id="C65",
+                fact_id="C65-M2",
+                target_card_id=target_at_65.card_id,
+                passage_id=passage_id,
+            ),
+        ),
+    )
+
+    assert at_65.selection_metadata[-1].identity == "generated:G65"
+    assert at_65.selection_metadata[-1].selected_position == 65
+    assert at_65.mandatory_generated_card_ids == ("G65",)
+
+    target_at_71 = _generated(71, passage_id)
+    at_70 = select_high_yield_v2(
+        (),
+        fast_classifications=(),
+        ledger=_ledger(71, low={71}),
+        source_index=source,
+        generated_cards=(
+            *(_generated(index, passage_id) for index in range(1, 71)),
+            target_at_71,
+            _generated_duplicate_target(
+                card_id="D71",
+                concept_id="C71",
+                fact_id="C71-M2",
+                target_card_id=target_at_71.card_id,
+                passage_id=passage_id,
+            ),
+        ),
+    )
+
+    assert at_70.selection_metadata[-1].identity == "generated:G71"
+    assert at_70.selection_metadata[-1].selected_position == 70
+    assert "G70" in at_70.excluded_generated_card_ids
+
+
+def test_generated_duplicate_target_uses_mandatory_overflow_when_required() -> None:
+    source = _source()
+    passage_id = source.passages[0].passage_id
+    target = _generated(71, passage_id)
+    result = select_high_yield_v2(
+        (),
+        fast_classifications=(),
+        ledger=_ledger(71, high=set(range(1, 71))),
+        source_index=source,
+        generated_cards=(
+            *(_generated(index, passage_id) for index in range(1, 71)),
+            target,
+            _generated_duplicate_target(
+                card_id="D71",
+                concept_id="C71",
+                fact_id="C71-M2",
+                target_card_id=target.card_id,
+                passage_id=passage_id,
+            ),
+        ),
+        overflow_acknowledgement={
+            "acknowledged_at": "2026-08-09T00:00:00Z",
+            "acknowledged_by": "reviewer",
+            "reason": "S8 generated target conservation",
+        },
+    )
+
+    overflow = result.selection_metadata[-1]
+    assert overflow.identity == "generated:G71"
+    assert overflow.selected_position == 71
+    assert overflow.mandatory is True
+    assert overflow.manual_acknowledgement_required is True
+    assert result.overflow_acknowledgement is not None
+
+
+def test_multiple_equivalent_generated_duplicate_targets_are_all_conserved() -> None:
+    source = _source()
+    passage_id = source.passages[0].passage_id
+    targets = (
+        GeneratedCardResolution(
+            card_id="G-target-a",
+            concept_id="C01",
+            fact_id="C01-M1",
+            text="{{c1::First generated target}}",
+            source_passage_ids=(passage_id,),
+            evidence_ids=("E-target-a",),
+        ),
+        GeneratedCardResolution(
+            card_id="G-target-b",
+            concept_id="C01",
+            fact_id="C01-M1",
+            text="{{c1::Second generated target}}",
+            source_passage_ids=(passage_id,),
+            evidence_ids=("E-target-b",),
+        ),
+    )
+    result = select_high_yield_v2(
+        (),
+        fast_classifications=(),
+        ledger=_ledger(1),
+        source_index=source,
+        generated_cards=(
+            *targets,
+            _generated_duplicate_target(
+                card_id="D-target-a",
+                concept_id="C01",
+                fact_id="C01-M2",
+                target_card_id="G-target-a",
+                passage_id=passage_id,
+            ),
+            _generated_duplicate_target(
+                card_id="D-target-b",
+                concept_id="C01",
+                fact_id="C01-M3",
+                target_card_id="G-target-b",
+                passage_id=passage_id,
+            ),
+        ),
+    )
+
+    assert result.selected_generated_card_ids == ("G-target-a", "G-target-b")
+    assert result.mandatory_generated_card_ids == ("G-target-a", "G-target-b")
 
 
 def test_summary_evidence_with_unknown_id_does_not_upgrade_to_primary() -> None:

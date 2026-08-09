@@ -671,6 +671,12 @@ def select_high_yield_v2(
         if generated_row.status == "duplicate_of_existing"
         and generated_row.duplicate_of_existing_note_id is not None
     }
+    duplicate_target_generated_card_ids = {
+        generated_row.duplicate_of_generated_card_id
+        for generated_row in generated_cards
+        if generated_row.status == "duplicate_of_existing"
+        and generated_row.duplicate_of_generated_card_id is not None
+    }
 
     def priority(concept_id: str) -> tuple[int, str]:
         concept = concepts[concept_id]
@@ -702,6 +708,7 @@ def select_high_yield_v2(
     candidates: list[_QualitySelectionCandidate] = []
     selectable_generated_ids: set[str] = set()
     for generated_row in generated_cards:
+        is_duplicate_target = generated_row.card_id in duplicate_target_generated_card_ids
         tier_priority = (
             priority(generated_row.concept_id)[0]
             if generated_row.concept_id in concepts
@@ -724,8 +731,12 @@ def select_high_yield_v2(
                 evidence_quality=evidence_quality(generated_row.source_passage_ids),
                 coverage=frozenset({("fact", generated_row.fact_id)}),
                 priority=tier_priority,
-                mandatory=tier_priority == 0,
-                duplicate_target=False,
+                # An S8 terminal can name a prior generated card.  As with a
+                # named existing note, only an independently eligible generated
+                # row may be conserved, but its exact identity then remains
+                # mandatory through selection and S9.
+                mandatory=tier_priority == 0 or is_duplicate_target,
+                duplicate_target=is_duplicate_target,
                 split=generated_row.split,
                 flag_count=0,
             )
