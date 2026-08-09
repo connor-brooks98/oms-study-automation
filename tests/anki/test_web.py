@@ -1324,6 +1324,56 @@ def test_blank_card_scope_retry_repairs_legacy_job_through_api(
     assert response.json()["error"] is None
 
 
+def test_semantic_dedupe_retry_hold_blocks_review_and_resumes_through_api(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, lecture_id, revision_id, _ = prepared_app
+    repository: AnkiCurationRepository = app.state.anki_repository
+    created = repository.create_job(
+        CreateCurationJob(
+            lecture_id=lecture_id,
+            block_id="heme-block-1",
+            source_revision_ids=(revision_id,),
+            deck_allowlist=("AnKing Step Deck",),
+            tag_allowlist=("#AK_Step2_v12::Hematology",),
+            instruction_text="",
+            target_deck="OMS::Heme::Lecture 4",
+            target_tag=TARGET_TAG,
+            index_snapshot_id="snapshot-test",
+            lcl_prompt_version="lcl-v1",
+            judgment_rubric_version="judgment-v1",
+            gap_prompt_version="card-centric-gap-v2",
+            provider="anthropic",
+            model="claude-sonnet-5",
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+    )
+    with app.state.database.session() as session:
+        stored = session.get(AnkiCurationJobModel, str(created.id))
+        assert stored is not None
+        stored.state = CurationState.READY_FOR_REVIEW.value
+        stored.error = "Semantic dedupe retry required: Voyage unavailable"
+
+    review = client.get(f"/api/anki/jobs/{created.id}/review")
+
+    assert review.status_code == 200
+    assert review.json()["job"]["can_retry"] is True
+    assert review.json()["can_edit"] is False
+    assert review.json()["can_build_envelope"] is False
+    envelope = client.post(
+        f"/api/anki/jobs/{created.id}/envelope",
+        json={"review_revision": 0},
+    )
+    assert envelope.status_code == 409
+    assert "Semantic dedupe must be retried" in envelope.json()["detail"]
+
+    retry = client.post(f"/api/anki/jobs/{created.id}/retry")
+
+    assert retry.status_code == 200
+    assert retry.json()["state"] == "card_deduping"
+    assert retry.json()["error"] is None
+
+
 def test_failed_curation_job_can_be_removed_through_api(
     prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
 ) -> None:

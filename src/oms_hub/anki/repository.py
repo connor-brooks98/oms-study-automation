@@ -212,7 +212,10 @@ ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
         CurationState.READY_FOR_REVIEW,
         CurationState.FAILED,
     },
-    CurationState.READY_FOR_REVIEW: {CurationState.ENVELOPE_PENDING},
+    CurationState.READY_FOR_REVIEW: {
+        CurationState.CARD_DEDUPING,
+        CurationState.ENVELOPE_PENDING,
+    },
     CurationState.ENVELOPE_PENDING: {
         CurationState.APPLYING_LOCAL,
         CurationState.FAILED,
@@ -375,6 +378,7 @@ _CARD_CENTRIC_REWIND_STAGES = frozenset(
     }
 )
 _BLANK_CARD_CENTRIC_SCOPE_ERROR = "tag scope has no resolved tokens"
+_SEMANTIC_DEDUPE_RETRY_HOLD_PREFIX = "Semantic dedupe retry required: "
 
 
 class InvalidCurationTransition(ValueError):
@@ -456,6 +460,18 @@ def _same_unique_identity_set(
         and len(frozen) == len(set(frozen))
         and set(provided) == set(frozen)
     )
+
+
+def is_semantic_dedupe_retry_hold(job: CurationJob) -> bool:
+    """Whether a ready job is an S8 outage hold, not a reviewable result."""
+    return (
+        job.state is CurationState.READY_FOR_REVIEW
+        and _is_semantic_dedupe_retry_hold(job.error)
+    )
+
+
+def _is_semantic_dedupe_retry_hold(error: str | None) -> bool:
+    return bool(error and error.startswith(_SEMANTIC_DEDUPE_RETRY_HOLD_PREFIX))
 
 
 class AnkiCurationRepository:
@@ -1265,7 +1281,7 @@ class AnkiCurationRepository:
                 )
                 .values(
                     state=CurationState.READY_FOR_REVIEW.value,
-                    error=safe_error[:1_000],
+                    error=(_SEMANTIC_DEDUPE_RETRY_HOLD_PREFIX + safe_error)[:1_000],
                     ready_at=now_text,
                     available_at=None,
                     lease_owner=None,
@@ -1287,6 +1303,24 @@ class AnkiCurationRepository:
     def retry_job(self, job_id: UUID) -> CurationJob:
         with self.database.session() as session:
             stored = self._require_job_model(session, job_id)
+            if (
+                stored.state == CurationState.READY_FOR_REVIEW.value
+                and _is_semantic_dedupe_retry_hold(stored.error)
+            ):
+                if CurationState.CARD_DEDUPING not in ALLOWED_TRANSITIONS[
+                    CurationState.READY_FOR_REVIEW
+                ]:
+                    raise InvalidCurationTransition(
+                        "transition ready_for_review -> card_deduping is not allowed"
+                    )
+                stored.state = CurationState.CARD_DEDUPING.value
+                stored.error = None
+                stored.ready_at = None
+                stored.available_at = None
+                stored.lease_owner = None
+                stored.lease_expires_at = None
+                session.flush()
+                return self._job(stored)
             if stored.state != CurationState.FAILED.value:
                 raise ValueError("only a failed curation job can be retried")
             failed_stage = session.scalar(

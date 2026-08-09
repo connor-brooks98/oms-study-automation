@@ -1461,7 +1461,7 @@
     );
   };
 
-  const canRetryCuration = (state) => state === "failed";
+  const canRetryCuration = (job) => job.state === "failed" || job.can_retry === true;
 
   const renderProcessing = (documentRef, job) => {
     const percent = processingPercent(job.state);
@@ -1482,7 +1482,7 @@
           : "This run is resumable. You may leave this page while Study Hub works."
       );
     const retry = documentRef.querySelector("[data-retry-job]");
-    if (retry) retry.hidden = !canRetryCuration(job.state);
+    if (retry) retry.hidden = !canRetryCuration(job);
   };
 
   const editableTagPatch = (input) => {
@@ -1838,7 +1838,7 @@
         const button = event.currentTarget;
         button.disabled = true;
         documentRef.querySelector("#anki-processing-note").textContent =
-          "Retrying the failed stage…";
+          "Retrying the interrupted stage…";
         try {
           await requestJson(
             documentRef,

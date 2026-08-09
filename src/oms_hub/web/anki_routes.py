@@ -62,6 +62,7 @@ from oms_hub.anki.reconciliation import (
 from oms_hub.anki.repository import (
     AnkiCurationRepository,
     InvalidCurationTransition,
+    is_semantic_dedupe_retry_hold,
 )
 from oms_hub.anki.sources import NotebookSummaryParser, SummaryMalformedError
 from oms_hub.anki.stages import revision_fingerprint
@@ -598,8 +599,9 @@ async def read_anki_review(
             gaps,
             candidates,
         )
-    reconciliation_allows_review = reconciliation is None or bool(
-        reconciliation.get("can_render_envelope", False)
+    semantic_dedupe_hold = is_semantic_dedupe_retry_hold(job)
+    reconciliation_allows_review = not semantic_dedupe_hold and (
+        reconciliation is None or bool(reconciliation.get("can_render_envelope", False))
     )
     return {
         "job": _job_payload(job),
@@ -619,7 +621,7 @@ async def read_anki_review(
         ),
         "evidence": [_evidence_payload(item) for item in evidence],
         "tag_policy": _tag_policy_payload(_tag_policy(request)),
-        "can_edit": job.state is CurationState.READY_FOR_REVIEW,
+        "can_edit": job.state is CurationState.READY_FOR_REVIEW and not semantic_dedupe_hold,
         "can_build_envelope": (
             job.state is CurationState.READY_FOR_REVIEW and reconciliation_allows_review
         ),
@@ -634,6 +636,11 @@ async def save_anki_review(
 ) -> dict[str, Any]:
     repository = _repository(request)
     job = _require_job(repository, job_id)
+    if is_semantic_dedupe_retry_hold(job):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Semantic dedupe must be retried before this job can be reviewed",
+        )
     if job.state is not CurationState.READY_FOR_REVIEW:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -831,6 +838,11 @@ async def build_anki_envelope(
 ) -> dict[str, Any]:
     repository = _repository(request)
     job = _require_job(repository, job_id)
+    if is_semantic_dedupe_retry_hold(job):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Semantic dedupe must be retried before building an apply plan",
+        )
     if (
         job.state is not CurationState.READY_FOR_REVIEW
         or job.review_revision != payload.review_revision
@@ -1204,6 +1216,7 @@ def _job_payload(job: CurationJob) -> dict[str, Any]:
         "provider": job.provider,
         "model": job.model,
         "error": job.error,
+        "can_retry": job.state is CurationState.FAILED or is_semantic_dedupe_retry_hold(job),
         "created_at": job.created_at,
         "updated_at": job.updated_at,
     }

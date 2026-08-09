@@ -39,7 +39,7 @@ from oms_hub.anki.pipeline import (
     StageContext,
     StageProduct,
 )
-from oms_hub.anki.repository import AnkiCurationRepository
+from oms_hub.anki.repository import AnkiCurationRepository, InvalidCurationTransition
 from oms_hub.anki.semantic.service import SemanticCoverageError
 from oms_hub.anki.semantic.store import SemanticSnapshotError
 from oms_hub.anki.semantic.voyage import VoyageEmbeddingError
@@ -710,10 +710,24 @@ def test_expected_red_p3_h10_exhausted_semantic_outage_requires_manual_review(
             stage = repository.get_stage(job.id, CurationStage.DEDUPE)
             assert stage is not None and stage.attempt_count == 3
             assert outage_client.calls == 3
-            assert repository.require_job(job.id).state is CurationState.READY_FOR_REVIEW, (
+            held = repository.require_job(job.id)
+            assert held.state is CurationState.READY_FOR_REVIEW, (
                 "P3 H-10: exhausted semantic dedupe must reach an approved manual-review/block "
                 "outcome instead of failing the worker stage"
             )
+            assert held.error is not None and held.error.startswith(
+                "Semantic dedupe retry required: "
+            )
+            with pytest.raises(InvalidCurationTransition):
+                repository.hold_semantic_dedupe_for_review(
+                    job.id,
+                    "stale-worker",
+                    "stale semantic outage",
+                    now=current[0],
+                )
+            resumed = repository.retry_job(job.id)
+            assert resumed.state is CurationState.CARD_DEDUPING
+            assert resumed.error is None
         finally:
             database.close()
 
