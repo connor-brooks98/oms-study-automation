@@ -137,6 +137,17 @@ test("cancellation aborts the in-flight request without becoming a timeout", asy
   await assert.rejects(pending, (error) => error.name === "AbortError");
 });
 
+test("cancellation while waiting for duplicate confirmation rejects promptly", async () => {
+  const controller = new AbortController();
+  const decision = uploads.createDecisionWait(controller.signal);
+  controller.abort();
+
+  await assert.rejects(
+    decision.promise,
+    (error) => error.name === "AbortError",
+  );
+});
+
 test("selection locks and serialized errors are rendered as safe text inputs", () => {
   assert.equal(uploads.selectionIsLocked(null), false);
   assert.equal(uploads.selectionIsLocked({ controller: {} }), true);

@@ -74,6 +74,16 @@
     }
   };
 
+  const createDecisionWait = (signal) => {
+    let resume;
+    const promise = new Promise((resolve, reject) => {
+      resume = () => resolve();
+      const abort = () => reject(new DOMException("Cancelled", "AbortError"));
+      signal.addEventListener("abort", abort, { once: true });
+    });
+    return { promise, resume: () => resume() };
+  };
+
   const chunkFinalizeUrl = (sessionId, lectureId) => (
     `/api/upload-chunks/${encodeURIComponent(sessionId)}/finalize${
       lectureId ? `?lecture_id=${encodeURIComponent(lectureId)}` : ""
@@ -228,14 +238,13 @@
         const batch = await response.json();
         renderBatch(batch);
         if (showConfirmation(batch, batchId)) {
-          await new Promise((resolve, reject) => {
-            resumeDecision = resolve;
-            const abort = () => {
-              resumeDecision = null;
-              reject(new DOMException("Cancelled", "AbortError"));
-            };
-            signal.addEventListener("abort", abort, { once: true });
-          });
+          const decision = createDecisionWait(signal);
+          resumeDecision = decision.resume;
+          try {
+            await decision.promise;
+          } finally {
+            resumeDecision = null;
+          }
           delay = 750;
           continue;
         }
@@ -513,6 +522,7 @@
     chunkFinalizeUrl,
     csrfToken,
     batchIsTerminal,
+    createDecisionWait,
     freezeManifest,
     itemErrorText,
     rejectionDetail,
