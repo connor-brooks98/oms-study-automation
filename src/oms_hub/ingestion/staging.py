@@ -158,9 +158,58 @@ class StagingService:
                 )
             )
         if errors:
-            self.discard_manifest(manifest_id)
+            self._discard_manifest_data(manifest_id)
             raise UploadRejected(json.dumps({"errors": errors}))
         return uploads
+
+    def claim_manifest_finalization(self, manifest_id: str) -> UploadManifest:
+        """Atomically make finalization the sole manifest owner.
+
+        The sibling claim is intentionally outside the manifest directory, so
+        cancellation cannot remove it while a finalizer owns the request.
+        """
+        root = self._manifest_root(manifest_id)
+        if not root.is_dir():
+            raise UploadRejected("upload manifest does not exist")
+        claim = self._manifest_claim_path(manifest_id)
+        try:
+            with claim.open("x", encoding="ascii") as stream:
+                stream.write("finalize")
+        except FileExistsError as error:
+            try:
+                owner = claim.read_text(encoding="ascii")
+            except OSError:
+                owner = ""
+            message = (
+                "upload manifest was cancelled"
+                if owner == "cancel"
+                else "upload manifest is already finalizing"
+            )
+            raise UploadRejected(message) from error
+        try:
+            return self.get_manifest(manifest_id)
+        except Exception:
+            self.release_manifest_finalization(manifest_id)
+            raise
+
+    def release_manifest_finalization(self, manifest_id: str) -> None:
+        """Release a failed finalization claim without deleting retry data."""
+        claim = self._manifest_claim_path(manifest_id)
+        try:
+            if claim.read_text(encoding="ascii") == "finalize":
+                claim.unlink(missing_ok=True)
+        except OSError:
+            return
+
+    def abandon_manifest_finalization(self, manifest_id: str) -> None:
+        """Discard a rejected finalization and its claim idempotently."""
+        self._discard_manifest_data(manifest_id)
+        self.release_manifest_finalization(manifest_id)
+
+    def complete_manifest_finalization(self, manifest_id: str) -> None:
+        """Discard temporary members after their DB transaction committed."""
+        self._discard_manifest_data(manifest_id)
+        self.release_manifest_finalization(manifest_id)
 
     def promote_manifest(
         self,
@@ -204,6 +253,10 @@ class StagingService:
         batch_id: str,
         uploads: list[StagedUpload],
     ) -> None:
+        # The finalization claim normally preserves this root.  Re-create it
+        # defensively so a cleanup fault cannot strand batch-owned .ready
+        # files merely because temporary metadata disappeared.
+        self._manifest_root(manifest_id).mkdir(parents=True, exist_ok=True)
         for upload in uploads:
             if upload.path.exists():
                 upload.path.replace(self._manifest_file_path(manifest_id, upload.item_id))
@@ -213,12 +266,33 @@ class StagingService:
         batch_root.rmdir()
 
     def discard_manifest(self, manifest_id: str) -> None:
+        """Cancel a manifest unless an atomic finalization claim owns it."""
         root = self._manifest_root(manifest_id)
         if not root.exists():
             return
-        for path in root.glob("*"):
-            path.unlink(missing_ok=True)
-        root.rmdir()
+        claim = self._manifest_claim_path(manifest_id)
+        try:
+            with claim.open("x", encoding="ascii") as stream:
+                stream.write("cancel")
+        except FileExistsError as error:
+            try:
+                owner = claim.read_text(encoding="ascii")
+            except OSError:
+                owner = ""
+            if owner == "cancel":
+                return
+            raise UploadRejected("upload manifest is finalizing") from error
+        try:
+            self._discard_manifest_data(manifest_id)
+        finally:
+            claim.unlink(missing_ok=True)
+
+    def _discard_manifest_data(self, manifest_id: str) -> None:
+        root = self._manifest_root(manifest_id)
+        if root.exists():
+            for path in root.glob("*"):
+                path.unlink(missing_ok=True)
+            root.rmdir()
         chunk_root = self._chunk_root()
         if chunk_root.exists():
             for session_path in chunk_root.glob("*.json"):
@@ -524,6 +598,9 @@ class StagingService:
 
     def _manifest_path(self, manifest_id: str) -> Path:
         return self._manifest_root(manifest_id) / "manifest.json"
+
+    def _manifest_claim_path(self, manifest_id: str) -> Path:
+        return self._contained(self.root / "manifests", f"{manifest_id}.claim")
 
     def _manifest_file_path(self, manifest_id: str, slot_id: str) -> Path:
         self._contained(self._manifest_root(manifest_id), slot_id)

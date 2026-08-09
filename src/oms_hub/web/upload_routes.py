@@ -205,7 +205,10 @@ def finalize_manifest(manifest_id: str, request: Request) -> dict[str, str] | JS
 
 @router.delete("/api/upload-manifests/{manifest_id}", status_code=204)
 def cancel_manifest(manifest_id: str, request: Request) -> None:
-    _staging(request).discard_manifest(manifest_id)
+    try:
+        _staging(request).discard_manifest(manifest_id)
+    except UploadRejected as error:
+        raise HTTPException(409, str(error)) from error
 
 
 @router.get("/api/upload-batches/{batch_id}")
@@ -416,16 +419,24 @@ def _finalize_manifest(
     manifest_id: str,
 ) -> dict[str, str] | JSONResponse:
     staging = _staging(request)
+    claimed = False
     try:
-        manifest = staging.get_manifest(manifest_id)
+        manifest = staging.claim_manifest_finalization(manifest_id)
+        claimed = True
         _require_lecture(request, manifest.lecture_id)
         staged = staging.manifest_uploads(manifest_id)
     except UploadRejected as error:
+        if claimed:
+            staging.abandon_manifest_finalization(manifest_id)
         try:
             payload = json.loads(str(error))
         except json.JSONDecodeError:
             raise HTTPException(422, str(error)) from error
         return JSONResponse(status_code=422, content=payload)
+    except Exception:
+        if claimed:
+            staging.release_manifest_finalization(manifest_id)
+        raise
     service = _ingestion(request)
     decisions = (
         {}
@@ -449,10 +460,13 @@ def _finalize_manifest(
             decisions=decisions,
         )
     except Exception:
-        if moved:
-            staging.revert_promoted_manifest(manifest_id, batch_id, moved)
+        try:
+            if moved:
+                staging.revert_promoted_manifest(manifest_id, batch_id, moved)
+        finally:
+            staging.release_manifest_finalization(manifest_id)
         raise
-    staging.discard_manifest(manifest_id)
+    staging.complete_manifest_finalization(manifest_id)
     if manifest.lecture_id is not None:
         for _ in moved:
             service._complete_match_steps(manifest.lecture_id, manifest.kind)

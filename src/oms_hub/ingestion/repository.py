@@ -387,6 +387,7 @@ class IngestionRepository:
                         StudyRevisionModel.lecture_id == revision.lecture_id,
                         StudyRevisionModel.kind == UploadKind.TRANSCRIPTS.value,
                         StudyRevisionModel.current.is_(True),
+                        StudyRevisionModel.id != revision.id,
                     )
                 )
                 if current is not None:

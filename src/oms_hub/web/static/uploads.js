@@ -146,6 +146,19 @@
     if (activeSubmission) activeSubmission.controller.abort();
   };
 
+  const waitForDecision = async (signal, deadline, setResume, onRejected) => {
+    const decision = createDecisionWait(signal, deadline);
+    setResume(decision.resume);
+    try {
+      await decision.promise;
+    } catch (error) {
+      onRejected();
+      throw error;
+    } finally {
+      setResume(null);
+    }
+  };
+
   const initialize = (documentRef, fetchImpl) => {
     const form = documentRef.querySelector("[data-upload-form]");
     if (!form) return;
@@ -256,6 +269,13 @@
       return true;
     };
 
+    const clearPausedDecision = () => {
+      if (dialog?.open) dialog.close();
+      pausedItem = null;
+      pausedBatchId = null;
+      resumeDecision = null;
+    };
+
     const fetchWithTimeout = (url, options = {}, timeoutMs = 120000) => (
       requestWithTimeout(fetchImpl, url, options, timeoutMs)
     );
@@ -273,13 +293,12 @@
         const batch = await response.json();
         renderBatch(batch);
         if (showConfirmation(batch, batchId)) {
-          const decision = createDecisionWait(signal, deadline);
-          resumeDecision = decision.resume;
-          try {
-            await decision.promise;
-          } finally {
-            resumeDecision = null;
-          }
+          await waitForDecision(
+            signal,
+            deadline,
+            (resume) => { resumeDecision = resume; },
+            clearPausedDecision,
+          );
           delay = 750;
           continue;
         }
@@ -536,14 +555,14 @@
               method: "DELETE", headers: csrfHeaders(), keepalive: true,
             }).catch(() => {});
           }
-          if (dialog?.open) dialog.close();
-          pausedItem = null;
-          pausedBatchId = null;
-          resumeDecision = null;
+          clearPausedDecision();
           status.textContent = "Upload cancelled.";
-        } else status.textContent = error instanceof Error
-          ? error.message
-          : "Upload failed.";
+        } else {
+          clearPausedDecision();
+          status.textContent = error instanceof Error
+            ? error.message
+            : "Upload failed.";
+        }
       } finally {
         activeSubmission = null;
         input.disabled = false;
@@ -560,6 +579,7 @@
     batchIsTerminal,
     createDecisionWait,
     handleDecisionDialogCancel,
+    waitForDecision,
     freezeManifest,
     itemErrorText,
     rejectionDetail,

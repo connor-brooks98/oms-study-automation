@@ -2,11 +2,13 @@ import hashlib
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from oms_hub.app import create_app
 from oms_hub.config import Settings
+from oms_hub.ingestion.staging import UploadRejected
 from oms_hub.models import IngestionJobModel, UploadBatchModel, UploadItemModel
 
 
@@ -292,3 +294,114 @@ def test_manifest_delete_after_chunk_staging_never_uses_legacy_finalize(
     assert raced.status_code == 422
     assert _counts(app) == (0, 0, 0)
     assert _ready(app) == []
+
+
+def test_cancel_before_manifest_finalize_leaves_no_durable_rows_or_ready_files(
+    tmp_path: Path,
+) -> None:
+    client, app = _client(tmp_path)
+    payload = b"cancel before finalization"
+    slot_id = str(uuid4())
+    created = client.post(
+        "/api/upload-manifests",
+        json={
+            "kind": "transcripts",
+            "files": [{
+                "slot_id": slot_id,
+                "filename": "before.txt",
+                "size_bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }],
+        },
+    )
+    manifest_id = created.json()["manifest_id"]
+    uploaded = client.post(
+        "/uploads/transcripts",
+        data={"manifest_id": manifest_id, "slot_ids": slot_id},
+        files=[("files", ("before.txt", payload))],
+    )
+    assert uploaded.status_code == 202
+
+    assert client.delete(f"/api/upload-manifests/{manifest_id}").status_code == 204
+    finalized = client.post(f"/api/upload-manifests/{manifest_id}/finalize")
+
+    assert finalized.status_code == 422
+    assert _counts(app) == (0, 0, 0)
+    assert _ready(app) == []
+
+
+def test_finalize_claim_rejects_cancel_during_move_and_reverts_without_orphans(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    client, app = _client(tmp_path)
+    payload = b"cancel while promoting"
+    slot_id = str(uuid4())
+    created = client.post(
+        "/api/upload-manifests",
+        json={
+            "kind": "transcripts",
+            "files": [{
+                "slot_id": slot_id,
+                "filename": "during.txt",
+                "size_bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }],
+        },
+    )
+    manifest_id = created.json()["manifest_id"]
+    uploaded = client.post(
+        "/uploads/transcripts",
+        data={"manifest_id": manifest_id, "slot_ids": slot_id},
+        files=[("files", ("during.txt", payload))],
+    )
+    assert uploaded.status_code == 202
+
+    staging = app.state.upload_staging  # type: ignore[attr-defined]
+    promote = staging.promote_manifest
+
+    def promote_while_cancel_is_rejected(
+        manifest_id: str, batch_id: str
+    ) -> object:
+        with pytest.raises(UploadRejected, match="is finalizing"):
+            staging.discard_manifest(manifest_id)
+        return promote(manifest_id, batch_id)
+
+    def fail_finalization(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("database finalization failed")
+
+    monkeypatch.setattr(staging, "promote_manifest", promote_while_cancel_is_rejected)
+    monkeypatch.setattr(app.state.ingestion_repository, "finalize_batch", fail_finalization)  # type: ignore[attr-defined]
+    with pytest.raises(RuntimeError, match="database finalization failed"):
+        client.post(f"/api/upload-manifests/{manifest_id}/finalize")
+
+    assert _counts(app) == (0, 0, 0)
+    assert _ready(app) == []
+    assert client.delete(f"/api/upload-manifests/{manifest_id}").status_code == 204
+
+
+def test_finalize_owned_manifest_returns_conflict_to_cancel_request(tmp_path: Path) -> None:
+    client, app = _client(tmp_path)
+    payload = b"finalizer owns cancellation"
+    slot_id = str(uuid4())
+    created = client.post(
+        "/api/upload-manifests",
+        json={
+            "kind": "transcripts",
+            "files": [{
+                "slot_id": slot_id,
+                "filename": "owned.txt",
+                "size_bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }],
+        },
+    )
+    manifest_id = created.json()["manifest_id"]
+    staging = app.state.upload_staging  # type: ignore[attr-defined]
+    staging.claim_manifest_finalization(manifest_id)
+
+    cancelled = client.delete(f"/api/upload-manifests/{manifest_id}")
+
+    assert cancelled.status_code == 409
+    assert cancelled.json()["detail"] == "upload manifest is finalizing"
+    staging.release_manifest_finalization(manifest_id)

@@ -220,6 +220,46 @@ def test_failed_exact_current_repair_releases_cleaning_admission(tmp_path: Path)
         pipeline.process("retry-repair")
 
 
+def test_recovery_keeps_interrupted_exact_current_repair_as_its_own_owner(
+    tmp_path: Path,
+) -> None:
+    database, repository, lecture_id = _prepared(tmp_path)
+    payload = b"Same transcript with enough facts to preserve and repair."
+    _add(repository, tmp_path, "original", payload)
+    repository.set_manual_assignment("original", lecture_id)
+    pipeline = _pipeline(database, tmp_path, CountingCleaner())
+    original = pipeline.process("original")
+    assert original.canonical_derived_path is not None
+    Path(original.canonical_derived_path).write_text("corrupt", encoding="utf-8")
+
+    _add(repository, tmp_path, "repair", payload)
+    repository.set_manual_assignment("repair", lecture_id)
+    repairing = repository.begin_revision(
+        "repair", tmp_path / "data" / "artifacts" / "v2" / "transcripts"
+    )
+    with database.session() as session:
+        job = session.scalar(
+            text("SELECT id FROM ingestion_jobs WHERE upload_item_id='repair'")
+        )
+        assert job is not None
+        stored = session.get(IngestionJobModel, job)
+        assert stored is not None
+        stored.state = UploadState.PROCESSING.value
+
+    repository.recover_interrupted_jobs()
+
+    with database.session() as session:
+        stored = session.get(StudyRevisionModel, repairing.id)
+        assert stored is not None
+        assert stored.state == "cleaning"
+        assert stored.current is True
+        assert stored.upload_item_id == "repair"
+    assert repository.require_item("repair").state is UploadState.QUEUED
+    claimed = repository.claim_next_job(datetime.now(UTC))
+    assert claimed is not None
+    assert claimed.upload_item_id == "repair"
+
+
 def test_recovery_requeues_orphaned_cleaning_owner(tmp_path: Path) -> None:
     database, repository, lecture_id = _prepared(tmp_path)
     _add(repository, tmp_path, "orphan")

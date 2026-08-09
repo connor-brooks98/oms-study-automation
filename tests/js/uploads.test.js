@@ -168,6 +168,25 @@ test("duplicate confirmation wait respects the overall polling deadline", async 
   );
 });
 
+test("decision deadline clears the active modal state before upload cleanup", async () => {
+  const controller = new AbortController();
+  let resume = undefined;
+  let cleared = 0;
+
+  await assert.rejects(
+    uploads.waitForDecision(
+      controller.signal,
+      Date.now() + 1,
+      (value) => { resume = value; },
+      () => { cleared += 1; },
+    ),
+    /Upload status timed out before a terminal result\./,
+  );
+
+  assert.equal(cleared, 1);
+  assert.equal(resume, null);
+});
+
 test("decision POST shares the active abort signal and bounded timeout", async () => {
   let captured;
   const stalled = async (_url, options) => {
