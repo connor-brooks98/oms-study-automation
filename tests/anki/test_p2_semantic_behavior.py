@@ -432,6 +432,7 @@ def test_residual_audits_borderline_band_and_binds_semantic_generation(monkeypat
             "below_classification_threshold_note_ids": [1],
             "classified_note_ids": [],
             "semantic_skip": False,
+            "disposition": "below_classification_threshold",
         }
     ]
 

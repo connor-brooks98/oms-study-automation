@@ -1104,12 +1104,23 @@ class CurationServicesRunner:
                 )
                 row["below_classification_threshold_note_ids"] = list(below_threshold)
                 if top is None or top < 0.40:
-                    row.update({"classified_note_ids": [], "semantic_skip": True})
+                    row.update(
+                        {
+                            "classified_note_ids": [],
+                            "semantic_skip": True,
+                            "disposition": "semantic_skip",
+                        }
+                    )
                     audit.append(row)
                     continue
                 gated = tuple(sorted(item.note_id for item in usable if item.score >= 0.50))
                 row["classified_note_ids"] = list(gated)
                 row["semantic_skip"] = False
+                row["disposition"] = (
+                    "classified"
+                    if gated
+                    else "below_classification_threshold"
+                )
                 hit_ids.update(gated)
                 audit.append(row)
                 continue

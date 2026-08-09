@@ -185,6 +185,18 @@ class AnkiCurationWorker:
                     job_id,
                     safe,
                 )
+            elif state is CurationState.CARD_DEDUPING and isinstance(error, VoyageEmbeddingError):
+                self.repository.hold_semantic_dedupe_for_review(
+                    job_id,
+                    self.worker_id,
+                    safe,
+                    now=handled_at,
+                )
+                logger.warning(
+                    "Anki curation job %s awaits review after semantic dedupe outage: %s",
+                    job_id,
+                    safe,
+                )
             else:
                 self.repository.fail_job(
                     job_id,

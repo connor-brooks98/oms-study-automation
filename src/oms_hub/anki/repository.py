@@ -146,7 +146,11 @@ ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
         CurationState.FAILED,
     },
     CurationState.CARD_GENERATING_GAPS: {CurationState.CARD_DEDUPING, CurationState.FAILED},
-    CurationState.CARD_DEDUPING: {CurationState.CARD_SELECTING, CurationState.FAILED},
+    CurationState.CARD_DEDUPING: {
+        CurationState.CARD_SELECTING,
+        CurationState.READY_FOR_REVIEW,
+        CurationState.FAILED,
+    },
     CurationState.CARD_SELECTING: {CurationState.CARD_RECONCILING, CurationState.FAILED},
     CurationState.CARD_RECONCILING: {CurationState.READY_FOR_REVIEW, CurationState.FAILED},
     CurationState.BUILDING_LCL: {
@@ -1225,6 +1229,54 @@ class AnkiCurationRepository:
                 if stored.state != expected_state.value:
                     raise InvalidCurationTransition(
                         f"job {job_id} is not in {expected_state.value}"
+                    )
+                self._require_active_stage_lease(stored, job_id, worker_id, now=now)
+                raise InvalidCurationTransition(f"job {job_id} is not claimable")
+            stored = self._require_job_model(session, job_id)
+            session.refresh(stored)
+            return self._job(stored)
+
+    def hold_semantic_dedupe_for_review(
+        self,
+        job_id: UUID,
+        worker_id: str,
+        safe_error: str,
+        *,
+        now: datetime,
+    ) -> CurationJob:
+        """Fence an exhausted S8 semantic outage into an explicit review hold.
+
+        A semantic-deduplication provider outage must never be represented as a
+        completed selection.  The terminal review state keeps the fault detail
+        while releasing the active lease, so an operator can decide whether to
+        retry rather than the worker silently proceeding or marking the job
+        irrecoverably failed.
+        """
+        now_text = _aware_utc(now).isoformat()
+        with self.database.session() as session:
+            changed = session.execute(
+                update(AnkiCurationJobModel)
+                .where(
+                    AnkiCurationJobModel.id == str(job_id),
+                    AnkiCurationJobModel.lease_owner == worker_id,
+                    AnkiCurationJobModel.lease_expires_at.is_not(None),
+                    AnkiCurationJobModel.lease_expires_at > now_text,
+                    AnkiCurationJobModel.state == CurationState.CARD_DEDUPING.value,
+                )
+                .values(
+                    state=CurationState.READY_FOR_REVIEW.value,
+                    error=safe_error[:1_000],
+                    ready_at=now_text,
+                    available_at=None,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                )
+            )
+            if cast(CursorResult[Any], changed).rowcount != 1:
+                stored = self._require_job_model(session, job_id)
+                if stored.state != CurationState.CARD_DEDUPING.value:
+                    raise InvalidCurationTransition(
+                        f"job {job_id} is not in {CurationState.CARD_DEDUPING.value}"
                     )
                 self._require_active_stage_lease(stored, job_id, worker_id, now=now)
                 raise InvalidCurationTransition(f"job {job_id} is not claimable")
