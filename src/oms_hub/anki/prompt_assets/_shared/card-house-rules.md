@@ -22,7 +22,11 @@ shared: true
 A context trap is a cloze whose answer is trivially inferable from the lecture
 topic alone.
 
-- Never blank any string in `forbidden_cloze_targets[]`.
+- When `forbidden_cloze_targets_by_fact[]` is supplied, use only the row
+  matching the card's `fact_id`; never blank a target in that row and never
+  flatten or union targets from unrelated facts.
+- When only legacy `forbidden_cloze_targets[]` is supplied, never blank any
+  string in that global list.
 - When `lecture_entity_count == 1`, the concept's primary entity is also
   forbidden — blanking *Staph aureus* in the Staph lecture teaches nothing.
 - When `lecture_entity_count > 1`, blanking a disease name is permitted where
@@ -56,7 +60,8 @@ topic alone.
 - Every cloze answer wrapped in `<b>` inside the brackets?
 - Contextual label nouns underlined, not bolded?
 - One sentence in Text, one sentence in Extra?
-- Cloze target absent from `forbidden_cloze_targets[]`?
+- Cloze target absent from the matching per-fact target row, or from the legacy
+  global list when no per-fact rows are supplied?
 
 ## Note type
 

@@ -45,7 +45,6 @@ from oms_hub.anki.convergence import (
     update_growth,
 )
 from oms_hub.anki.correction_contracts import (
-    QUALITY_FIRST_MODEL_INSTRUCTION,
     DuplicateIdentity,
     FactForbiddenClozeMap,
     FactForbiddenClozeTargets,
@@ -1016,8 +1015,6 @@ class CurationServicesRunner:
             if is_v2
             else _card_gap_prompt(self.prompts, version)
         )
-        if is_v2:
-            instruction = f"{instruction}\n\n{QUALITY_FIRST_MODEL_INSTRUCTION}"
         # P1 will persist this S0 contract in the preflight artifact.  V2 must
         # fail closed until that integration lands instead of reading a mutable
         # live lecture title during an S7 request.
