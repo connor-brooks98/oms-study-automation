@@ -6,6 +6,7 @@ from zipfile import BadZipFile, ZipFile
 
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.ingestion.domain import (
+    MatchDecision,
     StoredUploadItem,
     UploadEvidence,
     UploadKind,
@@ -49,7 +50,9 @@ class IngestionService:
             )
         return self.repository.require_item(item_id)
 
-    def decide_staged(self, kind: UploadKind, path: Path, filename: str):
+    def decide_staged(
+        self, kind: UploadKind, path: Path, filename: str
+    ) -> MatchDecision:
         """Compute a match without creating item rows or catalog progress."""
         if kind is UploadKind.SLIDES:
             title, opening = self._pptx_text(path)

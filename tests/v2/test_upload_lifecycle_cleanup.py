@@ -1,6 +1,5 @@
 import hashlib
 from datetime import UTC, datetime, timedelta
-from io import BytesIO
 from pathlib import Path
 
 from oms_hub.db import Database

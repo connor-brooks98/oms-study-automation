@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from oms_hub.ingestion.domain import (
+    StagedUpload,
     UploadKind,
     UploadManifestSlot,
     UploadState,
@@ -120,7 +121,11 @@ def upload_files(
                 )
             )
         try:
-            manifest_id = _create_manifest(staging, kind, slots, lecture_id)["manifest_id"]
+            created = _create_manifest(staging, kind, slots, lecture_id)
+            created_id = created["manifest_id"]
+            if not isinstance(created_id, str):
+                raise AssertionError("manifest response is missing its identifier")
+            manifest_id = created_id
         except HTTPException as error:
             return JSONResponse(
                 status_code=422,
@@ -150,6 +155,7 @@ def upload_files(
         slot_ids = [slot.slot_id for slot in slots]
     if slot_ids is None or len(slot_ids) != len(files):
         raise HTTPException(422, "every multipart file needs one manifest slot")
+    assert manifest_id is not None
     errors = _stage_multipart_members(staging, manifest_id, slot_ids, files)
     if errors:
         staging.discard_manifest(manifest_id)
@@ -302,10 +308,15 @@ def finalize_chunks(
     if _staging(request)._manifest_root(staged.batch_id).is_dir():
         return {"manifest_id": staged.batch_id, "item_id": staged.item_id}
     batch = _repository(request).get_batch(staged.batch_id)
+    inferred_kind = (
+        UploadKind.TRANSCRIPTS
+        if staged.original_filename.casefold().endswith(".txt")
+        else UploadKind.SLIDES
+    )
     if batch is None:
         # Older chunk sessions had no manifest and no durable batch until now.
-        _repository(request).create_batch(staged.kind, staged.batch_id)
-    _repository(request).add_item(staged.kind, staged)
+        _repository(request).create_batch(inferred_kind, staged.batch_id)
+    _repository(request).add_item(batch.kind if batch else inferred_kind, staged)
     _assign_or_match(request, staged.item_id, lecture_id)
     return {"batch_id": staged.batch_id, "item_id": staged.item_id}
 
@@ -402,7 +413,7 @@ def _finalize_manifest(
         }
     )
     batch_id = str(uuid4())
-    moved: list[object] = []
+    moved: list[StagedUpload] = []
     try:
         moved = staging.promote_manifest(manifest_id, batch_id)
         _repository(request).finalize_batch(

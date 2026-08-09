@@ -376,13 +376,13 @@ class IngestionRepository:
                     self._sync_batch_state(session, item.batch_id)
                     recovered += 1
                     continue
-                job = session.scalar(
+                orphan_job = session.scalar(
                     select(IngestionJobModel).where(
                         IngestionJobModel.upload_item_id == item.id,
                         IngestionJobModel.action == "process",
                     )
                 )
-                if job is None:
+                if orphan_job is None:
                     self._enqueue(session, item.id, "process")
                     item.state = UploadState.QUEUED.value
                     self._sync_batch_state(session, item.batch_id)
