@@ -1,9 +1,15 @@
 import hashlib
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from oms_hub.db import Database
-from oms_hub.ingestion.domain import StagedUpload, UploadKind, UploadState
+from oms_hub.ingestion.domain import (
+    StagedUpload,
+    UploadKind,
+    UploadManifestSlot,
+    UploadState,
+)
 from oms_hub.ingestion.matcher import UploadMatcher
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.ingestion.service import IngestionService
@@ -90,6 +96,28 @@ def test_expired_chunk_sessions_are_collected_idempotently(tmp_path: Path) -> No
     assert not session_path.exists()
     assert not chunk_path.exists()
     assert service.collect_staging(datetime.now(UTC) + timedelta(hours=25)) == 0
+
+
+def test_expired_temporary_manifest_is_collected(tmp_path: Path) -> None:
+    _, service, _ = _prepared(tmp_path)
+    payload = b"manifest text"
+    manifest = service.staging.begin_manifest(
+        UploadKind.TRANSCRIPTS,
+        [
+            UploadManifestSlot(
+                "00000000-0000-0000-0000-000000000001",
+                "manifest.txt",
+                len(payload),
+                hashlib.sha256(payload).hexdigest(),
+            )
+        ],
+    )
+    root = service.staging.root / "manifests" / manifest.id
+    old = (datetime.now(UTC) - timedelta(hours=25)).timestamp()
+    os.utime(root, (old, old))
+
+    assert service.collect_staging(datetime.now(UTC)) == 1
+    assert not root.exists()
 
 
 def test_cleanup_keeps_active_paths_and_removes_old_complete_paths(tmp_path: Path) -> None:

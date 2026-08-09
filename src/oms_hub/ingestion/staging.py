@@ -437,6 +437,19 @@ class StagingService:
                     self._chunk_path(session_path.stem).unlink(missing_ok=True)
                     session_path.unlink(missing_ok=True)
                     removed += 1
+        manifest_root = self.root / "manifests"
+        if manifest_root.exists():
+            cutoff = current - timedelta(hours=self.session_hours)
+            for root in manifest_root.iterdir():
+                if not root.is_dir():
+                    continue
+                try:
+                    created = datetime.fromtimestamp(root.stat().st_mtime, UTC)
+                except OSError:
+                    continue
+                if created <= cutoff:
+                    self.discard_manifest(root.name)
+                    removed += 1
         return removed
 
     def _validate_filename(
