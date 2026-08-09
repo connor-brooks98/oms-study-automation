@@ -100,6 +100,51 @@
     }
   };
 
+  const quizCountLabel = (count) => `${count} quiz${count === 1 ? "" : "zes"}`;
+
+  const applyRenamedTitle = (documentRef, token, title, focusTarget) => {
+    documentRef.querySelectorAll?.(`[data-quiz-title-for="${token}"]`).forEach((surface) => {
+      if (surface.dataset?.resetQuiz !== undefined) {
+        surface.setAttribute?.("aria-label", `Restart ${title}`);
+        surface.setAttribute?.("title", `Restart ${title}`);
+      } else if (surface.tagName === "SUMMARY") {
+        surface.setAttribute?.("aria-label", `More actions for ${title}`);
+      } else if (surface.value !== undefined && surface.dataset?.titleInput !== undefined) {
+        surface.value = title;
+      } else {
+        surface.textContent = title;
+      }
+    });
+    focusTarget?.focus?.();
+  };
+
+  const firstFocusable = (container) => (
+    container?.querySelector?.("[data-remove-quiz], [data-title-input], .exam-button, .course-button")
+    || null
+  );
+
+  const applyUnpublish = (documentRef, row, response) => {
+    const exam = documentRef.querySelector?.(`[data-exam-key="${response.exam_key}"]`)
+      || row.closest?.("[data-exam-key]");
+    const course = documentRef.querySelector?.(`[data-course-key="${response.course_key}"]`)
+      || row.closest?.("[data-course-key]");
+    const fallback = row.nextElementSibling
+      || row.previousElementSibling
+      || firstFocusable(exam)
+      || firstFocusable(course)
+      || documentRef.querySelector?.("[data-quiz-library]");
+    row.remove();
+    const courseCount = course?.querySelector?.("[data-course-count]");
+    if (courseCount) courseCount.textContent = quizCountLabel(response.course_quiz_count);
+    const examCount = exam?.querySelector?.("[data-exam-count]");
+    if (examCount) examCount.textContent = quizCountLabel(response.exam_quiz_count);
+    if (response.exam_quiz_count === 0) exam?.remove?.();
+    if (response.course_quiz_count === 0) course?.remove?.();
+    (fallback?.isConnected === false
+      ? firstFocusable(course) || documentRef.querySelector?.("[data-quiz-library]")
+      : fallback)?.focus?.();
+  };
+
   // A direction endpoint moves one position. A longer pointer drop is therefore
   // deliberately represented as sequential, server-authoritative moves.
   const directionSequence = (fromIndex, toIndex) => {
@@ -242,7 +287,11 @@
           });
           if (!response.ok) throw new Error(await errorMessage(response, "Quiz could not be unpublished."));
           resetProgress(storage, button.dataset.quizToken, button.dataset.quizVersion);
-          button.closest(".lecture-row")?.remove();
+          applyUnpublish(
+            documentRef,
+            button.closest(".lecture-row"),
+            await response.json(),
+          );
           report(documentRef, "The released quiz was removed.");
         } catch (error) {
           button.disabled = false;
@@ -257,7 +306,24 @@
         const saveButton = form.querySelector("[data-save-title]");
         const cleanedTitle = String(input?.value || "").trim();
         if (!cleanedTitle) return report(documentRef, "Quiz title cannot be blank.");
-        await managementRequest(documentRef, saveButton, form.dataset.titleUrl, { title: cleanedTitle });
+        saveButton.disabled = true;
+        try {
+          const response = await root.fetch(form.dataset.titleUrl, {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+              "X-CSRF-Token": cookieValue(documentRef.cookie, "study_hub_csrf") || "",
+            },
+            body: JSON.stringify({ title: cleanedTitle }),
+          });
+          if (!response.ok) throw new Error(await errorMessage(response, "Quiz title could not be updated."));
+          const renamed = await response.json();
+          applyRenamedTitle(documentRef, renamed.token, renamed.title, saveButton);
+          report(documentRef, "Quiz title updated.");
+        } catch (error) {
+          saveButton.disabled = false;
+          report(documentRef, error instanceof Error ? error.message : "Quiz title could not be updated.");
+        }
       });
     });
     documentRef.querySelectorAll("[data-move-quiz-library]").forEach((button) => {
@@ -291,6 +357,7 @@
     initialize, progressKey, progressLabel, progressClass, readProgress, resetProgress,
     cookieValue, managementRequest, setExpanded, directionSequence, reorderRequest,
     reorderFailureStorageKey, storeReorderFailure, consumeReorderFailure, keyboardReorderDirection,
+    applyRenamedTitle, applyUnpublish, quizCountLabel,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) root.document.addEventListener("DOMContentLoaded", () => initialize(root.document, root.localStorage), { once: true });

@@ -322,7 +322,7 @@ test("failed remove keeps the row and reports the server detail", async () => {
   assert.equal(documentRef.resetMessage.textContent, "Cloudflare Access identity is required");
 });
 
-test("title edit sends a trimmed PATCH and reloads only after success", async () => {
+test("title edit sends a trimmed PATCH and preserves the page after success", async () => {
   const titleForm = new FakeTitleForm("  Revised title  ");
   const documentRef = new FakeLibraryDocument({ titleForms: [titleForm] });
   documentRef.cookie = "study_hub_csrf=csrf-token";
@@ -333,7 +333,7 @@ test("title edit sends a trimmed PATCH and reloads only after success", async ()
   global.location = { reload: () => { reloads += 1; } };
   global.fetch = async (url, options) => {
     request = { url, options };
-    return { ok: true, async json() { return { title: "Revised title" }; } };
+    return { ok: true, async json() { return { token: "tok1", title: "Revised title" }; } };
   };
   try {
     library.initialize(documentRef, makeMemoryStorage());
@@ -354,7 +354,66 @@ test("title edit sends a trimmed PATCH and reloads only after success", async ()
       body: JSON.stringify({ title: "Revised title" }),
     },
   });
-  assert.equal(reloads, 1);
+  assert.equal(reloads, 0);
+  assert.equal(titleForm.saveButton.disabled, true);
+  assert.equal(documentRef.resetMessage.textContent, "Quiz title updated.");
+});
+
+test("rename applies the authoritative title in place and restores the edit control focus", () => {
+  const display = new FakeLibraryElement();
+  const input = new FakeLibraryElement();
+  input.value = "Old title";
+  input.dataset.titleInput = "";
+  const reset = new FakeLibraryElement();
+  reset.dataset.resetQuiz = "";
+  const save = new FakeLibraryElement();
+  let focused = false;
+  save.focus = () => { focused = true; };
+  const documentRef = {
+    querySelectorAll(selector) {
+      assert.equal(selector, '[data-quiz-title-for="tok1"]');
+      return [display, input, reset];
+    },
+  };
+
+  library.applyRenamedTitle(documentRef, "tok1", "Authoritative title", save);
+
+  assert.equal(display.textContent, "Authoritative title");
+  assert.equal(input.value, "Authoritative title");
+  assert.equal(reset.attributes?.title, undefined);
+  assert.equal(focused, true);
+});
+
+test("unpublish uses authoritative counts, prunes empty shells, and focuses a neighbor", () => {
+  const count = { textContent: "2 quizzes" };
+  const exam = { removed: false, querySelector: () => count, remove() { this.removed = true; } };
+  const course = { removed: false, querySelector: () => count, remove() { this.removed = true; } };
+  const neighbor = { focused: false, focus() { this.focused = true; } };
+  const row = {
+    removed: false,
+    nextElementSibling: neighbor,
+    remove() { this.removed = true; },
+    closest() { return null; },
+  };
+  const documentRef = {
+    querySelector(selector) {
+      if (selector === '[data-exam-key="neuro:1"]') return exam;
+      if (selector === '[data-course-key="neuro"]') return course;
+      return null;
+    },
+  };
+
+  library.applyUnpublish(documentRef, row, {
+    exam_key: "neuro:1",
+    course_key: "neuro",
+    exam_quiz_count: 0,
+    course_quiz_count: 0,
+  });
+
+  assert.equal(row.removed, true);
+  assert.equal(exam.removed, true);
+  assert.equal(course.removed, true);
+  assert.equal(neighbor.focused, true);
 });
 
 test("library controls and direction sequences preserve management payloads", async () => {

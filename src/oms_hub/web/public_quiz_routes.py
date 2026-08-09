@@ -15,6 +15,7 @@ from oms_hub.study_generation.native_quiz import (
 from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.web.artifact_routes import outline_pdf_response
+from oms_hub.web.lecture_labels import lecture_label
 from oms_hub.web.routes import _course_hue
 
 router = APIRouter(prefix="/public")
@@ -195,7 +196,7 @@ def _quiz_library(
                 ),
                 "is_studio": lecture is None,
                 "primary_label": (
-                    f"Lecture {lecture.lecture_number}"
+                    lecture_label(lecture.subject, lecture.lecture_number)
                     if lecture is not None
                     else published.title
                 ),
@@ -211,11 +212,13 @@ def _quiz_library(
     grouped = tuple(
         {
             "name": course_names[subject_key],
+            "key": subject_key,
             "hue": _course_hue(course_names[subject_key]),
             "quiz_count": sum(len(rows) for rows in exams.values()),
             "exams": tuple(
                 {
                     "number": number,
+                    "quiz_count": len(exams[number]),
                     "quizzes": tuple(exams[number]),
                 }
                 for number in sorted(exams)

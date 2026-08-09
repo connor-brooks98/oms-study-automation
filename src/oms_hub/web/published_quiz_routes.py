@@ -8,6 +8,7 @@ from oms_hub.study_generation.domain import (
     PublishedQuizLibrarySection,
     PublishedQuizOrderDirection,
 )
+from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.web.csrf import require_form_csrf
 
@@ -34,14 +35,78 @@ def _repository(request: Request) -> GenerationRepository:
     return cast(GenerationRepository, request.app.state.generation_repository)
 
 
+def _normalized_subject(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def _library_scope(request: Request, token: str) -> dict[str, object]:
+    """Return the current library scope using the same catalog reads as its UI."""
+    repository = _repository(request)
+    published = repository.published_quiz(token)
+    if published is None:
+        raise KeyError(token)
+    catalog = request.app.state.catalog_repository
+    lecture = (
+        catalog.get_lecture(published.lecture_id)
+        if published.lecture_id is not None
+        else None
+    )
+    subject = lecture.subject if lecture is not None else published.destination_subject
+    exam_number = (
+        lecture.exam_number if lecture is not None else published.destination_exam_number
+    )
+    kinds = (
+        frozenset({QuizContentKind.PRACTICE_QUESTIONS})
+        if published.content_kind == QuizContentKind.PRACTICE_QUESTIONS.value
+        else frozenset({QuizContentKind.LECTURE_QUIZ, QuizContentKind.EXAM_REVIEW})
+    )
+    subject_key = _normalized_subject(subject)
+    course_count = 0
+    exam_count = 0
+    for candidate in repository.published_quizzes(kinds):
+        candidate_lecture = (
+            catalog.get_lecture(candidate.lecture_id)
+            if candidate.lecture_id is not None
+            else None
+        )
+        candidate_subject = (
+            candidate_lecture.subject
+            if candidate_lecture is not None
+            else candidate.destination_subject
+        )
+        candidate_exam = (
+            candidate_lecture.exam_number
+            if candidate_lecture is not None
+            else candidate.destination_exam_number
+        )
+        if _normalized_subject(candidate_subject) != subject_key:
+            continue
+        course_count += 1
+        if candidate_exam == exam_number:
+            exam_count += 1
+    return {
+        "course_key": subject_key,
+        "exam_number": exam_number,
+        "exam_key": f"{subject_key}:{exam_number}",
+        # The scope is read before the mutation to retain its identity; the
+        # authoritative response describes the state after this one quiz is
+        # unpublished.
+        "course_quiz_count": course_count - 1,
+        "exam_quiz_count": exam_count - 1,
+    }
+
+
 @router.delete("/{token}")
 def unpublish_quiz(request: Request, token: _PublishedQuizToken) -> JSONResponse:
     require_form_csrf(request, None)
     try:
+        scope = _library_scope(request, token)
         unpublished = _repository(request).unpublish_quiz(token)
     except KeyError as error:
         raise HTTPException(404, "published quiz was not found") from error
-    return JSONResponse({"token": unpublished, "state": "unpublished"})
+    return JSONResponse(
+        {"token": unpublished, "state": "unpublished", **scope}
+    )
 
 
 @router.patch("/{token}/title")

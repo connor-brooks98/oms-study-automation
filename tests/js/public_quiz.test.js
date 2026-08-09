@@ -226,6 +226,15 @@ class FakeQuizNode {
   }
 
   querySelector(selector) {
+    if (selector === "[data-question-information]") {
+      const stack = [...this.children];
+      while (stack.length) {
+        const node = stack.shift();
+        if (node?.dataset?.questionInformation) return node;
+        if (node?.children) stack.push(...node.children);
+      }
+      return null;
+    }
     const match = /^\[data-focus-key="([^"]+)"\]$/.exec(selector);
     if (!match) return null;
     const [, key] = match;
@@ -335,6 +344,65 @@ test("player puts navigation above the shell and question metadata in a disclosu
   assert.equal(information.tagName, "details");
   assert.match(information.textContent, /Question Information/);
   assert.match(information.textContent, /Area: Hematology/);
+});
+
+test("Question Information remains open through same-question interactions", async () => {
+  const { documentRef, app } = buildQuizApp();
+  const fetchImpl = async (url) => ({
+    ok: true,
+    async json() {
+      if (url === "/mock/answer") {
+        return { correct: true, correct_choice_id: "c1", rationale: "Because." };
+      }
+      return {
+        token: "tok",
+        version: 1,
+        questions: [{
+          id: "q1",
+          stem: "Question?",
+          area: "Area",
+          choices: [{ id: "c1", text: "One" }, { id: "c2", text: "Two" }],
+        }],
+      };
+    },
+  });
+
+  await quiz.initialize(documentRef, fetchImpl);
+  let information = app.querySelector("[data-question-information]");
+  information.open = true;
+  information._listeners.toggle[0]();
+  app.querySelector('[data-focus-key="answer-c1"]')._listeners.click[0]();
+  information = app.querySelector("[data-question-information]");
+  assert.equal(information.open, true, "selection preserves disclosure state");
+  app.querySelector('[data-focus-key="strike-c2"]'). _listeners.click[0]();
+  information = app.querySelector("[data-question-information]");
+  assert.equal(information.open, true, "elimination preserves disclosure state");
+  const flag = findByClass(app, "quiz-flag-select");
+  flag.value = "want_to_review";
+  flag._listeners.change[0]();
+  assert.equal(app.querySelector("[data-question-information]").open, true, "flagging does not recreate disclosure");
+  await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
+  assert.equal(app.querySelector("[data-question-information]").open, true, "submission preserves disclosure state");
+});
+
+test("safe storage falls back to memory when getter, reads, or writes are denied", async () => {
+  const getterDenied = {};
+  Object.defineProperty(getterDenied, "localStorage", { get() { throw new Error("denied"); } });
+  const getterStorage = quiz.safeStorage(getterDenied);
+  getterStorage.setItem("key", "value");
+  assert.equal(getterStorage.getItem("key"), "value");
+
+  const readDenied = quiz.safeStorage({ localStorage: { getItem() { throw new Error("denied"); }, setItem() {} } });
+  assert.equal(readDenied.getItem("key"), null);
+
+  const writeDenied = quiz.safeStorage({ localStorage: { getItem() { return null; }, setItem() { throw new Error("denied"); } } });
+  writeDenied.setItem("key", "value");
+  assert.equal(writeDenied.getItem("key"), "value");
+
+  const { documentRef, app } = buildQuizApp();
+  Object.defineProperty(documentRef, "defaultView", { get() { throw new Error("denied"); } });
+  await quiz.initialize(documentRef, async () => ({ ok: true, async json() { return content; } }));
+  assert.notEqual(app.textContent, "This quiz could not be loaded.");
 });
 
 test("initialize renders the could-not-load state when the response body is not valid JSON", async () => {
