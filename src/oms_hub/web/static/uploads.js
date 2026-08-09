@@ -161,6 +161,25 @@
     return { finalized: false, batchId: null };
   };
 
+  const reconcileFinalizedBatch = async (
+    fetchImpl,
+    batchId,
+    headers,
+    render,
+    timeoutMs = 5000,
+  ) => {
+    const response = await requestWithTimeout(
+      fetchImpl,
+      `/api/upload-batches/${encodeURIComponent(batchId)}`,
+      { headers, cache: "no-store" },
+      timeoutMs,
+    );
+    if (!response.ok) throw new Error("Could not read finalized upload status.");
+    const batch = await response.json();
+    render(batch);
+    return batch;
+  };
+
   const waitForDecision = async (signal, deadline, setResume, onRejected) => {
     const decision = createDecisionWait(signal, deadline);
     setResume(decision.resume);
@@ -572,7 +591,17 @@
               );
               if (cancelled.finalized) {
                 clearPausedDecision();
-                status.textContent = "Upload was already finalized.";
+                try {
+                  await reconcileFinalizedBatch(
+                    fetchImpl,
+                    cancelled.batchId,
+                    { Accept: "application/json" },
+                    renderBatch,
+                  );
+                  status.textContent = "Upload was already finalized.";
+                } catch (_reconcileError) {
+                  status.textContent = "Upload finalized; status could not be refreshed.";
+                }
                 return;
               }
             } catch (_cancelError) {
@@ -606,6 +635,7 @@
     createDecisionWait,
     handleDecisionDialogCancel,
     cancelManifest,
+    reconcileFinalizedBatch,
     waitForDecision,
     freezeManifest,
     itemErrorText,

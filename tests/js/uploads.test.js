@@ -230,6 +230,27 @@ test("manifest cancellation reconciles a committed batch instead of claiming suc
   assert.deepEqual(cancelled, { finalized: false, batchId: null });
 });
 
+test("finalized cancellation fetches and renders authoritative batch state", async () => {
+  let captured;
+  let rendered;
+  const batch = { lifecycle: "terminal", outcome: "complete", items: [] };
+
+  const result = await uploads.reconcileFinalizedBatch(
+    async (url, options) => {
+      captured = { url, options };
+      return { ok: true, json: async () => batch };
+    },
+    "batch-1",
+    { Accept: "application/json" },
+    (value) => { rendered = value; },
+  );
+
+  assert.equal(captured.url, "/api/upload-batches/batch-1");
+  assert.equal(captured.options.cache, "no-store");
+  assert.deepEqual(rendered, batch);
+  assert.deepEqual(result, batch);
+});
+
 test("duplicate-dialog Escape aborts an active submission and keeps modal dismissals explicit", () => {
   const controller = new AbortController();
   let prevented = false;

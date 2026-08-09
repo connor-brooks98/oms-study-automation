@@ -6,6 +6,7 @@ from zipfile import BadZipFile, ZipFile
 
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.ingestion.domain import (
+    ChunkSession,
     MatchDecision,
     StoredUploadItem,
     UploadEvidence,
@@ -92,7 +93,22 @@ class IngestionService:
     ) -> int:
         """Safe idempotent hook for startup/periodic runtime ownership."""
         current = now or datetime.now(UTC)
-        removed = self.staging.collect_expired(current)
+        expired_chunks: list[ChunkSession] = []
+        removed = self.staging.collect_expired(current, expired_chunks=expired_chunks)
+        for chunk in expired_chunks:
+            if not chunk.manifest_owned and self.repository.get_batch(chunk.batch_id) is None:
+                removed += int(self.staging.discard_unreferenced_batch(chunk.batch_id))
+        for manifest_id, batch_id in self.staging.expired_pending_manifest_finalizations(
+            current
+        ):
+            committed = self.repository.get_batch(batch_id) is not None
+            if not committed:
+                removed += int(self.staging.discard_unreferenced_batch(batch_id))
+            removed += int(
+                self.staging.reconcile_pending_manifest_finalization(
+                    manifest_id, batch_id, committed=committed
+                )
+            )
         for path in self.repository.terminal_staging_paths_before(
             current - terminal_retention
         ):

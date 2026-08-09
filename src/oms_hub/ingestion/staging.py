@@ -540,7 +540,12 @@ class StagingService:
             raise UploadRejected("staged upload file is missing")
         resolved.unlink()
 
-    def collect_expired(self, now: datetime | None = None) -> int:
+    def collect_expired(
+        self,
+        now: datetime | None = None,
+        *,
+        expired_chunks: list[ChunkSession] | None = None,
+    ) -> int:
         """Idempotently collect only abandoned chunk/manifest request state.
 
         Accepted ready files require repository reference checks and are
@@ -551,6 +556,7 @@ class StagingService:
         chunk_root = self._chunk_root()
         if chunk_root.exists():
             for session_path in chunk_root.glob("*.json"):
+                session: ChunkSession | None = None
                 try:
                     session = self._load_session(session_path.stem)
                     expired = datetime.fromisoformat(session.expires_at) <= current
@@ -559,6 +565,8 @@ class StagingService:
                 if expired:
                     self._chunk_path(session_path.stem).unlink(missing_ok=True)
                     session_path.unlink(missing_ok=True)
+                    if expired_chunks is not None and session is not None:
+                        expired_chunks.append(session)
                     removed += 1
         manifest_root = self.root / "manifests"
         if manifest_root.exists():
@@ -571,6 +579,9 @@ class StagingService:
                 except OSError:
                     continue
                 if created <= cutoff:
+                    outcome = self._manifest_finalization_outcome(root.name)
+                    if outcome is not None and outcome["state"] == "pending":
+                        continue
                     claim = self._manifest_claim_path(root.name)
                     try:
                         claim_age = datetime.fromtimestamp(
@@ -593,6 +604,9 @@ class StagingService:
                 except OSError:
                     continue
                 if claim_age <= cutoff and not claim.with_suffix("").is_dir():
+                    outcome = self._manifest_finalization_outcome(claim.stem)
+                    if outcome is not None and outcome["state"] == "pending":
+                        continue
                     claim.unlink(missing_ok=True)
                     removed += 1
             for tombstone in manifest_root.glob("*.finalized"):
@@ -603,6 +617,9 @@ class StagingService:
                 except OSError:
                     continue
                 if tombstone_age <= cutoff:
+                    outcome = self._manifest_finalization_outcome(tombstone.stem)
+                    if outcome is not None and outcome["state"] == "pending":
+                        continue
                     tombstone.unlink(missing_ok=True)
                     removed += 1
             for temporary in manifest_root.glob("*.finalized.tmp"):
@@ -616,6 +633,78 @@ class StagingService:
                     temporary.unlink(missing_ok=True)
                     removed += 1
         return removed
+
+    def expired_pending_manifest_finalizations(
+        self, now: datetime
+    ) -> list[tuple[str, str]]:
+        """Return only lease-expired pending outcomes safe for reconciliation."""
+        cutoff = now - timedelta(hours=self.session_hours)
+        manifest_root = self.root / "manifests"
+        if not manifest_root.exists():
+            return []
+        pending: list[tuple[str, str]] = []
+        for tombstone in manifest_root.glob("*.finalized"):
+            outcome = self._manifest_finalization_outcome(tombstone.stem)
+            if outcome is None or outcome["state"] != "pending":
+                continue
+            try:
+                outcome_age = datetime.fromtimestamp(tombstone.stat().st_mtime, UTC)
+            except OSError:
+                continue
+            if outcome_age > cutoff:
+                continue
+            root = self._manifest_root(tombstone.stem)
+            claim = self._manifest_claim_path(tombstone.stem)
+            try:
+                root_age = datetime.fromtimestamp(root.stat().st_mtime, UTC)
+            except FileNotFoundError:
+                root_age = None
+            except OSError:
+                continue
+            try:
+                claim_age = datetime.fromtimestamp(claim.stat().st_mtime, UTC)
+            except FileNotFoundError:
+                claim_age = None
+            except OSError:
+                continue
+            if (root_age is not None and root_age > cutoff) or (
+                claim_age is not None and claim_age > cutoff
+            ):
+                continue
+            pending.append((tombstone.stem, outcome["batch_id"]))
+        return pending
+
+    def reconcile_pending_manifest_finalization(
+        self,
+        manifest_id: str,
+        batch_id: str,
+        *,
+        committed: bool,
+    ) -> bool:
+        """Resolve a lease-expired process-death outcome after DB inspection."""
+        outcome = self._manifest_finalization_outcome(manifest_id)
+        if outcome != {"state": "pending", "batch_id": batch_id}:
+            return False
+        if committed:
+            self._write_manifest_outcome(manifest_id, "finalized", batch_id)
+            self._discard_manifest_data(manifest_id)
+            self.release_manifest_finalization(manifest_id)
+        else:
+            self._discard_manifest_data(manifest_id)
+            self.release_manifest_finalization(manifest_id)
+            self.clear_manifest_finalization_outcome(manifest_id)
+        return True
+
+    def discard_unreferenced_batch(self, batch_id: str) -> bool:
+        """Remove one known-unreferenced legacy staging batch directory."""
+        root = self._batch_root(batch_id)
+        if not root.is_dir():
+            return False
+        for path in root.iterdir():
+            if path.is_file():
+                path.unlink(missing_ok=True)
+        root.rmdir()
+        return True
 
     def _validate_filename(
         self,

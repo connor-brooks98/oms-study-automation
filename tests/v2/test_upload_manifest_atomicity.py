@@ -447,6 +447,46 @@ def test_matching_failure_releases_finalize_claim_and_preserves_retry_data(
     assert _counts(app) == (0, 0, 0)
 
 
+def test_manifest_preflight_exception_releases_claim_and_preserves_retry_data(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    client, app = _client(tmp_path)
+    payload = b"preflight exception retains manifest"
+    slot_id = str(uuid4())
+    created = client.post(
+        "/api/upload-manifests",
+        json={
+            "kind": "transcripts",
+            "files": [{
+                "slot_id": slot_id,
+                "filename": "preflight.txt",
+                "size_bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }],
+        },
+    )
+    manifest_id = created.json()["manifest_id"]
+    uploaded = client.post(
+        "/uploads/transcripts",
+        data={"manifest_id": manifest_id, "slot_ids": slot_id},
+        files=[("files", ("preflight.txt", payload))],
+    )
+    assert uploaded.status_code == 202
+    staging = app.state.upload_staging  # type: ignore[attr-defined]
+
+    def fail_preflight(*_args: object, **_kwargs: object) -> object:
+        raise OSError("staging device unavailable")
+
+    monkeypatch.setattr(staging, "manifest_uploads", fail_preflight)
+    with pytest.raises(OSError, match="staging device unavailable"):
+        client.post(f"/api/upload-manifests/{manifest_id}/finalize")
+
+    assert (staging.root / "manifests" / manifest_id).is_dir()
+    assert not (staging.root / "manifests" / f"{manifest_id}.claim").exists()
+    assert _counts(app) == (0, 0, 0)
+
+
 def test_post_commit_cancel_returns_authoritative_finalized_batch(tmp_path: Path) -> None:
     client, app = _client(tmp_path)
     payload = b"committed manifest outcome"

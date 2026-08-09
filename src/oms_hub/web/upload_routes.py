@@ -456,6 +456,9 @@ def _finalize_manifest(
         except json.JSONDecodeError:
             raise HTTPException(422, str(error)) from error
         return JSONResponse(status_code=422, content=payload)
+    except Exception:
+        staging.release_manifest_finalization(manifest_id)
+        raise
     service = _ingestion(request)
     try:
         decisions = (

@@ -2,6 +2,7 @@ import hashlib
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 from oms_hub.db import Database
 from oms_hub.ingestion.domain import (
@@ -92,10 +93,112 @@ def test_expired_chunk_sessions_are_collected_idempotently(tmp_path: Path) -> No
 
     removed = service.collect_staging(datetime.now(UTC) + timedelta(hours=25))
 
-    assert removed == 1
+    assert removed == 2
     assert not session_path.exists()
     assert not chunk_path.exists()
+    assert not (service.staging.root / "batches" / session.batch_id).exists()
     assert service.collect_staging(datetime.now(UTC) + timedelta(hours=25)) == 0
+
+
+def test_expired_legacy_chunk_preserves_a_repository_referenced_batch(
+    tmp_path: Path,
+) -> None:
+    repository, service, _ = _prepared(tmp_path)
+    session = service.staging.begin_chunks(
+        UploadKind.TRANSCRIPTS,
+        "referenced.txt",
+        4,
+        hashlib.sha256(b"text").hexdigest(),
+    )
+    repository.create_batch(UploadKind.TRANSCRIPTS, session.batch_id)
+    batch_root = service.staging.root / "batches" / session.batch_id
+
+    assert service.collect_staging(datetime.now(UTC) + timedelta(hours=25)) == 1
+    assert batch_root.exists()
+
+
+def test_expired_pending_manifest_reconciles_precommit_orphan_batch(
+    tmp_path: Path,
+) -> None:
+    _, service, _ = _prepared(tmp_path)
+    payload = b"precommit manifest"
+    manifest = service.staging.begin_manifest(
+        UploadKind.TRANSCRIPTS,
+        [
+            UploadManifestSlot(
+                "00000000-0000-0000-0000-000000000004",
+                "precommit.txt",
+                len(payload),
+                hashlib.sha256(payload).hexdigest(),
+            )
+        ],
+    )
+    batch_id = str(uuid4())
+    service.staging.claim_manifest_finalization(manifest.id)
+    service.staging.record_manifest_finalization(manifest.id, batch_id)
+    batch_root = service.staging.root / "batches" / batch_id
+    batch_root.mkdir(parents=True)
+    (batch_root / "orphan.ready").write_bytes(payload)
+    old = (datetime.now(UTC) - timedelta(hours=25)).timestamp()
+    for path in (
+        service.staging.root / "manifests" / manifest.id,
+        service.staging.root / "manifests" / f"{manifest.id}.claim",
+        service.staging.root / "manifests" / f"{manifest.id}.finalized",
+    ):
+        os.utime(path, (old, old))
+
+    assert service.collect_staging(datetime.now(UTC)) == 2
+    assert not batch_root.exists()
+    assert not (service.staging.root / "manifests" / manifest.id).exists()
+    assert service.staging.finalized_manifest_outcome(manifest.id) is None
+
+
+def test_expired_pending_manifest_marks_postcommit_batch_finalized(tmp_path: Path) -> None:
+    repository, service, _ = _prepared(tmp_path)
+    payload = b"postcommit manifest"
+    manifest = service.staging.begin_manifest(
+        UploadKind.TRANSCRIPTS,
+        [
+            UploadManifestSlot(
+                "00000000-0000-0000-0000-000000000005",
+                "postcommit.txt",
+                len(payload),
+                hashlib.sha256(payload).hexdigest(),
+            )
+        ],
+    )
+    batch_id = str(uuid4())
+    repository.create_batch(UploadKind.TRANSCRIPTS, batch_id)
+    batch_root = service.staging.root / "batches" / batch_id
+    batch_root.mkdir(parents=True)
+    ready = batch_root / "referenced.ready"
+    ready.write_bytes(payload)
+    repository.add_item(
+        UploadKind.TRANSCRIPTS,
+        StagedUpload(
+            batch_id,
+            "referenced",
+            ready,
+            hashlib.sha256(payload).hexdigest(),
+            len(payload),
+            "referenced.txt",
+        ),
+    )
+    service.staging.claim_manifest_finalization(manifest.id)
+    service.staging.record_manifest_finalization(manifest.id, batch_id)
+    old = (datetime.now(UTC) - timedelta(hours=25)).timestamp()
+    for path in (
+        service.staging.root / "manifests" / manifest.id,
+        service.staging.root / "manifests" / f"{manifest.id}.claim",
+        service.staging.root / "manifests" / f"{manifest.id}.finalized",
+    ):
+        os.utime(path, (old, old))
+
+    assert service.collect_staging(datetime.now(UTC)) == 1
+    assert ready.exists()
+    assert service.staging.finalized_manifest_outcome(manifest.id) == {
+        "batch_id": batch_id
+    }
 
 
 def test_expired_temporary_manifest_is_collected(tmp_path: Path) -> None:
