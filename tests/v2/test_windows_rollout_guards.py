@@ -84,6 +84,32 @@ def test_windows_installer_resolves_config_stops_tree_and_backs_up_before_pip() 
     assert "Verified rollback backup was not completed; installation is blocked." in script
 
 
+def test_windows_installer_fails_closed_after_every_install_native_command() -> None:
+    script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+
+    expected_checks = (
+        (
+            '& $PythonCommand @PythonVenvArgs',
+            'Assert-NativeCommandSucceeded -Operation "Python virtual environment creation"',
+        ),
+        (
+            '-m pip install --upgrade pip',
+            'Assert-NativeCommandSucceeded -Operation "pip upgrade"',
+        ),
+        (
+            '-m pip install -e $ProjectRoot',
+            'Assert-NativeCommandSucceeded -Operation "editable Study Hub installation"',
+        ),
+        (
+            'oms-hub.exe" validate-config',
+            'Assert-NativeCommandSucceeded -Operation "Study Hub configuration validation"',
+        ),
+    )
+    for invocation, check in expected_checks:
+        assert script.index(invocation) < script.index(check)
+    assert "failed with native exit code $LASTEXITCODE" in script
+
+
 def test_windows_installer_backup_is_integrity_checked_and_atomically_complete() -> None:
     installer = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
     helper = (ROOT / "scripts" / "backup-sqlite.py").read_text(encoding="utf-8")

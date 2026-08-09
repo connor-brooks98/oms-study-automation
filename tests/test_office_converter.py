@@ -8,6 +8,8 @@ from types import ModuleType
 import pytest
 
 import oms_hub.files.office as office_module
+from oms_hub.app import create_app
+from oms_hub.config import Settings
 from oms_hub.files import office_worker
 from oms_hub.files.office import (
     OfficeAdmissionTimeoutError,
@@ -310,7 +312,7 @@ def test_timeout_kills_owned_office_tree_cleans_partial_and_releases_lock(
     source = tmp_path / "lecture.pptx"
     destination = tmp_path / "lecture.pdf"
     source.write_bytes(b"pptx")
-    converter = SerialOfficeConverter(timeout_seconds=0.1, worker=_hang)
+    converter = SerialOfficeConverter(timeout_seconds=2, worker=_hang)
     terminated: list[int] = []
     monkeypatch.setattr(
         office_module,
@@ -458,8 +460,8 @@ def test_office_admission_waits_for_an_in_process_conversion_slot(tmp_path):
     finally:
         release.join()
     assert destination.read_bytes() == b"pdf"
-    assert admission_events == ["waiting", "admitted"]
-    assert converter.admission_state == "admitted"
+    assert admission_events == ["waiting", "admitted", "idle"]
+    assert converter.admission_state == "idle"
 
 
 def test_office_admission_timeout_is_distinct_from_conversion_failure(tmp_path):
@@ -477,6 +479,32 @@ def test_office_admission_timeout_is_distinct_from_conversion_failure(tmp_path):
             converter.convert(source, destination)
     finally:
         SerialOfficeConverter._lock.release()
+
+
+def test_production_converters_log_admission_transitions_to_durable_log(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+    )
+    app = create_app(settings)
+    slide_converter = app.state.slide_pipeline.converter
+    studio_converter = app.state.studio_worker.converter
+
+    slide_converter._report_admission("waiting")
+    slide_converter._report_admission("admitted")
+    slide_converter._report_admission("timeout")
+    slide_converter._report_admission("idle")
+    for handler in __import__("logging").getLogger("oms_hub").handlers:
+        handler.flush()
+
+    log_text = app.state.application_log_path.read_text(encoding="utf-8")
+    assert slide_converter.admission_reporter is not None
+    assert studio_converter.admission_reporter is not None
+    assert "office conversion admission surface=slides state=waiting" in log_text
+    assert "office conversion admission surface=slides state=admitted" in log_text
+    assert "office conversion admission surface=slides state=timeout" in log_text
+    assert slide_converter.admission_state == "idle"
 
 
 def test_windows_cross_process_admission_lock_uses_a_shared_lock_file(

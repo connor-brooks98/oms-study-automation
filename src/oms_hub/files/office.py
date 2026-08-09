@@ -67,6 +67,8 @@ class SerialOfficeConverter:
             self._report_admission("waiting")
             remaining = max(0.0, deadline - time.monotonic())
             if not self._lock.acquire(timeout=remaining):
+                self._report_admission("timeout")
+                self._report_admission("idle")
                 raise OfficeAdmissionTimeoutError(
                     "Office conversion admission timed out while waiting for the "
                     "in-process automation slot"
@@ -104,6 +106,7 @@ class SerialOfficeConverter:
                             process.kill()
                             process.join(5)
                         destination.unlink(missing_ok=True)
+                        self._report_admission("timeout")
                         raise OfficeTimeoutError(
                             f"Office conversion exceeded {self.timeout_seconds:g} seconds"
                         )
@@ -153,6 +156,7 @@ class SerialOfficeConverter:
             if cross_process_lock is not None:
                 cross_process_lock.release()
             self._lock.release()
+            self._report_admission("idle")
 
     def _report_admission(self, state: str) -> None:
         self.admission_state = state
@@ -219,6 +223,8 @@ class _WindowsOfficeLock:
                     waiting_reported = True
                 if time.monotonic() >= deadline:
                     stream.close()
+                    if report_admission is not None:
+                        report_admission("timeout")
                     raise OfficeAdmissionTimeoutError(
                         "Office conversion admission timed out while waiting for "
                         "the cross-process automation slot"

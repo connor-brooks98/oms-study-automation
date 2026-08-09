@@ -66,6 +66,19 @@ class _FailsThenSucceedsWorker(_Worker):
         return False
 
 
+class _RecoveryFailsWorker(_Worker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ran = threading.Event()
+
+    def recover_interrupted_jobs(self) -> int:
+        raise RuntimeError("recovery")
+
+    def run_once(self) -> bool:
+        self.ran.set()
+        return False
+
+
 def test_supervisor_owns_one_worker_of_each_kind_and_reports_metadata() -> None:
     names = ("ingestion_worker", "generation_worker", "studio_worker")
     workers = {name: _Worker() for name in names}
@@ -122,6 +135,28 @@ def test_successful_cycle_clears_current_error_but_retains_error_history() -> No
     assert supervisor.ready() == (True, None)
 
 
+def test_recovery_failure_remains_unhealthy_after_a_normal_worker_cycle() -> None:
+    recovery_failure = _RecoveryFailsWorker()
+    supervisor = WorkerSupervisor(
+        {
+            "ingestion_worker": recovery_failure,
+            "generation_worker": _Worker(),
+            "studio_worker": _Worker(),
+        }
+    )
+
+    supervisor.start()
+    assert recovery_failure.ran.wait(timeout=1)
+    ready, reason = supervisor.ready()
+    snapshot = supervisor.snapshot()
+    supervisor.stop()
+
+    assert ready is False
+    assert reason == "worker_recovery_error"
+    assert snapshot["ingestion_worker"]["recovery_error"] == "RuntimeError"
+    assert snapshot["ingestion_worker"]["current_error"] is None
+
+
 def test_supervisor_reports_missing_expected_worker() -> None:
     supervisor = WorkerSupervisor(
         {
@@ -160,17 +195,36 @@ class _Thread:
             self._clock.advance(timeout)
 
 
-def _supervisor_with_real_state(clock: _Clock) -> WorkerSupervisor:
+def _supervisor_with_real_state(
+    clock: _Clock,
+    *,
+    active_work_timeout_seconds: float = 900,
+) -> WorkerSupervisor:
     workers = {
         name: _Worker()
         for name in ("ingestion_worker", "generation_worker", "studio_worker")
     }
-    supervisor = WorkerSupervisor(workers, heartbeat_timeout_seconds=10, clock=clock)
+    supervisor = WorkerSupervisor(
+        workers,
+        heartbeat_timeout_seconds=10,
+        active_work_timeout_seconds=active_work_timeout_seconds,
+        clock=clock,
+    )
     for state in supervisor._workers.values():
         state.start_count = 1
         state.thread = _Thread()
         state.heartbeat_at = clock()
     return supervisor
+
+
+def test_hung_active_work_exceeding_the_configured_bound_is_unhealthy() -> None:
+    clock = _Clock()
+    supervisor = _supervisor_with_real_state(clock, active_work_timeout_seconds=20)
+    state = next(iter(supervisor._workers.values()))
+    state.active_started_at = clock() - 21
+
+    assert supervisor.ready() == (False, "worker_active_timeout")
+    assert supervisor.snapshot()[state.name]["active_work_age_seconds"] == 21
 
 
 @pytest.mark.parametrize(

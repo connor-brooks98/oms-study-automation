@@ -228,3 +228,53 @@ def test_crash_recovery_restores_every_destination_before_backup_cleanup(tmp_pat
     assert second_destination.read_bytes() == b"second-old"
     assert not first_backup.exists()
     assert not second_backup.exists()
+
+
+def test_crash_restore_failure_keeps_all_backups_and_does_not_reset_state(
+    tmp_path,
+    monkeypatch,
+):
+    revision = SimpleNamespace(id=49)
+    service = ArtifactService.__new__(ArtifactService)
+    reset_calls: list[int] = []
+    service.repository = SimpleNamespace(reset_study_promotion=reset_calls.append)
+    first_source = tmp_path / "first-immutable.pdf"
+    second_source = tmp_path / "second-immutable.pdf"
+    first_destination = tmp_path / "first-current.pdf"
+    second_destination = tmp_path / "second-current.pdf"
+    first_source.write_bytes(b"first-new")
+    second_source.write_bytes(b"second-new")
+    first_destination.write_bytes(b"first-new")
+    second_destination.write_bytes(b"partial")
+    first_backup = ArtifactService._backup_path(first_destination, revision.id)
+    second_backup = ArtifactService._backup_path(second_destination, revision.id)
+    first_backup.write_bytes(b"first-old")
+    second_backup.write_bytes(b"second-old")
+    original_copy = artifacts_module.verified_atomic_copy
+
+    def fail_second_restore(copy_source, copy_destination):
+        if copy_source == second_backup and copy_destination == second_destination:
+            raise OSError("second destination is locked")
+        return original_copy(copy_source, copy_destination)
+
+    monkeypatch.setattr(
+        artifacts_module,
+        "verified_atomic_copy",
+        fail_second_restore,
+    )
+
+    with pytest.raises(ArtifactRecoveryError) as raised:
+        service._recover_promotion(
+            revision,
+            [
+                (first_source, first_destination),
+                (second_source, second_destination),
+            ],
+        )
+
+    assert isinstance(raised.value.restore_error, OSError)
+    assert raised.value.backup_paths == (first_backup, second_backup)
+    assert first_destination.read_bytes() == b"first-old"
+    assert first_backup.read_bytes() == b"first-old"
+    assert second_backup.read_bytes() == b"second-old"
+    assert reset_calls == []

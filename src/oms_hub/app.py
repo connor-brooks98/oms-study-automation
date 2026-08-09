@@ -137,6 +137,13 @@ from oms_hub.web.upload_routes import router as upload_router
 logger = logging.getLogger(__name__)
 
 
+def _office_admission_reporter(surface: str) -> Callable[[str], None]:
+    def report(state: str) -> None:
+        logger.info("office conversion admission surface=%s state=%s", surface, state)
+
+    return report
+
+
 @asynccontextmanager
 async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
     anki_worker = getattr(app.state, "anki_curation_worker", None)
@@ -542,7 +549,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.slide_pipeline = SlidePipeline(
         database,
         resolved,
-        SerialOfficeConverter(resolved.office_timeout_seconds),
+        SerialOfficeConverter(
+            resolved.office_timeout_seconds,
+            admission_reporter=_office_admission_reporter("slides"),
+        ),
         DocumentShadowEvaluator(
             AnydocProcessor(PptxLocatorEnricher()),
             LegacyPptxProcessor(),
@@ -631,7 +641,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.studio_worker = StudioWorker(
         app.state.studio_repository,
         notebook_gateway,
-        SerialOfficeConverter(resolved.office_timeout_seconds),
+        SerialOfficeConverter(
+            resolved.office_timeout_seconds,
+            admission_reporter=_office_admission_reporter("studio"),
+        ),
         app.state.notebook_connection,
         app.state.generation_repository,
         app.state.studio_quiz_image_service,

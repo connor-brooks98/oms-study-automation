@@ -76,6 +76,13 @@ function Resolve-SqliteDatabasePath {
   return [System.IO.Path]::GetFullPath($RawPath)
 }
 
+function Assert-NativeCommandSucceeded {
+  param([string]$Operation)
+  if ($LASTEXITCODE -ne 0) {
+    throw "$Operation failed with native exit code $LASTEXITCODE."
+  }
+}
+
 $EffectiveDataRootValue = Get-EffectiveSetting `
   -Name "OMS_HUB_DATA_DIR" `
   -Path $EnvFile `
@@ -393,9 +400,12 @@ if ($PSCmdlet.ShouldProcess($ProjectRoot, "Install Study Hub V2")) {
   if (-not (Test-Path "$ProjectRoot\.venv\Scripts\python.exe")) {
     $PythonVenvArgs = $PythonPrefix + @("-m", "venv", "$ProjectRoot\.venv")
     & $PythonCommand @PythonVenvArgs
+    Assert-NativeCommandSucceeded -Operation "Python virtual environment creation"
   }
   & "$ProjectRoot\.venv\Scripts\python.exe" -m pip install --upgrade pip
+  Assert-NativeCommandSucceeded -Operation "pip upgrade"
   & "$ProjectRoot\.venv\Scripts\python.exe" -m pip install -e $ProjectRoot
+  Assert-NativeCommandSucceeded -Operation "editable Study Hub installation"
   New-Item -ItemType Directory -Force -Path $EffectiveDataRoot, $BackupRoot | Out-Null
   & icacls.exe $EffectiveDataRoot /grant "${TaskIdentity}:(OI)(CI)M" /T /C | Out-Null
   if ($LASTEXITCODE -ne 0) {
@@ -406,6 +416,7 @@ if ($PSCmdlet.ShouldProcess($ProjectRoot, "Install Study Hub V2")) {
     throw "Configure $ProjectRoot\.env, then run this installer again"
   }
   & "$ProjectRoot\.venv\Scripts\oms-hub.exe" validate-config
+  Assert-NativeCommandSucceeded -Operation "Study Hub configuration validation"
 }
 
 if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {

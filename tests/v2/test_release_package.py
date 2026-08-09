@@ -107,16 +107,21 @@ def test_release_builder_rejects_symlink_entries_in_the_selected_tree(tmp_path):
         ["git", "-C", repository, "config", "user.name", "Release Test"],
         check=True,
     )
-    (repository / "tracked.txt").write_text("tracked\n", encoding="utf-8")
-    (repository / "linked.txt").symlink_to("tracked.txt")
-    subprocess.run(["git", "-C", repository, "add", "."], check=True)
-    subprocess.run(
-        ["git", "-C", repository, "commit", "-m", "symlink fixture"],
-        check=True,
-        capture_output=True,
-    )
+    blob = subprocess.check_output(
+        ["git", "-C", repository, "hash-object", "-w", "--stdin"],
+        input="tracked\n",
+        text=True,
+    ).strip()
+    tree = subprocess.check_output(
+        ["git", "-C", repository, "mktree"],
+        input=(
+            f"100644 blob {blob}\ttracked.txt\n"
+            f"120000 blob {blob}\tlinked.txt\n"
+        ),
+        text=True,
+    ).strip()
     commit = subprocess.check_output(
-        ["git", "-C", repository, "rev-parse", "HEAD"],
+        ["git", "-C", repository, "commit-tree", tree, "-m", "symlink fixture"],
         text=True,
     ).strip()
 

@@ -27,6 +27,7 @@ class _WorkerState:
     heartbeat_at: float | None = None
     last_work_at: float | None = None
     active_started_at: float | None = None
+    recovery_error: str | None = None
     current_error: str | None = None
     last_error: str | None = None
 
@@ -39,12 +40,16 @@ class WorkerSupervisor:
         workers: Mapping[str, RecoverableWorker],
         *,
         heartbeat_timeout_seconds: float = 30.0,
+        active_work_timeout_seconds: float = 900.0,
         clock: Callable[[], float] = monotonic,
     ) -> None:
+        if active_work_timeout_seconds <= 0:
+            raise ValueError("active_work_timeout_seconds must be positive")
         self._workers = {
             name: _WorkerState(name, worker) for name, worker in sorted(workers.items())
         }
         self._heartbeat_timeout_seconds = heartbeat_timeout_seconds
+        self._active_work_timeout_seconds = active_work_timeout_seconds
         self._clock = clock
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -62,11 +67,13 @@ class WorkerSupervisor:
                 try:
                     state.worker.recover_interrupted_jobs()
                 except Exception as error:  # noqa: BLE001 - health records a safe boundary
-                    state.current_error = type(error).__name__
-                    state.last_error = state.current_error
+                    state.recovery_error = type(error).__name__
+                    state.last_error = state.recovery_error
                     logging.getLogger(__name__).exception(
                         "%s worker recovery failed", state.name
                     )
+                else:
+                    state.recovery_error = None
                 state.heartbeat_at = self._clock()
                 state.thread = threading.Thread(
                     target=self._run,
@@ -99,6 +106,8 @@ class WorkerSupervisor:
                     "heartbeat_age_seconds": _age(now, state.heartbeat_at),
                     "last_work_age_seconds": _age(now, state.last_work_at),
                     "active_work_age_seconds": _age(now, state.active_started_at),
+                    "active_work_timeout_seconds": self._active_work_timeout_seconds,
+                    "recovery_error": state.recovery_error,
                     "current_error": state.current_error,
                     "last_error": state.last_error,
                 }
@@ -124,8 +133,15 @@ class WorkerSupervisor:
                     return False, "worker_duplicate"
                 if state.thread is None or not state.thread.is_alive():
                     return False, "worker_dead"
+                if state.recovery_error is not None:
+                    return False, "worker_recovery_error"
                 if state.current_error is not None:
                     return False, "worker_error"
+                if (
+                    state.active_started_at is not None
+                    and now - state.active_started_at > self._active_work_timeout_seconds
+                ):
+                    return False, "worker_active_timeout"
                 if (
                     state.active_started_at is None
                     and (
