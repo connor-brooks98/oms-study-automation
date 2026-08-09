@@ -471,6 +471,109 @@ def test_card_selection_v2_persists_exact_pending_overflow_metadata_and_flags() 
     assert selected_gap_cards["G01"].provenance["selection"]["selected_position"] == 1
 
 
+def test_card_selection_v2_persists_unique_required_existing_card_after_65() -> None:
+    source_ledger = _selection_ledger(65)
+    ledger = CardConceptLedger(
+        lecture_entity_count=67,
+        concepts=(
+            *source_ledger.concepts,
+            CardConcept(
+                concept_id="C66",
+                canonical_statement="Required high-value existing fact.",
+                primary_entity="Required existing",
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+            ),
+            CardConcept(
+                concept_id="C67",
+                canonical_statement="Low-value existing fact.",
+                primary_entity="Low existing",
+                depth="surface",
+                emphasis_flag=False,
+                importance="low",
+            ),
+        ),
+    )
+    cards = (
+        CardRecord(
+            note_id=66,
+            content_sha256="6" * 64,
+            text="Required high-value existing fact",
+            extra="",
+            tags=(),
+            deck_names=("AnKing",),
+        ),
+        CardRecord(
+            note_id=67,
+            content_sha256="7" * 64,
+            text="Low-value existing fact",
+            extra="",
+            tags=(),
+            deck_names=("AnKing",),
+        ),
+    )
+    classifications = (
+        CardClassification(
+            note_id=66,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="unique required high coverage",
+            covered_concept_ids=("C66",),
+            supporting_passage_ids=(),
+        ),
+        CardClassification(
+            note_id=67,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="unique low-value coverage",
+            covered_concept_ids=("C67",),
+            supporting_passage_ids=(),
+        ),
+    )
+    runner, context, passage_id = _dedupe_stage_fixture(
+        _DedupeEmbedder([]),
+        existing=classifications,
+        cards=cards,
+    )
+    context.job.pipeline_contract_version = PipelineContractVersion.CARD_CENTRIC_V2
+    context.prior_payloads[CurationStage.CARD_TAG_SCOPE] = {
+        "scope": TagScopeResult(
+            snapshot_id="dedupe-snapshot",
+            filters_sha256="f" * 64,
+            scoped_note_ids=(66, 67),
+            unscoped_note_ids=(),
+        ).model_dump(mode="json")
+    }
+    context.prior_payloads[CurationStage.CARD_LEDGER] = {
+        "ledger": ledger.model_dump(mode="json")
+    }
+    generated = _selection_generated_rows(65, passage_id)
+    context.prior_payloads[CurationStage.DEDUPE] = {
+        "resolutions": [item.model_dump(mode="json") for item in generated],
+        "semantic_dedupe_reviews": [],
+    }
+    context.prior_payloads[CurationStage.CARD_CLASSIFY]["classifier"]["results"] = [
+        item.model_copy(update={"supporting_passage_ids": (passage_id,)}).model_dump(mode="json")
+        for item in classifications
+    ]
+
+    product = asyncio.run(runner._card_selection(context))
+
+    assert product.payload["selected_count"] == 66
+    assert product.payload["selected_existing_note_ids"] == [66]
+    assert product.payload["excluded_existing_note_ids"] == [67]
+    marginal = product.payload["selection_metadata"][-1]
+    assert marginal["identity"] == "existing:66"
+    assert marginal["selected_position"] == 66
+    assert marginal["tier"] == SelectionTier.T3.value
+    assert marginal["marginal_value_reason"] == MarginalValueReason.ONLY_VALID_REQUIRED_FACT.value
+    candidates = {candidate.note_id: candidate for candidate in product.candidates}
+    assert candidates[66].selected is True
+    assert candidates[66].provenance["selection"] == marginal
+    assert candidates[67].selected is False
+
+
 def test_card_selection_v2_preserves_a_supplied_overflow_acknowledgement(monkeypatch) -> None:
     runner, context, passage_id = _selection_stage_context(
         ledger=_selection_ledger(71, high_through=71),

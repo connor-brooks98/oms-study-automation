@@ -999,10 +999,14 @@ def _marginal_reason(
 ) -> MarginalValueReason | None:
     if candidate.split:
         return MarginalValueReason.VALIDATED_NECESSARY_SPLIT
+    uncovered = candidate.coverage - selected_coverage
     if (
-        candidate.kind == "generated"
-        and candidate.priority <= 1
-        and candidate.coverage - selected_coverage
+        candidate.kind == "generated" and candidate.priority <= 1 and uncovered
+    ) or any(
+        kind == "concept"
+        and concept_id in concepts
+        and concepts[concept_id].importance in {"high", "medium"}
+        for kind, concept_id in uncovered
     ):
         return MarginalValueReason.ONLY_VALID_REQUIRED_FACT
     if any(

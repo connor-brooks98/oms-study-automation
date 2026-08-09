@@ -336,3 +336,49 @@ def test_invalid_low_value_marginal_card_is_excluded_after_65() -> None:
 
     assert len(result.selected_generated_card_ids) == 65
     assert result.excluded_generated_card_ids == ("G66",)
+
+
+def test_unique_required_existing_card_is_retained_after_65() -> None:
+    source = _source()
+    passage_id = next(
+        passage.passage_id for passage in source.passages if passage.authority != "summary"
+    )
+    summary_id = next(
+        passage.passage_id for passage in source.passages if passage.authority == "summary"
+    )
+    ledger = _ledger(67, low={67})
+    classifications = (
+        CardClassification(
+            note_id=66,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="unique required medium coverage",
+            covered_concept_ids=("C66",),
+            supporting_passage_ids=(passage_id,),
+        ),
+        CardClassification(
+            note_id=67,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="only the low-value coverage is new",
+            covered_concept_ids=("C66", "C67"),
+            supporting_passage_ids=(summary_id,),
+        ),
+    )
+
+    result = select_high_yield_v2(
+        classifications,
+        fast_classifications=(),
+        ledger=ledger,
+        source_index=source,
+        generated_cards=tuple(_generated(index, passage_id) for index in range(1, 66)),
+    )
+
+    assert result.selected_generated_card_ids == tuple(f"G{index:02d}" for index in range(1, 66))
+    assert result.selected_existing_note_ids == (66,)
+    assert result.excluded_existing_note_ids == (67,)
+    marginal = result.selection_metadata[-1]
+    assert marginal.identity == "existing:66"
+    assert marginal.selected_position == 66
+    assert marginal.tier is SelectionTier.T5
+    assert marginal.marginal_value_reason is MarginalValueReason.ONLY_VALID_REQUIRED_FACT
