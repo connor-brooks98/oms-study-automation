@@ -474,6 +474,7 @@ def _finalize_manifest(
     batch_id = str(uuid4())
     moved: list[StagedUpload] = []
     try:
+        staging.record_manifest_finalization(manifest_id, batch_id)
         moved = staging.promote_manifest(manifest_id, batch_id)
         _repository(request).finalize_batch(
             manifest.kind,
@@ -488,6 +489,7 @@ def _finalize_manifest(
                 staging.revert_promoted_manifest(manifest_id, batch_id, moved)
         finally:
             staging.release_manifest_finalization(manifest_id)
+            staging.clear_manifest_finalization_outcome(manifest_id)
         raise
     staging.complete_manifest_finalization(manifest_id, batch_id)
     if manifest.lecture_id is not None:

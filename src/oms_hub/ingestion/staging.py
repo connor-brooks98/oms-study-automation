@@ -206,27 +206,43 @@ class StagingService:
         self._discard_manifest_data(manifest_id)
         self.release_manifest_finalization(manifest_id)
 
+    def record_manifest_finalization(self, manifest_id: str, batch_id: str) -> None:
+        """Persist the known batch target before crossing the DB boundary."""
+        self._write_manifest_outcome(manifest_id, "pending", batch_id)
+
     def complete_manifest_finalization(self, manifest_id: str, batch_id: str) -> None:
         """Discard temporary members after their DB transaction committed."""
         # Publish the committed outcome before removing the claimed root, so a
         # racing cancellation never receives a false 204 in that interval.
-        self._finalized_manifest_path(manifest_id).write_text(
-            json.dumps({"batch_id": batch_id}), encoding="ascii"
-        )
+        self._write_manifest_outcome(manifest_id, "finalized", batch_id)
         self._discard_manifest_data(manifest_id)
         self.release_manifest_finalization(manifest_id)
 
     def finalized_manifest_outcome(self, manifest_id: str) -> dict[str, str] | None:
         """Return the bounded post-commit cancellation outcome, if retained."""
+        outcome = self._manifest_finalization_outcome(manifest_id)
+        if outcome is None or outcome["state"] != "finalized":
+            return None
+        return {"batch_id": outcome["batch_id"]}
+
+    def _manifest_finalization_outcome(
+        self, manifest_id: str
+    ) -> dict[str, str] | None:
         try:
             outcome = json.loads(
                 self._finalized_manifest_path(manifest_id).read_text("ascii")
             )
             batch_id = str(outcome["batch_id"])
+            state = str(outcome["state"])
             UUID(batch_id)
-            return {"batch_id": batch_id}
+            if state not in {"pending", "finalized"}:
+                return None
+            return {"state": state, "batch_id": batch_id}
         except (FileNotFoundError, OSError, ValueError, KeyError, TypeError):
             return None
+
+    def clear_manifest_finalization_outcome(self, manifest_id: str) -> None:
+        self._finalized_manifest_path(manifest_id).unlink(missing_ok=True)
 
     def promote_manifest(
         self,
@@ -288,6 +304,8 @@ class StagingService:
         if not root.exists():
             if self.finalized_manifest_outcome(manifest_id) is not None:
                 raise UploadRejected("upload manifest was already finalized")
+            if self._manifest_finalization_outcome(manifest_id) is not None:
+                raise UploadRejected("upload manifest finalization is unresolved")
             return
         claim = self._manifest_claim_path(manifest_id)
         try:
@@ -587,6 +605,16 @@ class StagingService:
                 if tombstone_age <= cutoff:
                     tombstone.unlink(missing_ok=True)
                     removed += 1
+            for temporary in manifest_root.glob("*.finalized.tmp"):
+                try:
+                    temporary_age = datetime.fromtimestamp(
+                        temporary.stat().st_mtime, UTC
+                    )
+                except OSError:
+                    continue
+                if temporary_age <= cutoff:
+                    temporary.unlink(missing_ok=True)
+                    removed += 1
         return removed
 
     def _validate_filename(
@@ -655,6 +683,19 @@ class StagingService:
 
     def _finalized_manifest_path(self, manifest_id: str) -> Path:
         return self._contained(self.root / "manifests", f"{manifest_id}.finalized")
+
+    def _write_manifest_outcome(
+        self,
+        manifest_id: str,
+        state: str,
+        batch_id: str,
+    ) -> None:
+        path = self._finalized_manifest_path(manifest_id)
+        temporary = path.with_name(f"{path.name}.tmp")
+        temporary.write_text(
+            json.dumps({"state": state, "batch_id": batch_id}), encoding="ascii"
+        )
+        temporary.replace(path)
 
     def _manifest_file_path(self, manifest_id: str, slot_id: str) -> Path:
         self._contained(self._manifest_root(manifest_id), slot_id)
