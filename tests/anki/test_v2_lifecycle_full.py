@@ -20,8 +20,18 @@ from oms_hub.anki.card_centric_contracts import (
     FastClassificationResult,
     GeneratedCardResolution,
 )
+from oms_hub.anki.correction_contracts import (
+    DuplicateIdentity,
+    GeneratedFactResolution,
+    GeneratedResolutionKind,
+)
 from oms_hub.anki.domain import CreateCurationJob, CurationStage, PipelineContractVersion
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
+from oms_hub.anki.reconciliation import (
+    AuditResolution,
+    CardCentricReconciliationInput,
+    reconcile_card_centric,
+)
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.anki.semantic.domain import PinnedCentroidSimilarityResult
 from oms_hub.anki.stages import CurationServicesRunner
@@ -853,6 +863,120 @@ def test_expected_red_p3_h3_s8_duplicate_identity_survives_into_s9_audit() -> No
         }
 
     asyncio.run(scenario())
+
+
+def test_duplicate_target_identity_survives_selection_into_reconciliation() -> None:
+    """A named S8 duplicate target cannot be replaced by equivalent coverage."""
+    source = lifecycle_source_payload(card_count=11)
+    source_index = CardCentricSourceIndex.model_validate(source["source_index"])
+    primary_id = next(
+        passage.passage_id for passage in source_index.passages if passage.authority == "slide"
+    )
+    summary_id = next(
+        passage.passage_id for passage in source_index.passages if passage.authority == "summary"
+    )
+    ledger = _independent_ledger(10, mandatory=False)
+    duplicate = GeneratedCardResolution(
+        card_id="G-duplicate",
+        concept_id="C01",
+        fact_id="C01-M1",
+        text="{{c1::Duplicate fact}}",
+        source_passage_ids=(primary_id,),
+        evidence_ids=("E-duplicate",),
+        status="duplicate_of_existing",
+        duplicate_of_existing_note_id=11,
+        reason="Semantic duplicate of existing note 11.",
+    )
+    classifications = (
+        *(
+            CardClassification(
+                note_id=note_id,
+                verdict="YES",
+                primary_subject="fixture",
+                reason="Unique grounded coverage.",
+                covered_concept_ids=(f"C{note_id + 1:02d}",),
+                supporting_passage_ids=(primary_id,),
+            )
+            for note_id in range(1, 10)
+        ),
+        CardClassification(
+            note_id=10,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="Higher-ranked equivalent coverage.",
+            covered_concept_ids=("C01",),
+            supporting_passage_ids=(primary_id,),
+        ),
+        CardClassification(
+            note_id=11,
+            verdict="YES",
+            primary_subject="fixture",
+            reason="Exact S8 duplicate target.",
+            covered_concept_ids=("C01",),
+            supporting_passage_ids=(summary_id,),
+        ),
+    )
+
+    selection = select_high_yield_v2(
+        classifications,
+        fast_classifications=(),
+        ledger=ledger,
+        source_index=source_index,
+        generated_cards=(duplicate,),
+    )
+    snapshot = CardCentricReconciliationInput(
+        pipeline_contract_version="card_centric_v2",
+        concept_ids=tuple(concept.concept_id for concept in ledger.concepts),
+        coverage={concept.concept_id: "covered" for concept in ledger.concepts},
+        required_fact_ids=("C01-M1",),
+        uncovered_after_s5=("C01",),
+        residual_ran_for=("C01",),
+        generated_cards=(),
+        raw_generated_cards=(),
+        canonical_generated_cards=(),
+        terminal_resolutions=(
+            GeneratedFactResolution(
+                fact_id="C01-M1",
+                kind=GeneratedResolutionKind.DUPLICATE_OF_EXISTING,
+                duplicate_of=DuplicateIdentity(existing_note_id=11),
+            ),
+        ),
+        terminal_resolutions_provided=True,
+        canonical_unresolved_fact_ids=(),
+        unresolved_fact_ids=(),
+        expected_scoped_nids=tuple(range(1, 12)),
+        classifications=tuple(
+            AuditResolution(nid=classification.note_id, verdict="keep")
+            for classification in classifications
+        ),
+        eligible_yes_nids=tuple(range(1, 12)),
+        selected_nids=selection.selected_existing_note_ids,
+        selected_generated_card_ids=(),
+        generated_card_ids=(),
+        source_passage_ids=tuple(passage.passage_id for passage in source_index.passages),
+        forbidden_cloze_targets=(),
+        prompt_sync_stale=False,
+        untagged_rate=0,
+        mandatory_nids=selection.mandatory_note_ids,
+        covered_concept_ids_by_nid={
+            classification.note_id: classification.covered_concept_ids
+            for classification in classifications
+        },
+        selection_metadata=selection.selection_metadata,
+        selection_order=tuple(item.identity for item in selection.selection_metadata),
+        selected_count=len(selection.selected_existing_note_ids),
+        below_warning_floor=selection.below_warning_floor,
+    )
+
+    report = reconcile_card_centric(snapshot)
+
+    assert selection.selected_existing_note_ids == (11, *range(1, 10))
+    assert 10 in selection.excluded_existing_note_ids
+    assert report.failed == ()
+    # The deliberately 10-card fixture still warns below the policy floor;
+    # its envelope status is unrelated to the duplicate-target invariant.
+    assert any(item.assertion_id == "selection_warning_floor" for item in report.warned)
+    assert "duplicate_coverage" in report.passed
 
 
 def test_selection_never_pads_with_unclassified_s4a_fallback_expected_red_p3_h1() -> None:

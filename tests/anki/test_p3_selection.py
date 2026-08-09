@@ -194,6 +194,56 @@ def test_selector_applies_subset_and_equivalent_coverage_dominance() -> None:
     assert result.excluded_existing_note_ids == (10, 11)
 
 
+def test_selector_preserves_exact_existing_duplicate_target_over_equivalent_coverage() -> None:
+    source = _source()
+    primary_id = next(
+        passage.passage_id for passage in source.passages if passage.authority != "summary"
+    )
+    summary_id = next(
+        passage.passage_id for passage in source.passages if passage.authority == "summary"
+    )
+    duplicate = GeneratedCardResolution(
+        card_id="G-duplicate",
+        concept_id="C01",
+        fact_id="C01-M1",
+        text="{{c1::Duplicate fact}}",
+        source_passage_ids=(primary_id,),
+        evidence_ids=("E-duplicate",),
+        status="duplicate_of_existing",
+        duplicate_of_existing_note_id=11,
+        reason="Semantic duplicate of existing note 11.",
+    )
+
+    result = select_high_yield_v2(
+        (
+            CardClassification(
+                note_id=10,
+                verdict="YES",
+                primary_subject="fixture",
+                reason="higher-ranked equivalent coverage",
+                covered_concept_ids=("C01",),
+                supporting_passage_ids=(primary_id,),
+            ),
+            CardClassification(
+                note_id=11,
+                verdict="YES",
+                primary_subject="fixture",
+                reason="exact S8 duplicate target",
+                covered_concept_ids=("C01",),
+                supporting_passage_ids=(summary_id,),
+            ),
+        ),
+        fast_classifications=(),
+        ledger=_ledger(1),
+        source_index=source,
+        generated_cards=(duplicate,),
+    )
+
+    assert result.selected_existing_note_ids == (11,)
+    assert result.excluded_existing_note_ids == (10,)
+    assert result.mandatory_note_ids == (11,)
+
+
 def test_summary_evidence_with_unknown_id_does_not_upgrade_to_primary() -> None:
     source = _source()
     summary_id = next(

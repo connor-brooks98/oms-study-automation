@@ -664,6 +664,12 @@ def select_high_yield_v2(
     }
     semantic_review_ids = tuple(sorted(set(semantic_review_required_card_ids)))
     semantic_review_set = set(semantic_review_ids)
+    duplicate_target_note_ids = {
+        generated_row.duplicate_of_existing_note_id
+        for generated_row in generated_cards
+        if generated_row.status == "duplicate_of_existing"
+        and generated_row.duplicate_of_existing_note_id is not None
+    }
 
     def priority(concept_id: str) -> tuple[int, str]:
         concept = concepts[concept_id]
@@ -763,7 +769,11 @@ def select_high_yield_v2(
                 evidence_quality=evidence_quality(classification.supporting_passage_ids),
                 coverage=coverage,
                 priority=tier_priority,
-                mandatory=tier is SelectionTier.T3 and tier_priority == 0,
+                # S8's terminal duplicate identity is a conservation contract:
+                # selecting an equivalent card is insufficient for S9 because
+                # the exact named existing target proves the duplicate outcome.
+                mandatory=(tier is SelectionTier.T3 and tier_priority == 0)
+                or classification.note_id in duplicate_target_note_ids,
                 split=False,
                 flag_count=len(classification.flags),
             )
