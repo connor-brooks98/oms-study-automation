@@ -419,6 +419,43 @@ test("unpublish uses authoritative counts, prunes empty shells, and focuses a su
   assert.equal(neighborLink.focused, true);
 });
 
+test("unpublish of the final row ignores pruned controls and focuses the library main", () => {
+  const main = { focused: false, focus() { this.focused = true; } };
+  const examControl = { isConnected: true, focus() { throw new Error("removed control must not receive focus"); } };
+  const courseControl = { isConnected: true, focus() { throw new Error("removed control must not receive focus"); } };
+  const examCount = { textContent: "1 quiz" };
+  const courseCount = { textContent: "1 quiz" };
+  const exam = {
+    isConnected: true,
+    querySelector(selector) { return selector === "[data-exam-count]" ? examCount : examControl; },
+    remove() { this.isConnected = false; examControl.isConnected = false; },
+  };
+  const course = {
+    isConnected: true,
+    querySelector(selector) { return selector === "[data-course-count]" ? courseCount : courseControl; },
+    remove() { this.isConnected = false; courseControl.isConnected = false; },
+  };
+  const row = {
+    remove() {},
+    closest(selector) { return selector === "[data-exam-key]" ? exam : course; },
+  };
+  const documentRef = {
+    querySelector(selector) {
+      if (selector === "[data-quiz-library]") return main;
+      return null;
+    },
+  };
+
+  library.applyUnpublish(documentRef, row, {
+    exam_key: "neuro:1",
+    course_key: "neuro",
+    exam_quiz_count: 0,
+    course_quiz_count: 0,
+  });
+
+  assert.equal(main.focused, true);
+});
+
 test("library controls and direction sequences preserve management payloads", async () => {
   const libraryButton = new FakeLibraryElement();
   libraryButton.dataset = {

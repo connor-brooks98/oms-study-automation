@@ -123,16 +123,19 @@
     || null
   );
 
+  const connectedFocusable = (candidate) => (
+    candidate && candidate.isConnected !== false && !candidate.disabled
+      ? candidate
+      : null
+  );
+
   const applyUnpublish = (documentRef, row, response) => {
     const exam = row.closest?.("[data-exam-key]")
       || documentRef.querySelector?.(`[data-exam-key="${response.exam_key}"]`);
     const course = row.closest?.("[data-course-key]")
       || documentRef.querySelector?.(`[data-course-key="${response.course_key}"]`);
-    const fallback = firstFocusable(row.nextElementSibling)
-      || firstFocusable(row.previousElementSibling)
-      || firstFocusable(exam)
-      || firstFocusable(course)
-      || documentRef.querySelector?.("[data-quiz-library]");
+    const nextRow = row.nextElementSibling;
+    const previousRow = row.previousElementSibling;
     row.remove();
     const courseCount = course?.querySelector?.("[data-course-count]");
     if (courseCount) courseCount.textContent = quizCountLabel(response.course_quiz_count);
@@ -140,9 +143,12 @@
     if (examCount) examCount.textContent = quizCountLabel(response.exam_quiz_count);
     if (response.exam_quiz_count === 0) exam?.remove?.();
     if (response.course_quiz_count === 0) course?.remove?.();
-    (fallback?.isConnected === false
-      ? firstFocusable(course) || documentRef.querySelector?.("[data-quiz-library]")
-      : fallback)?.focus?.();
+    const fallback = connectedFocusable(firstFocusable(nextRow))
+      || connectedFocusable(firstFocusable(previousRow))
+      || connectedFocusable(firstFocusable(exam))
+      || connectedFocusable(firstFocusable(course))
+      || connectedFocusable(documentRef.querySelector?.("[data-quiz-library]"));
+    fallback?.focus?.();
   };
 
   // A direction endpoint moves one position. A longer pointer drop is therefore
@@ -363,7 +369,7 @@
     initialize, progressKey, progressLabel, progressClass, readProgress, resetProgress,
     cookieValue, managementRequest, setExpanded, directionSequence, reorderRequest,
     reorderFailureStorageKey, storeReorderFailure, consumeReorderFailure, keyboardReorderDirection,
-    applyRenamedTitle, applyUnpublish, quizCountLabel,
+    applyRenamedTitle, applyUnpublish, connectedFocusable, quizCountLabel,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) root.document.addEventListener("DOMContentLoaded", () => initialize(root.document, root.localStorage), { once: true });

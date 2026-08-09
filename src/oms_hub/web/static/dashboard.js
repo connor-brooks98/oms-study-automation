@@ -27,23 +27,48 @@
     });
   };
 
-  const initialize = (documentRef, storage = root.sessionStorage) => {
-    documentRef.querySelectorAll("[data-disclosure]").forEach((button) => {
-      const key = storagePrefix + button.dataset.storageKey;
+  const savedState = (storage, button) => {
+    try {
+      const saved = storage?.getItem(storagePrefix + button.dataset.storageKey);
+      return saved === null || saved === undefined ? undefined : saved === "true";
+    } catch (_) {
+      return undefined;
+    }
+  };
+
+  const initialize = (documentRef, suppliedStorage) => {
+    let storage = suppliedStorage;
+    if (storage === undefined) {
       try {
-        const saved = storage?.getItem(key);
-        const parentCourse = button.closest(".course-group")?.querySelector(".course-toggle");
-        const parentOpen = !parentCourse || parentCourse.getAttribute("aria-expanded") === "true";
-        if (saved !== null && saved !== undefined) {
-          setExpanded(
-            documentRef,
-            button,
-            parentCourse ? nestedExpanded(parentOpen, saved) : saved === "true",
-          );
-        }
+        storage = root.sessionStorage;
       } catch (_) {
-        // Storage can be unavailable in privacy modes; server defaults still work.
+        storage = undefined;
       }
+    }
+    const buttons = [...documentRef.querySelectorAll("[data-disclosure]")];
+    const courses = buttons.filter((button) => button.classList.contains("course-toggle"));
+    const exams = buttons.filter((button) => button.classList.contains("exam-toggle"));
+    courses.forEach((button) => {
+      const restored = savedState(storage, button);
+      setExpanded(
+        documentRef,
+        button,
+        restored === undefined
+          ? button.getAttribute("aria-expanded") === "true"
+          : restored,
+      );
+    });
+    exams.forEach((button) => {
+      const restored = savedState(storage, button);
+      const parentCourse = button.closest(".course-group")?.querySelector(".course-toggle");
+      const parentOpen = parentCourse?.getAttribute("aria-expanded") === "true";
+      const requested = restored === undefined
+        ? button.getAttribute("aria-expanded") === "true"
+        : restored;
+      setExpanded(documentRef, button, nestedExpanded(parentOpen, String(requested)));
+    });
+    buttons.forEach((button) => {
+      const key = storagePrefix + button.dataset.storageKey;
       button.addEventListener("click", () => {
         const expanded = button.getAttribute("aria-expanded") !== "true";
         setExpanded(documentRef, button, expanded);
@@ -59,7 +84,7 @@
     });
   };
 
-  const api = { collapseDescendants, initialize, nestedExpanded, setExpanded };
+  const api = { collapseDescendants, initialize, nestedExpanded, savedState, setExpanded };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) initialize(root.document);
 })(typeof globalThis === "undefined" ? this : globalThis);
