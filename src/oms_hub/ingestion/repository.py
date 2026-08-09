@@ -107,6 +107,60 @@ class IngestionRepository:
             )
             batch.state = UploadState.MATCHING.value
 
+    def finalize_batch(
+        self,
+        kind: UploadKind,
+        batch_id: str,
+        staged_uploads: list[StagedUpload],
+        *,
+        lecture_id: int | None,
+        decisions: dict[str, MatchDecision],
+    ) -> None:
+        """Persist a fully preflighted manifest in one database transaction."""
+        if not staged_uploads:
+            raise ValueError("upload manifest has no files")
+        with self.database.session() as session:
+            batch = UploadBatchModel(
+                id=batch_id,
+                kind=kind.value,
+                state=UploadState.MATCHING.value,
+            )
+            session.add(batch)
+            for staged in staged_uploads:
+                item = UploadItemModel(
+                    id=staged.item_id,
+                    batch_id=batch_id,
+                    kind=kind.value,
+                    original_filename=staged.original_filename,
+                    staged_path=str(staged.path),
+                    sha256=staged.sha256,
+                    size_bytes=staged.size_bytes,
+                    state=UploadState.MATCHING.value,
+                )
+                session.add(item)
+                if lecture_id is not None:
+                    item.lecture_id = lecture_id
+                    item.confidence = 1.0
+                    item.evidence_json = json.dumps(
+                        ["Assigned during upload finalization"]
+                    )
+                    item.manual_assignment = True
+                    item.state = UploadState.QUEUED.value
+                    self._enqueue_unless_current_duplicate(session, item)
+                    continue
+                decision = decisions[staged.item_id]
+                item.lecture_id = decision.lecture_id
+                item.confidence = decision.confidence
+                item.evidence_json = json.dumps(list(decision.evidence))
+                item.state = (
+                    UploadState.QUEUED.value
+                    if decision.state == "matched"
+                    else UploadState.QUARANTINED.value
+                )
+                if decision.state == "matched":
+                    self._enqueue_unless_current_duplicate(session, item)
+            self._sync_batch_state(session, batch_id)
+
     def set_batch_state(
         self,
         batch_id: str,

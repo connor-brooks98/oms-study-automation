@@ -1,13 +1,20 @@
+import hashlib
+import json
 from io import BytesIO
 from pathlib import Path
 from typing import Annotated, cast
+from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from oms_hub.ingestion.domain import UploadKind, UploadState
+from oms_hub.ingestion.domain import (
+    UploadKind,
+    UploadManifestSlot,
+    UploadState,
+)
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.ingestion.service import IngestionService
 from oms_hub.ingestion.staging import StagingService, UploadRejected
@@ -50,6 +57,21 @@ class ChunkCreate(BaseModel):
     filename: str
     total_size: int = Field(ge=1)
     sha256: str
+    manifest_id: str | None = None
+    slot_id: str | None = None
+
+
+class ManifestFile(BaseModel):
+    slot_id: str
+    filename: str
+    size_bytes: int = Field(ge=1)
+    sha256: str
+
+
+class ManifestCreate(BaseModel):
+    kind: UploadKind
+    files: list[ManifestFile]
+    lecture_id: int | None = None
 
 
 def _repository(request: Request) -> IngestionRepository:
@@ -71,32 +93,95 @@ def _catalog(request: Request) -> CatalogRepository:
     return cast(CatalogRepository, request.app.state.catalog_repository)
 
 
-@router.post("/uploads/{kind}", status_code=202)
+@router.post("/uploads/{kind}", status_code=202, response_model=None)
 def upload_files(
     kind: UploadKind,
     request: Request,
     files: Annotated[list[UploadFile], File()],
     lecture_id: Annotated[int | None, Form()] = None,
-) -> dict[str, str]:
+    manifest_id: Annotated[str | None, Form()] = None,
+    slot_ids: Annotated[list[str] | None, Form()] = None,
+) -> dict[str, str] | JSONResponse:
     if not files:
         raise HTTPException(422, "at least one file is required")
     _require_lecture(request, lecture_id)
-    batch = _staging(request).begin_batch(kind)
-    repository = _repository(request)
-    repository.create_batch(kind, batch.id)
-    try:
+    staging = _staging(request)
+    created_here = manifest_id is None
+    if manifest_id is None:
+        slots = []
         for upload in files:
-            staged = _staging(request).stage_file(
-                batch,
-                upload.filename or "",
-                upload.file,
+            size_bytes, sha256 = _upload_size_and_hash(upload)
+            slots.append(
+                ManifestFile(
+                    slot_id=str(uuid4()),
+                    filename=upload.filename or "",
+                    size_bytes=size_bytes,
+                    sha256=sha256,
+                )
             )
-            repository.add_item(kind, staged)
-            _assign_or_match(request, staged.item_id, lecture_id)
-    except UploadRejected as error:
-        repository.set_batch_state(batch.id, UploadState.FAILED)
-        raise HTTPException(422, str(error)) from error
-    return {"batch_id": batch.id}
+        try:
+            manifest_id = _create_manifest(staging, kind, slots, lecture_id)["manifest_id"]
+        except HTTPException as error:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "errors": [
+                        {
+                            "slot_id": slot.slot_id,
+                            "filename": slot.filename,
+                            "code": "validation_failed",
+                            "detail": str(error.detail),
+                        }
+                        for slot in slots
+                        if Path(slot.filename).suffix.casefold()
+                        != (".pptx" if kind is UploadKind.SLIDES else ".txt")
+                    ]
+                    or [
+                        {
+                            "slot_id": slot.slot_id,
+                            "filename": slot.filename,
+                            "code": "validation_failed",
+                            "detail": str(error.detail),
+                        }
+                        for slot in slots
+                    ],
+                },
+            )
+        slot_ids = [slot.slot_id for slot in slots]
+    if slot_ids is None or len(slot_ids) != len(files):
+        raise HTTPException(422, "every multipart file needs one manifest slot")
+    errors = _stage_multipart_members(staging, manifest_id, slot_ids, files)
+    if errors:
+        staging.discard_manifest(manifest_id)
+        return JSONResponse(status_code=422, content={"errors": errors})
+    # Legacy multipart remains a one-shot call. Explicit manifests are
+    # finalized only after their chunk siblings have arrived.
+    if not created_here:
+        return {"manifest_id": manifest_id}
+    return _finalize_manifest(request, manifest_id)
+
+
+@router.post("/api/upload-manifests", status_code=201)
+def create_manifest(
+    payload: ManifestCreate,
+    request: Request,
+) -> dict[str, object]:
+    _require_lecture(request, payload.lecture_id)
+    return _create_manifest(_staging(request), payload.kind, payload.files, payload.lecture_id)
+
+
+@router.post(
+    "/api/upload-manifests/{manifest_id}/finalize",
+    status_code=202,
+    response_model=None,
+)
+def finalize_manifest(manifest_id: str, request: Request) -> dict[str, str] | JSONResponse:
+    return _finalize_manifest(request, manifest_id)
+
+
+@router.delete("/api/upload-manifests/{manifest_id}", status_code=204)
+def cancel_manifest(manifest_id: str, request: Request) -> None:
+    _staging(request).discard_manifest(manifest_id)
 
 
 @router.get("/api/upload-batches/{batch_id}")
@@ -161,15 +246,18 @@ def create_chunk_session(
     request: Request,
 ) -> dict[str, object]:
     try:
-        session = _staging(request).begin_chunks(
-            payload.kind,
-            payload.filename,
-            payload.total_size,
-            payload.sha256,
+        session = (
+            _staging(request).begin_manifest_chunks(payload.manifest_id, payload.slot_id)
+            if payload.manifest_id is not None and payload.slot_id is not None
+            else _staging(request).begin_chunks(
+                payload.kind,
+                payload.filename,
+                payload.total_size,
+                payload.sha256,
+            )
         )
     except UploadRejected as error:
         raise HTTPException(422, str(error)) from error
-    _repository(request).create_batch(payload.kind, session.batch_id)
     return {
         "session_id": session.id,
         "batch_id": session.batch_id,
@@ -206,12 +294,134 @@ def finalize_chunks(
         staged = _staging(request).finalize_chunks(session_id)
     except UploadRejected as error:
         raise HTTPException(422, str(error)) from error
+    # A manifest-owned chunk is now staged but not durable. Legacy chunk
+    # callers retain their historical one-file finalization behaviour.
+    if _staging(request)._manifest_root(staged.batch_id).is_dir():
+        return {"manifest_id": staged.batch_id, "item_id": staged.item_id}
     batch = _repository(request).get_batch(staged.batch_id)
     if batch is None:
-        raise HTTPException(409, "chunk upload batch is missing")
-    _repository(request).add_item(batch.kind, staged)
+        # Older chunk sessions had no manifest and no durable batch until now.
+        _repository(request).create_batch(staged.kind, staged.batch_id)
+    _repository(request).add_item(staged.kind, staged)
     _assign_or_match(request, staged.item_id, lecture_id)
     return {"batch_id": staged.batch_id, "item_id": staged.item_id}
+
+
+def _upload_size_and_hash(upload: UploadFile) -> tuple[int, str]:
+    stream = upload.file
+    stream.seek(0)
+    digest = hashlib.sha256()
+    size = 0
+    while chunk := stream.read(1024 * 1024):
+        size += len(chunk)
+        digest.update(chunk)
+    stream.seek(0)
+    return size, digest.hexdigest()
+
+
+def _create_manifest(
+    staging: StagingService,
+    kind: UploadKind,
+    files: list[ManifestFile],
+    lecture_id: int | None,
+) -> dict[str, object]:
+    try:
+        manifest = staging.begin_manifest(
+            kind,
+            [
+                UploadManifestSlot(
+                    id=file.slot_id,
+                    filename=file.filename,
+                    size_bytes=file.size_bytes,
+                    sha256=file.sha256,
+                )
+                for file in files
+            ],
+            lecture_id,
+        )
+    except UploadRejected as error:
+        raise HTTPException(422, str(error)) from error
+    return {
+        "manifest_id": manifest.id,
+        "slots": [
+            {"slot_id": slot.id, "filename": slot.filename}
+            for slot in manifest.slots
+        ],
+    }
+
+
+def _stage_multipart_members(
+    staging: StagingService,
+    manifest_id: str,
+    slot_ids: list[str],
+    files: list[UploadFile],
+) -> list[dict[str, str]]:
+    errors: list[dict[str, str]] = []
+    for slot_id, upload in zip(slot_ids, files, strict=True):
+        try:
+            staging.stage_manifest_file(manifest_id, slot_id, upload.file)
+        except UploadRejected as error:
+            errors.append(
+                {
+                    "slot_id": slot_id,
+                    "filename": upload.filename or "",
+                    "code": "validation_failed",
+                    "detail": str(error),
+                }
+            )
+    return errors
+
+
+def _finalize_manifest(
+    request: Request,
+    manifest_id: str,
+) -> dict[str, str] | JSONResponse:
+    staging = _staging(request)
+    try:
+        manifest = staging.get_manifest(manifest_id)
+        _require_lecture(request, manifest.lecture_id)
+        staged = staging.manifest_uploads(manifest_id)
+    except UploadRejected as error:
+        try:
+            payload = json.loads(str(error))
+        except json.JSONDecodeError:
+            raise HTTPException(422, str(error)) from error
+        return JSONResponse(status_code=422, content=payload)
+    service = _ingestion(request)
+    decisions = (
+        {}
+        if manifest.lecture_id is not None
+        else {
+            item.item_id: service.decide_staged(
+                manifest.kind, item.path, item.original_filename
+            )
+            for item in staged
+        }
+    )
+    batch_id = str(uuid4())
+    moved: list[object] = []
+    try:
+        moved = staging.promote_manifest(manifest_id, batch_id)
+        _repository(request).finalize_batch(
+            manifest.kind,
+            batch_id,
+            moved,
+            lecture_id=manifest.lecture_id,
+            decisions=decisions,
+        )
+    except Exception:
+        if moved:
+            staging.revert_promoted_manifest(manifest_id, batch_id, moved)
+        raise
+    staging.discard_manifest(manifest_id)
+    if manifest.lecture_id is not None:
+        for _ in moved:
+            service._complete_match_steps(manifest.lecture_id, manifest.kind)
+    else:
+        for decision in decisions.values():
+            if decision.lecture_id is not None:
+                service._complete_match_steps(decision.lecture_id, manifest.kind)
+    return {"batch_id": batch_id}
 
 
 def _require_lecture(request: Request, lecture_id: int | None) -> None:

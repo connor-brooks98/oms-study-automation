@@ -67,6 +67,28 @@ class ChunkSession:
 
 
 @dataclass(frozen=True, slots=True)
+class UploadManifestSlot:
+    """An immutable member of a browser upload action.
+
+    Slots deliberately exist only in staging until every member has passed
+    validation.  They are not queue records.
+    """
+
+    id: str
+    filename: str
+    size_bytes: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class UploadManifest:
+    id: str
+    kind: UploadKind
+    lecture_id: int | None
+    slots: tuple[UploadManifestSlot, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class UploadItem:
     id: str
     kind: UploadKind

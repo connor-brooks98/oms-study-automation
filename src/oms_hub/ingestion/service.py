@@ -48,6 +48,17 @@ class IngestionService:
             )
         return self.repository.require_item(item_id)
 
+    def decide_staged(self, kind: UploadKind, path: Path, filename: str):
+        """Compute a match without creating item rows or catalog progress."""
+        if kind is UploadKind.SLIDES:
+            title, opening = self._pptx_text(path)
+        else:
+            title, opening = self._transcript_text(path)
+        return self.matcher.match(
+            UploadEvidence(filename=filename, embedded_title=title, opening_text=opening),
+            self.catalog.list_lectures(),
+        )
+
     def assign(self, item_id: str, lecture_id: int) -> None:
         if self.catalog.get_lecture(lecture_id) is None:
             raise KeyError(lecture_id)
@@ -145,10 +156,9 @@ class IngestionService:
 
     def _transcript_text(self, path: Path) -> tuple[str, str]:
         raw = path.read_bytes()[:8192]
-        try:
-            text = raw.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text = raw.decode("cp1252")
+        from oms_hub.ingestion.staging import decode_utf8_transcript
+
+        text = decode_utf8_transcript(raw)
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         title = lines[0] if lines else ""
         return title[:500], " ".join(lines[:20])[:2000]

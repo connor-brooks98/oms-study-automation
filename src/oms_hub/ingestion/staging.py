@@ -12,6 +12,8 @@ from oms_hub.ingestion.domain import (
     StagedUpload,
     UploadBatchRef,
     UploadKind,
+    UploadManifest,
+    UploadManifestSlot,
 )
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -20,6 +22,14 @@ _PPTX_REQUIRED = {"[Content_Types].xml", "ppt/presentation.xml"}
 
 class UploadRejected(ValueError):
     pass
+
+
+def decode_utf8_transcript(raw: bytes) -> str:
+    """The single admission decoder for staged, matched, and processed text."""
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError as error:
+        raise UploadRejected("transcript is not UTF-8") from error
 
 
 class StagingService:
@@ -41,6 +51,174 @@ class StagingService:
         batch_root.mkdir(parents=True, exist_ok=False)
         (batch_root / "kind").write_text(kind.value, encoding="ascii")
         return batch
+
+    def begin_manifest(
+        self,
+        kind: UploadKind,
+        slots: list[UploadManifestSlot],
+        lecture_id: int | None = None,
+    ) -> UploadManifest:
+        """Create only request-scoped staging metadata, never queue rows."""
+        if not slots:
+            raise UploadRejected("at least one file is required")
+        total = 0
+        seen: set[str] = set()
+        for slot in slots:
+            if slot.id in seen:
+                raise UploadRejected("manifest slot identifiers must be unique")
+            seen.add(slot.id)
+            self._validate_filename(kind, slot.filename)
+            if slot.size_bytes < 1 or slot.size_bytes > self.max_file_bytes:
+                raise UploadRejected("declared file size exceeds upload limit")
+            total += slot.size_bytes
+            if total > self.max_batch_bytes:
+                raise UploadRejected("batch exceeds upload limit")
+            if not _SHA256.fullmatch(slot.sha256):
+                raise UploadRejected("invalid SHA-256 checksum")
+        manifest = UploadManifest(str(uuid4()), kind, lecture_id, tuple(slots))
+        root = self._manifest_root(manifest.id)
+        root.mkdir(parents=True, exist_ok=False)
+        self._write_manifest(manifest)
+        return manifest
+
+    def get_manifest(self, manifest_id: str) -> UploadManifest:
+        try:
+            raw = json.loads(self._manifest_path(manifest_id).read_text("utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, KeyError) as error:
+            raise UploadRejected("upload manifest does not exist") from error
+        try:
+            slots = tuple(
+                UploadManifestSlot(
+                    id=str(slot["id"]),
+                    filename=str(slot["filename"]),
+                    size_bytes=int(slot["size_bytes"]),
+                    sha256=str(slot["sha256"]),
+                )
+                for slot in raw["slots"]
+            )
+            return UploadManifest(
+                id=str(raw["id"]),
+                kind=UploadKind(raw["kind"]),
+                lecture_id=(int(raw["lecture_id"]) if raw["lecture_id"] is not None else None),
+                slots=slots,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise UploadRejected("upload manifest is invalid") from error
+
+    def stage_manifest_file(
+        self,
+        manifest_id: str,
+        slot_id: str,
+        stream: BinaryIO,
+    ) -> None:
+        manifest = self.get_manifest(manifest_id)
+        slot = self._manifest_slot(manifest, slot_id)
+        target = self._manifest_file_path(manifest_id, slot_id)
+        self._write_checked_file(
+            manifest.kind,
+            slot.filename,
+            stream,
+            target,
+            expected_size=slot.size_bytes,
+            expected_sha256=slot.sha256,
+        )
+
+    def manifest_uploads(self, manifest_id: str) -> list[StagedUpload]:
+        manifest = self.get_manifest(manifest_id)
+        uploads: list[StagedUpload] = []
+        errors: list[dict[str, str]] = []
+        for slot in manifest.slots:
+            path = self._manifest_file_path(manifest.id, slot.id)
+            try:
+                if not path.is_file():
+                    raise UploadRejected("file transfer is incomplete")
+                self._validate_content(manifest.kind, path)
+                if path.stat().st_size != slot.size_bytes:
+                    raise UploadRejected("file size does not match manifest")
+                if self._hash_file(path) != slot.sha256:
+                    raise UploadRejected("file checksum does not match manifest")
+            except UploadRejected as error:
+                errors.append(
+                    {
+                        "slot_id": slot.id,
+                        "filename": slot.filename,
+                        "code": "validation_failed",
+                        "detail": str(error),
+                    }
+                )
+                continue
+            uploads.append(
+                StagedUpload(
+                    batch_id=manifest.id,
+                    item_id=slot.id,
+                    path=path,
+                    sha256=slot.sha256,
+                    size_bytes=slot.size_bytes,
+                    original_filename=slot.filename,
+                )
+            )
+        if errors:
+            self.discard_manifest(manifest_id)
+            raise UploadRejected(json.dumps({"errors": errors}))
+        return uploads
+
+    def promote_manifest(
+        self,
+        manifest_id: str,
+        batch_id: str,
+    ) -> list[StagedUpload]:
+        """Move validated temporary files into batch-owned ready names.
+
+        Callers must revert with ``revert_promoted_manifest`` if their single
+        database finalization transaction fails.
+        """
+        uploads = self.manifest_uploads(manifest_id)
+        kind = self.get_manifest(manifest_id).kind
+        target_root = self._batch_root(batch_id)
+        target_root.mkdir(parents=True, exist_ok=False)
+        (target_root / "kind").write_text(kind.value, encoding="ascii")
+        target_root = self._batch_root(batch_id)
+        moved: list[StagedUpload] = []
+        try:
+            for upload in uploads:
+                target = target_root / f"{upload.item_id}.ready"
+                upload.path.replace(target)
+                moved.append(
+                    StagedUpload(
+                        batch_id=batch_id,
+                        item_id=upload.item_id,
+                        path=target,
+                        sha256=upload.sha256,
+                        size_bytes=upload.size_bytes,
+                        original_filename=upload.original_filename,
+                    )
+                )
+        except Exception:
+            self.revert_promoted_manifest(manifest_id, batch_id, moved)
+            raise
+        return moved
+
+    def revert_promoted_manifest(
+        self,
+        manifest_id: str,
+        batch_id: str,
+        uploads: list[StagedUpload],
+    ) -> None:
+        for upload in uploads:
+            if upload.path.exists():
+                upload.path.replace(self._manifest_file_path(manifest_id, upload.item_id))
+        batch_root = self._batch_root(batch_id)
+        for child in batch_root.glob("*"):
+            child.unlink(missing_ok=True)
+        batch_root.rmdir()
+
+    def discard_manifest(self, manifest_id: str) -> None:
+        root = self._manifest_root(manifest_id)
+        if not root.exists():
+            return
+        for path in root.glob("*"):
+            path.unlink(missing_ok=True)
+        root.rmdir()
 
     def stage_file(
         self,
@@ -84,6 +262,37 @@ class StagingService:
         finally:
             temporary.unlink(missing_ok=True)
 
+    def _write_checked_file(
+        self,
+        kind: UploadKind,
+        filename: str,
+        stream: BinaryIO,
+        target: Path,
+        *,
+        expected_size: int,
+        expected_sha256: str,
+    ) -> None:
+        self._validate_filename(kind, filename)
+        temporary = target.with_suffix(".writing")
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with temporary.open("xb") as output:
+                while chunk := stream.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > expected_size or size > self.max_file_bytes:
+                        raise UploadRejected("file exceeds declared upload size")
+                    digest.update(chunk)
+                    output.write(chunk)
+            if size != expected_size:
+                raise UploadRejected("file size does not match manifest")
+            if digest.hexdigest() != expected_sha256:
+                raise UploadRejected("file checksum does not match manifest")
+            self._validate_content(kind, temporary)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def begin_chunks(
         self,
         kind: UploadKind,
@@ -109,6 +318,30 @@ class StagingService:
             expires_at=(
                 datetime.now(UTC) + timedelta(hours=self.session_hours)
             ).isoformat(),
+        )
+        chunk_root = self._chunk_root()
+        chunk_root.mkdir(parents=True, exist_ok=True)
+        self._write_session(session)
+        self._chunk_path(session.id).touch(exist_ok=False)
+        return session
+
+    def begin_manifest_chunks(
+        self,
+        manifest_id: str,
+        slot_id: str,
+    ) -> ChunkSession:
+        manifest = self.get_manifest(manifest_id)
+        slot = self._manifest_slot(manifest, slot_id)
+        session = ChunkSession(
+            id=str(uuid4()),
+            batch_id=manifest.id,
+            item_id=slot.id,
+            kind=manifest.kind,
+            filename=slot.filename,
+            total_size=slot.size_bytes,
+            expected_sha256=slot.sha256,
+            received=0,
+            expires_at=(datetime.now(UTC) + timedelta(hours=self.session_hours)).isoformat(),
         )
         chunk_root = self._chunk_root()
         chunk_root.mkdir(parents=True, exist_ok=True)
@@ -157,7 +390,13 @@ class StagingService:
         if digest != session.expected_sha256:
             raise UploadRejected("chunk upload checksum mismatch")
         self._validate_content(session.kind, source)
-        ready = self._batch_root(session.batch_id) / f"{session.item_id}.ready"
+        manifest_path = self._manifest_file_path(session.batch_id, session.item_id)
+        is_manifest = self._manifest_root(session.batch_id).is_dir()
+        ready = (
+            manifest_path
+            if is_manifest
+            else self._batch_root(session.batch_id) / f"{session.item_id}.ready"
+        )
         source.replace(ready)
         self._session_path(session.id).unlink(missing_ok=True)
         return StagedUpload(
@@ -177,6 +416,28 @@ class StagingService:
         if not resolved.is_file():
             raise UploadRejected("staged upload file is missing")
         resolved.unlink()
+
+    def collect_expired(self, now: datetime | None = None) -> int:
+        """Idempotently collect only abandoned chunk/manifest request state.
+
+        Accepted ready files require repository reference checks and are
+        deliberately handled by the repository-facing cleanup hook.
+        """
+        current = now or datetime.now(UTC)
+        removed = 0
+        chunk_root = self._chunk_root()
+        if chunk_root.exists():
+            for session_path in chunk_root.glob("*.json"):
+                try:
+                    session = self._load_session(session_path.stem)
+                    expired = datetime.fromisoformat(session.expires_at) <= current
+                except UploadRejected:
+                    expired = True
+                if expired:
+                    self._chunk_path(session_path.stem).unlink(missing_ok=True)
+                    session_path.unlink(missing_ok=True)
+                    removed += 1
+        return removed
 
     def _validate_filename(
         self,
@@ -220,10 +481,7 @@ class StagingService:
         raw = path.read_bytes()
         if b"\x00" in raw:
             raise UploadRejected("transcript contains binary data")
-        try:
-            decoded = raw.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            decoded = raw.decode("cp1252")
+        decoded = decode_utf8_transcript(raw)
         if not decoded.strip():
             raise UploadRejected("transcript contains no text")
         printable = sum(
@@ -235,6 +493,51 @@ class StagingService:
 
     def _batch_root(self, batch_id: str) -> Path:
         return self._contained(self.root / "batches", batch_id)
+
+    def _manifest_root(self, manifest_id: str) -> Path:
+        return self._contained(self.root / "manifests", manifest_id)
+
+    def _manifest_path(self, manifest_id: str) -> Path:
+        return self._manifest_root(manifest_id) / "manifest.json"
+
+    def _manifest_file_path(self, manifest_id: str, slot_id: str) -> Path:
+        self._contained(self._manifest_root(manifest_id), slot_id)
+        return self._manifest_root(manifest_id) / f"{slot_id}.part"
+
+    def _manifest_slot(
+        self, manifest: UploadManifest, slot_id: str
+    ) -> UploadManifestSlot:
+        try:
+            UUID(slot_id)
+        except ValueError as error:
+            raise UploadRejected("invalid manifest slot identifier") from error
+        for slot in manifest.slots:
+            if slot.id == slot_id:
+                return slot
+        raise UploadRejected("manifest slot does not exist")
+
+    def _write_manifest(self, manifest: UploadManifest) -> None:
+        path = self._manifest_path(manifest.id)
+        path.write_text(
+            json.dumps(
+                {
+                    "id": manifest.id,
+                    "kind": manifest.kind.value,
+                    "lecture_id": manifest.lecture_id,
+                    "slots": [
+                        {
+                            "id": slot.id,
+                            "filename": slot.filename,
+                            "size_bytes": slot.size_bytes,
+                            "sha256": slot.sha256,
+                        }
+                        for slot in manifest.slots
+                    ],
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
 
     def _chunk_root(self) -> Path:
         return self.root / "chunks"
