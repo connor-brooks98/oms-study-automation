@@ -250,6 +250,10 @@
     recoveryController ? { controller: recoveryController } : activeSubmission
   );
 
+  const cancelActiveSubmission = (activeSubmission, recoveryController) => {
+    cancellationOwner(activeSubmission, recoveryController)?.controller.abort();
+  };
+
   const waitForDecision = async (signal, deadline, setResume, onRejected) => {
     const decision = createDecisionWait(signal, deadline);
     setResume(decision.resume);
@@ -622,7 +626,7 @@
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (activeSubmission) {
-        activeSubmission.controller.abort();
+        cancelActiveSubmission(activeSubmission, recoveryController);
         return;
       }
       if (!chosenFiles.length) {
@@ -749,6 +753,7 @@
     reconcileAmbiguousFinalization,
     isDefinitiveFinalizationRejection,
     cancellationOwner,
+    cancelActiveSubmission,
     pollUntilTerminal,
     waitForDecision,
     freezeManifest,

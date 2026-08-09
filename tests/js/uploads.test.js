@@ -349,6 +349,15 @@ test("recovered confirmation Escape aborts the fresh reconciliation controller",
   assert.equal(recovery, null);
 });
 
+test("submit Cancel chooses the fresh recovery controller", () => {
+  const original = new AbortController();
+  const recovery = new AbortController();
+  uploads.cancelActiveSubmission({ controller: original }, recovery);
+
+  assert.equal(original.signal.aborted, false);
+  assert.equal(recovery.signal.aborted, true);
+});
+
 test("duplicate-dialog Escape aborts an active submission and keeps modal dismissals explicit", () => {
   const controller = new AbortController();
   let prevented = false;

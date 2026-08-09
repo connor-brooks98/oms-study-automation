@@ -212,6 +212,41 @@ def test_failed_exact_current_repair_releases_cleaning_admission(tmp_path: Path)
         assert revision.current is True
         assert revision.upload_item_id == "failed-repair"
 
+    # The worker's terminal retry handling must not demote the authoritative
+    # exact-current row after the pipeline has released cleaning ownership.
+    with database.session() as session:
+        job_id = session.scalar(
+            text("SELECT id FROM ingestion_jobs WHERE upload_item_id='failed-repair'")
+        )
+    assert job_id is not None
+    worker = IngestionWorker(repository, object(), object())
+    worker._handle_failure(
+        IngestionJob(
+            id=job_id,
+            upload_item_id="failed-repair",
+            kind=UploadKind.TRANSCRIPTS,
+            action="process",
+            attempts=IngestionWorker.max_attempts,
+            claimed_at=datetime.now(UTC),
+        ),
+        TranscriptValidationError("immutable cleaned transcript does not match this prompt"),
+    )
+    with database.session() as session:
+        revision = session.get(StudyRevisionModel, original.id)
+        assert revision is not None
+        assert revision.state == "current"
+        assert revision.current is True
+    reclaimed = repository.begin_revision(
+        "failed-repair", tmp_path / "data" / "artifacts" / "v2" / "transcripts"
+    )
+    assert reclaimed.id == original.id
+    assert reclaimed.current is True
+    assert reclaimed.state == "cleaning"
+    repository.finish_revision(
+        "failed-repair", reclaimed.id, UploadState.NEEDS_REVIEW,
+        current=False, revision_state="failed", error="retry exhausted",
+    )
+
     # A subsequent repair can reclaim the released row; it sees validation
     # failure rather than an infinite admission-pending conflict.
     _add(repository, tmp_path, "retry-repair", payload)
