@@ -165,7 +165,7 @@ def test_rendered_card_centric_v2_gap_prompt_is_complete_and_fact_scoped() -> No
     assets = Path(__file__).parents[2] / "src" / "oms_hub" / "anki" / "prompt_assets"
     prompt = AnkiPromptLibrary(assets).load("card-centric-gap-v2")
 
-    assert prompt.metadata.version == "2.0.1"
+    assert prompt.metadata.version == "2.0.2"
     assert prompt.prompt_hash == hashlib.sha256(prompt.content.encode()).hexdigest()[:12]
     assert "Return every requested fact ID M1 through MN." in prompt.content
     assert "one unresolved row" in prompt.content
@@ -182,6 +182,20 @@ def test_rendered_card_centric_v2_gap_prompt_is_complete_and_fact_scoped() -> No
     assert "Counts are soft targets, never quotas." in prompt.content
     assert "split one fact into unnecessary cards" in prompt.content
     assert "label a card eligible merely to reach a count" in prompt.content
+    assert (
+        "Summary-only support is allowed when it is the best available supplied"
+        in prompt.content
+    )
+    assert "Cite the honest `SUM:` passage and label the card" in prompt.content
+    assert "`summary_grounded` downstream" in prompt.content
+    assert "never upgrade summary support to primary" in prompt.content
+    assert "or inherit emphasis from it" in prompt.content
+    assert "prefer and cite the underlying primary passage" in prompt.content
+    assert "A card may not be kept on summary support alone." not in prompt.content
+    assert (
+        "A generated card may not cite a summary passage as its sole evidence."
+        not in prompt.content
+    )
 
 
 def test_git_sync_fast_forwards_nuc_prompt_checkout(tmp_path: Path) -> None:
