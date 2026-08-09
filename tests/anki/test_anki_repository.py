@@ -31,6 +31,7 @@ from oms_hub.anki.domain import (
     GapCard,
     GapCardEdit,
     PipelineContractVersion,
+    ResolvedClassifierExecution,
     ResolvedModelConfiguration,
     ResolvedStageModel,
     RetrievalPass,
@@ -122,11 +123,51 @@ def test_card_centric_profile_persists_for_the_local_study_hub_user(tmp_path: Pa
         classify_s4=ResolvedStageModel("anthropic", "haiku", "disabled", "fixture-v1"),
         residual_s6=ResolvedStageModel("anthropic", "haiku", "disabled", "fixture-v1"),
         gap_fill_s7=ResolvedStageModel("anthropic", "sonnet"),
+        classifier_execution=ResolvedClassifierExecution(
+            fast_concurrency=6,
+            thorough_batch_size=31,
+            thorough_concurrency=3,
+            thinking_budget_tokens=2048,
+        ),
     )
 
     repository.save_card_centric_profile(profile)
 
     assert repository.card_centric_profile() == profile
+
+
+def test_repository_pins_new_v2_execution_defaults_but_preserves_legacy_documents(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    configured = replace(
+        ResolvedModelConfiguration.card_centric_v2_default(
+            "anthropic", "claude-sonnet-5"
+        ),
+        classifier_execution=None,
+    )
+    legacy_json = json.dumps(
+        configured.canonical_document(), sort_keys=True, separators=(",", ":")
+    )
+
+    legacy = repository._resolved_model_config(
+        legacy_json, "anthropic", "claude-sonnet-5"
+    )
+    assert legacy.classifier_execution is None
+    assert legacy.resolved_classifier_execution() == ResolvedClassifierExecution()
+    assert json.dumps(
+        legacy.canonical_document(), sort_keys=True, separators=(",", ":")
+    ) == legacy_json
+
+    created = repository.create_job(
+        replace(
+            _job_request(lecture_id),
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+            resolved_model_config=configured,
+        )
+    )
+    assert created.resolved_model_config.classifier_execution == ResolvedClassifierExecution()
+    assert "classifier_execution" in created.resolved_model_config.canonical_document()
 
 
 def test_repository_rejects_an_unapproved_v2_fast_classifier_provider(tmp_path: Path) -> None:

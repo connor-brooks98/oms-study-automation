@@ -1194,7 +1194,7 @@ class CurationServicesRunner:
         passages_by_id = {passage.passage_id: passage for passage in source.passages}
         usages: list[StageUsage] = []
         for concept in ledger.concepts:
-            if coverage[concept.concept_id]["status"] == "covered":
+            if _coverage_suppresses_recovery(coverage[concept.concept_id]):
                 continue
             fact_count = concept.suggested_fact_count if is_v2 else 1
             missing_facts = [
@@ -2695,7 +2695,7 @@ class CurationServicesRunner:
         required_fact_ids = tuple(
             f"{concept.concept_id}-M{index + 1}"
             for concept in ledger.concepts
-            if coverage[concept.concept_id]["status"] == "uncovered"
+            if not _coverage_suppresses_recovery(coverage[concept.concept_id])
             for index in range(
                 concept.suggested_fact_count
                 if context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
@@ -2784,7 +2784,7 @@ class CurationServicesRunner:
             uncovered_after_s5=tuple(
                 concept_id
                 for concept_id, value in _card_coverage_payload(context).items()
-                if value["status"] == "uncovered"
+                if not _coverage_suppresses_recovery(value)
             ),
             residual_ran_for=tuple(
                 _payload(context, CurationStage.CARD_RESIDUAL).get("uncovered_concept_ids", [])
@@ -3158,8 +3158,32 @@ def _card_residual_targets(
     return tuple(
         concept
         for concept in ledger.concepts
-        if coverage[concept.concept_id]["status"] == "uncovered"
+        if not _coverage_suppresses_recovery(coverage[concept.concept_id])
     )
+
+
+def _coverage_suppresses_recovery(value: Mapping[str, Any]) -> bool:
+    """Only thorough/generated-grade evidence may suppress terminal recovery.
+
+    Fast-pass evidence remains visible as covered in S5 diagnostics, but the
+    T6-only selector may correctly exclude it after the warning floor. Treat an
+    all-fast coverage row as provisional so S6/S7 and S9 fact accounting still
+    produce a selected, duplicate, generated, or unresolved terminal outcome.
+    """
+
+    status = value.get("status")
+    evidence = value.get("evidence")
+    if status not in {"covered", "uncovered"} or not isinstance(evidence, list):
+        raise PinnedInputChanged("card-centric coverage entry is malformed")
+    if status == "uncovered":
+        return False
+    if any(not isinstance(item, dict) for item in evidence):
+        raise PinnedInputChanged("covered card-centric concept has malformed evidence")
+    if not evidence:
+        # Preserve legacy/handcrafted v1 coverage rows that predate evidence
+        # quality labels. New v2 S5 artifacts always include evidence here.
+        return True
+    return any(item.get("evidence_quality") != "fast_pass" for item in evidence)
 
 
 def _card_concept_centroid_terms(concept: CardConcept) -> tuple[str, ...]:

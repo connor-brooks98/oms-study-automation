@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from oms_hub.anki.contracts import CreateCurationJobRequest, TagPatchContract
-from oms_hub.anki.domain import ResolvedModelConfiguration
+from oms_hub.anki.domain import ResolvedClassifierExecution, ResolvedModelConfiguration
 
 
 def _job_payload() -> dict[str, object]:
@@ -155,6 +155,7 @@ def test_v2_job_accepts_an_approved_persisted_fast_classifier_route(
     assert domain.resolved_model_config.fast_classify_s4b is not None
     assert domain.resolved_model_config.fast_classify_s4b.provider == provider
     assert domain.resolved_model_config.fast_classify_s4b.model == model
+    assert domain.resolved_model_config.classifier_execution == ResolvedClassifierExecution()
 
 
 @pytest.mark.parametrize(
@@ -201,6 +202,38 @@ def test_v2_job_keeps_the_legacy_openai_fast_classifier_route_as_the_default() -
     assert domain.resolved_model_config.fast_classify_s4b is not None
     assert domain.resolved_model_config.fast_classify_s4b.provider == "openai"
     assert domain.resolved_model_config.fast_classify_s4b.model == "gpt-4o-mini"
+    assert domain.resolved_model_config.classifier_execution == ResolvedClassifierExecution()
+
+
+def test_v2_request_normalizes_omitted_classifier_execution_to_frozen_defaults() -> None:
+    payload = _job_payload()
+    payload["pipeline_contract_version"] = "card_centric_v2"
+    config = ResolvedModelConfiguration.card_centric_v2_default(
+        "anthropic", "claude-sonnet-5"
+    ).canonical_document()
+    config.pop("classifier_execution")
+    payload["resolved_model_config"] = config
+
+    domain = CreateCurationJobRequest.model_validate(payload).to_domain(
+        model="claude-sonnet-5"
+    )
+
+    assert domain.resolved_model_config is not None
+    assert domain.resolved_model_config.classifier_execution == ResolvedClassifierExecution()
+
+
+def test_v2_request_rejects_explicit_null_classifier_execution() -> None:
+    payload = _job_payload()
+    payload["pipeline_contract_version"] = "card_centric_v2"
+    config = ResolvedModelConfiguration.card_centric_v2_default(
+        "anthropic", "claude-sonnet-5"
+    ).canonical_document()
+    config["classifier_execution"] = None
+    payload["resolved_model_config"] = config
+
+    request = CreateCurationJobRequest.model_validate(payload)
+    with pytest.raises(ValueError, match="classifier execution configuration must be an object"):
+        request.to_domain(model="claude-sonnet-5")
 
 
 def test_tag_patch_round_trips_exact_diff() -> None:

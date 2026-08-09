@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from dataclasses import replace
 
 import numpy as np
 
@@ -25,7 +26,12 @@ from oms_hub.anki.correction_contracts import (
     GeneratedFactResolution,
     GeneratedResolutionKind,
 )
-from oms_hub.anki.domain import CreateCurationJob, CurationStage, PipelineContractVersion
+from oms_hub.anki.domain import (
+    CreateCurationJob,
+    CurationStage,
+    PipelineContractVersion,
+    ResolvedClassifierExecution,
+)
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
 from oms_hub.anki.reconciliation import (
     AuditResolution,
@@ -246,6 +252,18 @@ def test_m13_real_handlers_use_the_persisted_resolved_model_routes() -> None:
                 for note_id in range(2, 11)
             ]
         }
+        fast_gap = {
+            "resolutions": [
+                {
+                    "fact_id": "C01-M1",
+                    "status": "generated",
+                    "text": "Heme synthesis begins in {{c1::mitochondria}}.",
+                    "extra": "Fast-only terminal replacement.",
+                    "note_type": "Cloze",
+                    "source_passage_ids": [slide_id],
+                }
+            ]
+        }
         gap = {
             "resolutions": [
                 {
@@ -287,7 +305,8 @@ def test_m13_real_handlers_use_the_persisted_resolved_model_routes() -> None:
             ]
         }
         harness, generator = _runner(
-            [ledger.model_dump(mode="json"), fast, thorough, gap], embedder=_UniqueEmbeddings()
+            [ledger.model_dump(mode="json"), fast, thorough, fast_gap, gap],
+            embedder=_UniqueEmbeddings(),
         )
         harness.runner.semantic = _NoResidualHits()
         job = lifecycle_job()
@@ -330,6 +349,7 @@ def test_m13_real_handlers_use_the_persisted_resolved_model_routes() -> None:
             (routes.fast_classify_s4b.provider, routes.fast_classify_s4b.model),
             (routes.classify_s4.provider, routes.classify_s4.model),
             (routes.gap_fill_s7.provider, routes.gap_fill_s7.model),
+            (routes.gap_fill_s7.provider, routes.gap_fill_s7.model),
         ]
         assert products[CurationStage.CARD_LEDGER].payload["provenance"] == {
             "provider": routes.ledger_s2.provider,
@@ -368,7 +388,15 @@ def test_m13_repository_reload_preserves_resolved_model_document_and_hash(tmp_pa
             session.flush()
             lecture_id = lecture.id
         repository = AnkiCurationRepository(database)
-        resolved = lifecycle_job().resolved_model_config
+        resolved = replace(
+            lifecycle_job().resolved_model_config,
+            classifier_execution=ResolvedClassifierExecution(
+                fast_concurrency=7,
+                thorough_batch_size=31,
+                thorough_concurrency=3,
+                thinking_budget_tokens=2048,
+            ),
+        )
         job = repository.create_job(
             CreateCurationJob(
                 lecture_id=lecture_id,
@@ -393,6 +421,9 @@ def test_m13_repository_reload_preserves_resolved_model_document_and_hash(tmp_pa
         canonical = json.dumps(resolved.canonical_document(), sort_keys=True, separators=(",", ":"))
 
         assert reloaded.resolved_model_config.canonical_document() == resolved.canonical_document()
+        assert reloaded.resolved_model_config.classifier_execution == (
+            resolved.classifier_execution
+        )
         assert reloaded.model_config_sha256 == hashlib.sha256(canonical.encode()).hexdigest()
     finally:
         database.close()
@@ -1229,6 +1260,123 @@ def test_selection_does_not_promote_fast_yes_after_floor_expected_red_p3_m10() -
         )
 
         assert 1 not in selection.payload["selected_existing_note_ids"]
+
+    asyncio.run(scenario())
+
+
+def test_fast_only_concept_gets_terminal_replacement_after_floor_before_s9() -> None:
+    """Fast evidence remains visible but cannot suppress the terminal S7/S9 path."""
+
+    async def scenario() -> None:
+        source = lifecycle_source_payload(card_count=61)
+        slide_id = next(
+            passage["passage_id"]
+            for passage in source["source_index"]["passages"]
+            if passage["authority"] == "slide"
+        )
+        ledger = _independent_ledger(61, mandatory=False)
+        gap = {
+            "resolutions": [
+                {
+                    "fact_id": "C61-M1",
+                    "status": "generated",
+                    "text": "Independent entity 61 has {{c1::terminal coverage}}.",
+                    "extra": "Fast-only replacement.",
+                    "note_type": "Cloze",
+                    "source_passage_ids": [slide_id],
+                }
+            ]
+        }
+        harness, _ = _runner([gap], embedder=_UniqueEmbeddings())
+        harness.runner.semantic = _NoResidualHits()
+        job = lifecycle_job()
+        prior = payloads(source=source, preflight=lifecycle_preflight())
+        scope = await harness.invoke(
+            job=job, stage=CurationStage.CARD_TAG_SCOPE, prior_payloads=prior
+        )
+        prior[CurationStage.CARD_TAG_SCOPE] = scope.payload
+        prior[CurationStage.CARD_LEDGER] = {"ledger": ledger.model_dump(mode="json")}
+        prior[CurationStage.CARD_CLASSIFY] = {
+            "classifier": ClassifierResult(
+                results=tuple(
+                    CardClassification(
+                        note_id=index + 1,
+                        verdict="YES",
+                        primary_subject=f"independent entity {index}",
+                        reason="Grounded ordinary coverage.",
+                        covered_concept_ids=(f"C{index:02d}",),
+                        supporting_passage_ids=(slide_id,),
+                    )
+                    for index in range(1, 61)
+                ),
+                telemetry=ClassifierTelemetry(
+                    batch_count=0,
+                    cache_prefix_sha256="a" * 64,
+                    cache_mode="ordinary_prefix",
+                    provider="anthropic",
+                    model="fixture-model",
+                    request_ids=(),
+                    batches=(),
+                ),
+            ).model_dump(mode="json")
+        }
+        prior[CurationStage.CARD_FAST_CLASSIFY] = {
+            "fast_classifier": FastClassificationResult(
+                results=(
+                    FastCardClassification(
+                        note_id=1,
+                        verdict="LIKELY_YES",
+                        grounded_concept_ids=("C61",),
+                        supporting_passage_ids=(slide_id,),
+                        reason="Grounded fast-only coverage.",
+                    ),
+                )
+            ).model_dump(mode="json"),
+            "fallback_note_ids": [],
+        }
+
+        coverage = await harness.invoke(
+            job=job, stage=CurationStage.CARD_COVERAGE, prior_payloads=prior
+        )
+        prior[CurationStage.CARD_COVERAGE] = coverage.payload
+        assert coverage.payload["coverage"]["C61"] == {
+            "status": "covered",
+            "evidence": [
+                {
+                    "note_id": 1,
+                    "supporting_passage_ids": [slide_id],
+                    "evidence_quality": "fast_pass",
+                }
+            ],
+        }
+
+        residual = await harness.invoke(
+            job=job, stage=CurationStage.CARD_RESIDUAL, prior_payloads=prior
+        )
+        prior[CurationStage.CARD_RESIDUAL] = residual.payload
+        assert residual.payload["uncovered_concept_ids"] == ["C61"]
+        generated = await harness.invoke(
+            job=job, stage=CurationStage.CARD_GAP_FILL, prior_payloads=prior
+        )
+        prior[CurationStage.CARD_GAP_FILL] = generated.payload
+        assert [row["fact_id"] for row in generated.payload["resolutions"]] == ["C61-M1"]
+
+        deduped = await harness.invoke(
+            job=job, stage=CurationStage.DEDUPE, prior_payloads=prior
+        )
+        prior[CurationStage.DEDUPE] = deduped.payload
+        selection = await harness.invoke(
+            job=job, stage=CurationStage.CARD_SELECTION, prior_payloads=prior
+        )
+        prior[CurationStage.CARD_SELECTION] = selection.payload
+        reconciliation = await harness.invoke(
+            job=job, stage=CurationStage.RECONCILIATION, prior_payloads=prior
+        )
+
+        assert selection.payload["selected_count"] == 61
+        assert 1 not in selection.payload["selected_existing_note_ids"]
+        assert reconciliation.payload["failed"] == []
+        assert reconciliation.blocking_error is None
 
     asyncio.run(scenario())
 

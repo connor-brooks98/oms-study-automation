@@ -47,6 +47,7 @@ from oms_hub.anki.domain import (
     GapCard,
     JobStage,
     PipelineContractVersion,
+    ResolvedClassifierExecution,
     ResolvedModelConfiguration,
     ResolvedStageModel,
     RetrievalPass,
@@ -514,6 +515,11 @@ class AnkiCurationRepository:
             raise ValueError("card-centric S4/S6 thinking must be disabled")
         if request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2:
             model_config.require_card_centric_v2_fast_classifier()
+            if model_config.classifier_execution is None:
+                model_config = replace(
+                    model_config,
+                    classifier_execution=model_config.resolved_classifier_execution(),
+                )
         model_config_json = _canonical_json(model_config.canonical_document())
         model_config_sha256 = _sha256_text(model_config_json)
         configuration = _configuration_document(
@@ -3146,6 +3152,14 @@ class AnkiCurationRepository:
                     item.get("fixture_validation_signature"),
                 )
 
+            def classifier_execution() -> ResolvedClassifierExecution | None:
+                item = raw.get("classifier_execution")
+                if item is None:
+                    return None
+                if not isinstance(item, dict):
+                    raise ValueError
+                return ResolvedClassifierExecution.from_document(item)
+
             resolved = ResolvedModelConfiguration(
                 raw["profile"],
                 stage("ledger_s2"),
@@ -3154,6 +3168,7 @@ class AnkiCurationRepository:
                 stage("gap_fill_s7"),
                 bool(raw.get("residual_unlocked", False)),
                 stage("fast_classify_s4b") if raw.get("fast_classify_s4b") is not None else None,
+                classifier_execution(),
             )
             if _canonical_json(resolved.canonical_document()) != value:
                 raise ValueError("stored resolved model configuration is not canonical")

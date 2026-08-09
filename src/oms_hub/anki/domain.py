@@ -145,6 +145,27 @@ class ResolvedClassifierExecution:
             "thinking_budget_tokens": self.thinking_budget_tokens,
         }
 
+    @classmethod
+    def from_document(cls, value: dict[str, Any]) -> "ResolvedClassifierExecution":
+        expected = {
+            "fast_batch_size",
+            "fast_concurrency",
+            "thorough_batch_size",
+            "thorough_concurrency",
+            "thorough_retry_attempts",
+            "thinking_budget_tokens",
+        }
+        if set(value) != expected or any(type(value[name]) is not int for name in expected):
+            raise ValueError("classifier execution document is invalid")
+        return cls(
+            fast_batch_size=value["fast_batch_size"],
+            fast_concurrency=value["fast_concurrency"],
+            thorough_batch_size=value["thorough_batch_size"],
+            thorough_concurrency=value["thorough_concurrency"],
+            thorough_retry_attempts=value["thorough_retry_attempts"],
+            thinking_budget_tokens=value["thinking_budget_tokens"],
+        )
+
     def canonical_json(self) -> str:
         return json.dumps(self.canonical_document(), sort_keys=True, separators=(",", ":"))
 
@@ -162,9 +183,9 @@ class ResolvedModelConfiguration:
     residual_unlocked: bool = False
     # None deliberately preserves old v1/legacy persisted canonical documents.
     fast_classify_s4b: ResolvedStageModel | None = None
-    # P1/I0 owns persistence for this additive field. P2-C keeps it out of
-    # canonical_document() until that repository/request seam is implemented,
-    # so existing persisted jobs continue to round-trip unchanged.
+    # None preserves legacy persisted canonical documents. New v2 jobs carry
+    # an explicit execution document so batch/concurrency inputs participate in
+    # the resolved-model hash and every downstream replay identity.
     classifier_execution: ResolvedClassifierExecution | None = None
 
     def __post_init__(self) -> None:
@@ -219,7 +240,14 @@ class ResolvedModelConfiguration:
 
     def resolved_classifier_execution(self) -> ResolvedClassifierExecution:
         """Return compatible defaults without rewriting legacy configuration."""
-        return self.classifier_execution or ResolvedClassifierExecution()
+        return self.classifier_execution or ResolvedClassifierExecution(
+            fast_batch_size=60,
+            fast_concurrency=4,
+            thorough_batch_size=30,
+            thorough_concurrency=4,
+            thorough_retry_attempts=2,
+            thinking_budget_tokens=1024,
+        )
 
     def canonical_document(self) -> dict[str, Any]:
         def stage(value: ResolvedStageModel) -> dict[str, Any]:
@@ -240,6 +268,8 @@ class ResolvedModelConfiguration:
         }
         if self.fast_classify_s4b is not None:
             document["fast_classify_s4b"] = stage(self.fast_classify_s4b)
+        if self.classifier_execution is not None:
+            document["classifier_execution"] = self.classifier_execution.canonical_document()
         return document
 
     def require_card_centric_v2_fast_classifier(self) -> None:

@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -73,8 +74,25 @@ def test_p2_classifier_execution_has_a_canonical_identity_seam() -> None:
     }
     assert len(execution.generation_parameters_sha256()) == 64
     assert configuration.resolved_classifier_execution() == execution
-    # P1/I0 owns adding this typed field to persisted job canonical documents.
-    assert "classifier_execution" not in configuration.canonical_document()
+    assert configuration.canonical_document()["classifier_execution"] == (
+        execution.canonical_document()
+    )
+    custom = replace(
+        configuration,
+        classifier_execution=ResolvedClassifierExecution(
+            fast_concurrency=7,
+            thorough_batch_size=31,
+            thorough_concurrency=3,
+        ),
+    )
+    assert custom.canonical_document() != configuration.canonical_document()
+    custom_json = json.dumps(custom.canonical_document(), sort_keys=True, separators=(",", ":"))
+    default_json = json.dumps(
+        configuration.canonical_document(), sort_keys=True, separators=(",", ":")
+    )
+    assert hashlib.sha256(custom_json.encode()).hexdigest() != hashlib.sha256(
+        default_json.encode()
+    ).hexdigest()
     assert _classifier_generation_parameters(
         "openai", "configured-model", execution, prompt_id="card-centric-classifier"
     ) == {
@@ -89,6 +107,21 @@ def test_p2_classifier_execution_has_a_canonical_identity_seam() -> None:
             "thinking_budget_tokens": 1024,
         },
     }
+
+
+@pytest.mark.parametrize(
+    "document",
+    (
+        {},
+        ResolvedClassifierExecution().canonical_document() | {"unexpected": 1},
+        ResolvedClassifierExecution().canonical_document() | {"fast_concurrency": True},
+    ),
+)
+def test_classifier_execution_rejects_noncanonical_documents(
+    document: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="classifier execution document is invalid"):
+        ResolvedClassifierExecution.from_document(document)  # type: ignore[arg-type]
 
 
 def _source():

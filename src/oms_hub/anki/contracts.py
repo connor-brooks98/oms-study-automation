@@ -18,6 +18,7 @@ from oms_hub.anki.domain import (
     AgentCommandType,
     CreateCurationJob,
     PipelineContractVersion,
+    ResolvedClassifierExecution,
     ResolvedModelConfiguration,
     ResolvedStageModel,
 )
@@ -219,6 +220,19 @@ def _resolved_model_config(
                 ),
             )
 
+        classifier_execution: ResolvedClassifierExecution | None
+        if "classifier_execution" in value:
+            execution_value = value["classifier_execution"]
+            if not isinstance(execution_value, dict):
+                raise ValueError("classifier execution configuration must be an object")
+            classifier_execution = ResolvedClassifierExecution.from_document(execution_value)
+        else:
+            classifier_execution = (
+                ResolvedClassifierExecution()
+                if version is PipelineContractVersion.CARD_CENTRIC_V2
+                else None
+            )
+
         resolved = ResolvedModelConfiguration(
             profile=str(value["profile"]),
             ledger_s2=stage("ledger_s2"),
@@ -229,6 +243,7 @@ def _resolved_model_config(
             fast_classify_s4b=(
                 stage("fast_classify_s4b") if value.get("fast_classify_s4b") is not None else None
             ),
+            classifier_execution=classifier_execution,
         )
         if version in {
             PipelineContractVersion.CARD_CENTRIC_V1,
