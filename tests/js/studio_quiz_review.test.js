@@ -4,6 +4,73 @@ const fs = require("node:fs");
 
 const review = require("../../src/oms_hub/web/static/studio_quiz_review.js");
 
+class Element {
+  constructor(tagName) {
+    this.tagName = tagName;
+    this.children = [];
+    this.dataset = {};
+    this.className = "";
+    this.textContent = "";
+    this.value = "";
+    this.open = false;
+    this.parentElement = null;
+  }
+
+  append(...items) {
+    items.forEach((item) => { if (item && typeof item === "object") item.parentElement = this; });
+    this.children.push(...items);
+  }
+  replaceChildren(...items) { this.children = []; this.append(...items); }
+  setAttribute(name, value) { this[name] = value; }
+  focus() { documentRef.activeElement = this; }
+  querySelectorAll(selector) {
+    const matches = (element) => {
+      if (!element?.dataset) return false;
+      if (selector === "details[data-state-key]") return element.tagName === "details" && Boolean(element.dataset.stateKey);
+      if (selector === "[data-state-key]") return Boolean(element.dataset.stateKey);
+      if (selector === "[data-focus-key]") return Boolean(element.dataset.focusKey);
+      if (selector === "[data-question-id]") return Boolean(element.dataset.questionId);
+      return false;
+    };
+    const found = [];
+    const visit = (element) => {
+      if (matches(element)) found.push(element);
+      element?.children?.forEach(visit);
+    };
+    this.children.forEach(visit);
+    return found;
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+}
+
+const documentRef = {
+  activeElement: null,
+  createElement: (tag) => new Element(tag),
+  createTextNode: (text) => ({ textContent: text }),
+};
+
+const question = (id, stem) => ({
+  id, original_identifier: id, provenance: "source", confidence: 1,
+  source_refs: [], stem, choices: ["A", "B"], correct_index: 0,
+  rationale: "Because", topic: null, area: null, learning_objective: null,
+  verification_required: false, verified_at: null, candidates: [], selected_candidate_id: null,
+});
+
+const reviewPage = () => {
+  const page = new Element("main");
+  const blockers = new Element("section");
+  const publish = new Element("button");
+  const preview = new Element("a");
+  const questions = new Element("section");
+  const controls = new Map([
+    ["[data-review-blockers]", blockers], ["[data-publish-quiz]", publish],
+    ["[data-preview-link]", preview], ["[data-review-questions]", questions],
+  ]);
+  page.querySelector = (selector) => controls.get(selector) || Element.prototype.querySelector.call(page, selector);
+  page.append(blockers, publish, preview, questions);
+  return { page, blockers, questions };
+};
+
 test("publish gating follows authoritative blocker state", () => {
   assert.equal(review.canPublish([]), true);
   assert.equal(review.canPublish(["q1: answer is missing"]), false);
@@ -87,4 +154,79 @@ test("review UI uses DOM text nodes rather than untrusted HTML injection", () =>
   assert.match(source, /textContent/);
   assert.match(source, /X-CSRF-Token/);
   assert.match(source, /"PATCH"/);
+});
+
+test("issue disclosures and keyed focus survive a clean review refresh", () => {
+  const { page, blockers } = reviewPage();
+  const payload = {
+    blockers: ["q1: missing answer"], issues: [{ question_id: "q1", display_label: "Q1", type: "answer", message: "missing", role: "err" }],
+    preview_url: null, questions: [question("q1", "Stem")],
+  };
+  review.render(documentRef, page, payload);
+  const details = blockers.querySelectorAll("details[data-state-key]")[0];
+  const summary = details.children[0];
+  details.open = true;
+  summary.focus();
+
+  review.render(documentRef, page, payload);
+
+  const restored = blockers.querySelectorAll("details[data-state-key]")[0];
+  assert.equal(restored.open, true);
+  assert.equal(documentRef.activeElement, restored.children[0]);
+});
+
+test("a successful q2-style authoritative refresh retains an unrelated dirty q1 editor", () => {
+  const { page, questions } = reviewPage();
+  const initial = {
+    blockers: [], issues: [], preview_url: null,
+    questions: [question("q1", "Local stem"), question("q2", "Old clean stem")],
+  };
+  review.render(documentRef, page, initial);
+  const [dirtyCard, cleanCard] = questions.querySelectorAll("[data-question-id]");
+  const dirtyStem = dirtyCard.querySelectorAll("[data-focus-key]")
+    .find((field) => field.dataset.focusKey === "question:q1:stem");
+  dirtyCard.dataset.dirty = "true";
+  dirtyStem.value = "Unsaved local edit";
+
+  review.render(documentRef, page, {
+    blockers: [], issues: [], preview_url: null,
+    questions: [question("q1", "Server replacement"), question("q2", "New clean stem")],
+  });
+
+  const [afterDirty, afterClean] = questions.querySelectorAll("[data-question-id]");
+  assert.equal(afterDirty, dirtyCard);
+  assert.equal(afterDirty.querySelectorAll("[data-focus-key]")
+    .find((field) => field.dataset.focusKey === "question:q1:stem").value, "Unsaved local edit");
+  assert.notEqual(afterClean, cleanCard);
+});
+
+test("typed review-artifact envelopes retain recovery guidance with safe detail fallback", () => {
+  assert.equal(
+    review.reviewErrorMessage({
+      error: {
+        code: "review_artifact_unavailable",
+        message: "Review data is unavailable.",
+        recovery: "Re-run the source import, then refresh this page.",
+      },
+    }, "Fallback."),
+    "Review data is unavailable. Re-run the source import, then refresh this page.",
+  );
+  assert.equal(
+    review.reviewErrorMessage({ detail: "Legacy detail." }, "Fallback."),
+    "Legacy detail.",
+  );
+});
+
+test("candidate selection and choice removal controls have stable focus keys", () => {
+  const { page, questions } = reviewPage();
+  const item = question("q1", "Stem");
+  item.candidates = [{
+    candidate_id: "candidate-1", preview_url: "/candidate.png", source_title: "Slides",
+    origin: "embedded", locator: "slide 1",
+  }];
+  review.render(documentRef, page, { blockers: [], issues: [], preview_url: null, questions: [item] });
+
+  const keys = questions.querySelectorAll("[data-focus-key]").map((element) => element.dataset.focusKey);
+  assert.ok(keys.includes("question:q1:candidate:candidate-1"));
+  assert.ok(keys.includes("question:q1:choice:0:remove"));
 });

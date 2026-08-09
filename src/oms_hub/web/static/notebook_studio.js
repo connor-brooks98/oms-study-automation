@@ -23,6 +23,24 @@
     role === "supporting_reference" || role === "combined_questions_answers"
   );
 
+  const captureRenderState = (documentRef, container) => ({
+    openKeys: new Set(Array.from(
+      container.querySelectorAll?.("details[data-state-key]") || [],
+      (details) => details.open ? details.dataset.stateKey : null,
+    ).filter(Boolean)),
+    focusKey: documentRef.activeElement?.dataset?.focusKey || null,
+  });
+
+  const restoreRenderState = (container, state) => {
+    const keyed = Array.from(container.querySelectorAll?.("[data-state-key]") || []);
+    keyed.forEach((element) => {
+      if (state.openKeys.has(element.dataset.stateKey)) element.open = true;
+    });
+    const focus = Array.from(container.querySelectorAll?.("[data-focus-key]") || [])
+      .find((element) => element.dataset.focusKey === state.focusKey);
+    if (focus?.focus) focus.focus({ preventScroll: true });
+  };
+
   const applyImportRoleState = (form) => {
     const role = form.querySelector("[data-import-role]")?.value || "questions";
     const checkbox = form.querySelector("[data-import-notebook]");
@@ -152,17 +170,20 @@
   };
 
   const renderRuns = (documentRef, container, runs) => {
+    const state = captureRenderState(documentRef, container);
     container.replaceChildren();
     if (!runs.length) {
       const note = documentRef.createElement("p");
       note.textContent = "No prompt runs yet.";
       container.append(note);
+      restoreRenderState(container, state);
       return false;
     }
     runs.forEach((run) => {
       const card = documentRef.createElement("article");
       card.className = "sh-card studio-run";
       card.dataset.runId = run.id;
+      card.dataset.stateKey = `run:${run.id}`;
       const heading = documentRef.createElement("h3");
       heading.textContent = run.label;
       card.append(heading);
@@ -183,6 +204,7 @@
         const images = documentRef.createElement("a");
         images.className = "button primary compact sh-btn sh-btn--primary";
         images.href = run.image_review_url;
+        images.dataset.focusKey = `run:${run.id}:images`;
         images.textContent = "Add images";
         card.append(images);
       }
@@ -190,6 +212,7 @@
         const review = documentRef.createElement("a");
         review.className = "button primary compact sh-btn sh-btn--primary";
         review.href = run.review_url;
+        review.dataset.focusKey = `run:${run.id}:review`;
         review.textContent = "Review questions";
         card.append(review);
       }
@@ -197,12 +220,14 @@
         const link = documentRef.createElement("a");
         link.className = "button secondary compact sh-btn sh-btn--secondary";
         link.href = run.published_url;
+        link.dataset.focusKey = `run:${run.id}:published`;
         link.textContent = "Open published quiz";
         card.append(link);
         const unpublish = documentRef.createElement("button");
         unpublish.type = "button";
         unpublish.className = "button secondary compact sh-btn sh-btn--secondary";
         unpublish.dataset.unpublishRun = run.id;
+        unpublish.dataset.focusKey = `run:${run.id}:unpublish`;
         unpublish.textContent = "Unpublish";
         card.append(unpublish);
       }
@@ -213,6 +238,7 @@
         rerun.type = "button";
         rerun.className = "button secondary compact sh-btn sh-btn--secondary";
         rerun.dataset.rerun = run.id;
+        rerun.dataset.focusKey = `run:${run.id}:rerun`;
         rerun.textContent = "↻";
         rerun.ariaLabel = "Re-run this quiz";
         rerun.title = "Re-run";
@@ -222,6 +248,7 @@
         remove.type = "button";
         remove.className = "button danger compact sh-btn sh-btn--danger";
         remove.dataset.removeRun = run.id;
+        remove.dataset.focusKey = `run:${run.id}:remove`;
         remove.textContent = "×";
         remove.ariaLabel = "Remove run from history";
         remove.title = "Remove from history";
@@ -233,7 +260,9 @@
       attempts.forEach((attempt) => {
         if (!attempt.error) return;
         const details = documentRef.createElement("details");
+        details.dataset.stateKey = `run:${run.id}:attempt:${attempt.attempt_number}`;
         const summary = documentRef.createElement("summary");
+        summary.dataset.focusKey = `${details.dataset.stateKey}:summary`;
         summary.textContent = `Attempt ${attempt.attempt_number} · ${attempt.diagnostic_source}`;
         const error = documentRef.createElement("p");
         error.textContent = attempt.error;
@@ -242,6 +271,7 @@
       });
       container.append(card);
     });
+    restoreRenderState(container, state);
     return hasActiveRuns(runs);
   };
 
@@ -275,7 +305,11 @@
     sources: Array.from(rows, (row) => ({
       source_id: row.dataset.sourceId,
       role: row.querySelector("[data-import-row-role]")?.value || row.dataset.role,
-      attach_to_notebook: Boolean(row.querySelector("[data-import-row-notebook]")?.checked),
+      attach_to_notebook: (() => {
+        const role = row.querySelector("[data-import-row-role]")?.value || row.dataset.role;
+        return importRoleAllowsNotebook(role)
+          && Boolean(row.querySelector("[data-import-row-notebook]")?.checked);
+      })(),
     })),
   });
 
@@ -321,6 +355,31 @@
     });
     row.append(title, roleLabel, select, notebookLabel, remove);
     list.append(row);
+  };
+
+  const hydrateImportSources = (documentRef, list, sources) => {
+    const existing = new Map();
+    Array.from(list.querySelectorAll?.("[data-import-source-row]") || []).forEach((row) => {
+      const sourceId = row.dataset.sourceId;
+      if (existing.has(sourceId)) row.remove?.();
+      else existing.set(sourceId, row);
+    });
+    sources.filter((source) => (
+      source.state === "ready"
+      && source.purpose === "local_import"
+      && source.import_defaults
+    )).forEach((source) => {
+      if (existing.has(source.id)) return;
+      const defaults = source.import_defaults;
+      appendImportSource(
+        documentRef,
+        list,
+        source,
+        defaults.role || "questions",
+        importRoleAllowsNotebook(defaults.role) && Boolean(defaults.attach_to_notebook),
+      );
+      existing.set(source.id, true);
+    });
   };
 
   const populateExams = (documentRef, course, exam) => {
@@ -400,6 +459,7 @@
         const activeSources = renderSources(documentRef, list, sourcePayload.sources || []);
         renderSourcePicker(documentRef, picker, sourcePayload.sources || []);
         filterSourcePicker(picker, sourceFilter.value);
+        hydrateImportSources(documentRef, importSourceList, sourcePayload.sources || []);
         const activeRuns = renderRuns(documentRef, runList, runPayload.runs || []);
         if (activeSources || activeRuns) scheduleRefresh(pollDelayMs);
       } catch (error) {
@@ -732,6 +792,8 @@
         if (submitButton) submitButton.disabled = false;
       }
     });
+
+    if (course.value && exam.value) refresh();
   };
 
   const api = {
@@ -742,6 +804,7 @@
     filterSourcePicker,
     hasActiveRuns,
     hasActiveSources,
+    hydrateImportSources,
     initialize,
     imageUrlFromDrop,
     normalizeSubject,

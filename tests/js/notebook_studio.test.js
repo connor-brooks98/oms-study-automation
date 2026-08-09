@@ -16,15 +16,46 @@ class Element {
     this.href = "";
     this.id = "";
     this.htmlFor = "";
+    this.open = false;
+    this.parentElement = null;
   }
 
-  append(...items) { this.children.push(...items); }
-  replaceChildren(...items) { this.children = items; }
+  append(...items) {
+    items.forEach((item) => { if (item && typeof item === "object") item.parentElement = this; });
+    this.children.push(...items);
+  }
+  replaceChildren(...items) {
+    this.children = [];
+    this.append(...items);
+  }
   addEventListener() {}
   setAttribute(name, value) { this[name] = value; }
+  remove() {
+    if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((item) => item !== this);
+  }
+  focus() { documentRef.activeElement = this; }
+  querySelectorAll(selector) {
+    const matches = (element) => {
+      if (!element?.dataset) return false;
+      if (selector === "[data-import-source-row]") return element.dataset.importSourceRow === "true";
+      if (selector === "details[data-state-key]") return element.tagName === "details" && Boolean(element.dataset.stateKey);
+      if (selector === "[data-state-key]") return Boolean(element.dataset.stateKey);
+      if (selector === "[data-focus-key]") return Boolean(element.dataset.focusKey);
+      return false;
+    };
+    const found = [];
+    const visit = (element) => {
+      if (matches(element)) found.push(element);
+      element?.children?.forEach(visit);
+    };
+    this.children.forEach(visit);
+    return found;
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
 }
 
 const documentRef = {
+  activeElement: null,
   createElement: (tag) => new Element(tag),
   createTextNode: (text) => ({ textContent: text }),
 };
@@ -145,4 +176,87 @@ test("terminal runs expose compact rerun and history-only remove actions", () =>
   assert.equal(actions.children[0].dataset.rerun, "run-1");
   assert.equal(actions.children[1].dataset.removeRun, "run-1");
   assert.equal(actions.children[1].ariaLabel, "Remove run from history");
+});
+
+test("ready local-import rows hydrate on refresh and deduplicate by source id", () => {
+  const list = new Element("ul");
+  const sources = [{
+    id: "source-42", title: "Exam PDF", state: "ready", purpose: "local_import",
+    import_defaults: { role: "supporting_reference", attach_to_notebook: true },
+  }];
+
+  studio.hydrateImportSources(documentRef, list, sources);
+  studio.hydrateImportSources(documentRef, list, sources);
+
+  assert.equal(list.querySelectorAll("[data-import-source-row]").length, 1);
+  const row = list.children[0];
+  assert.equal(row.dataset.sourceId, "source-42");
+  assert.equal(row.children[2].children.find((option) => option.selected).value, "supporting_reference");
+  assert.equal(row.children[3].children[0].checked, true);
+});
+
+test("ready local-import defaults reconstruct after a fresh page instance", () => {
+  const sources = [{
+    id: "source-1", title: "Questions", state: "ready", purpose: "local_import",
+    import_defaults: { role: "questions", attach_to_notebook: true },
+  }];
+  const first = new Element("ul");
+  const backForward = new Element("ul");
+
+  studio.hydrateImportSources(documentRef, first, sources);
+  studio.hydrateImportSources(documentRef, backForward, sources);
+
+  [first, backForward].forEach((list) => {
+    const notebook = list.children[0].children[3].children[0];
+    assert.equal(notebook.checked, false);
+    assert.equal(notebook.disabled, true);
+  });
+});
+
+test("only ready local-import sources hydrate into import rows", () => {
+  const list = new Element("ul");
+  studio.hydrateImportSources(documentRef, list, [
+    { id: "pending", title: "Pending", state: "pending", purpose: "local_import", import_defaults: { role: "questions", attach_to_notebook: false } },
+    { id: "deleted", title: "Deleted", state: "deleted", purpose: "local_import", import_defaults: { role: "questions", attach_to_notebook: false } },
+    { id: "generic", title: "Generic", state: "ready", purpose: "notebook_source", import_defaults: { role: "questions", attach_to_notebook: false } },
+    { id: "ready", title: "Ready", state: "ready", purpose: "local_import", import_defaults: { role: "answer_key", attach_to_notebook: false } },
+  ]);
+
+  assert.deepEqual(list.querySelectorAll("[data-import-source-row]").map((row) => row.dataset.sourceId), ["ready"]);
+});
+
+test("forbidden import roles never serialize a programmatically checked NotebookLM attachment", () => {
+  const row = {
+    dataset: { sourceId: "questions-id", role: "questions" },
+    querySelector: (selector) => selector === "[data-import-row-role]"
+      ? { value: "questions" }
+      : { checked: true },
+  };
+  const form = { elements: { label: { value: "Imported set" } }, ownerDocument: { querySelectorAll: () => [row] } };
+
+  const payload = studio.buildImportRunPayload(
+    form, { value: "Neuro" }, { value: "1" }, { value: "Neuro" }, { value: "1" }, [row],
+  );
+
+  assert.equal(payload.sources[0].attach_to_notebook, false);
+});
+
+test("run attempt disclosure and keyed focus survive polling rerender", () => {
+  const container = new Element("div");
+  const run = {
+    id: "run-1", label: "Imported set", state: "failed", stage: "review", attempts: 1,
+    error: null, workflow_kind: "direct_import", review_url: null, image_review_url: null,
+    published_url: null, attempt_history: [{ attempt_number: 1, diagnostic_source: "contract", error: "bad" }],
+  };
+  studio.renderRuns(documentRef, container, [run]);
+  const details = container.querySelectorAll("details[data-state-key]")[0];
+  const summary = details.children[0];
+  details.open = true;
+  summary.focus();
+
+  studio.renderRuns(documentRef, container, [run]);
+
+  const restored = container.querySelectorAll("details[data-state-key]")[0];
+  assert.equal(restored.open, true);
+  assert.equal(documentRef.activeElement, restored.children[0]);
 });
