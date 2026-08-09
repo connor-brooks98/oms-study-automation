@@ -45,6 +45,7 @@ from oms_hub.db import Database
 from oms_hub.llm.structured import StructuredJSONResult
 from oms_hub.models import LectureModel
 from tests.anki.fixtures.card_centric_v2_faults import GenerationSwitchingSemantic
+from tests.anki.fixtures.card_centric_v2_lifecycle_data import lifecycle_pinned_lecture
 
 
 class _ReadyRuntime:
@@ -571,6 +572,8 @@ def test_s7_title_edit_must_not_change_provider_input_mid_stage() -> None:
                 "fallback_note_ids": [],
             },
         },
+        replay_inputs={"pinned_lecture": lifecycle_pinned_lecture()},
+        replay_inputs_sha256="a" * 64,
     )
 
     asyncio.run(runner._card_gap_fill(context))

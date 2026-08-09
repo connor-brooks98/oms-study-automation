@@ -8,6 +8,7 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from oms_hub.anki.domain import (
     CreateCurationJob,
@@ -93,25 +94,91 @@ def _save_reviewed_selection(
     selection_metadata: list[dict[str, Any]] | None = None,
 ) -> None:
     with app.state.database.session() as session:
+        payload: dict[str, Any] = {
+            "can_render_envelope": True,
+            "selection": {
+                "selected_existing_note_ids": selected_existing_note_ids,
+                "selected_generated_card_ids": [],
+                "overflow_acknowledgement": acknowledgement,
+                **(
+                    {"selection_metadata": selection_metadata}
+                    if selection_metadata is not None
+                    else {}
+                ),
+            },
+        }
+        stored = session.scalar(
+            select(AnkiReviewedReconciliationModel).where(
+                AnkiReviewedReconciliationModel.job_id == str(job_id),
+                AnkiReviewedReconciliationModel.review_revision == review_revision,
+            )
+        )
+        if stored is None:
+            session.add(
+                AnkiReviewedReconciliationModel(
+                    job_id=str(job_id),
+                    review_revision=review_revision,
+                    payload_json=json.dumps(payload),
+                )
+            )
+        else:
+            previous = json.loads(stored.payload_json)
+            if "snapshot" in previous:
+                payload["snapshot"] = previous["snapshot"]
+            stored.payload_json = json.dumps(payload)
+
+
+def _save_v2_overflow_selection_proof(app: Any, job_id: UUID) -> None:
+    """Store the immutable S9 snapshot that an acknowledgement must bind."""
+    selected = list(range(1, 72))
+    metadata = [
+        {
+            "identity": f"existing:{note_id}",
+            "selected_position": note_id,
+            "tier": "T1",
+            "evidence_quality": "primary_source",
+            "mandatory": note_id > 70,
+            "marginal_value_reason": (
+                "only_valid_required_fact" if 66 <= note_id <= 70 else None
+            ),
+            "overflow_reason": (
+                "Only valid identity covering required fact C02-M1." if note_id > 70 else None
+            ),
+            "manual_acknowledgement_required": note_id > 70,
+        }
+        for note_id in selected
+    ]
+    snapshot = {
+        "pipeline_contract_version": "card_centric_v2",
+        "concept_ids": [],
+        "coverage": {},
+        "required_fact_ids": [],
+        "uncovered_after_s5": [],
+        "residual_ran_for": [],
+        "generated_cards": [],
+        "unresolved_fact_ids": [],
+        "expected_scoped_nids": selected,
+        "classifications": [{"nid": note_id, "verdict": "keep"} for note_id in selected],
+        "eligible_yes_nids": selected,
+        "selected_nids": selected,
+        "selected_generated_card_ids": [],
+        "generated_card_ids": [],
+        "source_passage_ids": [],
+        "forbidden_cloze_targets": [],
+        "prompt_sync_stale": False,
+        "untagged_rate": 0.0,
+        "mandatory_nids": [71],
+        "selection_metadata": metadata,
+        "selection_order": [item["identity"] for item in metadata],
+        "selected_count": len(selected),
+        "below_warning_floor": False,
+    }
+    with app.state.database.session() as session:
         session.add(
             AnkiReviewedReconciliationModel(
                 job_id=str(job_id),
-                review_revision=review_revision,
-                payload_json=json.dumps(
-                    {
-                        "can_render_envelope": True,
-                        "selection": {
-                            "selected_existing_note_ids": selected_existing_note_ids,
-                            "selected_generated_card_ids": [],
-                            "overflow_acknowledgement": acknowledgement,
-                            **(
-                                {"selection_metadata": selection_metadata}
-                                if selection_metadata is not None
-                                else {}
-                            ),
-                        },
-                    }
-                ),
+                review_revision=0,
+                payload_json=json.dumps({"snapshot": snapshot}),
             )
         )
 
@@ -445,6 +512,7 @@ def test_review_api_surfaces_server_validated_overflow_acknowledgement(
             }
         ],
     )
+    _save_v2_overflow_selection_proof(app, job_id)
     repository: AnkiCurationRepository = app.state.anki_repository
     selected = tuple(range(1, 72))
     acknowledgement = repository.issue_card_centric_overflow_acknowledgement(
@@ -452,7 +520,7 @@ def test_review_api_surfaces_server_validated_overflow_acknowledgement(
         review_revision=0,
         selected_note_ids=selected,
         selected_generated_ids=(),
-        mandatory_note_ids=selected,
+        mandatory_note_ids=(71,),
         mandatory_generated_ids=(),
         cap=70,
     )
@@ -494,6 +562,7 @@ def test_review_api_marks_forged_or_stale_overflow_acknowledgement_pending(
             }
         ],
     )
+    _save_v2_overflow_selection_proof(app, job_id)
     repository: AnkiCurationRepository = app.state.anki_repository
     selected = tuple(range(1, 72))
     acknowledgement = repository.issue_card_centric_overflow_acknowledgement(
@@ -501,7 +570,7 @@ def test_review_api_marks_forged_or_stale_overflow_acknowledgement_pending(
         review_revision=0,
         selected_note_ids=selected,
         selected_generated_ids=(),
-        mandatory_note_ids=selected,
+        mandatory_note_ids=(71,),
         mandatory_generated_ids=(),
         cap=70,
     )

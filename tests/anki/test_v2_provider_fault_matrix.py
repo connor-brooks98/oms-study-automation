@@ -58,6 +58,7 @@ from tests.anki.fixtures.card_centric_v2_faults import (
     malformed_structured_output,
     provider_fault,
 )
+from tests.anki.fixtures.card_centric_v2_lifecycle_data import lifecycle_pinned_lecture
 
 
 def _source() -> tuple[object, CardRecord, CardConceptLedger]:
@@ -809,6 +810,8 @@ def test_s7_real_handler_propagates_provider_fault_to_worker(
                 "fallback_note_ids": [],
             },
         },
+        replay_inputs={"pinned_lecture": lifecycle_pinned_lecture()},
+        replay_inputs_sha256="a" * 64,
     )
 
     with pytest.raises(type(fault)) as raised:
@@ -888,7 +891,6 @@ def test_expected_red_m12_s4c_resolved_classifier_batches_exactly_thirty_cards()
 
     from oms_hub.anki.card_centric_contracts import SemanticPreFilterResult, TagScopeResult
     from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
-    from oms_hub.anki.prompts import AnkiPromptLibrary
     from tests.anki.fixtures.card_centric_v2_lifecycle_data import (
         lifecycle_job,
         lifecycle_ledger,
@@ -906,18 +908,6 @@ def test_expected_red_m12_s4c_resolved_classifier_batches_exactly_thirty_cards()
     runner.prompts = AnkiPromptCatalogService()
     job = lifecycle_job()
     preflight = lifecycle_preflight()
-    classifier_prompt = AnkiPromptLibrary().load("card-centric-classifier")
-    preflight["prompt_snapshot"].append(
-        {
-            "id": classifier_prompt.metadata.id,
-            "version": classifier_prompt.metadata.version,
-            "prompt_hash": classifier_prompt.prompt_hash,
-            "content": classifier_prompt.content,
-            "path": str(classifier_prompt.path),
-            "source_paths": [str(path) for path in classifier_prompt.source_paths],
-            "metadata": classifier_prompt.metadata.model_dump(mode="json", by_alias=True),
-        }
-    )
     context = SimpleNamespace(
         job=job,
         prior_payloads={

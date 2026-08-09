@@ -23,6 +23,7 @@ from oms_hub.anki.card_centric_contracts import (
 from oms_hub.anki.domain import CreateCurationJob, CurationStage, PipelineContractVersion
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
 from oms_hub.anki.repository import AnkiCurationRepository
+from oms_hub.anki.semantic.domain import PinnedCentroidSimilarityResult
 from oms_hub.anki.stages import CurationServicesRunner
 from oms_hub.db import Database
 from oms_hub.llm.structured import StructuredTextService
@@ -131,6 +132,17 @@ class _NoResidualHits:
         assert expected_generation == "fixture-generation"
         return {note_id: 0.90 for note_id in note_ids}
 
+    async def pinned_centroid_similarity(
+        self,
+        concept_terms: tuple[tuple[str, ...], ...],
+        *,
+        note_ids: tuple[int, ...],
+        expected_generation: str,
+    ) -> PinnedCentroidSimilarityResult:
+        del concept_terms
+        assert expected_generation == "fixture-generation"
+        return PinnedCentroidSimilarityResult(scores={note_id: 0.90 for note_id in note_ids})
+
     async def search(
         self,
         queries: tuple[str, ...],
@@ -163,6 +175,29 @@ def test_m13_real_handlers_use_the_persisted_resolved_model_routes() -> None:
     async def scenario() -> None:
         source = lifecycle_source_payload()
         ledger = lifecycle_ledger()
+        ledger = ledger.model_copy(
+            update={
+                "concepts": ledger.concepts
+                + tuple(
+                    CardConcept(
+                        concept_id=f"C{concept_number:02d}",
+                        canonical_statement=(
+                            f"Heme synthesis review concept {concept_number}."
+                        ),
+                        primary_entity="Heme synthesis",
+                        aliases=("heme",),
+                        depth="medium",
+                        emphasis_flag=False,
+                        importance="medium",
+                        fact_descriptions=(
+                            f"Heme synthesis review concept {concept_number}.",
+                        ),
+                        forbidden_cloze_targets_by_fact=((),),
+                    )
+                    for concept_number in range(3, 12)
+                ),
+            }
+        )
         slide_id = next(
             passage["passage_id"]
             for passage in source["source_index"]["passages"]
@@ -194,7 +229,7 @@ def test_m13_real_handlers_use_the_persisted_resolved_model_routes() -> None:
                     "verdict": "YES",
                     "primary_subject": "heme synthesis",
                     "reason": "Grounded existing high coverage.",
-                    "covered_concept_ids": ["C01"],
+                    "covered_concept_ids": [f"C{note_id + 1:02d}"],
                     "supporting_passage_ids": [slide_id],
                     "flags": [],
                 }
@@ -211,6 +246,7 @@ def test_m13_real_handlers_use_the_persisted_resolved_model_routes() -> None:
                     "note_type": "Cloze",
                     "source_passage_ids": [slide_id],
                     "split": True,
+                    "split_index": 1,
                 },
                 {
                     "fact_id": "C02-M1",
@@ -220,6 +256,7 @@ def test_m13_real_handlers_use_the_persisted_resolved_model_routes() -> None:
                     "note_type": "Cloze",
                     "source_passage_ids": [slide_id],
                     "split": True,
+                    "split_index": 2,
                 },
                 {
                     "fact_id": "C02-M2",
@@ -468,6 +505,7 @@ def test_real_handlers_s7_split_generation_and_s8_unique_resolutions() -> None:
                     "note_type": "Cloze",
                     "source_passage_ids": [slide_id],
                     "split": True,
+                    "split_index": 1,
                 },
                 {
                     "fact_id": "C02-M1",
@@ -477,6 +515,7 @@ def test_real_handlers_s7_split_generation_and_s8_unique_resolutions() -> None:
                     "note_type": "Cloze",
                     "source_passage_ids": [slide_id],
                     "split": True,
+                    "split_index": 2,
                 },
                 {
                     "fact_id": "C02-M2",
@@ -504,6 +543,10 @@ def test_real_handlers_s7_split_generation_and_s8_unique_resolutions() -> None:
             "coverage": {
                 "C01": {"status": "covered", "evidence": []},
                 "C02": {"status": "uncovered", "evidence": []},
+                **{
+                    f"C{concept_number:02d}": {"status": "covered", "evidence": []}
+                    for concept_number in range(3, 12)
+                },
             }
         }
         empty_classifier = ClassifierResult(
@@ -558,7 +601,31 @@ def test_l1_real_handler_s9_constructs_holistic_reconciliation_snapshot() -> Non
             job=job, stage=CurationStage.CARD_TAG_SCOPE, prior_payloads=prior
         )
         prior[CurationStage.CARD_TAG_SCOPE] = scope.payload
-        prior[CurationStage.CARD_LEDGER] = {"ledger": lifecycle_ledger().model_dump(mode="json")}
+        base_ledger = lifecycle_ledger()
+        ledger = base_ledger.model_copy(
+            update={
+                "concepts": base_ledger.concepts
+                + tuple(
+                    CardConcept(
+                        concept_id=f"C{concept_number:02d}",
+                        canonical_statement=(
+                            f"Heme synthesis review concept {concept_number}."
+                        ),
+                        primary_entity="Heme synthesis",
+                        aliases=("heme",),
+                        depth="medium",
+                        emphasis_flag=False,
+                        importance="medium",
+                        fact_descriptions=(
+                            f"Heme synthesis review concept {concept_number}.",
+                        ),
+                        forbidden_cloze_targets_by_fact=((),),
+                    )
+                    for concept_number in range(3, 12)
+                ),
+            }
+        )
+        prior[CurationStage.CARD_LEDGER] = {"ledger": ledger.model_dump(mode="json")}
         classifier = ClassifierResult(
             results=tuple(
                 CardClassification(
@@ -566,7 +633,9 @@ def test_l1_real_handler_s9_constructs_holistic_reconciliation_snapshot() -> Non
                     verdict="YES",
                     primary_subject="heme synthesis",
                     reason="Grounded lifecycle fixture coverage.",
-                    covered_concept_ids=("C01",),
+                    covered_concept_ids=(
+                        "C01" if note_id == 1 else f"C{note_id + 1:02d}",
+                    ),
                     supporting_passage_ids=(slide_id,),
                 )
                 for note_id in range(1, 11)
@@ -590,6 +659,7 @@ def test_l1_real_handler_s9_constructs_holistic_reconciliation_snapshot() -> Non
                 source_passage_ids=(slide_id,),
                 evidence_ids=(f"E{index}",),
                 split=fact_id == "C02-M1",
+                split_index=index if fact_id == "C02-M1" else None,
             )
             for index, fact_id in enumerate(("C02-M1", "C02-M1", "C02-M2", "C02-M3"), 1)
         )
@@ -602,6 +672,10 @@ def test_l1_real_handler_s9_constructs_holistic_reconciliation_snapshot() -> Non
             "coverage": {
                 "C01": {"status": "covered", "evidence": []},
                 "C02": {"status": "uncovered", "evidence": []},
+                **{
+                    f"C{concept_number:02d}": {"status": "covered", "evidence": []}
+                    for concept_number in range(3, 12)
+                },
             }
         }
         prior[CurationStage.CARD_RESIDUAL] = {
@@ -609,6 +683,9 @@ def test_l1_real_handler_s9_constructs_holistic_reconciliation_snapshot() -> Non
             "uncovered_concept_ids": ["C02"],
         }
         prior[CurationStage.DEDUPE] = {
+            "resolutions": [item.model_dump(mode="json") for item in generated]
+        }
+        prior[CurationStage.CARD_GAP_FILL] = {
             "resolutions": [item.model_dump(mode="json") for item in generated]
         }
         selection = await harness.invoke(
@@ -621,11 +698,11 @@ def test_l1_real_handler_s9_constructs_holistic_reconciliation_snapshot() -> Non
         )
 
         assert report.kind == "card_centric_reconciliation"
-        assert report.payload["can_render_envelope"] is True
+        assert report.payload["can_render_envelope"] is True, report.payload["failed"]
         assert report.payload["failed"] == []
         assert selection.kind == "card_centric_selection"
-        assert selection.payload["selected_existing_note_ids"] == list(range(1, 11))
-        assert selection.payload["selected_generated_card_ids"] == ["G1", "G2", "G3", "G4"]
+        assert selection.payload["selected_existing_note_ids"] == [1, 10, *range(2, 10)]
+        assert selection.payload["selected_generated_card_ids"] == ["G1", "G3", "G4", "G2"]
         assert selection.payload["minimum_target"] == 60
         assert selection.payload["target"] == 65
         assert selection.payload["cap"] == 70
@@ -635,15 +712,19 @@ def test_l1_real_handler_s9_constructs_holistic_reconciliation_snapshot() -> Non
             "C02-M2",
             "C02-M3",
         }
-        assert snapshot["selected_generated_card_ids"] == ["G1", "G2", "G3", "G4"]
+        assert snapshot["selected_generated_card_ids"] == ["G1", "G3", "G4", "G2"]
         assert snapshot["canonical_unresolved_fact_ids"] == []
         assert [item["nid"] for item in snapshot["classifications"]] == list(range(1, 11))
-        assert snapshot["selected_nids"] == list(range(1, 11))
+        assert snapshot["selected_nids"] == [1, 10, *range(2, 10)]
         from oms_hub.anki.reconciliation import CardCentricReconciliationInput
 
         assert set(snapshot) == set(CardCentricReconciliationInput.model_fields)
-        assert snapshot["concept_ids"] == ["C01", "C02"]
-        assert snapshot["coverage"] == {"C01": "covered", "C02": "covered"}
+        assert snapshot["concept_ids"] == [f"C{number:02d}" for number in range(1, 12)]
+        assert snapshot["coverage"] == {
+            "C01": "covered",
+            "C02": "covered",
+            **{f"C{number:02d}": "covered" for number in range(3, 12)},
+        }
         assert snapshot["required_fact_ids"] == ["C02-M1", "C02-M2", "C02-M3"]
         assert snapshot["uncovered_after_s5"] == ["C02"]
         assert snapshot["residual_ran_for"] == ["C02"]
@@ -761,10 +842,15 @@ def test_expected_red_p3_h3_s8_duplicate_identity_survives_into_s9_audit() -> No
         )
 
         assert selection.payload["selected_generated_card_ids"] == []
-        canonical = s9.payload["snapshot"]["canonical_generated_cards"]
-        assert canonical == [resolution]
-        assert canonical[0]["status"] == "duplicate_of_existing"
-        assert canonical[0].get("status") != "intentional_gap"
+        terminals = s9.payload["snapshot"]["terminal_resolutions"]
+        assert len(terminals) == 1
+        assert terminals[0]["fact_id"] == "C02-M1"
+        assert terminals[0]["kind"] == "duplicate_of_existing"
+        assert terminals[0]["duplicate_of"] == {
+            "correction_contract_version": 1,
+            "existing_note_id": 1,
+            "generated_card_id": None,
+        }
 
     asyncio.run(scenario())
 
@@ -872,7 +958,19 @@ def test_selection_does_not_promote_fast_yes_after_floor_expected_red_p3_m10() -
             ).model_dump(mode="json"),
             "fallback_note_ids": [],
         }
-        prior[CurationStage.DEDUPE] = {"resolutions": []}
+        prior[CurationStage.DEDUPE] = {
+            "resolutions": [
+                GeneratedCardResolution(
+                    card_id=f"G{index}",
+                    concept_id="C02",
+                    fact_id=f"C02-M{index}",
+                    text=f"Generated {{c1::fact {index}}}.",
+                    source_passage_ids=(slide_id,),
+                    evidence_ids=(f"E{index}",),
+                ).model_dump(mode="json")
+                for index in range(1, 61)
+            ]
+        }
 
         selection = await harness.invoke(
             job=lifecycle_job(), stage=CurationStage.CARD_SELECTION, prior_payloads=prior
@@ -1040,9 +1138,15 @@ def test_selection_keeps_only_best_redundant_coverage_expected_red_p3_h5() -> No
 
         assert selection.payload["selection_metadata"] == [
             {
-                "identity": "note:1",
+                "correction_contract_version": 1,
+                "identity": "existing:1",
                 "selected_position": 1,
-                "reason": "best_nonredundant_coverage",
+                "tier": "T3",
+                "evidence_quality": "primary_source",
+                "mandatory": True,
+                "marginal_value_reason": None,
+                "overflow_reason": None,
+                "manual_acknowledgement_required": False,
             }
         ], "P3 H-5: Selection lacks quality-first nonredundant coverage evidence"
         assert selection.payload["selected_existing_note_ids"] == [1]
@@ -1411,10 +1515,10 @@ def test_h6_s7_provider_input_keeps_forbidden_cloze_targets_per_fact() -> None:
         request = json.loads(generator.calls[0][1])
 
         assert product.payload["resolutions"]
-        assert [item["forbidden_cloze_targets"] for item in request["missing_facts"]] == [
-            ["glycine"],
-            ["mitochondria"],
-            ["succinyl-CoA"],
+        assert request["forbidden_cloze_targets_by_fact"] == [
+            {"fact_id": "C02-M1", "targets": ["glycine"]},
+            {"fact_id": "C02-M2", "targets": ["mitochondria"]},
+            {"fact_id": "C02-M3", "targets": ["succinyl-CoA"]},
         ]
 
     asyncio.run(scenario())

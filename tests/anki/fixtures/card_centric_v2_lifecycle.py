@@ -124,7 +124,21 @@ class CardCentricV2LifecycleHarness:
             "prior_payloads": prior_payloads,
         }
         if "replay_inputs" in StageContext.__dataclass_fields__:
-            context_kwargs["replay_inputs"] = replay_inputs or {}
+            if replay_inputs is None:
+                # The real-handler fixture models P1's immutable documents for
+                # every normal lifecycle stage. Tests for a missing/tampered
+                # document pass an explicit mapping instead.
+                from tests.anki.fixtures.card_centric_v2_lifecycle_data import (
+                    lifecycle_empty_a11_history,
+                    lifecycle_pinned_lecture,
+                )
+
+                replay_inputs = {
+                    "a11_history": lifecycle_empty_a11_history(),
+                    "pinned_lecture": lifecycle_pinned_lecture(),
+                }
+                replay_inputs_sha256 = "f" * 64
+            context_kwargs["replay_inputs"] = replay_inputs
             context_kwargs["replay_inputs_sha256"] = replay_inputs_sha256
         product = await self.runner.run(StageContext(**context_kwargs))
         self.products[stage] = product

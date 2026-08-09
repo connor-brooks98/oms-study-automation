@@ -16,7 +16,7 @@ from oms_hub.anki.domain import (
     SourceKind,
 )
 from oms_hub.anki.prompts import AnkiPromptLibrary
-from oms_hub.anki.semantic.domain import SemanticHit
+from oms_hub.anki.semantic.domain import PinnedCentroidSimilarityResult, SemanticHit
 from oms_hub.anki.sources import SourcePassage
 
 
@@ -29,6 +29,19 @@ class LifecycleSemanticService:
         del queries
         assert expected_generation == "fixture-generation"
         return {note_id: 0.90 if note_id != 2 else 0.20 for note_id in note_ids}
+
+    async def pinned_centroid_similarity(
+        self,
+        concept_terms: tuple[tuple[str, ...], ...],
+        *,
+        note_ids: tuple[int, ...],
+        expected_generation: str,
+    ) -> PinnedCentroidSimilarityResult:
+        del concept_terms
+        assert expected_generation == "fixture-generation"
+        return PinnedCentroidSimilarityResult(
+            scores={note_id: 0.90 if note_id != 2 else 0.20 for note_id in note_ids}
+        )
 
     async def search(
         self,
@@ -171,7 +184,12 @@ def lifecycle_job() -> Any:
 def lifecycle_preflight() -> dict[str, Any]:
     library = AnkiPromptLibrary()
     prompts = library.load_many(
-        ("card-centric-ledger-v2", "card-centric-fast-classifier", "card-centric-gap-v2")
+        (
+            "card-centric-ledger-v2",
+            "card-centric-fast-classifier",
+            "card-centric-classifier",
+            "card-centric-gap-v2",
+        )
     )
     return {
         "prompt_snapshot": [
