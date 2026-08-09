@@ -120,6 +120,46 @@ def test_expired_temporary_manifest_is_collected(tmp_path: Path) -> None:
     assert not root.exists()
 
 
+def test_expired_finalize_claims_and_orphan_claims_are_collected_safely(
+    tmp_path: Path,
+) -> None:
+    _, service, _ = _prepared(tmp_path)
+    payload = b"claimed manifest text"
+    manifest = service.staging.begin_manifest(
+        UploadKind.TRANSCRIPTS,
+        [
+            UploadManifestSlot(
+                "00000000-0000-0000-0000-000000000002",
+                "claimed.txt",
+                len(payload),
+                hashlib.sha256(payload).hexdigest(),
+            )
+        ],
+    )
+    service.staging.claim_manifest_finalization(manifest.id)
+    root = service.staging.root / "manifests" / manifest.id
+    claim = service.staging.root / "manifests" / f"{manifest.id}.claim"
+    orphan_id = "00000000-0000-0000-0000-000000000003"
+    orphan = service.staging.root / "manifests" / f"{orphan_id}.claim"
+    orphan.write_text("finalize", encoding="ascii")
+    old = (datetime.now(UTC) - timedelta(hours=25)).timestamp()
+    os.utime(root, (old, old))
+    os.utime(orphan, (old, old))
+
+    # The still-fresh claim is a live lease: an old manifest alone is not
+    # enough for expiry to steal a finalizer's ownership.
+    assert service.collect_staging(datetime.now(UTC)) == 1
+    assert root.exists()
+    assert claim.exists()
+    assert not orphan.exists()
+
+    os.utime(claim, (old, old))
+    assert service.collect_staging(datetime.now(UTC)) == 1
+    assert not root.exists()
+    assert not claim.exists()
+    assert service.collect_staging(datetime.now(UTC)) == 0
+
+
 def test_cleanup_keeps_active_paths_and_removes_old_complete_paths(tmp_path: Path) -> None:
     repository, service, lecture_id = _prepared(tmp_path)
     batch_id = repository.create_batch(UploadKind.TRANSCRIPTS)

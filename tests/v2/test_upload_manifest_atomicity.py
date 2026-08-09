@@ -405,3 +405,76 @@ def test_finalize_owned_manifest_returns_conflict_to_cancel_request(tmp_path: Pa
     assert cancelled.status_code == 409
     assert cancelled.json()["detail"] == "upload manifest is finalizing"
     staging.release_manifest_finalization(manifest_id)
+
+
+def test_matching_failure_releases_finalize_claim_and_preserves_retry_data(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    client, app = _client(tmp_path)
+    payload = b"matching failure retains manifest"
+    slot_id = str(uuid4())
+    created = client.post(
+        "/api/upload-manifests",
+        json={
+            "kind": "transcripts",
+            "files": [{
+                "slot_id": slot_id,
+                "filename": "matching.txt",
+                "size_bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }],
+        },
+    )
+    manifest_id = created.json()["manifest_id"]
+    uploaded = client.post(
+        "/uploads/transcripts",
+        data={"manifest_id": manifest_id, "slot_ids": slot_id},
+        files=[("files", ("matching.txt", payload))],
+    )
+    assert uploaded.status_code == 202
+
+    def fail_match(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("matching unavailable")
+
+    monkeypatch.setattr(app.state.ingestion_service, "decide_staged", fail_match)  # type: ignore[attr-defined]
+    with pytest.raises(RuntimeError, match="matching unavailable"):
+        client.post(f"/api/upload-manifests/{manifest_id}/finalize")
+
+    staging = app.state.upload_staging  # type: ignore[attr-defined]
+    assert (staging.root / "manifests" / manifest_id).is_dir()
+    assert not (staging.root / "manifests" / f"{manifest_id}.claim").exists()
+    assert _counts(app) == (0, 0, 0)
+
+
+def test_post_commit_cancel_returns_authoritative_finalized_batch(tmp_path: Path) -> None:
+    client, app = _client(tmp_path)
+    payload = b"committed manifest outcome"
+    slot_id = str(uuid4())
+    created = client.post(
+        "/api/upload-manifests",
+        json={
+            "kind": "transcripts",
+            "files": [{
+                "slot_id": slot_id,
+                "filename": "committed.txt",
+                "size_bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }],
+        },
+    )
+    manifest_id = created.json()["manifest_id"]
+    uploaded = client.post(
+        "/uploads/transcripts",
+        data={"manifest_id": manifest_id, "slot_ids": slot_id},
+        files=[("files", ("committed.txt", payload))],
+    )
+    assert uploaded.status_code == 202
+    finalized = client.post(f"/api/upload-manifests/{manifest_id}/finalize")
+    assert finalized.status_code == 202
+
+    cancelled = client.delete(f"/api/upload-manifests/{manifest_id}")
+
+    assert cancelled.status_code == 409
+    assert cancelled.json()["batch_id"] == finalized.json()["batch_id"]
+    assert _counts(app) == (1, 1, 0)

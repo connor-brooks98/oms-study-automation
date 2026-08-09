@@ -206,10 +206,27 @@ class StagingService:
         self._discard_manifest_data(manifest_id)
         self.release_manifest_finalization(manifest_id)
 
-    def complete_manifest_finalization(self, manifest_id: str) -> None:
+    def complete_manifest_finalization(self, manifest_id: str, batch_id: str) -> None:
         """Discard temporary members after their DB transaction committed."""
+        # Publish the committed outcome before removing the claimed root, so a
+        # racing cancellation never receives a false 204 in that interval.
+        self._finalized_manifest_path(manifest_id).write_text(
+            json.dumps({"batch_id": batch_id}), encoding="ascii"
+        )
         self._discard_manifest_data(manifest_id)
         self.release_manifest_finalization(manifest_id)
+
+    def finalized_manifest_outcome(self, manifest_id: str) -> dict[str, str] | None:
+        """Return the bounded post-commit cancellation outcome, if retained."""
+        try:
+            outcome = json.loads(
+                self._finalized_manifest_path(manifest_id).read_text("ascii")
+            )
+            batch_id = str(outcome["batch_id"])
+            UUID(batch_id)
+            return {"batch_id": batch_id}
+        except (FileNotFoundError, OSError, ValueError, KeyError, TypeError):
+            return None
 
     def promote_manifest(
         self,
@@ -269,6 +286,8 @@ class StagingService:
         """Cancel a manifest unless an atomic finalization claim owns it."""
         root = self._manifest_root(manifest_id)
         if not root.exists():
+            if self.finalized_manifest_outcome(manifest_id) is not None:
+                raise UploadRejected("upload manifest was already finalized")
             return
         claim = self._manifest_claim_path(manifest_id)
         try:
@@ -534,7 +553,39 @@ class StagingService:
                 except OSError:
                     continue
                 if created <= cutoff:
-                    self.discard_manifest(root.name)
+                    claim = self._manifest_claim_path(root.name)
+                    try:
+                        claim_age = datetime.fromtimestamp(
+                            claim.stat().st_mtime, UTC
+                        )
+                    except FileNotFoundError:
+                        claim_age = None
+                    except OSError:
+                        continue
+                    if claim_age is not None and claim_age > cutoff:
+                        # A live finalizer owns this stale request.  The claim
+                        # lease must expire too before recovery can clean it.
+                        continue
+                    self._discard_manifest_data(root.name)
+                    claim.unlink(missing_ok=True)
+                    removed += 1
+            for claim in manifest_root.glob("*.claim"):
+                try:
+                    claim_age = datetime.fromtimestamp(claim.stat().st_mtime, UTC)
+                except OSError:
+                    continue
+                if claim_age <= cutoff and not claim.with_suffix("").is_dir():
+                    claim.unlink(missing_ok=True)
+                    removed += 1
+            for tombstone in manifest_root.glob("*.finalized"):
+                try:
+                    tombstone_age = datetime.fromtimestamp(
+                        tombstone.stat().st_mtime, UTC
+                    )
+                except OSError:
+                    continue
+                if tombstone_age <= cutoff:
+                    tombstone.unlink(missing_ok=True)
                     removed += 1
         return removed
 
@@ -601,6 +652,9 @@ class StagingService:
 
     def _manifest_claim_path(self, manifest_id: str) -> Path:
         return self._contained(self.root / "manifests", f"{manifest_id}.claim")
+
+    def _finalized_manifest_path(self, manifest_id: str) -> Path:
+        return self._contained(self.root / "manifests", f"{manifest_id}.finalized")
 
     def _manifest_file_path(self, manifest_id: str, slot_id: str) -> Path:
         self._contained(self._manifest_root(manifest_id), slot_id)

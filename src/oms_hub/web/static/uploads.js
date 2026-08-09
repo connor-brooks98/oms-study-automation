@@ -134,7 +134,7 @@
       },
       timeoutMs,
     );
-    const payload = await response.json();
+    const payload = response.status === 204 ? {} : await response.json();
     if (!response.ok) {
       throw new Error(payload.detail || "Study Hub rejected the decision.");
     }
@@ -144,6 +144,21 @@
   const handleDecisionDialogCancel = (event, activeSubmission) => {
     event.preventDefault();
     if (activeSubmission) activeSubmission.controller.abort();
+  };
+
+  const cancelManifest = async (fetchImpl, manifestId, headers) => {
+    const response = await requestWithTimeout(
+      fetchImpl,
+      `/api/upload-manifests/${encodeURIComponent(manifestId)}`,
+      { method: "DELETE", headers, keepalive: true },
+      5000,
+    );
+    const payload = await response.json();
+    if (response.status === 409 && payload.batch_id) {
+      return { finalized: true, batchId: payload.batch_id };
+    }
+    if (!response.ok) throw new Error("Upload cancellation could not be confirmed.");
+    return { finalized: false, batchId: null };
   };
 
   const waitForDecision = async (signal, deadline, setResume, onRejected) => {
@@ -551,9 +566,20 @@
         if (error instanceof DOMException && error.name === "AbortError") {
           const manifestId = activeSubmission?.manifestId;
           if (manifestId) {
-            fetchImpl(`/api/upload-manifests/${encodeURIComponent(manifestId)}`, {
-              method: "DELETE", headers: csrfHeaders(), keepalive: true,
-            }).catch(() => {});
+            try {
+              const cancelled = await cancelManifest(
+                fetchImpl, manifestId, csrfHeaders(),
+              );
+              if (cancelled.finalized) {
+                clearPausedDecision();
+                status.textContent = "Upload was already finalized.";
+                return;
+              }
+            } catch (_cancelError) {
+              clearPausedDecision();
+              status.textContent = "Upload cancellation could not be confirmed.";
+              return;
+            }
           }
           clearPausedDecision();
           status.textContent = "Upload cancelled.";
@@ -579,6 +605,7 @@
     batchIsTerminal,
     createDecisionWait,
     handleDecisionDialogCancel,
+    cancelManifest,
     waitForDecision,
     freezeManifest,
     itemErrorText,

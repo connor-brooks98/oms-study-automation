@@ -206,6 +206,26 @@ test("decision POST shares the active abort signal and bounded timeout", async (
   assert.equal(captured.headers["X-CSRF-Token"], "csrf");
 });
 
+test("manifest cancellation reconciles a committed batch instead of claiming success", async () => {
+  const finalized = await uploads.cancelManifest(
+    async () => ({
+      status: 409,
+      ok: false,
+      json: async () => ({ batch_id: "batch-1" }),
+    }),
+    "manifest-1",
+    { "X-CSRF-Token": "csrf" },
+  );
+  const cancelled = await uploads.cancelManifest(
+    async () => ({ status: 204, ok: true, json: async () => ({}) }),
+    "manifest-2",
+    { "X-CSRF-Token": "csrf" },
+  );
+
+  assert.deepEqual(finalized, { finalized: true, batchId: "batch-1" });
+  assert.deepEqual(cancelled, { finalized: false, batchId: null });
+});
+
 test("duplicate-dialog Escape aborts an active submission and keeps modal dismissals explicit", () => {
   const controller = new AbortController();
   let prevented = false;

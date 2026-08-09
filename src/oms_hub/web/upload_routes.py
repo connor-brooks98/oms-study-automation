@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Annotated, cast
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -203,12 +203,25 @@ def finalize_manifest(manifest_id: str, request: Request) -> dict[str, str] | JS
     return _finalize_manifest(request, manifest_id)
 
 
-@router.delete("/api/upload-manifests/{manifest_id}", status_code=204)
-def cancel_manifest(manifest_id: str, request: Request) -> None:
+@router.delete(
+    "/api/upload-manifests/{manifest_id}", status_code=204, response_model=None
+)
+def cancel_manifest(manifest_id: str, request: Request) -> Response:
+    staging = _staging(request)
     try:
-        _staging(request).discard_manifest(manifest_id)
+        staging.discard_manifest(manifest_id)
     except UploadRejected as error:
+        outcome = staging.finalized_manifest_outcome(manifest_id)
+        if outcome is not None:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "upload manifest was already finalized",
+                    **outcome,
+                },
+            )
         raise HTTPException(409, str(error)) from error
+    return Response(status_code=204)
 
 
 @router.get("/api/upload-batches/{batch_id}")
@@ -424,10 +437,7 @@ def _finalize_manifest(
         manifest = staging.claim_manifest_finalization(manifest_id)
         claimed = True
         _require_lecture(request, manifest.lecture_id)
-        staged = staging.manifest_uploads(manifest_id)
     except UploadRejected as error:
-        if claimed:
-            staging.abandon_manifest_finalization(manifest_id)
         try:
             payload = json.loads(str(error))
         except json.JSONDecodeError:
@@ -437,17 +447,30 @@ def _finalize_manifest(
         if claimed:
             staging.release_manifest_finalization(manifest_id)
         raise
+    try:
+        staged = staging.manifest_uploads(manifest_id)
+    except UploadRejected as error:
+        staging.abandon_manifest_finalization(manifest_id)
+        try:
+            payload = json.loads(str(error))
+        except json.JSONDecodeError:
+            raise HTTPException(422, str(error)) from error
+        return JSONResponse(status_code=422, content=payload)
     service = _ingestion(request)
-    decisions = (
-        {}
-        if manifest.lecture_id is not None
-        else {
-            item.item_id: service.decide_staged(
-                manifest.kind, item.path, item.original_filename
-            )
-            for item in staged
-        }
-    )
+    try:
+        decisions = (
+            {}
+            if manifest.lecture_id is not None
+            else {
+                item.item_id: service.decide_staged(
+                    manifest.kind, item.path, item.original_filename
+                )
+                for item in staged
+            }
+        )
+    except Exception:
+        staging.release_manifest_finalization(manifest_id)
+        raise
     batch_id = str(uuid4())
     moved: list[StagedUpload] = []
     try:
@@ -466,7 +489,7 @@ def _finalize_manifest(
         finally:
             staging.release_manifest_finalization(manifest_id)
         raise
-    staging.complete_manifest_finalization(manifest_id)
+    staging.complete_manifest_finalization(manifest_id, batch_id)
     if manifest.lecture_id is not None:
         for _ in moved:
             service._complete_match_steps(manifest.lecture_id, manifest.kind)
