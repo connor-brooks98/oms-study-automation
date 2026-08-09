@@ -77,6 +77,19 @@ router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
+def _same_unique_identity_set(
+    provided: tuple[object, ...],
+    frozen: tuple[object, ...],
+) -> bool:
+    """Permit display/storage order changes without permitting identity drift."""
+    return (
+        len(provided) == len(frozen)
+        and len(provided) == len(set(provided))
+        and len(frozen) == len(set(frozen))
+        and set(provided) == set(frozen)
+    )
+
+
 class GapCardEditRequest(ContractModel):
     card_id: Annotated[str, Field(max_length=100)] = ""
     concept_id: Annotated[str, Field(min_length=1, max_length=200)]
@@ -704,17 +717,20 @@ def issue_anki_overflow_acknowledgement(
     mandatory_generated = tuple(selection.get("mandatory_generated_card_ids", []))
     selected_notes = tuple(selection.get("selected_existing_note_ids", []))
     selected_generated = tuple(selection.get("selected_generated_card_ids", []))
-    if (
-        tuple(payload.selected_existing_note_ids) != selected_notes
-        or tuple(payload.selected_generated_card_ids) != selected_generated
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="overflow acknowledgement must bind the frozen full selection",
-        )
     if job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V2:
         try:
             snapshot = CardCentricReconciliationInput.model_validate(committed["snapshot"])
+            if not (
+                _same_unique_identity_set(
+                    payload.selected_existing_note_ids, snapshot.selected_nids
+                )
+                and _same_unique_identity_set(
+                    payload.selected_generated_card_ids,
+                    snapshot.selected_generated_card_ids,
+                )
+            ):
+                raise ValueError("request selection does not match the frozen identities")
+            cap = snapshot.cap
             overflow = tuple(
                 item
                 for item in snapshot.selection_metadata
@@ -735,6 +751,14 @@ def issue_anki_overflow_acknowledgement(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="persisted V2 selection cannot prove overflow scope",
             ) from exc
+    elif (
+        tuple(payload.selected_existing_note_ids) != selected_notes
+        or tuple(payload.selected_generated_card_ids) != selected_generated
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="overflow acknowledgement must bind the frozen full selection",
+        )
     try:
         document = repository.issue_card_centric_overflow_acknowledgement(
             job_id,

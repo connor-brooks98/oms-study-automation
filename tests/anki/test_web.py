@@ -16,6 +16,14 @@ from selectolax.parser import HTMLParser
 
 from oms_hub.anki.apply import ApplyCoordinator
 from oms_hub.anki.card_centric import build_source_index
+from oms_hub.anki.correction_contracts import (
+    EvidenceQuality,
+    GeneratedFactResolution,
+    GeneratedResolutionKind,
+    MarginalValueReason,
+    SelectionMetadata,
+    SelectionTier,
+)
 from oms_hub.anki.domain import (
     Candidate,
     CreateCurationJob,
@@ -31,7 +39,12 @@ from oms_hub.anki.domain import (
     SourceReference,
     StageArtifact,
 )
-from oms_hub.anki.models import AnkiCurationJobModel
+from oms_hub.anki.models import AnkiCurationJobModel, AnkiReviewedReconciliationModel
+from oms_hub.anki.reconciliation import (
+    AuditResolution,
+    CardCentricReconciliationInput,
+    GeneratedResolution,
+)
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.anki.runtime import AnkiPreflight
 from oms_hub.anki.sources import SourcePassage
@@ -473,7 +486,14 @@ def test_agent_heartbeat_persists_envelope_capabilities_end_to_end(
     ] == [1]
 
 
-def _ready_job(app: Any, lecture_id: int, revision_id: int) -> UUID:
+def _ready_job(
+    app: Any,
+    lecture_id: int,
+    revision_id: int,
+    *,
+    pipeline_contract_version: PipelineContractVersion = PipelineContractVersion.RETRIEVAL_V4,
+    resolved_model_config: ResolvedModelConfiguration | None = None,
+) -> UUID:
     repository: AnkiCurationRepository = app.state.anki_repository
     job = repository.create_job(
         CreateCurationJob(
@@ -492,6 +512,8 @@ def _ready_job(app: Any, lecture_id: int, revision_id: int) -> UUID:
             gap_prompt_version="gap-v1",
             provider="anthropic",
             model="claude-sonnet-5",
+            pipeline_contract_version=pipeline_contract_version,
+            resolved_model_config=resolved_model_config,
             semantic_generation="33a3b975-0e93-41e6-8a44-ec255c7e1269",
             companion_generation="snapshot-test",
         )
@@ -564,6 +586,185 @@ def _ready_job(app: Any, lecture_id: int, revision_id: int) -> UUID:
         assert stored is not None
         stored.state = CurationState.READY_FOR_REVIEW.value
     return job.id
+
+
+def test_v2_mixed_overflow_envelope_accepts_database_order_not_frozen_order(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, lecture_id, revision_id, gateway = prepared_app
+    repository: AnkiCurationRepository = app.state.anki_repository
+    job_id = _ready_job(
+        app,
+        lecture_id,
+        revision_id,
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        resolved_model_config=ResolvedModelConfiguration.card_centric_v2_default(
+            "anthropic", "claude-sonnet-5"
+        ),
+    )
+    frozen_existing = (2, 1, *range(3, 71))
+    database_existing = tuple(range(1, 71))
+    repository.replace_candidates(
+        job_id,
+        tuple(
+            Candidate(
+                note_id=note_id,
+                content_hash=f"{note_id:064x}",
+                best_concept_id="C01",
+                provenance={"card_centric": {"covered_concept_ids": ["C01"]}},
+                scores={},
+                predicted_band="covered",
+                verdict="keep",
+                confidence=1,
+                reason="selected fixture card",
+                context_trap=False,
+                recall_direction="forward",
+                mnemonic_classification="none",
+                dedupe_disposition="unique",
+                selected=True,
+            )
+            for note_id in database_existing
+        ),
+    )
+    for note_id in database_existing:
+        gateway.notes[note_id] = {
+            "noteId": note_id,
+            "modelName": "AnKingOverhaul",
+            "fields": {
+                "Text": {"value": f"Fixture {{c1::note {note_id}}}", "order": 0},
+                "Extra": {"value": "Frozen selection fixture.", "order": 1},
+            },
+            "tags": ["#Pathoma::Hematology"],
+            "cards": [note_id + 1_000],
+        }
+    existing_gap = repository.list_gap_cards(job_id)[0]
+    repository.save_gap_cards(
+        job_id,
+        (replace(existing_gap, card_id="G1", concept_id="C01"),),
+    )
+    generated = GeneratedResolution(
+        card_id="G1",
+        fact_id="C01-M1",
+        text="The fixture finding is {{c1::present}}.",
+    )
+    identities = [
+        *(f"existing:{note_id}" for note_id in frozen_existing),
+        "generated:G1",
+    ]
+    metadata = tuple(
+        SelectionMetadata(
+            identity=identity,
+            selected_position=position,
+            tier=SelectionTier.T1,
+            evidence_quality=EvidenceQuality.PRIMARY_SOURCE,
+            mandatory=position == 71,
+            marginal_value_reason=(
+                MarginalValueReason.ONLY_VALID_REQUIRED_FACT if 66 <= position <= 70 else None
+            ),
+            overflow_reason="required fixture coverage" if position == 71 else None,
+            manual_acknowledgement_required=position == 71,
+        )
+        for position, identity in enumerate(identities, start=1)
+    )
+    snapshot = CardCentricReconciliationInput(
+        pipeline_contract_version="card_centric_v2",
+        concept_ids=("C01",),
+        coverage={"C01": "covered"},
+        required_fact_ids=("C01-M1",),
+        uncovered_after_s5=(),
+        residual_ran_for=(),
+        generated_cards=(generated,),
+        raw_generated_cards=(generated,),
+        canonical_generated_cards=(generated,),
+        terminal_resolutions=(
+            GeneratedFactResolution(
+                fact_id="C01-M1",
+                kind=GeneratedResolutionKind.GENERATED,
+                generated_card_ids=("G1",),
+            ),
+        ),
+        terminal_resolutions_provided=True,
+        unresolved_fact_ids=(),
+        expected_scoped_nids=frozen_existing,
+        classifications=tuple(
+            AuditResolution(nid=note_id, verdict="keep") for note_id in frozen_existing
+        ),
+        eligible_yes_nids=frozen_existing,
+        selected_nids=frozen_existing,
+        selected_generated_card_ids=("G1",),
+        generated_card_ids=("G1",),
+        source_passage_ids=(),
+        forbidden_cloze_targets=(),
+        prompt_sync_stale=False,
+        untagged_rate=0,
+        mandatory_generated_card_ids=("G1",),
+        covered_concept_ids_by_nid={note_id: ("C01",) for note_id in frozen_existing},
+        generated_concept_id_by_card_id={"G1": "C01"},
+        selection_metadata=metadata,
+        selection_order=tuple(item.identity for item in metadata),
+        selected_count=71,
+        below_warning_floor=False,
+    )
+    with app.state.database.session() as session:
+        stored = session.get(AnkiCurationJobModel, str(job_id))
+        assert stored is not None
+        stored.gap_prompt_version = "card-centric-gap-v2"
+        session.add(
+            AnkiReviewedReconciliationModel(
+                job_id=str(job_id),
+                review_revision=0,
+                payload_json=json.dumps(
+                    {
+                        "contract_version": "card_centric_s9_v1",
+                        "snapshot": snapshot.model_dump(mode="json"),
+                        "selection": {
+                            "selected_existing_note_ids": list(frozen_existing),
+                            "selected_generated_card_ids": ["G1"],
+                            "mandatory_note_ids": [],
+                            "mandatory_generated_card_ids": ["G1"],
+                            "cap": 70,
+                        },
+                    }
+                ),
+            )
+        )
+    repository.record_agent_heartbeat(
+        agent_id="anki-agent",
+        heartbeat_at="2026-08-05T18:00:00+00:00",
+        versions={"supported_envelope_contract_versions": (1, 2)},
+        active_snapshot_id="snapshot-test",
+        health={"status": "ok"},
+    )
+
+    tampered = client.post(
+        f"/api/anki/jobs/{job_id}/overflow-acknowledgement",
+        json={
+            "review_revision": 0,
+            "selected_existing_note_ids": [*database_existing[:-1], 999],
+            "selected_generated_card_ids": ["G1"],
+        },
+    )
+    assert tampered.status_code == 422
+
+    issued = client.post(
+        f"/api/anki/jobs/{job_id}/overflow-acknowledgement",
+        json={
+            "review_revision": 0,
+            "selected_existing_note_ids": list(database_existing),
+            "selected_generated_card_ids": ["G1"],
+        },
+    )
+    assert issued.status_code == 200
+    document = issued.json()
+    built = client.post(
+        f"/api/anki/jobs/{job_id}/envelope",
+        json={"review_revision": 0, "overflow_acknowledgement": document},
+    )
+
+    assert built.status_code == 201
+    assert repository.validate_card_centric_envelope_acknowledgement(
+        UUID(built.json()["envelope_id"])
+    )
 
 
 def test_api_requires_dashboard_auth_on_public_host(tmp_path: Path) -> None:
