@@ -393,14 +393,9 @@ def reconcile_card_centric(snapshot: CardCentricReconciliationInput) -> Reconcil
         )
     )
     legacy_overflow_ready = (
-        mandatory_selected
+        snapshot.pipeline_contract_version == "card_centric_v1"
+        and mandatory_selected
         and set(snapshot.selected_nids) == set(snapshot.mandatory_nids)
-        and (
-            set(snapshot.selected_generated_card_ids)
-            == set(snapshot.mandatory_generated_card_ids)
-            if snapshot.pipeline_contract_version == "card_centric_v1"
-            else False
-        )
     )
     overflow_ok = total <= snapshot.cap or (
         snapshot.overflow_acknowledgement is not None
