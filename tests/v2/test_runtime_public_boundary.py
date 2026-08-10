@@ -522,21 +522,60 @@ def test_public_trailing_slash_bypasses_access_and_docs_are_disabled_under_csp(t
         assert "script-src 'self'" in response.headers["content-security-policy"]
 
 
-def test_limiter_rejects_before_public_repository_or_hashing_work(tmp_path) -> None:
+def test_limiter_exhausts_normal_bucket_before_repository_or_hashing_work(
+    tmp_path,
+    monkeypatch,
+) -> None:
     app = create_app(_settings(tmp_path))
     app.state.public_quiz_rate_limiter = PublicQuizRateLimiter(
-        general_client=RatePolicy(0, 0),
-        general_global=RatePolicy(0, 0),
-        outline_client=RatePolicy(0, 0),
-        outline_global=RatePolicy(0, 0),
+        general_client=RatePolicy(2, 0.5),
+        general_global=RatePolicy(10, 1),
+        outline_client=RatePolicy(2, 0.5),
+        outline_global=RatePolicy(10, 1),
+        clock=lambda: 100.0,
     )
-    app.state.generation_repository = object()
+    media_path = tmp_path / "image.png"
+    media_path.write_bytes(b"public image")
+    repository_calls: list[tuple[str, str]] = []
+    hash_calls = 0
 
-    response = TestClient(app).get("/public/quizzes/token/media/image-key")
+    class Repository:
+        def published_quiz(self, token: str) -> object:
+            repository_calls.append(("quiz", token))
+            return object()
 
-    assert response.status_code == 429
-    assert response.headers["retry-after"] == "60"
-    assert response.headers["cache-control"] == "no-store"
+        def published_quiz_media_item(self, token: str, image_key: str) -> object:
+            repository_calls.append((token, image_key))
+            return SimpleNamespace(
+                path=media_path,
+                sha256="expected-digest",
+                media_type="image/png",
+            )
+
+    def hash_media(path) -> str:
+        nonlocal hash_calls
+        assert path == media_path
+        hash_calls += 1
+        return "expected-digest"
+
+    app.state.generation_repository = Repository()
+    monkeypatch.setattr("oms_hub.web.public_quiz_routes.sha256_file", hash_media)
+    client = TestClient(app)
+
+    allowed = [
+        client.get("/public/quizzes/token/media/image-key")
+        for _ in range(2)
+    ]
+    calls_before_rejection = tuple(repository_calls)
+    hashes_before_rejection = hash_calls
+    rejected = client.get("/public/quizzes/token/media/image-key")
+
+    assert [response.status_code for response in allowed] == [200, 200]
+    assert rejected.status_code == 429
+    assert rejected.headers["retry-after"] == "2"
+    assert rejected.headers["cache-control"] == "no-store"
+    assert tuple(repository_calls) == calls_before_rejection
+    assert hash_calls == hashes_before_rejection == 2
 
 
 def test_public_client_identity_rejects_forwarded_chains() -> None:

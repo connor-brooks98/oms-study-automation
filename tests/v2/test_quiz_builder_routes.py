@@ -237,7 +237,9 @@ def test_sources_expose_safe_persisted_import_defaults(tmp_path) -> None:
     assert invalid.status_code == 422
 
 
-def test_all_import_source_forms_persist_selected_defaults_across_refresh(tmp_path) -> None:
+def test_all_import_source_forms_persist_checked_and_unchecked_defaults_across_refresh(
+    tmp_path,
+) -> None:
     client = _client(tmp_path)
 
     class Snapshotter:
@@ -255,25 +257,41 @@ def test_all_import_source_forms_persist_selected_defaults_across_refresh(tmp_pa
         'name="attach_to_notebook" value="true" data-import-notebook'
     ) == 3
 
-    submissions = (
+    submissions = tuple(
         (
-            "file",
-            {"title": "File reference"},
-            {"file": ("reference.txt", b"file facts", "text/plain")},
-        ),
-        ("text", {"title": "Text reference", "text": "text facts"}, None),
-        (
-            "url",
-            {"title": "URL reference", "url": "https://example.test/reference"},
-            None,
-        ),
+            source_type,
+            attach_to_notebook,
+            {
+                "title": f"{source_type.title()} reference {attach_to_notebook}",
+                **({"text": "text facts"} if source_type == "text" else {}),
+                **(
+                    {"url": f"https://example.test/{source_type}/{attach_to_notebook}"}
+                    if source_type == "url"
+                    else {}
+                ),
+            },
+            (
+                {
+                    "file": (
+                        f"reference-{attach_to_notebook}.txt",
+                        b"file facts",
+                        "text/plain",
+                    )
+                }
+                if source_type == "file"
+                else None
+            ),
+        )
+        for source_type in ("file", "text", "url")
+        for attach_to_notebook in (True, False)
     )
-    for source_type, fields, files in submissions:
+    expected_defaults: dict[str, dict[str, object]] = {}
+    for source_type, attach_to_notebook, fields, files in submissions:
         data = {
             "subject": "Neuro",
             "exam_number": "1",
             "role": "supporting_reference",
-            "attach_to_notebook": "true",
+            "attach_to_notebook": str(attach_to_notebook).lower(),
             **fields,
         }
         response = client.post(
@@ -283,19 +301,20 @@ def test_all_import_source_forms_persist_selected_defaults_across_refresh(tmp_pa
             headers=_csrf_headers(client),
         )
         assert response.status_code == 202, response.text
+        expected_defaults[fields["title"]] = {
+            "role": "supporting_reference",
+            "attach_to_notebook": attach_to_notebook,
+        }
 
     refreshed = client.get(
         "/studio/sources", params={"subject_key": "neuro", "exam_number": 1}
     )
     assert refreshed.status_code == 200
     records = {record["title"]: record for record in refreshed.json()["sources"]}
-    assert set(records) == {"File reference", "Text reference", "URL reference"}
-    for record in records.values():
+    assert set(records) == set(expected_defaults)
+    for title, record in records.items():
         assert record["purpose"] == "local_import"
-        assert record["import_defaults"] == {
-            "role": "supporting_reference",
-            "attach_to_notebook": True,
-        }
+        assert record["import_defaults"] == expected_defaults[title]
 
 
 def test_remote_source_delete_is_queued_before_any_worker_effect(tmp_path) -> None:
