@@ -12,7 +12,10 @@ HOTFIX_FILES = (
     "README.md",
     "docs/operations/quiz-builder.md",
     "pyproject.toml",
+    "scripts/backup-sqlite.py",
     "scripts/evaluate_anydoc_corpus.py",
+    "scripts/install-windows.ps1",
+    "scripts/start-hub.ps1",
 )
 _FULL_COMMIT_SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 _ZIP_TIMESTAMP = (2026, 7, 26, 0, 0, 0)

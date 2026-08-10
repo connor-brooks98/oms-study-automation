@@ -88,7 +88,9 @@ $EffectiveDataRootValue = Get-EffectiveSetting `
   -Path $EnvFile `
   -DefaultValue $DataRoot
 $EffectiveDataRoot = [System.IO.Path]::GetFullPath($EffectiveDataRootValue)
-$DefaultDatabaseUrl = "sqlite:///" + ((Join-Path $EffectiveDataRoot "hub.db").Replace("\", "/"))
+# Match Settings.database_url exactly when OMS_HUB_DATABASE_URL is absent.
+# OMS_HUB_DATA_DIR does not implicitly relocate the runtime database.
+$DefaultDatabaseUrl = "sqlite:///C:/ProgramData/OMSStudyHub/hub.db"
 $EffectiveDatabaseUrl = Get-EffectiveSetting `
   -Name "OMS_HUB_DATABASE_URL" `
   -Path $EnvFile `
@@ -243,6 +245,22 @@ function Get-ProjectBuildTree {
   return $FullTree.ToLowerInvariant()
 }
 
+function Assert-ProjectBuildIdentity {
+  param(
+    [string]$ExpectedProjectRoot,
+    [string]$ExpectedBuildRevision,
+    [string]$ExpectedBuildTree
+  )
+  $ActualBuildRevision = Get-ProjectBuildRevision -ExpectedProjectRoot $ExpectedProjectRoot
+  $ActualBuildTree = Get-ProjectBuildTree -ExpectedProjectRoot $ExpectedProjectRoot
+  if (
+    $ActualBuildRevision -ne $ExpectedBuildRevision -or
+    $ActualBuildTree -ne $ExpectedBuildTree
+  ) {
+    throw "The project checkout changed after installer preflight; installation is blocked."
+  }
+}
+
 function Assert-StartedHubProvenance {
   param(
     [string]$ExpectedProjectRoot,
@@ -328,10 +346,18 @@ if ($LASTEXITCODE -ne 0) { throw "Python 3.12 is required" }
 
 # The scheduled-task command can return before its launcher and child exit.
 # Stop and verify only the exact process tree rooted in this deployment.
+Assert-ProjectBuildIdentity `
+  -ExpectedProjectRoot $ProjectRoot `
+  -ExpectedBuildRevision $PreflightBuildRevision `
+  -ExpectedBuildTree $PreflightBuildTree
 Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot
 
 $BackupComplete = $false
 if ($PSCmdlet.ShouldProcess($BackupPath, "Create verified rollback backup")) {
+  Assert-ProjectBuildIdentity `
+    -ExpectedProjectRoot $ProjectRoot `
+    -ExpectedBuildRevision $PreflightBuildRevision `
+    -ExpectedBuildTree $PreflightBuildTree
   if (Test-Path -LiteralPath $BackupPath) {
     throw "Rollback backup path already exists: $BackupPath"
   }
@@ -371,8 +397,8 @@ if ($PSCmdlet.ShouldProcess($BackupPath, "Create verified rollback backup")) {
   $ConfigMetadataPath = Join-Path $BackupPath "effective-config.json"
   $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   $ConfigMetadata = [ordered]@{
-    build_revision = Get-ProjectBuildRevision -ExpectedProjectRoot $ProjectRoot
-    build_tree = Get-ProjectBuildTree -ExpectedProjectRoot $ProjectRoot
+    build_revision = $PreflightBuildRevision
+    build_tree = $PreflightBuildTree
     database_path = $DatabasePath
     database_url = $EffectiveDatabaseUrl
     data_root = $EffectiveDataRoot
@@ -431,6 +457,10 @@ if (-not $BackupComplete -and -not $WhatIfPreference) {
 }
 
 if ($PSCmdlet.ShouldProcess($ProjectRoot, "Install Study Hub V2")) {
+  Assert-ProjectBuildIdentity `
+    -ExpectedProjectRoot $ProjectRoot `
+    -ExpectedBuildRevision $PreflightBuildRevision `
+    -ExpectedBuildTree $PreflightBuildTree
   if (-not (Test-Path "$ProjectRoot\.venv\Scripts\python.exe")) {
     $PythonVenvArgs = $PythonPrefix + @("-m", "venv", "$ProjectRoot\.venv")
     & $PythonCommand @PythonVenvArgs
@@ -457,6 +487,10 @@ if ($PSCmdlet.ShouldProcess($ProjectRoot, "Install Study Hub V2")) {
 }
 
 if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {
+  Assert-ProjectBuildIdentity `
+    -ExpectedProjectRoot $ProjectRoot `
+    -ExpectedBuildRevision $PreflightBuildRevision `
+    -ExpectedBuildTree $PreflightBuildTree
   $PowerShell = (Get-Command powershell.exe).Source
   $Action = New-ScheduledTaskAction `
     -Execute $PowerShell `
@@ -484,13 +518,15 @@ if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {
   # Re-assert the same-root stop invariant immediately before task startup.
   # Never terminate generic Python processes from another deployment.
   Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot
+  Assert-ProjectBuildIdentity `
+    -ExpectedProjectRoot $ProjectRoot `
+    -ExpectedBuildRevision $PreflightBuildRevision `
+    -ExpectedBuildTree $PreflightBuildTree
   Start-ScheduledTask -TaskName $TaskName
-  $ExpectedBuildRevision = Get-ProjectBuildRevision -ExpectedProjectRoot $ProjectRoot
-  $ExpectedBuildTree = Get-ProjectBuildTree -ExpectedProjectRoot $ProjectRoot
   Assert-StartedHubProvenance `
     -ExpectedProjectRoot $ProjectRoot `
-    -ExpectedBuildRevision $ExpectedBuildRevision `
-    -ExpectedBuildTree $ExpectedBuildTree
+    -ExpectedBuildRevision $PreflightBuildRevision `
+    -ExpectedBuildTree $PreflightBuildTree
 }
 
 Write-Host "Study Hub V2 install complete."

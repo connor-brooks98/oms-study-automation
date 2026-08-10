@@ -44,6 +44,9 @@ def test_release_builder_creates_secret_safe_hotfix_and_source_archives(tmp_path
     assert "src/oms_hub/web/static/uploads.js" in hotfix_names
     assert "src/oms_hub/web/templates/uploads.html" in hotfix_names
     assert "src/oms_hub/web/templates/artifact_text.html" in hotfix_names
+    assert "scripts/backup-sqlite.py" in hotfix_names
+    assert "scripts/install-windows.ps1" in hotfix_names
+    assert "scripts/start-hub.ps1" in hotfix_names
     assert "pyproject.toml" in source_names
     assert "src/oms_hub/app.py" in source_names
     assert "tests/v2/test_llm_settings_routes.py" in source_names

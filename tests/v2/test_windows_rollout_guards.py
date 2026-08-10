@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from oms_hub.config import Settings
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -125,6 +127,41 @@ def test_windows_installer_resolves_config_stops_tree_and_backs_up_before_pip() 
     assert 'Get-EffectiveSetting `\n  -Name "OMS_HUB_DATABASE_URL"' in script
     assert "Resolve-SqliteDatabasePath" in script
     assert "Verified rollback backup was not completed; installation is blocked." in script
+
+
+def test_windows_installer_database_default_matches_runtime_under_partial_override(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OMS_HUB_DATA_DIR", r"D:\StudyHubData")
+    monkeypatch.delenv("OMS_HUB_DATABASE_URL", raising=False)
+
+    settings = Settings(_env_file=None)
+    script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+
+    assert settings.database_url == "sqlite:///C:/ProgramData/OMSStudyHub/hub.db"
+    assert (
+        '$DefaultDatabaseUrl = "sqlite:///C:/ProgramData/OMSStudyHub/hub.db"'
+        in script
+    )
+    assert 'Join-Path $EffectiveDataRoot "hub.db"' not in script
+
+
+def test_windows_installer_pins_preflight_identity_through_startup() -> None:
+    script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+
+    assert "function Assert-ProjectBuildIdentity" in script
+    assert script.count("Assert-ProjectBuildIdentity `") >= 5
+    metadata = script[script.index("$ConfigMetadata = [ordered]@{") :]
+    assert "build_revision = $PreflightBuildRevision" in metadata
+    assert "build_tree = $PreflightBuildTree" in metadata
+    start = script.index("Start-ScheduledTask -TaskName $TaskName")
+    final_identity_check = script.rindex("Assert-ProjectBuildIdentity `", 0, start)
+    assert final_identity_check < start
+    health = script.index("Assert-StartedHubProvenance `", start)
+    health_block = script[health : script.index("}", health)]
+    assert "-ExpectedBuildRevision $PreflightBuildRevision" in health_block
+    assert "-ExpectedBuildTree $PreflightBuildTree" in health_block
+    assert "$ExpectedBuildRevision = Get-ProjectBuildRevision" not in script
 
 
 def test_windows_installer_fails_closed_after_every_install_native_command() -> None:
