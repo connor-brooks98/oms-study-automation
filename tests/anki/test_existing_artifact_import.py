@@ -36,7 +36,11 @@ from oms_hub.models import (
 )
 from oms_hub.repositories import CatalogRepository, LectureInput
 from oms_hub.study_generation.domain import GenerationKind, NotebookAnswer, SourceKind
-from oms_hub.study_generation.outline import OutlinePdfRenderer, OutlineService
+from oms_hub.study_generation.outline import (
+    OutlinePdfRenderer,
+    OutlineService,
+    outline_rollback_path,
+)
 from oms_hub.study_generation.repository import (
     GenerationRepository,
     ImportedOutlineReplacementRequired,
@@ -487,9 +491,7 @@ def test_imported_outline_requires_explicit_replacement_and_rolls_back_copy(
     assert review is not None
     _mark_imported_outline_job_running(imported_bundle, job.id)
     job = repository.get(job.id)
-    rollback = imported_bundle.outline_path.with_name(
-        f".{imported_bundle.outline_path.name}.rollback-{job.id}"
-    )
+    rollback = outline_rollback_path(imported_bundle.outline_path, job.id)
     monkeypatch.setattr(repository, "record_outline", reject_record)
     with pytest.raises(RuntimeError, match="database write failed"):
         service.file(job, lecture, answer, replacement_review=review)
@@ -620,13 +622,35 @@ def test_outline_claim_loss_preserves_successor_and_rollback_evidence(
     with pytest.raises(ArtifactWriteClaimLost, match="successor owns"):
         service.file(job, lecture, answer, replacement_review=review)
 
-    rollback = imported_bundle.outline_path.with_name(
-        f".{imported_bundle.outline_path.name}.rollback-{job.id}"
-    )
+    rollback = outline_rollback_path(imported_bundle.outline_path, job.id)
     assert imported_bundle.outline_path.read_bytes() == successor
     assert rollback.read_bytes() == before
     current = repository.current_outline(imported_bundle.lecture_id)
     assert current is not None and current.id == imported_bundle.outline_id
+
+
+def test_outline_rollback_path_is_short_deterministic_and_destination_job_keyed(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "outlines"
+    parent.mkdir()
+    target_length = 250
+    filename_length = target_length - len(str(parent)) - 1 - len(".pdf")
+    destination = parent / ("a" * filename_length + ".pdf")
+    assert len(str(destination)) == target_length
+    assert len(destination.name) < 255
+
+    first = outline_rollback_path(destination, "job-1")
+    same = outline_rollback_path(destination, "job-1")
+    other_job = outline_rollback_path(destination, "job-2")
+    other_destination = outline_rollback_path(parent / "other.pdf", "job-1")
+
+    assert first.parent == destination.parent
+    assert first == same
+    assert first != other_job
+    assert first != other_destination
+    assert len(first.name) < 64
+    assert len(str(first)) < 260
 
 
 def test_approved_outline_replacement_requires_running_pdf_job_at_promotion(

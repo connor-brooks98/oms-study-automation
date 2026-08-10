@@ -4,6 +4,8 @@ import shutil
 import uuid
 from pathlib import Path
 
+_COPY_TEMPORARY_ATTEMPTS = 16
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -13,9 +15,28 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def atomic_copy_temporary_path(destination: Path) -> Path:
+    """Return a short, same-directory candidate for an atomic copy temporary."""
+    return destination.parent / f".oms-copy-{uuid.uuid4().hex}.tmp"
+
+
+def _reserve_atomic_copy_temporary(destination: Path) -> Path:
+    for _ in range(_COPY_TEMPORARY_ATTEMPTS):
+        temporary = atomic_copy_temporary_path(destination)
+        try:
+            with temporary.open("xb"):
+                pass
+        except FileExistsError:
+            continue
+        return temporary
+    raise FileExistsError(
+        f"could not reserve an atomic copy temporary for {destination}"
+    )
+
+
 def verified_atomic_copy(source: Path, destination: Path) -> str:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.partial-{uuid.uuid4().hex}")
+    temporary = _reserve_atomic_copy_temporary(destination)
     try:
         shutil.copy2(source, temporary)
         source_digest = sha256_file(source)

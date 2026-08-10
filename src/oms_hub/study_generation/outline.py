@@ -1,5 +1,7 @@
+import hashlib
 from html import escape
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 from pypdf import PdfReader
@@ -36,6 +38,13 @@ from oms_hub.study_generation.repository import (
     GenerationRepository,
     ImportedOutlineReplacementReview,
 )
+
+
+def outline_rollback_path(destination: Path, job_id: str) -> Path:
+    """Return the stable, same-directory rollback sidecar for an outline promotion."""
+    identity = f"{destination.resolve(strict=False)}\0{job_id}".encode()
+    key = hashlib.sha256(identity).hexdigest()[:32]
+    return destination.parent / f".oms-outline-rollback-{key}.bak"
 
 
 class OutlinePdfRenderer:
@@ -200,9 +209,7 @@ class OutlineService:
                 job.id,
                 replacement_review=replacement_review,
             )
-            rollback = destination.with_name(
-                f".{destination.name}.rollback-{job.id}"
-            )
+            rollback = outline_rollback_path(destination, job.id)
             had_destination = destination.exists()
             copied = False
             try:
