@@ -329,6 +329,42 @@ test("remove clears local progress and removes a row only after successful unpub
   assert.equal(row.removed, true);
 });
 
+test("successful unpublish updates the UI when browser progress cleanup is denied", async () => {
+  const storage = {
+    getItem: () => null,
+    removeItem() { throw new Error("storage denied"); },
+    key: () => null,
+    get length() { return 0; },
+  };
+  const row = new FakeQuizRow("tok1", 1);
+  const removeButton = new FakeRemoveButton("tok1", 1, row);
+  const documentRef = new FakeLibraryDocument({ rows: [row], removeButtons: [removeButton] });
+  const originalConfirm = global.confirm;
+  const originalFetch = global.fetch;
+  global.confirm = () => true;
+  global.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        state: "unpublished",
+        exam_quiz_count: 0,
+        course_quiz_count: 0,
+      };
+    },
+  });
+  try {
+    library.initialize(documentRef, storage);
+    await removeButton._listeners.click[0]();
+  } finally {
+    global.confirm = originalConfirm;
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(row.removed, true);
+  assert.match(documentRef.resetMessage.textContent, /released quiz was removed/i);
+  assert.match(documentRef.resetMessage.textContent, /progress could not be cleared/i);
+});
+
 test("failed remove keeps the row and reports the server detail", async () => {
   const storage = makeMemoryStorage();
   const row = new FakeQuizRow("tok1", 1);

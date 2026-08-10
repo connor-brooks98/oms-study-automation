@@ -35,6 +35,15 @@
 
   const resetProgress = (storage, token, version) => storage.removeItem(progressKey(token, version));
 
+  const tryResetProgress = (storage, token, version) => {
+    try {
+      resetProgress(storage, token, version);
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  };
+
   const cookieValue = (cookie, name) => {
     const prefix = `${name}=`;
     const value = String(cookie || "").split(";").map((part) => part.trim())
@@ -299,13 +308,23 @@
             headers: { "X-CSRF-Token": cookieValue(documentRef.cookie, "study_hub_csrf") || "" },
           });
           if (!response.ok) throw new Error(await errorMessage(response, "Quiz could not be unpublished."));
-          resetProgress(storage, button.dataset.quizToken, button.dataset.quizVersion);
+          const payload = await response.json();
+          const progressCleared = tryResetProgress(
+            storage,
+            button.dataset.quizToken,
+            button.dataset.quizVersion,
+          );
           applyUnpublish(
             documentRef,
             button.closest(".lecture-row"),
-            await response.json(),
+            payload,
           );
-          report(documentRef, "The released quiz was removed.");
+          report(
+            documentRef,
+            progressCleared
+              ? "The released quiz was removed."
+              : "The released quiz was removed, but this browser's saved progress could not be cleared.",
+          );
         } catch (error) {
           button.disabled = false;
           report(documentRef, error instanceof Error ? error.message : "Quiz could not be unpublished.");
@@ -374,6 +393,7 @@
 
   const api = {
     initialize, progressKey, progressLabel, progressClass, readProgress, resetProgress,
+    tryResetProgress,
     cookieValue, managementRequest, setExpanded, directionSequence, reorderRequest,
     reorderFailureStorageKey, storeReorderFailure, consumeReorderFailure, keyboardReorderDirection,
     applyRenamedTitle, applyUnpublish, connectedFocusable, quizCountLabel,

@@ -31,14 +31,26 @@
     focusKey: documentRef.activeElement?.dataset?.focusKey || null,
   });
 
+  const connectedFocusable = (element) => (
+    element && element.isConnected !== false && !element.disabled && element.focus
+      ? element
+      : null
+  );
+
   const restoreRenderState = (container, state) => {
     const keyed = Array.from(container.querySelectorAll?.("[data-state-key]") || []);
     keyed.forEach((element) => {
       if (state.openKeys.has(element.dataset.stateKey)) element.open = true;
     });
-    const focus = Array.from(container.querySelectorAll?.("[data-focus-key]") || [])
-      .find((element) => element.dataset.focusKey === state.focusKey);
-    if (focus?.focus) focus.focus({ preventScroll: true });
+    if (!state.focusKey) return;
+    const focusable = Array.from(container.querySelectorAll?.("[data-focus-key]") || [])
+      .filter(connectedFocusable);
+    const runKey = state.focusKey.match(/^(run:[^:]+):/)?.[1] || null;
+    const focus = focusable.find((element) => element.dataset.focusKey === state.focusKey)
+      || (runKey && focusable.find((element) => element.dataset.focusKey.startsWith(`${runKey}:`)))
+      || focusable[0]
+      || connectedFocusable(container);
+    focus?.focus({ preventScroll: true });
   };
 
   const applyImportRoleState = (form) => {

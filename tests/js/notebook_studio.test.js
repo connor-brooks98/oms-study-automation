@@ -183,6 +183,41 @@ test("terminal runs expose compact rerun and history-only remove actions", () =>
   assert.equal(actions.children[1].ariaLabel, "Remove run from history");
 });
 
+test("run history rerender moves focus to a surviving control when the focused action disappears", () => {
+  const container = new Element("div");
+  const originalRuns = [{
+    id: "run-1", label: "First", state: "complete", stage: "complete",
+    attempts: 1, error: null, workflow_kind: "generate", review_url: null,
+    image_review_url: null, published_url: "/quizzes/token", attempt_history: [],
+  }, {
+    id: "run-2", label: "Second", state: "complete", stage: "complete",
+    attempts: 1, error: null, workflow_kind: "generate", review_url: null,
+    image_review_url: null, published_url: null, attempt_history: [],
+  }];
+  studio.renderRuns(documentRef, container, originalRuns);
+  const unpublish = container.querySelectorAll("[data-focus-key]")
+    .find((element) => element.dataset.focusKey === "run:run-1:unpublish");
+  unpublish.focus();
+
+  studio.renderRuns(documentRef, container, [originalRuns[1]]);
+
+  assert.equal(documentRef.activeElement.dataset.focusKey, "run:run-2:rerun");
+});
+
+test("empty run history receives focus after its focused run is removed", () => {
+  const container = new Element("div");
+  studio.renderRuns(documentRef, container, [{
+    id: "run-1", label: "First", state: "complete", stage: "complete",
+    attempts: 1, error: null, workflow_kind: "generate", review_url: null,
+    image_review_url: null, published_url: null, attempt_history: [],
+  }]);
+  container.querySelectorAll("[data-focus-key]")[0].focus();
+
+  studio.renderRuns(documentRef, container, []);
+
+  assert.equal(documentRef.activeElement, container);
+});
+
 test("ready local-import rows hydrate on refresh and deduplicate by source id", () => {
   const list = new Element("ul");
   const sources = [{
