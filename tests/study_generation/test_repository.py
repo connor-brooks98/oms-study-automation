@@ -101,7 +101,21 @@ def test_notebook_scope_lease_serializes_workers_and_recovers_after_expiry(tmp_p
         "NEURO", 1, "generation", "job-1", now=now
     )
 
-    after_expiry = now + timedelta(minutes=31)
+    renewed_at = now + timedelta(minutes=20)
+    assert repository.renew_notebook_scope(
+        "neuro", 1, "generation", "job-1", now=renewed_at
+    )
+    assert not competitor.acquire_notebook_scope(
+        "neuro", 1, "studio", "operation-1", now=now + timedelta(minutes=31)
+    )
+    assert not competitor.renew_notebook_scope(
+        "neuro", 1, "studio", "operation-1", now=renewed_at
+    )
+
+    after_expiry = renewed_at + timedelta(minutes=31)
+    assert not repository.renew_notebook_scope(
+        "neuro", 1, "generation", "job-1", now=after_expiry
+    )
     assert competitor.acquire_notebook_scope(
         "neuro", 1, "studio", "operation-1", now=after_expiry
     )

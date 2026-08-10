@@ -6,9 +6,11 @@ from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock, Thread
+from time import monotonic
 from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
@@ -35,6 +37,7 @@ from oms_hub.study_generation.domain import (
 from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
     NotebookScopeBusyError,
+    NotebookScopeLostError,
     translate_notebook_error,
 )
 from oms_hub.study_generation.notebook_storage import PlaintextNotebookStorage
@@ -47,7 +50,17 @@ _active_client: ContextVar[Any | None] = ContextVar(
     "notebooklm_active_client",
     default=None,
 )
-_active_scope: ContextVar[tuple[int, str, int] | None] = ContextVar(
+
+
+@dataclass(slots=True)
+class _MutationScopeState:
+    gateway_id: int
+    subject_key: str
+    exam_number: int
+    lost: Event
+
+
+_active_scope: ContextVar[_MutationScopeState | None] = ContextVar(
     "notebooklm_active_scope",
     default=None,
 )
@@ -227,6 +240,8 @@ class StoredNotebookLMGateway:
         repository: GenerationRepository,
         *,
         client_factory: Callable[[], Any] | None = None,
+        scope_lease_duration: timedelta = timedelta(minutes=30),
+        scope_renew_interval_seconds: float = 60.0,
     ):
         self.storage = (
             PlaintextNotebookStorage(storage_path)
@@ -235,6 +250,12 @@ class StoredNotebookLMGateway:
         )
         self.repository = repository
         self.client_factory = client_factory
+        if scope_lease_duration.total_seconds() <= scope_renew_interval_seconds:
+            raise ValueError("notebook scope lease must exceed its renewal interval")
+        if scope_renew_interval_seconds <= 0:
+            raise ValueError("notebook scope renewal interval must be positive")
+        self._scope_lease_duration = scope_lease_duration
+        self._scope_renew_interval_seconds = scope_renew_interval_seconds
         self._scope_locks: dict[tuple[str, int], Lock] = {}
         self._scope_locks_guard = Lock()
 
@@ -250,8 +271,10 @@ class StoredNotebookLMGateway:
         subject_key = " ".join(subject.casefold().split())
         scope = (subject_key, exam_number)
         active = _active_scope.get()
-        if active == (id(self), *scope):
+        if self._scope_matches(active, subject_key, exam_number):
+            self._raise_if_scope_lost(active)
             yield
+            self._raise_if_scope_lost(active)
             return
         with self._scope_locks_guard:
             local_lock = self._scope_locks.setdefault(scope, Lock())
@@ -259,19 +282,53 @@ class StoredNotebookLMGateway:
             raise NotebookScopeBusyError()
         durable_acquired = False
         acquire = getattr(self.repository, "acquire_notebook_scope", None)
+        renew = getattr(self.repository, "renew_notebook_scope", None)
         release = getattr(self.repository, "release_notebook_scope", None)
+        stop_renewal = Event()
+        state = _MutationScopeState(id(self), subject_key, exam_number, Event())
+        renewal_thread: Thread | None = None
         try:
             if callable(acquire):
                 durable_acquired = bool(
-                    acquire(subject_key, exam_number, owner_kind, owner_id)
+                    acquire(
+                        subject_key,
+                        exam_number,
+                        owner_kind,
+                        owner_id,
+                        lease_duration=self._scope_lease_duration,
+                    )
                 )
                 if not durable_acquired:
                     raise NotebookScopeBusyError()
-            token = _active_scope.set((id(self), *scope))
+                if not callable(renew):
+                    raise RuntimeError("durable notebook scope does not support renewal")
+                renewal_thread = Thread(
+                    target=self._renew_scope_lease,
+                    args=(
+                        subject_key,
+                        exam_number,
+                        owner_kind,
+                        owner_id,
+                        renew,
+                        stop_renewal,
+                        state.lost,
+                    ),
+                    name=f"oms-notebook-scope-{exam_number}",
+                    daemon=True,
+                )
+                renewal_thread.start()
+            token = _active_scope.set(state)
             try:
                 yield
+                stop_renewal.set()
+                if renewal_thread is not None:
+                    renewal_thread.join(timeout=5)
+                self._raise_if_scope_lost(state)
             finally:
                 _active_scope.reset(token)
+                stop_renewal.set()
+                if renewal_thread is not None and renewal_thread.is_alive():
+                    renewal_thread.join(timeout=5)
                 if durable_acquired and callable(release):
                     try:
                         release(subject_key, exam_number, owner_kind, owner_id)
@@ -279,6 +336,57 @@ class StoredNotebookLMGateway:
                         logger.exception("NotebookLM scope lease release failed")
         finally:
             local_lock.release()
+
+    def _scope_matches(
+        self,
+        active: _MutationScopeState | None,
+        subject_key: str,
+        exam_number: int,
+    ) -> bool:
+        return bool(
+            active is not None
+            and active.gateway_id == id(self)
+            and active.subject_key == subject_key
+            and active.exam_number == exam_number
+        )
+
+    @staticmethod
+    def _raise_if_scope_lost(active: _MutationScopeState | None) -> None:
+        if active is not None and active.lost.is_set():
+            raise NotebookScopeLostError()
+
+    def _renew_scope_lease(
+        self,
+        subject_key: str,
+        exam_number: int,
+        owner_kind: str,
+        owner_id: str,
+        renew: Callable[..., object],
+        stop: Event,
+        lost: Event,
+    ) -> None:
+        deadline = monotonic() + self._scope_lease_duration.total_seconds()
+        while not stop.wait(self._scope_renew_interval_seconds):
+            try:
+                renewed = bool(
+                    renew(
+                        subject_key,
+                        exam_number,
+                        owner_kind,
+                        owner_id,
+                        lease_duration=self._scope_lease_duration,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - retry until the existing lease expires
+                logger.exception("NotebookLM scope lease renewal failed")
+                if monotonic() >= deadline:
+                    lost.set()
+                    return
+                continue
+            if not renewed:
+                lost.set()
+                return
+            deadline = monotonic() + self._scope_lease_duration.total_seconds()
 
     @contextmanager
     def _remote_notebook_scope(
@@ -291,8 +399,10 @@ class StoredNotebookLMGateway:
             raise SourceIsolationError("NotebookLM notebook is not bound to an exam")
         subject_key = " ".join(mapping.subject_key.casefold().split())
         active = _active_scope.get()
-        if active == (id(self), subject_key, mapping.exam_number):
+        if self._scope_matches(active, subject_key, mapping.exam_number):
+            self._raise_if_scope_lost(active)
             yield
+            self._raise_if_scope_lost(active)
             return
         with self.mutation_scope(
             subject_key,

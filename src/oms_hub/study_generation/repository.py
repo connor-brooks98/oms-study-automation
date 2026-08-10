@@ -300,6 +300,35 @@ class GenerationRepository:
             )
             return cast(CursorResult[Any], result).rowcount == 1
 
+    def renew_notebook_scope(
+        self,
+        subject_key: str,
+        exam_number: int,
+        owner_kind: str,
+        owner_id: str,
+        *,
+        now: datetime | None = None,
+        lease_duration: timedelta = timedelta(minutes=30),
+    ) -> bool:
+        """Extend a live lease without reclaiming an expired or replaced owner."""
+        now = now or datetime.now(UTC)
+        with self.database.session() as session:
+            result = session.execute(
+                update(NotebookScopeLeaseModel)
+                .where(
+                    NotebookScopeLeaseModel.subject_key == _normalize(subject_key),
+                    NotebookScopeLeaseModel.exam_number == exam_number,
+                    NotebookScopeLeaseModel.owner_kind == owner_kind.strip()[:30],
+                    NotebookScopeLeaseModel.owner_id == owner_id.strip()[:100],
+                    NotebookScopeLeaseModel.lease_expires_at > now.isoformat(),
+                )
+                .values(
+                    lease_expires_at=(now + lease_duration).isoformat(),
+                    updated_at=now.isoformat(),
+                )
+            )
+            return cast(CursorResult[Any], result).rowcount == 1
+
     def save_notebook_mapping(
         self,
         subject: str,

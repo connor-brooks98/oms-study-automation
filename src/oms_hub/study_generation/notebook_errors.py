@@ -63,6 +63,17 @@ class NotebookScopeBusyError(NotebookGatewayError):
         )
 
 
+class NotebookScopeLostError(NotebookGatewayError):
+    """The durable owner could not renew its active logical notebook lease."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "NotebookLM operation ownership was lost; the result will be reconciled.",
+            source=DiagnosticSource.STUDY_HUB,
+            retryable=True,
+        )
+
+
 def translate_notebook_error(
     error: BaseException,
 ) -> NotebookGatewayError | None:

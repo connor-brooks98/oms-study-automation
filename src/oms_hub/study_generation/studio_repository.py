@@ -465,6 +465,8 @@ class StudioRepository:
             operation = session.get(StudioSourceOperationModel, operation_id)
             if operation is None or operation.operation_kind != "add":
                 raise KeyError(operation_id)
+            if operation.state == "completed":
+                return
             operation.state = "reconciling"
             operation.diagnostic_source = diagnostic_source
             operation.error = error[:1000]
