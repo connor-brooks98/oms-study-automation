@@ -268,12 +268,15 @@ class StudioWorker:
                     text=text,
                     url=source.source_url,
                 )
-                self.repository.complete_attach_operation(
-                    operation.id,
-                    remote_id,
-                    converted=converted,
-                    payload_path=path,
-                )
+            # Exiting the durable mutation scope is part of the remote effect's
+            # success contract. A lost lease must remain reconcilable rather
+            # than committing a silently trusted local completion.
+            self.repository.complete_attach_operation(
+                operation.id,
+                remote_id,
+                converted=converted,
+                payload_path=path,
+            )
         except NotebookMutationBusy:
             self.repository.defer_attach_for_notebook(operation.id)
         except NotebookScopeBusyError:

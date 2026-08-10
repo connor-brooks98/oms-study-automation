@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from oms_hub.db import Database
 from oms_hub.llm.domain import DiagnosticSource
@@ -10,6 +11,7 @@ from oms_hub.models import StudioSourceModel, StudioSourceOperationModel
 from oms_hub.study_generation.notebook_errors import (
     NotebookGatewayError,
     NotebookScopeBusyError,
+    NotebookScopeLostError,
     NotebookSourceNotFoundError,
 )
 from oms_hub.study_generation.studio_domain import StudioSourceState, StudioSourceType
@@ -130,6 +132,42 @@ def test_interrupted_add_with_one_delta_is_adopted_without_duplicate(tmp_path: P
     assert attached is not None
     assert attached.state is StudioSourceState.ATTACHED
     assert attached.remote_source_id == "remote-1"
+    assert gateway.add_calls == 1
+
+
+def test_lease_loss_after_remote_add_remains_reconcilable_until_adopted(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    source = _source(repository, tmp_path)
+
+    class LosingGateway(_SagaGateway):
+        @contextmanager
+        def mutation_scope(self, subject, exam_number, owner_kind, owner_id):
+            with super().mutation_scope(subject, exam_number, owner_kind, owner_id):
+                yield
+            raise NotebookScopeLostError()
+
+    gateway = LosingGateway("success")
+    worker = _worker(repository, gateway)
+
+    assert worker.run_once() is True
+    pending = repository.get(source.id)
+    assert pending is not None
+    assert pending.state is StudioSourceState.ATTACHING
+    assert pending.remote_source_id is None
+    with repository.database.session() as session:
+        operation = session.scalar(select(StudioSourceOperationModel))
+        assert operation is not None
+        assert operation.state == "reconciling"
+        assert operation.remote_source_id is None
+
+    _make_source_retry_due(repository, source.id)
+    assert worker.run_once() is True
+    attached = repository.get(source.id)
+    assert attached is not None
+    assert attached.state is StudioSourceState.ATTACHED
+    assert attached.remote_source_id == "remote-success"
     assert gateway.add_calls == 1
 
 

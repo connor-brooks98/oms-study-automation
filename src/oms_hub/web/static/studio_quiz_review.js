@@ -53,6 +53,26 @@
   const candidateSelectionPayload = (candidateId) => ({ image_candidate_id: candidateId });
   const candidateSelectionUrl = (runId, questionId) => `/studio/runs/${encodeURIComponent(runId)}/questions/${encodeURIComponent(questionId)}/image-selection`;
 
+  const reindexChoiceRows = (group, questionId = "") => {
+    Array.from(group?.querySelectorAll?.(".studio-review-choice") || []).forEach((row, index) => {
+      const choice = row.querySelector?.('input[name="choice"]');
+      const correct = row.querySelector?.('input[name="correct_index"]');
+      const overflow = row.querySelector?.("details");
+      const summary = overflow?.querySelector?.("summary");
+      const remove = row.querySelector?.("[data-remove-choice]");
+      choice?.setAttribute?.("aria-label", `Choice ${index + 1}`);
+      correct?.setAttribute?.("aria-label", `Correct choice ${index + 1}`);
+      summary?.setAttribute?.("aria-label", `More actions for choice ${index + 1}`);
+      if (correct) correct.value = String(index);
+      if (!questionId) return;
+      if (choice) choice.dataset.focusKey = `question:${questionId}:choice:${index}`;
+      if (correct) correct.dataset.focusKey = `question:${questionId}:correct:${index}`;
+      if (overflow) overflow.dataset.stateKey = `question:${questionId}:choice:${index}:overflow`;
+      if (summary) summary.dataset.focusKey = `question:${questionId}:choice:${index}:overflow:summary`;
+      if (remove) remove.dataset.focusKey = `question:${questionId}:choice:${index}:remove`;
+    });
+  };
+
   const removeChoiceRow = (remove) => {
     const row = remove.closest?.(".studio-review-choice");
     const group = remove.closest?.("[data-choices]");
@@ -62,6 +82,7 @@
     const removedIndex = rows.indexOf(row);
     row.remove();
     card.dataset.dirty = "true";
+    reindexChoiceRows(group, card.dataset.questionId || "");
     const remaining = Array.from(group.querySelectorAll?.(".studio-review-choice") || []);
     const fallbackRow = remaining[Math.min(Math.max(removedIndex, 0), remaining.length - 1)];
     const fallback = fallbackRow?.querySelector?.("[data-focus-key]")
@@ -403,6 +424,7 @@
         const questionId = add.closest("[data-question-id]")?.dataset.questionId || "";
         if (rows.length < 8) {
           group.insertBefore(choiceRow(documentRef, "", rows.length, -1, questionId), add);
+          reindexChoiceRows(group, questionId);
           if (card) card.dataset.dirty = "true";
         }
         return;
@@ -441,7 +463,8 @@
     blockersText, canPublish, questionAnchor, issueSummary, groupIssues, hasImageReviewIssues,
     shouldRenderNoCandidateEmpty, normalizedEditPayload,
     candidateSelectionPayload, candidateSelectionUrl, captureRenderState,
-    restoreRenderState, removeChoiceRow, initialize, render, reviewErrorMessage,
+    restoreRenderState, reindexChoiceRows, removeChoiceRow, choiceRow,
+    initialize, render, reviewErrorMessage,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) root.document.addEventListener("DOMContentLoaded", () => initialize(root.document), { once: true });

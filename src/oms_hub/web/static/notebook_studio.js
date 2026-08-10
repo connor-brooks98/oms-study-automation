@@ -415,6 +415,13 @@
     exam.disabled = !course.value;
   };
 
+  const restoreFailedAction = (target, status, detail) => {
+    if (status) status.textContent = detail;
+    if (!target) return;
+    target.disabled = false;
+    if (target.isConnected !== false) target.focus?.({ preventScroll: true });
+  };
+
   const initialize = (documentRef, fetchImpl = root.fetch.bind(root)) => {
     const page = documentRef.querySelector("[data-studio-page]");
     if (!page) return;
@@ -661,11 +668,7 @@
         await refresh();
       } catch (error) {
         const detail = error instanceof Error ? error.message : "Quiz Builder action could not be completed.";
-        if (deleteButton) {
-          if (sourceStatus) sourceStatus.textContent = detail;
-        } else {
-          runList.textContent = detail;
-        }
+        restoreFailedAction(target, deleteButton ? sourceStatus : pollStatus, detail);
       } finally {
         target.disabled = false;
       }
@@ -825,6 +828,7 @@
     renderRuns,
     renderSources,
     retryStatus,
+    restoreFailedAction,
     selectAllAttachedSources,
     setWorkflowState,
     workflowPanelState,

@@ -21,20 +21,45 @@ class Element {
     this.children.push(...items);
   }
   replaceChildren(...items) { this.children = []; this.append(...items); }
+  insertBefore(item, before) {
+    item.parentElement = this;
+    const index = this.children.indexOf(before);
+    if (index < 0) this.children.push(item);
+    else this.children.splice(index, 0, item);
+  }
   setAttribute(name, value) { this[name] = value; }
   focus() { documentRef.activeElement = this; }
+  remove() {
+    if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((item) => item !== this);
+  }
+  closest(selector) {
+    let element = this;
+    while (element) {
+      if (Element.matches(element, selector)) return element;
+      element = element.parentElement;
+    }
+    return null;
+  }
+  static matches(element, selector) {
+    if (!element?.dataset) return false;
+    if (selector === ".studio-review-choice") return element.className.split(" ").includes("studio-review-choice");
+    if (selector === "details") return element.tagName === "details";
+    if (selector === "summary") return element.tagName === "summary";
+    if (selector === 'input[name="choice"]') return element.tagName === "input" && element.name === "choice";
+    if (selector === 'input[name="correct_index"]') return element.tagName === "input" && element.name === "correct_index";
+    if (selector === "[data-choices]") return element.dataset.choices === "true";
+    if (selector === "[data-add-choice]") return element.dataset.addChoice === "true";
+    if (selector === "[data-remove-choice]") return element.dataset.removeChoice === "true";
+    if (selector === "details[data-state-key]") return element.tagName === "details" && Boolean(element.dataset.stateKey);
+    if (selector === "[data-state-key]") return Boolean(element.dataset.stateKey);
+    if (selector === "[data-focus-key]") return Boolean(element.dataset.focusKey);
+    if (selector === "[data-question-id]") return Boolean(element.dataset.questionId);
+    return false;
+  }
   querySelectorAll(selector) {
-    const matches = (element) => {
-      if (!element?.dataset) return false;
-      if (selector === "details[data-state-key]") return element.tagName === "details" && Boolean(element.dataset.stateKey);
-      if (selector === "[data-state-key]") return Boolean(element.dataset.stateKey);
-      if (selector === "[data-focus-key]") return Boolean(element.dataset.focusKey);
-      if (selector === "[data-question-id]") return Boolean(element.dataset.questionId);
-      return false;
-    };
     const found = [];
     const visit = (element) => {
-      if (matches(element)) found.push(element);
+      if (Element.matches(element, selector)) found.push(element);
       element?.children?.forEach(visit);
     };
     this.children.forEach(visit);
@@ -216,6 +241,45 @@ test("removing a review choice retains dirty state and moves focus before refres
   assert.equal(removed.removed, true);
   assert.equal(card.dataset.dirty, "true");
   assert.equal(documentRef.activeElement, fallback);
+});
+
+test("removing a choice reindexes the retained correct answer and future choice keys", () => {
+  const { page, questions } = reviewPage();
+  const payload = question("q1", "Stem");
+  payload.choices = ["A", "B", "C"];
+  payload.correct_index = 1;
+  review.render(documentRef, page, {
+    blockers: [], issues: [], preview_url: null, questions: [payload],
+  });
+  const card = questions.querySelector("[data-question-id]");
+  const group = card.querySelector("[data-choices]");
+  const firstRemove = group.querySelectorAll(".studio-review-choice")[0]
+    .querySelector("[data-remove-choice]");
+
+  assert.equal(review.removeChoiceRow(firstRemove), true);
+  let rows = group.querySelectorAll(".studio-review-choice");
+  let choices = rows.map((row) => row.querySelector('input[name="choice"]'));
+  let correct = rows.map((row) => row.querySelector('input[name="correct_index"]'));
+  assert.deepEqual(choices.map((choice) => choice.value), ["B", "C"]);
+  assert.deepEqual(correct.map((radio) => radio.value), ["0", "1"]);
+  assert.equal(correct[0].checked, true);
+  assert.deepEqual(review.normalizedEditPayload({
+    stem: "Stem", choices: choices.map((choice) => choice.value),
+    correct_index: correct.find((radio) => radio.checked).value, rationale: "Because",
+  }), {
+    stem: "Stem", choices: ["B", "C"], correct_index: 0, rationale: "Because",
+  });
+
+  const add = group.querySelector("[data-add-choice]");
+  group.insertBefore(review.choiceRow(documentRef, "D", rows.length, -1, "q1"), add);
+  review.reindexChoiceRows(group, "q1");
+  rows = group.querySelectorAll(".studio-review-choice");
+  const focusKeys = group.querySelectorAll("[data-focus-key]").map((element) => element.dataset.focusKey);
+  const stateKeys = group.querySelectorAll("[data-state-key]").map((element) => element.dataset.stateKey);
+  assert.equal(new Set(focusKeys).size, focusKeys.length);
+  assert.equal(new Set(stateKeys).size, stateKeys.length);
+  assert.equal(rows[2].querySelector('input[name="choice"]')["aria-label"], "Choice 3");
+  assert.equal(rows[2].querySelector('input[name="correct_index"]').value, "2");
 });
 
 test("a successful q2-style authoritative refresh retains an unrelated dirty q1 editor", () => {

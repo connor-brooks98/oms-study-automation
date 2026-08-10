@@ -218,6 +218,28 @@ test("empty run history receives focus after its focused run is removed", () => 
   assert.equal(documentRef.activeElement, container);
 });
 
+test("a failed run action preserves history and restores its action focus", () => {
+  const container = new Element("div");
+  studio.renderRuns(documentRef, container, [{
+    id: "run-1", label: "First", state: "complete", stage: "complete",
+    attempts: 1, error: null, workflow_kind: "generate", review_url: null,
+    image_review_url: null, published_url: null, attempt_history: [],
+  }]);
+  const originalCard = container.children[0];
+  const rerun = container.querySelectorAll("[data-focus-key]")
+    .find((element) => element.dataset.focusKey === "run:run-1:rerun");
+  const status = new Element("p");
+  rerun.disabled = true;
+
+  studio.restoreFailedAction(rerun, status, "Remote action failed.");
+
+  assert.equal(container.children.length, 1);
+  assert.equal(container.children[0], originalCard);
+  assert.equal(status.textContent, "Remote action failed.");
+  assert.equal(rerun.disabled, false);
+  assert.equal(documentRef.activeElement, rerun);
+});
+
 test("ready local-import rows hydrate on refresh and deduplicate by source id", () => {
   const list = new Element("ul");
   const sources = [{
