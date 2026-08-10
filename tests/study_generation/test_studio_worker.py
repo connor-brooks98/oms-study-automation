@@ -85,6 +85,17 @@ class _NeverAskGateway(_RaisingGateway):
         return super().ask_studio(subject, exam_number, prompt, remote_source_ids)
 
 
+class _SuccessfulGateway:
+    def __init__(self) -> None:
+        self.ask_calls = 0
+
+    def ask_studio(self, subject, exam_number, prompt, remote_source_ids):
+        self.ask_calls += 1
+        return "replacement-notebook", serialize_native_quiz(
+            _quiz("Replacement response")
+        )
+
+
 class _ImportWorker:
     def __init__(self) -> None:
         self.runs = []
@@ -378,16 +389,27 @@ def test_rerun_successor_may_chat_while_predecessor_publication_stays_live(
     assert publisher.adopt_owned_studio_publication(predecessor.id) is not None
 
     successor = repository.rerun(predecessor.id)
-    claimed_successor = repository.claim_next_run()
+    gateway = _SuccessfulGateway()
+    worker = StudioWorker(
+        repository,
+        gateway,
+        object(),
+        _FakeConnection(),
+        publisher=publisher,
+    )
 
-    assert claimed_successor is not None and claimed_successor.id == successor.id
-    assert publisher.prepare_studio_run_chat(successor.id) is True
-    prepared = repository.get_run(successor.id)
-    assert prepared.state is StudioRunState.RUNNING
-    assert prepared.stage is StudioRunStage.CHAT
+    assert worker.recover_interrupted_jobs() == 0
+    assert repository.get_run(successor.id).state is StudioRunState.QUEUED
+    assert worker.run_once() is True
+
+    completed = repository.get_run(successor.id)
+    assert gateway.ask_calls == 1
+    assert completed.state is StudioRunState.COMPLETE
+    assert completed.stage is StudioRunStage.COMPLETE
     still_published = publisher.published_quiz(publication.token)
     assert still_published is not None
-    assert still_published.studio_run_id == predecessor.id
+    assert still_published.studio_run_id == successor.id
+    assert still_published.version == publication.version + 1
 
 
 def test_startup_recovery_completes_owner_and_retires_conflicting_active_run(

@@ -1008,6 +1008,11 @@ class GenerationRepository:
                     )
                 ).all()
                 for conflict in conflicts:
+                    if conflict.supersedes_run_id == run.id:
+                        # A declared rerun intentionally coexists with its
+                        # predecessor's durable publication until replacement.
+                        # Leave it active for normal interrupted-run recovery.
+                        continue
                     conflict.state = StudioRunState.FAILED.value
                     conflict.diagnostic_source = "recovery"
                     conflict.error = (
