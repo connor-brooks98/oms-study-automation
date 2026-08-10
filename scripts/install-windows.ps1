@@ -134,7 +134,7 @@ function Test-ProcessPathUnderRoot {
     [string]$ExpectedProjectRoot
   )
   if ([string]::IsNullOrWhiteSpace($ExecutablePath)) { return $false }
-  $ExpectedPrefix = $ExpectedProjectRoot.TrimEnd("\\") + "\\"
+  $ExpectedPrefix = $ExpectedProjectRoot.TrimEnd("\") + "\"
   return $ExecutablePath.StartsWith(
     $ExpectedPrefix,
     [System.StringComparison]::OrdinalIgnoreCase

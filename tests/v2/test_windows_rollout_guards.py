@@ -156,6 +156,15 @@ def test_windows_installer_guard_covers_same_root_tree_but_not_unrelated_python(
     assert "generic Python processes from another deployment" in script
 
 
+def test_windows_installer_builds_a_single_separator_root_prefix() -> None:
+    script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+
+    # PowerShell does not use backslash escaping. Two backslashes here would
+    # build a root\\ prefix and silently exclude every same-root process.
+    assert '$ExpectedPrefix = $ExpectedProjectRoot.TrimEnd("\\") + "\\"' in script
+    assert '$ExpectedPrefix = $ExpectedProjectRoot.TrimEnd("\\\\") + "\\\\"' not in script
+
+
 def test_windows_installer_selects_every_descendant_of_verified_launcher() -> None:
     script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
 
