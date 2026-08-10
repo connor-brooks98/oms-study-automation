@@ -76,6 +76,39 @@ test("course disclosures keep aria and the shared glyph state in sync", () => {
   assert.deepEqual(glyph.states, [false]);
 });
 
+test("closing a course semantically collapses its open descendant exams", () => {
+  const examPanel = { hidden: false, querySelectorAll: () => [] };
+  const panels = new Map();
+  const makeButton = (controls, expanded) => ({
+    attributes: { "aria-controls": controls, "aria-expanded": String(expanded) },
+    setAttribute(name, value) { this.attributes[name] = value; },
+    getAttribute(name) { return this.attributes[name] || null; },
+    querySelector() { return null; },
+    ownerDocument: { getElementById(id) { return panels.get(id) || null; } },
+  });
+  const exam = makeButton("exam-1", true);
+  const coursePanel = {
+    hidden: false,
+    querySelectorAll(selector) {
+      return selector === ".disclosure[aria-expanded='true']" ? [exam] : [];
+    },
+  };
+  const course = makeButton("course-1", true);
+  panels.set("course-1", coursePanel);
+  panels.set("exam-1", examPanel);
+
+  library.setExpanded(course, false);
+
+  assert.equal(course.attributes["aria-expanded"], "false");
+  assert.equal(coursePanel.hidden, true);
+  assert.equal(exam.attributes["aria-expanded"], "false");
+  assert.equal(examPanel.hidden, true);
+
+  library.setExpanded(course, true);
+  assert.equal(exam.attributes["aria-expanded"], "false");
+  assert.equal(examPanel.hidden, true);
+});
+
 // -- Minimal fake DOM sufficient to drive initialize()'s reset controls --
 
 class FakeLibraryElement {

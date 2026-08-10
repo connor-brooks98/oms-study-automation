@@ -46,7 +46,12 @@
     button.setAttribute("aria-expanded", String(expanded));
     button.querySelector(".sh-disclose")?.classList.toggle("is-open", expanded);
     const panel = button.ownerDocument.getElementById(button.getAttribute("aria-controls"));
-    if (panel) panel.hidden = !expanded;
+    if (!panel) return;
+    panel.hidden = !expanded;
+    if (!expanded) {
+      Array.from(panel.querySelectorAll?.(".disclosure[aria-expanded='true']") || [])
+        .forEach((descendant) => setExpanded(descendant, false));
+    }
   };
 
   const errorMessage = async (response, fallback) => {
