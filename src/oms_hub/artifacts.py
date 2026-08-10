@@ -316,12 +316,29 @@ class ArtifactService:
         revision_id: int,
         commit: Callable[[], StudyRevision],
     ) -> None:
+        planned_backups = {
+            destination: (
+                ArtifactService._backup_path(destination, revision_id)
+                if destination.exists()
+                else None
+            )
+            for _source, destination in pairs
+        }
+        # This journal must exist before the first filesystem effect.  A
+        # process death is not catchable, so restart recovery needs the
+        # original destination identity even when no backup was completed.
+        journal_path = ArtifactService._write_recovery_journal(
+            pairs,
+            planned_backups,
+            revision_id,
+        )
         backups: dict[Path, Path | None] = {}
         try:
             for _, destination in pairs:
                 if destination.exists():
-                    existing_backup = destination.with_name(
-                        f".{destination.name}.oms-backup-{revision_id}"
+                    existing_backup = ArtifactService._backup_path(
+                        destination,
+                        revision_id,
                     )
                     verified_atomic_copy(destination, existing_backup)
                     backups[destination] = existing_backup
@@ -331,16 +348,6 @@ class ArtifactService:
                 verified_atomic_copy(source, destination)
             commit()
         except Exception as promotion_error:
-            journal_path: Path | None = None
-            journal_error: Exception | None = None
-            try:
-                journal_path = ArtifactService._write_recovery_journal(
-                    pairs,
-                    backups,
-                    revision_id,
-                )
-            except Exception as error:
-                journal_error = error
             try:
                 ArtifactService._restore_backups(backups)
             except Exception as restore_error:
@@ -356,20 +363,17 @@ class ArtifactService:
                     recovery_journal_path=journal_path,
                     original_error=promotion_error,
                     restore_error=restore_error,
-                    journal_error=journal_error,
                 ) from promotion_error
             for saved_path in backups.values():
                 if saved_path is not None:
                     saved_path.unlink(missing_ok=True)
-            if journal_path is not None:
-                journal_path.unlink(missing_ok=True)
-            if journal_error is not None:
-                raise promotion_error from journal_error
+            journal_path.unlink(missing_ok=True)
             raise
         else:
             for saved_path in backups.values():
                 if saved_path is not None:
                     saved_path.unlink(missing_ok=True)
+            journal_path.unlink(missing_ok=True)
 
     @staticmethod
     def _restore_backups(backups: dict[Path, Path | None]) -> None:
@@ -403,10 +407,15 @@ class ArtifactService:
                 "backup_path": str(backups[destination])
                 if backups.get(destination) is not None
                 else None,
-                "backup_created": destination in backups,
+                "destination_existed": destination.is_file(),
                 "destination_path": str(destination),
+                "destination_sha256": (
+                    sha256_file(destination) if destination.is_file() else None
+                ),
+                "source_path": str(source),
+                "source_sha256": sha256_file(source),
             }
-            for _source, destination in pairs
+            for source, destination in pairs
         ]
         temporary = journal_path.with_name(f".{journal_path.name}.partial")
         journal_path.parent.mkdir(parents=True, exist_ok=True)
@@ -433,16 +442,42 @@ class ArtifactService:
         revision: StudyRevision,
         pairs: list[tuple[Path, Path]],
     ) -> bool:
-        if all(
+        try:
+            journal = self._read_recovery_journal(pairs, revision.id)
+        except Exception as journal_error:
+            raise ArtifactRecoveryError(
+                "interrupted artifact promotion has an invalid recovery journal; "
+                "retain the journal and backup paths",
+                backup_paths=self._existing_backup_paths(pairs, revision.id),
+                recovery_journal_path=self._existing_journal_path(
+                    pairs,
+                    revision.id,
+                ),
+                original_error=ArtifactConflict(
+                    "interrupted artifact promotion requires recovery"
+                ),
+                restore_error=journal_error,
+            ) from journal_error
+        destinations_match_sources = all(
             destination.is_file()
             and sha256_file(destination) == sha256_file(source)
             for source, destination in pairs
-        ):
+        )
+        originals_already_matched = journal is not None and all(
+            entry["destination_existed"]
+            and entry["destination_sha256"] == entry["source_sha256"]
+            for entry in journal.values()
+        )
+        if destinations_match_sources and not originals_already_matched:
             self.repository.promote_study_revision(revision.id)
             self._remove_promotion_backups(pairs, revision.id)
             return True
         try:
-            self._restore_interrupted_promotion(pairs, revision.id)
+            self._restore_interrupted_promotion(
+                pairs,
+                revision.id,
+                journal=journal,
+            )
         except Exception as restore_error:
             raise ArtifactRecoveryError(
                 "interrupted artifact promotion could not be verified and "
@@ -466,10 +501,65 @@ class ArtifactService:
         cls,
         pairs: list[tuple[Path, Path]],
         revision_id: int,
+        *,
+        journal: dict[Path, dict[str, object]] | None = None,
     ) -> None:
         """Restore an interrupted promotion without consuming its backups."""
         for source, destination in pairs:
             backup = cls._backup_path(destination, revision_id)
+            entry = journal.get(destination) if journal is not None else None
+            if entry is not None:
+                original_existed = bool(entry["destination_existed"])
+                original_sha256 = entry["destination_sha256"]
+                if original_existed:
+                    if not isinstance(original_sha256, str):
+                        raise OSError(
+                            "promotion journal lacks the original checksum for: "
+                            f"{destination}"
+                        )
+                    if backup.is_file():
+                        if sha256_file(backup) != original_sha256:
+                            raise OSError(
+                                "artifact backup does not match the promotion journal: "
+                                f"{backup}"
+                            )
+                        verified_atomic_copy(backup, destination)
+                    elif (
+                        destination.is_file()
+                        and sha256_file(destination) == original_sha256
+                    ):
+                        continue
+                    else:
+                        raise OSError(
+                            "interrupted promotion has no verified original for: "
+                            f"{destination}"
+                        )
+                    if (
+                        not destination.is_file()
+                        or sha256_file(destination) != original_sha256
+                    ):
+                        raise OSError(
+                            "interrupted promotion restore verification failed: "
+                            f"{destination}"
+                        )
+                    continue
+                if not destination.exists():
+                    continue
+                if (
+                    destination.is_file()
+                    and sha256_file(destination) == str(entry["source_sha256"])
+                ):
+                    destination.unlink()
+                    if destination.exists():
+                        raise OSError(
+                            "interrupted promotion destination remained: "
+                            f"{destination}"
+                        )
+                    continue
+                raise OSError(
+                    "interrupted promotion created an unverified destination: "
+                    f"{destination}"
+                )
             if backup.is_file():
                 expected_sha256 = sha256_file(backup)
                 verified_atomic_copy(backup, destination)
@@ -493,6 +583,39 @@ class ArtifactService:
                     "interrupted promotion has no verified backup for: "
                     f"{destination}"
                 )
+
+    @classmethod
+    def _read_recovery_journal(
+        cls,
+        pairs: list[tuple[Path, Path]],
+        revision_id: int,
+    ) -> dict[Path, dict[str, object]] | None:
+        path = cls._existing_journal_path(pairs, revision_id)
+        if path is None:
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if payload.get("revision_id") != revision_id:
+                raise ValueError("revision identity does not match")
+            raw_entries = payload["entries"]
+            entries = {
+                Path(str(entry["destination_path"])): entry
+                for entry in raw_entries
+            }
+            expected = {destination for _source, destination in pairs}
+            if set(entries) != expected:
+                raise ValueError("destination set does not match")
+            for source, destination in pairs:
+                entry = entries[destination]
+                if entry.get("source_path") != str(source):
+                    raise ValueError("source path does not match")
+                if entry.get("source_sha256") != sha256_file(source):
+                    raise ValueError("source checksum does not match")
+                if not isinstance(entry.get("destination_existed"), bool):
+                    raise ValueError("destination state is missing")
+            return entries
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise OSError(f"artifact promotion journal is invalid: {path}") from error
 
     @classmethod
     def _existing_backup_paths(
@@ -529,6 +652,9 @@ class ArtifactService:
             cls._backup_path(destination, revision_id).unlink(
                 missing_ok=True
             )
+        journal_path = cls._existing_journal_path(pairs, revision_id)
+        if journal_path is not None:
+            journal_path.unlink(missing_ok=True)
 
     @staticmethod
     def _backup_path(destination: Path, revision_id: int) -> Path:

@@ -187,6 +187,18 @@ def test_review_uses_course_relative_human_label_for_proposed_revisions(tmp_path
     assert f"Revision {revision_id}" in page.text
     assert f"/artifacts/{revision_id}/pdf" in page.text
 
+    with app.state.database.session() as session:
+        interrupted = session.get(StudyRevisionModel, revision_id)
+        assert interrupted is not None
+        interrupted.state = "promoting"
+
+    recovery_page = TestClient(app).get("/review")
+
+    assert f"Revision {revision_id}" in recovery_page.text
+    assert "Promotion was interrupted." in recovery_page.text
+    assert "Resume recovery" in recovery_page.text
+    assert "Keep current file" not in recovery_page.text
+
 
 def test_lecture_upload_page_targets_the_selected_lecture(tmp_path):
     app = create_app(

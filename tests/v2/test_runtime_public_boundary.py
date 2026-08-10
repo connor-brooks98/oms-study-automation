@@ -364,7 +364,13 @@ def test_stop_uses_one_total_deadline_across_worker_joins() -> None:
 def test_readiness_rejects_database_failure_but_liveness_preserves_provenance(
     tmp_path, monkeypatch
 ) -> None:
-    app = create_app(_settings(tmp_path, build_revision="revision-sentinel"))
+    app = create_app(
+        _settings(
+            tmp_path,
+            build_revision="revision-sentinel",
+            build_tree="tree-sentinel",
+        )
+    )
     app.state.worker_supervisor = SimpleNamespace(
         ready=lambda: (True, None), snapshot=lambda: {}
     )
@@ -375,7 +381,9 @@ def test_readiness_rejects_database_failure_but_liveness_preserves_provenance(
     monkeypatch.setattr(app.state.database.engine, "connect", unavailable)
     client = TestClient(app)
 
-    assert client.get("/health/live").json()["build_revision"] == "revision-sentinel"
+    liveness = client.get("/health/live").json()
+    assert liveness["build_revision"] == "revision-sentinel"
+    assert liveness["build_tree"] == "tree-sentinel"
     response = client.get("/health")
     assert response.status_code == 503
     assert response.json()["reason"] == "database_unavailable"
@@ -510,6 +518,17 @@ def test_limiter_rejects_before_public_repository_or_hashing_work(tmp_path) -> N
 
 def test_public_client_identity_rejects_forwarded_chains() -> None:
     assert public_client_identifier("203.0.113.9, 198.51.100.2", "127.0.0.1") == "127.0.0.1"
+
+
+def test_public_client_identity_rejects_forged_forwarding_from_untrusted_peer() -> None:
+    assert (
+        public_client_identifier("203.0.113.9", "198.51.100.2")
+        == "198.51.100.2"
+    )
+
+
+def test_public_client_identity_accepts_single_address_from_local_proxy() -> None:
+    assert public_client_identifier("203.0.113.9", "127.0.0.1") == "203.0.113.9"
 
 
 def test_application_logging_is_bounded_and_not_duplicated(tmp_path, caplog) -> None:

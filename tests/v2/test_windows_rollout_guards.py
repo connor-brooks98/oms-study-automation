@@ -8,7 +8,11 @@ def test_windows_launcher_exports_runtime_provenance() -> None:
 
     assert "OMS_HUB_DEPLOYMENT_ROOT" in script
     assert "OMS_HUB_BUILD_REVISION" in script
+    assert "OMS_HUB_BUILD_TREE" in script
     assert "rev-parse HEAD" in script
+    assert 'rev-parse "HEAD^{tree}"' in script
+    assert "status --porcelain=v1 --untracked-files=all -- src scripts pyproject.toml" in script
+    assert "refusing to start an editable deployment" in script
 
 
 def test_windows_revision_capture_preserves_the_complete_git_hash() -> None:
@@ -27,6 +31,8 @@ def test_windows_revision_capture_preserves_the_complete_git_hash() -> None:
     installer = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
     assert '"^[0-9a-fA-F]{40}$"' in installer
     assert "Git is required to establish exact build provenance." in installer
+    assert "The editable Study Hub runtime differs from HEAD" in installer
+    assert "Get-ProjectBuildTree" in installer
 
 
 def test_windows_installer_replaces_old_root_task_action_and_verifies_it() -> None:
@@ -167,6 +173,8 @@ def test_windows_installer_polls_local_health_for_expected_root_and_revision() -
     assert 'http://127.0.0.1:$Port/health/ready' in script
     assert "deployment_root" in script
     assert "build_revision" in script
+    assert "build_tree" in script
+    assert "$TreeMatches" in script
     assert '@("generation_worker", "ingestion_worker", "studio_worker")' in script
     assert "[int]$Worker.start_count -ne 1" in script
     assert "Study Hub did not start from the expected root/build" in script

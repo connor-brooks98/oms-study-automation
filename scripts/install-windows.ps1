@@ -207,6 +207,15 @@ function Get-ProjectBuildRevision {
   $Git = Get-Command git.exe -ErrorAction SilentlyContinue
   if (-not $Git) { $Git = Get-Command git -ErrorAction SilentlyContinue }
   if (-not $Git) { throw "Git is required to establish exact build provenance." }
+  $SourceStatus = @(
+    & $Git.Source -C $ExpectedProjectRoot status --porcelain=v1 --untracked-files=all -- src scripts pyproject.toml 2>$null
+  )
+  if ($LASTEXITCODE -ne 0) {
+    throw "The project source cleanliness could not be verified."
+  }
+  if ($SourceStatus.Count -gt 0) {
+    throw "The editable Study Hub runtime differs from HEAD; installation is blocked."
+  }
   $Revision = @(& $Git.Source -C $ExpectedProjectRoot rev-parse HEAD 2>$null)
   if ($LASTEXITCODE -ne 0 -or -not $Revision) {
     throw "The project build revision could not be resolved."
@@ -218,10 +227,27 @@ function Get-ProjectBuildRevision {
   return $FullRevision.ToLowerInvariant()
 }
 
+function Get-ProjectBuildTree {
+  param([string]$ExpectedProjectRoot)
+  $Git = Get-Command git.exe -ErrorAction SilentlyContinue
+  if (-not $Git) { $Git = Get-Command git -ErrorAction SilentlyContinue }
+  if (-not $Git) { throw "Git is required to establish exact build provenance." }
+  $Tree = @(& $Git.Source -C $ExpectedProjectRoot rev-parse "HEAD^{tree}" 2>$null)
+  if ($LASTEXITCODE -ne 0 -or -not $Tree) {
+    throw "The project build tree could not be resolved."
+  }
+  $FullTree = ([string]$Tree[0]).Trim()
+  if ($FullTree -notmatch "^[0-9a-fA-F]{40}$") {
+    throw "The project build tree is not a full tree SHA."
+  }
+  return $FullTree.ToLowerInvariant()
+}
+
 function Assert-StartedHubProvenance {
   param(
     [string]$ExpectedProjectRoot,
-    [string]$ExpectedBuildRevision
+    [string]$ExpectedBuildRevision,
+    [string]$ExpectedBuildTree
   )
   $Port = Get-DashboardPort -ExpectedProjectRoot $ExpectedProjectRoot
   $Deadline = (Get-Date).AddSeconds(30)
@@ -231,6 +257,7 @@ function Assert-StartedHubProvenance {
       $Health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/health/ready" -TimeoutSec 3
       $RootMatches = ([string]$Health.deployment_root).TrimEnd("\\") -eq $ExpectedProjectRoot.TrimEnd("\\")
       $BuildMatches = [string]$Health.build_revision -eq $ExpectedBuildRevision
+      $TreeMatches = [string]$Health.build_tree -eq $ExpectedBuildTree
       $ExpectedWorkers = @("generation_worker", "ingestion_worker", "studio_worker")
       $WorkerNames = @($Health.workers.PSObject.Properties.Name | Sort-Object)
       $WorkerNamesMatch = ($WorkerNames -join ",") -eq (($ExpectedWorkers | Sort-Object) -join ",")
@@ -245,9 +272,10 @@ function Assert-StartedHubProvenance {
         $Health.status -eq "ok" -and
         $RootMatches -and
         $BuildMatches -and
+        $TreeMatches -and
         $WorkersHealthy
       ) { return }
-      $LastFailure = "health reported root '$($Health.deployment_root)' and build '$($Health.build_revision)'"
+      $LastFailure = "health reported root '$($Health.deployment_root)', build '$($Health.build_revision)', and tree '$($Health.build_tree)'"
     } catch {
       $LastFailure = $_.Exception.Message
     }
@@ -338,6 +366,7 @@ if ($PSCmdlet.ShouldProcess($BackupPath, "Create verified rollback backup")) {
   $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   $ConfigMetadata = [ordered]@{
     build_revision = Get-ProjectBuildRevision -ExpectedProjectRoot $ProjectRoot
+    build_tree = Get-ProjectBuildTree -ExpectedProjectRoot $ProjectRoot
     database_path = $DatabasePath
     database_url = $EffectiveDatabaseUrl
     data_root = $EffectiveDataRoot
@@ -450,9 +479,12 @@ if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {
   # Never terminate generic Python processes from another deployment.
   Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot
   Start-ScheduledTask -TaskName $TaskName
+  $ExpectedBuildRevision = Get-ProjectBuildRevision -ExpectedProjectRoot $ProjectRoot
+  $ExpectedBuildTree = Get-ProjectBuildTree -ExpectedProjectRoot $ProjectRoot
   Assert-StartedHubProvenance `
     -ExpectedProjectRoot $ProjectRoot `
-    -ExpectedBuildRevision (Get-ProjectBuildRevision -ExpectedProjectRoot $ProjectRoot)
+    -ExpectedBuildRevision $ExpectedBuildRevision `
+    -ExpectedBuildTree $ExpectedBuildTree
 }
 
 Write-Host "Study Hub V2 install complete."

@@ -9,6 +9,7 @@ from starlette.responses import Response
 from oms_hub.artifacts import (
     ArtifactConflict,
     ArtifactNotFound,
+    ArtifactRecoveryError,
     ArtifactRole,
     ArtifactService,
     ResolvedArtifact,
@@ -178,7 +179,7 @@ def approve_replacement(
         _service(request).approve(revision_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="revision not found") from error
-    except (ArtifactConflict, ArtifactNotFound) as error:
+    except (ArtifactConflict, ArtifactNotFound, ArtifactRecoveryError) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return RedirectResponse("/review", status_code=303)
 

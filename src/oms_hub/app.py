@@ -808,6 +808,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 else "unreported"
             ),
             "build_revision": resolved.build_revision or "unreported",
+            "build_tree": resolved.build_tree or "unreported",
         }
         if reason is not None:
             payload["reason"] = reason

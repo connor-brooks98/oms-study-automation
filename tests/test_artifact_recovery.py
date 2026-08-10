@@ -91,7 +91,7 @@ def test_partial_backup_failure_does_not_mask_original_error_with_journal_keyerr
     assert second_destination.read_bytes() == b"second-old"
 
 
-def test_journal_failure_still_restores_destination_and_keeps_original_failure(
+def test_journal_failure_blocks_before_the_first_filesystem_effect(
     tmp_path,
     monkeypatch,
 ):
@@ -109,61 +109,141 @@ def test_journal_failure_still_restores_destination_and_keeps_original_failure(
         staticmethod(fail_journal),
     )
 
-    def fail_commit():
-        raise RuntimeError("database commit failed")
-
-    with pytest.raises(RuntimeError, match="database commit failed") as raised:
+    with pytest.raises(OSError, match="recovery journal disk is unavailable"):
         ArtifactService._promote_with_rollback(
             [(source, destination)],
             45,
-            fail_commit,
+            lambda: None,
         )
 
-    assert isinstance(raised.value.__cause__, OSError)
     assert destination.read_bytes() == b"old"
     assert not ArtifactService._backup_path(destination, 45).exists()
 
 
-def test_dual_journal_and_restore_failure_keeps_backup_without_journal_path(
+def test_process_death_before_first_backup_recovers_untouched_destination(
     tmp_path,
     monkeypatch,
 ):
+    class ProcessDeath(BaseException):
+        pass
+
     source = tmp_path / "immutable.pdf"
     destination = tmp_path / "current.pdf"
     source.write_bytes(b"new")
     destination.write_bytes(b"old")
-    backup = ArtifactService._backup_path(destination, 46)
     original_copy = artifacts_module.verified_atomic_copy
-
-    def fail_restore(copy_source, copy_destination):
-        if copy_source == backup and copy_destination == destination:
-            raise OSError("rollback destination remains locked")
-        return original_copy(copy_source, copy_destination)
-
-    def fail_journal(*_args, **_kwargs):
-        raise OSError("recovery journal disk is unavailable")
-
-    monkeypatch.setattr(artifacts_module, "verified_atomic_copy", fail_restore)
     monkeypatch.setattr(
-        ArtifactService,
-        "_write_recovery_journal",
-        staticmethod(fail_journal),
+        artifacts_module,
+        "verified_atomic_copy",
+        lambda *_args: (_ for _ in ()).throw(ProcessDeath()),
     )
 
-    with pytest.raises(ArtifactRecoveryError) as raised:
+    with pytest.raises(ProcessDeath):
         ArtifactService._promote_with_rollback(
             [(source, destination)],
             46,
-            lambda: (_ for _ in ()).throw(RuntimeError("database commit failed")),
+            lambda: None,
         )
 
-    error = raised.value
-    assert error.recovery_journal_path is None
-    assert error.backup_paths == (backup,)
-    assert isinstance(error.original_error, RuntimeError)
-    assert isinstance(error.restore_error, OSError)
-    assert isinstance(error.journal_error, OSError)
-    assert backup.read_bytes() == b"old"
+    journal = destination.with_name(".oms-promotion-46.recovery.json")
+    assert journal.is_file()
+    assert destination.read_bytes() == b"old"
+
+    service = ArtifactService.__new__(ArtifactService)
+    reset_calls: list[int] = []
+    service.repository = SimpleNamespace(reset_study_promotion=reset_calls.append)
+    monkeypatch.setattr(
+        artifacts_module,
+        "verified_atomic_copy",
+        original_copy,
+    )
+    assert service._recover_promotion(SimpleNamespace(id=46), [(source, destination)]) is False
+    assert reset_calls == [46]
+    assert destination.read_bytes() == b"old"
+    assert not journal.exists()
+
+
+def test_process_death_mid_backup_restores_completed_backup_and_untouched_peer(
+    tmp_path,
+    monkeypatch,
+):
+    class ProcessDeath(BaseException):
+        pass
+
+    pairs = [
+        (tmp_path / "first-immutable.pdf", tmp_path / "first-current.pdf"),
+        (tmp_path / "second-immutable.pdf", tmp_path / "second-current.pdf"),
+    ]
+    pairs[0][0].write_bytes(b"first-new")
+    pairs[0][1].write_bytes(b"first-old")
+    pairs[1][0].write_bytes(b"second-new")
+    pairs[1][1].write_bytes(b"second-old")
+    original_copy = artifacts_module.verified_atomic_copy
+
+    def die_on_second_backup(copy_source, copy_destination):
+        if copy_source == pairs[1][1]:
+            raise ProcessDeath()
+        return original_copy(copy_source, copy_destination)
+
+    monkeypatch.setattr(
+        artifacts_module,
+        "verified_atomic_copy",
+        die_on_second_backup,
+    )
+    with pytest.raises(ProcessDeath):
+        ArtifactService._promote_with_rollback(pairs, 50, lambda: None)
+
+    service = ArtifactService.__new__(ArtifactService)
+    reset_calls: list[int] = []
+    service.repository = SimpleNamespace(reset_study_promotion=reset_calls.append)
+    monkeypatch.setattr(artifacts_module, "verified_atomic_copy", original_copy)
+
+    assert service._recover_promotion(SimpleNamespace(id=50), pairs) is False
+    assert reset_calls == [50]
+    assert pairs[0][1].read_bytes() == b"first-old"
+    assert pairs[1][1].read_bytes() == b"second-old"
+
+
+def test_process_death_mid_copy_restores_every_original_destination(
+    tmp_path,
+    monkeypatch,
+):
+    class ProcessDeath(BaseException):
+        pass
+
+    pairs = [
+        (tmp_path / "first-immutable.pdf", tmp_path / "first-current.pdf"),
+        (tmp_path / "second-immutable.pdf", tmp_path / "second-current.pdf"),
+    ]
+    pairs[0][0].write_bytes(b"first-new")
+    pairs[0][1].write_bytes(b"first-old")
+    pairs[1][0].write_bytes(b"second-new")
+    pairs[1][1].write_bytes(b"second-old")
+    original_copy = artifacts_module.verified_atomic_copy
+
+    def die_on_second_canonical_copy(copy_source, copy_destination):
+        if copy_source == pairs[1][0] and copy_destination == pairs[1][1]:
+            raise ProcessDeath()
+        return original_copy(copy_source, copy_destination)
+
+    monkeypatch.setattr(
+        artifacts_module,
+        "verified_atomic_copy",
+        die_on_second_canonical_copy,
+    )
+    with pytest.raises(ProcessDeath):
+        ArtifactService._promote_with_rollback(pairs, 51, lambda: None)
+
+    assert pairs[0][1].read_bytes() == b"first-new"
+    service = ArtifactService.__new__(ArtifactService)
+    reset_calls: list[int] = []
+    service.repository = SimpleNamespace(reset_study_promotion=reset_calls.append)
+    monkeypatch.setattr(artifacts_module, "verified_atomic_copy", original_copy)
+
+    assert service._recover_promotion(SimpleNamespace(id=51), pairs) is False
+    assert reset_calls == [51]
+    assert pairs[0][1].read_bytes() == b"first-old"
+    assert pairs[1][1].read_bytes() == b"second-old"
 
 
 def test_approve_does_not_reset_recovery_required_promotion(monkeypatch, tmp_path):
