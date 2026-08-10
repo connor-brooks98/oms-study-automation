@@ -371,6 +371,10 @@ def test_import_checks_and_image_rows_escape_late_legacy_cascade() -> None:
 
     assert ".studio-import-intake label:not(.sh-check)" in app_css
     assert ".studio-import-intake [data-import-source-row] label:not(.sh-check)" in app_css
+    assert (
+        '.studio-import-intake [data-import-source-row] .sh-check '
+        'input[type="checkbox"] { width: 16px; min-width: 16px; }'
+    ) in app_css
     assert ".studio-import-intake label {" not in app_css
     assert ".studio-import-intake [data-import-source-row] label {" not in app_css
 
