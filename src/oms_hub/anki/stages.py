@@ -150,7 +150,7 @@ from oms_hub.anki.v2_contracts import (
     LectureConceptLedgerV2,
     MissingFactV2,
 )
-from oms_hub.ingestion.domain import StudyRevision
+from oms_hub.ingestion.domain import StudyRevision, UploadKind
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.llm.domain import GenerationOptions, ProviderCapabilities, ProviderName
 from oms_hub.llm.repository import LLMSettingsRepository
@@ -228,6 +228,7 @@ class PinnedCurationInputValidator:
             raise PinnedInputChanged(
                 "Selected source revisions are missing immutable hashes; start a new curation job"
             )
+        pinned_revisions: dict[int, StudyRevision] = {}
         for revision_id in job.source_revision_ids:
             try:
                 revision = self.revisions.get_study_revision(revision_id)
@@ -239,6 +240,10 @@ class PinnedCurationInputValidator:
                 raise PinnedInputChanged(
                     f"Selected source revision {revision_id} belongs to another lecture"
                 )
+            if revision.provenance_kind == "imported_cleaned" and not revision.current:
+                raise PinnedInputChanged(
+                    f"Selected source revision {revision_id} is no longer current"
+                )
             if revision_fingerprint(revision) != job.source_revision_hashes[revision_id]:
                 raise PinnedInputChanged(
                     f"Selected source revision {revision_id} changed after the job was queued"
@@ -247,6 +252,9 @@ class PinnedCurationInputValidator:
                 raise PinnedInputChanged(
                     f"Selected source revision {revision_id} file is unavailable"
                 )
+            if revision.provenance_kind == "imported_cleaned":
+                self._validate_imported_transcript(revision)
+            pinned_revisions[revision_id] = revision
 
         if job.summary_outline_id is not None:
             if job.summary_outline_sha256 is None or self.outlines is None:
@@ -269,6 +277,51 @@ class PinnedCurationInputValidator:
                 raise PinnedInputChanged(
                     "Pinned NotebookLM summary changed after the job was queued"
                 )
+            expects_imported_outline = any(
+                revision.provenance_kind == "imported_cleaned"
+                for revision in pinned_revisions.values()
+            )
+            if expects_imported_outline and outline.provenance_kind != "imported_notebooklm":
+                raise PinnedInputChanged("Pinned imported NotebookLM summary provenance changed")
+            if outline.provenance_kind == "imported_notebooklm":
+                if (
+                    outline.import_id is None
+                    or outline.immutable_path is None
+                    or not outline.immutable_path.is_file()
+                    or hashlib.sha256(outline.immutable_path.read_bytes()).hexdigest()
+                    != outline.sha256
+                    or outline.slide_revision_id is None
+                    or outline.transcript_revision_id is None
+                    or outline.slide_sha256 is None
+                    or outline.slide_source_sha256 is None
+                    or outline.transcript_sha256 is None
+                ):
+                    raise PinnedInputChanged(
+                        "Pinned imported NotebookLM summary provenance changed"
+                    )
+                try:
+                    slide = self.revisions.get_study_revision(outline.slide_revision_id)
+                    transcript = self.revisions.get_study_revision(outline.transcript_revision_id)
+                except KeyError as exc:
+                    raise PinnedInputChanged(
+                        "Pinned imported NotebookLM summary links changed"
+                    ) from exc
+                if (
+                    slide.lecture_id != job.lecture_id
+                    or transcript.lecture_id != job.lecture_id
+                    or not slide.current
+                    or not transcript.current
+                    or slide.kind is not UploadKind.SLIDES
+                    or transcript.kind is not UploadKind.TRANSCRIPTS
+                    or slide.source_sha256 != outline.slide_source_sha256
+                    or slide.derived_sha256 != outline.slide_sha256
+                    or transcript.derived_sha256 != outline.transcript_sha256
+                    or transcript.provenance_kind != "imported_cleaned"
+                    or transcript.import_id != outline.import_id
+                    or outline.slide_revision_id not in job.source_revision_ids
+                    or outline.transcript_revision_id not in job.source_revision_ids
+                ):
+                    raise PinnedInputChanged("Pinned imported NotebookLM summary links changed")
 
         companion_generation = self.companion.snapshot_id()
         if job.companion_generation is None:
@@ -302,6 +355,30 @@ class PinnedCurationInputValidator:
                     f"Pinned source index generation "
                     f"{job.source_index_generation} is no longer active"
                 )
+
+    @staticmethod
+    def _validate_imported_transcript(revision: StudyRevision) -> None:
+        required_paths = (
+            revision.immutable_source_path,
+            revision.immutable_derived_path,
+            revision.canonical_source_path,
+            revision.canonical_derived_path,
+        )
+        if (
+            revision.import_id is None
+            or revision.derived_sha256 != revision.source_sha256
+            or any(path is None or not path.is_file() for path in required_paths)
+        ):
+            raise PinnedInputChanged("Pinned imported transcript provenance changed")
+        try:
+            if any(
+                hashlib.sha256(path.read_bytes()).hexdigest() != revision.source_sha256
+                for path in required_paths
+                if path is not None
+            ):
+                raise PinnedInputChanged("Pinned imported transcript files changed")
+        except OSError as exc:
+            raise PinnedInputChanged("Pinned imported transcript files changed") from exc
 
 
 class CurationServicesRunner:
@@ -4109,6 +4186,9 @@ def revision_fingerprint(revision: StudyRevision) -> str:
         "derived_sha256": revision.derived_sha256,
         "prompt_sha256": revision.prompt_sha256,
     }
+    if revision.provenance_kind == "imported_cleaned" or revision.import_id is not None:
+        payload["provenance_kind"] = revision.provenance_kind
+        payload["import_id"] = revision.import_id
     return hashlib.sha256(
         json.dumps(
             payload,

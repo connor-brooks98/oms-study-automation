@@ -39,6 +39,7 @@ def _create_study_revision(
     *,
     upload_item_id: str,
     source_sha256: str,
+    current: bool = True,
 ) -> int:
     with repository.database.session() as session:
         batch = UploadBatchModel(id=f"batch-{upload_item_id}", kind="slides")
@@ -64,7 +65,7 @@ def _create_study_revision(
             source_sha256=source_sha256,
             immutable_source_path=f"/tmp/{upload_item_id}-immutable.pdf",
             state="accepted",
-            current=True,
+            current=current,
         )
         session.add(revision)
         session.flush()
@@ -565,6 +566,7 @@ def test_binding_new_revision_supersedes_prior_ready_source(tmp_path):
         lecture_id,
         upload_item_id="revision-new",
         source_sha256="b" * 64,
+        current=False,
     )
 
     first = repository.bind_source(

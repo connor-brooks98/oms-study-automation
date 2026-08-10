@@ -167,10 +167,20 @@ class NotebookGeneration:
 class OutlineRecord:
     id: int
     lecture_id: int
-    job_id: str
+    job_id: str | None
     path: Path
     sha256: str
     current: bool
+    provenance_kind: str = "notebooklm_generated"
+    original_filename: str | None = None
+    immutable_path: Path | None = None
+    slide_revision_id: int | None = None
+    # Derived/current PDF digest retained for legacy compatibility.
+    slide_sha256: str | None = None
+    slide_source_sha256: str | None = None
+    transcript_revision_id: int | None = None
+    transcript_sha256: str | None = None
+    import_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

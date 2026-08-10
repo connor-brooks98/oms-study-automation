@@ -1,6 +1,6 @@
 import re
 import secrets
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -15,6 +15,7 @@ from oms_hub.files.atomic import sha256_file
 from oms_hub.models import (
     CourseQuizDocumentModel,
     ExamQuizTabModel,
+    ExistingArtifactImportModel,
     GenerationAttemptModel,
     GenerationJobModel,
     GoogleConnectionModel,
@@ -22,6 +23,7 @@ from oms_hub.models import (
     NotebookMappingModel,
     NotebookSourceMappingModel,
     OutlineOutputModel,
+    OutlineReplacementReviewModel,
     PublishedQuizMediaModel,
     PublishedQuizModel,
     QuizOutputModel,
@@ -29,6 +31,9 @@ from oms_hub.models import (
     StudioQuizImageRequirementModel,
     StudioRunModel,
     StudyPromptSettingModel,
+    StudyRevisionModel,
+    UploadBatchModel,
+    UploadItemModel,
 )
 from oms_hub.study_generation.domain import (
     GenerationJob,
@@ -67,6 +72,20 @@ class DirectImportReviewer(Protocol):
     def to_native_quiz_in_session(
         self, session: Session, run_id: str, *, title: str
     ) -> NativeQuiz: ...
+
+
+class ImportedOutlineReplacementRequired(RuntimeError):
+    """An imported current outline may only be replaced by an explicit decision."""
+
+
+@dataclass(frozen=True, slots=True)
+class ImportedOutlineReplacementReview:
+    generation_job_id: str
+    lecture_id: int
+    import_id: str
+    operator: str
+    reason: str
+    confirmed_at: str
 
 
 def _normalize(value: str) -> str:
@@ -541,8 +560,16 @@ class GenerationRepository:
         job_id: str,
         path: Path,
         sha256: str,
+        *,
+        replacement_review: ImportedOutlineReplacementReview | None = None,
     ) -> OutlineRecord:
         with self.database.session() as session:
+            self._assert_outline_replacement_allowed(
+                session,
+                lecture_id,
+                job_id,
+                replacement_review=replacement_review,
+            )
             session.execute(
                 update(OutlineOutputModel)
                 .where(OutlineOutputModel.lecture_id == lecture_id)
@@ -566,6 +593,286 @@ class GenerationRepository:
                 model.current = True
             session.flush()
             return self._outline(model)
+
+    def assert_outline_replacement_allowed(
+        self,
+        lecture_id: int,
+        job_id: str,
+        *,
+        replacement_review: ImportedOutlineReplacementReview | None = None,
+    ) -> None:
+        """Fail closed before a writer can replace an imported canonical PDF."""
+        with self.database.session() as session:
+            self._assert_outline_replacement_allowed(
+                session,
+                lecture_id,
+                job_id,
+                replacement_review=replacement_review,
+            )
+
+    def _assert_outline_replacement_allowed(
+        self,
+        session: Session,
+        lecture_id: int,
+        job_id: str,
+        *,
+        replacement_review: ImportedOutlineReplacementReview | None,
+    ) -> None:
+        current = session.scalar(
+            select(OutlineOutputModel).where(
+                OutlineOutputModel.lecture_id == lecture_id,
+                OutlineOutputModel.current.is_(True),
+            )
+        )
+        if (
+            current is not None
+            and current.provenance_kind == "imported_notebooklm"
+        ):
+            review = session.get(OutlineReplacementReviewModel, job_id)
+            if (
+                replacement_review is None
+                or review is None
+                or replacement_review.generation_job_id != review.generation_job_id
+                or review.lecture_id != lecture_id
+                or review.import_id != current.import_id
+                or not review.operator.strip()
+                or not review.reason.strip()
+            ):
+                raise ImportedOutlineReplacementRequired(
+                    "current imported outline requires a durable replacement review decision"
+                )
+            self._assert_replacement_review_eligible(
+                session,
+                lecture_id,
+                job_id,
+                current,
+                review,
+                expected_state=GenerationState.RUNNING,
+            )
+
+    def approve_imported_outline_replacement(
+        self, lecture_id: int, job_id: str, operator: str, reason: str
+    ) -> ImportedOutlineReplacementReview:
+        operator = operator.strip()
+        reason = reason.strip()
+        if not operator or not reason:
+            raise ValueError("replacement operator and reason are required")
+        with self.database.session() as session:
+            job = session.get(GenerationJobModel, job_id)
+            current = session.scalar(
+                select(OutlineOutputModel).where(
+                    OutlineOutputModel.lecture_id == lecture_id,
+                    OutlineOutputModel.current.is_(True),
+                )
+            )
+            if (
+                job is None
+                or job.lecture_id != lecture_id
+                or job.kind != GenerationKind.OUTLINE.value
+                or current is None
+                or current.provenance_kind != "imported_notebooklm"
+                or current.import_id is None
+            ):
+                raise ImportedOutlineReplacementRequired(
+                    "replacement review requires this lecture's current imported outline "
+                    "and outline job"
+                )
+            if job.state != GenerationState.FAILED.value or job.stage != GenerationStage.PDF.value:
+                raise ImportedOutlineReplacementRequired(
+                    "replacement review requires the exact terminal failed PDF-stage outline job"
+                )
+            review = session.get(OutlineReplacementReviewModel, job_id)
+            if review is None:
+                review = OutlineReplacementReviewModel(
+                    generation_job_id=job_id,
+                    lecture_id=lecture_id,
+                    import_id=current.import_id,
+                    operator=operator,
+                    reason=reason,
+                )
+            elif (
+                review.lecture_id != lecture_id
+                or review.import_id != current.import_id
+                or review.operator != operator
+                or review.reason != reason
+            ):
+                raise ImportedOutlineReplacementRequired(
+                    "replacement job already has a different durable review decision"
+                )
+            self._assert_replacement_review_eligible(
+                session,
+                lecture_id,
+                job_id,
+                current,
+                review,
+                expected_state=GenerationState.FAILED,
+            )
+            if session.get(OutlineReplacementReviewModel, job_id) is None:
+                session.add(review)
+                # The SQLite trigger intentionally observes the terminal failed
+                # state.  Persist that reviewed identity before requeueing.
+                session.flush()
+            job.state = GenerationState.QUEUED.value
+            job.next_attempt_at = None
+            job.error = None
+            session.flush()
+            return self._replacement_review(review)
+
+    @staticmethod
+    def _assert_replacement_review_eligible(
+        session: Session,
+        lecture_id: int,
+        job_id: str,
+        current: OutlineOutputModel,
+        review: OutlineReplacementReviewModel,
+        *,
+        expected_state: GenerationState,
+    ) -> None:
+        job = session.get(GenerationJobModel, job_id)
+        audit = session.get(ExistingArtifactImportModel, current.import_id)
+        slide = session.get(StudyRevisionModel, current.slide_revision_id)
+        transcript = session.get(StudyRevisionModel, current.transcript_revision_id)
+        lecture = session.get(LectureModel, lecture_id)
+        item = session.get(UploadItemModel, transcript.upload_item_id) if transcript else None
+        batch = session.get(UploadBatchModel, item.batch_id) if item else None
+        current_slide = session.scalar(
+            select(StudyRevisionModel).where(
+                StudyRevisionModel.lecture_id == lecture_id,
+                StudyRevisionModel.kind == "slides",
+                StudyRevisionModel.current.is_(True),
+            )
+        )
+        current_transcript = session.scalar(
+            select(StudyRevisionModel).where(
+                StudyRevisionModel.lecture_id == lecture_id,
+                StudyRevisionModel.kind == "transcripts",
+                StudyRevisionModel.current.is_(True),
+            )
+        )
+        if (
+            job is None
+            or job.lecture_id != lecture_id
+            or job.kind != GenerationKind.OUTLINE.value
+            or job.state != expected_state.value
+            or job.stage != GenerationStage.PDF.value
+            or not job.notebook_answer
+            or not job.pdf_source_id
+            or not job.transcript_source_id
+            or job.pdf_revision_id != current.slide_revision_id
+            or job.transcript_revision_id != current.transcript_revision_id
+            or review.lecture_id != lecture_id
+            or review.import_id != current.import_id
+            or audit is None
+            or audit.status != "complete"
+            or audit.lecture_id != lecture_id
+            or audit.outline_id != current.id
+            or lecture is None
+            or (audit.subject, audit.exam_number, audit.lecture_number, audit.topic)
+            != (lecture.subject, lecture.exam_number, lecture.lecture_number, lecture.topic)
+            or slide is None
+            or transcript is None
+            or current_slide is None
+            or current_transcript is None
+            or current_slide.id != slide.id
+            or current_transcript.id != transcript.id
+            or slide.id != audit.slide_revision_id
+            or transcript.id != audit.transcript_revision_id
+            or slide.source_sha256 != audit.slide_source_sha256
+            or slide.derived_sha256 != audit.slide_pdf_sha256
+            or transcript.source_sha256 != audit.transcript_sha256
+            or transcript.derived_sha256 != audit.transcript_sha256
+            or transcript.provenance_kind != "imported_cleaned"
+            or transcript.import_id != audit.id
+            or transcript.state != "current"
+            or transcript.immutable_source_path != audit.immutable_transcript_path
+            or transcript.immutable_derived_path != audit.immutable_transcript_path
+            or transcript.canonical_source_path != audit.canonical_transcript_path
+            or transcript.canonical_derived_path != audit.canonical_transcript_path
+            or item is None
+            or item.lecture_id != lecture_id
+            or item.kind != "transcripts"
+            or item.original_filename != audit.transcript_filename
+            or item.staged_path != audit.immutable_transcript_path
+            or item.sha256 != audit.transcript_sha256
+            or item.state != "complete"
+            or not item.manual_assignment
+            or batch is None
+            or batch.kind != "transcripts"
+            or batch.state != "complete"
+            or current.path != audit.canonical_outline_path
+            or current.job_id is not None
+            or current.provenance_kind != "imported_notebooklm"
+            or current.import_id != audit.id
+            or current.original_filename != audit.outline_filename
+            or current.immutable_path != audit.immutable_outline_path
+            or current.slide_revision_id != audit.slide_revision_id
+            or current.slide_source_sha256 != audit.slide_source_sha256
+            or current.slide_sha256 != audit.slide_pdf_sha256
+            or current.transcript_revision_id != audit.transcript_revision_id
+            or current.transcript_sha256 != audit.transcript_sha256
+            or current.sha256 != audit.outline_sha256
+            or not GenerationRepository._replacement_source_identity_matches(
+                session, job, lecture_id, slide, transcript
+            )
+        ):
+            raise ImportedOutlineReplacementRequired(
+                "replacement review job or pinned imported sources are no longer eligible"
+            )
+
+    @staticmethod
+    def _replacement_source_identity_matches(
+        session: Session,
+        job: GenerationJobModel,
+        lecture_id: int,
+        slide: StudyRevisionModel,
+        transcript: StudyRevisionModel,
+    ) -> bool:
+        if not job.notebook_id or not job.pdf_source_id or not job.transcript_source_id:
+            return False
+        lecture = session.get(LectureModel, lecture_id)
+        if lecture is None:
+            return False
+        mapping = session.scalar(
+            select(NotebookMappingModel).where(
+                NotebookMappingModel.remote_notebook_id == job.notebook_id,
+                NotebookMappingModel.subject_key == _normalize(lecture.subject),
+                NotebookMappingModel.exam_number == lecture.exam_number,
+            )
+        )
+        if mapping is None:
+            return False
+        pdf = session.scalar(
+            select(NotebookSourceMappingModel).where(
+                NotebookSourceMappingModel.notebook_mapping_id == mapping.id,
+                NotebookSourceMappingModel.lecture_id == lecture_id,
+                NotebookSourceMappingModel.study_revision_id == slide.id,
+                NotebookSourceMappingModel.source_kind == SourceKind.LECTURE_PDF.value,
+                NotebookSourceMappingModel.source_sha256 == slide.derived_sha256,
+                NotebookSourceMappingModel.remote_source_id == job.pdf_source_id,
+                NotebookSourceMappingModel.state == "ready",
+            )
+        )
+        transcript_binding = session.scalar(
+            select(NotebookSourceMappingModel).where(
+                NotebookSourceMappingModel.notebook_mapping_id == mapping.id,
+                NotebookSourceMappingModel.lecture_id == lecture_id,
+                NotebookSourceMappingModel.study_revision_id == transcript.id,
+                NotebookSourceMappingModel.source_kind == SourceKind.CLEANED_TRANSCRIPT.value,
+                NotebookSourceMappingModel.source_sha256 == transcript.derived_sha256,
+                NotebookSourceMappingModel.remote_source_id == job.transcript_source_id,
+                NotebookSourceMappingModel.state == "ready",
+            )
+        )
+        return pdf is not None and transcript_binding is not None
+
+    def imported_outline_replacement_review(
+        self, lecture_id: int, job_id: str
+    ) -> ImportedOutlineReplacementReview | None:
+        with self.database.session() as session:
+            review = session.get(OutlineReplacementReviewModel, job_id)
+            if review is None or review.lecture_id != lecture_id:
+                return None
+            return self._replacement_review(review)
 
     def current_outline(self, lecture_id: int) -> OutlineRecord | None:
         with self.database.session() as session:
@@ -1417,6 +1724,28 @@ class GenerationRepository:
             Path(model.path),
             model.sha256,
             model.current,
+            model.provenance_kind,
+            model.original_filename,
+            Path(model.immutable_path) if model.immutable_path else None,
+            model.slide_revision_id,
+            model.slide_sha256,
+            model.slide_source_sha256,
+            model.transcript_revision_id,
+            model.transcript_sha256,
+            model.import_id,
+        )
+
+    @staticmethod
+    def _replacement_review(
+        model: OutlineReplacementReviewModel,
+    ) -> ImportedOutlineReplacementReview:
+        return ImportedOutlineReplacementReview(
+            model.generation_job_id,
+            model.lecture_id,
+            model.import_id,
+            model.operator,
+            model.reason,
+            model.confirmed_at,
         )
 
     @staticmethod

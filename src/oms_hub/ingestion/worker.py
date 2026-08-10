@@ -3,6 +3,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
+from oms_hub.artifact_writes import ArtifactWriteClaimLost, ArtifactWriteContended
 from oms_hub.db import is_sqlite_busy
 from oms_hub.files.office import (
     OfficeConversionError,
@@ -60,10 +61,13 @@ class IngestionWorker:
 
     def _handle_failure(self, job: IngestionJob, error: Exception) -> None:
         detail = self._concise_error(error)
+        claim_contention = isinstance(
+            error, (ArtifactWriteContended, ArtifactWriteClaimLost)
+        )
         recovery_pending = isinstance(error, PromotionRecoveryError)
-        if self._is_transient(error) and (
+        if claim_contention or (self._is_transient(error) and (
             recovery_pending or job.attempts < self.max_attempts
-        ):
+        )):
             retry_exponent = min(max(job.attempts - 1, 0), 6)
             delay = timedelta(seconds=5 * (2**retry_exponent))
             self.repository.retry_job(job, detail, delay=delay)
@@ -98,6 +102,8 @@ class IngestionWorker:
 
     @staticmethod
     def _is_transient(error: Exception) -> bool:
+        if isinstance(error, (ArtifactWriteContended, ArtifactWriteClaimLost)):
+            return True
         if is_sqlite_busy(error):
             return True
         if isinstance(error, LLMRequestError):

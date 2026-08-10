@@ -79,11 +79,12 @@ def test_pipeline_records_the_provider_used_for_cleaning(tmp_path, provider):
 
     revision = pipeline.process(item_id)
 
+    assert revision.provenance_kind == "llm_cleaned"
+    assert revision.import_id is None
+
     with database.session() as session:
         usage = session.scalar(
-            select(StudyUsageModel).where(
-                StudyUsageModel.revision_id == revision.id
-            )
+            select(StudyUsageModel).where(StudyUsageModel.revision_id == revision.id)
         )
     assert usage is not None
     assert usage.provider == provider.value

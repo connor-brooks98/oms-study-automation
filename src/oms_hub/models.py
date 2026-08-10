@@ -164,6 +164,13 @@ class StudyRevisionModel(Base):
     __table_args__ = (
         UniqueConstraint("upload_item_id"),
         UniqueConstraint("lecture_id", "kind", "source_sha256"),
+        Index(
+            "uq_study_revisions_current_lecture_kind",
+            "lecture_id",
+            "kind",
+            unique=True,
+            sqlite_where=text("current = 1"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -192,6 +199,15 @@ class StudyRevisionModel(Base):
     prompt_sha256: Mapped[str | None] = mapped_column(
         String(64),
         nullable=True,
+    )
+    # ``llm_cleaned`` is deliberately the compatibility value: historical
+    # revisions were produced by the cleaning pipeline.  Imports never claim
+    # that provenance.
+    provenance_kind: Mapped[str] = mapped_column(
+        String(40), default="llm_cleaned", server_default="llm_cleaned"
+    )
+    import_id: Mapped[str | None] = mapped_column(
+        ForeignKey("existing_artifact_imports.id", ondelete="RESTRICT"), nullable=True
     )
     state: Mapped[str] = mapped_column(String(30), default="proposed")
     current: Mapped[bool] = mapped_column(default=False)
@@ -644,14 +660,109 @@ class GenerationAttemptModel(Base):
 
 class OutlineOutputModel(Base):
     __tablename__ = "outline_outputs"
+    __table_args__ = (
+        Index(
+            "uq_outline_outputs_current_lecture",
+            "lecture_id",
+            unique=True,
+            sqlite_where=text("current = 1"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     lecture_id: Mapped[int] = mapped_column(ForeignKey("lectures.id"))
-    job_id: Mapped[str] = mapped_column(ForeignKey("generation_jobs.id"), unique=True)
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("generation_jobs.id"), unique=True, nullable=True
+    )
     path: Mapped[str] = mapped_column(Text)
     sha256: Mapped[str] = mapped_column(String(64))
     current: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    provenance_kind: Mapped[str] = mapped_column(
+        String(40), default="notebooklm_generated", server_default="notebooklm_generated"
+    )
+    original_filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    immutable_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    slide_revision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("study_revisions.id", ondelete="RESTRICT"), nullable=True
+    )
+    # ``slide_sha256`` is the derived/current PDF hash; source PPTX is explicit.
+    slide_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    slide_source_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    transcript_revision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("study_revisions.id", ondelete="RESTRICT"), nullable=True
+    )
+    transcript_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    import_id: Mapped[str | None] = mapped_column(
+        ForeignKey("existing_artifact_imports.id", ondelete="RESTRICT"), nullable=True
+    )
+
+
+class ExistingArtifactImportModel(Base):
+    """Audit record for the intentionally narrow offline import path."""
+
+    __tablename__ = "existing_artifact_imports"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    bundle_sha256: Mapped[str] = mapped_column(String(64), unique=True)
+    lecture_id: Mapped[int] = mapped_column(ForeignKey("lectures.id"))
+    slide_revision_id: Mapped[int] = mapped_column(
+        ForeignKey("study_revisions.id", ondelete="RESTRICT")
+    )
+    slide_source_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    slide_pdf_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    transcript_sha256: Mapped[str] = mapped_column(String(64))
+    outline_sha256: Mapped[str] = mapped_column(String(64))
+    subject: Mapped[str] = mapped_column(String(200), default="")
+    exam_number: Mapped[int] = mapped_column(default=0)
+    lecture_number: Mapped[int] = mapped_column(default=0)
+    topic: Mapped[str] = mapped_column(String(500), default="")
+    canonical_transcript_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    canonical_outline_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    immutable_transcript_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    immutable_outline_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    transcript_filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    outline_filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="preparing")
+    attempts: Mapped[int] = mapped_column(default=1)
+    transcript_revision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("study_revisions.id", ondelete="RESTRICT"), nullable=True
+    )
+    outline_id: Mapped[int | None] = mapped_column(
+        ForeignKey("outline_outputs.id", ondelete="RESTRICT"), nullable=True
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
+class OutlineReplacementReviewModel(Base):
+    """Durable operator approval before a generated outline supersedes an import."""
+
+    __tablename__ = "outline_replacement_reviews"
+
+    generation_job_id: Mapped[str] = mapped_column(
+        ForeignKey("generation_jobs.id", ondelete="RESTRICT"), primary_key=True
+    )
+    lecture_id: Mapped[int] = mapped_column(
+        ForeignKey("lectures.id", ondelete="RESTRICT")
+    )
+    import_id: Mapped[str] = mapped_column(
+        ForeignKey("existing_artifact_imports.id", ondelete="RESTRICT")
+    )
+    operator: Mapped[str] = mapped_column(String(200))
+    reason: Mapped[str] = mapped_column(Text)
+    confirmed_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class LectureArtifactWriteClaimModel(Base):
+    __tablename__ = "lecture_artifact_write_claims"
+
+    lecture_id: Mapped[int] = mapped_column(ForeignKey("lectures.id"), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(100))
+    purpose: Mapped[str] = mapped_column(String(100))
+    acquired_at: Mapped[str] = mapped_column(String(40), default=utc_now)
 
 
 class QuizOutputModel(Base):

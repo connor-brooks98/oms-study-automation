@@ -4,6 +4,9 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from oms_hub.artifact_writes import ArtifactWriteClaimLost, ArtifactWriteContended
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.ingestion.domain import UploadKind
 from oms_hub.study_generation.domain import (
@@ -62,6 +65,10 @@ class Repository:
 
     def fail(self, job_id, error, paused=False):
         raise AssertionError((job_id, error, paused))
+
+    def retry(self, job_id, error, delay):
+        assert job_id == self.current.id
+        self.retried = (job_id, error, delay)
 
     def record_quiz(self, lecture_id, job_id, url):
         self.quiz = (lecture_id, job_id, url)
@@ -213,6 +220,19 @@ def test_worker_validates_and_publishes_notebook_quiz_natively(tmp_path):
         V2StepName.QUIZ_PUBLISHED,
         StepStatus.COMPLETE,
     )
+
+
+@pytest.mark.parametrize("error", [ArtifactWriteContended("held"), ArtifactWriteClaimLost("lost")])
+def test_claim_failures_are_deferred_after_generation_retry_limit(tmp_path, error):
+    publisher = Publisher()
+    worker, repository, _, progress = _worker(
+        tmp_path, _job(attempts=99), publisher
+    )
+    worker._run = lambda job: (_ for _ in ()).throw(error)
+    assert worker.run_once() is True
+    assert repository.current.state is not GenerationState.FAILED
+    assert repository.retried[0] == "job-1"
+    assert progress[-1][2] is StepStatus.QUEUED
 
 
 def test_worker_appends_machine_contract_to_editable_obsidian_prompt(tmp_path):

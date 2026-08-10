@@ -793,6 +793,8 @@ class IngestionRepository:
             prompt_sha256=revision.prompt_sha256,
             state=revision.state,
             current=revision.current,
+            provenance_kind=revision.provenance_kind,
+            import_id=revision.import_id,
         )
 
     def _complete_revision_item(

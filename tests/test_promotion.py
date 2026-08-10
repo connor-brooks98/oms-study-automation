@@ -5,6 +5,14 @@ from oms_hub.files.atomic import verified_atomic_copy
 from oms_hub.files.promotion import PromotionCoordinator, PromotionRecoveryError
 
 
+class _AlwaysOwned:
+    def assert_owned(self) -> None:
+        return None
+
+
+CLAIM = _AlwaysOwned()
+
+
 def test_promotion_restores_prior_file_when_database_commit_fails(tmp_path):
     source = tmp_path / "immutable.pdf"
     destination = tmp_path / "current.pdf"
@@ -16,7 +24,7 @@ def test_promotion_restores_prior_file_when_database_commit_fails(tmp_path):
         raise RuntimeError("database unavailable")
 
     with pytest.raises(RuntimeError, match="database unavailable"):
-        coordinator.promote([(source, destination)], 12, fail_commit)
+        coordinator.promote([(source, destination)], 12, fail_commit, CLAIM)
 
     assert destination.read_bytes() == b"old"
     assert not coordinator.backup_path(destination, 12).exists()
@@ -37,6 +45,7 @@ def test_recovery_commits_completed_file_promotion_and_removes_backups(tmp_path)
         20,
         lambda: calls.append("commit") or "committed",
         lambda: calls.append("reset"),
+        CLAIM,
     )
 
     assert result == "committed"
@@ -65,6 +74,7 @@ def test_recovery_restores_prior_file_when_database_commit_still_fails(tmp_path)
             25,
             fail_commit,
             lambda: calls.append("reset"),
+            CLAIM,
         )
 
     assert calls == ["commit", "reset"]
@@ -90,6 +100,7 @@ def test_recovery_preserves_ambiguous_matching_destination_without_backup(tmp_pa
         30,
         lambda: calls.append("commit"),
         lambda: calls.append("reset"),
+        CLAIM,
     )
 
     assert result is None
@@ -120,6 +131,7 @@ def test_recovery_translates_locked_destination_to_retryable_error(
             31,
             lambda: None,
             lambda: None,
+            CLAIM,
         )
 
     assert isinstance(error.value.__cause__, OSError)

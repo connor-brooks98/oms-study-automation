@@ -1,6 +1,12 @@
 import json
 from pathlib import Path
 
+from oms_hub.artifact_writes import (
+    ArtifactWriteClaim,
+    ArtifactWriteClaimLost,
+    ArtifactWriteContended,
+    ArtifactWriteCoordinator,
+)
 from oms_hub.config import Settings
 from oms_hub.db import Database
 from oms_hub.domain import LectureKey, StepStatus, V2StepName
@@ -53,12 +59,16 @@ class TranscriptPipeline:
         settings: Settings,
         prompt: PromptLoader,
         cleaner: TranscriptCleaner,
+        artifact_writes: ArtifactWriteCoordinator | None = None,
     ):
         self.settings = settings
         self.prompt = prompt
         self.cleaner = cleaner
         self.repository = IngestionRepository(database)
         self.catalog = CatalogRepository(database)
+        # See SlidePipeline: this seam is only for deterministic interleaving
+        # tests; production still creates the standard coordinator.
+        self.writes = artifact_writes or ArtifactWriteCoordinator(database, settings)
 
     def process(self, item_id: str) -> StudyRevision:
         item = self.repository.require_item(item_id)
@@ -72,10 +82,7 @@ class TranscriptPipeline:
 
         revision = self.repository.begin_revision(
             item_id,
-            expanded_path(self.settings.data_dir)
-            / "artifacts"
-            / "v2"
-            / "transcripts",
+            expanded_path(self.settings.data_dir) / "artifacts" / "v2" / "transcripts",
         )
         cleaned_path = revision.immutable_derived_path
         if cleaned_path is None:
@@ -92,17 +99,13 @@ class TranscriptPipeline:
                 self.settings.max_upload_file_bytes,
             )
             if sha256_file(item.staged_path) != revision.source_sha256:
-                raise TranscriptValidationError(
-                    "staged transcript checksum mismatch"
-                )
+                raise TranscriptValidationError("staged transcript checksum mismatch")
             source_sha256 = verified_atomic_write(
                 payload,
                 revision.immutable_source_path,
             )
             if source_sha256 != revision.source_sha256:
-                raise TranscriptValidationError(
-                    "preserved transcript checksum mismatch"
-                )
+                raise TranscriptValidationError("preserved transcript checksum mismatch")
             self.catalog.set_step_status(
                 revision.lecture_id,
                 V2StepName.TRANSCRIPT_VALIDATED,
@@ -148,46 +151,97 @@ class TranscriptPipeline:
                     output_tokens=model_result.output_tokens,
                     cost_microusd=model_result.cost_microusd,
                 )
-            if self.repository.has_other_current_revision(
-                revision.lecture_id,
-                UploadKind.TRANSCRIPTS,
-                revision.id,
-            ):
-                self.catalog.set_step_status(
+            with self.writes.claim(revision.lecture_id, "transcript-filing") as claim:
+                claim.assert_owned()
+                if self.repository.has_other_current_revision(
                     revision.lecture_id,
-                    V2StepName.TRANSCRIPT_FILED,
-                    StepStatus.NEEDS_REVIEW,
-                    "A cleaned transcript replacement is ready for approval",
-                )
-                return self.repository.finish_revision(
-                    item_id,
+                    UploadKind.TRANSCRIPTS,
                     revision.id,
-                    UploadState.NEEDS_REVIEW,
-                    current=False,
-                    error="transcript replacement awaits approval",
-                )
-
-            copied_sha256 = verified_atomic_copy(
-                cleaned_path,
-                destination,
-            )
-            if copied_sha256 != cleaned_sha256:
-                raise TranscriptValidationError(
-                    "filed transcript checksum mismatch"
-                )
-            self.catalog.set_step_status(
-                revision.lecture_id,
-                V2StepName.TRANSCRIPT_FILED,
-                StepStatus.COMPLETE,
-                "Cleaned transcript filed on the NUC",
-            )
-            return self.repository.finish_revision(
-                item_id,
-                revision.id,
-                UploadState.COMPLETE,
-                current=True,
-            )
+                ):
+                    self.catalog.set_step_status(
+                        revision.lecture_id,
+                        V2StepName.TRANSCRIPT_FILED,
+                        StepStatus.NEEDS_REVIEW,
+                        "A cleaned transcript replacement is ready for approval",
+                    )
+                    return self.repository.finish_revision(
+                        item_id,
+                        revision.id,
+                        UploadState.NEEDS_REVIEW,
+                        current=False,
+                        error="transcript replacement awaits approval",
+                    )
+                backup = None
+                if destination.exists():
+                    backup = destination.with_name(f".{destination.name}.oms-backup-{revision.id}")
+                    if backup.exists():
+                        raise TranscriptValidationError(
+                            "prior transcript filing recovery backup requires operator review"
+                        )
+                    claim.assert_owned()
+                    verified_atomic_copy(destination, backup)
+                copied = False
+                try:
+                    copied_sha256 = verified_atomic_copy(
+                        cleaned_path,
+                        destination,
+                    )
+                    copied = True
+                    if copied_sha256 != cleaned_sha256:
+                        raise TranscriptValidationError("filed transcript checksum mismatch")
+                    claim.assert_owned()
+                    if self.repository.has_other_current_revision(
+                        revision.lecture_id,
+                        UploadKind.TRANSCRIPTS,
+                        revision.id,
+                    ):
+                        backup = self._restore_filed_destination(
+                            claim, backup, destination
+                        )
+                        copied = False
+                        self.catalog.set_step_status(
+                            revision.lecture_id,
+                            V2StepName.TRANSCRIPT_FILED,
+                            StepStatus.NEEDS_REVIEW,
+                            "A cleaned transcript replacement is ready for approval",
+                        )
+                        return self.repository.finish_revision(
+                            item_id,
+                            revision.id,
+                            UploadState.NEEDS_REVIEW,
+                            current=False,
+                            error="transcript replacement awaits approval",
+                        )
+                    self.catalog.set_step_status(
+                        revision.lecture_id,
+                        V2StepName.TRANSCRIPT_FILED,
+                        StepStatus.COMPLETE,
+                        "Cleaned transcript filed on the NUC",
+                    )
+                    claim.assert_owned()
+                    return self.repository.finish_revision(
+                        item_id,
+                        revision.id,
+                        UploadState.COMPLETE,
+                        current=True,
+                    )
+                except Exception:
+                    if copied:
+                        backup = self._restore_filed_destination(
+                            claim, backup, destination
+                        )
+                    raise
+                finally:
+                    try:
+                        claim.assert_owned()
+                    except ArtifactWriteClaimLost:
+                        pass
+                    else:
+                        if backup is not None:
+                            backup.unlink(missing_ok=True)
         except Exception as error:
+            if isinstance(error, (ArtifactWriteContended, ArtifactWriteClaimLost)):
+                raise
             self._set_steps(
                 revision.lecture_id,
                 StepStatus.NEEDS_REVIEW,
@@ -202,6 +256,19 @@ class TranscriptPipeline:
                 revision_state="failed",
             )
             raise
+
+    @staticmethod
+    def _restore_filed_destination(
+        claim: ArtifactWriteClaim, backup: Path | None, destination: Path
+    ) -> None:
+        """Restore only while this writer still owns the canonical destination."""
+        claim.assert_owned()
+        if backup is not None:
+            verified_atomic_copy(backup, destination)
+            backup.unlink(missing_ok=True)
+        else:
+            destination.unlink(missing_ok=True)
+        return None
 
     def _ensure_cleaned(
         self,
@@ -228,9 +295,7 @@ class TranscriptPipeline:
         try:
             cleaned_payload = result.text.encode("utf-8")
         except UnicodeEncodeError as error:
-            raise TranscriptValidationError(
-                "cleaned transcript is not valid UTF-8"
-            ) from error
+            raise TranscriptValidationError("cleaned transcript is not valid UTF-8") from error
         cleaned_sha256 = verified_atomic_write(
             cleaned_payload,
             cleaned_path,
@@ -241,19 +306,13 @@ class TranscriptPipeline:
         if not cleaned.strip():
             raise TranscriptValidationError("cleaned transcript is empty")
         if cleaned.lstrip().lower().startswith(("<html", "<!doctype")):
-            raise TranscriptValidationError(
-                "cleaned transcript contains an HTML response"
-            )
+            raise TranscriptValidationError("cleaned transcript contains an HTML response")
         if _is_data_envelope(cleaned):
-            raise TranscriptValidationError(
-                "cleaned transcript contains a data or error envelope"
-            )
+            raise TranscriptValidationError("cleaned transcript contains a data or error envelope")
         try:
             cleaned.encode("utf-8")
         except UnicodeEncodeError as error:
-            raise TranscriptValidationError(
-                "cleaned transcript is not valid UTF-8"
-            ) from error
+            raise TranscriptValidationError("cleaned transcript is not valid UTF-8") from error
         ratio = len(cleaned) / len(raw_text)
         if not (
             self.settings.transcript_min_clean_ratio

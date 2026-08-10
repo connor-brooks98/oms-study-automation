@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+from oms_hub.artifact_writes import ArtifactWriteClaimLost, ArtifactWriteContended
 from oms_hub.db import is_sqlite_busy
 from oms_hub.domain import LectureKey, StepStatus, V2StepName
 from oms_hub.files.atomic import sha256_file
@@ -74,9 +75,12 @@ class GenerationWorker:
                 self.notebook_connection.invalidate(str(error))
             safe = _safe_error(error)
             retryable = _is_transient(error)
+            claim_contention = isinstance(
+                error, (ArtifactWriteContended, ArtifactWriteClaimLost)
+            )
             if isinstance(error, QuizContractError):
                 retryable = self.repository.contract_failure_count(job.id) < 2
-            if retryable and job.attempts < 4:
+            if claim_contention or (retryable and job.attempts < 4):
                 self.repository.retry(
                     job.id,
                     safe,
@@ -226,7 +230,10 @@ class GenerationWorker:
             lecture.topic,
         )
         if job.kind is GenerationKind.OUTLINE:
-            self.outline.file(job, lecture_key, answer)
+            review = self.repository.imported_outline_replacement_review(
+                job.lecture_id, job.id
+            )
+            self.outline.file(job, lecture_key, answer, replacement_review=review)
             self.repository.complete(job.id)
             self.catalog.set_step_status(
                 job.lecture_id,
@@ -365,6 +372,8 @@ def _is_auth_error(error: Exception) -> bool:
 
 
 def _is_transient(error: Exception) -> bool:
+    if isinstance(error, (ArtifactWriteContended, ArtifactWriteClaimLost)):
+        return True
     if is_sqlite_busy(error):
         return True
     if isinstance(error, NotebookGatewayError):

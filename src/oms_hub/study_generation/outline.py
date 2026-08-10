@@ -18,6 +18,7 @@ from reportlab.platypus import (  # type: ignore[import-untyped]
     Spacer,
 )
 
+from oms_hub.artifact_writes import ArtifactWriteClaimLost, ArtifactWriteCoordinator
 from oms_hub.config import Settings
 from oms_hub.domain import LectureKey
 from oms_hub.files.atomic import verified_atomic_copy, verified_atomic_write
@@ -31,7 +32,10 @@ from oms_hub.study_generation.outline_markup import (
     parse_outline_blocks,
     safe_inline_markup,
 )
-from oms_hub.study_generation.repository import GenerationRepository
+from oms_hub.study_generation.repository import (
+    GenerationRepository,
+    ImportedOutlineReplacementReview,
+)
 
 
 class OutlinePdfRenderer:
@@ -167,6 +171,8 @@ class OutlineService:
         job: GenerationJob,
         lecture: LectureKey,
         answer: NotebookAnswer,
+        *,
+        replacement_review: ImportedOutlineReplacementReview | None = None,
     ) -> OutlineRecord:
         title = (
             f"{lecture.subject} - Lecture {lecture.lecture_number:02d} - "
@@ -182,13 +188,58 @@ class OutlineService:
         )
         digest = verified_atomic_write(payload, immutable)
         destination = build_outline_destination(self.settings, lecture)
-        verified_atomic_copy(immutable, destination)
-        return self.repository.record_outline(
-            job.lecture_id,
-            job.id,
-            destination,
-            digest,
+        coordinator = ArtifactWriteCoordinator(
+            self.repository.database, self.settings
         )
+        with coordinator.claim(job.lecture_id, "outline-generation") as claim:
+            claim.assert_owned()
+            # Check before touching the canonical path.  The repository repeats
+            # this guard at commit time for callers which bypass this service.
+            self.repository.assert_outline_replacement_allowed(
+                job.lecture_id,
+                job.id,
+                replacement_review=replacement_review,
+            )
+            rollback = destination.with_name(
+                f".{destination.name}.rollback-{job.id}"
+            )
+            had_destination = destination.exists()
+            copied = False
+            try:
+                if had_destination:
+                    verified_atomic_copy(destination, rollback)
+                claim.assert_owned()
+                verified_atomic_copy(immutable, destination)
+                copied = True
+                claim.assert_owned()
+                return self.repository.record_outline(
+                    job.lecture_id,
+                    job.id,
+                    destination,
+                    digest,
+                    replacement_review=replacement_review,
+                )
+            except Exception:
+                # The database transaction can fail after promotion.  Restore
+                # the prior canonical bytes while this writer still owns the
+                # lecture fence, so file and current-row state never diverge.
+                if copied:
+                    claim.assert_owned()
+                    if had_destination:
+                        verified_atomic_copy(rollback, destination)
+                    else:
+                        destination.unlink(missing_ok=True)
+                raise
+            finally:
+                # A successor may have promoted bytes after this writer lost
+                # its durable claim.  Keep the sidecar as recovery evidence;
+                # only its exact owner may remove it.
+                try:
+                    claim.assert_owned()
+                except ArtifactWriteClaimLost:
+                    pass
+                else:
+                    rollback.unlink(missing_ok=True)
 
 
 def _page_number(canvas: Any, document: Any) -> None:

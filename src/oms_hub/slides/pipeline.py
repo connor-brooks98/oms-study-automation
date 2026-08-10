@@ -1,5 +1,11 @@
 from pathlib import Path
 
+from oms_hub.artifact_writes import (
+    ArtifactWriteClaim,
+    ArtifactWriteClaimLost,
+    ArtifactWriteContended,
+    ArtifactWriteCoordinator,
+)
 from oms_hub.config import Settings
 from oms_hub.db import Database
 from oms_hub.document_processing.domain import ParsedDocument, SourceSnapshot
@@ -37,8 +43,14 @@ class SlidePipeline:
         settings: Settings,
         converter: OfficeConverter,
         document_evaluator: DocumentShadowEvaluator | None = None,
+        artifact_writes: ArtifactWriteCoordinator | None = None,
     ):
         self.settings = settings
+        self.database = database
+        # The default remains the durable OS/database coordinator.  Injection
+        # is deliberately limited to tests which need deterministic writer
+        # interleavings with the real pipeline object.
+        self.writes = artifact_writes or ArtifactWriteCoordinator(database, settings)
         self.converter = converter
         self.promotion = PromotionCoordinator()
         self.repository = IngestionRepository(database)
@@ -58,10 +70,7 @@ class SlidePipeline:
 
         revision = self.repository.begin_revision(
             item_id,
-            expanded_path(self.settings.data_dir)
-            / "artifacts"
-            / "v2"
-            / "slides",
+            expanded_path(self.settings.data_dir) / "artifacts" / "v2" / "slides",
         )
         derived = revision.immutable_derived_path
         if derived is None:
@@ -69,26 +78,23 @@ class SlidePipeline:
         recovering_promotion = revision.state == "promoting"
         try:
             if revision.current:
-                revision = self._repair_current_revision(
-                    item.staged_path,
-                    revision,
-                    derived,
-                )
-                self._mark_promoted(revision.lecture_id)
-                return self.repository.complete_promoted_revision(
-                    revision.id,
-                    item_id,
-                )
+                with self.writes.claim(revision.lecture_id, "slide-repair") as claim:
+                    revision = self._repair_current_revision(
+                        item.staged_path, revision, derived, claim
+                    )
+                    claim.assert_owned()
+                    self._mark_promoted(revision.lecture_id)
+                    claim.assert_owned()
+                    return self.repository.complete_promoted_revision(revision.id, item_id)
             if recovering_promotion:
-                revision = self._promote_revision(
-                    revision,
-                    self._persisted_promotion_pairs(revision, derived),
-                )
-                self._mark_promoted(revision.lecture_id)
-                return self.repository.complete_promoted_revision(
-                    revision.id,
-                    item_id,
-                )
+                with self.writes.claim(revision.lecture_id, "slide-recovery") as claim:
+                    revision = self._promote_revision(
+                        revision, self._persisted_promotion_pairs(revision, derived), claim
+                    )
+                    claim.assert_owned()
+                    self._mark_promoted(revision.lecture_id)
+                    claim.assert_owned()
+                    return self.repository.complete_promoted_revision(revision.id, item_id)
             destinations = build_slide_destinations(
                 self.settings,
                 LectureKey(
@@ -133,39 +139,41 @@ class SlidePipeline:
                 canonical_derived_path=destinations.pdf,
                 icloud_path=destinations.icloud_pdf,
             )
-            if self.repository.has_other_current_revision(
-                revision.lecture_id,
-                UploadKind.SLIDES,
-                revision.id,
-            ):
-                self.catalog.set_step_status(
-                    revision.lecture_id,
-                    V2StepName.SLIDES_FILED,
-                    StepStatus.NEEDS_REVIEW,
-                    "A replacement is ready for approval",
+            with self.writes.claim(revision.lecture_id, "slide-promotion") as claim:
+                if self.repository.has_other_current_revision(
+                    revision.lecture_id, UploadKind.SLIDES, revision.id
+                ):
+                    claim.assert_owned()
+                    self.catalog.set_step_status(
+                        revision.lecture_id,
+                        V2StepName.SLIDES_FILED,
+                        StepStatus.NEEDS_REVIEW,
+                        "A slide replacement is ready for approval",
+                    )
+                    claim.assert_owned()
+                    return self.repository.finish_revision(
+                        item_id,
+                        revision.id,
+                        UploadState.NEEDS_REVIEW,
+                        current=False,
+                        error="lecture replacement awaits approval",
+                    )
+                revision = self._promote_revision(
+                    revision,
+                    [
+                        (revision.immutable_source_path, destinations.source),
+                        (derived, destinations.pdf),
+                        (derived, destinations.icloud_pdf),
+                    ],
+                    claim,
                 )
-                return self.repository.finish_revision(
-                    item_id,
-                    revision.id,
-                    UploadState.NEEDS_REVIEW,
-                    current=False,
-                    error="lecture replacement awaits approval",
-                )
-
-            revision = self._promote_revision(
-                revision,
-                [
-                    (revision.immutable_source_path, destinations.source),
-                    (derived, destinations.pdf),
-                    (derived, destinations.icloud_pdf),
-                ],
-            )
-            self._mark_promoted(revision.lecture_id)
-            return self.repository.complete_promoted_revision(
-                revision.id,
-                item_id,
-            )
+                claim.assert_owned()
+                self._mark_promoted(revision.lecture_id)
+                claim.assert_owned()
+                return self.repository.complete_promoted_revision(revision.id, item_id)
         except Exception as error:
+            if isinstance(error, (ArtifactWriteContended, ArtifactWriteClaimLost)):
+                raise
             self._mark_failed(revision.lecture_id, str(error))
             revision_state = None
             if isinstance(error, PromotionSourceError):
@@ -272,40 +280,38 @@ class SlidePipeline:
         self,
         revision: StudyRevision,
         pairs: list[tuple[Path, Path]],
+        claim: ArtifactWriteClaim,
     ) -> StudyRevision:
         try:
             self._validate_promotion_sources(revision)
         except PromotionSourceError:
             if revision.state == "promoting":
-                self.promotion.restore_backups(pairs, revision.id)
+                self.promotion.restore_backups(pairs, revision.id, claim)
             raise
         if revision.state == "promoting":
             recovered = self.promotion.recover(
                 pairs,
                 revision.id,
-                lambda: self.repository.promote_study_revision(
-                    revision.id,
-                    complete_item=False,
-                ),
-                lambda: self.repository.reset_study_promotion(revision.id),
+                lambda: self._commit_promotion(revision.id, claim),
+                lambda: self._reset_promotion(revision.id, claim),
+                claim,
             )
             if recovered is not None:
                 return recovered
             revision = self.repository.get_study_revision(revision.id)
+        claim.assert_owned()
         self.repository.begin_study_promotion(revision.id)
         try:
             return self.promotion.promote(
                 pairs,
                 revision.id,
-                lambda: self.repository.promote_study_revision(
-                    revision.id,
-                    complete_item=False,
-                ),
+                lambda: self._commit_promotion(revision.id, claim),
+                claim,
             )
         except PromotionRecoveryError:
             raise
         except Exception:
-            self.repository.reset_study_promotion(revision.id)
+            self._reset_promotion(revision.id, claim)
             raise
 
     @staticmethod
@@ -313,8 +319,7 @@ class SlidePipeline:
         derived = revision.immutable_derived_path
         try:
             if (
-                sha256_file(revision.immutable_source_path)
-                != revision.source_sha256
+                sha256_file(revision.immutable_source_path) != revision.source_sha256
                 or derived is None
                 or revision.derived_sha256 is None
                 or sha256_file(derived) != revision.derived_sha256
@@ -332,6 +337,7 @@ class SlidePipeline:
         staged: Path,
         revision: StudyRevision,
         derived: Path,
+        claim: ArtifactWriteClaim,
     ) -> StudyRevision:
         self._preserve_source(
             staged,
@@ -356,7 +362,16 @@ class SlidePipeline:
             self._persisted_promotion_pairs(revision, derived),
             revision.id,
             lambda: revision,
+            claim,
         )
+
+    def _commit_promotion(self, revision_id: int, claim: ArtifactWriteClaim) -> StudyRevision:
+        claim.assert_owned()
+        return self.repository.promote_study_revision(revision_id, complete_item=False)
+
+    def _reset_promotion(self, revision_id: int, claim: ArtifactWriteClaim) -> None:
+        claim.assert_owned()
+        self.repository.reset_study_promotion(revision_id)
 
     @staticmethod
     def _persisted_promotion_pairs(
@@ -391,9 +406,7 @@ class SlidePipeline:
 
     def _mark_promoted(self, lecture_id: int) -> None:
         details = {
-            V2StepName.SLIDES_VALIDATED: (
-                "Original PowerPoint preserved and checksum verified"
-            ),
+            V2StepName.SLIDES_VALIDATED: ("Original PowerPoint preserved and checksum verified"),
             V2StepName.PDF_CONVERTED: "Converted PDF validated",
             V2StepName.SLIDES_FILED: "PowerPoint and PDF filed on the NUC",
             V2StepName.ICLOUD_PDF_STAGED: "PDF staged in iCloud",

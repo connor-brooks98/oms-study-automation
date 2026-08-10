@@ -1,6 +1,6 @@
 import hashlib
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import inspect, select, text
 
@@ -23,7 +23,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 19
+LATEST_SCHEMA_VERSION = 22
 
 
 def _ensure_column(
@@ -40,6 +40,809 @@ def _ensure_column(
         return
     with database.engine.begin() as connection:
         connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
+
+
+def _rebuild_legacy_outline_outputs_v19(database: "Database") -> None:
+    """Rebuild v19 outlines before metadata creates audit FKs.
+
+    SQLite rewrites inbound foreign-key targets when a referenced table is
+    renamed.  This must happen before ``create_schema`` can create
+    ``existing_artifact_imports.outline_id``.
+    """
+    inspector = inspect(database.engine)
+    if not inspector.has_table("outline_outputs"):
+        return
+    columns: dict[str, Any] = {
+        str(item["name"]): item for item in inspector.get_columns("outline_outputs")
+    }
+    if not bool(columns.get("job_id", {}).get("nullable") is False):
+        return
+    with database.engine.begin() as connection:
+        # A current-schema database deliberately downgraded for this legacy
+        # migration can still have the v22 review triggers.  SQLite validates
+        # trigger bodies while renaming this table, so remove only the derived
+        # v22 guards; the v22 step recreates their exact definitions later.
+        if database.engine.dialect.name == "sqlite":
+            connection.execute(text("DROP TRIGGER IF EXISTS trg_outline_replacement_review_insert"))
+            connection.execute(text("DROP TRIGGER IF EXISTS trg_outline_replacement_review_update"))
+        # A real v19 database has no audit table.  Tests and interrupted local
+        # upgrades can leave an empty later table behind; dropping that empty
+        # shell avoids SQLite retargeting its outline FK during the rename.
+        if inspector.has_table("existing_artifact_imports"):
+            count = connection.execute(
+                text("SELECT COUNT(*) FROM existing_artifact_imports")
+            ).scalar_one()
+            if count == 0:
+                connection.execute(text("DROP TABLE existing_artifact_imports"))
+        connection.execute(text("ALTER TABLE outline_outputs RENAME TO outline_outputs_v19"))
+    # With the legacy table out of the way, metadata can create both the new
+    # outline table and the audit table against its final name.  Creating the
+    # audit table before this rename is what retargeted its FK in SQLite.
+    database.create_schema()
+    with database.engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO outline_outputs
+            (id, lecture_id, job_id, path, sha256, current, created_at)
+            SELECT id, lecture_id, job_id, path, sha256, current, created_at
+            FROM outline_outputs_v19
+        """))
+        connection.execute(text("DROP TABLE outline_outputs_v19"))
+
+
+def _upgrade_existing_artifact_import_v20(database: "Database") -> None:
+    """Add provenance/audit data without inventing a generation history.
+
+    SQLite cannot relax the old ``outline_outputs.job_id NOT NULL`` constraint
+    in place, so the table is rebuilt only when that legacy constraint exists.
+    """
+    for name, definition in {
+        "provenance_kind": "VARCHAR(40) NOT NULL DEFAULT 'llm_cleaned'",
+        "import_id": "VARCHAR(36)",
+    }.items():
+        _ensure_column(database, "study_revisions", name, definition)
+    for name, definition in {
+        "subject": "VARCHAR(200) NOT NULL DEFAULT ''",
+        "exam_number": "INTEGER NOT NULL DEFAULT 0",
+        "lecture_number": "INTEGER NOT NULL DEFAULT 0",
+        "topic": "VARCHAR(500) NOT NULL DEFAULT ''",
+        "canonical_transcript_path": "TEXT",
+        "canonical_outline_path": "TEXT",
+        "immutable_transcript_path": "TEXT",
+        "immutable_outline_path": "TEXT",
+        "transcript_filename": "VARCHAR(500)",
+        "outline_filename": "VARCHAR(500)",
+    }.items():
+        _ensure_column(database, "existing_artifact_imports", name, definition)
+    inspector = inspect(database.engine)
+    if not inspector.has_table("outline_outputs"):
+        return
+    columns: dict[str, Any] = {
+        str(item["name"]): item for item in inspector.get_columns("outline_outputs")
+    }
+    if bool(columns.get("job_id", {}).get("nullable") is False):
+        raise RuntimeError("legacy outline rebuild must run before schema creation")
+    else:
+        for name, definition in {
+            "provenance_kind": "VARCHAR(40) NOT NULL DEFAULT 'notebooklm_generated'",
+            "original_filename": "VARCHAR(500)",
+            "immutable_path": "TEXT",
+            "slide_revision_id": "INTEGER",
+            "slide_sha256": "VARCHAR(64)",
+            "transcript_revision_id": "INTEGER",
+            "transcript_sha256": "VARCHAR(64)",
+            "import_id": "VARCHAR(36)",
+        }.items():
+            _ensure_column(database, "outline_outputs", name, definition)
+    with database.engine.begin() as connection:
+        duplicate_revision = connection.execute(
+            text("""
+            SELECT lecture_id, kind FROM study_revisions WHERE current = 1
+            GROUP BY lecture_id, kind HAVING COUNT(*) > 1 LIMIT 1
+        """)
+        ).first()
+        duplicate_outline = connection.execute(
+            text("""
+            SELECT lecture_id FROM outline_outputs WHERE current = 1
+            GROUP BY lecture_id HAVING COUNT(*) > 1 LIMIT 1
+        """)
+        ).first()
+        if duplicate_revision or duplicate_outline:
+            raise RuntimeError(
+                "schema v20 cannot add current-artifact uniqueness: duplicate "
+                "current rows exist; resolve them explicitly before migration"
+            )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_study_revisions_current_lecture_kind "
+                "ON study_revisions(lecture_id, kind) WHERE current = 1"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_outline_outputs_current_lecture "
+                "ON outline_outputs(lecture_id) WHERE current = 1"
+            )
+        )
+
+
+def _upgrade_existing_artifact_slide_identity_v21(database: "Database") -> None:
+    """Make imported slide source/PDF identities explicit without losing v20 rows."""
+    _validate_v20_legacy_slide_identity(database)
+    _ensure_column(
+        database,
+        "existing_artifact_imports",
+        "slide_source_sha256",
+        "VARCHAR(64)",
+    )
+    _ensure_column(
+        database,
+        "existing_artifact_imports",
+        "slide_pdf_sha256",
+        "VARCHAR(64)",
+    )
+    _ensure_column(database, "outline_outputs", "slide_source_sha256", "VARCHAR(64)")
+    inspector = inspect(database.engine)
+    if inspector.has_table("existing_artifact_imports"):
+        columns = {item["name"] for item in inspector.get_columns("existing_artifact_imports")}
+        with database.engine.begin() as connection:
+            if "slide_sha256" in columns:
+                connection.execute(
+                    text(
+                        "UPDATE existing_artifact_imports SET slide_pdf_sha256=slide_sha256 "
+                        "WHERE slide_pdf_sha256 IS NULL"
+                    )
+                )
+            connection.execute(
+                text(
+                    "UPDATE existing_artifact_imports SET "
+                    "slide_source_sha256=(SELECT source_sha256 FROM study_revisions "
+                    "WHERE id=existing_artifact_imports.slide_revision_id), "
+                    "slide_pdf_sha256=(SELECT derived_sha256 FROM study_revisions "
+                    "WHERE id=existing_artifact_imports.slide_revision_id) "
+                    "WHERE status='complete'"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE outline_outputs SET slide_source_sha256=(SELECT source_sha256 "
+                    "FROM study_revisions WHERE id=outline_outputs.slide_revision_id), "
+                    "slide_sha256=(SELECT derived_sha256 FROM study_revisions "
+                    "WHERE id=outline_outputs.slide_revision_id) "
+                    "WHERE provenance_kind='imported_notebooklm'"
+                )
+            )
+            invalid = connection.execute(
+                text(
+                    "SELECT id FROM existing_artifact_imports WHERE status='complete' "
+                    "AND (slide_source_sha256 IS NULL OR slide_pdf_sha256 IS NULL) LIMIT 1"
+                )
+            ).first()
+            if invalid:
+                raise RuntimeError("schema v21 cannot backfill imported slide identity")
+
+
+def _ensure_study_revision_import_fk(database: "Database") -> None:
+    """SQLite must rebuild this legacy table to add the imported-audit FK."""
+    if database.engine.dialect.name != "sqlite":
+        return
+    with database.engine.connect() as connection:
+        fks = {
+            row[3]: (row[2], row[6])
+            for row in connection.execute(text("PRAGMA foreign_key_list(study_revisions)"))
+        }
+    if fks.get("import_id") == ("existing_artifact_imports", "RESTRICT"):
+        return
+    columns = (
+        "id, upload_item_id, lecture_id, kind, source_sha256, immutable_source_path, "
+        "derived_sha256, immutable_derived_path, canonical_source_path, "
+        "canonical_derived_path, icloud_path, prompt_sha256, provenance_kind, import_id, "
+        "state, current, created_at, promoted_at"
+    )
+    raw = database.engine.raw_connection()
+    try:
+        cursor = raw.cursor()
+        cursor.execute("PRAGMA foreign_keys=OFF")
+        cursor.execute("DROP TRIGGER IF EXISTS trg_outline_replacement_review_insert")
+        cursor.execute("DROP TRIGGER IF EXISTS trg_outline_replacement_review_update")
+        cursor.execute("DROP TABLE IF EXISTS study_revisions_import_fk")
+        cursor.execute("""
+            CREATE TABLE study_revisions_import_fk (
+                id INTEGER PRIMARY KEY,
+                upload_item_id VARCHAR(36) NOT NULL UNIQUE REFERENCES upload_items(id),
+                lecture_id INTEGER NOT NULL REFERENCES lectures(id),
+                kind VARCHAR(20) NOT NULL,
+                source_sha256 VARCHAR(64) NOT NULL,
+                immutable_source_path TEXT NOT NULL,
+                derived_sha256 VARCHAR(64), immutable_derived_path TEXT,
+                canonical_source_path TEXT, canonical_derived_path TEXT, icloud_path TEXT,
+                prompt_sha256 VARCHAR(64),
+                provenance_kind VARCHAR(40) NOT NULL DEFAULT 'llm_cleaned',
+                import_id VARCHAR(36) REFERENCES existing_artifact_imports(id) ON DELETE RESTRICT,
+                state VARCHAR(30) NOT NULL DEFAULT 'proposed', current BOOLEAN NOT NULL DEFAULT 0,
+                created_at VARCHAR(40) NOT NULL, promoted_at VARCHAR(40),
+                UNIQUE(lecture_id, kind, source_sha256)
+            )
+        """)
+        cursor.execute(
+            f"INSERT INTO study_revisions_import_fk ({columns}) "
+            f"SELECT {columns} FROM study_revisions"
+        )
+        cursor.execute("DROP TABLE study_revisions")
+        cursor.execute("ALTER TABLE study_revisions_import_fk RENAME TO study_revisions")
+        cursor.execute(
+            "CREATE UNIQUE INDEX uq_study_revisions_current_lecture_kind "
+            "ON study_revisions(lecture_id, kind) WHERE current = 1"
+        )
+        raw.commit()
+    finally:
+        raw.execute("PRAGMA foreign_keys=ON")
+        raw.close()
+    _upgrade_outline_replacement_reviews_v22(database)
+
+
+def _validate_v20_legacy_slide_identity(database: "Database") -> None:
+    """Reject contradictory v20 identities before v21 can normalize them."""
+    inspector = inspect(database.engine)
+    if not inspector.has_table("existing_artifact_imports"):
+        return
+    audit_columns = {item["name"] for item in inspector.get_columns("existing_artifact_imports")}
+    outline_columns = {item["name"] for item in inspector.get_columns("outline_outputs")}
+    if "slide_sha256" not in audit_columns or "slide_sha256" not in outline_columns:
+        return
+    with database.engine.connect() as connection:
+        invalid = connection.execute(text("""
+            SELECT a.id
+            FROM existing_artifact_imports a
+            LEFT JOIN study_revisions s ON s.id=a.slide_revision_id
+            LEFT JOIN outline_outputs o ON o.id=a.outline_id
+            WHERE a.status='complete' AND (
+                s.id IS NULL
+                OR (a.slide_sha256 IS NOT NULL AND a.slide_sha256 != s.derived_sha256)
+                OR (o.id IS NOT NULL AND o.provenance_kind='imported_notebooklm'
+                    AND o.slide_sha256 IS NOT NULL AND o.slide_sha256 != s.derived_sha256)
+            ) LIMIT 1
+        """)).first()
+    if invalid is not None:
+        raise RuntimeError("schema v21 legacy imported slide identity is invalid")
+
+
+def _validate_complete_v20_import_graph(database: "Database") -> None:
+    """Read-only v20 gate: reject bad import graphs before any upgrade DDL."""
+    _validate_existing_artifact_graph(database, version=20)
+
+
+def _validate_complete_v21_import_graph(database: "Database") -> None:
+    """Read-only v21 gate before the v22 review table/trigger DDL exists."""
+    _validate_existing_artifact_graph(database, version=21)
+
+
+def _validate_complete_existing_artifact_graph(database: "Database") -> None:
+    """Fail closed unless every completed offline import is one coherent graph."""
+    _validate_existing_artifact_graph(database, version=LATEST_SCHEMA_VERSION)
+
+
+def _validate_existing_artifact_graph(database: "Database", *, version: int) -> None:
+    """Validate every persisted import edge without normalizing it.
+
+    The v20 form has one legacy slide digest; v21 separates source/PDF
+    identities.  Both must describe the same complete audit, upload,
+    transcript, outline, slide, and lecture graph before any mutation occurs.
+    """
+    inspector = inspect(database.engine)
+    _validate_required_import_tables(database, version=version)
+    required_tables = {
+        "existing_artifact_imports",
+        "lectures",
+        "upload_batches",
+        "upload_items",
+        "study_revisions",
+        "outline_outputs",
+    }
+    assert required_tables <= set(inspector.get_table_names())
+    audit_slide_columns = (
+        "a.slide_source_sha256 AS audit_source, a.slide_pdf_sha256 AS audit_pdf,"
+        if version >= 21
+        else "NULL AS audit_source, a.slide_sha256 AS audit_pdf,"
+    )
+    outline_slide_columns = (
+        "o.slide_source_sha256 AS outline_source,"
+        if version >= 21
+        else "NULL AS outline_source,"
+    )
+    with database.engine.connect() as connection:
+        foreign_key_errors = connection.execute(text("PRAGMA foreign_key_check")).first()
+        if foreign_key_errors is not None:
+            raise RuntimeError(f"schema v{version} imported artifact foreign-key check failed")
+        rows = connection.execute(text(f"""
+            SELECT
+                a.id AS audit_id, a.lecture_id AS audit_lecture, a.slide_revision_id,
+                {audit_slide_columns}
+                a.transcript_sha256 AS audit_transcript, a.outline_sha256 AS audit_outline,
+                a.transcript_revision_id AS audit_transcript_id, a.outline_id AS audit_outline_id,
+                a.subject AS audit_subject, a.exam_number AS audit_exam,
+                a.lecture_number AS audit_number, a.topic AS audit_topic,
+                a.canonical_transcript_path, a.canonical_outline_path,
+                a.immutable_transcript_path, a.immutable_outline_path,
+                a.transcript_filename, a.outline_filename,
+                l.subject AS lecture_subject, l.exam_number AS lecture_exam,
+                l.lecture_number AS lecture_number, l.topic AS lecture_topic,
+                s.lecture_id AS slide_lecture, s.kind AS slide_kind, s.current AS slide_current,
+                s.state AS slide_state,
+                s.source_sha256 AS slide_source, s.derived_sha256 AS slide_pdf,
+                t.lecture_id AS transcript_lecture, t.kind AS transcript_kind,
+                t.current AS transcript_current, t.provenance_kind AS transcript_provenance,
+                t.import_id AS transcript_import, t.source_sha256 AS transcript_source,
+                t.derived_sha256 AS transcript_derived, t.state AS transcript_state,
+                t.immutable_source_path AS transcript_immutable_source,
+                t.immutable_derived_path AS transcript_immutable_derived,
+                t.canonical_source_path AS transcript_canonical_source,
+                t.canonical_derived_path AS transcript_canonical_derived,
+                i.lecture_id AS item_lecture, i.kind AS item_kind,
+                i.original_filename AS item_filename, i.staged_path AS item_staged,
+                i.sha256 AS item_sha, i.state AS item_state,
+                i.manual_assignment AS item_manual, b.kind AS batch_kind,
+                b.state AS batch_state,
+                o.lecture_id AS outline_lecture, o.current AS outline_current,
+                o.provenance_kind AS outline_provenance, o.import_id AS outline_import,
+                o.job_id AS outline_job, o.path AS outline_path,
+                o.original_filename AS outline_filename_row,
+                o.immutable_path AS outline_immutable,
+                o.slide_revision_id AS outline_slide_id, {outline_slide_columns}
+                o.slide_sha256 AS outline_pdf, o.transcript_revision_id AS outline_transcript_id,
+                o.transcript_sha256 AS outline_transcript, o.sha256 AS outline_sha,
+                o.id AS imported_outline_id
+            FROM existing_artifact_imports a
+            LEFT JOIN lectures l ON l.id=a.lecture_id
+            LEFT JOIN study_revisions s ON s.id=a.slide_revision_id
+            LEFT JOIN study_revisions t ON t.id=a.transcript_revision_id
+            LEFT JOIN upload_items i ON i.id=t.upload_item_id
+            LEFT JOIN upload_batches b ON b.id=i.batch_id
+            LEFT JOIN outline_outputs o ON o.id=a.outline_id
+            WHERE a.status='complete'
+        """)).mappings()
+        for row in rows:
+            audit_id = row["audit_id"]
+            required = [
+                "slide_revision_id", "audit_pdf", "audit_transcript", "audit_outline",
+                "audit_transcript_id", "audit_outline_id", "audit_subject", "audit_topic",
+                "canonical_transcript_path", "canonical_outline_path",
+                "immutable_transcript_path", "immutable_outline_path",
+                "transcript_filename", "outline_filename",
+            ]
+            if version >= 21:
+                required.append("audit_source")
+            if (
+                any(row[key] is None or row[key] == "" for key in required)
+                or row["lecture_subject"] != row["audit_subject"]
+                or row["lecture_exam"] != row["audit_exam"]
+                or row["lecture_number"] != row["audit_number"]
+                or row["lecture_topic"] != row["audit_topic"]
+                or row["slide_lecture"] != row["audit_lecture"]
+                or row["slide_kind"] != "slides"
+                or row["slide_pdf"] != row["audit_pdf"]
+                or (version >= 21 and row["slide_source"] != row["audit_source"])
+                or row["transcript_lecture"] != row["audit_lecture"]
+                or row["transcript_kind"] != "transcripts"
+                or row["transcript_provenance"] != "imported_cleaned"
+                or row["transcript_import"] != audit_id
+                or row["transcript_source"] != row["audit_transcript"]
+                or row["transcript_derived"] != row["audit_transcript"]
+                or row["transcript_source"] != row["transcript_derived"]
+                or row["transcript_immutable_source"] != row["immutable_transcript_path"]
+                or row["transcript_immutable_derived"] != row["immutable_transcript_path"]
+                or row["transcript_canonical_source"] != row["canonical_transcript_path"]
+                or row["transcript_canonical_derived"] != row["canonical_transcript_path"]
+                or row["item_lecture"] != row["audit_lecture"]
+                or row["item_kind"] != "transcripts"
+                or row["item_filename"] != row["transcript_filename"]
+                or row["item_staged"] != row["immutable_transcript_path"]
+                or row["item_sha"] != row["audit_transcript"]
+                or row["item_state"] != "complete"
+                or not row["item_manual"]
+                or row["batch_kind"] != "transcripts"
+                or row["batch_state"] != "complete"
+                or row["outline_lecture"] != row["audit_lecture"]
+                or row["outline_provenance"] != "imported_notebooklm"
+                or row["outline_import"] != audit_id
+                or row["outline_job"] is not None
+                or row["outline_path"] != row["canonical_outline_path"]
+                or row["outline_filename_row"] != row["outline_filename"]
+                or row["outline_immutable"] != row["immutable_outline_path"]
+                or row["outline_slide_id"] != row["slide_revision_id"]
+                or row["outline_pdf"] != row["audit_pdf"]
+                or (version >= 21 and row["outline_source"] != row["audit_source"])
+                or row["outline_transcript_id"] != row["audit_transcript_id"]
+                or row["outline_transcript"] != row["audit_transcript"]
+                or row["outline_sha"] != row["audit_outline"]
+            ):
+                raise RuntimeError(
+                    f"schema v{version} imported artifact graph is invalid: {audit_id}"
+                )
+
+
+def _validate_required_import_tables(database: "Database", *, version: int) -> None:
+    """A versioned import schema is evidence, never a request to recreate it."""
+    required_tables = {
+        "existing_artifact_imports",
+        "lectures",
+        "upload_batches",
+        "upload_items",
+        "study_revisions",
+        "outline_outputs",
+    }
+    if version >= 22:
+        required_tables.add("outline_replacement_reviews")
+    present = set(inspect(database.engine).get_table_names())
+    if missing := sorted(required_tables - present):
+        raise RuntimeError(
+            f"schema v{version} imported artifact required table is missing: {missing[0]}"
+        )
+
+
+def _validate_import_schema_structure(database: "Database", *, version: int) -> None:
+    """Reject a reconstructed import schema even when its rows happen to cohere."""
+    if database.engine.dialect.name != "sqlite":
+        return
+    inspector = inspect(database.engine)
+    expected_columns = {
+        "study_revisions": {"provenance_kind", "import_id"},
+        "outline_outputs": {
+            "job_id",
+            "provenance_kind",
+            "slide_revision_id",
+            "slide_source_sha256",
+            "transcript_revision_id",
+            "import_id",
+        },
+        "existing_artifact_imports": {
+            "id",
+            "bundle_sha256",
+            "lecture_id",
+            "slide_revision_id",
+            "slide_source_sha256",
+            "slide_pdf_sha256",
+            "transcript_revision_id",
+            "outline_id",
+        },
+    }
+    if version >= 22:
+        expected_columns["outline_replacement_reviews"] = {
+            "generation_job_id", "lecture_id", "import_id", "operator", "reason"
+        }
+    for table, columns in expected_columns.items():
+        actual = {column["name"] for column in inspector.get_columns(table)}
+        if missing := sorted(columns - actual):
+            raise RuntimeError(
+                f"schema v{version} import structural column is missing: {table}.{missing[0]}"
+            )
+
+    def foreign_keys(table: str) -> dict[str, tuple[str, str]]:
+        with database.engine.connect() as connection:
+            return {
+                row[3]: (row[2], row[6])
+                for row in connection.execute(text(f"PRAGMA foreign_key_list({table})"))
+            }
+
+    expected_fks = {
+        "outline_outputs": {
+            "job_id": ("generation_jobs", "NO ACTION"),
+            "slide_revision_id": ("study_revisions", "RESTRICT"),
+            "transcript_revision_id": ("study_revisions", "RESTRICT"),
+            "import_id": ("existing_artifact_imports", "RESTRICT"),
+        },
+        "existing_artifact_imports": {
+            "lecture_id": ("lectures", "NO ACTION"),
+            "slide_revision_id": ("study_revisions", "RESTRICT"),
+            "transcript_revision_id": ("study_revisions", "RESTRICT"),
+            "outline_id": ("outline_outputs", "RESTRICT"),
+        },
+    }
+    if version >= 22:
+        expected_fks["study_revisions"] = {
+            "import_id": ("existing_artifact_imports", "RESTRICT")
+        }
+        expected_fks["outline_replacement_reviews"] = {
+            "generation_job_id": ("generation_jobs", "RESTRICT"),
+            "lecture_id": ("lectures", "RESTRICT"),
+            "import_id": ("existing_artifact_imports", "RESTRICT"),
+        }
+    for table, expected_fk in expected_fks.items():
+        actual_fks = foreign_keys(table)
+        if any(actual_fks.get(column) != target for column, target in expected_fk.items()):
+            raise RuntimeError(f"schema v{version} import foreign-key contract is invalid: {table}")
+
+    def has_unique(table: str, columns: tuple[str, ...]) -> bool:
+        with database.engine.connect() as connection:
+            indexes = connection.execute(text(f"PRAGMA index_list({table})")).all()
+            for index in indexes:
+                if not index[2]:
+                    continue
+                found = tuple(
+                    row[2]
+                    for row in connection.execute(text(f"PRAGMA index_info({index[1]})"))
+                )
+                if found == columns:
+                    return True
+        return False
+
+    if not has_unique("existing_artifact_imports", ("bundle_sha256",)):
+        raise RuntimeError(f"schema v{version} import unique contract is invalid: bundle_sha256")
+    if not has_unique("outline_outputs", ("job_id",)):
+        raise RuntimeError(f"schema v{version} import unique contract is invalid: job_id")
+    if version >= 22:
+        with database.engine.connect() as connection:
+            review_columns = connection.execute(
+                text("PRAGMA table_info(outline_replacement_reviews)")
+            ).all()
+        pk = tuple(row[1] for row in review_columns if row[5])
+        if pk != ("generation_job_id",):
+            raise RuntimeError("schema v22 outline replacement review primary-key is invalid")
+        confirmed_at = next((row for row in review_columns if row[1] == "confirmed_at"), None)
+        if confirmed_at is None or not confirmed_at[3]:
+            raise RuntimeError("schema v22 outline replacement review confirmed-at is invalid")
+
+
+def _validate_current_artifact_indexes(database: "Database") -> None:
+    """A v21 database must retain the exact partial-current uniqueness contract."""
+    expected = {
+        "uq_study_revisions_current_lecture_kind": (
+            "study_revisions",
+            "CREATE UNIQUE INDEX uq_study_revisions_current_lecture_kind "
+            "ON study_revisions (lecture_id, kind) WHERE current = 1",
+        ),
+        "uq_outline_outputs_current_lecture": (
+            "outline_outputs",
+            "CREATE UNIQUE INDEX uq_outline_outputs_current_lecture "
+            "ON outline_outputs (lecture_id) WHERE current = 1",
+        ),
+    }
+    if database.engine.dialect.name != "sqlite":
+        for name, (table, _) in expected.items():
+            index = next(
+                (
+                    item
+                    for item in inspect(database.engine).get_indexes(table)
+                    if item["name"] == name
+                ),
+                None,
+            )
+            if index is None or not index.get("unique"):
+                raise RuntimeError(
+                    f"schema v21 current-artifact index is missing or invalid: {name}"
+                )
+        return
+    with database.engine.connect() as connection:
+        for name, (_, definition) in expected.items():
+            actual = connection.execute(
+                text("SELECT sql FROM sqlite_master WHERE type='index' AND name=:name"),
+                {"name": name},
+            ).scalar_one_or_none()
+
+            def normalize(sql: str) -> str:
+                return " ".join(sql.split()).replace(" (", "(").casefold()
+
+            if actual is None or normalize(actual) != normalize(definition):
+                raise RuntimeError(
+                    f"schema v21 current-artifact index is missing or invalid: {name}"
+                )
+
+
+_REVIEW_IDENTITY_PREDICATE = """NOT EXISTS (
+    SELECT 1
+    FROM generation_jobs j
+    JOIN existing_artifact_imports a ON a.id=NEW.import_id
+    JOIN lectures l ON l.id=NEW.lecture_id
+    JOIN outline_outputs io ON io.id=a.outline_id
+    JOIN study_revisions s ON s.id=a.slide_revision_id
+    JOIN study_revisions t ON t.id=a.transcript_revision_id
+    JOIN upload_items i ON i.id=t.upload_item_id
+    JOIN upload_batches b ON b.id=i.batch_id
+    JOIN notebook_mappings n ON n.remote_notebook_id=j.notebook_id
+        AND n.subject=l.subject AND n.exam_number=l.exam_number
+    JOIN notebook_source_mappings ps ON ps.notebook_mapping_id=n.id
+        AND ps.lecture_id=NEW.lecture_id AND ps.study_revision_id=s.id
+        AND ps.source_kind='lecture_pdf' AND ps.source_sha256=s.derived_sha256
+        AND ps.remote_source_id=j.pdf_source_id AND ps.state='ready'
+    JOIN notebook_source_mappings ts ON ts.notebook_mapping_id=n.id
+        AND ts.lecture_id=NEW.lecture_id AND ts.study_revision_id=t.id
+        AND ts.source_kind='cleaned_transcript' AND ts.source_sha256=t.derived_sha256
+        AND ts.remote_source_id=j.transcript_source_id AND ts.state='ready'
+    WHERE j.id=NEW.generation_job_id AND j.lecture_id=NEW.lecture_id
+        AND j.kind='outline' AND j.state='failed' AND j.stage='pdf'
+        AND trim(COALESCE(j.notebook_answer, '')) != ''
+        AND trim(COALESCE(j.notebook_id, '')) != ''
+        AND trim(COALESCE(j.pdf_source_id, '')) != ''
+        AND trim(COALESCE(j.transcript_source_id, '')) != ''
+        AND j.pdf_revision_id=a.slide_revision_id
+        AND j.transcript_revision_id=a.transcript_revision_id
+        AND a.lecture_id=NEW.lecture_id AND a.status='complete'
+        AND a.subject=l.subject AND a.exam_number=l.exam_number
+        AND a.lecture_number=l.lecture_number AND a.topic=l.topic
+        AND s.lecture_id=NEW.lecture_id AND s.kind='slides'
+        AND s.source_sha256=a.slide_source_sha256 AND s.derived_sha256=a.slide_pdf_sha256
+        AND t.lecture_id=NEW.lecture_id AND t.kind='transcripts'
+        AND t.source_sha256=a.transcript_sha256 AND t.derived_sha256=a.transcript_sha256
+        AND t.provenance_kind='imported_cleaned' AND t.import_id=a.id
+        AND t.current=1 AND t.state='current'
+        AND t.immutable_source_path=a.immutable_transcript_path
+        AND t.immutable_derived_path=a.immutable_transcript_path
+        AND t.canonical_source_path=a.canonical_transcript_path
+        AND t.canonical_derived_path=a.canonical_transcript_path
+        AND i.lecture_id=NEW.lecture_id AND i.kind='transcripts'
+        AND i.original_filename=a.transcript_filename
+        AND i.staged_path=a.immutable_transcript_path AND i.sha256=a.transcript_sha256
+        AND i.state='complete' AND i.manual_assignment=1
+        AND b.kind='transcripts' AND b.state='complete'
+        AND io.lecture_id=NEW.lecture_id AND io.current=1
+        AND io.provenance_kind='imported_notebooklm' AND io.import_id=a.id
+        AND io.job_id IS NULL AND io.slide_revision_id=a.slide_revision_id
+        AND io.slide_source_sha256=a.slide_source_sha256 AND io.slide_sha256=a.slide_pdf_sha256
+        AND io.transcript_revision_id=a.transcript_revision_id
+        AND io.transcript_sha256=a.transcript_sha256 AND io.sha256=a.outline_sha256
+        AND io.path=a.canonical_outline_path AND io.original_filename=a.outline_filename
+        AND io.immutable_path=a.immutable_outline_path
+        AND s.current=1 AND t.current=1
+        AND trim(NEW.operator) != '' AND trim(NEW.reason) != ''
+)"""
+_REVIEW_INSERT_TRIGGER = f"""CREATE TRIGGER trg_outline_replacement_review_insert
+BEFORE INSERT ON outline_replacement_reviews
+FOR EACH ROW BEGIN
+  SELECT CASE WHEN {_REVIEW_IDENTITY_PREDICATE}
+  THEN RAISE(ABORT, 'outline replacement review identity is invalid') END;
+END"""
+_REVIEW_UPDATE_TRIGGER = f"""CREATE TRIGGER trg_outline_replacement_review_update
+BEFORE UPDATE OF generation_job_id, lecture_id, import_id, operator, reason
+ON outline_replacement_reviews
+FOR EACH ROW BEGIN
+  SELECT CASE WHEN {_REVIEW_IDENTITY_PREDICATE}
+  THEN RAISE(ABORT, 'outline replacement review identity is invalid') END;
+END"""
+
+
+def _upgrade_outline_replacement_reviews_v22(database: "Database") -> None:
+    if database.engine.dialect.name != "sqlite":
+        return
+    with database.engine.begin() as connection:
+        existing = set(
+            connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='trigger'")
+            ).scalars()
+        )
+        if "trg_outline_replacement_review_insert" not in existing:
+            connection.execute(text(_REVIEW_INSERT_TRIGGER))
+        if "trg_outline_replacement_review_update" not in existing:
+            connection.execute(text(_REVIEW_UPDATE_TRIGGER))
+
+
+def _validate_outline_replacement_reviews(database: "Database") -> None:
+    if not inspect(database.engine).has_table("outline_replacement_reviews"):
+        return
+    if database.engine.dialect.name == "sqlite":
+        with database.engine.connect() as connection:
+            for name, expected in {
+                "trg_outline_replacement_review_insert": _REVIEW_INSERT_TRIGGER,
+                "trg_outline_replacement_review_update": _REVIEW_UPDATE_TRIGGER,
+            }.items():
+                actual = connection.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=:name"),
+                    {"name": name},
+                ).scalar_one_or_none()
+                def normalize(value: str) -> str:
+                    return " ".join(value.split()).casefold()
+
+                if actual is None or normalize(actual) != normalize(expected):
+                    raise RuntimeError(
+                        "schema v22 outline replacement review trigger is invalid: "
+                        f"{name}"
+                    )
+    with database.engine.connect() as connection:
+        rows = connection.execute(text("""
+            SELECT r.generation_job_id, r.lecture_id AS review_lecture, r.import_id,
+                r.operator, r.reason, j.lecture_id AS job_lecture, j.kind AS job_kind,
+                j.stage AS job_stage, j.notebook_answer, j.pdf_revision_id,
+                j.transcript_revision_id, j.notebook_id, j.pdf_source_id, j.transcript_source_id,
+                j.state AS job_state,
+                a.lecture_id AS audit_lecture,
+                a.status AS audit_status, a.slide_revision_id,
+                a.transcript_revision_id AS audit_transcript,
+                a.slide_source_sha256, a.slide_pdf_sha256, a.transcript_sha256,
+                s.source_sha256 AS slide_source, s.derived_sha256 AS slide_pdf,
+                t.source_sha256 AS transcript_source, t.derived_sha256 AS transcript_derived,
+                o.id AS consumed_outline, o.lecture_id AS consumed_lecture,
+                o.job_id AS consumed_job, o.provenance_kind AS consumed_provenance,
+                o.import_id AS consumed_import, o.current AS consumed_current,
+                io.current AS imported_current, cs.id AS current_slide, ct.id AS current_transcript,
+                n.id AS mapping_id, ps.id AS pdf_binding_id, ts.id AS transcript_binding_id,
+                co.id AS current_generated_id, co.provenance_kind AS current_generated_provenance,
+                co.import_id AS current_generated_import
+            FROM outline_replacement_reviews r
+            LEFT JOIN generation_jobs j ON j.id=r.generation_job_id
+            LEFT JOIN existing_artifact_imports a ON a.id=r.import_id
+            LEFT JOIN study_revisions s ON s.id=a.slide_revision_id
+            LEFT JOIN study_revisions t ON t.id=a.transcript_revision_id
+            LEFT JOIN outline_outputs o ON o.job_id=r.generation_job_id
+            LEFT JOIN outline_outputs io ON io.id=a.outline_id
+            LEFT JOIN lectures l ON l.id=r.lecture_id
+            LEFT JOIN notebook_mappings n ON n.remote_notebook_id=j.notebook_id
+                AND n.subject=l.subject AND n.exam_number=l.exam_number
+            LEFT JOIN notebook_source_mappings ps ON ps.notebook_mapping_id=n.id
+                AND ps.lecture_id=r.lecture_id AND ps.study_revision_id=a.slide_revision_id
+                AND ps.source_kind='lecture_pdf' AND ps.source_sha256=s.derived_sha256
+                AND ps.remote_source_id=j.pdf_source_id AND ps.state='ready'
+            LEFT JOIN notebook_source_mappings ts ON ts.notebook_mapping_id=n.id
+                AND ts.lecture_id=r.lecture_id AND ts.study_revision_id=a.transcript_revision_id
+                AND ts.source_kind='cleaned_transcript' AND ts.source_sha256=t.derived_sha256
+                AND ts.remote_source_id=j.transcript_source_id AND ts.state='ready'
+            LEFT JOIN study_revisions cs
+                ON cs.lecture_id=r.lecture_id AND cs.kind='slides' AND cs.current=1
+            LEFT JOIN study_revisions ct
+                ON ct.lecture_id=r.lecture_id AND ct.kind='transcripts' AND ct.current=1
+            LEFT JOIN outline_outputs co
+                ON co.lecture_id=r.lecture_id AND co.current=1
+        """)).mappings()
+        for row in rows:
+            invalid = (
+                row["job_lecture"] != row["review_lecture"]
+                or row["job_kind"] != "outline"
+                or not row["notebook_answer"]
+                or not row["notebook_id"]
+                or not row["pdf_source_id"]
+                or not row["transcript_source_id"]
+                or row["audit_lecture"] != row["review_lecture"]
+                or row["audit_status"] != "complete"
+                or not row["operator"]
+                or not row["reason"]
+                or row["pdf_revision_id"] != row["slide_revision_id"]
+                or row["transcript_revision_id"] != row["audit_transcript"]
+                or row["slide_source"] != row["slide_source_sha256"]
+                or row["slide_pdf"] != row["slide_pdf_sha256"]
+                or row["transcript_source"] != row["transcript_sha256"]
+                or row["transcript_derived"] != row["transcript_sha256"]
+                or (
+                    row["consumed_outline"] is None
+                    and (
+                        row["job_stage"] != "pdf"
+                        or row["job_state"] not in {"failed", "queued", "running"}
+                        or not row["imported_current"]
+                        or row["current_slide"] != row["slide_revision_id"]
+                        or row["current_transcript"] != row["audit_transcript"]
+                        or row["mapping_id"] is None
+                        or row["pdf_binding_id"] is None
+                        or row["transcript_binding_id"] is None
+                    )
+                )
+                or (
+                    row["consumed_outline"] is not None
+                    and (
+                        row["job_state"] != "complete"
+                        or row["job_stage"] != "complete"
+                        or row["consumed_lecture"] != row["review_lecture"]
+                        or row["consumed_job"] != row["generation_job_id"]
+                        or row["consumed_provenance"] != "notebooklm_generated"
+                        or row["consumed_import"] is not None
+                        or row["mapping_id"] is None
+                        or row["pdf_binding_id"] is None
+                        or row["transcript_binding_id"] is None
+                        or row["imported_current"]
+                        or (
+                            not row["consumed_current"]
+                            and (
+                                row["current_generated_id"] is None
+                                or row["current_generated_provenance"]
+                                != "notebooklm_generated"
+                                or row["current_generated_import"] is not None
+                            )
+                        )
+                    )
+                )
+            )
+            if invalid:
+                raise RuntimeError(
+                    "schema v22 outline replacement review row is invalid: "
+                    f"{row['generation_job_id']}"
+                )
 
 
 def _upgrade_anki_v4_columns(database: "Database") -> None:
@@ -443,7 +1246,58 @@ def _seed_llm_task_assignments(database: "Database") -> None:
             )
 
 
+def _preflight_current_artifact_uniqueness(database: "Database") -> None:
+    """Run before metadata creates v20 partial indexes on an old database."""
+    inspector = inspect(database.engine)
+    if not inspector.has_table("study_revisions"):
+        return
+    with database.engine.connect() as connection:
+        duplicate_revision = connection.execute(
+            text(
+                "SELECT lecture_id, kind FROM study_revisions WHERE current = 1 "
+                "GROUP BY lecture_id, kind HAVING COUNT(*) > 1 LIMIT 1"
+            )
+        ).first()
+        duplicate_outline = None
+        if inspector.has_table("outline_outputs"):
+            duplicate_outline = connection.execute(
+                text(
+                    "SELECT lecture_id FROM outline_outputs WHERE current = 1 "
+                    "GROUP BY lecture_id HAVING COUNT(*) > 1 LIMIT 1"
+                )
+            ).first()
+    if duplicate_revision or duplicate_outline:
+        raise RuntimeError(
+            "schema v20 cannot add current-artifact uniqueness: duplicate "
+            "current rows exist; resolve them explicitly before migration"
+        )
+
+
 def migrate_database(database: "Database") -> None:
+    # A populated current schema is an integrity check, not an opportunity to
+    # rewrite persisted identities.  Keep this branch read-only.
+    inspector = inspect(database.engine)
+    if inspector.has_table("schema_version"):
+        with database.engine.connect() as connection:
+            version = connection.execute(
+                text("SELECT version FROM schema_version WHERE id=1")
+            ).scalar_one_or_none()
+        if version is not None and version >= 20:
+            _validate_required_import_tables(database, version=version)
+        if version is not None and version >= LATEST_SCHEMA_VERSION:
+            _validate_import_schema_structure(database, version=version)
+            _validate_complete_existing_artifact_graph(database)
+            _validate_current_artifact_indexes(database)
+            _validate_outline_replacement_reviews(database)
+            return
+        if version == 20:
+            _validate_complete_v20_import_graph(database)
+        if version == 21:
+            _validate_import_schema_structure(database, version=version)
+            _validate_complete_v21_import_graph(database)
+            _validate_current_artifact_indexes(database)
+    _preflight_current_artifact_uniqueness(database)
+    _rebuild_legacy_outline_outputs_v19(database)
     database.create_schema()
     _upgrade_generation_job_columns(database)
     _upgrade_studio_columns(database)
@@ -453,6 +1307,14 @@ def migrate_database(database: "Database") -> None:
     _upgrade_runtime_settings_v17(database)
     _upgrade_published_quiz_display_order_v18(database)
     _upgrade_anki_replay_inputs_v19(database)
+    _upgrade_existing_artifact_import_v20(database)
+    _upgrade_existing_artifact_slide_identity_v21(database)
+    _ensure_study_revision_import_fk(database)
+    _upgrade_outline_replacement_reviews_v22(database)
+    _validate_import_schema_structure(database, version=LATEST_SCHEMA_VERSION)
+    _validate_complete_existing_artifact_graph(database)
+    _validate_current_artifact_indexes(database)
+    _validate_outline_replacement_reviews(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

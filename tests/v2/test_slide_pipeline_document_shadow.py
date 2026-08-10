@@ -249,6 +249,11 @@ def test_exhausted_failure_retires_revision_with_corrupt_immutable_pdf(
     pipeline.repository.set_manual_assignment("replacement", lecture_id)
     proposed = pipeline.process("replacement")
     assert proposed.state == "proposed"
+    lecture = pipeline.catalog.get_lecture(proposed.lecture_id)
+    assert lecture is not None
+    filed = next(step for step in lecture.steps if step.name == "slides_filed")
+    assert filed.status == StepStatus.NEEDS_REVIEW.value
+    assert filed.detail == "A slide replacement is ready for approval"
     assert proposed.immutable_derived_path is not None
     proposed.immutable_derived_path.write_bytes(b"corrupt PDF")
 
@@ -373,8 +378,8 @@ def test_interrupted_group_promotion_recovers_old_files_before_clean_retry(
     original_promote = pipeline.promotion.promote
     original_recover = pipeline.promotion.recover
 
-    def crash_after_first_copy(pairs, revision_id, commit):
-        del commit
+    def crash_after_first_copy(pairs, revision_id, commit, claim):
+        del commit, claim
         for _, destination in pairs:
             verified_atomic_copy(
                 destination,
@@ -483,7 +488,8 @@ def test_post_commit_promotion_crash_requeues_finalization(
         destination.write_bytes(b"old")
     original_promote = pipeline.promotion.promote
 
-    def crash_after_database_commit(pairs, revision_id, commit):
+    def crash_after_database_commit(pairs, revision_id, commit, claim):
+        del claim
         for _, destination in pairs:
             if destination.exists():
                 verified_atomic_copy(
@@ -590,7 +596,7 @@ def test_missing_immutable_source_terminates_promotion_recovery(
     pipeline, item_id = _slide_pipeline(tmp_path)
     original_promote = pipeline.promotion.promote
 
-    def interrupt_promotion(_pairs, _revision_id, _commit):
+    def interrupt_promotion(_pairs, _revision_id, _commit, _claim):
         raise SystemExit("simulated process interruption")
 
     monkeypatch.setattr(pipeline.promotion, "promote", interrupt_promotion)
@@ -633,7 +639,7 @@ def test_corrupt_immutable_artifact_terminates_promotion_recovery(
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(b"old")
 
-    def interrupt_promotion(pairs, revision_id, _commit):
+    def interrupt_promotion(pairs, revision_id, _commit, _claim):
         for _, destination in pairs:
             verified_atomic_copy(
                 destination,

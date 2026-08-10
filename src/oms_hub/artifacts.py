@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from oms_hub.artifact_writes import ArtifactWriteClaim, ArtifactWriteCoordinator
 from oms_hub.config import Settings
 from oms_hub.db import Database
 from oms_hub.domain import StepStatus, V2StepName
@@ -47,6 +48,7 @@ class ResolvedArtifact:
 class ArtifactService:
     def __init__(self, database: Database, settings: Settings):
         self.settings = settings
+        self.database = database
         self.repository = IngestionRepository(database)
         self.catalog = CatalogRepository(database)
 
@@ -88,23 +90,38 @@ class ArtifactService:
         if revision.state not in {"proposed", "promoting"}:
             raise ArtifactConflict("revision is not awaiting approval")
         pairs = self._approval_pairs(revision)
-        if revision.state == "promoting":
-            if self._recover_promotion(revision, pairs):
-                self._complete_filing_progress(revision)
-                return self.repository.get_study_revision(revision.id)
-            revision = self.repository.get_study_revision(revision.id)
-        self.repository.begin_study_promotion(revision.id)
-        try:
-            self._promote_with_rollback(
-                pairs,
-                revision.id,
-                lambda: self.repository.promote_study_revision(revision.id),
-            )
-        except Exception:
-            self.repository.reset_study_promotion(revision.id)
-            raise
+        coordinator = ArtifactWriteCoordinator(self.database, self.settings)
+        with coordinator.claim(revision.lecture_id, "artifact-approval") as claim:
+            claim.assert_owned()
+            if revision.state == "promoting":
+                if self._recover_promotion(revision, pairs, claim):
+                    self._complete_filing_progress(revision)
+                    return self.repository.get_study_revision(revision.id)
+                revision = self.repository.get_study_revision(revision.id)
+            claim.assert_owned()
+            self.repository.begin_study_promotion(revision.id)
+            try:
+                claim.assert_owned()
+                self._promote_with_rollback(
+                    pairs,
+                    revision.id,
+                    lambda: self._commit_promotion(revision.id, claim),
+                    claim,
+                )
+            except Exception:
+                claim.assert_owned()
+                self.repository.reset_study_promotion(revision.id)
+                raise
         self._complete_filing_progress(revision)
         return self.repository.get_study_revision(revision.id)
+
+    def _commit_promotion(
+        self,
+        revision_id: int,
+        claim: ArtifactWriteClaim,
+    ) -> StudyRevision:
+        claim.assert_owned()
+        return self.repository.promote_study_revision(revision_id)
 
     def keep_current(self, revision_id: int) -> StudyRevision:
         try:
@@ -288,10 +305,12 @@ class ArtifactService:
         pairs: list[tuple[Path, Path]],
         revision_id: int,
         commit: Callable[[], StudyRevision],
+        claim: ArtifactWriteClaim,
     ) -> None:
         backups: dict[Path, Path | None] = {}
         try:
             for _, destination in pairs:
+                claim.assert_owned()
                 if destination.exists():
                     existing_backup = destination.with_name(
                         f".{destination.name}.oms-backup-{revision_id}"
@@ -301,10 +320,13 @@ class ArtifactService:
                 else:
                     backups[destination] = None
             for source, destination in pairs:
+                claim.assert_owned()
                 verified_atomic_copy(source, destination)
+            claim.assert_owned()
             commit()
         except Exception:
             for destination, saved_path in backups.items():
+                claim.assert_owned()
                 if saved_path is not None and saved_path.exists():
                     os.replace(saved_path, destination)
                 elif saved_path is None:
@@ -313,43 +335,58 @@ class ArtifactService:
         finally:
             for saved_path in backups.values():
                 if saved_path is not None:
+                    claim.assert_owned()
                     saved_path.unlink(missing_ok=True)
 
     def _recover_promotion(
         self,
         revision: StudyRevision,
         pairs: list[tuple[Path, Path]],
+        claim: ArtifactWriteClaim,
     ) -> bool:
         if all(
-            destination.is_file()
-            and sha256_file(destination) == sha256_file(source)
+            self._recovery_pair_matches(source, destination, claim)
             for source, destination in pairs
         ):
+            claim.assert_owned()
             self.repository.promote_study_revision(revision.id)
-            self._remove_promotion_backups(pairs, revision.id)
+            self._remove_promotion_backups(pairs, revision.id, claim)
             return True
         for source, destination in pairs:
             backup = self._backup_path(destination, revision.id)
+            claim.assert_owned()
             if backup.exists():
+                claim.assert_owned()
                 os.replace(backup, destination)
-            elif (
-                destination.is_file()
-                and sha256_file(destination) == sha256_file(source)
-            ):
+            elif self._recovery_pair_matches(source, destination, claim):
+                claim.assert_owned()
                 destination.unlink()
+        claim.assert_owned()
         self.repository.reset_study_promotion(revision.id)
         return False
+
+    @staticmethod
+    def _recovery_pair_matches(
+        source: Path,
+        destination: Path,
+        claim: ArtifactWriteClaim,
+    ) -> bool:
+        claim.assert_owned()
+        return (
+            destination.is_file()
+            and sha256_file(destination) == sha256_file(source)
+        )
 
     @classmethod
     def _remove_promotion_backups(
         cls,
         pairs: list[tuple[Path, Path]],
         revision_id: int,
+        claim: ArtifactWriteClaim,
     ) -> None:
         for _, destination in pairs:
-            cls._backup_path(destination, revision_id).unlink(
-                missing_ok=True
-            )
+            claim.assert_owned()
+            cls._backup_path(destination, revision_id).unlink(missing_ok=True)
 
     @staticmethod
     def _backup_path(destination: Path, revision_id: int) -> Path:

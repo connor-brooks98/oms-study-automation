@@ -91,6 +91,61 @@ def _same_unique_identity_set(
     )
 
 
+def _outline_ready_for_curation(
+    outline: object,
+    revisions: IngestionRepository,
+) -> bool:
+    """Check imported-outline links before exposing a lecture as curation-ready."""
+    if not getattr(outline, "current", False):
+        return False
+    path = getattr(outline, "path", None)
+    outline_sha256 = getattr(outline, "sha256", None)
+    if not isinstance(path, Path) or not path.is_file():
+        return False
+    if getattr(outline, "provenance_kind", None) != "imported_notebooklm":
+        return True
+    immutable = getattr(outline, "immutable_path", None)
+    slide_id = getattr(outline, "slide_revision_id", None)
+    transcript_id = getattr(outline, "transcript_revision_id", None)
+    slide_sha256 = getattr(outline, "slide_sha256", None)
+    slide_source_sha256 = getattr(outline, "slide_source_sha256", None)
+    transcript_sha256 = getattr(outline, "transcript_sha256", None)
+    import_id = getattr(outline, "import_id", None)
+    if (
+        not isinstance(immutable, Path)
+        or not immutable.is_file()
+        or not isinstance(slide_id, int)
+        or not isinstance(transcript_id, int)
+        or not isinstance(slide_sha256, str)
+        or not isinstance(slide_source_sha256, str)
+        or not isinstance(transcript_sha256, str)
+        or not isinstance(import_id, str)
+        or not isinstance(outline_sha256, str)
+    ):
+        return False
+    try:
+        if (
+            hashlib.sha256(immutable.read_bytes()).hexdigest() != outline_sha256
+            or hashlib.sha256(path.read_bytes()).hexdigest() != outline_sha256
+        ):
+            return False
+        slide = revisions.get_study_revision(slide_id)
+        transcript = revisions.get_study_revision(transcript_id)
+    except (KeyError, OSError):
+        return False
+    return (
+        slide.current
+        and transcript.current
+        and slide.kind is UploadKind.SLIDES
+        and transcript.kind is UploadKind.TRANSCRIPTS
+        and slide.source_sha256 == slide_source_sha256
+        and slide.derived_sha256 == slide_sha256
+        and transcript.derived_sha256 == transcript_sha256
+        and transcript.provenance_kind == "imported_cleaned"
+        and transcript.import_id == import_id
+    )
+
+
 class GapCardEditRequest(ContractModel):
     card_id: Annotated[str, Field(max_length=100)] = ""
     concept_id: Annotated[str, Field(min_length=1, max_length=200)]
@@ -360,10 +415,10 @@ def create_anki_job(
 
     outlines = GenerationRepository(request.app.state.database)
     outline = outlines.current_outline(payload.lecture_id)
-    if outline is None or not outline.path.is_file():
+    if outline is None or not _outline_ready_for_curation(outline, revisions):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Curation requires a current NotebookLM outline PDF",
+            detail="Curation requires a complete current NotebookLM outline PDF",
         )
     if payload.summary_outline_id not in {None, outline.id} or (
         payload.summary_outline_sha256 not in {None, outline.sha256}
@@ -1061,7 +1116,7 @@ def _page_context(request: Request) -> dict[str, Any]:
         current = revisions.list_current_revisions(lecture.id)
         outline = outlines.current_outline(lecture.id)
         current_kinds = {revision.kind for revision in current}
-        outline_available = outline is not None and outline.current and outline.path.is_file()
+        outline_available = outline is not None and _outline_ready_for_curation(outline, revisions)
         identity = LectureIdentity(
             course=lecture.subject,
             exam_number=lecture.exam_number,

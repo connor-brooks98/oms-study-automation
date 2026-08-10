@@ -149,6 +149,8 @@ class StudyRevision:
     prompt_sha256: str | None
     state: str
     current: bool
+    provenance_kind: str = "llm_cleaned"
+    import_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

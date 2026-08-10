@@ -21,13 +21,25 @@ from oms_hub.anki.semantic.service import SemanticIndexService
 from oms_hub.anki.semantic.store import SemanticSnapshotStore
 from oms_hub.anki.semantic.voyage import VoyageEmbeddingClient
 from oms_hub.app import create_app
+from oms_hub.artifact_writes import ArtifactWriteClaimLost, ArtifactWriteContended
 from oms_hub.config import Settings
 from oms_hub.db import Database
+from oms_hub.existing_artifact_import import (
+    ExistingArtifactImporter,
+    ExistingArtifactImportError,
+    ExistingArtifactImportRequest,
+    verify_a0_operator_files,
+    verify_a0_request_identities,
+)
 from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import expanded_path
 from oms_hub.security.secret_store import (
     VOYAGE_API_KEY_SECRET,
     KeyringSecretStore,
+)
+from oms_hub.study_generation.repository import (
+    GenerationRepository,
+    ImportedOutlineReplacementRequired,
 )
 from oms_hub.tracker_import import TrackerImporter
 from oms_hub.transcripts.prompt import PromptLoader
@@ -47,6 +59,79 @@ def import_tracker(args: argparse.Namespace) -> int:
     print(
         f"imported={result.imported} issues={result.issues} "
         f"sha256={result.source_sha256}"
+    )
+    return 0
+
+
+def import_existing_lecture_artifacts(args: argparse.Namespace) -> int:
+    try:
+        request = ExistingArtifactImportRequest(
+            lecture_id=args.lecture_id,
+            slides_revision_id=args.slides_revision_id,
+            slides_source_sha256=args.slides_source_sha256,
+            slides_pdf_sha256=args.slides_pdf_sha256,
+            cleaned_transcript=Path(args.cleaned_transcript),
+            cleaned_transcript_sha256=args.cleaned_transcript_sha256,
+            notebooklm_outline=Path(args.notebooklm_outline),
+            notebooklm_outline_sha256=args.notebooklm_outline_sha256,
+        )
+        if args.a0_operator_files:
+            if not args.a0_authoritative_pptx or not args.a0_derived_pdf:
+                raise ExistingArtifactImportError(
+                    "A0 verification requires --a0-authoritative-pptx and --a0-derived-pdf"
+                )
+            verify_a0_operator_files(
+                Path(args.a0_authoritative_pptx),
+                Path(args.a0_derived_pdf),
+                request.cleaned_transcript,
+                request.notebooklm_outline,
+            )
+            verify_a0_request_identities(request)
+        settings = Settings()
+        database = Database(settings.database_url)
+        database.migrate()
+        result = ExistingArtifactImporter(database, settings).import_artifacts(request)
+    except (ArtifactWriteContended, ArtifactWriteClaimLost) as error:
+        print(json.dumps({"status": "retryable", "error": str(error)}, sort_keys=True))
+        return 75
+    except ExistingArtifactImportError as error:
+        print(json.dumps({"status": "error", "error": str(error)}, sort_keys=True))
+        return 2
+    print(json.dumps(result.as_dict(), sort_keys=True))
+    return 0
+
+
+def approve_imported_outline_replacement(args: argparse.Namespace) -> int:
+    try:
+        if not args.confirm:
+            raise ImportedOutlineReplacementRequired(
+                "pass --confirm to approve replacement of the imported current outline"
+            )
+        settings = Settings()
+        database = Database(settings.database_url)
+        database.migrate()
+        review = GenerationRepository(database).approve_imported_outline_replacement(
+            args.lecture_id,
+            args.generation_job_id,
+            args.operator,
+            args.reason,
+        )
+    except (ImportedOutlineReplacementRequired, ValueError, KeyError) as error:
+        print(json.dumps({"status": "error", "error": str(error)}, sort_keys=True))
+        return 2
+    print(
+        json.dumps(
+            {
+                "status": "approved",
+                "lecture_id": review.lecture_id,
+                "generation_job_id": review.generation_job_id,
+                "import_id": review.import_id,
+                "operator": review.operator,
+                "reason": review.reason,
+                "confirmed_at": review.confirmed_at,
+            },
+            sort_keys=True,
+        )
     )
     return 0
 
@@ -292,6 +377,32 @@ def build_parser() -> argparse.ArgumentParser:
     tracker = commands.add_parser("import-tracker")
     tracker.add_argument("path")
     tracker.set_defaults(handler=import_tracker)
+
+    existing = commands.add_parser("import-existing-lecture-artifacts")
+    existing.add_argument("--lecture-id", type=int, required=True)
+    existing.add_argument("--slides-revision-id", type=int, required=True)
+    existing.add_argument("--slides-source-sha256", required=True)
+    existing.add_argument("--slides-pdf-sha256", required=True)
+    existing.add_argument("--cleaned-transcript", required=True)
+    existing.add_argument("--cleaned-transcript-sha256", required=True)
+    existing.add_argument("--notebooklm-outline", required=True)
+    existing.add_argument("--notebooklm-outline-sha256", required=True)
+    existing.add_argument(
+        "--a0-operator-files",
+        action="store_true",
+        help="Verify the four authoritative A0 files before importing.",
+    )
+    existing.add_argument("--a0-authoritative-pptx")
+    existing.add_argument("--a0-derived-pdf")
+    existing.set_defaults(handler=import_existing_lecture_artifacts)
+
+    replacement = commands.add_parser("approve-imported-outline-replacement")
+    replacement.add_argument("--lecture-id", type=int, required=True)
+    replacement.add_argument("--generation-job-id", required=True)
+    replacement.add_argument("--operator", required=True)
+    replacement.add_argument("--reason", required=True)
+    replacement.add_argument("--confirm", action="store_true")
+    replacement.set_defaults(handler=approve_imported_outline_replacement)
 
     server = commands.add_parser("serve")
     server.set_defaults(handler=serve)
