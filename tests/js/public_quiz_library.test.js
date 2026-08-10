@@ -365,6 +365,71 @@ test("successful unpublish updates the UI when browser progress cleanup is denie
   assert.match(documentRef.resetMessage.textContent, /progress could not be cleared/i);
 });
 
+test("storage-denied unpublish still applies authoritative counts, pruning, disclosure, and focus", async () => {
+  const storage = {
+    getItem: () => null,
+    removeItem() { throw new Error("storage denied"); },
+    key: () => null,
+    get length() { return 0; },
+  };
+  const examCount = { textContent: "1 quiz" };
+  const courseCount = { textContent: "2 quizzes" };
+  const courseDisclosure = { attributes: { "aria-expanded": "true" } };
+  const exam = {
+    removed: false,
+    querySelector(selector) { return selector === "[data-exam-count]" ? examCount : null; },
+    remove() { this.removed = true; },
+  };
+  const course = {
+    removed: false,
+    querySelector(selector) {
+      if (selector === "[data-course-count]") return courseCount;
+      if (selector === ".disclosure") return courseDisclosure;
+      return null;
+    },
+    remove() { this.removed = true; },
+  };
+  const survivingControl = {
+    focused: false, isConnected: true, disabled: false,
+    focus() { this.focused = true; },
+  };
+  const survivingRow = { querySelector: () => survivingControl };
+  const row = new FakeQuizRow("tok1", 1);
+  row.nextElementSibling = survivingRow;
+  row.closest = (selector) => selector === "[data-exam-key]" ? exam : course;
+  const removeButton = new FakeRemoveButton("tok1", 1, row);
+  const documentRef = new FakeLibraryDocument({ rows: [row], removeButtons: [removeButton] });
+  const originalConfirm = global.confirm;
+  const originalFetch = global.fetch;
+  global.confirm = () => true;
+  global.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        state: "unpublished", exam_key: "neuro:1", course_key: "neuro",
+        exam_quiz_count: 0, course_quiz_count: 1,
+      };
+    },
+  });
+  try {
+    library.initialize(documentRef, storage);
+    await removeButton._listeners.click[0]();
+  } finally {
+    global.confirm = originalConfirm;
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(row.removed, true);
+  assert.equal(examCount.textContent, "0 quizzes");
+  assert.equal(courseCount.textContent, "1 quiz");
+  assert.equal(exam.removed, true);
+  assert.equal(course.removed, false);
+  assert.equal(courseDisclosure.attributes["aria-expanded"], "true");
+  assert.equal(survivingControl.focused, true);
+  assert.match(documentRef.resetMessage.textContent, /released quiz was removed/i);
+  assert.match(documentRef.resetMessage.textContent, /progress could not be cleared/i);
+});
+
 test("failed remove keeps the row and reports the server detail", async () => {
   const storage = makeMemoryStorage();
   const row = new FakeQuizRow("tok1", 1);
