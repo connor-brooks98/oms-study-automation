@@ -98,6 +98,33 @@ class StudioWorker:
             else:
                 self.import_worker.run(run)
             return True
+        if self.publisher is not None:
+            try:
+                adopted = self.publisher.adopt_owned_studio_publication(run.id)
+            except Exception as error:  # noqa: BLE001 - durable recovery boundary
+                self.repository.record_run_attempt(
+                    run.id,
+                    run.attempts,
+                    DiagnosticSource.STUDY_HUB.value,
+                    run.raw_response,
+                    str(error),
+                )
+                if is_sqlite_busy(error) and run.attempts < 4:
+                    self.repository.retry_run(
+                        run.id,
+                        DiagnosticSource.STUDY_HUB.value,
+                        str(error),
+                        timedelta(seconds=min(30 * (2 ** (run.attempts - 1)), 300)),
+                    )
+                else:
+                    self.repository.fail_run(
+                        run.id,
+                        DiagnosticSource.STUDY_HUB.value,
+                        str(error),
+                    )
+                return True
+            if adopted is not None:
+                return True
         try:
             self.repository.set_run_stage(run.id, StudioRunStage.CHAT)
             notebook_id, answer = self.gateway.ask_studio(

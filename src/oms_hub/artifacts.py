@@ -1,6 +1,6 @@
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -40,6 +40,23 @@ class ArtifactPromotionError(ArtifactError):
 
     def __init__(self, message: str, *, original_error: BaseException) -> None:
         super().__init__(message)
+        self.original_error = original_error
+
+
+class ArtifactCleanupError(ArtifactError):
+    """Promotion state is durable, but recovery-file cleanup needs attention."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        backup_paths: tuple[Path, ...],
+        recovery_journal_path: Path | None,
+        original_error: BaseException,
+    ) -> None:
+        super().__init__(message)
+        self.backup_paths = backup_paths
+        self.recovery_journal_path = recovery_journal_path
         self.original_error = original_error
 
 
@@ -130,10 +147,11 @@ class ArtifactService:
                 revision.id,
                 lambda: self.repository.promote_study_revision(revision.id),
             )
-        except ArtifactRecoveryError:
+        except (ArtifactCleanupError, ArtifactRecoveryError):
             # Retained backups mean this revision is still in the recovery
-            # state.  Resetting it to proposed would allow a retry to replace
-            # the only verified recovery copy.
+            # state, or the promotion already committed before cleanup failed.
+            # Resetting either case could replace the only verified recovery
+            # copy or contradict the committed database state.
             raise
         except Exception:
             self.repository.reset_study_promotion(revision.id)
@@ -378,19 +396,54 @@ class ArtifactService:
                     original_error=promotion_error,
                     restore_error=restore_error,
                 ) from promotion_error
-            for saved_path in backups.values():
-                if saved_path is not None:
-                    saved_path.unlink(missing_ok=True)
-            journal_path.unlink(missing_ok=True)
+            try:
+                ArtifactService._remove_promotion_artifacts(
+                    backups,
+                    journal_path,
+                )
+            except ArtifactCleanupError as cleanup_error:
+                raise ArtifactRecoveryError(
+                    "artifact promotion failed and original destinations were restored, "
+                    "but recovery-file cleanup failed; retain the recovery paths",
+                    backup_paths=cleanup_error.backup_paths,
+                    recovery_journal_path=cleanup_error.recovery_journal_path,
+                    original_error=promotion_error,
+                    restore_error=cleanup_error,
+                ) from promotion_error
             raise ArtifactPromotionError(
                 "artifact promotion failed; original destinations were restored",
                 original_error=promotion_error,
             ) from promotion_error
         else:
+            ArtifactService._remove_promotion_artifacts(
+                backups,
+                journal_path,
+            )
+
+    @staticmethod
+    def _remove_promotion_artifacts(
+        backups: Mapping[Path, Path | None],
+        journal_path: Path,
+    ) -> None:
+        try:
             for saved_path in backups.values():
                 if saved_path is not None:
                     saved_path.unlink(missing_ok=True)
             journal_path.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            raise ArtifactCleanupError(
+                "artifact promotion committed or recovered, but recovery-file cleanup failed; "
+                "retain the reported recovery paths",
+                backup_paths=tuple(
+                    path
+                    for path in backups.values()
+                    if path is not None and path.is_file()
+                ),
+                recovery_journal_path=(
+                    journal_path if journal_path.is_file() else None
+                ),
+                original_error=cleanup_error,
+            ) from cleanup_error
 
     @staticmethod
     def _restore_backups(backups: dict[Path, Path | None]) -> None:
@@ -665,13 +718,18 @@ class ArtifactService:
         pairs: list[tuple[Path, Path]],
         revision_id: int,
     ) -> None:
-        for _, destination in pairs:
-            cls._backup_path(destination, revision_id).unlink(
-                missing_ok=True
-            )
-        journal_path = cls._existing_journal_path(pairs, revision_id)
-        if journal_path is not None:
-            journal_path.unlink(missing_ok=True)
+        backups = {
+            destination: cls._backup_path(destination, revision_id)
+            for _source, destination in pairs
+        }
+        journal_path = (
+            pairs[0][1].with_name(f".oms-promotion-{revision_id}.recovery.json")
+            if pairs
+            else None
+        )
+        if journal_path is None:
+            return
+        cls._remove_promotion_artifacts(backups, journal_path)
 
     @staticmethod
     def _backup_path(destination: Path, revision_id: int) -> Path:

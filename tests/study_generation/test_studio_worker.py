@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from pathlib import Path
 
@@ -6,13 +7,16 @@ from sqlalchemy.exc import OperationalError
 
 from oms_hub.db import Database
 from oms_hub.models import StudioSourceModel
+from oms_hub.study_generation.native_quiz import parse_native_quiz
 from oms_hub.study_generation.practice_domain import (
     ImportSourceRole,
     ImportSourceSelection,
     QuizContentKind,
     StudioSourcePurpose,
 )
+from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.study_generation.studio_domain import (
+    StudioRunStage,
     StudioRunState,
     StudioSourceState,
     StudioSourceType,
@@ -67,6 +71,16 @@ class _RaisingGateway:
         raise self.error
 
 
+class _NeverAskGateway(_RaisingGateway):
+    def __init__(self) -> None:
+        super().__init__(AssertionError("historical publication must be adopted"))
+        self.ask_calls = 0
+
+    def ask_studio(self, subject, exam_number, prompt, remote_source_ids):
+        self.ask_calls += 1
+        return super().ask_studio(subject, exam_number, prompt, remote_source_ids)
+
+
 class _ImportWorker:
     def __init__(self) -> None:
         self.runs = []
@@ -98,6 +112,64 @@ def _queued_run(repository: StudioRepository):
         "Neuro",
         1,
     )
+
+
+def _quiz(title: str):
+    return parse_native_quiz(
+        json.dumps(
+            {
+                "title": title,
+                "questions": [
+                    {
+                        "stem": "Which choice is correct?",
+                        "choices": ["First", "Second"],
+                        "correct_index": 0,
+                        "rationale": "The first choice is correct.",
+                    }
+                ],
+            }
+        )
+    )
+
+
+def test_recovery_adopts_owned_publication_without_repeating_remote_chat(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    repository = StudioRepository(database)
+    publisher = GenerationRepository(database)
+    run = _queued_run(repository)
+    claimed = repository.claim_next_run()
+    assert claimed is not None and claimed.id == run.id
+    repository.save_run_response(run.id, "original durable response")
+    repository.set_run_stage(run.id, StudioRunStage.PUBLISH)
+    original = publisher.publish_studio_quiz(run.id, _quiz("Original quiz"))
+    gateway = _NeverAskGateway()
+    worker = StudioWorker(
+        repository,
+        gateway,
+        object(),
+        _FakeConnection(),
+        publisher=publisher,
+    )
+
+    assert worker.recover_interrupted_jobs() == 1
+    assert worker.run_once() is True
+
+    recovered = repository.get_run(run.id)
+    published = publisher.published_quiz(original.token)
+    assert gateway.ask_calls == 0
+    assert recovered.state is StudioRunState.COMPLETE
+    assert recovered.stage is StudioRunStage.COMPLETE
+    assert recovered.published_token == original.token
+    assert recovered.raw_response == "original durable response"
+    assert published is not None and published.quiz.title == "Original quiz"
+    assert [
+        item.token
+        for item in publisher.published_quizzes(
+            frozenset({QuizContentKind.EXAM_REVIEW})
+        )
+    ] == [original.token]
 
 
 def test_sqlite_busy_chat_failure_retries_studio_run(tmp_path: Path) -> None:

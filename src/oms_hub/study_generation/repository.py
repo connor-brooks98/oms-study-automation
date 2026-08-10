@@ -897,6 +897,7 @@ class GenerationRepository:
                     PublishedQuizModel.active.is_(True),
                 )
             )
+            adopting_historical_publication = owned is not None
             if owned is None:
                 created = self._publish_studio_quiz_in_session(session, run_id, quiz)
                 # The helper returns a domain value, so reacquire the persisted row.
@@ -906,8 +907,35 @@ class GenerationRepository:
                 published = owned
             run.state = StudioRunState.COMPLETE.value
             run.stage = StudioRunStage.COMPLETE.value
-            run.notebook_id = notebook_id
-            run.raw_response = raw_response
+            if not adopting_historical_publication or run.notebook_id is None:
+                run.notebook_id = notebook_id
+            if not adopting_historical_publication or run.raw_response is None:
+                run.raw_response = raw_response
+            run.published_token = published.token
+            run.error = None
+            run.next_attempt_at = None
+            session.flush()
+            return self._published_quiz(published)
+
+    def adopt_owned_studio_publication(
+        self,
+        run_id: str,
+    ) -> PublishedQuizRecord | None:
+        """Complete a historical split run without repeating its remote work."""
+        with self.database.session() as session:
+            run = session.get(StudioRunModel, run_id)
+            if run is None:
+                raise ValueError("Studio run was removed")
+            published = session.scalar(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id == run_id,
+                    PublishedQuizModel.active.is_(True),
+                )
+            )
+            if published is None:
+                return None
+            run.state = StudioRunState.COMPLETE.value
+            run.stage = StudioRunStage.COMPLETE.value
             run.published_token = published.token
             run.error = None
             run.next_attempt_at = None

@@ -337,7 +337,8 @@ def test_atomic_studio_publication_adopts_historical_split_state(tmp_path):
             id="split-run", subject="Neuro", subject_key="neuro", exam_number=1,
             destination_subject="Neuro", destination_subject_key="neuro",
             destination_exam_number=1, label="Split", label_key="split", prompt="",
-            state="running", stage="publish",
+            state="running", stage="publish", notebook_id="original-notebook",
+            raw_response="original durable response",
         ))
     try:
         original = repository.publish_studio_quiz("split-run", _quiz("Split"))
@@ -350,6 +351,8 @@ def test_atomic_studio_publication_adopts_historical_split_state(tmp_path):
             run = session.get(StudioRunModel, "split-run")
             assert run is not None
             assert run.state == "complete" and run.published_token == original.token
+            assert run.notebook_id == "original-notebook"
+            assert run.raw_response == "original durable response"
     finally:
         repository.database.engine.dispose()
 

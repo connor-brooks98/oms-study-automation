@@ -6,10 +6,154 @@ from fastapi import HTTPException
 import oms_hub.artifacts as artifacts_module
 import oms_hub.web.artifact_routes as artifact_routes
 from oms_hub.artifacts import (
+    ArtifactCleanupError,
     ArtifactPromotionError,
     ArtifactRecoveryError,
     ArtifactService,
 )
+
+
+@pytest.mark.parametrize("failed_artifact", ["backup", "journal"])
+def test_committed_cleanup_failure_is_typed_and_does_not_reset_promotion(
+    tmp_path,
+    monkeypatch,
+    failed_artifact,
+):
+    source = tmp_path / "immutable.pdf"
+    destination = tmp_path / "current.pdf"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+    revision = SimpleNamespace(id=52, state="proposed")
+    backup = ArtifactService._backup_path(destination, revision.id)
+    journal = destination.with_name(".oms-promotion-52.recovery.json")
+    reset_calls: list[int] = []
+    commit_calls: list[int] = []
+
+    def commit(revision_id: int):
+        commit_calls.append(revision_id)
+        revision.state = "accepted"
+        return revision
+
+    service = ArtifactService.__new__(ArtifactService)
+    service.repository = SimpleNamespace(
+        get_study_revision=lambda _revision_id: revision,
+        begin_study_promotion=lambda _revision_id: revision,
+        promote_study_revision=commit,
+        reset_study_promotion=reset_calls.append,
+    )
+    monkeypatch.setattr(service, "_approval_pairs", lambda _revision: [(source, destination)])
+    original_unlink = artifacts_module.Path.unlink
+    failed_path = backup if failed_artifact == "backup" else journal
+
+    def fail_cleanup(path, missing_ok=False):
+        if path == failed_path:
+            raise OSError(f"{failed_artifact} cleanup is blocked")
+        return original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(artifacts_module.Path, "unlink", fail_cleanup)
+
+    with pytest.raises(ArtifactCleanupError) as raised:
+        service.approve(revision.id)
+
+    assert isinstance(raised.value.original_error, OSError)
+    assert raised.value.recovery_journal_path == journal
+    assert commit_calls == [revision.id]
+    assert reset_calls == []
+    assert revision.state == "accepted"
+    assert destination.read_bytes() == b"new"
+    assert journal.is_file()
+    if failed_artifact == "backup":
+        assert raised.value.backup_paths == (backup,)
+        assert backup.read_bytes() == b"old"
+    else:
+        assert raised.value.backup_paths == ()
+
+
+def test_rollback_cleanup_failure_is_typed_and_retains_recovery_files(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "immutable.pdf"
+    destination = tmp_path / "current.pdf"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+    backup = ArtifactService._backup_path(destination, 53)
+    journal = destination.with_name(".oms-promotion-53.recovery.json")
+    original_unlink = artifacts_module.Path.unlink
+
+    def fail_backup_cleanup(path, missing_ok=False):
+        if path == backup:
+            raise OSError("backup cleanup is blocked")
+        return original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(artifacts_module.Path, "unlink", fail_backup_cleanup)
+
+    with pytest.raises(ArtifactRecoveryError) as raised:
+        ArtifactService._promote_with_rollback(
+            [(source, destination)],
+            53,
+            lambda: (_ for _ in ()).throw(RuntimeError("database commit failed")),
+        )
+
+    assert isinstance(raised.value.original_error, RuntimeError)
+    assert isinstance(raised.value.restore_error, ArtifactCleanupError)
+    assert raised.value.backup_paths == (backup,)
+    assert raised.value.recovery_journal_path == journal
+    assert destination.read_bytes() == b"old"
+    assert backup.read_bytes() == b"old"
+    assert journal.is_file()
+
+
+def test_cleanup_failure_is_translated_to_operator_visible_409(monkeypatch, tmp_path) -> None:
+    backup = tmp_path / "current-backup.pdf"
+    journal = tmp_path / "recovery.json"
+
+    class FailingService:
+        def approve(self, revision_id: int) -> None:
+            assert revision_id == 52
+            raise ArtifactCleanupError(
+                "artifact promotion committed, but recovery-file cleanup failed",
+                backup_paths=(backup,),
+                recovery_journal_path=journal,
+                original_error=OSError("cleanup blocked"),
+            )
+
+    monkeypatch.setattr(artifact_routes, "_service", lambda _request: FailingService())
+
+    with pytest.raises(HTTPException) as raised:
+        artifact_routes.approve_replacement(SimpleNamespace(), 52)
+
+    assert raised.value.status_code == 409
+    assert "cleanup failed" in raised.value.detail
+
+
+def test_interrupted_recovery_cleanup_failure_is_typed(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    destination = tmp_path / "current.pdf"
+    backup = ArtifactService._backup_path(destination, 54)
+    journal = destination.with_name(".oms-promotion-54.recovery.json")
+    backup.write_bytes(b"old")
+    journal.write_text("{}", encoding="utf-8")
+    original_unlink = artifacts_module.Path.unlink
+
+    def fail_backup_cleanup(path, missing_ok=False):
+        if path == backup:
+            raise OSError("recovery cleanup is blocked")
+        return original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(artifacts_module.Path, "unlink", fail_backup_cleanup)
+
+    with pytest.raises(ArtifactCleanupError) as raised:
+        ArtifactService._remove_promotion_backups(
+            [(tmp_path / "immutable.pdf", destination)],
+            54,
+        )
+
+    assert isinstance(raised.value.original_error, OSError)
+    assert raised.value.backup_paths == (backup,)
+    assert raised.value.recovery_journal_path == journal
 
 
 def test_rollback_restore_failure_keeps_verified_backup_and_journal(tmp_path, monkeypatch):
