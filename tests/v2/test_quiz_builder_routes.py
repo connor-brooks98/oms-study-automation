@@ -9,6 +9,7 @@ from oms_hub.document_processing.domain import (
     ParsedDocument,
     ParsedSegment,
     SegmentKind,
+    SourceSnapshot,
 )
 from oms_hub.files.atomic import sha256_file
 from oms_hub.models import StudioRunModel
@@ -234,6 +235,67 @@ def test_sources_expose_safe_persisted_import_defaults(tmp_path) -> None:
         headers=_csrf_headers(client),
     )
     assert invalid.status_code == 422
+
+
+def test_all_import_source_forms_persist_selected_defaults_across_refresh(tmp_path) -> None:
+    client = _client(tmp_path)
+
+    class Snapshotter:
+        def fetch(self, source_id: str, title: str, url: str) -> SourceSnapshot:
+            path = tmp_path / f"{source_id}.html"
+            path.write_text("<h1>Reference</h1>", encoding="utf-8")
+            return SourceSnapshot(
+                source_id, title, path, "text/html", sha256_file(path), url
+            )
+
+    client.app.state.studio_service.url_snapshot_service = Snapshotter()
+    page = client.get("/studio")
+    assert page.text.count('name="role" data-import-role') == 3
+    assert page.text.count(
+        'name="attach_to_notebook" value="true" data-import-notebook'
+    ) == 3
+
+    submissions = (
+        (
+            "file",
+            {"title": "File reference"},
+            {"file": ("reference.txt", b"file facts", "text/plain")},
+        ),
+        ("text", {"title": "Text reference", "text": "text facts"}, None),
+        (
+            "url",
+            {"title": "URL reference", "url": "https://example.test/reference"},
+            None,
+        ),
+    )
+    for source_type, fields, files in submissions:
+        data = {
+            "subject": "Neuro",
+            "exam_number": "1",
+            "role": "supporting_reference",
+            "attach_to_notebook": "true",
+            **fields,
+        }
+        response = client.post(
+            f"/studio/import/sources/{source_type}",
+            data=data,
+            files=files,
+            headers=_csrf_headers(client),
+        )
+        assert response.status_code == 202, response.text
+
+    refreshed = client.get(
+        "/studio/sources", params={"subject_key": "neuro", "exam_number": 1}
+    )
+    assert refreshed.status_code == 200
+    records = {record["title"]: record for record in refreshed.json()["sources"]}
+    assert set(records) == {"File reference", "Text reference", "URL reference"}
+    for record in records.values():
+        assert record["purpose"] == "local_import"
+        assert record["import_defaults"] == {
+            "role": "supporting_reference",
+            "attach_to_notebook": True,
+        }
 
 
 def test_remote_source_delete_is_queued_before_any_worker_effect(tmp_path) -> None:

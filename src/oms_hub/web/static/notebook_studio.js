@@ -63,6 +63,19 @@
     return { role, attach_to_notebook: Boolean(checkbox?.checked) };
   };
 
+  const buildImportSourceFormData = (
+    form, course, exam, token, FormDataConstructor = root.FormData,
+  ) => {
+    const roleState = applyImportRoleState(form);
+    const body = new FormDataConstructor(form);
+    body.set("role", roleState.role);
+    body.set("attach_to_notebook", String(roleState.attach_to_notebook));
+    body.set("subject", course.value);
+    body.set("exam_number", exam.value);
+    body.set("csrf_token", token);
+    return { body, roleState };
+  };
+
   const workflowPanelState = (workflow) => ({
     generate: workflow === "generate",
     import: workflow === "import",
@@ -720,12 +733,10 @@
           message.textContent = "Select a course and exam first.";
           return;
         }
-        const roleState = applyImportRoleState(form);
         const token = csrf(documentRef);
-        const body = new FormData(form);
-        body.append("subject", course.value);
-        body.append("exam_number", exam.value);
-        body.append("csrf_token", token);
+        const { body, roleState } = buildImportSourceFormData(
+          form, course, exam, token,
+        );
         const submitButton = form.querySelector('button[type="submit"]');
         if (submitButton) submitButton.disabled = true;
         try {
@@ -817,6 +828,7 @@
     appendImportSource,
     buildRunPayload,
     buildImportRunPayload,
+    buildImportSourceFormData,
     applyImportRoleState,
     filterSourcePicker,
     hasActiveRuns,

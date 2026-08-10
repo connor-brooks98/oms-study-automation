@@ -116,6 +116,43 @@ test("role changes clear and disable NotebookLM use for question and answer-key 
   assert.equal(checkbox.checked, false);
 });
 
+test("file text and URL import forms submit selected role and Notebook defaults", () => {
+  class CapturingFormData {
+    constructor(form) { this.values = new Map(Object.entries(form.namedValues)); }
+    set(name, value) { this.values.set(name, value); }
+    get(name) { return this.values.get(name); }
+  }
+
+  [
+    ["file", { title: "File source", file: "questions.pdf" }],
+    ["text", { title: "Text source", text: "Question text" }],
+    ["url", { title: "URL source", url: "https://example.test/questions" }],
+  ].forEach(([sourceType, namedValues]) => {
+    const role = { value: "supporting_reference" };
+    const notebook = { checked: true, disabled: false };
+    const form = {
+      dataset: { importSourceType: sourceType }, namedValues,
+      querySelector: (selector) => selector === "[data-import-role]" ? role : notebook,
+    };
+
+    const { body, roleState } = studio.buildImportSourceFormData(
+      form, { value: "Neuro" }, { value: "1" }, "csrf-token", CapturingFormData,
+    );
+
+    assert.deepEqual(roleState, {
+      role: "supporting_reference", attach_to_notebook: true,
+    });
+    assert.equal(body.get("role"), "supporting_reference");
+    assert.equal(body.get("attach_to_notebook"), "true");
+    assert.equal(body.get("subject"), "Neuro");
+    assert.equal(body.get("exam_number"), "1");
+    assert.equal(body.get("csrf_token"), "csrf-token");
+    Object.entries(namedValues).forEach(([name, value]) => {
+      assert.equal(body.get(name), value);
+    });
+  });
+});
+
 test("workflow panel state remains deterministic", () => {
   assert.deepEqual(studio.workflowPanelState("generate"), { generate: true, import: false });
   assert.deepEqual(studio.workflowPanelState("import"), { generate: false, import: true });
