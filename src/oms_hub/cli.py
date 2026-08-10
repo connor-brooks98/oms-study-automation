@@ -57,6 +57,7 @@ def serve(args: argparse.Namespace) -> int:
         app,
         host=settings.dashboard_host,
         port=settings.dashboard_port,
+        proxy_headers=False,
     )
     return 0
 

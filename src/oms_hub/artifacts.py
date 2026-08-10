@@ -35,6 +35,14 @@ class ArtifactConflict(ArtifactError):
     pass
 
 
+class ArtifactPromotionError(ArtifactError):
+    """A promotion failed without leaving destinations in an ambiguous state."""
+
+    def __init__(self, message: str, *, original_error: BaseException) -> None:
+        super().__init__(message)
+        self.original_error = original_error
+
+
 class ArtifactRecoveryError(ArtifactError):
     """Rollback did not complete; retained paths can be used for recovery."""
 
@@ -327,11 +335,17 @@ class ArtifactService:
         # This journal must exist before the first filesystem effect.  A
         # process death is not catchable, so restart recovery needs the
         # original destination identity even when no backup was completed.
-        journal_path = ArtifactService._write_recovery_journal(
-            pairs,
-            planned_backups,
-            revision_id,
-        )
+        try:
+            journal_path = ArtifactService._write_recovery_journal(
+                pairs,
+                planned_backups,
+                revision_id,
+            )
+        except Exception as journal_error:
+            raise ArtifactPromotionError(
+                "artifact promotion could not start; no destination was changed",
+                original_error=journal_error,
+            ) from journal_error
         backups: dict[Path, Path | None] = {}
         try:
             for _, destination in pairs:
@@ -368,7 +382,10 @@ class ArtifactService:
                 if saved_path is not None:
                     saved_path.unlink(missing_ok=True)
             journal_path.unlink(missing_ok=True)
-            raise
+            raise ArtifactPromotionError(
+                "artifact promotion failed; original destinations were restored",
+                original_error=promotion_error,
+            ) from promotion_error
         else:
             for saved_path in backups.values():
                 if saved_path is not None:

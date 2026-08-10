@@ -1,9 +1,15 @@
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 import oms_hub.artifacts as artifacts_module
-from oms_hub.artifacts import ArtifactRecoveryError, ArtifactService
+import oms_hub.web.artifact_routes as artifact_routes
+from oms_hub.artifacts import (
+    ArtifactPromotionError,
+    ArtifactRecoveryError,
+    ArtifactService,
+)
 
 
 def test_rollback_restore_failure_keeps_verified_backup_and_journal(tmp_path, monkeypatch):
@@ -77,7 +83,10 @@ def test_partial_backup_failure_does_not_mask_original_error_with_journal_keyerr
 
     monkeypatch.setattr(artifacts_module, "verified_atomic_copy", fail_second_backup)
 
-    with pytest.raises(OSError, match="second destination backup is locked"):
+    with pytest.raises(
+        ArtifactPromotionError,
+        match="original destinations were restored",
+    ) as raised:
         ArtifactService._promote_with_rollback(
             [
                 (first_source, first_destination),
@@ -87,6 +96,10 @@ def test_partial_backup_failure_does_not_mask_original_error_with_journal_keyerr
             lambda: None,
         )
 
+    assert isinstance(raised.value.original_error, OSError)
+    assert "second destination backup is locked" in str(
+        raised.value.original_error
+    )
     assert first_destination.read_bytes() == b"first-old"
     assert second_destination.read_bytes() == b"second-old"
 
@@ -109,15 +122,39 @@ def test_journal_failure_blocks_before_the_first_filesystem_effect(
         staticmethod(fail_journal),
     )
 
-    with pytest.raises(OSError, match="recovery journal disk is unavailable"):
+    with pytest.raises(
+        ArtifactPromotionError,
+        match="could not start",
+    ) as raised:
         ArtifactService._promote_with_rollback(
             [(source, destination)],
             45,
             lambda: None,
         )
 
+    assert isinstance(raised.value.original_error, OSError)
     assert destination.read_bytes() == b"old"
     assert not ArtifactService._backup_path(destination, 45).exists()
+
+
+def test_partial_backup_failure_is_translated_to_operator_visible_409(
+    monkeypatch,
+) -> None:
+    class FailingService:
+        def approve(self, revision_id: int) -> None:
+            assert revision_id == 44
+            raise ArtifactPromotionError(
+                "artifact promotion failed; original destinations were restored",
+                original_error=OSError("backup locked"),
+            )
+
+    monkeypatch.setattr(artifact_routes, "_service", lambda _request: FailingService())
+
+    with pytest.raises(HTTPException) as raised:
+        artifact_routes.approve_replacement(SimpleNamespace(), 44)
+
+    assert raised.value.status_code == 409
+    assert "original destinations were restored" in raised.value.detail
 
 
 def test_process_death_before_first_backup_recovers_untouched_destination(

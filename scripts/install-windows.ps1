@@ -31,18 +31,25 @@ function Get-DotEnvValue {
   if (-not (Test-Path -LiteralPath $Path)) { return $null }
   $EscapedName = [regex]::Escape($Name)
   $Line = Get-Content -LiteralPath $Path | Where-Object {
-    $_ -match "^\s*${EscapedName}\s*="
-  } | Select-Object -First 1
+    $_ -match "^\s*(?:export\s+)?${EscapedName}\s*="
+  } | Select-Object -Last 1
   if (-not $Line) { return $null }
-  $Value = ([string]$Line -replace "^\s*${EscapedName}\s*=\s*", "").Trim()
-  if (
-    $Value.Length -ge 2 -and
-    (($Value.StartsWith('"') -and $Value.EndsWith('"')) -or
-      ($Value.StartsWith("'") -and $Value.EndsWith("'")))
-  ) {
-    $Value = $Value.Substring(1, $Value.Length - 2)
+  $Value = (
+    [string]$Line -replace "^\s*(?:export\s+)?${EscapedName}\s*=\s*", ""
+  ).Trim()
+  if ($Value.StartsWith('"') -or $Value.StartsWith("'")) {
+    $Quote = [string]$Value[0]
+    $ClosingIndex = $Value.IndexOf($Quote, 1)
+    if ($ClosingIndex -lt 1) {
+      throw "The $Name assignment in $Path has an unterminated quoted value."
+    }
+    $Trailing = $Value.Substring($ClosingIndex + 1).Trim()
+    if ($Trailing -and -not $Trailing.StartsWith("#")) {
+      throw "The $Name assignment in $Path has unsupported trailing content."
+    }
+    return $Value.Substring(1, $ClosingIndex - 1)
   }
-  return $Value
+  return ([regex]::Replace($Value, "\s+#.*$", "")).Trim()
 }
 
 function Get-EffectiveSetting {
@@ -52,9 +59,9 @@ function Get-EffectiveSetting {
     [string]$DefaultValue
   )
   $ProcessValue = [Environment]::GetEnvironmentVariable($Name, "Process")
-  if (-not [string]::IsNullOrWhiteSpace($ProcessValue)) { return $ProcessValue }
+  if ($null -ne $ProcessValue) { return $ProcessValue }
   $FileValue = Get-DotEnvValue -Name $Name -Path $Path
-  if (-not [string]::IsNullOrWhiteSpace($FileValue)) { return $FileValue }
+  if ($null -ne $FileValue) { return $FileValue }
   return $DefaultValue
 }
 
@@ -291,6 +298,8 @@ function Assert-StartedHubProvenance {
         $RootMatches -and
         $BuildMatches -and
         $TreeMatches -and
+        $Health.database_reachable -eq $true -and
+        [int]$Health.schema_version -gt 0 -and
         $WorkersHealthy
       ) { return }
       $LastFailure = "health reported root '$($Health.deployment_root)', build '$($Health.build_revision)', and tree '$($Health.build_tree)'"
@@ -329,7 +338,15 @@ $PreflightBuildTree = Get-ProjectBuildTree -ExpectedProjectRoot $ProjectRoot
 Write-Host "Verified install source $PreflightBuildRevision (tree $PreflightBuildTree)."
 
 $ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+$DatabasePresentAtPreflight = Test-Path -LiteralPath $DatabasePath
+if ($ExistingTask -and -not $DatabasePresentAtPreflight) {
+  throw "The effective runtime database does not exist at $DatabasePath; refusing to certify an incomplete rollback backup."
+}
 if ($ExistingTask -and $PSCmdlet.ShouldProcess($TaskName, "Stop scheduled task")) {
+  Assert-ProjectBuildIdentity `
+    -ExpectedProjectRoot $ProjectRoot `
+    -ExpectedBuildRevision $PreflightBuildRevision `
+    -ExpectedBuildTree $PreflightBuildTree
   Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 }
 
@@ -353,6 +370,7 @@ Assert-ProjectBuildIdentity `
 Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot
 
 $BackupComplete = $false
+$DatabaseBackedUp = $false
 if ($PSCmdlet.ShouldProcess($BackupPath, "Create verified rollback backup")) {
   Assert-ProjectBuildIdentity `
     -ExpectedProjectRoot $ProjectRoot `
@@ -364,6 +382,9 @@ if ($PSCmdlet.ShouldProcess($BackupPath, "Create verified rollback backup")) {
   New-Item -ItemType Directory -Path $BackupPath | Out-Null
   $ArtifactPath = Join-Path $EffectiveDataRoot "artifacts"
   $BackupDatabasePath = Join-Path $BackupPath "hub.db"
+  if ($DatabasePresentAtPreflight -and -not (Test-Path -LiteralPath $DatabasePath)) {
+    throw "The effective runtime database disappeared before backup: $DatabasePath"
+  }
   if (Test-Path -LiteralPath $DatabasePath) {
     $BackupArguments = $PythonPrefix + @(
       $BackupScript,
@@ -374,6 +395,7 @@ if ($PSCmdlet.ShouldProcess($BackupPath, "Create verified rollback backup")) {
     if ($LASTEXITCODE -ne 0) {
       throw "SQLite online backup or integrity verification failed."
     }
+    $DatabaseBackedUp = $true
   }
 
   if (Test-Path -LiteralPath $ArtifactPath) {
@@ -420,6 +442,12 @@ if ($PSCmdlet.ShouldProcess($BackupPath, "Create verified rollback backup")) {
   $ManifestPartial = Join-Path $BackupPath ".backup-manifest.json.partial"
   $Manifest = [ordered]@{
     created_at = (Get-Date).ToUniversalTime().ToString("o")
+    database = [ordered]@{
+      backed_up = $DatabaseBackedUp
+      backup_path = $(if ($DatabaseBackedUp) { "hub.db" } else { $null })
+      source_path = $DatabasePath
+      source_url = $EffectiveDatabaseUrl
+    }
     database_path = $DatabasePath
     files = $BackupFiles
     project_root = $ProjectRoot
@@ -444,6 +472,8 @@ if ($PSCmdlet.ShouldProcess($BackupPath, "Create verified rollback backup")) {
   $CompletePath = Join-Path $BackupPath "backup-complete.json"
   $CompletePartial = Join-Path $BackupPath ".backup-complete.json.partial"
   $CompleteRecord = [ordered]@{
+    database_backed_up = $DatabaseBackedUp
+    database_path = $DatabasePath
     manifest = "backup-manifest.json"
     manifest_sha256 = $ManifestHash
     status = "complete"
@@ -517,6 +547,10 @@ if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {
     -ExpectedStartScript $StartScript
   # Re-assert the same-root stop invariant immediately before task startup.
   # Never terminate generic Python processes from another deployment.
+  Assert-ProjectBuildIdentity `
+    -ExpectedProjectRoot $ProjectRoot `
+    -ExpectedBuildRevision $PreflightBuildRevision `
+    -ExpectedBuildTree $PreflightBuildTree
   Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot
   Assert-ProjectBuildIdentity `
     -ExpectedProjectRoot $ProjectRoot `

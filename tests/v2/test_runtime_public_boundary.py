@@ -425,11 +425,34 @@ def test_cli_serve_only_constructs_app_and_delegates_to_uvicorn(monkeypatch) -> 
     monkeypatch.setattr(
         cli.uvicorn,
         "run",
-        lambda actual, host, port: called.update(app=actual, host=host, port=port),
+        lambda actual, host, port, proxy_headers: called.update(
+            app=actual,
+            host=host,
+            port=port,
+            proxy_headers=proxy_headers,
+        ),
     )
 
     assert cli.serve(SimpleNamespace()) == 0
-    assert called == {"app": app, "host": "127.0.0.1", "port": 8787}
+    assert called == {
+        "app": app,
+        "host": "127.0.0.1",
+        "port": 8787,
+        "proxy_headers": False,
+    }
+
+
+def test_successful_readiness_reports_database_and_current_schema(tmp_path) -> None:
+    app = create_app(_settings(tmp_path))
+    app.state.worker_supervisor = SimpleNamespace(
+        ready=lambda: (True, None), snapshot=lambda: {}
+    )
+
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json()["database_reachable"] is True
+    assert response.json()["schema_version"] == LATEST_SCHEMA_VERSION
 
 
 @pytest.mark.parametrize(

@@ -827,6 +827,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ).scalar_one_or_none()
         except Exception:
             payload = health_payload("not_ready", "database_unavailable")
+            payload["database_reachable"] = False
+            payload["schema_version"] = None
             payload["workers"] = workers
             return JSONResponse(
                 payload,
@@ -838,14 +840,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             or schema_version != LATEST_SCHEMA_VERSION
         ):
             payload = health_payload("not_ready", "schema_outdated")
+            payload["database_reachable"] = True
+            payload["schema_version"] = schema_version
             payload["workers"] = workers
             return JSONResponse(payload, status_code=503)
         ready, reason = app.state.worker_supervisor.ready()
         if not ready:
             payload = health_payload("not_ready", reason)
+            payload["database_reachable"] = True
+            payload["schema_version"] = schema_version
             payload["workers"] = workers
             return JSONResponse(payload, status_code=503)
         payload = health_payload("ok")
+        payload["database_reachable"] = True
+        payload["schema_version"] = schema_version
         payload["workers"] = workers
         return JSONResponse(payload)
 

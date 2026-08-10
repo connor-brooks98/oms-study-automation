@@ -146,6 +146,54 @@ def test_windows_installer_database_default_matches_runtime_under_partial_overri
     assert 'Join-Path $EffectiveDataRoot "hub.db"' not in script
 
 
+def test_windows_installer_dotenv_resolution_matches_runtime_precedence() -> None:
+    script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+    parser = script[
+        script.index("function Get-DotEnvValue") : script.index(
+            "function Get-EffectiveSetting"
+        )
+    ]
+
+    assert "Select-Object -Last 1" in parser
+    assert "Select-Object -First 1" not in parser
+    assert '"\\s+#.*$"' in parser
+    assert 'StartsWith("#")' in parser
+    assert "(?:export\\s+)?" in parser
+    assert 'if ($null -ne $ProcessValue)' in script
+    assert 'if ($null -ne $FileValue)' in script
+
+
+def test_windows_installer_checks_identity_at_every_stop_boundary() -> None:
+    script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+    provenance = script.index("$PreflightBuildRevision = Get-ProjectBuildRevision")
+    task_stop = script.index("Stop-ScheduledTask -TaskName $TaskName", provenance)
+    task_check = script.rindex("Assert-ProjectBuildIdentity `", provenance, task_stop)
+    first_process_stop = script.index(
+        "Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot",
+        task_stop,
+    )
+    first_process_check = script.rindex(
+        "Assert-ProjectBuildIdentity `", task_stop, first_process_stop
+    )
+    task_start = script.index("Start-ScheduledTask -TaskName $TaskName")
+    final_process_stop = script.rindex(
+        "Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot",
+        first_process_stop,
+        task_start,
+    )
+    final_pre_stop_check = script.rindex(
+        "Assert-ProjectBuildIdentity `", first_process_stop, final_process_stop
+    )
+    final_pre_start_check = script.rindex(
+        "Assert-ProjectBuildIdentity `", final_process_stop, task_start
+    )
+
+    assert provenance < task_check < task_stop
+    assert task_stop < first_process_check < first_process_stop
+    assert first_process_stop < final_pre_stop_check < final_process_stop
+    assert final_process_stop < final_pre_start_check < task_start
+
+
 def test_windows_installer_pins_preflight_identity_through_startup() -> None:
     script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
 
@@ -206,6 +254,11 @@ def test_windows_installer_backup_is_integrity_checked_and_atomically_complete()
     assert "backup-manifest.json" in installer
     assert "Get-FileHash" in installer
     assert "backup-complete.json" in installer
+    assert "database_backed_up = $DatabaseBackedUp" in installer
+    assert "database_path = $DatabasePath" in installer
+    assert "source_url = $EffectiveDatabaseUrl" in installer
+    assert "$ExistingTask -and -not $DatabasePresentAtPreflight" in installer
+    assert "effective runtime database does not exist" in installer
     assert installer.index("backup-manifest.json.sha256") < installer.index(
         "$BackupComplete = $true"
     )
@@ -219,6 +272,8 @@ def test_windows_installer_polls_local_health_for_expected_root_and_revision() -
     assert "deployment_root" in script
     assert "build_revision" in script
     assert "build_tree" in script
+    assert "database_reachable" in script
+    assert "schema_version" in script
     assert "$TreeMatches" in script
     assert '@("generation_worker", "ingestion_worker", "studio_worker")' in script
     assert "[int]$Worker.start_count -ne 1" in script
