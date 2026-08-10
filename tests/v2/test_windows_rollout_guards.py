@@ -120,7 +120,13 @@ def test_windows_installer_whatif_never_stops_processes_or_reports_completion() 
     )
     assert first_stop in script
     stop_call = "Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot"
-    assert script.count(stop_call) == 2
+    assert script.count(stop_call) == 3
+    install_guard = script.index(
+        'if ($PSCmdlet.ShouldProcess($ProjectRoot, "Install Study Hub V2")) {'
+    )
+    install_stop = script.index(stop_call, install_guard)
+    pip_upgrade = script.index("-m pip install --upgrade pip", install_guard)
+    assert install_guard < install_stop < pip_upgrade
     scheduled_guard = script.index(
         'if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {'
     )
@@ -159,11 +165,13 @@ def test_windows_installer_selects_every_descendant_of_verified_launcher() -> No
     parents = {101: 1, 102: 101, 103: 102, 999: 1}
     pending = [101]
     selected: set[int] = set()
+    selected_order: list[int] = []
     while pending:
         process_id = pending.pop(0)
         if process_id in selected:
             continue
         selected.add(process_id)
+        selected_order.append(process_id)
         pending.extend(
             child_id
             for child_id, parent_id in parents.items()
@@ -171,12 +179,24 @@ def test_windows_installer_selects_every_descendant_of_verified_launcher() -> No
         )
 
     assert selected == {101, 102, 103}
+    assert list(reversed(selected_order)) == [103, 102, 101]
     assert "descendant belongs to that tree" in script
     assert "$Selected.Add($Process)" in script
     selection_start = script.index("while ($Pending.Count -gt 0)")
     selection_end = script.index("foreach ($Process in $Processes)", selection_start)
     selection_block = script[selection_start:selection_end]
     assert "-or [string]$Process.Name -ieq" not in selection_block
+
+    stop_function = script[
+        script.index("function Stop-ConflictingHubProcesses") : script.index(
+            "# Establish clean, exact source provenance"
+        )
+    ]
+    assert "$StopOrder = @($Conflicts)" in stop_function
+    assert "[array]::Reverse($StopOrder)" in stop_function
+    assert "foreach ($Process in $StopOrder)" in stop_function
+    assert "$StableClearObservations -ge 2" in stop_function
+    assert "Start-Sleep -Milliseconds 500" in stop_function
 
 
 def test_windows_installer_resolves_config_stops_tree_and_backs_up_before_pip() -> None:
@@ -200,6 +220,28 @@ def test_windows_installer_resolves_config_stops_tree_and_backs_up_before_pip() 
     assert 'Get-EffectiveSetting `\n  -Name "OMS_HUB_DATABASE_URL"' in script
     assert "Resolve-SqliteDatabasePath" in script
     assert "Verified rollback backup was not completed; installation is blocked." in script
+
+
+def test_windows_installer_preflights_config_before_downtime_without_live_db_mutation() -> None:
+    script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+
+    preflight_database = script.index(
+        '[Environment]::SetEnvironmentVariable(\n'
+        '      "OMS_HUB_DATABASE_URL",\n'
+        '      "sqlite:///:memory:",\n'
+        '      "Process"'
+    )
+    preflight_validate = script.index(
+        '& $ExistingHubExecutable validate-config', preflight_database
+    )
+    restore_environment = script.index("} finally {", preflight_validate)
+    task_stop = script.index(
+        "Stop-ScheduledTask -TaskName $TaskName", restore_environment
+    )
+
+    assert preflight_database < preflight_validate < restore_environment < task_stop
+    assert "Existing Study Hub configuration preflight" in script
+    assert "$PreviousProcessDatabaseUrl" in script
 
 
 def test_windows_installer_database_default_matches_runtime_under_partial_override(

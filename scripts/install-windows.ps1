@@ -313,75 +313,94 @@ function Assert-StartedHubProvenance {
 
 function Stop-ConflictingHubProcesses {
   param([string]$ExpectedProjectRoot)
-  $Conflicts = @(Get-ConflictingHubProcesses -ExpectedProjectRoot $ExpectedProjectRoot)
-  foreach ($Process in $Conflicts) {
-    $ProcessId = [int]$Process.ProcessId
-    $LiveProcess = Get-CimInstance Win32_Process `
-      -Filter "ProcessId = $ProcessId" `
-      -ErrorAction SilentlyContinue
-    if (-not $LiveProcess) { continue }
-
-    # A numeric PID is recyclable. Refuse to act unless the process selected
-    # from the same-root snapshot is still the exact same OS process at the
-    # destructive boundary. CreationDate is the stable instance identity;
-    # path/name/parent/command line additionally preserve the ownership proof.
-    $SameIdentity = (
-      -not [string]::IsNullOrWhiteSpace([string]$Process.CreationDate) -and
-      [string]$LiveProcess.CreationDate -eq [string]$Process.CreationDate -and
-      [string]$LiveProcess.Name -ieq [string]$Process.Name -and
-      [string]$LiveProcess.ExecutablePath -ieq [string]$Process.ExecutablePath -and
-      [int]$LiveProcess.ParentProcessId -eq [int]$Process.ParentProcessId -and
-      [string]$LiveProcess.CommandLine -eq [string]$Process.CommandLine
+  $Deadline = (Get-Date).AddSeconds(15)
+  $StableClearObservations = 0
+  while ((Get-Date) -lt $Deadline) {
+    $Conflicts = @(
+      Get-ConflictingHubProcesses -ExpectedProjectRoot $ExpectedProjectRoot
     )
-    if (-not $SameIdentity) {
-      throw "Process $ProcessId changed identity after same-root discovery; refusing to stop a potentially unrelated process. Retry installation after reviewing running processes."
+    if ($Conflicts.Count -eq 0) {
+      $StableClearObservations += 1
+      if ($StableClearObservations -ge 2) { return }
+      Start-Sleep -Milliseconds 500
+      continue
     }
 
-    # Acquire the kernel-backed Process object before the destructive call.
-    # Stop-Process -Id would resolve the recyclable PID again and reopen the
-    # race after validation. Forcing .Handle binds this object to the process
-    # instance; StartTime proves that it is the CIM instance validated above.
-    $LiveHandle = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-    if (-not $LiveHandle) { continue }
-    try {
-      $null = $LiveHandle.Handle
-      $HandleStartUtc = $LiveHandle.StartTime.ToUniversalTime()
-      $ExpectedStartUtc = ([datetime]$LiveProcess.CreationDate).ToUniversalTime()
-    } catch {
-      if ($LiveHandle.HasExited) { continue }
-      throw
-    }
-    # Win32_Process exposes creation time to microsecond precision. Normalize
-    # both views to that same precision before comparing their instance key.
-    $CreationFormat = "yyyyMMddHHmmss.ffffff"
-    $HandleCreationKey = $HandleStartUtc.ToString(
-      $CreationFormat,
-      [System.Globalization.CultureInfo]::InvariantCulture
-    )
-    $ExpectedCreationKey = $ExpectedStartUtc.ToString(
-      $CreationFormat,
-      [System.Globalization.CultureInfo]::InvariantCulture
-    )
-    if ($HandleCreationKey -cne $ExpectedCreationKey) {
-      throw "Process $ProcessId changed identity while acquiring its stable handle; refusing to stop it."
-    }
+    $StableClearObservations = 0
+    # The verified launcher is discovered before its descendants. Stop the
+    # selected snapshot in reverse order so the actual server and helpers exit
+    # before their console-script and scheduled-task wrappers.
+    $StopOrder = @($Conflicts)
+    [array]::Reverse($StopOrder)
+    foreach ($Process in $StopOrder) {
+      $ProcessId = [int]$Process.ProcessId
+      $LiveProcess = Get-CimInstance Win32_Process `
+        -Filter "ProcessId = $ProcessId" `
+        -ErrorAction SilentlyContinue
+      if (-not $LiveProcess) { continue }
 
-    Write-Host "Stopping same-root Study Hub process $ProcessId from $($Process.ExecutablePath)."
-    try {
-      Stop-Process -InputObject $LiveHandle -Force -ErrorAction Stop
-    } catch {
-      if ($LiveHandle.HasExited) { continue }
-      throw
+      # A numeric PID is recyclable. Refuse to act unless the process selected
+      # from the same-root snapshot is still the exact same OS process at the
+      # destructive boundary. CreationDate is the stable instance identity;
+      # path/name/parent/command line additionally preserve the ownership proof.
+      $SameIdentity = (
+        -not [string]::IsNullOrWhiteSpace([string]$Process.CreationDate) -and
+        [string]$LiveProcess.CreationDate -eq [string]$Process.CreationDate -and
+        [string]$LiveProcess.Name -ieq [string]$Process.Name -and
+        [string]$LiveProcess.ExecutablePath -ieq [string]$Process.ExecutablePath -and
+        [int]$LiveProcess.ParentProcessId -eq [int]$Process.ParentProcessId -and
+        [string]$LiveProcess.CommandLine -eq [string]$Process.CommandLine
+      )
+      if (-not $SameIdentity) {
+        throw "Process $ProcessId changed identity after same-root discovery; refusing to stop a potentially unrelated process. Retry installation after reviewing running processes."
+      }
+
+      # Acquire the kernel-backed Process object before the destructive call.
+      # Stop-Process -Id would resolve the recyclable PID again and reopen the
+      # race after validation. Forcing .Handle binds this object to the process
+      # instance; StartTime proves that it is the CIM instance validated above.
+      $LiveHandle = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+      if (-not $LiveHandle) { continue }
+      try {
+        $null = $LiveHandle.Handle
+        $HandleStartUtc = $LiveHandle.StartTime.ToUniversalTime()
+        $ExpectedStartUtc = ([datetime]$LiveProcess.CreationDate).ToUniversalTime()
+      } catch {
+        if ($LiveHandle.HasExited) { continue }
+        throw
+      }
+      # Win32_Process exposes creation time to microsecond precision. Normalize
+      # both views to that same precision before comparing their instance key.
+      $CreationFormat = "yyyyMMddHHmmss.ffffff"
+      $HandleCreationKey = $HandleStartUtc.ToString(
+        $CreationFormat,
+        [System.Globalization.CultureInfo]::InvariantCulture
+      )
+      $ExpectedCreationKey = $ExpectedStartUtc.ToString(
+        $CreationFormat,
+        [System.Globalization.CultureInfo]::InvariantCulture
+      )
+      if ($HandleCreationKey -cne $ExpectedCreationKey) {
+        throw "Process $ProcessId changed identity while acquiring its stable handle; refusing to stop it."
+      }
+
+      Write-Host "Stopping same-root Study Hub process $ProcessId from $($Process.ExecutablePath)."
+      try {
+        Stop-Process -InputObject $LiveHandle -Force -ErrorAction Stop
+      } catch {
+        if ($LiveHandle.HasExited) { continue }
+        throw
+      }
     }
+    Start-Sleep -Milliseconds 500
   }
-  if ($Conflicts.Count -gt 0) {
-    Start-Sleep -Seconds 1
-  }
+
   $Remaining = @(Get-ConflictingHubProcesses -ExpectedProjectRoot $ExpectedProjectRoot)
   if ($Remaining.Count -gt 0) {
     $Details = $Remaining | ForEach-Object { "$($_.ProcessId): $($_.ExecutablePath)" }
     throw "A same-root Study Hub process under $ExpectedProjectRoot is still running: $($Details -join '; '). Stop it before installation."
   }
+  throw "Same-root Study Hub processes did not remain clear for two consecutive snapshots before the installation deadline."
 }
 
 # Establish clean, exact source provenance before stopping a task, process, or
@@ -394,6 +413,34 @@ $ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyConti
 $DatabasePresentAtPreflight = Test-Path -LiteralPath $DatabasePath
 if ($ExistingTask -and -not $DatabasePresentAtPreflight) {
   throw "The effective runtime database does not exist at $DatabasePath; refusing to certify an incomplete rollback backup."
+}
+if ($ExistingTask) {
+  # Validate paths, loopback/access settings, and the pinned prompt before any
+  # downtime. Point validation at an in-memory database so its migration check
+  # cannot mutate the live database before the verified rollback backup.
+  $ExistingHubExecutable = Join-Path $ProjectRoot ".venv\Scripts\oms-hub.exe"
+  if (-not (Test-Path -LiteralPath $ExistingHubExecutable)) {
+    throw "Existing Study Hub executable not found: $ExistingHubExecutable"
+  }
+  $PreviousProcessDatabaseUrl = [Environment]::GetEnvironmentVariable(
+    "OMS_HUB_DATABASE_URL",
+    "Process"
+  )
+  try {
+    [Environment]::SetEnvironmentVariable(
+      "OMS_HUB_DATABASE_URL",
+      "sqlite:///:memory:",
+      "Process"
+    )
+    & $ExistingHubExecutable validate-config
+    Assert-NativeCommandSucceeded -Operation "Existing Study Hub configuration preflight"
+  } finally {
+    [Environment]::SetEnvironmentVariable(
+      "OMS_HUB_DATABASE_URL",
+      $PreviousProcessDatabaseUrl,
+      "Process"
+    )
+  }
 }
 if ($ExistingTask -and $PSCmdlet.ShouldProcess($TaskName, "Stop scheduled task")) {
   Assert-ProjectBuildIdentity `
@@ -549,6 +596,10 @@ if ($PSCmdlet.ShouldProcess($ProjectRoot, "Install Study Hub V2")) {
     -ExpectedProjectRoot $ProjectRoot `
     -ExpectedBuildRevision $PreflightBuildRevision `
     -ExpectedBuildTree $PreflightBuildTree
+  # Re-discover immediately before pip. Task Scheduler stop is asynchronous,
+  # and an orphaned console-script descendant can otherwise retain the Windows
+  # executable lock after the earlier stop snapshot and rollback backup.
+  Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot
   if (-not (Test-Path "$ProjectRoot\.venv\Scripts\python.exe")) {
     $PythonVenvArgs = @($PythonPrefix) + @("-m", "venv", "$ProjectRoot\.venv")
     & $PythonCommand @PythonVenvArgs
