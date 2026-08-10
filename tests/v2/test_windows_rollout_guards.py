@@ -107,12 +107,20 @@ def test_windows_installer_selects_every_descendant_of_verified_launcher() -> No
 def test_windows_installer_resolves_config_stops_tree_and_backs_up_before_pip() -> None:
     script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
 
+    provenance = script.index(
+        "$PreflightBuildRevision = Get-ProjectBuildRevision"
+    )
+    task_stop = script.index(
+        'Stop-ScheduledTask -TaskName $TaskName',
+        provenance,
+    )
     config = script.index("$EffectiveDataRootValue = Get-EffectiveSetting")
     stop = script.index("Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot")
     backup = script.index('"--source", $DatabasePath')
     complete = script.index("$BackupComplete = $true")
     pip = script.index('-m pip install --upgrade pip')
 
+    assert provenance < task_stop
     assert config < stop < backup < complete < pip
     assert 'Get-EffectiveSetting `\n  -Name "OMS_HUB_DATABASE_URL"' in script
     assert "Resolve-SqliteDatabasePath" in script

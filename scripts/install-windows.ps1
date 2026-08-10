@@ -304,6 +304,12 @@ function Stop-ConflictingHubProcesses {
   }
 }
 
+# Establish clean, exact source provenance before stopping a task, process, or
+# writing a rollback backup. Re-check immediately before startup below.
+$PreflightBuildRevision = Get-ProjectBuildRevision -ExpectedProjectRoot $ProjectRoot
+$PreflightBuildTree = Get-ProjectBuildTree -ExpectedProjectRoot $ProjectRoot
+Write-Host "Verified install source $PreflightBuildRevision (tree $PreflightBuildTree)."
+
 $ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if ($ExistingTask -and $PSCmdlet.ShouldProcess($TaskName, "Stop scheduled task")) {
   Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
