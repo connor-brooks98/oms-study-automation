@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from sqlalchemy import inspect, text
 
 from oms_hub.db import Database
@@ -416,3 +417,92 @@ def test_active_label_migration_repairs_legacy_duplicates_before_index(tmp_path:
         ("later", "failed", "migration", "migration active-label conflict; retained run first"),
     ]
     assert "ix_studio_runs_active_label" in index_names
+
+
+def test_active_label_migration_retains_the_single_active_publication_owner(
+    tmp_path: Path,
+) -> None:
+    database = _v14_database(tmp_path)
+    with database.engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO studio_runs (id, subject, subject_key, exam_number, "
+            "destination_subject, destination_subject_key, destination_exam_number, "
+            "label, label_key, prompt, state, stage, attempts, created_at, updated_at) VALUES "
+            "('earlier', 'Neuro', 'neuro', 1, 'Neuro', 'neuro', 1, 'Duplicate', "
+            "'duplicate', '', 'queued', 'validate', 0, "
+            "'2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'), "
+            "('publication-owner', 'Neuro', 'neuro', 1, 'Neuro', 'neuro', 1, "
+            "'Duplicate', 'duplicate', '', 'running', 'publish', 1, "
+            "'2026-01-02T00:00:00+00:00', '2026-01-02T00:00:00+00:00')"
+        ))
+        connection.execute(text(
+            "INSERT INTO published_quizzes (token, lecture_id, job_id, studio_run_id, "
+            "destination_subject, destination_subject_key, destination_exam_number, label, "
+            "label_key, title, payload_json, version, active, created_at, updated_at) VALUES "
+            "('owner-token', NULL, NULL, 'publication-owner', 'Neuro', 'neuro', 1, "
+            "'Duplicate', 'duplicate', 'Duplicate', '{\"title\":\"Duplicate\","
+            "\"questions\":[]}', 1, 1, '2026-01-02T00:00:00+00:00', "
+            "'2026-01-02T00:00:00+00:00')"
+        ))
+
+    database.migrate()
+    with database.engine.connect() as connection:
+        first_pass = connection.execute(text(
+            "SELECT id, state, diagnostic_source, error FROM studio_runs "
+            "WHERE id IN ('earlier', 'publication-owner') ORDER BY id"
+        )).all()
+    database.migrate()
+    with database.engine.connect() as connection:
+        second_pass = connection.execute(text(
+            "SELECT id, state, diagnostic_source, error FROM studio_runs "
+            "WHERE id IN ('earlier', 'publication-owner') ORDER BY id"
+        )).all()
+
+    assert first_pass == second_pass == [
+        (
+            "earlier",
+            "failed",
+            "migration",
+            "migration active-label conflict; retained active publication owner "
+            "publication-owner",
+        ),
+        ("publication-owner", "running", None, None),
+    ]
+
+
+def test_active_label_migration_fails_closed_on_multiple_active_publications(
+    tmp_path: Path,
+) -> None:
+    database = _v14_database(tmp_path)
+    with database.engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO studio_runs (id, subject, subject_key, exam_number, "
+            "destination_subject, destination_subject_key, destination_exam_number, "
+            "label, label_key, prompt, state, stage, attempts, created_at, updated_at) VALUES "
+            "('first-owner', 'Neuro', 'neuro', 1, 'Neuro', 'neuro', 1, 'Duplicate', "
+            "'duplicate', '', 'queued', 'validate', 0, "
+            "'2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'), "
+            "('second-owner', 'Neuro', 'neuro', 1, 'Neuro', 'neuro', 1, 'Duplicate', "
+            "'duplicate', '', 'running', 'publish', 1, "
+            "'2026-01-02T00:00:00+00:00', '2026-01-02T00:00:00+00:00')"
+        ))
+        connection.execute(text(
+            "INSERT INTO published_quizzes (token, lecture_id, job_id, studio_run_id, "
+            "destination_subject, destination_subject_key, destination_exam_number, label, "
+            "label_key, title, payload_json, version, active, created_at, updated_at) VALUES "
+            "('first-owner-token', NULL, NULL, 'first-owner', 'Neuro', 'neuro', 1, "
+            "'Duplicate', 'duplicate', 'First', '{}', 1, 1, "
+            "'2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'), "
+            "('second-owner-token', NULL, NULL, 'second-owner', 'Neuro', 'neuro', 1, "
+            "'Duplicate', 'duplicate', 'Second', '{}', 1, 1, "
+            "'2026-01-02T00:00:00+00:00', '2026-01-02T00:00:00+00:00')"
+        ))
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "migration recovery conflict: multiple active Studio publications exist "
+            "for neuro exam 1 label duplicate"
+        ),
+    ):
+        database.migrate()

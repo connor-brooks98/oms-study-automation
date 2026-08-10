@@ -7,6 +7,7 @@ class Element {
   constructor(tagName) {
     this.tagName = tagName;
     this.children = [];
+    this.listeners = new Map();
     this.dataset = {};
     this.textContent = "";
     this.className = "";
@@ -18,17 +19,41 @@ class Element {
     this.htmlFor = "";
     this.open = false;
     this.parentElement = null;
+    this._value = "";
+  }
+
+  get value() { return this._value; }
+  set value(next) {
+    this._value = String(next);
+    if (this.tagName === "select") {
+      this.children.forEach((option) => { option.selected = option.value === this._value; });
+    }
+  }
+  get options() { return this.children; }
+  get selectedIndex() {
+    const index = this.children.findIndex((option) => option.value === this.value);
+    return index < 0 ? 0 : index;
   }
 
   append(...items) {
     items.forEach((item) => { if (item && typeof item === "object") item.parentElement = this; });
     this.children.push(...items);
+    if (this.tagName === "select") {
+      const selected = items.find((item) => item?.selected);
+      if (selected) this._value = selected.value;
+    }
   }
   replaceChildren(...items) {
     this.children = [];
     this.append(...items);
   }
-  addEventListener() {}
+  addEventListener(type, listener) {
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type).push(listener);
+  }
+  async dispatch(type) {
+    for (const listener of this.listeners.get(type) || []) await listener({ target: this });
+  }
   setAttribute(name, value) { this[name] = value; }
   remove() {
     if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((item) => item !== this);
@@ -294,22 +319,123 @@ test("ready local-import rows hydrate on refresh and deduplicate by source id", 
   assert.equal(row.children[3].children[0].checked, true);
 });
 
-test("ready local-import defaults reconstruct after a fresh page instance", () => {
-  const sources = [{
-    id: "source-1", title: "Questions", state: "ready", purpose: "local_import",
-    import_defaults: { role: "questions", attach_to_notebook: true },
-  }];
-  const first = new Element("ul");
-  const backForward = new Element("ul");
-
-  studio.hydrateImportSources(documentRef, first, sources);
-  studio.hydrateImportSources(documentRef, backForward, sources);
-
-  [first, backForward].forEach((list) => {
-    const notebook = list.children[0].children[3].children[0];
-    assert.equal(notebook.checked, false);
-    assert.equal(notebook.disabled, true);
+test("initialize restores durable URL scope and fresh-page import rows", async () => {
+  const select = (values) => {
+    const element = new Element("select");
+    values.forEach(([value, exams = ""]) => {
+      const option = new Element("option");
+      option.value = value;
+      option.dataset.exams = exams;
+      element.append(option);
+    });
+    element.value = "";
+    return element;
+  };
+  const course = select([[""], ["Neuro", "1,2"], ["Cardio", "1"]]);
+  course.dataset.studioCourse = "true";
+  const exam = select([[""]]);
+  exam.dataset.studioExam = "true";
+  exam.disabled = true;
+  const workflowTabs = ["generate", "import"].map((workflow) => {
+    const tab = new Element("button");
+    tab.dataset.workflowTab = workflow;
+    return tab;
   });
+  const workflowPanels = ["generate", "import"].map((workflow) => {
+    const panel = new Element("section");
+    panel.dataset.workflowPanel = workflow;
+    return panel;
+  });
+  const elements = {
+    "[data-studio-course]": course,
+    "[data-studio-exam]": exam,
+    "[data-source-list]": new Element("ul"),
+    "[data-source-status]": new Element("p"),
+    "[data-source-picker]": new Element("div"),
+    "[data-source-filter]": new Element("input"),
+    "[data-select-all-sources]": null,
+    "[data-image-dropzone]": null,
+    "[data-image-drop-message]": null,
+    "[data-run-list]": new Element("div"),
+    "[data-run-form]": new Element("form"),
+    "[data-destination-course]": select([[""]]),
+    "[data-destination-exam]": select([[""]]),
+    "[data-import-run-form]": new Element("form"),
+    "[data-import-destination-course]": select([[""]]),
+    "[data-import-destination-exam]": select([[""]]),
+    "[data-import-source-list]": new Element("ul"),
+    "[data-poll-status]": new Element("p"),
+  };
+  const page = new Element("section");
+  page.querySelector = (selector) => elements[selector] || null;
+  page.querySelectorAll = (selector) => {
+    if (selector === "[data-workflow-tab]") return workflowTabs;
+    if (selector === "[data-workflow-panel]") return workflowPanels;
+    if (selector === "[data-source-form]" || selector === "[data-import-source-form]") return [];
+    return [];
+  };
+  const freshDocument = {
+    ...documentRef,
+    cookie: "",
+    querySelector: (selector) => selector === "[data-studio-page]" ? page : null,
+  };
+  const requests = [];
+  const fetchImpl = async (url) => {
+    requests.push(url);
+    return {
+      ok: true,
+      json: async () => url.startsWith("/studio/sources?") ? {
+        sources: url.includes("subject_key=neuro") ? [{
+          id: "source-1", title: "Questions", type: "text", state: "ready",
+          purpose: "local_import",
+          import_defaults: { role: "questions", attach_to_notebook: true },
+        }] : [],
+      } : { runs: [] },
+    };
+  };
+  const replacedUrls = [];
+  const navigation = {
+    location: { href: "https://study.test/studio?subject=neuro&exam=1&workflow=import" },
+    history: {
+      state: null,
+      replaceState: (_state, _title, url) => replacedUrls.push(String(url)),
+    },
+  };
+
+  await studio.initialize(freshDocument, fetchImpl, navigation);
+
+  assert.equal(course.value, "Neuro");
+  assert.equal(exam.value, "1");
+  assert.equal(exam.disabled, false);
+  assert.equal(workflowPanels.find((panel) => panel.dataset.workflowPanel === "import").hidden, false);
+  assert.deepEqual(requests, [
+    "/studio/sources?subject_key=neuro&exam_number=1",
+    "/studio/runs?subject_key=neuro&exam_number=1",
+  ]);
+  const row = elements["[data-import-source-list]"].children[0];
+  assert.equal(row.dataset.sourceId, "source-1");
+  assert.equal(row.children[2].value, "questions");
+  assert.equal(row.children[3].children[0].checked, false);
+  assert.equal(row.children[3].children[0].disabled, true);
+  assert.match(replacedUrls.at(-1), /subject=neuro&exam=1&workflow=import/);
+
+  course.value = "Cardio";
+  await course.dispatch("change");
+  assert.equal(exam.value, "");
+  assert.equal(elements["[data-import-source-list]"].querySelectorAll(
+    "[data-import-source-row]",
+  ).length, 0);
+  assert.match(replacedUrls.at(-1), /subject=cardio/);
+  assert.doesNotMatch(replacedUrls.at(-1), /[?&]exam=/);
+  exam.value = "1";
+  await exam.dispatch("change");
+  const changedScope = new URL(replacedUrls.at(-1));
+  assert.equal(changedScope.searchParams.get("subject"), "cardio");
+  assert.equal(changedScope.searchParams.get("exam"), "1");
+  assert.equal(changedScope.searchParams.get("workflow"), "import");
+  assert.equal(elements["[data-import-source-list]"].querySelectorAll(
+    "[data-import-source-row]",
+  ).length, 0);
 });
 
 test("only ready local-import sources hydrate into import rows", () => {

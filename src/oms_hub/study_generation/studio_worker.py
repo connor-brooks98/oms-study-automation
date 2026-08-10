@@ -104,7 +104,7 @@ class StudioWorker:
             return True
         if self.publisher is not None:
             try:
-                adopted = self.publisher.adopt_owned_studio_publication(run.id)
+                remote_chat_allowed = self.publisher.prepare_studio_run_chat(run.id)
             except Exception as error:  # noqa: BLE001 - durable recovery boundary
                 self.repository.record_run_attempt(
                     run.id,
@@ -127,10 +127,9 @@ class StudioWorker:
                         str(error),
                     )
                 return True
-            if adopted is not None:
+            if not remote_chat_allowed:
                 return True
         try:
-            self.repository.set_run_stage(run.id, StudioRunStage.CHAT)
             notebook_id, answer = self.gateway.ask_studio(
                 run.subject,
                 run.exam_number,

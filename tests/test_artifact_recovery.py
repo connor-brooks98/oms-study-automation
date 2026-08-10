@@ -1,7 +1,8 @@
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 import oms_hub.artifacts as artifacts_module
 import oms_hub.web.artifact_routes as artifact_routes
@@ -124,7 +125,80 @@ def test_cleanup_failure_is_translated_to_operator_visible_409(monkeypatch, tmp_
         artifact_routes.approve_replacement(SimpleNamespace(), 52)
 
     assert raised.value.status_code == 409
-    assert "cleanup failed" in raised.value.detail
+    assert "cleanup failed" in raised.value.detail["message"]
+
+
+@pytest.mark.parametrize(
+    ("error_type", "expected_code", "expected_message", "expected_statement"),
+    [
+        (
+            ArtifactCleanupError,
+            "artifact_cleanup_required",
+            "artifact promotion committed, but recovery-file cleanup failed",
+            "Promotion committed; retained recovery files require operator cleanup.",
+        ),
+        (
+            ArtifactRecoveryError,
+            "artifact_recovery_required",
+            "artifact promotion failed and rollback is incomplete",
+            "Promotion did not commit and rollback remains incomplete.",
+        ),
+    ],
+)
+def test_approval_route_preserves_typed_recovery_locations_without_internals(
+    monkeypatch,
+    tmp_path,
+    caplog,
+    error_type,
+    expected_code,
+    expected_message,
+    expected_statement,
+) -> None:
+    backup = tmp_path / "retained backup.pdf"
+    journal = tmp_path / "retained recovery journal.json"
+
+    class FailingService:
+        def approve(self, revision_id: int) -> None:
+            assert revision_id == 91
+            common = {
+                "backup_paths": (backup,),
+                "recovery_journal_path": journal,
+                "original_error": OSError("PRIVATE_ORIGINAL_ERROR"),
+            }
+            if error_type is ArtifactCleanupError:
+                raise ArtifactCleanupError(
+                    "artifact promotion committed, but recovery-file cleanup failed",
+                    **common,
+                )
+            raise ArtifactRecoveryError(
+                "artifact promotion failed and rollback is incomplete",
+                restore_error=OSError("PRIVATE_RESTORE_ERROR"),
+                journal_error=OSError("PRIVATE_JOURNAL_ERROR"),
+                **common,
+            )
+
+    monkeypatch.setattr(artifact_routes, "_service", lambda _request: FailingService())
+    app = FastAPI()
+    app.include_router(artifact_routes.router)
+
+    with caplog.at_level("ERROR", logger="oms_hub.web.artifact_routes"):
+        response = TestClient(app).post("/review/replacements/91/approve")
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail == {
+        "code": expected_code,
+        "message": expected_message,
+        "recovery_state": expected_statement,
+        "backup_paths": [str(backup)],
+        "recovery_journal_path": str(journal),
+    }
+    serialized = response.text
+    assert "PRIVATE_ORIGINAL_ERROR" not in serialized
+    assert "PRIVATE_RESTORE_ERROR" not in serialized
+    assert "PRIVATE_JOURNAL_ERROR" not in serialized
+    assert str(backup) in caplog.text
+    assert str(journal) in caplog.text
 
 
 def test_interrupted_recovery_cleanup_failure_is_typed(

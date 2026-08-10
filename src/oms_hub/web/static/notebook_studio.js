@@ -81,6 +81,28 @@
     import: workflow === "import",
   });
 
+  const scopeUrl = (navigation) => {
+    const href = navigation?.location?.href;
+    if (!href) return null;
+    try {
+      return new URL(href);
+    } catch (_error) {
+      return null;
+    }
+  };
+
+  const selectedCourseOption = (course, value) => {
+    const normalized = normalizeSubject(value || "");
+    if (!normalized) return null;
+    return Array.from(course.options || []).find(
+      (option) => normalizeSubject(option.value || "") === normalized,
+    ) || null;
+  };
+
+  const selectedWorkflowFromUrl = (url) => (
+    url?.searchParams.get("workflow") === "import" ? "import" : "generate"
+  );
+
   const toggleClass = (element, className, enabled) => {
     if (element.classList) {
       element.classList.toggle(className, enabled);
@@ -425,7 +447,49 @@
         option.textContent = `Exam ${number}`;
         exam.append(option);
       });
+    exam.value = "";
     exam.disabled = !course.value;
+  };
+
+  const restoreScopeFromUrl = (documentRef, course, exam, navigation) => {
+    const url = scopeUrl(navigation);
+    const workflow = selectedWorkflowFromUrl(url);
+    const courseOption = selectedCourseOption(
+      course,
+      url?.searchParams.get("subject") || "",
+    );
+    course.value = courseOption?.value || "";
+    populateExams(documentRef, course, exam);
+    const requestedExam = url?.searchParams.get("exam") || "";
+    const validExam = Array.from(exam.options || []).some(
+      (option) => option.value === requestedExam && requestedExam !== "",
+    );
+    exam.value = validExam ? requestedExam : "";
+    return { workflow, scopeValid: Boolean(course.value && exam.value) };
+  };
+
+  const updateScopeUrl = (course, exam, workflow, navigation) => {
+    const url = scopeUrl(navigation);
+    if (!url || !navigation?.history?.replaceState) return;
+    if (course.value) {
+      url.searchParams.set("subject", normalizeSubject(course.value));
+    } else {
+      url.searchParams.delete("subject");
+    }
+    if (course.value && exam.value) url.searchParams.set("exam", exam.value);
+    else url.searchParams.delete("exam");
+    if (workflow === "import") url.searchParams.set("workflow", "import");
+    else url.searchParams.delete("workflow");
+    navigation.history.replaceState(navigation.history.state, "", url.toString());
+  };
+
+  const clearImportSources = (documentRef, list) => {
+    hydrateImportSources(documentRef, list, []);
+    list.querySelector("[data-import-empty]")?.remove();
+    const empty = documentRef.createElement("li");
+    empty.dataset.importEmpty = "true";
+    empty.textContent = "Add at least one local source.";
+    list.append(empty);
   };
 
   const restoreFailedAction = (target, status, detail) => {
@@ -435,7 +499,11 @@
     if (target.isConnected !== false) target.focus?.({ preventScroll: true });
   };
 
-  const initialize = (documentRef, fetchImpl = root.fetch.bind(root)) => {
+  const initialize = (
+    documentRef,
+    fetchImpl = root.fetch.bind(root),
+    navigation = root,
+  ) => {
     const page = documentRef.querySelector("[data-studio-page]");
     if (!page) return;
     const course = page.querySelector("[data-studio-course]");
@@ -461,10 +529,23 @@
     const maxPollDelayMs = 30000;
     let pollDelayMs = basePollDelayMs;
 
+    let selectedWorkflow = "generate";
     page.querySelectorAll("[data-workflow-tab]").forEach((tab) => {
-      tab.addEventListener("click", () => setWorkflowState(page, tab.dataset.workflowTab));
+      tab.addEventListener("click", () => {
+        selectedWorkflow = tab.dataset.workflowTab;
+        setWorkflowState(page, selectedWorkflow);
+        updateScopeUrl(course, exam, selectedWorkflow, navigation);
+      });
     });
-    setWorkflowState(page, "generate");
+    const restoredScope = restoreScopeFromUrl(
+      documentRef,
+      course,
+      exam,
+      navigation,
+    );
+    selectedWorkflow = restoredScope.workflow;
+    setWorkflowState(page, selectedWorkflow);
+    updateScopeUrl(course, exam, selectedWorkflow, navigation);
 
     const scheduleRefresh = (delay = basePollDelayMs) => {
       if (pollHandle !== null) root.clearTimeout(pollHandle);
@@ -510,11 +591,15 @@
       if (pollHandle !== null) root.clearTimeout(pollHandle);
       pollHandle = null;
       populateExams(documentRef, course, exam);
+      clearImportSources(documentRef, importSourceList);
       list.textContent = "Select an exam to view sources.";
       picker.textContent = "Select a source course and exam first.";
       runList.textContent = "Select a source course and exam to view runs.";
+      updateScopeUrl(course, exam, selectedWorkflow, navigation);
     });
     exam.addEventListener("change", () => {
+      clearImportSources(documentRef, importSourceList);
+      updateScopeUrl(course, exam, selectedWorkflow, navigation);
       if (exam.value) {
         list.textContent = "";
         const loading = documentRef.createElement("li");
@@ -522,7 +607,7 @@
         list.append(loading);
         if (sourceStatus) sourceStatus.textContent = "Loading sources…";
       }
-      refresh();
+      return refresh();
     });
     destinationCourse.addEventListener("change", () => {
       populateExams(documentRef, destinationCourse, destinationExam);
@@ -821,7 +906,21 @@
       }
     });
 
-    if (course.value && exam.value) refresh();
+    navigation?.addEventListener?.("popstate", () => {
+      const restored = restoreScopeFromUrl(
+        documentRef,
+        course,
+        exam,
+        navigation,
+      );
+      selectedWorkflow = restored.workflow;
+      setWorkflowState(page, selectedWorkflow);
+      clearImportSources(documentRef, importSourceList);
+      if (restored.scopeValid) refresh();
+    });
+
+    if (restoredScope.scopeValid) return refresh();
+    return Promise.resolve();
   };
 
   const api = {
@@ -841,8 +940,10 @@
     renderSources,
     retryStatus,
     restoreFailedAction,
+    restoreScopeFromUrl,
     selectAllAttachedSources,
     setWorkflowState,
+    updateScopeUrl,
     workflowPanelState,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

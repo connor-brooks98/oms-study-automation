@@ -26,6 +26,10 @@ if TYPE_CHECKING:
 LATEST_SCHEMA_VERSION = 22
 
 
+class StudioPublicationMigrationConflict(RuntimeError):
+    """Legacy Studio publication ownership is ambiguous and needs recovery."""
+
+
 def _ensure_column(
     database: "Database",
     table_name: str,
@@ -216,6 +220,21 @@ def _upgrade_studio_run_active_label_index(database: "Database") -> None:
     if not inspector.has_table("studio_runs"):
         return
     with database.engine.begin() as connection:
+        publication_conflicts = connection.execute(
+            text(
+                "SELECT destination_subject_key, destination_exam_number, label_key "
+                "FROM published_quizzes WHERE active = 1 AND studio_run_id IS NOT NULL "
+                "GROUP BY destination_subject_key, destination_exam_number, label_key "
+                "HAVING COUNT(*) > 1"
+            )
+        ).mappings().all()
+        if publication_conflicts:
+            conflict = publication_conflicts[0]
+            raise StudioPublicationMigrationConflict(
+                "migration recovery conflict: multiple active Studio publications exist "
+                f"for {conflict['destination_subject_key']} exam "
+                f"{conflict['destination_exam_number']} label {conflict['label_key']}"
+            )
         # Older Studio databases can contain multiple active rows from before
         # the partial index existed.  Repair them deterministically before
         # creating the guard, otherwise the upgrade itself prevents startup.
@@ -241,8 +260,25 @@ def _upgrade_studio_run_active_label_index(database: "Database") -> None:
                     "label": group["label_key"],
                 },
             ).mappings().all()
-            retained_id = rows[0]["id"]
-            for row in rows[1:]:
+            owner_ids = connection.execute(
+                text(
+                    "SELECT DISTINCT studio_run_id FROM published_quizzes "
+                    "WHERE destination_subject_key=:subject "
+                    "AND destination_exam_number=:exam AND label_key=:label "
+                    "AND active = 1 AND studio_run_id IS NOT NULL"
+                ),
+                {
+                    "subject": group["destination_subject_key"],
+                    "exam": group["destination_exam_number"],
+                    "label": group["label_key"],
+                },
+            ).scalars().all()
+            retained_id = owner_ids[0] if owner_ids else rows[0]["id"]
+            active_ids = {row["id"] for row in rows}
+            retain_active_owner = retained_id in active_ids
+            for row in rows:
+                if retain_active_owner and row["id"] == retained_id:
+                    continue
                 connection.execute(
                     text(
                         "UPDATE studio_runs SET state='failed', next_attempt_at=NULL, "
@@ -250,7 +286,12 @@ def _upgrade_studio_run_active_label_index(database: "Database") -> None:
                     ),
                     {
                         "id": row["id"],
-                        "error": f"migration active-label conflict; retained run {retained_id}",
+                        "error": (
+                            "migration active-label conflict; retained active publication "
+                            f"owner {retained_id}"
+                            if owner_ids
+                            else f"migration active-label conflict; retained run {retained_id}"
+                        ),
                     },
                 )
         connection.execute(

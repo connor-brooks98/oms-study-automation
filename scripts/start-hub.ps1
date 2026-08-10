@@ -40,3 +40,10 @@ $env:OMS_HUB_BUILD_TREE = $BuildTree
 Set-Location $ProjectRoot
 Write-Host "Starting Study Hub from $ProjectRoot (build $BuildRevision, tree $BuildTree)."
 & $HubExecutable serve
+$ServeExitCode = $LASTEXITCODE
+if ($ServeExitCode -ne 0) {
+  [Console]::Error.WriteLine(
+    "Study Hub server exited with native exit code $ServeExitCode"
+  )
+}
+exit $ServeExitCode

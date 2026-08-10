@@ -64,6 +64,10 @@ _ACTIVE_STATES = {
 _ANKI_PROMPT_DIRECTORY_KEY = "anki_curation_prompt_directory"
 
 
+class StudioPublicationRecoveryConflict(RuntimeError):
+    """Active Studio publication ownership cannot be resolved safely."""
+
+
 class DirectImportReviewer(Protocol):
     def to_native_quiz_in_session(
         self, session: Session, run_id: str, *, title: str
@@ -943,37 +947,135 @@ class GenerationRepository:
             return self._published_quiz(published)
 
     def recover_owned_studio_publications(self) -> int:
-        """Repair every historical split publication, including failed runs.
+        """Atomically converge publication owners and conflicting active runs.
 
         Older code could commit the publication and subsequently mark its run
         failed.  Such a run is outside the normal queued/retrying claim set, so
         startup recovery must discover it from publication ownership instead
-        of waiting for the run worker to claim it.
+        of waiting for the run worker to claim it. The publication owner and
+        every conflicting active run are updated in this one SQL transaction.
         """
         with self.database.session() as session:
             publications = session.scalars(
                 select(PublishedQuizModel).where(
                     PublishedQuizModel.studio_run_id.is_not(None),
                     PublishedQuizModel.active.is_(True),
+                ).order_by(
+                    PublishedQuizModel.destination_subject_key,
+                    PublishedQuizModel.destination_exam_number,
+                    PublishedQuizModel.label_key,
+                    PublishedQuizModel.token,
                 )
             ).all()
             recovered = 0
+            seen_scopes: set[tuple[str, int, str]] = set()
             for published in publications:
                 assert published.studio_run_id is not None
+                scope = (
+                    published.destination_subject_key,
+                    published.destination_exam_number,
+                    published.label_key,
+                )
+                if scope in seen_scopes:
+                    raise StudioPublicationRecoveryConflict(
+                        "startup recovery conflict: multiple active Studio publications "
+                        f"exist for {scope[0]} exam {scope[1]} label {scope[2]}"
+                    )
+                seen_scopes.add(scope)
                 run = session.get(StudioRunModel, published.studio_run_id)
-                if run is None or (
+                if run is None:
+                    raise StudioPublicationRecoveryConflict(
+                        "startup recovery conflict: active Studio publication "
+                        f"{published.token} references missing run {published.studio_run_id}"
+                    )
+                owner_already_complete = (
                     run.state == StudioRunState.COMPLETE.value
                     and run.published_token == published.token
-                ):
-                    continue
+                )
+                conflicts = session.scalars(
+                    select(StudioRunModel).where(
+                        StudioRunModel.destination_subject_key == scope[0],
+                        StudioRunModel.destination_exam_number == scope[1],
+                        StudioRunModel.label_key == scope[2],
+                        StudioRunModel.id != run.id,
+                        StudioRunModel.state.in_(
+                            {
+                                StudioRunState.QUEUED.value,
+                                StudioRunState.RUNNING.value,
+                                StudioRunState.RETRYING.value,
+                            }
+                        ),
+                    )
+                ).all()
+                for conflict in conflicts:
+                    conflict.state = StudioRunState.FAILED.value
+                    conflict.diagnostic_source = "recovery"
+                    conflict.error = (
+                        f"active publication {published.token} is owned by Studio run "
+                        f"{run.id}; conflicting run retired during startup recovery"
+                    )
+                    conflict.next_attempt_at = None
                 run.state = StudioRunState.COMPLETE.value
                 run.stage = StudioRunStage.COMPLETE.value
                 run.published_token = published.token
                 run.error = None
                 run.next_attempt_at = None
-                recovered += 1
+                if not owner_already_complete:
+                    recovered += 1
             session.flush()
             return recovered
+
+    def prepare_studio_run_chat(self, run_id: str) -> bool:
+        """Resolve publication ownership before a claimed run may do remote work.
+
+        Returns true only when the scope has no active publication. Owning runs
+        adopt their durable publication; non-owning runs enter a targeted
+        terminal recovery state. The check and state transition share one SQL
+        transaction so the worker never merely returns with a running claim.
+        """
+        with self.database.session() as session:
+            run = session.get(StudioRunModel, run_id)
+            if run is None:
+                raise ValueError("Studio run was removed")
+            publications = session.scalars(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id.is_not(None),
+                    PublishedQuizModel.destination_subject_key
+                    == run.destination_subject_key,
+                    PublishedQuizModel.destination_exam_number
+                    == run.destination_exam_number,
+                    PublishedQuizModel.label_key == run.label_key,
+                    PublishedQuizModel.active.is_(True),
+                )
+            ).all()
+            if not publications:
+                run.stage = StudioRunStage.CHAT.value
+                session.flush()
+                return True
+            if len(publications) > 1:
+                raise StudioPublicationRecoveryConflict(
+                    "worker recovery conflict: multiple active Studio publications "
+                    f"exist for {run.destination_subject_key} exam "
+                    f"{run.destination_exam_number} label {run.label_key}"
+                )
+            published = publications[0]
+            assert published.studio_run_id is not None
+            if published.studio_run_id == run.id:
+                run.state = StudioRunState.COMPLETE.value
+                run.stage = StudioRunStage.COMPLETE.value
+                run.published_token = published.token
+                run.error = None
+                run.next_attempt_at = None
+            else:
+                run.state = StudioRunState.FAILED.value
+                run.diagnostic_source = "recovery"
+                run.error = (
+                    f"active publication {published.token} is owned by Studio run "
+                    f"{published.studio_run_id}; remote chat was not created"
+                )
+                run.next_attempt_at = None
+            session.flush()
+            return False
 
     def _publish_studio_quiz_in_session(
         self, session: Session, run_id: str, quiz: NativeQuiz
@@ -981,6 +1083,26 @@ class GenerationRepository:
         run = session.get(StudioRunModel, run_id)
         if run is None:
             raise ValueError("Studio run was removed")
+        competing_active_run = session.scalar(
+            select(StudioRunModel).where(
+                StudioRunModel.destination_subject_key == run.destination_subject_key,
+                StudioRunModel.destination_exam_number == run.destination_exam_number,
+                StudioRunModel.label_key == run.label_key,
+                StudioRunModel.id != run.id,
+                StudioRunModel.state.in_(
+                    {
+                        StudioRunState.QUEUED.value,
+                        StudioRunState.RUNNING.value,
+                        StudioRunState.RETRYING.value,
+                    }
+                ),
+            )
+        )
+        if competing_active_run is not None:
+            raise ValueError(
+                "another active Studio run owns this publication scope; "
+                "publication was not changed"
+            )
         model = None
         if run.supersedes_run_id:
             model = session.scalar(

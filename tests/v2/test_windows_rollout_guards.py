@@ -17,6 +17,24 @@ def test_windows_launcher_exports_runtime_provenance() -> None:
     assert "refusing to start an editable deployment" in script
 
 
+def test_scheduled_launcher_propagates_the_exact_serve_exit_code() -> None:
+    script = (ROOT / "scripts" / "start-hub.ps1").read_text(encoding="utf-8")
+    lines = [line.strip() for line in script.splitlines() if line.strip()]
+
+    serve_index = lines.index("& $HubExecutable serve")
+    assert lines[serve_index + 1] == "$ServeExitCode = $LASTEXITCODE"
+    assert "if ($ServeExitCode -ne 0) {" in lines[serve_index + 2 :]
+    assert (
+        '"Study Hub server exited with native exit code $ServeExitCode"'
+        in lines[serve_index + 2 :]
+    )
+    assert lines[-1] == "exit $ServeExitCode"
+    assert not any(
+        line.casefold().startswith("throw ")
+        for line in lines[serve_index + 1 :]
+    )
+
+
 def test_windows_revision_capture_preserves_the_complete_git_hash() -> None:
     for relative_path in (
         "scripts/start-hub.ps1",

@@ -83,6 +83,50 @@ class ArtifactRecoveryError(ArtifactError):
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactOperatorDiagnostic:
+    """Safe, actionable recovery data for the private operator route."""
+
+    code: str
+    message: str
+    recovery_state: str
+    backup_paths: tuple[str, ...]
+    recovery_journal_path: str | None
+
+    def as_detail(self) -> dict[str, object]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "recovery_state": self.recovery_state,
+            "backup_paths": list(self.backup_paths),
+            "recovery_journal_path": self.recovery_journal_path,
+        }
+
+
+def artifact_operator_diagnostic(
+    error: ArtifactCleanupError | ArtifactRecoveryError,
+) -> ArtifactOperatorDiagnostic:
+    if isinstance(error, ArtifactCleanupError):
+        code = "artifact_cleanup_required"
+        recovery_state = (
+            "Promotion committed; retained recovery files require operator cleanup."
+        )
+    else:
+        code = "artifact_recovery_required"
+        recovery_state = "Promotion did not commit and rollback remains incomplete."
+    return ArtifactOperatorDiagnostic(
+        code=code,
+        message=str(error),
+        recovery_state=recovery_state,
+        backup_paths=tuple(str(path) for path in error.backup_paths),
+        recovery_journal_path=(
+            str(error.recovery_journal_path)
+            if error.recovery_journal_path is not None
+            else None
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedArtifact:
     revision_id: int
     role: ArtifactRole

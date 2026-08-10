@@ -357,6 +357,55 @@ def test_atomic_studio_publication_adopts_historical_split_state(tmp_path):
         repository.database.engine.dispose()
 
 
+def test_claimed_run_reserves_publication_scope_against_review_publish(tmp_path):
+    repository, _ = prepared_repository(tmp_path)
+    with repository.database.session() as session:
+        session.add_all([
+            StudioRunModel(
+                id="claimed-chat-run",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Reserved",
+                label_key="reserved",
+                prompt="Remote work",
+                state="running",
+                stage="chat",
+            ),
+            StudioRunModel(
+                id="review-ready-run",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Reserved",
+                label_key="reserved",
+                prompt="Local review",
+                state="awaiting_review",
+                stage="review",
+            ),
+        ])
+
+    try:
+        with pytest.raises(
+            ValueError,
+            match="another active Studio run owns this publication scope",
+        ):
+            repository.publish_studio_quiz(
+                "review-ready-run",
+                _quiz("Reserved"),
+            )
+        with repository.database.session() as session:
+            assert session.query(PublishedQuizModel).count() == 0
+    finally:
+        repository.database.engine.dispose()
+
+
 def test_unknown_public_quiz_token_returns_none(tmp_path):
     repository, _ = prepared_repository(tmp_path)
 
