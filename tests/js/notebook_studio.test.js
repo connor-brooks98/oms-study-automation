@@ -380,8 +380,18 @@ test("initialize restores durable URL scope and fresh-page import rows", async (
     querySelector: (selector) => selector === "[data-studio-page]" ? page : null,
   };
   const requests = [];
+  let delayNextNeuroSources = false;
+  let resolveDelayedNeuroSources = null;
   const fetchImpl = async (url) => {
     requests.push(url);
+    if (
+      delayNextNeuroSources
+      && url.startsWith("/studio/sources?")
+      && url.includes("subject_key=neuro")
+    ) {
+      delayNextNeuroSources = false;
+      return new Promise((resolve) => { resolveDelayedNeuroSources = resolve; });
+    }
     return {
       ok: true,
       json: async () => url.startsWith("/studio/sources?") ? {
@@ -433,6 +443,32 @@ test("initialize restores durable URL scope and fresh-page import rows", async (
   assert.equal(changedScope.searchParams.get("subject"), "cardio");
   assert.equal(changedScope.searchParams.get("exam"), "1");
   assert.equal(changedScope.searchParams.get("workflow"), "import");
+  assert.equal(elements["[data-import-source-list]"].querySelectorAll(
+    "[data-import-source-row]",
+  ).length, 0);
+
+  course.value = "Neuro";
+  await course.dispatch("change");
+  exam.value = "1";
+  delayNextNeuroSources = true;
+  const staleNeuroRefresh = exam.dispatch("change");
+  assert.equal(typeof resolveDelayedNeuroSources, "function");
+
+  course.value = "Cardio";
+  await course.dispatch("change");
+  exam.value = "1";
+  await exam.dispatch("change");
+  resolveDelayedNeuroSources({
+    ok: true,
+    json: async () => ({
+      sources: [{
+        id: "stale-neuro-source", title: "Stale Questions", type: "text", state: "ready",
+        purpose: "local_import",
+        import_defaults: { role: "questions", attach_to_notebook: false },
+      }],
+    }),
+  });
+  await staleNeuroRefresh;
   assert.equal(elements["[data-import-source-list]"].querySelectorAll(
     "[data-import-source-row]",
   ).length, 0);

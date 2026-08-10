@@ -528,6 +528,7 @@
     const basePollDelayMs = 2000;
     const maxPollDelayMs = 30000;
     let pollDelayMs = basePollDelayMs;
+    let refreshGeneration = 0;
 
     let selectedWorkflow = "generate";
     page.querySelectorAll("[data-workflow-tab]").forEach((tab) => {
@@ -560,14 +561,22 @@
     };
 
     const refresh = async () => {
+      const generation = ++refreshGeneration;
       pollHandle = null;
       if (!course.value || !exam.value) return;
-      const query = `subject_key=${encodeURIComponent(normalizeSubject(course.value))}&exam_number=${encodeURIComponent(exam.value)}`;
+      const subjectKey = normalizeSubject(course.value);
+      const examNumber = exam.value;
+      const query = `subject_key=${encodeURIComponent(subjectKey)}&exam_number=${encodeURIComponent(examNumber)}`;
       try {
         const [sourcePayload, runPayload] = await Promise.all([
           loadJson(`/studio/sources?${query}`),
           loadJson(`/studio/runs?${query}`),
         ]);
+        if (
+          generation !== refreshGeneration
+          || normalizeSubject(course.value) !== subjectKey
+          || exam.value !== examNumber
+        ) return;
         if (pollStatus) pollStatus.textContent = "";
         if (sourceStatus) sourceStatus.textContent = "";
         pollDelayMs = basePollDelayMs;
@@ -578,6 +587,7 @@
         const activeRuns = renderRuns(documentRef, runList, runPayload.runs || []);
         if (activeSources || activeRuns) scheduleRefresh(pollDelayMs);
       } catch (error) {
+        if (generation !== refreshGeneration) return;
         // Keep the previously rendered lists in place; surface the failure
         // in the dedicated status region and keep polling with backoff.
         const message = error instanceof Error ? error.message : "Quiz Builder status could not be loaded.";
@@ -588,6 +598,7 @@
     };
 
     course.addEventListener("change", () => {
+      refreshGeneration += 1;
       if (pollHandle !== null) root.clearTimeout(pollHandle);
       pollHandle = null;
       populateExams(documentRef, course, exam);
@@ -598,6 +609,9 @@
       updateScopeUrl(course, exam, selectedWorkflow, navigation);
     });
     exam.addEventListener("change", () => {
+      refreshGeneration += 1;
+      if (pollHandle !== null) root.clearTimeout(pollHandle);
+      pollHandle = null;
       clearImportSources(documentRef, importSourceList);
       updateScopeUrl(course, exam, selectedWorkflow, navigation);
       if (exam.value) {
@@ -907,6 +921,9 @@
     });
 
     navigation?.addEventListener?.("popstate", () => {
+      refreshGeneration += 1;
+      if (pollHandle !== null) root.clearTimeout(pollHandle);
+      pollHandle = null;
       const restored = restoreScopeFromUrl(
         documentRef,
         course,

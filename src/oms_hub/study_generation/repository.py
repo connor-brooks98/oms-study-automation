@@ -1028,10 +1028,11 @@ class GenerationRepository:
     def prepare_studio_run_chat(self, run_id: str) -> bool:
         """Resolve publication ownership before a claimed run may do remote work.
 
-        Returns true only when the scope has no active publication. Owning runs
-        adopt their durable publication; non-owning runs enter a targeted
-        terminal recovery state. The check and state transition share one SQL
-        transaction so the worker never merely returns with a running claim.
+        Returns true when the scope has no active publication or when a rerun
+        is replacing its declared predecessor. Owning runs adopt their durable
+        publication; unrelated non-owning runs enter a targeted terminal
+        recovery state. The check and state transition share one SQL transaction
+        so the worker never merely returns with a running claim.
         """
         with self.database.session() as session:
             run = session.get(StudioRunModel, run_id)
@@ -1066,6 +1067,16 @@ class GenerationRepository:
                 run.published_token = published.token
                 run.error = None
                 run.next_attempt_at = None
+            elif (
+                run.supersedes_run_id is not None
+                and published.studio_run_id == run.supersedes_run_id
+            ):
+                # A rerun deliberately keeps its predecessor's publication live
+                # until the replacement is ready. That durable predecessor does
+                # not make the successor's remote work unsafe.
+                run.stage = StudioRunStage.CHAT.value
+                session.flush()
+                return True
             else:
                 run.state = StudioRunState.FAILED.value
                 run.diagnostic_source = "recovery"
@@ -1077,16 +1088,17 @@ class GenerationRepository:
             session.flush()
             return False
 
-    def _publish_studio_quiz_in_session(
-        self, session: Session, run_id: str, quiz: NativeQuiz
-    ) -> PublishedQuizRecord:
-        run = session.get(StudioRunModel, run_id)
-        if run is None:
-            raise ValueError("Studio run was removed")
+    @staticmethod
+    def _require_unreserved_studio_publication_scope(
+        session: Session,
+        run: StudioRunModel,
+    ) -> None:
         competing_active_run = session.scalar(
             select(StudioRunModel).where(
-                StudioRunModel.destination_subject_key == run.destination_subject_key,
-                StudioRunModel.destination_exam_number == run.destination_exam_number,
+                StudioRunModel.destination_subject_key
+                == run.destination_subject_key,
+                StudioRunModel.destination_exam_number
+                == run.destination_exam_number,
                 StudioRunModel.label_key == run.label_key,
                 StudioRunModel.id != run.id,
                 StudioRunModel.state.in_(
@@ -1103,6 +1115,14 @@ class GenerationRepository:
                 "another active Studio run owns this publication scope; "
                 "publication was not changed"
             )
+
+    def _publish_studio_quiz_in_session(
+        self, session: Session, run_id: str, quiz: NativeQuiz
+    ) -> PublishedQuizRecord:
+        run = session.get(StudioRunModel, run_id)
+        if run is None:
+            raise ValueError("Studio run was removed")
+        self._require_unreserved_studio_publication_scope(session, run)
         model = None
         if run.supersedes_run_id:
             model = session.scalar(
@@ -1176,6 +1196,7 @@ class GenerationRepository:
                     and existing.studio_run_id == run_id
                 ):
                     return self._published_quiz(existing)
+            self._require_unreserved_studio_publication_scope(session, run)
             if run.workflow_kind == QuizWorkflowKind.DIRECT_IMPORT.value:
                 if run.state != StudioRunState.AWAITING_REVIEW.value:
                     raise ValueError("imported quiz is not awaiting question review")

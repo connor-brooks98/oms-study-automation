@@ -21,7 +21,7 @@ from oms_hub.study_generation.domain import (
     PublishedQuizOrderDirection,
     SourceKind,
 )
-from oms_hub.study_generation.native_quiz import parse_native_quiz
+from oms_hub.study_generation.native_quiz import parse_native_quiz, serialize_native_quiz
 from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.study_generation.repository import GenerationRepository
 
@@ -357,7 +357,7 @@ def test_atomic_studio_publication_adopts_historical_split_state(tmp_path):
         repository.database.engine.dispose()
 
 
-def test_claimed_run_reserves_publication_scope_against_review_publish(tmp_path):
+def test_claimed_run_reserves_scope_against_reviewed_notebook_publish(tmp_path):
     repository, _ = prepared_repository(tmp_path)
     with repository.database.session() as session:
         session.add_all([
@@ -386,8 +386,9 @@ def test_claimed_run_reserves_publication_scope_against_review_publish(tmp_path)
                 label="Reserved",
                 label_key="reserved",
                 prompt="Local review",
-                state="awaiting_review",
-                stage="review",
+                state="awaiting_images",
+                stage="images",
+                draft_payload_json=serialize_native_quiz(_quiz("Reserved")),
             ),
         ])
 
@@ -396,10 +397,7 @@ def test_claimed_run_reserves_publication_scope_against_review_publish(tmp_path)
             ValueError,
             match="another active Studio run owns this publication scope",
         ):
-            repository.publish_studio_quiz(
-                "review-ready-run",
-                _quiz("Reserved"),
-            )
+            repository.publish_reviewed_studio_quiz("review-ready-run")
         with repository.database.session() as session:
             assert session.query(PublishedQuizModel).count() == 0
     finally:

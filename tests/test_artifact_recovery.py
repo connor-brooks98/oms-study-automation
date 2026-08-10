@@ -10,7 +10,9 @@ from oms_hub.artifacts import (
     ArtifactCleanupError,
     ArtifactPromotionError,
     ArtifactRecoveryError,
+    ArtifactRecoveryState,
     ArtifactService,
+    artifact_operator_diagnostic,
 )
 
 
@@ -57,6 +59,10 @@ def test_committed_cleanup_failure_is_typed_and_does_not_reset_promotion(
         service.approve(revision.id)
 
     assert isinstance(raised.value.original_error, OSError)
+    assert (
+        raised.value.recovery_state
+        is ArtifactRecoveryState.COMMITTED_CLEANUP_REQUIRED
+    )
     assert raised.value.recovery_journal_path == journal
     assert commit_calls == [revision.id]
     assert reset_calls == []
@@ -98,6 +104,10 @@ def test_rollback_cleanup_failure_is_typed_and_retains_recovery_files(
 
     assert isinstance(raised.value.original_error, RuntimeError)
     assert isinstance(raised.value.restore_error, ArtifactCleanupError)
+    assert (
+        raised.value.recovery_state
+        is ArtifactRecoveryState.ROLLED_BACK_CLEANUP_REQUIRED
+    )
     assert raised.value.backup_paths == (backup,)
     assert raised.value.recovery_journal_path == journal
     assert destination.read_bytes() == b"old"
@@ -117,6 +127,7 @@ def test_cleanup_failure_is_translated_to_operator_visible_409(monkeypatch, tmp_
                 backup_paths=(backup,),
                 recovery_journal_path=journal,
                 original_error=OSError("cleanup blocked"),
+                recovery_state=ArtifactRecoveryState.COMMITTED_CLEANUP_REQUIRED,
             )
 
     monkeypatch.setattr(artifact_routes, "_service", lambda _request: FailingService())
@@ -129,19 +140,39 @@ def test_cleanup_failure_is_translated_to_operator_visible_409(monkeypatch, tmp_
 
 
 @pytest.mark.parametrize(
-    ("error_type", "expected_code", "expected_message", "expected_statement"),
+    (
+        "scenario",
+        "expected_code",
+        "expected_message",
+        "expected_statement",
+        "expected_destination",
+    ),
     [
         (
-            ArtifactCleanupError,
+            "committed_cleanup",
             "artifact_cleanup_required",
-            "artifact promotion committed, but recovery-file cleanup failed",
+            "artifact promotion committed or recovered, but recovery-file cleanup "
+            "failed; retain the reported recovery paths",
             "Promotion committed; retained recovery files require operator cleanup.",
+            b"new",
         ),
         (
-            ArtifactRecoveryError,
+            "rolled_back_cleanup",
+            "artifact_cleanup_required",
+            "artifact promotion failed and original destinations were restored, but "
+            "recovery-file cleanup failed; retain the recovery paths",
+            "Promotion did not commit; original destinations were restored, and "
+            "retained recovery files require operator cleanup.",
+            b"old",
+        ),
+        (
+            "rollback_incomplete",
             "artifact_recovery_required",
-            "artifact promotion failed and rollback is incomplete",
-            "Promotion did not commit and rollback remains incomplete.",
+            "artifact promotion failed and verified rollback could not complete; "
+            "retain the recovery journal and backup paths",
+            "Promotion did not commit and rollback remains incomplete; retained "
+            "recovery files require operator recovery.",
+            b"new",
         ),
     ],
 )
@@ -149,32 +180,53 @@ def test_approval_route_preserves_typed_recovery_locations_without_internals(
     monkeypatch,
     tmp_path,
     caplog,
-    error_type,
+    scenario,
     expected_code,
     expected_message,
     expected_statement,
+    expected_destination,
 ) -> None:
-    backup = tmp_path / "retained backup.pdf"
-    journal = tmp_path / "retained recovery journal.json"
+    source = tmp_path / "immutable.pdf"
+    destination = tmp_path / "current.pdf"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+    backup = ArtifactService._backup_path(destination, 91)
+    journal = destination.with_name(".oms-promotion-91.recovery.json")
+    original_copy = artifacts_module.verified_atomic_copy
+    original_unlink = artifacts_module.Path.unlink
 
     class FailingService:
         def approve(self, revision_id: int) -> None:
             assert revision_id == 91
-            common = {
-                "backup_paths": (backup,),
-                "recovery_journal_path": journal,
-                "original_error": OSError("PRIVATE_ORIGINAL_ERROR"),
-            }
-            if error_type is ArtifactCleanupError:
-                raise ArtifactCleanupError(
-                    "artifact promotion committed, but recovery-file cleanup failed",
-                    **common,
+            if scenario in {"committed_cleanup", "rolled_back_cleanup"}:
+                monkeypatch.setattr(
+                    artifacts_module.Path,
+                    "unlink",
+                    lambda path, missing_ok=False: (
+                        (_ for _ in ()).throw(OSError("PRIVATE_CLEANUP_ERROR"))
+                        if path == backup
+                        else original_unlink(path, missing_ok=missing_ok)
+                    ),
                 )
-            raise ArtifactRecoveryError(
-                "artifact promotion failed and rollback is incomplete",
-                restore_error=OSError("PRIVATE_RESTORE_ERROR"),
-                journal_error=OSError("PRIVATE_JOURNAL_ERROR"),
-                **common,
+            if scenario == "rollback_incomplete":
+                monkeypatch.setattr(
+                    artifacts_module,
+                    "verified_atomic_copy",
+                    lambda copy_source, copy_destination: (
+                        (_ for _ in ()).throw(OSError("PRIVATE_RESTORE_ERROR"))
+                        if copy_source == backup and copy_destination == destination
+                        else original_copy(copy_source, copy_destination)
+                    ),
+                )
+
+            def commit() -> None:
+                if scenario != "committed_cleanup":
+                    raise RuntimeError("PRIVATE_ORIGINAL_ERROR")
+
+            ArtifactService._promote_with_rollback(
+                [(source, destination)],
+                revision_id,
+                commit,
             )
 
     monkeypatch.setattr(artifact_routes, "_service", lambda _request: FailingService())
@@ -193,10 +245,14 @@ def test_approval_route_preserves_typed_recovery_locations_without_internals(
         "backup_paths": [str(backup)],
         "recovery_journal_path": str(journal),
     }
+    assert destination.read_bytes() == expected_destination
+    assert backup.is_file()
+    assert journal.is_file()
     serialized = response.text
     assert "PRIVATE_ORIGINAL_ERROR" not in serialized
     assert "PRIVATE_RESTORE_ERROR" not in serialized
     assert "PRIVATE_JOURNAL_ERROR" not in serialized
+    assert "PRIVATE_CLEANUP_ERROR" not in serialized
     assert str(backup) in caplog.text
     assert str(journal) in caplog.text
 
@@ -205,11 +261,18 @@ def test_interrupted_recovery_cleanup_failure_is_typed(
     tmp_path,
     monkeypatch,
 ) -> None:
+    source = tmp_path / "immutable.pdf"
     destination = tmp_path / "current.pdf"
     backup = ArtifactService._backup_path(destination, 54)
-    journal = destination.with_name(".oms-promotion-54.recovery.json")
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+    journal = ArtifactService._write_recovery_journal(
+        [(source, destination)],
+        {destination: backup},
+        54,
+    )
     backup.write_bytes(b"old")
-    journal.write_text("{}", encoding="utf-8")
+    destination.write_bytes(b"interrupted")
     original_unlink = artifacts_module.Path.unlink
 
     def fail_backup_cleanup(path, missing_ok=False):
@@ -218,16 +281,34 @@ def test_interrupted_recovery_cleanup_failure_is_typed(
         return original_unlink(path, missing_ok=missing_ok)
 
     monkeypatch.setattr(artifacts_module.Path, "unlink", fail_backup_cleanup)
+    reset_calls: list[int] = []
+    service = ArtifactService.__new__(ArtifactService)
+    service.repository = SimpleNamespace(
+        reset_study_promotion=reset_calls.append,
+        promote_study_revision=lambda _revision_id: pytest.fail(
+            "interrupted rollback must not commit"
+        ),
+    )
 
     with pytest.raises(ArtifactCleanupError) as raised:
-        ArtifactService._remove_promotion_backups(
-            [(tmp_path / "immutable.pdf", destination)],
-            54,
+        service._recover_promotion(
+            SimpleNamespace(id=54),
+            [(source, destination)],
         )
 
     assert isinstance(raised.value.original_error, OSError)
+    assert (
+        raised.value.recovery_state
+        is ArtifactRecoveryState.ROLLED_BACK_CLEANUP_REQUIRED
+    )
+    assert reset_calls == [54]
+    assert destination.read_bytes() == b"old"
     assert raised.value.backup_paths == (backup,)
     assert raised.value.recovery_journal_path == journal
+    assert artifact_operator_diagnostic(raised.value).recovery_state == (
+        "Promotion did not commit; original destinations were restored, and "
+        "retained recovery files require operator cleanup."
+    )
 
 
 def test_rollback_restore_failure_keeps_verified_backup_and_journal(tmp_path, monkeypatch):
@@ -537,6 +618,7 @@ def test_approve_does_not_reset_recovery_required_promotion(monkeypatch, tmp_pat
         recovery_journal_path=tmp_path / "recovery.json",
         original_error=RuntimeError("promotion failed"),
         restore_error=OSError("restore failed"),
+        recovery_state=ArtifactRecoveryState.ROLLBACK_INCOMPLETE,
     )
 
     def fail_promotion(*_args):

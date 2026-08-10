@@ -362,6 +362,34 @@ def test_worker_terminally_rejects_claim_when_another_run_owns_publication(
     )
 
 
+def test_rerun_successor_may_chat_while_predecessor_publication_stays_live(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    repository = StudioRepository(database)
+    publisher = GenerationRepository(database)
+    predecessor = _queued_run(repository)
+    claimed_predecessor = repository.claim_next_run()
+    assert claimed_predecessor is not None
+    publication = publisher.publish_studio_quiz(
+        predecessor.id,
+        _quiz("Practice Quiz"),
+    )
+    assert publisher.adopt_owned_studio_publication(predecessor.id) is not None
+
+    successor = repository.rerun(predecessor.id)
+    claimed_successor = repository.claim_next_run()
+
+    assert claimed_successor is not None and claimed_successor.id == successor.id
+    assert publisher.prepare_studio_run_chat(successor.id) is True
+    prepared = repository.get_run(successor.id)
+    assert prepared.state is StudioRunState.RUNNING
+    assert prepared.stage is StudioRunStage.CHAT
+    still_published = publisher.published_quiz(publication.token)
+    assert still_published is not None
+    assert still_published.studio_run_id == predecessor.id
+
+
 def test_startup_recovery_completes_owner_and_retires_conflicting_active_run(
     tmp_path: Path,
 ) -> None:

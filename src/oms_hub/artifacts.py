@@ -36,6 +36,12 @@ class ArtifactConflict(ArtifactError):
     pass
 
 
+class ArtifactRecoveryState(StrEnum):
+    COMMITTED_CLEANUP_REQUIRED = "committed_cleanup_required"
+    ROLLED_BACK_CLEANUP_REQUIRED = "rolled_back_cleanup_required"
+    ROLLBACK_INCOMPLETE = "rollback_incomplete"
+
+
 class ArtifactPromotionError(ArtifactError):
     """A promotion failed without leaving destinations in an ambiguous state."""
 
@@ -45,7 +51,7 @@ class ArtifactPromotionError(ArtifactError):
 
 
 class ArtifactCleanupError(ArtifactError):
-    """Promotion state is durable, but recovery-file cleanup needs attention."""
+    """Promotion outcome is durable, but recovery-file cleanup needs attention."""
 
     def __init__(
         self,
@@ -54,15 +60,17 @@ class ArtifactCleanupError(ArtifactError):
         backup_paths: tuple[Path, ...],
         recovery_journal_path: Path | None,
         original_error: BaseException,
+        recovery_state: ArtifactRecoveryState,
     ) -> None:
         super().__init__(message)
         self.backup_paths = backup_paths
         self.recovery_journal_path = recovery_journal_path
         self.original_error = original_error
+        self.recovery_state = recovery_state
 
 
 class ArtifactRecoveryError(ArtifactError):
-    """Rollback did not complete; retained paths can be used for recovery."""
+    """Promotion recovery needs attention; recovery_state identifies its outcome."""
 
     def __init__(
         self,
@@ -73,6 +81,7 @@ class ArtifactRecoveryError(ArtifactError):
         original_error: BaseException,
         restore_error: BaseException,
         journal_error: BaseException | None = None,
+        recovery_state: ArtifactRecoveryState,
     ) -> None:
         super().__init__(message)
         self.backup_paths = backup_paths
@@ -80,6 +89,7 @@ class ArtifactRecoveryError(ArtifactError):
         self.original_error = original_error
         self.restore_error = restore_error
         self.journal_error = journal_error
+        self.recovery_state = recovery_state
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,14 +115,23 @@ class ArtifactOperatorDiagnostic:
 def artifact_operator_diagnostic(
     error: ArtifactCleanupError | ArtifactRecoveryError,
 ) -> ArtifactOperatorDiagnostic:
-    if isinstance(error, ArtifactCleanupError):
+    if error.recovery_state is ArtifactRecoveryState.COMMITTED_CLEANUP_REQUIRED:
         code = "artifact_cleanup_required"
         recovery_state = (
             "Promotion committed; retained recovery files require operator cleanup."
         )
+    elif error.recovery_state is ArtifactRecoveryState.ROLLED_BACK_CLEANUP_REQUIRED:
+        code = "artifact_cleanup_required"
+        recovery_state = (
+            "Promotion did not commit; original destinations were restored, and "
+            "retained recovery files require operator cleanup."
+        )
     else:
         code = "artifact_recovery_required"
-        recovery_state = "Promotion did not commit and rollback remains incomplete."
+        recovery_state = (
+            "Promotion did not commit and rollback remains incomplete; retained "
+            "recovery files require operator recovery."
+        )
     return ArtifactOperatorDiagnostic(
         code=code,
         message=str(error),
@@ -449,11 +468,15 @@ class ArtifactService:
                     recovery_journal_path=journal_path,
                     original_error=promotion_error,
                     restore_error=restore_error,
+                    recovery_state=ArtifactRecoveryState.ROLLBACK_INCOMPLETE,
                 ) from promotion_error
             try:
                 ArtifactService._remove_promotion_artifacts(
                     backups,
                     journal_path,
+                    recovery_state=(
+                        ArtifactRecoveryState.ROLLED_BACK_CLEANUP_REQUIRED
+                    ),
                 )
             except ArtifactCleanupError as cleanup_error:
                 raise ArtifactRecoveryError(
@@ -463,6 +486,7 @@ class ArtifactService:
                     recovery_journal_path=cleanup_error.recovery_journal_path,
                     original_error=promotion_error,
                     restore_error=cleanup_error,
+                    recovery_state=cleanup_error.recovery_state,
                 ) from promotion_error
             raise ArtifactPromotionError(
                 "artifact promotion failed; original destinations were restored",
@@ -472,12 +496,15 @@ class ArtifactService:
             ArtifactService._remove_promotion_artifacts(
                 backups,
                 journal_path,
+                recovery_state=ArtifactRecoveryState.COMMITTED_CLEANUP_REQUIRED,
             )
 
     @staticmethod
     def _remove_promotion_artifacts(
         backups: Mapping[Path, Path | None],
         journal_path: Path,
+        *,
+        recovery_state: ArtifactRecoveryState,
     ) -> None:
         try:
             for saved_path in backups.values():
@@ -497,6 +524,7 @@ class ArtifactService:
                     journal_path if journal_path.is_file() else None
                 ),
                 original_error=cleanup_error,
+                recovery_state=recovery_state,
             ) from cleanup_error
 
     @staticmethod
@@ -581,6 +609,7 @@ class ArtifactService:
                     "interrupted artifact promotion requires recovery"
                 ),
                 restore_error=journal_error,
+                recovery_state=ArtifactRecoveryState.ROLLBACK_INCOMPLETE,
             ) from journal_error
         if journal is None and not self._existing_backup_paths(pairs, revision.id):
             # ``begin_study_promotion`` commits before the recovery journal is
@@ -601,7 +630,11 @@ class ArtifactService:
         )
         if destinations_match_sources and not originals_already_matched:
             self.repository.promote_study_revision(revision.id)
-            self._remove_promotion_backups(pairs, revision.id)
+            self._remove_promotion_backups(
+                pairs,
+                revision.id,
+                recovery_state=ArtifactRecoveryState.COMMITTED_CLEANUP_REQUIRED,
+            )
             return True
         try:
             self._restore_interrupted_promotion(
@@ -622,9 +655,14 @@ class ArtifactService:
                     "interrupted artifact promotion requires recovery"
                 ),
                 restore_error=restore_error,
+                recovery_state=ArtifactRecoveryState.ROLLBACK_INCOMPLETE,
             ) from restore_error
         self.repository.reset_study_promotion(revision.id)
-        self._remove_promotion_backups(pairs, revision.id)
+        self._remove_promotion_backups(
+            pairs,
+            revision.id,
+            recovery_state=ArtifactRecoveryState.ROLLED_BACK_CLEANUP_REQUIRED,
+        )
         return False
 
     @classmethod
@@ -778,6 +816,8 @@ class ArtifactService:
         cls,
         pairs: list[tuple[Path, Path]],
         revision_id: int,
+        *,
+        recovery_state: ArtifactRecoveryState,
     ) -> None:
         backups = {
             destination: cls._backup_path(destination, revision_id)
@@ -790,7 +830,11 @@ class ArtifactService:
         )
         if journal_path is None:
             return
-        cls._remove_promotion_artifacts(backups, journal_path)
+        cls._remove_promotion_artifacts(
+            backups,
+            journal_path,
+            recovery_state=recovery_state,
+        )
 
     @staticmethod
     def _backup_path(destination: Path, revision_id: int) -> Path:
