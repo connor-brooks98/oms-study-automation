@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 from oms_hub.db import Database
+from oms_hub.llm.domain import DiagnosticSource
 from oms_hub.models import StudioSourceModel
 from oms_hub.study_generation.native_quiz import parse_native_quiz
 from oms_hub.study_generation.practice_domain import (
@@ -154,7 +155,7 @@ def test_recovery_adopts_owned_publication_without_repeating_remote_chat(
     )
 
     assert worker.recover_interrupted_jobs() == 1
-    assert worker.run_once() is True
+    assert worker.run_once() is False
 
     recovered = repository.get_run(run.id)
     published = publisher.published_quiz(original.token)
@@ -170,6 +171,37 @@ def test_recovery_adopts_owned_publication_without_repeating_remote_chat(
             frozenset({QuizContentKind.EXAM_REVIEW})
         )
     ] == [original.token]
+
+
+def test_recovery_adopts_historical_publication_owned_by_already_failed_run(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    repository = StudioRepository(database)
+    publisher = GenerationRepository(database)
+    run = _queued_run(repository)
+    claimed = repository.claim_next_run()
+    assert claimed is not None
+    repository.save_run_response(run.id, "durable response")
+    original = publisher.publish_studio_quiz(run.id, _quiz("Historical quiz"))
+    repository.fail_run(run.id, DiagnosticSource.STUDY_HUB.value, "historical split")
+    gateway = _NeverAskGateway()
+    worker = StudioWorker(
+        repository,
+        gateway,
+        object(),
+        _FakeConnection(),
+        publisher=publisher,
+    )
+
+    assert worker.recover_interrupted_jobs() == 1
+
+    recovered = repository.get_run(run.id)
+    assert recovered.state is StudioRunState.COMPLETE
+    assert recovered.stage is StudioRunStage.COMPLETE
+    assert recovered.published_token == original.token
+    assert recovered.raw_response == "durable response"
+    assert gateway.ask_calls == 0
 
 
 def test_sqlite_busy_chat_failure_retries_studio_run(tmp_path: Path) -> None:

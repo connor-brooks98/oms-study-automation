@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -92,6 +93,11 @@ class ResolvedArtifact:
 
 
 class ArtifactService:
+    # Promotion changes canonical files outside SQL. The application has one
+    # process owner, so one process-wide lock prevents two approval requests
+    # from interleaving their journals, backups, and canonical replacements.
+    _promotion_lock = threading.RLock()
+
     def __init__(self, database: Database, settings: Settings):
         self.settings = settings
         self.repository = IngestionRepository(database)
@@ -131,6 +137,10 @@ class ArtifactService:
         )
 
     def approve(self, revision_id: int) -> StudyRevision:
+        with self._promotion_lock:
+            return self._approve_serialized(revision_id)
+
+    def _approve_serialized(self, revision_id: int) -> StudyRevision:
         revision = self.repository.get_study_revision(revision_id)
         if revision.state not in {"proposed", "promoting"}:
             raise ArtifactConflict("revision is not awaiting approval")
@@ -528,6 +538,13 @@ class ArtifactService:
                 ),
                 restore_error=journal_error,
             ) from journal_error
+        if journal is None and not self._existing_backup_paths(pairs, revision.id):
+            # ``begin_study_promotion`` commits before the recovery journal is
+            # created. A hard process death in that narrow pre-journal window
+            # cannot have changed a destination because the journal is the
+            # first filesystem effect. Return the row to proposed safely.
+            self.repository.reset_study_promotion(revision.id)
+            return False
         destinations_match_sources = all(
             destination.is_file()
             and sha256_file(destination) == sha256_file(source)

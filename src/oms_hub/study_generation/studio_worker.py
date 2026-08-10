@@ -63,7 +63,11 @@ class StudioWorker:
         self.import_worker = import_worker
 
     def recover_interrupted_jobs(self) -> int:
-        return self.repository.recover_interrupted_jobs()
+        recovered = 0
+        if self.publisher is not None:
+            recovered += self.publisher.recover_owned_studio_publications()
+        recovered += self.repository.recover_interrupted_jobs()
+        return recovered
 
     def run_once(self) -> bool:
         claimed_operation = self.repository.claim_next_source_operation()

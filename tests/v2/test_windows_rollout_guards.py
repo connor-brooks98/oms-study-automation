@@ -59,10 +59,36 @@ def test_windows_installer_stops_and_verifies_only_same_root_hub_processes() -> 
     assert "python.exe" in script
     assert "(?i)oms[-_]hub" in script
     assert "Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot" in script
-    assert "Get-Process -Id $Process.ProcessId -ErrorAction SilentlyContinue" in script
-    assert "Stop-Process -Id $Process.ProcessId -Force" in script
+    assert 'Get-CimInstance Win32_Process `' in script
+    assert '-Filter "ProcessId = $ProcessId" `' in script
+    assert "Stop-Process -InputObject $LiveHandle -Force" in script
+    assert "Stop-Process -Id $ProcessId -Force" not in script
     assert "Stop-Process -Name python" not in script
     assert "same-root Study Hub process" in script
+
+
+def test_windows_installer_revalidates_process_identity_immediately_before_force_stop() -> None:
+    script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+    stop_function = script[
+        script.index("function Stop-ConflictingHubProcesses") : script.index(
+            "# Establish clean, exact source provenance"
+        )
+    ]
+
+    rediscovery = stop_function.index("Get-CimInstance Win32_Process")
+    creation_identity = stop_function.index("$LiveProcess.CreationDate")
+    executable_identity = stop_function.index("$LiveProcess.ExecutablePath")
+    parent_identity = stop_function.index("$LiveProcess.ParentProcessId")
+    refusal = stop_function.index("refusing to stop a potentially unrelated process")
+    stable_handle = stop_function.index("$null = $LiveHandle.Handle")
+    handle_identity = stop_function.index("$LiveHandle.StartTime.ToUniversalTime()")
+    force_stop = stop_function.index("Stop-Process -InputObject $LiveHandle -Force")
+
+    assert rediscovery < creation_identity < executable_identity < parent_identity < refusal
+    assert refusal < stable_handle < handle_identity < force_stop
+    assert "[string]$LiveProcess.CommandLine -eq [string]$Process.CommandLine" in stop_function
+    assert "[string]::IsNullOrWhiteSpace([string]$Process.CreationDate)" in stop_function
+    assert "Stop-Process -Id $ProcessId" not in stop_function
 
 
 def test_windows_installer_whatif_never_stops_processes_or_reports_completion() -> None:

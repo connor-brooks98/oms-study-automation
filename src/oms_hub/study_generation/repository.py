@@ -942,6 +942,39 @@ class GenerationRepository:
             session.flush()
             return self._published_quiz(published)
 
+    def recover_owned_studio_publications(self) -> int:
+        """Repair every historical split publication, including failed runs.
+
+        Older code could commit the publication and subsequently mark its run
+        failed.  Such a run is outside the normal queued/retrying claim set, so
+        startup recovery must discover it from publication ownership instead
+        of waiting for the run worker to claim it.
+        """
+        with self.database.session() as session:
+            publications = session.scalars(
+                select(PublishedQuizModel).where(
+                    PublishedQuizModel.studio_run_id.is_not(None),
+                    PublishedQuizModel.active.is_(True),
+                )
+            ).all()
+            recovered = 0
+            for published in publications:
+                assert published.studio_run_id is not None
+                run = session.get(StudioRunModel, published.studio_run_id)
+                if run is None or (
+                    run.state == StudioRunState.COMPLETE.value
+                    and run.published_token == published.token
+                ):
+                    continue
+                run.state = StudioRunState.COMPLETE.value
+                run.stage = StudioRunStage.COMPLETE.value
+                run.published_token = published.token
+                run.error = None
+                run.next_attempt_at = None
+                recovered += 1
+            session.flush()
+            return recovered
+
     def _publish_studio_quiz_in_session(
         self, session: Session, run_id: str, quiz: NativeQuiz
     ) -> PublishedQuizRecord:

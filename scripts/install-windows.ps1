@@ -315,10 +315,63 @@ function Stop-ConflictingHubProcesses {
   param([string]$ExpectedProjectRoot)
   $Conflicts = @(Get-ConflictingHubProcesses -ExpectedProjectRoot $ExpectedProjectRoot)
   foreach ($Process in $Conflicts) {
-    $LiveProcess = Get-Process -Id $Process.ProcessId -ErrorAction SilentlyContinue
-    if ($LiveProcess) {
-      Write-Host "Stopping same-root Study Hub process $($Process.ProcessId) from $($Process.ExecutablePath)."
-      Stop-Process -Id $Process.ProcessId -Force -ErrorAction Stop
+    $ProcessId = [int]$Process.ProcessId
+    $LiveProcess = Get-CimInstance Win32_Process `
+      -Filter "ProcessId = $ProcessId" `
+      -ErrorAction SilentlyContinue
+    if (-not $LiveProcess) { continue }
+
+    # A numeric PID is recyclable. Refuse to act unless the process selected
+    # from the same-root snapshot is still the exact same OS process at the
+    # destructive boundary. CreationDate is the stable instance identity;
+    # path/name/parent/command line additionally preserve the ownership proof.
+    $SameIdentity = (
+      -not [string]::IsNullOrWhiteSpace([string]$Process.CreationDate) -and
+      [string]$LiveProcess.CreationDate -eq [string]$Process.CreationDate -and
+      [string]$LiveProcess.Name -ieq [string]$Process.Name -and
+      [string]$LiveProcess.ExecutablePath -ieq [string]$Process.ExecutablePath -and
+      [int]$LiveProcess.ParentProcessId -eq [int]$Process.ParentProcessId -and
+      [string]$LiveProcess.CommandLine -eq [string]$Process.CommandLine
+    )
+    if (-not $SameIdentity) {
+      throw "Process $ProcessId changed identity after same-root discovery; refusing to stop a potentially unrelated process. Retry installation after reviewing running processes."
+    }
+
+    # Acquire the kernel-backed Process object before the destructive call.
+    # Stop-Process -Id would resolve the recyclable PID again and reopen the
+    # race after validation. Forcing .Handle binds this object to the process
+    # instance; StartTime proves that it is the CIM instance validated above.
+    $LiveHandle = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $LiveHandle) { continue }
+    try {
+      $null = $LiveHandle.Handle
+      $HandleStartUtc = $LiveHandle.StartTime.ToUniversalTime()
+      $ExpectedStartUtc = ([datetime]$LiveProcess.CreationDate).ToUniversalTime()
+    } catch {
+      if ($LiveHandle.HasExited) { continue }
+      throw
+    }
+    # Win32_Process exposes creation time to microsecond precision. Normalize
+    # both views to that same precision before comparing their instance key.
+    $CreationFormat = "yyyyMMddHHmmss.ffffff"
+    $HandleCreationKey = $HandleStartUtc.ToString(
+      $CreationFormat,
+      [System.Globalization.CultureInfo]::InvariantCulture
+    )
+    $ExpectedCreationKey = $ExpectedStartUtc.ToString(
+      $CreationFormat,
+      [System.Globalization.CultureInfo]::InvariantCulture
+    )
+    if ($HandleCreationKey -cne $ExpectedCreationKey) {
+      throw "Process $ProcessId changed identity while acquiring its stable handle; refusing to stop it."
+    }
+
+    Write-Host "Stopping same-root Study Hub process $ProcessId from $($Process.ExecutablePath)."
+    try {
+      Stop-Process -InputObject $LiveHandle -Force -ErrorAction Stop
+    } catch {
+      if ($LiveHandle.HasExited) { continue }
+      throw
     }
   }
   if ($Conflicts.Count -gt 0) {

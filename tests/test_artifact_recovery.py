@@ -344,6 +344,26 @@ def test_process_death_before_first_backup_recovers_untouched_destination(
     assert not journal.exists()
 
 
+def test_process_death_before_recovery_journal_resets_untouched_promotion(
+    tmp_path,
+) -> None:
+    source = tmp_path / "immutable.pdf"
+    destination = tmp_path / "current.pdf"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+    service = ArtifactService.__new__(ArtifactService)
+    reset_calls: list[int] = []
+    service.repository = SimpleNamespace(reset_study_promotion=reset_calls.append)
+
+    assert service._recover_promotion(
+        SimpleNamespace(id=48),
+        [(source, destination)],
+    ) is False
+    assert reset_calls == [48]
+    assert destination.read_bytes() == b"old"
+    assert not ArtifactService._backup_path(destination, 48).exists()
+
+
 def test_process_death_mid_backup_restores_completed_backup_and_untouched_peer(
     tmp_path,
     monkeypatch,
