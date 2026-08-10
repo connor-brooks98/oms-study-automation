@@ -436,6 +436,22 @@ class StudioRepository:
             ).isoformat()
             source.error = None
 
+    def defer_source_operation_for_scope(self, operation_id: str) -> None:
+        """Release a busy shared scope without consuming a remote attempt."""
+        with self.database.session() as session:
+            operation = session.get(StudioSourceOperationModel, operation_id)
+            if operation is None:
+                raise KeyError(operation_id)
+            source = session.get(StudioSourceModel, operation.source_id)
+            if source is None:
+                raise KeyError(operation.source_id)
+            operation.attempts = max(0, operation.attempts - 1)
+            operation.lease_owner = None
+            operation.lease_expires_at = None
+            source.next_attempt_at = (
+                datetime.now(UTC) + timedelta(seconds=5)
+            ).isoformat()
+
     def mark_attach_reconciling(
         self,
         operation_id: str,

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from oms_hub.db import is_sqlite_busy
 from oms_hub.files.office import OfficeConverter
@@ -18,6 +19,7 @@ from oms_hub.study_generation.notebook import StoredNotebookLMGateway
 from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
     NotebookGatewayError,
+    NotebookScopeBusyError,
     NotebookSourceNotFoundError,
 )
 from oms_hub.study_generation.quiz_images import StudioQuizImageService
@@ -238,41 +240,44 @@ class StudioWorker:
         source: StudioSource,
     ) -> None:
         if operation.operation_kind == "delete":
-            self._run_delete_operation(operation)
+            self._run_delete_operation(operation, source)
             return
         if operation.state == "reconciling":
-            self._reconcile_add_operation(operation)
+            self._reconcile_add_operation(operation, source)
             return
 
         remote_effect_started = False
         try:
-            path, text, converted = self._prepare_source_payload(source)
-            notebook_id, baseline = self.gateway.prepare_studio_source_add(
-                source.subject,
-                source.exam_number,
-            )
-            self.repository.record_attach_baseline(
-                operation.id,
-                notebook_id,
-                set(baseline),
-            )
-            remote_effect_started = True
-            remote_id = self.gateway.add_studio_source_to_notebook(
-                notebook_id,
-                source.source_type.value,
-                source.title,
-                path=path,
-                text=text,
-                url=source.source_url,
-            )
-            self.repository.complete_attach_operation(
-                operation.id,
-                remote_id,
-                converted=converted,
-                payload_path=path,
-            )
+            with self._notebook_scope(operation, source):
+                path, text, converted = self._prepare_source_payload(source)
+                notebook_id, baseline = self.gateway.prepare_studio_source_add(
+                    source.subject,
+                    source.exam_number,
+                )
+                self.repository.record_attach_baseline(
+                    operation.id,
+                    notebook_id,
+                    set(baseline),
+                )
+                remote_effect_started = True
+                remote_id = self.gateway.add_studio_source_to_notebook(
+                    notebook_id,
+                    source.source_type.value,
+                    source.title,
+                    path=path,
+                    text=text,
+                    url=source.source_url,
+                )
+                self.repository.complete_attach_operation(
+                    operation.id,
+                    remote_id,
+                    converted=converted,
+                    payload_path=path,
+                )
         except NotebookMutationBusy:
             self.repository.defer_attach_for_notebook(operation.id)
+        except NotebookScopeBusyError:
+            self.repository.defer_source_operation_for_scope(operation.id)
         except NotebookGatewayError as error:
             if isinstance(error, NotebookAuthenticationError):
                 self.connection.invalidate(str(error))
@@ -304,7 +309,11 @@ class StudioWorker:
                     retry=is_sqlite_busy(error),
                 )
 
-    def _reconcile_add_operation(self, operation: StudioSourceOperation) -> None:
+    def _reconcile_add_operation(
+        self,
+        operation: StudioSourceOperation,
+        source: StudioSource,
+    ) -> None:
         if not operation.notebook_id:
             self.repository.fail_attach_preparation(
                 operation.id,
@@ -314,8 +323,11 @@ class StudioWorker:
             )
             return
         try:
-            remote_ids = self.gateway.list_studio_source_ids(operation.notebook_id)
-            self.repository.reconcile_attach_operation(operation.id, set(remote_ids))
+            with self._notebook_scope(operation, source):
+                remote_ids = self.gateway.list_studio_source_ids(operation.notebook_id)
+                self.repository.reconcile_attach_operation(operation.id, set(remote_ids))
+        except NotebookScopeBusyError:
+            self.repository.defer_source_operation_for_scope(operation.id)
         except NotebookGatewayError as error:
             if isinstance(error, NotebookAuthenticationError):
                 self.connection.invalidate(str(error))
@@ -333,18 +345,25 @@ class StudioWorker:
                 during_reconciliation=True,
             )
 
-    def _run_delete_operation(self, operation: StudioSourceOperation) -> None:
+    def _run_delete_operation(
+        self,
+        operation: StudioSourceOperation,
+        source: StudioSource,
+    ) -> None:
         if not operation.notebook_id or not operation.remote_source_id:
             self.repository.complete_delete_operation(operation.id)
             return
         try:
-            self.gateway.delete_studio_source(
-                operation.notebook_id,
-                operation.remote_source_id,
-            )
-            self.repository.complete_delete_operation(operation.id)
+            with self._notebook_scope(operation, source):
+                self.gateway.delete_studio_source(
+                    operation.notebook_id,
+                    operation.remote_source_id,
+                )
+                self.repository.complete_delete_operation(operation.id)
         except NotebookSourceNotFoundError:
             self.repository.complete_delete_operation(operation.id)
+        except NotebookScopeBusyError:
+            self.repository.defer_source_operation_for_scope(operation.id)
         except NotebookGatewayError as error:
             if isinstance(error, NotebookAuthenticationError):
                 self.connection.invalidate(str(error))
@@ -359,6 +378,24 @@ class StudioWorker:
                 DiagnosticSource.STUDY_HUB.value,
                 str(error),
             )
+
+    def _notebook_scope(
+        self,
+        operation: StudioSourceOperation,
+        source: StudioSource,
+    ) -> AbstractContextManager[None]:
+        scope = getattr(self.gateway, "mutation_scope", None)
+        if not callable(scope):
+            return nullcontext()
+        return cast(
+            AbstractContextManager[None],
+            scope(
+                source.subject,
+                source.exam_number,
+                "studio",
+                operation.id,
+            ),
+        )
 
     def _prepare_source_payload(
         self,

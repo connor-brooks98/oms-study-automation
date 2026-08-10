@@ -2,13 +2,15 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Callable
-from contextlib import asynccontextmanager
+from collections.abc import Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from threading import Lock
 from typing import Any, Literal, Protocol, cast
+from uuid import uuid4
 
 from pydantic import (
     BaseModel,
@@ -32,6 +34,7 @@ from oms_hub.study_generation.domain import (
 )
 from oms_hub.study_generation.notebook_errors import (
     NotebookAuthenticationError,
+    NotebookScopeBusyError,
     translate_notebook_error,
 )
 from oms_hub.study_generation.notebook_storage import PlaintextNotebookStorage
@@ -42,6 +45,10 @@ logger = logging.getLogger(__name__)
 __all__ = ["NotebookAuthenticationError"]
 _active_client: ContextVar[Any | None] = ContextVar(
     "notebooklm_active_client",
+    default=None,
+)
+_active_scope: ContextVar[tuple[int, str, int] | None] = ContextVar(
+    "notebooklm_active_scope",
     default=None,
 )
 
@@ -228,14 +235,83 @@ class StoredNotebookLMGateway:
         )
         self.repository = repository
         self.client_factory = client_factory
+        self._scope_locks: dict[tuple[str, int], Lock] = {}
+        self._scope_locks_guard = Lock()
+
+    @contextmanager
+    def mutation_scope(
+        self,
+        subject: str,
+        exam_number: int,
+        owner_kind: str,
+        owner_id: str,
+    ) -> Iterator[None]:
+        """Serialize every local and cross-process mutation of one notebook."""
+        subject_key = " ".join(subject.casefold().split())
+        scope = (subject_key, exam_number)
+        active = _active_scope.get()
+        if active == (id(self), *scope):
+            yield
+            return
+        with self._scope_locks_guard:
+            local_lock = self._scope_locks.setdefault(scope, Lock())
+        if not local_lock.acquire(blocking=False):
+            raise NotebookScopeBusyError()
+        durable_acquired = False
+        acquire = getattr(self.repository, "acquire_notebook_scope", None)
+        release = getattr(self.repository, "release_notebook_scope", None)
+        try:
+            if callable(acquire):
+                durable_acquired = bool(
+                    acquire(subject_key, exam_number, owner_kind, owner_id)
+                )
+                if not durable_acquired:
+                    raise NotebookScopeBusyError()
+            token = _active_scope.set((id(self), *scope))
+            try:
+                yield
+            finally:
+                _active_scope.reset(token)
+                if durable_acquired and callable(release):
+                    try:
+                        release(subject_key, exam_number, owner_kind, owner_id)
+                    except Exception:  # noqa: BLE001 - expiry remains a safe fallback
+                        logger.exception("NotebookLM scope lease release failed")
+        finally:
+            local_lock.release()
+
+    @contextmanager
+    def _remote_notebook_scope(
+        self,
+        notebook_id: str,
+        owner_kind: str,
+    ) -> Iterator[None]:
+        mapping = self.repository.notebook_mapping_by_remote_id(notebook_id)
+        if mapping is None:
+            raise SourceIsolationError("NotebookLM notebook is not bound to an exam")
+        subject_key = " ".join(mapping.subject_key.casefold().split())
+        active = _active_scope.get()
+        if active == (id(self), subject_key, mapping.exam_number):
+            yield
+            return
+        with self.mutation_scope(
+            subject_key,
+            mapping.exam_number,
+            owner_kind,
+            str(uuid4()),
+        ):
+            yield
 
     def ensure_notebook(self, subject: str, exam_number: int) -> NotebookRef:
-        return cast(
-            NotebookRef,
-            _run(
-                self._ensure_notebook(subject, exam_number),
-            ),
-        )
+        with self.mutation_scope(
+            subject, exam_number, "notebook", str(uuid4())
+        ):
+            return cast(
+                NotebookRef,
+                _run(
+                    self._ensure_notebook(subject, exam_number),
+                ),
+            )
 
     def ensure_sources(
         self,
@@ -244,17 +320,18 @@ class StoredNotebookLMGateway:
         pdf: RevisionSource,
         transcript: RevisionSource,
     ) -> LectureSourceSet:
-        return cast(
-            LectureSourceSet,
-            _run(
-                self._ensure_sources(
-                    notebook,
-                    lecture_id,
-                    pdf,
-                    transcript,
-                )
-            ),
-        )
+        with self._remote_notebook_scope(notebook.id, "generation"):
+            return cast(
+                LectureSourceSet,
+                _run(
+                    self._ensure_sources(
+                        notebook,
+                        lecture_id,
+                        pdf,
+                        transcript,
+                    )
+                ),
+            )
 
     def ask(
         self,
@@ -276,19 +353,22 @@ class StoredNotebookLMGateway:
         transcript: RevisionSource,
         prompt: PromptSnapshot,
     ) -> NotebookGeneration:
-        return cast(
-            NotebookGeneration,
-            _run(
-                self._generate(
-                    subject,
-                    exam_number,
-                    lecture_id,
-                    pdf,
-                    transcript,
-                    prompt,
-                )
-            ),
-        )
+        with self.mutation_scope(
+            subject, exam_number, "generation", str(uuid4())
+        ):
+            return cast(
+                NotebookGeneration,
+                _run(
+                    self._generate(
+                        subject,
+                        exam_number,
+                        lecture_id,
+                        pdf,
+                        transcript,
+                        prompt,
+                    )
+                ),
+            )
 
     def attach_studio_source(
         self,
@@ -301,20 +381,21 @@ class StoredNotebookLMGateway:
         text: str | None = None,
         url: str | None = None,
     ) -> tuple[str, str]:
-        return cast(
-            tuple[str, str],
-            _run(
-                self._attach_studio_source(
-                    subject,
-                    exam_number,
-                    source_type,
-                    title,
-                    path=path,
-                    text=text,
-                    url=url,
-                )
-            ),
-        )
+        with self.mutation_scope(subject, exam_number, "studio", str(uuid4())):
+            return cast(
+                tuple[str, str],
+                _run(
+                    self._attach_studio_source(
+                        subject,
+                        exam_number,
+                        source_type,
+                        title,
+                        path=path,
+                        text=text,
+                        url=url,
+                    )
+                ),
+            )
 
     def prepare_studio_source_add(
         self,
@@ -322,10 +403,11 @@ class StoredNotebookLMGateway:
         exam_number: int,
     ) -> tuple[str, frozenset[str]]:
         """Resolve the notebook and snapshot its sources before a durable add."""
-        return cast(
-            tuple[str, frozenset[str]],
-            _run(self._prepare_studio_source_add(subject, exam_number)),
-        )
+        with self.mutation_scope(subject, exam_number, "studio", str(uuid4())):
+            return cast(
+                tuple[str, frozenset[str]],
+                _run(self._prepare_studio_source_add(subject, exam_number)),
+            )
 
     def add_studio_source_to_notebook(
         self,
@@ -338,25 +420,27 @@ class StoredNotebookLMGateway:
         url: str | None = None,
     ) -> str:
         """Perform the effect only after the caller commits its operation intent."""
-        return cast(
-            str,
-            _run(
-                self._add_studio_source_to_notebook(
-                    notebook_id,
-                    source_type,
-                    title,
-                    path=path,
-                    text=text,
-                    url=url,
-                )
-            ),
-        )
+        with self._remote_notebook_scope(notebook_id, "studio"):
+            return cast(
+                str,
+                _run(
+                    self._add_studio_source_to_notebook(
+                        notebook_id,
+                        source_type,
+                        title,
+                        path=path,
+                        text=text,
+                        url=url,
+                    )
+                ),
+            )
 
     def list_studio_source_ids(self, notebook_id: str) -> frozenset[str]:
-        return cast(
-            frozenset[str],
-            _run(self._list_studio_source_ids(notebook_id)),
-        )
+        with self._remote_notebook_scope(notebook_id, "studio"):
+            return cast(
+                frozenset[str],
+                _run(self._list_studio_source_ids(notebook_id)),
+            )
 
     def ask_studio(
         self,
@@ -365,10 +449,11 @@ class StoredNotebookLMGateway:
         prompt: str,
         source_ids: list[str],
     ) -> tuple[str, str]:
-        return cast(
-            tuple[str, str],
-            _run(self._ask_studio(subject, exam_number, prompt, source_ids)),
-        )
+        with self.mutation_scope(subject, exam_number, "studio", str(uuid4())):
+            return cast(
+                tuple[str, str],
+                _run(self._ask_studio(subject, exam_number, prompt, source_ids)),
+            )
 
     def answer_studio_question(
         self,
@@ -377,20 +462,22 @@ class StoredNotebookLMGateway:
         question: QuestionDraft,
         source_ids: tuple[str, ...],
     ) -> NotebookQuestionResult:
-        return cast(
-            NotebookQuestionResult,
-            _run(
-                self._answer_studio_question(
-                    subject,
-                    exam_number,
-                    question,
-                    source_ids,
-                )
-            ),
-        )
+        with self.mutation_scope(subject, exam_number, "studio", str(uuid4())):
+            return cast(
+                NotebookQuestionResult,
+                _run(
+                    self._answer_studio_question(
+                        subject,
+                        exam_number,
+                        question,
+                        source_ids,
+                    )
+                ),
+            )
 
     def delete_studio_source(self, notebook_id: str, source_id: str) -> bool:
-        return cast(bool, _run(self._delete_studio_source(notebook_id, source_id)))
+        with self._remote_notebook_scope(notebook_id, "studio"):
+            return cast(bool, _run(self._delete_studio_source(notebook_id, source_id)))
 
     async def _delete_studio_source(self, notebook_id: str, source_id: str) -> bool:
         async with self._with_client() as client:

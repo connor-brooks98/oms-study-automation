@@ -53,6 +53,24 @@
   const candidateSelectionPayload = (candidateId) => ({ image_candidate_id: candidateId });
   const candidateSelectionUrl = (runId, questionId) => `/studio/runs/${encodeURIComponent(runId)}/questions/${encodeURIComponent(questionId)}/image-selection`;
 
+  const removeChoiceRow = (remove) => {
+    const row = remove.closest?.(".studio-review-choice");
+    const group = remove.closest?.("[data-choices]");
+    const card = remove.closest?.("[data-question-id]");
+    const rows = Array.from(group?.querySelectorAll?.(".studio-review-choice") || []);
+    if (!row || !group || !card || rows.length <= 2) return false;
+    const removedIndex = rows.indexOf(row);
+    row.remove();
+    card.dataset.dirty = "true";
+    const remaining = Array.from(group.querySelectorAll?.(".studio-review-choice") || []);
+    const fallbackRow = remaining[Math.min(Math.max(removedIndex, 0), remaining.length - 1)];
+    const fallback = fallbackRow?.querySelector?.("[data-focus-key]")
+      || group.querySelector?.("[data-add-choice]")
+      || card;
+    fallback?.focus?.({ preventScroll: true });
+    return true;
+  };
+
   const csrf = (documentRef) => {
     const value = documentRef.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("study_hub_csrf="));
     return value ? decodeURIComponent(value.split("=").slice(1).join("=")) : "";
@@ -391,12 +409,7 @@
       }
       const remove = event.target.closest?.("[data-remove-choice]");
       if (remove) {
-        const group = remove.closest("[data-choices]");
-        if (group.querySelectorAll(".studio-review-choice").length > 2) {
-          remove.closest(".studio-review-choice").remove();
-          const card = remove.closest("[data-question-id]");
-          if (card) card.dataset.dirty = "true";
-        }
+        removeChoiceRow(remove);
         return;
       }
       const candidate = event.target.closest?.("[data-select-candidate]");
@@ -428,7 +441,7 @@
     blockersText, canPublish, questionAnchor, issueSummary, groupIssues, hasImageReviewIssues,
     shouldRenderNoCandidateEmpty, normalizedEditPayload,
     candidateSelectionPayload, candidateSelectionUrl, captureRenderState,
-    restoreRenderState, initialize, render, reviewErrorMessage,
+    restoreRenderState, removeChoiceRow, initialize, render, reviewErrorMessage,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) root.document.addEventListener("DOMContentLoaded", () => initialize(root.document), { once: true });

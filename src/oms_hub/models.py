@@ -345,6 +345,19 @@ class NotebookMappingModel(Base):
     updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
 
 
+class NotebookScopeLeaseModel(Base):
+    """Durable cross-worker ownership of one logical NotebookLM notebook."""
+
+    __tablename__ = "notebook_scope_leases"
+
+    subject_key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    exam_number: Mapped[int] = mapped_column(primary_key=True)
+    owner_kind: Mapped[str] = mapped_column(String(30))
+    owner_id: Mapped[str] = mapped_column(String(100))
+    lease_expires_at: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
+
+
 class NotebookSourceMappingModel(Base):
     __tablename__ = "notebook_source_mappings"
     __table_args__ = (

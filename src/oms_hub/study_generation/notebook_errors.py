@@ -52,6 +52,17 @@ class NotebookSourceNotFoundError(NotebookGatewayError):
         )
 
 
+class NotebookScopeBusyError(NotebookGatewayError):
+    """Another durable worker currently owns this logical notebook."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Another NotebookLM operation is already running for this subject and exam.",
+            source=DiagnosticSource.STUDY_HUB,
+            retryable=True,
+        )
+
+
 def translate_notebook_error(
     error: BaseException,
 ) -> NotebookGatewayError | None:

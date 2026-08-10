@@ -23,7 +23,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 21
+LATEST_SCHEMA_VERSION = 22
 
 
 def _ensure_column(
@@ -383,6 +383,12 @@ def _upgrade_studio_source_scope_fence_v21(database: "Database") -> None:
         )
 
 
+def _upgrade_notebook_scope_leases_v22(database: "Database") -> None:
+    """Create the cross-worker NotebookLM scope reservation table."""
+    if not inspect(database.engine).has_table("notebook_scope_leases"):
+        database.create_schema()
+
+
 def _upgrade_quiz_import_v15(database: "Database") -> None:
     """Add durable direct-import provenance without disturbing older workflows."""
     source_columns = {
@@ -599,6 +605,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_transcript_cleaning_reservation_v20(database)
     _upgrade_studio_source_operation_claims_v20(database)
     _upgrade_studio_source_scope_fence_v21(database)
+    _upgrade_notebook_scope_leases_v22(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

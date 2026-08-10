@@ -1,4 +1,5 @@
 import hashlib
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from oms_hub.study_generation.notebook import (
     NotebookQuestionStatus,
     StoredNotebookLMGateway,
 )
+from oms_hub.study_generation.notebook_errors import NotebookScopeBusyError
 from oms_hub.study_generation.practice_domain import QuestionDraft, QuestionSourceRef
 
 
@@ -301,6 +303,59 @@ def test_studio_saga_gateway_snapshots_then_adds_to_known_notebook(tmp_path):
     assert gateway.list_studio_source_ids("nb-1") == frozenset(
         {"existing", "new-1"}
     )
+
+
+def test_generation_notebook_creation_blocks_competing_studio_preparation(tmp_path):
+    create_started = threading.Event()
+    allow_create = threading.Event()
+    events = []
+
+    class EmptyRepository(FakeRepository):
+        def __init__(self):
+            super().__init__(events)
+            self.notebook = None
+
+        def notebook_mapping(self, subject_key, exam_number):
+            return self.notebook
+
+        def notebook_mapping_by_remote_id(self, remote_notebook_id):
+            return self.notebook
+
+    class BlockingNotebooks(FakeNotebooks):
+        async def create(self, title):
+            create_started.set()
+            assert allow_create.wait(timeout=5)
+            created = FakeRemote("nb-1", title)
+            self.items.append(created)
+            return created
+
+    repository = EmptyRepository()
+    client = FakeClient([], events)
+    client.notebooks = BlockingNotebooks([])
+    gateway = _gateway(tmp_path, client, repository)
+    generation_result = []
+
+    thread = threading.Thread(
+        target=lambda: generation_result.append(
+            gateway.ensure_notebook("Neuro", 1)
+        )
+    )
+    thread.start()
+    assert create_started.wait(timeout=5)
+
+    with pytest.raises(NotebookScopeBusyError):
+        gateway.prepare_studio_source_add("Neuro", 1)
+
+    allow_create.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert generation_result == [NotebookRef("nb-1", "Neuro · Exam 1")]
+    assert len(client.notebooks.items) == 1
+
+    notebook_id, baseline = gateway.prepare_studio_source_add("Neuro", 1)
+    assert notebook_id == "nb-1"
+    assert baseline == frozenset()
+    assert len(client.notebooks.items) == 1
 
 
 def test_studio_saga_gateway_treats_remote_not_found_delete_as_success(tmp_path):

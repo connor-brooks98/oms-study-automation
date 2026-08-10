@@ -191,6 +191,33 @@ test("render-state recovery uses the page when the keyed control became disabled
   assert.equal(documentRef.activeElement, page);
 });
 
+test("removing a review choice retains dirty state and moves focus before refresh", () => {
+  const card = { dataset: {}, focus() { documentRef.activeElement = card; } };
+  const fallback = { focus() { documentRef.activeElement = fallback; } };
+  const first = { querySelector: () => fallback };
+  const removed = { removed: false, remove() { this.removed = true; } };
+  const third = { querySelector: () => fallback };
+  const group = {
+    querySelectorAll() {
+      return removed.removed ? [first, third] : [first, removed, third];
+    },
+    querySelector: () => null,
+  };
+  const remove = {
+    closest(selector) {
+      if (selector === ".studio-review-choice") return removed;
+      if (selector === "[data-choices]") return group;
+      if (selector === "[data-question-id]") return card;
+      return null;
+    },
+  };
+
+  assert.equal(review.removeChoiceRow(remove), true);
+  assert.equal(removed.removed, true);
+  assert.equal(card.dataset.dirty, "true");
+  assert.equal(documentRef.activeElement, fallback);
+});
+
 test("a successful q2-style authoritative refresh retains an unrelated dirty q1 editor", () => {
   const { page, questions } = reviewPage();
   const initial = {

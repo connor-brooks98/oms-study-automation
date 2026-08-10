@@ -16,6 +16,7 @@ def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
         "google_connection",
         "study_prompt_settings",
         "notebook_mappings",
+        "notebook_scope_leases",
         "notebook_source_mappings",
         "course_quiz_documents",
         "exam_quiz_tabs",
@@ -64,7 +65,7 @@ def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
     assert version == LATEST_SCHEMA_VERSION
 
 
-def test_v21_reservation_indexes_and_operation_scope_upgrade_idempotently(
+def test_v22_reservation_indexes_and_operation_scope_upgrade_idempotently(
     tmp_path: Path,
 ) -> None:
     database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
@@ -84,6 +85,7 @@ def test_v21_reservation_indexes_and_operation_scope_upgrade_idempotently(
         connection.execute(
             text("ALTER TABLE studio_source_operations DROP COLUMN exam_number")
         )
+        connection.execute(text("DROP TABLE notebook_scope_leases"))
         connection.execute(text("UPDATE schema_version SET version=20 WHERE id=1"))
 
     database.migrate()
@@ -114,6 +116,7 @@ def test_v21_reservation_indexes_and_operation_scope_upgrade_idempotently(
         for index in inspect(database.engine).get_indexes("studio_source_operations")
     }
     assert "ix_studio_source_operations_scope_active" in operation_indexes
+    assert inspect(database.engine).has_table("notebook_scope_leases")
 
 
 def test_v21_scope_upgrade_fails_closed_on_duplicate_active_operations(

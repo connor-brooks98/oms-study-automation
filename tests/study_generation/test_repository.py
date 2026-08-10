@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -84,6 +84,33 @@ def test_queue_reuses_active_job_but_separates_generation_kinds(tmp_path):
     assert quiz.id != first.id
     assert first.state is GenerationState.QUEUED
     assert first.stage is GenerationStage.VALIDATE
+
+
+def test_notebook_scope_lease_serializes_workers_and_recovers_after_expiry(tmp_path):
+    repository, _ = prepared_repository(tmp_path)
+    competitor = GenerationRepository(repository.database)
+    now = datetime.now(UTC)
+
+    assert repository.acquire_notebook_scope(
+        "Neuro", 1, "generation", "job-1", now=now
+    )
+    assert not competitor.acquire_notebook_scope(
+        "neuro", 1, "studio", "operation-1", now=now
+    )
+    assert repository.acquire_notebook_scope(
+        "NEURO", 1, "generation", "job-1", now=now
+    )
+
+    after_expiry = now + timedelta(minutes=31)
+    assert competitor.acquire_notebook_scope(
+        "neuro", 1, "studio", "operation-1", now=after_expiry
+    )
+    assert not repository.release_notebook_scope(
+        "neuro", 1, "generation", "job-1"
+    )
+    assert competitor.release_notebook_scope(
+        "neuro", 1, "studio", "operation-1"
+    )
 
 
 def test_claim_and_recovery_preserve_recorded_stage(tmp_path):

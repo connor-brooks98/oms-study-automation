@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,7 @@ from oms_hub.models import (
     GoogleConnectionModel,
     LectureModel,
     NotebookMappingModel,
+    NotebookScopeLeaseModel,
     NotebookSourceMappingModel,
     OutlineOutputModel,
     PublishedQuizMediaModel,
@@ -232,6 +233,72 @@ class GenerationRepository:
                 )
             )
             return self._notebook_mapping(model) if model is not None else None
+
+    def acquire_notebook_scope(
+        self,
+        subject_key: str,
+        exam_number: int,
+        owner_kind: str,
+        owner_id: str,
+        *,
+        now: datetime | None = None,
+        lease_duration: timedelta = timedelta(minutes=30),
+    ) -> bool:
+        """Atomically acquire or renew one logical NotebookLM mutation scope."""
+        normalized_key = _normalize(subject_key)
+        normalized_kind = owner_kind.strip()
+        normalized_owner = owner_id.strip()
+        if not normalized_key or not normalized_kind or not normalized_owner:
+            raise ValueError("notebook scope owner fields cannot be empty")
+        if exam_number < 1:
+            raise ValueError("exam number must be positive")
+        now = now or datetime.now(UTC)
+        expires_at = (now + lease_duration).isoformat()
+        with self.database.session() as session:
+            result = session.execute(
+                text(
+                    "INSERT INTO notebook_scope_leases "
+                    "(subject_key, exam_number, owner_kind, owner_id, "
+                    "lease_expires_at, updated_at) "
+                    "VALUES (:subject_key, :exam_number, :owner_kind, :owner_id, "
+                    ":lease_expires_at, :updated_at) "
+                    "ON CONFLICT(subject_key, exam_number) DO UPDATE SET "
+                    "owner_kind=excluded.owner_kind, owner_id=excluded.owner_id, "
+                    "lease_expires_at=excluded.lease_expires_at, "
+                    "updated_at=excluded.updated_at "
+                    "WHERE notebook_scope_leases.lease_expires_at <= :updated_at "
+                    "OR (notebook_scope_leases.owner_kind=:owner_kind "
+                    "AND notebook_scope_leases.owner_id=:owner_id)"
+                ),
+                {
+                    "subject_key": normalized_key,
+                    "exam_number": exam_number,
+                    "owner_kind": normalized_kind[:30],
+                    "owner_id": normalized_owner[:100],
+                    "lease_expires_at": expires_at,
+                    "updated_at": now.isoformat(),
+                },
+            )
+            return cast(CursorResult[Any], result).rowcount == 1
+
+    def release_notebook_scope(
+        self,
+        subject_key: str,
+        exam_number: int,
+        owner_kind: str,
+        owner_id: str,
+    ) -> bool:
+        """Release only the lease still owned by this exact durable operation."""
+        with self.database.session() as session:
+            result = session.execute(
+                delete(NotebookScopeLeaseModel).where(
+                    NotebookScopeLeaseModel.subject_key == _normalize(subject_key),
+                    NotebookScopeLeaseModel.exam_number == exam_number,
+                    NotebookScopeLeaseModel.owner_kind == owner_kind.strip()[:30],
+                    NotebookScopeLeaseModel.owner_id == owner_id.strip()[:100],
+                )
+            )
+            return cast(CursorResult[Any], result).rowcount == 1
 
     def save_notebook_mapping(
         self,

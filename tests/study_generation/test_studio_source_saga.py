@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -5,9 +6,10 @@ import pytest
 
 from oms_hub.db import Database
 from oms_hub.llm.domain import DiagnosticSource
-from oms_hub.models import StudioSourceModel
+from oms_hub.models import StudioSourceModel, StudioSourceOperationModel
 from oms_hub.study_generation.notebook_errors import (
     NotebookGatewayError,
+    NotebookScopeBusyError,
     NotebookSourceNotFoundError,
 )
 from oms_hub.study_generation.studio_domain import StudioSourceState, StudioSourceType
@@ -26,11 +28,26 @@ class _SagaGateway:
         self.remote_ids: set[str] = {"baseline"}
         self.add_calls = 0
         self.delete_calls = 0
+        self.scope_depth = 0
+
+    @contextmanager
+    def mutation_scope(self, subject, exam_number, owner_kind, owner_id):
+        assert subject
+        assert exam_number == 1
+        assert owner_kind == "studio"
+        assert owner_id
+        self.scope_depth += 1
+        try:
+            yield
+        finally:
+            self.scope_depth -= 1
 
     def prepare_studio_source_add(self, subject: str, exam_number: int):
+        assert self.scope_depth == 1
         return "notebook-1", frozenset(self.remote_ids)
 
     def add_studio_source_to_notebook(self, notebook_id, source_type, title, **kwargs):
+        assert self.scope_depth == 1
         self.add_calls += 1
         if self.effect == "zero":
             raise _network_error()
@@ -47,9 +64,11 @@ class _SagaGateway:
         return "remote-success"
 
     def list_studio_source_ids(self, notebook_id):
+        assert self.scope_depth == 1
         return frozenset(self.remote_ids)
 
     def delete_studio_source(self, notebook_id, source_id):
+        assert self.scope_depth == 1
         self.delete_calls += 1
         if self.effect == "delete_crash":
             self.effect = "delete_missing"
@@ -245,6 +264,36 @@ def test_logical_notebook_scope_is_reserved_before_remote_preparation(
         "Cardio", 1, StudioSourceType.TEXT, "Other scope", payload_path=other_scope_path
     )
     assert competing_repository.claim_next().id == other_scope.id  # type: ignore[union-attr]
+
+
+def test_busy_generation_scope_defers_studio_without_consuming_remote_attempt(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    source = _source(repository, tmp_path)
+    assert repository.claim_next() is not None
+    claimed = repository.claim_next_source_operation()
+    assert claimed is not None
+
+    class BusyGateway(_SagaGateway):
+        @contextmanager
+        def mutation_scope(self, subject, exam_number, owner_kind, owner_id):
+            raise NotebookScopeBusyError()
+            yield  # pragma: no cover
+
+    gateway = BusyGateway("success")
+    _worker(repository, gateway)._run_source_operation(*claimed)
+
+    waiting = repository.get(source.id)
+    assert waiting is not None
+    assert waiting.state is StudioSourceState.ATTACHING
+    assert waiting.next_attempt_at is not None
+    assert gateway.add_calls == 0
+    with repository.database.session() as session:
+        operation = session.get(StudioSourceOperationModel, claimed[0].id)
+        assert operation is not None
+        assert operation.attempts == 0
+        assert operation.lease_owner is None
 
 
 def test_same_notebook_add_defers_without_remote_effect_then_proceeds(
