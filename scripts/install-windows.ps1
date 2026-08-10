@@ -409,8 +409,11 @@ $PythonCommand = if ($PyLauncher) {
 } else {
   (Get-Command python -ErrorAction Stop).Source
 }
-$PythonPrefix = if ($PyLauncher) { @("-3.12") } else { @() }
-$PythonVersionArgs = $PythonPrefix + @("--version")
+[string[]]$PythonPrefix = @()
+if ($PyLauncher) {
+  $PythonPrefix = @("-3.12")
+}
+$PythonVersionArgs = @($PythonPrefix) + @("--version")
 & $PythonCommand @PythonVersionArgs
 if ($LASTEXITCODE -ne 0) { throw "Python 3.12 is required" }
 
@@ -441,7 +444,7 @@ if ($PSCmdlet.ShouldProcess($BackupPath, "Create verified rollback backup")) {
     throw "The effective runtime database disappeared before backup: $DatabasePath"
   }
   if (Test-Path -LiteralPath $DatabasePath) {
-    $BackupArguments = $PythonPrefix + @(
+    $BackupArguments = @($PythonPrefix) + @(
       $BackupScript,
       "--source", $DatabasePath,
       "--destination", $BackupDatabasePath
@@ -547,7 +550,7 @@ if ($PSCmdlet.ShouldProcess($ProjectRoot, "Install Study Hub V2")) {
     -ExpectedBuildRevision $PreflightBuildRevision `
     -ExpectedBuildTree $PreflightBuildTree
   if (-not (Test-Path "$ProjectRoot\.venv\Scripts\python.exe")) {
-    $PythonVenvArgs = $PythonPrefix + @("-m", "venv", "$ProjectRoot\.venv")
+    $PythonVenvArgs = @($PythonPrefix) + @("-m", "venv", "$ProjectRoot\.venv")
     & $PythonCommand @PythonVenvArgs
     Assert-NativeCommandSucceeded -Operation "Python virtual environment creation"
   }

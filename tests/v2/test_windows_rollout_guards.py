@@ -316,6 +316,25 @@ def test_windows_installer_fails_closed_after_every_install_native_command() -> 
     assert '$EditableInstallTarget = "${ProjectRoot}[document-processing]"' in script
 
 
+def test_windows_installer_preserves_python_launcher_argument_boundaries() -> None:
+    script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+
+    # PowerShell enumerates the output of an if expression. A one-item array
+    # returned from the true branch therefore becomes a scalar string, and
+    # adding another array concatenates all arguments into one string. Keep the
+    # prefix explicitly typed and force array composition at every native call.
+    assert "[string[]]$PythonPrefix = @()" in script
+    assert 'if ($PyLauncher) {\n  $PythonPrefix = @("-3.12")\n}' in script
+    assert "$PythonPrefix = if ($PyLauncher)" not in script
+    assert '$PythonVersionArgs = @($PythonPrefix) + @("--version")' in script
+    assert "$BackupArguments = @($PythonPrefix) + @(" in script
+    assert (
+        '$PythonVenvArgs = @($PythonPrefix) + @("-m", "venv", '
+        '"$ProjectRoot\\.venv")'
+        in script
+    )
+
+
 def test_windows_installer_backup_is_integrity_checked_and_atomically_complete() -> None:
     installer = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
     helper = (ROOT / "scripts" / "backup-sqlite.py").read_text(encoding="utf-8")
