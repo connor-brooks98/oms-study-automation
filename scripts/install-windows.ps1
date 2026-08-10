@@ -367,7 +367,9 @@ Assert-ProjectBuildIdentity `
   -ExpectedProjectRoot $ProjectRoot `
   -ExpectedBuildRevision $PreflightBuildRevision `
   -ExpectedBuildTree $PreflightBuildTree
-Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot
+if ($PSCmdlet.ShouldProcess($ProjectRoot, "Stop same-root Study Hub processes")) {
+  Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot
+}
 
 $BackupComplete = $false
 $DatabaseBackedUp = $false
@@ -563,7 +565,11 @@ if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {
     -ExpectedBuildTree $PreflightBuildTree
 }
 
-Write-Host "Study Hub V2 install complete."
-Write-Host "Scheduled task root: $ProjectRoot"
-Write-Host "Local dashboard: use OMS_HUB_DASHBOARD_PORT from .env (V4 example: http://127.0.0.1:8787)"
-Write-Host "Rollback backup: $BackupPath"
+if ($WhatIfPreference) {
+  Write-Host "Study Hub V2 install preview complete. No processes or files were changed."
+} else {
+  Write-Host "Study Hub V2 install complete."
+  Write-Host "Scheduled task root: $ProjectRoot"
+  Write-Host "Local dashboard: use OMS_HUB_DASHBOARD_PORT from .env (V4 example: http://127.0.0.1:8787)"
+  Write-Host "Rollback backup: $BackupPath"
+}

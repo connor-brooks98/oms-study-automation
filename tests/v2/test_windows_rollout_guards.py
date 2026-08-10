@@ -65,6 +65,35 @@ def test_windows_installer_stops_and_verifies_only_same_root_hub_processes() -> 
     assert "same-root Study Hub process" in script
 
 
+def test_windows_installer_whatif_never_stops_processes_or_reports_completion() -> None:
+    script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+
+    first_stop = (
+        'if ($PSCmdlet.ShouldProcess($ProjectRoot, '
+        '"Stop same-root Study Hub processes")) {\n'
+        '  Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot\n'
+        "}"
+    )
+    assert first_stop in script
+    stop_call = "Stop-ConflictingHubProcesses -ExpectedProjectRoot $ProjectRoot"
+    assert script.count(stop_call) == 2
+    scheduled_guard = script.index(
+        'if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {'
+    )
+    scheduled_stop = script.index(stop_call, scheduled_guard)
+    scheduled_start = script.index(
+        "Start-ScheduledTask -TaskName $TaskName", scheduled_guard
+    )
+    assert scheduled_guard < scheduled_stop < scheduled_start
+
+    final_guard = script.rindex('if ($WhatIfPreference) {')
+    preview_message = script.index("install preview complete", final_guard)
+    normal_completion = script.index("Study Hub V2 install complete.", final_guard)
+    else_branch = script.index("} else {", preview_message, normal_completion)
+    assert final_guard < preview_message < else_branch < normal_completion
+    assert "No processes or files were changed." in script
+
+
 def test_windows_installer_guard_covers_same_root_tree_but_not_unrelated_python() -> None:
     script = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
 
