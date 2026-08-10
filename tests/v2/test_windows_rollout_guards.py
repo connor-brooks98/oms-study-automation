@@ -327,12 +327,25 @@ def test_windows_installer_preserves_python_launcher_argument_boundaries() -> No
     assert 'if ($PyLauncher) {\n  $PythonPrefix = @("-3.12")\n}' in script
     assert "$PythonPrefix = if ($PyLauncher)" not in script
     assert '$PythonVersionArgs = @($PythonPrefix) + @("--version")' in script
+    assert "& $PythonCommand @PythonVersionArgs" in script
     assert "$BackupArguments = @($PythonPrefix) + @(" in script
+    assert "& $PythonCommand @BackupArguments" in script
     assert (
         '$PythonVenvArgs = @($PythonPrefix) + @("-m", "venv", '
         '"$ProjectRoot\\.venv")'
         in script
     )
+    assert "& $PythonCommand @PythonVenvArgs" in script
+
+    version_build = script.index("$PythonVersionArgs =")
+    version_call = script.index("& $PythonCommand @PythonVersionArgs")
+    backup_build = script.index("$BackupArguments =")
+    backup_call = script.index("& $PythonCommand @BackupArguments")
+    venv_build = script.index("$PythonVenvArgs =")
+    venv_call = script.index("& $PythonCommand @PythonVenvArgs")
+
+    assert version_build < version_call < backup_build < backup_call
+    assert backup_call < venv_build < venv_call
 
 
 def test_windows_installer_backup_is_integrity_checked_and_atomically_complete() -> None:

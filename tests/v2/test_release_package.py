@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import json
+import secrets
 import subprocess
 import zipfile
 from pathlib import Path
@@ -75,9 +76,11 @@ def test_release_builder_is_deterministic_and_excludes_untracked_files(tmp_path)
         text=True,
     ).strip()
     planted = root / "arbitrary-untracked-release-secret.bin"
-    planted.write_bytes(b"not part of the reviewed commit")
+    planted_payload = b"secret-like untracked payload: " + secrets.token_bytes(32)
     try:
         first = builder.build_releases(root, tmp_path / "first", "20260726", commit)
+        planted.write_bytes(planted_payload)
+        assert planted.exists()
         second = builder.build_releases(root, tmp_path / "second", "20260726", commit)
     finally:
         planted.unlink(missing_ok=True)
@@ -88,6 +91,16 @@ def test_release_builder_is_deterministic_and_excludes_untracked_files(tmp_path)
         ).digest()
         with zipfile.ZipFile(first_path) as archive:
             assert planted.name not in archive.namelist()
+            assert all(
+                planted_payload not in archive.read(member)
+                for member in archive.namelist()
+            )
+        with zipfile.ZipFile(second_path) as archive:
+            assert planted.name not in archive.namelist()
+            assert all(
+                planted_payload not in archive.read(member)
+                for member in archive.namelist()
+            )
 
 
 @pytest.mark.parametrize("commit", ["62c6d5f", "HEAD", "not-a-commit", "f" * 40])
