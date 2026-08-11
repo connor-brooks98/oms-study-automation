@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import cast
 
 _MAX_EVENT_PROCESS_LAG = timedelta(seconds=30)
+_EVENT_NAMESPACE = "http://schemas.microsoft.com/win/2004/08/events/event"
+
+
+def _event_tag(local_name: str) -> str:
+    return f"{{{_EVENT_NAMESPACE}}}{local_name}"
 
 
 def _local_name(tag: str) -> str:
@@ -78,26 +83,46 @@ def _parse_event(raw_event: Mapping[str, object]) -> dict[str, object]:
         root = element_tree.fromstring(xml)
     except element_tree.ParseError as error:
         raise ValueError("event XML is invalid") from error
-
-    system_values: dict[str, str] = {}
-    fields: dict[str, str] = {}
-    system_time: str | None = None
+    if root.tag != _event_tag("Event"):
+        raise ValueError("event XML root is not the Windows Event element")
+    system_nodes = [child for child in root if child.tag == _event_tag("System")]
+    if len(system_nodes) != 1:
+        raise ValueError("event XML must contain exactly one direct Event/System node")
+    system = system_nodes[0]
+    required_metadata: dict[str, element_tree.Element] = {}
+    for name in ("EventID", "EventRecordID", "TimeCreated"):
+        matches = [child for child in system if child.tag == _event_tag(name)]
+        if len(matches) != 1:
+            raise ValueError(
+                f"event XML must contain exactly one {name} direct child of Event/System"
+            )
+        required_metadata[name] = matches[0]
+    allowed_metadata_ids = {id(element) for element in required_metadata.values()}
     for element in root.iter():
-        name = _local_name(element.tag)
-        if name in {"EventID", "EventRecordID"}:
-            system_values[name] = element.text or ""
-        if name == "Data":
-            field_name = element.attrib.get("Name")
-            if field_name is None or field_name in fields:
-                raise ValueError("event XML has invalid EventData fields")
-            fields[field_name] = element.text or ""
-        if name == "TimeCreated":
-            if system_time is not None or "SystemTime" not in element.attrib:
-                raise ValueError("event XML has invalid TimeCreated metadata")
-            system_time = element.attrib["SystemTime"]
-    event_id = _strict_decimal(system_values.get("EventID"), "EventID", minimum=1)
+        if (
+            _local_name(element.tag) in required_metadata
+            and id(element) not in allowed_metadata_ids
+        ):
+            raise ValueError("event metadata must be a direct child of Event/System")
+
+    event_data_nodes = [child for child in root if child.tag == _event_tag("EventData")]
+    if len(event_data_nodes) != 1:
+        raise ValueError("event XML must contain exactly one direct EventData node")
+    fields: dict[str, str] = {}
+    for element in event_data_nodes[0]:
+        if element.tag != _event_tag("Data"):
+            raise ValueError("event XML has invalid EventData fields")
+        field_name = element.attrib.get("Name")
+        if field_name is None or field_name in fields:
+            raise ValueError("event XML has invalid EventData fields")
+        fields[field_name] = element.text or ""
+
+    system_time = required_metadata["TimeCreated"].attrib.get("SystemTime")
+    if system_time is None:
+        raise ValueError("TimeCreated SystemTime is missing")
+    event_id = _strict_decimal(required_metadata["EventID"].text, "EventID", minimum=1)
     xml_record_id = _strict_decimal(
-        system_values.get("EventRecordID"), "EventRecordID", minimum=1
+        required_metadata["EventRecordID"].text, "EventRecordID", minimum=1
     )
     if xml_record_id != record_id:
         raise ValueError("event record identifier differs from EventRecordID XML")

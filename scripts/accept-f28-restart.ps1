@@ -87,6 +87,39 @@ function ConvertTo-UtcIso8601 {
   return ([datetime]$Value).ToUniversalTime().ToString("o")
 }
 
+function Write-F28Diagnostic {
+  param([string]$Message)
+  try {
+    [Console]::Error.WriteLine($Message)
+  } catch {
+    # Diagnostics must never replace the acceptance failure being preserved.
+  }
+}
+
+function Remove-F28TemporaryDatabaseSnapshots {
+  param([string[]]$Paths, [switch]$BestEffort)
+  foreach ($Path in $Paths) {
+    if ($BestEffort) {
+      if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        Remove-Item `
+          -LiteralPath $Path `
+          -Force `
+          -ErrorAction SilentlyContinue
+      }
+      continue
+    }
+    if (Test-Path -LiteralPath $Path) {
+      if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "F28 temporary database snapshot is not a regular file: $Path"
+      }
+      Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+    }
+    if (Test-Path -LiteralPath $Path) {
+      throw "F28 temporary database snapshot cleanup failed: $Path"
+    }
+  }
+}
+
 function Get-DotEnvValue {
   param([string]$Name, [string]$Path)
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
@@ -535,6 +568,7 @@ $ConsumedPath = Join-Path $GateDirectory "consumed-$Nonce.json"
 $FinalizedPath = Join-Path $GateDirectory "finalized-$Nonce.json"
 $DatabaseBeforePath = Join-Path $GateDirectory ".database-before-$Nonce.db"
 $DatabaseAfterPath = Join-Path $GateDirectory ".database-after-$Nonce.db"
+$DatabaseSnapshotsCleaned = $false
 $SchedulerEvidencePath = Join-Path $GateDirectory "scheduler-evidence-$Nonce.json"
 $SchedulerProofPath = Join-Path $GateDirectory "scheduler-proof-$Nonce.json"
 $PythonExecutable = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
@@ -732,6 +766,11 @@ try {
     throw "Scheduled task configuration changed during F28 acceptance."
   }
 
+  # Mandatory cleanup completes before durable success proof or stdout output.
+  Remove-F28TemporaryDatabaseSnapshots `
+    -Paths @($DatabaseBeforePath, $DatabaseAfterPath)
+  $DatabaseSnapshotsCleaned = $true
+
   $Result = [ordered]@{
     marker = "F28_NATIVE_RESTART_$($ExpectedRevision.ToUpperInvariant())_VERIFIED_COMPLETE"
     nonce = $Nonce
@@ -756,9 +795,17 @@ try {
   $Failure = $_
   if (-not $FireWritten -and (Test-Path -LiteralPath $RequestPath -PathType Leaf)) {
     # Retain the unclaimed request as evidence; never delete acceptance records.
-    Move-Item -LiteralPath $RequestPath -Destination (
-      Join-Path $GateDirectory "failed-before-fire-$Nonce.json"
-    )
+    try {
+      $FailedBeforeFirePath = Join-Path $GateDirectory "failed-before-fire-$Nonce.json"
+      if (Test-Path -LiteralPath $FailedBeforeFirePath) {
+        throw "F28 pre-fire failure evidence destination already exists."
+      }
+      [System.IO.File]::Move($RequestPath, $FailedBeforeFirePath)
+    } catch {
+      Write-F28Diagnostic -Message (
+        "F28 pre-fire request archival failed; rethrowing the original acceptance failure."
+      )
+    }
   }
   if ($FireWritten) {
     try {
@@ -778,23 +825,27 @@ try {
             break
           } catch {
             if ((Get-Date).ToUniversalTime() -ge $RecoveryDeadline) {
-              [Console]::Error.WriteLine("F28 recovery could not restore exact readiness.")
+              Write-F28Diagnostic -Message "F28 recovery could not restore exact readiness."
               break
             }
           }
         } while ($true)
       }
     } catch {
-      [Console]::Error.WriteLine(
+      Write-F28Diagnostic -Message (
         "F28 recovery attempt failed; rethrowing the original acceptance failure."
       )
     }
   }
   throw $Failure
 } finally {
-  foreach ($TemporaryDatabase in @($DatabaseBeforePath, $DatabaseAfterPath)) {
-    if (Test-Path -LiteralPath $TemporaryDatabase -PathType Leaf) {
-      Remove-Item -LiteralPath $TemporaryDatabase -Force
+  if (-not $DatabaseSnapshotsCleaned) {
+    try {
+      Remove-F28TemporaryDatabaseSnapshots `
+        -Paths @($DatabaseBeforePath, $DatabaseAfterPath) `
+        -BestEffort
+    } catch {
+      # Best-effort cleanup must never replace the primary acceptance failure.
     }
   }
 }

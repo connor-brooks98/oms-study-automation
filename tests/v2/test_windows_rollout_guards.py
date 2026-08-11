@@ -134,9 +134,11 @@ def test_f28_acceptance_publishes_exact_success_leaf_before_printing_marker() ->
     assert "[System.IO.File]::Move($Temporary, $Path)" in script
     assert "Test-Path -LiteralPath $Path -PathType Leaf" in script
     assert "F28 atomic JSON publication did not create the exact destination file" in script
-    assert script.index("Write-AtomicJson -Path $SuccessPath -Value $Result") < script.index(
-        "$Result | ConvertTo-Json -Depth 20"
-    )
+    cleanup = "Remove-F28TemporaryDatabaseSnapshots `"
+    publish = "Write-AtomicJson -Path $SuccessPath -Value $Result"
+    output = "$Result | ConvertTo-Json -Depth 20"
+    assert script.index(cleanup) < script.index(publish) < script.index(output)
+    assert "-ErrorAction SilentlyContinue" in script
 
 
 def test_f28_recovery_always_rethrows_the_original_acceptance_failure() -> None:
@@ -151,6 +153,12 @@ def test_f28_recovery_always_rethrows_the_original_acceptance_failure() -> None:
         task_start,
     )
     assert task_start < recovery_guard < recovery_throw
+    assert "function Write-F28Diagnostic" in script
+    assert (
+        "F28 pre-fire request archival failed; rethrowing the original acceptance failure."
+        in script
+    )
+    assert script.count("[Console]::Error.WriteLine") == 1
 
 
 def test_windows_revision_capture_preserves_the_complete_git_hash() -> None:

@@ -264,3 +264,94 @@ def test_scheduler_verifier_rejects_process_created_too_early_for_event_129() ->
             replacement_hub_pid=702,
             process_snapshot=processes,
         )
+
+
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    [
+        ("", "TimeCreated"),
+        ('<TimeCreated SystemTime="not-a-time"/>', "UTC timestamp"),
+        (
+            '<TimeCreated SystemTime="2026-08-10T20:20:03.2500000+01:00"/>',
+            "UTC timestamp",
+        ),
+        (
+            '<TimeCreated SystemTime="2026-08-10T19:20:03.2500000Z"/>'
+            '<TimeCreated SystemTime="2026-08-10T19:20:03.2500000Z"/>',
+            "exactly one TimeCreated",
+        ),
+    ],
+)
+def test_scheduler_verifier_rejects_invalid_system_time_metadata(
+    replacement: str, message: str
+) -> None:
+    events = _valid_events()
+    events[3]["xml"] = str(events[3]["xml"]).replace(
+        '<TimeCreated SystemTime="2026-08-10T19:20:03.2500000Z"/>', replacement
+    )
+
+    with pytest.raises(ValueError, match=message):
+        verify_scheduler_restart(
+            events=events,
+            cursor_event_record_id=10,
+            full_task_name=TASK,
+            action_path=ACTION,
+            replacement_hub_pid=702,
+            process_snapshot=_processes(),
+        )
+
+
+def test_scheduler_verifier_rejects_time_created_outside_system_node() -> None:
+    events = _valid_events()
+    events[3]["xml"] = str(events[3]["xml"]).replace(
+        '<TimeCreated SystemTime="2026-08-10T19:20:03.2500000Z"/>', ""
+    ).replace(
+        "<EventData>",
+        '<EventData><TimeCreated SystemTime="2026-08-10T19:20:03.2500000Z"/>',
+    )
+
+    with pytest.raises(ValueError, match="direct child of Event/System"):
+        verify_scheduler_restart(
+            events=events,
+            cursor_event_record_id=10,
+            full_task_name=TASK,
+            action_path=ACTION,
+            replacement_hub_pid=702,
+            process_snapshot=_processes(),
+        )
+
+
+@pytest.mark.parametrize("element_name", ["EventID", "EventRecordID"])
+def test_scheduler_verifier_rejects_duplicate_system_identifiers(element_name: str) -> None:
+    events = _valid_events()
+    value = "129" if element_name == "EventID" else "14"
+    events[3]["xml"] = str(events[3]["xml"]).replace(
+        "</System>", f"<{element_name}>{value}</{element_name}></System>"
+    )
+
+    with pytest.raises(ValueError, match=f"exactly one {element_name}"):
+        verify_scheduler_restart(
+            events=events,
+            cursor_event_record_id=10,
+            full_task_name=TASK,
+            action_path=ACTION,
+            replacement_hub_pid=702,
+            process_snapshot=_processes(),
+        )
+
+
+def test_scheduler_verifier_rejects_event_identifier_outside_system_node() -> None:
+    events = _valid_events()
+    events[3]["xml"] = str(events[3]["xml"]).replace(
+        "<EventData>", "<EventData><EventID>129</EventID>"
+    )
+
+    with pytest.raises(ValueError, match="direct child of Event/System"):
+        verify_scheduler_restart(
+            events=events,
+            cursor_event_record_id=10,
+            full_task_name=TASK,
+            action_path=ACTION,
+            replacement_hub_pid=702,
+            process_snapshot=_processes(),
+        )
