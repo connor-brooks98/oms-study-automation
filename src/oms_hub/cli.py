@@ -3,6 +3,8 @@ import asyncio
 import getpass
 import json
 import logging
+import os
+import sys
 import tracemalloc
 from dataclasses import asdict
 from pathlib import Path
@@ -21,7 +23,13 @@ from oms_hub.anki.semantic.store import SemanticSnapshotStore
 from oms_hub.anki.semantic.voyage import VoyageEmbeddingClient
 from oms_hub.app import create_app
 from oms_hub.config import Settings
+from oms_hub.controlled_restart import (
+    CONTROLLED_RESTART_EXIT_CODE,
+    ControlledRestartController,
+    fetch_readiness,
+)
 from oms_hub.db import Database
+from oms_hub.migrations import LATEST_SCHEMA_VERSION
 from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import expanded_path
 from oms_hub.security.secret_store import (
@@ -53,13 +61,45 @@ def serve(args: argparse.Namespace) -> int:
     del args
     settings = Settings()
     app = create_app(settings)
-    uvicorn.run(
-        app,
+    config = uvicorn.Config(
+        app=app,
         host=settings.dashboard_host,
         port=settings.dashboard_port,
         proxy_headers=False,
     )
-    return 0
+    server = uvicorn.Server(config)
+    controller: ControlledRestartController | None = None
+    gate_directory = os.environ.get("OMS_HUB_F28_GATE_DIR")
+    if sys.platform == "win32" and gate_directory:
+        controller = ControlledRestartController(
+            gate_directory=Path(gate_directory),
+            data_directory=settings.data_dir,
+            expected_revision=settings.build_revision or "",
+            expected_tree=settings.build_tree or "",
+            expected_schema=LATEST_SCHEMA_VERSION,
+            supervisor=app.state.worker_supervisor,
+            server=server,
+            readiness_probe=lambda: fetch_readiness(settings.dashboard_port),
+        )
+        controller.start()
+    try:
+        server.run()
+    except Exception:  # noqa: BLE001 - preserve the fired native boundary
+        if controller is None or not controller.fired:
+            raise
+        logger.exception("server shutdown raised after the controlled F28 boundary")
+    finally:
+        if controller is not None:
+            controller.stop()
+    if controller is None:
+        return 0
+    try:
+        return controller.finalize_server_exit()
+    except Exception:  # noqa: BLE001 - Task Scheduler must still receive exact code 75
+        if not controller.fired:
+            raise
+        logger.exception("F28 exit evidence failed after the controlled boundary")
+        return CONTROLLED_RESTART_EXIT_CODE
 
 
 def worker_once(args: argparse.Namespace) -> int:

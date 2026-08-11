@@ -107,12 +107,64 @@ $DatabasePath = Resolve-SqliteDatabasePath `
   -ExpectedProjectRoot $ProjectRoot
 $BackupRoot = Join-Path $EffectiveDataRoot "backups"
 $BackupPath = Join-Path $BackupRoot $Timestamp
+$F28GateDirectory = Join-Path $EffectiveDataRoot "acceptance\f28"
+
+function Get-ExpectedTaskArguments {
+  param(
+    [string]$ExpectedStartScript,
+    [string]$ExpectedDataRoot
+  )
+  return "-NoProfile -ExecutionPolicy Bypass -File `"$ExpectedStartScript`" -DataRoot `"$ExpectedDataRoot`""
+}
+
+function Initialize-F28GateDirectory {
+  param(
+    [string]$ExpectedDataRoot,
+    [string]$Identity
+  )
+  $AcceptanceRoot = Join-Path $ExpectedDataRoot "acceptance"
+  $GateDirectory = Join-Path $AcceptanceRoot "f28"
+  New-Item -ItemType Directory -Force -Path $AcceptanceRoot, $GateDirectory | Out-Null
+  foreach ($Path in @($ExpectedDataRoot, $AcceptanceRoot, $GateDirectory)) {
+    $Item = Get-Item -LiteralPath $Path -Force
+    if (($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "F28 gate directory path must not contain a reparse point: $Path"
+    }
+  }
+  $TaskSid = (
+    [System.Security.Principal.NTAccount]::new($Identity)
+  ).Translate([System.Security.Principal.SecurityIdentifier])
+  $SystemSid = [System.Security.Principal.SecurityIdentifier]::new("S-1-5-18")
+  $AdministratorsSid = [System.Security.Principal.SecurityIdentifier]::new(
+    "S-1-5-32-544"
+  )
+  $Acl = New-Object System.Security.AccessControl.DirectorySecurity
+  $Acl.SetAccessRuleProtection($true, $false)
+  $Acl.SetOwner($TaskSid)
+  $Inheritance = (
+    [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+    [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+  )
+  foreach ($Sid in @($TaskSid, $SystemSid, $AdministratorsSid)) {
+    $Rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+      $Sid,
+      [System.Security.AccessControl.FileSystemRights]::Modify,
+      $Inheritance,
+      [System.Security.AccessControl.PropagationFlags]::None,
+      [System.Security.AccessControl.AccessControlType]::Allow
+    )
+    $Acl.AddAccessRule($Rule) | Out-Null
+  }
+  Set-Acl -LiteralPath $GateDirectory -AclObject $Acl
+  Write-Host "Initialized ACL-restricted F28 gate directory: $GateDirectory"
+}
 
 function Assert-TaskActionTargetsProjectRoot {
   param(
     [string]$Name,
     [string]$ExpectedProjectRoot,
-    [string]$ExpectedStartScript
+    [string]$ExpectedStartScript,
+    [string]$ExpectedDataRoot
   )
   $Task = Get-ScheduledTask -TaskName $Name -ErrorAction Stop
   $Actions = @($Task.Actions)
@@ -120,10 +172,17 @@ function Assert-TaskActionTargetsProjectRoot {
     throw "Scheduled task $Name must have exactly one action; found $($Actions.Count)."
   }
   $Action = $Actions[0]
-  $ScriptMatches = $Action.Arguments -match [regex]::Escape($ExpectedStartScript)
+  $ExpectedArguments = Get-ExpectedTaskArguments `
+    -ExpectedStartScript $ExpectedStartScript `
+    -ExpectedDataRoot $ExpectedDataRoot
+  $ArgumentsMatch = [string]::Equals(
+    ([string]$Action.Arguments).Trim(),
+    $ExpectedArguments,
+    [System.StringComparison]::OrdinalIgnoreCase
+  )
   $WorkingDirectory = ([string]$Action.WorkingDirectory).TrimEnd("\\")
   $ExpectedDirectory = $ExpectedProjectRoot.TrimEnd("\\")
-  if (-not $ScriptMatches -or $WorkingDirectory -ne $ExpectedDirectory) {
+  if (-not $ArgumentsMatch -or $WorkingDirectory -ne $ExpectedDirectory) {
     throw "Scheduled task $Name does not target $ExpectedProjectRoot. Re-run the installer with the intended -ProjectRoot."
   }
 }
@@ -625,15 +684,22 @@ if ($PSCmdlet.ShouldProcess($ProjectRoot, "Install Study Hub V2")) {
   Assert-NativeCommandSucceeded -Operation "Study Hub configuration validation"
 }
 
+if ($PSCmdlet.ShouldProcess($F28GateDirectory, "Initialize F28 gate directory")) {
+  Initialize-F28GateDirectory `
+    -ExpectedDataRoot $EffectiveDataRoot `
+    -Identity $TaskIdentity
+}
+
 if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {
   Assert-ProjectBuildIdentity `
     -ExpectedProjectRoot $ProjectRoot `
     -ExpectedBuildRevision $PreflightBuildRevision `
     -ExpectedBuildTree $PreflightBuildTree
   $PowerShell = (Get-Command powershell.exe).Source
+  $TaskArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$StartScript`" -DataRoot `"$EffectiveDataRoot`""
   $Action = New-ScheduledTaskAction `
     -Execute $PowerShell `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$StartScript`"" `
+    -Argument $TaskArguments `
     -WorkingDirectory $ProjectRoot
   $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $TaskIdentity
   $TaskSettings = New-ScheduledTaskSettingsSet `
@@ -653,7 +719,8 @@ if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {
   Assert-TaskActionTargetsProjectRoot `
     -Name $TaskName `
     -ExpectedProjectRoot $ProjectRoot `
-    -ExpectedStartScript $StartScript
+    -ExpectedStartScript $StartScript `
+    -ExpectedDataRoot $EffectiveDataRoot
   # Re-assert the same-root stop invariant immediately before task startup.
   # Never terminate generic Python processes from another deployment.
   Assert-ProjectBuildIdentity `

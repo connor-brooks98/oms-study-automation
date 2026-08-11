@@ -70,6 +70,7 @@ class WorkerSupervisor:
         self._maintenance_interval_seconds = maintenance_interval_seconds
         self._clock = clock
         self._stop = threading.Event()
+        self._quiesce = threading.Event()
         self._lock = threading.RLock()
 
     def start(self) -> None:
@@ -113,6 +114,31 @@ class WorkerSupervisor:
                 if remaining == 0:
                     break
                 state.thread.join(timeout=remaining)
+
+    @property
+    def is_quiesced(self) -> bool:
+        return self._quiesce.is_set()
+
+    def quiesce(self, timeout_seconds: float = 10.0) -> bool:
+        """Prevent new cycles and wait for all current non-Anki work to finish."""
+        if timeout_seconds < 0:
+            raise ValueError("timeout_seconds must be non-negative")
+        with self._lock:
+            self._quiesce.set()
+        deadline = monotonic() + timeout_seconds
+        while True:
+            with self._lock:
+                if all(state.active_started_at is None for state in self._workers.values()):
+                    return True
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return False
+            self._stop.wait(min(0.05, remaining))
+
+    def resume(self) -> None:
+        """Resume worker cycles after an armed gate expires or is rejected."""
+        with self._lock:
+            self._quiesce.clear()
 
     def snapshot(self) -> dict[str, dict[str, object]]:
         now = self._clock()
@@ -180,6 +206,11 @@ class WorkerSupervisor:
 
     def _run(self, state: _WorkerState) -> None:
         while not self._stop.is_set():
+            if self._quiesce.is_set():
+                with self._lock:
+                    state.heartbeat_at = self._clock()
+                self._stop.wait(0.1)
+                continue
             worked = self._run_cycle(state)
             if worked:
                 with self._lock:
@@ -187,19 +218,21 @@ class WorkerSupervisor:
             self._stop.wait(0.5 if worked else 5.0)
 
     def _run_cycle(self, state: _WorkerState) -> bool:
-        maintenance_worked = False
-        if (
-            state.maintenance is not None
-            and (
-                state.maintenance_at is None
-                or self._clock() - state.maintenance_at
-                >= self._maintenance_interval_seconds
-            )
-        ):
-            maintenance_worked = self._run_maintenance(state) > 0
         with self._lock:
+            if self._quiesce.is_set():
+                return False
             state.active_started_at = self._clock()
+        maintenance_worked = False
         try:
+            if (
+                state.maintenance is not None
+                and (
+                    state.maintenance_at is None
+                    or self._clock() - state.maintenance_at
+                    >= self._maintenance_interval_seconds
+                )
+            ):
+                maintenance_worked = self._run_maintenance(state) > 0
             worked = state.worker.run_once()
         except Exception as error:  # noqa: BLE001 - health records a safe boundary
             error_name = type(error).__name__

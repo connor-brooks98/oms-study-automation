@@ -361,6 +361,37 @@ def test_stop_uses_one_total_deadline_across_worker_joins() -> None:
     assert threads[2].join_timeouts == []
 
 
+def test_supervisor_quiesce_blocks_new_worker_cycles_until_resume() -> None:
+    clock = _Clock()
+    supervisor = _supervisor_with_real_state(clock)
+    state = next(iter(supervisor._workers.values()))
+    worker = _Worker()
+    state.worker = worker
+
+    assert supervisor.quiesce(timeout_seconds=0.1) is True
+    assert supervisor.is_quiesced is True
+    assert supervisor._run_cycle(state) is False
+    assert worker.recoveries == 0
+
+    supervisor.resume()
+
+    assert supervisor.is_quiesced is False
+    assert supervisor._run_cycle(state) is False
+
+
+def test_supervisor_quiesce_refuses_to_claim_idle_while_work_is_active() -> None:
+    clock = _Clock()
+    supervisor = _supervisor_with_real_state(clock)
+    state = next(iter(supervisor._workers.values()))
+    state.active_started_at = clock()
+
+    assert supervisor.quiesce(timeout_seconds=0) is False
+    assert supervisor.is_quiesced is True
+
+    supervisor.resume()
+    assert supervisor.is_quiesced is False
+
+
 def test_readiness_rejects_database_failure_but_liveness_preserves_provenance(
     tmp_path, monkeypatch
 ) -> None:
@@ -424,14 +455,18 @@ def test_cli_serve_only_constructs_app_and_delegates_to_uvicorn(monkeypatch) -> 
     monkeypatch.setattr(cli, "create_app", lambda actual: app)
     monkeypatch.setattr(
         cli.uvicorn,
-        "run",
-        lambda actual, host, port, proxy_headers: called.update(
-            app=actual,
-            host=host,
-            port=port,
-            proxy_headers=proxy_headers,
-        ),
+        "Config",
+        lambda **values: called.update(values) or SimpleNamespace(**values),
     )
+
+    class _Server:
+        def __init__(self, config) -> None:
+            called["config"] = config
+
+        def run(self) -> None:
+            called["ran"] = True
+
+    monkeypatch.setattr(cli.uvicorn, "Server", _Server)
 
     assert cli.serve(SimpleNamespace()) == 0
     assert called == {
@@ -439,6 +474,8 @@ def test_cli_serve_only_constructs_app_and_delegates_to_uvicorn(monkeypatch) -> 
         "host": "127.0.0.1",
         "port": 8787,
         "proxy_headers": False,
+        "config": called["config"],
+        "ran": True,
     }
 
 

@@ -13,6 +13,7 @@ HOTFIX_FILES = (
     "docs/operations/quiz-builder.md",
     "pyproject.toml",
     "scripts/backup-sqlite.py",
+    "scripts/accept-f28-restart.ps1",
     "scripts/evaluate_anydoc_corpus.py",
     "scripts/install-windows.ps1",
     "scripts/start-hub.ps1",

@@ -35,6 +35,51 @@ def test_scheduled_launcher_propagates_the_exact_serve_exit_code() -> None:
     )
 
 
+def test_f28_launcher_and_installer_bind_one_acl_restricted_gate_directory() -> None:
+    launcher = (ROOT / "scripts" / "start-hub.ps1").read_text(encoding="utf-8")
+    installer = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+
+    assert "param(" in launcher
+    assert "[string]$DataRoot" in launcher
+    assert 'Join-Path $ResolvedDataRoot "acceptance\\f28"' in launcher
+    assert '$env:OMS_HUB_F28_GATE_DIR = $GateDirectory' in launcher
+    assert "CONTROLLED_RESTART_EXIT_CODE" not in launcher
+    assert "$ServeExitCode -eq 75" in launcher
+    assert "latest-server-exit.json" in launcher
+    assert "launcher-exit-$Nonce.json" in launcher
+    assert "exit $ServeExitCode" in launcher
+
+    assert "Initialize-F28GateDirectory" in installer
+    assert "SetAccessRuleProtection" in installer
+    assert 'S-1-5-18' in installer
+    assert 'S-1-5-32-544' in installer
+    assert '-DataRoot `"$EffectiveDataRoot`"' in installer
+    assert "ExpectedDataRoot" in installer
+    assert "F28 gate directory" in installer
+
+
+def test_f28_acceptance_script_is_two_phase_and_never_kills_or_reconfigures() -> None:
+    script = (ROOT / "scripts" / "accept-f28-restart.ps1").read_text(encoding="utf-8")
+
+    assert "SupportsShouldProcess" in script
+    assert "request.json" in script
+    assert "armed-$Nonce.json" in script
+    assert "fire-$Nonce.json" in script
+    assert "server-exit-$Nonce.json" in script
+    assert "launcher-exit-$Nonce.json" in script
+    assert "RestartCount" in script
+    assert "LastTaskResult" in script
+    assert "Get-WinEvent" in script
+    assert "backup-sqlite.py" in script
+    assert "F28_NATIVE_RESTART_" in script
+    assert "Start-ScheduledTask" in script
+    assert "RECOVERY ONLY" in script
+    assert "Stop-Process" not in script
+    assert "Stop-ScheduledTask" not in script
+    assert "Register-ScheduledTask" not in script
+    assert "Set-Content" not in script
+
+
 def test_windows_revision_capture_preserves_the_complete_git_hash() -> None:
     for relative_path in (
         "scripts/start-hub.ps1",
