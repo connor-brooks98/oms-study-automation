@@ -16,6 +16,7 @@ from typing import cast
 
 _MAX_EVENT_PROCESS_LAG = timedelta(seconds=30)
 _EVENT_NAMESPACE = "http://schemas.microsoft.com/win/2004/08/events/event"
+_EXIT_75_HRESULT = 2147942475  # 0x8007004B: HRESULT_FROM_WIN32(75)
 
 
 def _event_tag(local_name: str) -> str:
@@ -174,6 +175,8 @@ def _replacement_ancestor_chain(
     replacement_process_id: int,
     replacement_hub_pid: int,
     expected_action: str,
+    expected_action_index: int,
+    expected_action_arguments: str,
     created_process_event_time: str,
 ) -> tuple[list[int], str]:
     parents: dict[int, int] = {}
@@ -185,6 +188,12 @@ def _replacement_ancestor_chain(
         if pid in parents:
             raise ValueError("process snapshot contains duplicate PIDs")
         parents[pid] = parent_pid
+        command_line = process.get("command_line")
+        if not isinstance(command_line, str):
+            raise ValueError("process snapshot command_line must be a string")
+        creation_date = process.get("creation_date")
+        if not isinstance(creation_date, str):
+            raise ValueError("process snapshot creation_date must be a string")
         if pid == replacement_process_id:
             executable_path = process.get("executable_path")
             if not isinstance(executable_path, str):
@@ -192,10 +201,19 @@ def _replacement_ancestor_chain(
             replacement_executable_path = _canonical_windows_path(
                 executable_path, "Task Scheduler process executable_path"
             )
-            creation_date = process.get("creation_date")
-            if not isinstance(creation_date, str):
-                raise ValueError("Task Scheduler process creation_date must be a string")
             replacement_creation_date = creation_date
+            if not expected_action_arguments:
+                raise ValueError("recovery_action_arguments must be a non-empty string")
+            expected_forms = {
+                f'"{expected_action}" {expected_action_arguments}',
+                f"{expected_action} {expected_action_arguments}",
+            }
+            if command_line.strip().casefold() not in {
+                form.casefold() for form in expected_forms
+            }:
+                raise ValueError(
+                    "Task Scheduler process command line differs from exact recovery action"
+                )
     if replacement_process_id not in parents or replacement_hub_pid not in parents:
         raise ValueError("scheduler process is absent from the same-snapshot process list")
     if replacement_executable_path != expected_action:
@@ -234,19 +252,26 @@ def verify_scheduler_restart(
     action_path: str,
     replacement_hub_pid: int,
     process_snapshot: Sequence[Mapping[str, object]],
+    recovery_action_index: int = 1,
+    recovery_action_arguments: str,
 ) -> dict[str, object]:
-    """Return normalized proof only for one unambiguous automatic task restart."""
+    """Return proof only for the same-instance F28 recovery action chain."""
     cursor = _strict_int(cursor_event_record_id, "cursor_event_record_id", minimum=0)
     if not full_task_name.startswith("\\"):
         raise ValueError("full_task_name must be an exact full Task Scheduler path")
     expected_action = _canonical_windows_path(action_path, "action_path")
     hub_pid = _strict_int(replacement_hub_pid, "replacement_hub_pid", minimum=1)
+    recovery_index = _strict_int(recovery_action_index, "recovery_action_index", minimum=1)
+    if not isinstance(recovery_action_arguments, str) or not recovery_action_arguments.strip():
+        raise ValueError("recovery_action_arguments must be a non-empty string")
+    if recovery_index > 3:
+        raise ValueError("recovery_action_index must be at most 3")
     task_events = _task_events_after_cursor(events, cursor, full_task_name)
     if not task_events:
         raise ValueError("no exact task events occurred after the event cursor")
-    forbidden = [event for event in task_events if _event_id(event) in {107, 110}]
+    forbidden = [event for event in task_events if _event_id(event) in {102, 107, 110}]
     if forbidden:
-        labels = {107: "trigger", 110: "manual"}
+        labels = {102: "task completion", 107: "trigger", 110: "manual"}
         raise ValueError(f"{labels[_event_id(forbidden[0])]} launch occurred after event cursor")
 
     old_actions = [event for event in task_events if _event_id(event) == 201]
@@ -254,42 +279,40 @@ def verify_scheduler_restart(
         raise ValueError("exactly one old Event 201 action-completed failure is required")
     old_action = old_actions[0]
     if (
-        _strict_decimal(_event_field(old_action, "ResultCode"), "ResultCode") != 75
+        _strict_decimal(_event_field(old_action, "ResultCode"), "ResultCode") != _EXIT_75_HRESULT
         or _canonical_windows_path(_event_field(old_action, "ActionName") or "", "ActionName")
         != expected_action
     ):
         raise ValueError("old Event 201 does not match exact failure action")
     old_instance = _canonical_guid(_event_field(old_action, "TaskInstanceId"), "old TaskInstanceId")
     failure_record_id = _event_record_id(old_action)
-
-    replacement_event_ids = {100, 200, 129}
-    reordered = [
-        event
-        for event in task_events
-        if _event_id(event) in replacement_event_ids
+    if any(
+        _event_id(event) in {200, 129}
         and _event_record_id(event) < failure_record_id
+        for event in task_events
+    ):
+        raise ValueError("recovery Event 129/200 cannot precede old Event 201")
+    ordered_after_failure = [
+        event for event in task_events if _event_record_id(event) > failure_record_id
     ]
-    if reordered:
-        raise ValueError("replacement task evidence occurred before old action failure")
-    start_events = [event for event in task_events if _event_id(event) == 100]
-    if len(start_events) != 1:
-        raise ValueError("exactly one replacement Event 100 is required after the old failure")
-    replacement_start = start_events[0]
-    replacement_instance = _canonical_guid(
-        _event_field(replacement_start, "InstanceId"), "replacement InstanceId"
-    )
-    if replacement_instance == old_instance:
-        raise ValueError("replacement task instance must differ from old failed instance")
-
-    replacement_actions = [event for event in task_events if _event_id(event) == 200]
-    if len(replacement_actions) != 1:
-        raise ValueError("exactly one replacement Event 200 action is required")
-    replacement_action = replacement_actions[0]
+    relevant_ids = {100, 102, 107, 110, 200, 129}
+    recovery_relevant = [
+        event for event in ordered_after_failure if _event_id(event) in relevant_ids
+    ]
+    if len(recovery_relevant) < 2 or {
+        _event_id(event) for event in recovery_relevant[:2]
+    } != {200, 129}:
+        raise ValueError(
+            "old Event 201 must be followed by exactly one Event 129 and one Event 200"
+        )
+    if len(recovery_relevant) != 2:
+        raise ValueError("unexpected or reordered Task Scheduler recovery evidence")
+    replacement_action = next(event for event in recovery_relevant if _event_id(event) == 200)
     if (
         _canonical_guid(
             _event_field(replacement_action, "TaskInstanceId"), "Event 200 TaskInstanceId"
         )
-        != replacement_instance
+        != old_instance
         or _canonical_windows_path(
             _event_field(replacement_action, "ActionName") or "", "ActionName"
         )
@@ -297,10 +320,7 @@ def verify_scheduler_restart(
     ):
         raise ValueError("replacement Event 200 does not match exact task action")
 
-    created_processes = [event for event in task_events if _event_id(event) == 129]
-    if len(created_processes) != 1:
-        raise ValueError("exactly one Event 129 CreatedTaskProcess is required")
-    created_process = created_processes[0]
+    created_process = next(event for event in recovery_relevant if _event_id(event) == 129)
     if (
         _canonical_windows_path(_event_field(created_process, "Path") or "", "Event 129 Path")
         != expected_action
@@ -309,24 +329,41 @@ def verify_scheduler_restart(
     created_pid = _strict_decimal(
         _event_field(created_process, "ProcessID"), "Event 129 ProcessID", minimum=1
     )
+    engine_pid = _strict_decimal(
+        _event_field(replacement_action, "EnginePID"), "Event 200 EnginePID", minimum=1
+    )
+    if engine_pid != created_pid:
+        raise ValueError("Event 200 EnginePID does not match Event 129 ProcessID")
+    created_instance = _event_field(created_process, "TaskInstanceId")
+    if (
+        created_instance is not None
+        and _canonical_guid(created_instance, "Event 129 TaskInstanceId") != old_instance
+    ):
+        raise ValueError("Event 129 TaskInstanceId does not match failed task instance")
     created_process_event_time = _event_system_time(created_process)
     ancestor_pids, created_process_creation_time = _replacement_ancestor_chain(
         process_snapshot,
         created_pid,
         hub_pid,
         expected_action,
+        recovery_index,
+        recovery_action_arguments,
         created_process_event_time,
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "event_cursor_record_id": cursor,
         "full_task_name": full_task_name,
         "action_path": action_path,
         "old_action_event_record_id": failure_record_id,
         "old_task_instance_id": old_instance,
-        "replacement_start_event_record_id": _event_record_id(replacement_start),
+        "old_result_code": _EXIT_75_HRESULT,
+        "old_win32_exit_code": 75,
         "replacement_action_event_record_id": _event_record_id(replacement_action),
-        "replacement_task_instance_id": replacement_instance,
+        "replacement_task_instance_id": old_instance,
+        "replacement_engine_pid": engine_pid,
+        "recovery_action_arguments": recovery_action_arguments,
+        "recovery_action_index": recovery_index,
         "replacement_process_event_record_id": _event_record_id(created_process),
         "replacement_process_event_time": created_process_event_time,
         "replacement_process_id": created_pid,
@@ -367,6 +404,8 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--full-task-name", required=True)
     parser.add_argument("--action-path", required=True)
+    parser.add_argument("--recovery-action-index", type=int, required=True)
+    parser.add_argument("--recovery-action-arguments", required=True)
     parser.add_argument("--replacement-hub-pid", type=int, required=True)
     arguments = parser.parse_args()
     payload = _read_input(arguments.input)
@@ -385,6 +424,8 @@ def main() -> None:
         ),
         full_task_name=arguments.full_task_name,
         action_path=arguments.action_path,
+        recovery_action_index=arguments.recovery_action_index,
+        recovery_action_arguments=arguments.recovery_action_arguments,
         replacement_hub_pid=arguments.replacement_hub_pid,
         process_snapshot=cast(list[Mapping[str, object]], process_snapshot),
     )

@@ -87,6 +87,12 @@ function ConvertTo-UtcIso8601 {
   return ([datetime]$Value).ToUniversalTime().ToString("o")
 }
 
+function Test-ExactUtcTimestamp {
+  param([object]$Value)
+  $Parsed = [datetime]::MinValue
+  return [datetime]::TryParseExact([string]$Value, "o", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$Parsed) -and $Parsed.Kind -eq [System.DateTimeKind]::Utc
+}
+
 function Write-F28Diagnostic {
   param([string]$Message)
   try {
@@ -194,36 +200,31 @@ function Get-TaskContract {
   )
   $Task = Get-ScheduledTask -TaskName $Name -ErrorAction Stop
   $Actions = @($Task.Actions)
-  if ($Actions.Count -ne 1) { throw "Scheduled task must have exactly one action." }
+  if ($Actions.Count -ne 4) { throw "Scheduled task must have exactly four F28 actions." }
   $StartScript = Join-Path $Root "scripts\start-hub.ps1"
-  $ExpectedArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$StartScript`" -DataRoot `"$EffectiveDataRoot`""
-  if (-not [string]::Equals(
-    ([string]$Actions[0].Arguments).Trim(),
-    $ExpectedArguments,
-    [System.StringComparison]::OrdinalIgnoreCase
-  )) { throw "Scheduled task action differs from the installed F28 launcher contract." }
-  if (-not [string]::Equals(
-    ([string]$Actions[0].WorkingDirectory).TrimEnd("\"),
-    $Root.TrimEnd("\"),
-    [System.StringComparison]::OrdinalIgnoreCase
-  )) { throw "Scheduled task working directory differs from the installed source." }
-  if ([System.IO.Path]::GetFileName([string]$Actions[0].Execute) -ine "powershell.exe") {
-    throw "Scheduled task action does not use Windows PowerShell."
-  }
-  if ([int]$Task.Settings.RestartCount -lt 3) {
-    throw "Scheduled task RestartCount must be at least three."
-  }
-  if (-not $Task.Settings.RestartInterval) {
-    throw "Scheduled task RestartInterval is missing."
+  $RecoveryScript = Join-Path $Root "scripts\restart-hub-after-failure.ps1"
+  $ExpectedPowerShell = (Get-Command powershell.exe -ErrorAction Stop).Source
+  $ExpectedIds = @("f28-primary-0", "f28-recovery-1", "f28-recovery-2", "f28-recovery-3")
+  foreach ($Index in 0..3) {
+    $ExpectedArguments = if ($Index -eq 0) {
+      "-NoProfile -ExecutionPolicy Bypass -File `"$StartScript`" -DataRoot `"$EffectiveDataRoot`" -ActionIndex 0"
+    } else {
+      "-NoProfile -ExecutionPolicy Bypass -File `"$RecoveryScript`" -DataRoot `"$EffectiveDataRoot`" -ActionIndex $Index -DelaySeconds 60"
+    }
+    if ([string]$Actions[$Index].Id -cne $ExpectedIds[$Index] -or
+        -not [string]::Equals(([string]$Actions[$Index].Arguments).Trim(), $ExpectedArguments, [System.StringComparison]::Ordinal) -or
+        -not [string]::Equals(([string]$Actions[$Index].WorkingDirectory).TrimEnd("\"), $Root.TrimEnd("\"), [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals(([string]$Actions[$Index].Execute).Trim(), $ExpectedPowerShell, [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw "Scheduled task action $Index differs from the installed F28 action-chain contract."
+    }
   }
   $TaskXml = Export-ScheduledTask -TaskName $Name
   return [ordered]@{
     full_task_name = "{0}{1}" -f [string]$Task.TaskPath, [string]$Task.TaskName
-    action = [string]$Actions[0].Execute
-    arguments = [string]$Actions[0].Arguments
+    action = [string]$Actions[1].Execute
+    arguments = [string]$Actions[1].Arguments
+    recovery_action_index = 1
     principal = [string]$Task.Principal.UserId
-    restart_count = [int]$Task.Settings.RestartCount
-    restart_interval = [string]$Task.Settings.RestartInterval
     xml_sha256 = (Get-StringSha256 -Value $TaskXml)
   }
 }
@@ -378,6 +379,7 @@ function Get-RuntimeEvidence {
       parent_pid = [int]$Process.ParentProcessId
       name = [string]$Process.Name
       executable_path = [string]$Process.ExecutablePath
+      command_line = [string]$Process.CommandLine
       creation_date = (ConvertTo-UtcIso8601 -Value $Process.CreationDate)
     })
     $Key = [string]$Process.ProcessId
@@ -391,6 +393,7 @@ function Get-RuntimeEvidence {
       parent_pid = [int]$_.ParentProcessId
       name = [string]$_.Name
       executable_path = [string]$_.ExecutablePath
+      command_line = [string]$_.CommandLine
       creation_date = (ConvertTo-UtcIso8601 -Value $_.CreationDate)
     }
   })
@@ -573,6 +576,7 @@ $FirePath = Join-Path $GateDirectory "fire-$Nonce.json"
 $ServerExitPath = Join-Path $GateDirectory "server-exit-$Nonce.json"
 $ConsumedLauncherServerExitPath = Join-Path $GateDirectory "consumed-launcher-server-exit-$Nonce.json"
 $LauncherExitPath = Join-Path $GateDirectory "launcher-exit-$Nonce.json"
+$RecoveryConsumedPath = Join-Path $GateDirectory "recovery-consumed-$Nonce-1.json"
 $ConsumedPath = Join-Path $GateDirectory "consumed-$Nonce.json"
 $FinalizedPath = Join-Path $GateDirectory "finalized-$Nonce.json"
 $DatabaseBeforePath = Join-Path $GateDirectory ".database-before-$Nonce.db"
@@ -614,6 +618,7 @@ try {
   $DatabaseHashBefore = New-DatabaseSnapshotHash -Destination $DatabaseBeforePath
   $ArmedHash = (Get-FileHash -LiteralPath $ArmedPath -Algorithm SHA256).Hash.ToLowerInvariant()
   $TaskSchedulerCursor = Get-TaskSchedulerEventCursor
+  Write-F28Diagnostic -Message "F28 firing controlled native exit 75 request."
   Write-AtomicJson -Path $FirePath -Value ([ordered]@{
     schema_version = 1
     nonce = $Nonce
@@ -628,7 +633,10 @@ try {
     -Deadline $RestartDeadline `
     -Label "consumed launcher server exit record"
   Wait-ForFile -Path $LauncherExitPath -Deadline $RestartDeadline -Label "launcher exit record"
+  Write-F28Diagnostic -Message "F28 waiting for scheduler-consumed recovery authorization."
+  Wait-ForFile -Path $RecoveryConsumedPath -Deadline $RestartDeadline -Label "recovery consumed authorization"
   Wait-ForFile -Path $FinalizedPath -Deadline $RestartDeadline -Label "finalized exit record"
+  Write-F28Diagnostic -Message "F28 launcher/server evidence finalized; awaiting recovery readiness."
   if (Test-Path -LiteralPath $ActivePath) {
     throw "F28 active state remains after server finalization."
   }
@@ -638,6 +646,8 @@ try {
   $ServerExit = Get-Content -LiteralPath $ServerExitPath -Raw | ConvertFrom-Json
   $ConsumedLauncherServerExit = Get-Content -LiteralPath $ConsumedLauncherServerExitPath -Raw | ConvertFrom-Json
   $LauncherExit = Get-Content -LiteralPath $LauncherExitPath -Raw | ConvertFrom-Json
+  $RecoveryConsumedBytes = [System.IO.File]::ReadAllBytes($RecoveryConsumedPath)
+  $RecoveryConsumed = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($RecoveryConsumedBytes) | ConvertFrom-Json
   $Consumed = Get-Content -LiteralPath $ConsumedPath -Raw | ConvertFrom-Json
   $Finalized = Get-Content -LiteralPath $FinalizedPath -Raw | ConvertFrom-Json
   foreach ($Record in @($ServerExit, $ConsumedLauncherServerExit, $LauncherExit)) {
@@ -681,6 +691,29 @@ try {
     [string]$Finalized.server_exit_sha256 -cne $ServerExitHash -or
     [string]$Finalized.latest_server_exit_sha256 -cne $ConsumedLauncherServerExitHash
   ) { throw "Finalized exit record does not prove exact consumed state." }
+  if (-not (Test-ExactJsonInteger -Value $LauncherExit.action_index -Expected 0)) {
+    throw "Primary launcher evidence does not bind action index zero."
+  }
+  $RecoveryAuthorizedAt = [datetime]::MinValue
+  $RecoveryExpiresAt = [datetime]::MinValue
+  $RecoveryValidationNow = (Get-Date).ToUniversalTime()
+  if (-not (Test-ExactJsonInteger -Value $RecoveryConsumed.schema_version -Expected 1) -or
+      [string]$RecoveryConsumed.nonce -cne $Nonce -or
+      -not (Test-ExactJsonInteger -Value $RecoveryConsumed.exit_code -Expected 75) -or
+      [string]$RecoveryConsumed.expected_revision -cne $ExpectedRevision -or
+      [string]$RecoveryConsumed.expected_tree -cne $ExpectedTree -or
+      -not (Test-ExactJsonInteger -Value $RecoveryConsumed.expected_schema -Expected $ExpectedSchema) -or
+      -not (Test-ExactJsonInteger -Value $RecoveryConsumed.predecessor_action_index -Expected 0) -or
+      -not (Test-ExactJsonInteger -Value $RecoveryConsumed.next_action_index -Expected 1) -or
+      -not [datetime]::TryParseExact([string]$RecoveryConsumed.authorized_at, "o", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$RecoveryAuthorizedAt) -or
+      -not [datetime]::TryParseExact([string]$RecoveryConsumed.expires_at, "o", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$RecoveryExpiresAt) -or
+      $RecoveryAuthorizedAt.Kind -ne [System.DateTimeKind]::Utc -or $RecoveryExpiresAt.Kind -ne [System.DateTimeKind]::Utc -or
+      $RecoveryExpiresAt -le $RecoveryAuthorizedAt -or $RecoveryExpiresAt -gt $RecoveryAuthorizedAt.AddMinutes(5) -or
+      $RecoveryAuthorizedAt -lt $RequestIssuedAt -or $RecoveryAuthorizedAt -gt $RecoveryValidationNow -or
+      [string]$RecoveryConsumed.predecessor_evidence -cne "launcher-exit-$Nonce.json" -or
+      [string]$RecoveryConsumed.predecessor_evidence_sha256 -cne (Get-FileHash -LiteralPath $LauncherExitPath -Algorithm SHA256).Hash.ToLowerInvariant()) {
+    throw "Consumed recovery authorization does not bind primary launcher evidence."
+  }
   $OldPids = @($OldProcesses | ForEach-Object { [int]$_.pid })
   if (
     -not (Test-JsonInteger -Value $ServerExit.server_pid) -or
@@ -693,6 +726,7 @@ try {
   $ReplacementProcesses = $null
   $ReplacementProcessSnapshot = $null
   $HealthAfter = $null
+  Write-F28Diagnostic -Message "F28 waiting for replacement runtime readiness."
   while ((Get-Date).ToUniversalTime() -lt $RestartDeadline) {
     $TaskInfo = Get-ScheduledTaskInfo -TaskName $TaskName
     $ObservedLastResults.Add([int]$TaskInfo.LastTaskResult)
@@ -720,9 +754,6 @@ try {
   ) {
     throw "Task Scheduler did not restore a new exact healthy runtime before timeout."
   }
-  if ($FixedExitCode -notin @($ObservedLastResults)) {
-    throw "Task Scheduler LastTaskResult never exposed native exit code 75."
-  }
   $ReplacementHubProcesses = @($ReplacementProcesses | Where-Object {
     [string]$_.name -ieq "oms-hub.exe"
   })
@@ -747,11 +778,18 @@ try {
     --output $SchedulerProofPath `
     --full-task-name $TaskBefore.full_task_name `
     --action-path $TaskBefore.action `
+    --recovery-action-index $TaskBefore.recovery_action_index `
+    --recovery-action-arguments $TaskBefore.arguments `
     --replacement-hub-pid ([int]$ReplacementHubProcesses[0].pid)
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $SchedulerProofPath -PathType Leaf)) {
     throw "Task Scheduler XML evidence did not prove automatic failure restart."
   }
   $SchedulerProof = Get-Content -LiteralPath $SchedulerProofPath -Raw | ConvertFrom-Json
+  Write-F28Diagnostic -Message "F28 scheduler action-chain proof completed."
+  if (-not (Test-ExactJsonInteger -Value $SchedulerProof.old_result_code -Expected 2147942475) -or
+      -not (Test-ExactJsonInteger -Value $SchedulerProof.old_win32_exit_code -Expected 75)) {
+    throw "Task Scheduler Event 201 did not record exact HRESULT 0x8007004B / Win32 75."
+  }
 
   $DatabaseHashAfter = New-DatabaseSnapshotHash -Destination $DatabaseAfterPath
   if ($DatabaseHashAfter -cne $DatabaseHashBefore) { throw "Live database changed during F28 acceptance." }
@@ -791,6 +829,7 @@ try {
     workers = $HealthAfter.workers
     task_last_results = @($ObservedLastResults)
     scheduler = $SchedulerProof
+    recovery_consumed_sha256 = (Get-FileHash -LiteralPath $RecoveryConsumedPath -Algorithm SHA256).Hash.ToLowerInvariant()
     database_sha256 = $DatabaseHashAfter
     env_sha256 = $EnvHashAfter
     rollback_backup = $ExpectedBackupPath
@@ -829,6 +868,7 @@ try {
         } catch {
           # RECOVERY ONLY: request the unchanged registered task when automatic
           # restart failed. Never stop, kill, register, or rewrite the task.
+          Write-F28Diagnostic -Message "F28 beginning recovery-only manual task start."
           Start-ScheduledTask -TaskName $TaskName
           $RecoveryDeadline = (Get-Date).ToUniversalTime().AddSeconds($RestartTimeoutSeconds)
           do {

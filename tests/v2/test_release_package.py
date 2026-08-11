@@ -49,6 +49,7 @@ def test_release_builder_creates_secret_safe_hotfix_and_source_archives(tmp_path
     assert "scripts/install-windows.ps1" in hotfix_names
     assert "scripts/start-hub.ps1" in hotfix_names
     assert "scripts/accept-f28-restart.ps1" in hotfix_names
+    assert "scripts/restart-hub-after-failure.ps1" in builder._RECOVERY_HOTFIX
     assert "pyproject.toml" in source_names
     assert "src/oms_hub/app.py" in source_names
     assert "tests/v2/test_llm_settings_routes.py" in source_names
@@ -102,6 +103,39 @@ def test_release_builder_is_deterministic_and_excludes_untracked_files(tmp_path)
                 planted_payload not in archive.read(member)
                 for member in archive.namelist()
             )
+
+
+def test_release_builder_rejects_missing_legacy_hotfix_member(tmp_path, monkeypatch):
+    builder = load_builder()
+    legacy = builder.HOTFIX_FILES[0]
+    release_tree = builder.ReleaseTree(
+        commit_sha="a" * 40,
+        tree_sha="b" * 40,
+        blobs={path: b"x" for path in builder.HOTFIX_FILES if path != legacy},
+    )
+    monkeypatch.setattr(builder, "_release_tree", lambda _root, _commit: release_tree)
+
+    with pytest.raises(ValueError, match="required hotfix files"):
+        builder.build_releases(tmp_path, tmp_path / "output", "20260811", "a" * 40)
+
+
+def test_release_builder_requires_referenced_recovery_wrapper_and_packages_it(
+    tmp_path, monkeypatch
+):
+    builder = load_builder()
+    blobs = {path: b"x" for path in builder.HOTFIX_FILES}
+    blobs["scripts/install-windows.ps1"] = b"restart-hub-after-failure.ps1"
+    missing = builder.ReleaseTree("a" * 40, "b" * 40, blobs)
+    monkeypatch.setattr(builder, "_release_tree", lambda _root, _commit: missing)
+    with pytest.raises(ValueError, match="references missing recovery wrapper"):
+        builder.build_releases(tmp_path, tmp_path / "missing", "20260811", "a" * 40)
+
+    blobs[builder._RECOVERY_HOTFIX] = b"recovery"
+    present = builder.ReleaseTree("a" * 40, "b" * 40, blobs)
+    monkeypatch.setattr(builder, "_release_tree", lambda _root, _commit: present)
+    hotfix, _ = builder.build_releases(tmp_path, tmp_path / "present", "20260811", "a" * 40)
+    with zipfile.ZipFile(hotfix) as archive:
+        assert builder._RECOVERY_HOTFIX in archive.namelist()
 
 
 @pytest.mark.parametrize("commit", ["62c6d5f", "HEAD", "not-a-commit", "f" * 40])

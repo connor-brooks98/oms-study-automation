@@ -17,6 +17,10 @@ $StartScript = Join-Path $ProjectRoot "scripts\start-hub.ps1"
 if (-not (Test-Path -LiteralPath $StartScript)) {
   throw "Study Hub start script not found: $StartScript"
 }
+$RecoveryScript = Join-Path $ProjectRoot "scripts\restart-hub-after-failure.ps1"
+if (-not (Test-Path -LiteralPath $RecoveryScript)) {
+  throw "F28 recovery script not found: $RecoveryScript"
+}
 $EnvFile = Join-Path $ProjectRoot ".env"
 $BackupScript = Join-Path $ProjectRoot "scripts\backup-sqlite.py"
 if (-not (Test-Path -LiteralPath $BackupScript)) {
@@ -112,9 +116,15 @@ $F28GateDirectory = Join-Path $EffectiveDataRoot "acceptance\f28"
 function Get-ExpectedTaskArguments {
   param(
     [string]$ExpectedStartScript,
-    [string]$ExpectedDataRoot
+    [string]$ExpectedDataRoot,
+    [int]$ActionIndex
   )
-  return "-NoProfile -ExecutionPolicy Bypass -File `"$ExpectedStartScript`" -DataRoot `"$ExpectedDataRoot`""
+  return "-NoProfile -ExecutionPolicy Bypass -File `"$ExpectedStartScript`" -DataRoot `"$ExpectedDataRoot`" -ActionIndex $ActionIndex"
+}
+
+function Get-ExpectedRecoveryTaskArguments {
+  param([string]$ExpectedRecoveryScript, [string]$ExpectedDataRoot, [int]$ActionIndex)
+  return "-NoProfile -ExecutionPolicy Bypass -File `"$ExpectedRecoveryScript`" -DataRoot `"$ExpectedDataRoot`" -ActionIndex $ActionIndex -DelaySeconds 60"
 }
 
 function Initialize-F28GateDirectory {
@@ -164,27 +174,64 @@ function Assert-TaskActionTargetsProjectRoot {
     [string]$Name,
     [string]$ExpectedProjectRoot,
     [string]$ExpectedStartScript,
-    [string]$ExpectedDataRoot
+    [string]$ExpectedRecoveryScript,
+    [string]$ExpectedDataRoot,
+    [string]$ExpectedPowerShell
   )
   $Task = Get-ScheduledTask -TaskName $Name -ErrorAction Stop
   $Actions = @($Task.Actions)
-  if ($Actions.Count -ne 1) {
-    throw "Scheduled task $Name must have exactly one action; found $($Actions.Count)."
+  if ($Actions.Count -ne 4) {
+    throw "Scheduled task $Name must have exactly four ordered F28 actions; found $($Actions.Count)."
   }
-  $Action = $Actions[0]
-  $ExpectedArguments = Get-ExpectedTaskArguments `
-    -ExpectedStartScript $ExpectedStartScript `
-    -ExpectedDataRoot $ExpectedDataRoot
-  $ArgumentsMatch = [string]::Equals(
-    ([string]$Action.Arguments).Trim(),
-    $ExpectedArguments,
-    [System.StringComparison]::OrdinalIgnoreCase
+  $ExpectedIds = @("f28-primary-0", "f28-recovery-1", "f28-recovery-2", "f28-recovery-3")
+  foreach ($Index in 0..3) {
+    $Action = $Actions[$Index]
+    $ExpectedArguments = if ($Index -eq 0) {
+      Get-ExpectedTaskArguments -ExpectedStartScript $ExpectedStartScript -ExpectedDataRoot $ExpectedDataRoot -ActionIndex 0
+    } else {
+      Get-ExpectedRecoveryTaskArguments -ExpectedRecoveryScript $ExpectedRecoveryScript -ExpectedDataRoot $ExpectedDataRoot -ActionIndex $Index
+    }
+    if ([string]$Action.Id -cne $ExpectedIds[$Index] -or
+        -not [string]::Equals(([string]$Action.Execute).Trim(), $ExpectedPowerShell, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals(([string]$Action.Arguments).Trim(), $ExpectedArguments, [System.StringComparison]::Ordinal) -or
+        -not [string]::Equals(([string]$Action.WorkingDirectory).TrimEnd("\\"), $ExpectedProjectRoot.TrimEnd("\\"), [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw "Scheduled task $Name action $Index differs from the exact F28 action-chain contract."
+    }
+  }
+}
+
+function Restore-PreviousScheduledTask {
+  param(
+    [string]$Name,
+    [AllowNull()][string]$PriorXmlPath,
+    [AllowNull()][string]$PriorXmlSha256,
+    [string]$ExpectedProjectRoot,
+    [string]$ExpectedBuildRevision,
+    [string]$ExpectedBuildTree
   )
-  $WorkingDirectory = ([string]$Action.WorkingDirectory).TrimEnd("\\")
-  $ExpectedDirectory = $ExpectedProjectRoot.TrimEnd("\\")
-  if (-not $ArgumentsMatch -or $WorkingDirectory -ne $ExpectedDirectory) {
-    throw "Scheduled task $Name does not target $ExpectedProjectRoot. Re-run the installer with the intended -ProjectRoot."
+  if ($PriorXmlPath) {
+    if (-not (Test-Path -LiteralPath $PriorXmlPath -PathType Leaf) -or
+        ((Get-Item -LiteralPath $PriorXmlPath -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        (Get-FileHash -LiteralPath $PriorXmlPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $PriorXmlSha256) {
+      throw "Prior scheduled task rollback XML is missing or hash-mismatched."
+    }
+    $PriorXml = Get-Content -LiteralPath $PriorXmlPath -Raw -ErrorAction Stop
+    Register-ScheduledTask -TaskName $Name -Xml $PriorXml -Force -ErrorAction Stop | Out-Null
+    $RestoredXml = Export-ScheduledTask -TaskName $Name -ErrorAction Stop
+    if ((Get-StringSha256 -Value $RestoredXml) -cne (Get-StringSha256 -Value $PriorXml)) { throw "Prior scheduled task restore differs from its exported definition." }
+    Start-ScheduledTask -TaskName $Name -ErrorAction Stop
+  } else {
+    $CandidateTask = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
+    if ($CandidateTask) {
+      Unregister-ScheduledTask -TaskName $Name -Confirm:$false -ErrorAction Stop
+    }
+    if (Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue) { throw "New scheduled task remains after rollback removal." }
+    return
   }
+  Assert-StartedHubProvenance `
+    -ExpectedProjectRoot $ExpectedProjectRoot `
+    -ExpectedBuildRevision $ExpectedBuildRevision `
+    -ExpectedBuildTree $ExpectedBuildTree
 }
 
 function Test-ProcessPathUnderRoot {
@@ -535,6 +582,8 @@ if ($PSCmdlet.ShouldProcess($ProjectRoot, "Stop same-root Study Hub processes"))
 
 $BackupComplete = $false
 $DatabaseBackedUp = $false
+$PriorTaskXmlPath = $null
+$PriorTaskXmlSha256 = $null
 if ($PSCmdlet.ShouldProcess($BackupPath, "Create verified rollback backup")) {
   Assert-ProjectBuildIdentity `
     -ExpectedProjectRoot $ProjectRoot `
@@ -544,6 +593,16 @@ if ($PSCmdlet.ShouldProcess($BackupPath, "Create verified rollback backup")) {
     throw "Rollback backup path already exists: $BackupPath"
   }
   New-Item -ItemType Directory -Path $BackupPath | Out-Null
+  if ($ExistingTask) {
+    $PriorTaskXmlPath = Join-Path $BackupPath "scheduled-task-before.xml"
+    $PriorTaskXml = Export-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($PriorTaskXmlPath, $PriorTaskXml, $Utf8NoBom)
+    if (-not (Test-Path -LiteralPath $PriorTaskXmlPath -PathType Leaf)) {
+      throw "Prior scheduled task export was not written as an exact leaf."
+    }
+    $PriorTaskXmlSha256 = (Get-FileHash -LiteralPath $PriorTaskXmlPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  }
   $ArtifactPath = Join-Path $EffectiveDataRoot "artifacts"
   $BackupDatabasePath = Join-Path $BackupPath "hub.db"
   if ($DatabasePresentAtPreflight -and -not (Test-Path -LiteralPath $DatabasePath)) {
@@ -586,6 +645,11 @@ if ($PSCmdlet.ShouldProcess($BackupPath, "Create verified rollback backup")) {
     build_revision = $PreflightBuildRevision
     build_tree = $PreflightBuildTree
     database_path = $DatabasePath
+    scheduled_task = [ordered]@{
+      existed = [bool]$ExistingTask
+      xml = $(if ($PriorTaskXmlPath) { "scheduled-task-before.xml" } else { $null })
+      sha256 = $PriorTaskXmlSha256
+    }
     database_url = $EffectiveDatabaseUrl
     data_root = $EffectiveDataRoot
     project_root = $ProjectRoot
@@ -691,21 +755,33 @@ if ($PSCmdlet.ShouldProcess($F28GateDirectory, "Initialize F28 gate directory"))
 }
 
 if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {
-  Assert-ProjectBuildIdentity `
+  try {
+    Assert-ProjectBuildIdentity `
     -ExpectedProjectRoot $ProjectRoot `
     -ExpectedBuildRevision $PreflightBuildRevision `
     -ExpectedBuildTree $PreflightBuildTree
   $PowerShell = (Get-Command powershell.exe).Source
-  $TaskArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$StartScript`" -DataRoot `"$EffectiveDataRoot`""
-  $Action = New-ScheduledTaskAction `
+  $PrimaryArguments = Get-ExpectedTaskArguments -ExpectedStartScript $StartScript -ExpectedDataRoot $EffectiveDataRoot -ActionIndex 0
+  $PrimaryAction = New-ScheduledTaskAction `
     -Execute $PowerShell `
-    -Argument $TaskArguments `
-    -WorkingDirectory $ProjectRoot
+    -Argument $PrimaryArguments `
+    -WorkingDirectory $ProjectRoot `
+    -Id "f28-primary-0"
+  $RecoveryActions = @()
+  foreach ($Index in 1..3) {
+    $RecoveryArguments = Get-ExpectedRecoveryTaskArguments -ExpectedRecoveryScript $RecoveryScript -ExpectedDataRoot $EffectiveDataRoot -ActionIndex $Index
+    $RecoveryAction = New-ScheduledTaskAction `
+      -Execute $PowerShell `
+      -Argument $RecoveryArguments `
+      -WorkingDirectory $ProjectRoot `
+      -Id "f28-recovery-$Index"
+    $RecoveryActions += $RecoveryAction
+  }
+  $Action = @($PrimaryAction) + $RecoveryActions
   $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $TaskIdentity
-  $TaskSettings = New-ScheduledTaskSettingsSet `
-    -RestartCount 3 `
-    -RestartInterval (New-TimeSpan -Minutes 1) `
-    -StartWhenAvailable
+  # Scheduler treats HRESULT_FROM_WIN32(75) as ActionSuccess/TaskSuccess.
+  # Do not use RestartOnFailure; only the guarded F28 actions can recover.
+  $TaskSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable
   $Principal = New-ScheduledTaskPrincipal `
     -UserId $TaskIdentity `
     -LogonType Interactive
@@ -720,7 +796,9 @@ if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {
     -Name $TaskName `
     -ExpectedProjectRoot $ProjectRoot `
     -ExpectedStartScript $StartScript `
-    -ExpectedDataRoot $EffectiveDataRoot
+    -ExpectedRecoveryScript $RecoveryScript `
+    -ExpectedDataRoot $EffectiveDataRoot `
+    -ExpectedPowerShell $PowerShell
   # Re-assert the same-root stop invariant immediately before task startup.
   # Never terminate generic Python processes from another deployment.
   Assert-ProjectBuildIdentity `
@@ -733,10 +811,25 @@ if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {
     -ExpectedBuildRevision $PreflightBuildRevision `
     -ExpectedBuildTree $PreflightBuildTree
   Start-ScheduledTask -TaskName $TaskName
-  Assert-StartedHubProvenance `
+    Assert-StartedHubProvenance `
     -ExpectedProjectRoot $ProjectRoot `
     -ExpectedBuildRevision $PreflightBuildRevision `
     -ExpectedBuildTree $PreflightBuildTree
+  } catch {
+    $OriginalFailure = $_
+    try {
+      Restore-PreviousScheduledTask `
+        -Name $TaskName `
+        -PriorXmlPath $PriorTaskXmlPath `
+        -PriorXmlSha256 $PriorTaskXmlSha256 `
+        -ExpectedProjectRoot $ProjectRoot `
+        -ExpectedBuildRevision $PreflightBuildRevision `
+        -ExpectedBuildTree $PreflightBuildTree
+    } catch {
+      [Console]::Error.WriteLine("F28 scheduled-task rollback failed: $($_.Exception.Message)")
+    }
+    throw $OriginalFailure
+  }
 }
 
 if ($WhatIfPreference) {

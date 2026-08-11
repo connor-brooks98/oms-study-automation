@@ -1,9 +1,17 @@
+import inspect
+
 import pytest
 
-from oms_hub.task_scheduler_evidence import verify_scheduler_restart
+from oms_hub.task_scheduler_evidence import verify_scheduler_restart as _verify_scheduler_restart
 
 TASK = r"\OMS Study Hub V2"
 ACTION = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+RECOVERY_ARGUMENTS = '-NoProfile -File "C:\\Services\\restart-hub-after-failure.ps1" -ActionIndex 1'
+
+
+def verify_scheduler_restart(**kwargs: object) -> dict[str, object]:
+    kwargs.setdefault("recovery_action_arguments", RECOVERY_ARGUMENTS)
+    return _verify_scheduler_restart(**kwargs)  # type: ignore[arg-type]
 
 
 def _event(
@@ -29,13 +37,25 @@ def _event(
 
 def _valid_events() -> list[dict[str, object]]:
     old = "11111111-1111-1111-1111-111111111111"
-    replacement = "22222222-2222-2222-2222-222222222222"
     return [
-        _event(11, 201, TaskName=TASK, TaskInstanceId=old, ActionName=ACTION, ResultCode="75"),
-        _event(12, 100, TaskName=TASK, InstanceId=replacement),
-        _event(13, 200, TaskName=TASK, TaskInstanceId=replacement, ActionName=ACTION),
         _event(
-            14,
+            11,
+            201,
+            TaskName=TASK,
+            TaskInstanceId=old,
+            ActionName=ACTION,
+            ResultCode="2147942475",
+        ),
+        _event(
+            12,
+            200,
+            TaskName=TASK,
+            TaskInstanceId=old,
+            ActionName=ACTION,
+            EnginePID="700",
+        ),
+        _event(
+            13,
             129,
             system_time="2026-08-10T19:20:03.2500000Z",
             TaskName=TASK,
@@ -53,18 +73,26 @@ def _processes() -> list[dict[str, object]]:
             "name": "powershell.exe",
             "executable_path": ACTION,
             "creation_date": "2026-08-10T19:20:03.1250000Z",
+            "command_line": (
+                'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe '
+                '-NoProfile -File "C:\\Services\\restart-hub-after-failure.ps1" -ActionIndex 1'
+            ),
         },
         {
             "pid": 701,
             "parent_pid": 700,
             "name": "python.exe",
             "executable_path": r"C:\Services\oms-study-automation-v2\.venv\Scripts\python.exe",
+            "creation_date": "2026-08-10T19:20:03.1250000Z",
+            "command_line": "python.exe -m oms_hub",
         },
         {
             "pid": 702,
             "parent_pid": 701,
             "name": "oms-hub.exe",
             "executable_path": r"C:\Services\oms-study-automation-v2\.venv\Scripts\oms-hub.exe",
+            "creation_date": "2026-08-10T19:20:03.1250000Z",
+            "command_line": "oms-hub.exe serve",
         },
     ]
 
@@ -86,11 +114,170 @@ def test_scheduler_verifier_proves_one_automatic_restart_and_parent_chain() -> N
     assert proof["replacement_process_creation_time"] == "2026-08-10T19:20:03.1250000Z"
 
 
+def test_scheduler_verifier_requires_exact_recovery_arguments_api() -> None:
+    parameter = inspect.signature(_verify_scheduler_restart).parameters[
+        "recovery_action_arguments"
+    ]
+    assert parameter.default is inspect.Parameter.empty
+
+
+def test_scheduler_verifier_requires_the_native_exit_75_hresult_not_a_low_word() -> None:
+    """Task Scheduler records PowerShell's exit 75 as 0x8007004B, not 75."""
+    events = _valid_events()
+    events[0] = _event(
+        11,
+        201,
+        TaskName=TASK,
+        TaskInstanceId="11111111-1111-1111-1111-111111111111",
+        ActionName=ACTION,
+        ResultCode="2147942475",
+    )
+
+    proof = verify_scheduler_restart(
+        events=events,
+        cursor_event_record_id=10,
+        full_task_name=TASK,
+        action_path=ACTION,
+        replacement_hub_pid=702,
+        process_snapshot=_processes(),
+    )
+
+    assert proof["old_result_code"] == 2147942475
+
+
+def test_scheduler_verifier_allows_native_129_then_200_recovery_order() -> None:
+    events = _valid_events()
+    events[1] = _event(
+        12,
+        129,
+        system_time="2026-08-10T19:20:03.2500000Z",
+        TaskName=TASK,
+        Path=ACTION,
+        ProcessID="700",
+    )
+    events[2] = _event(
+        13,
+        200,
+        TaskName=TASK,
+        TaskInstanceId="11111111-1111-1111-1111-111111111111",
+        ActionName=ACTION,
+        EnginePID="700",
+    )
+
+    proof = verify_scheduler_restart(
+        events=events,
+        cursor_event_record_id=10,
+        full_task_name=TASK,
+        action_path=ACTION,
+        replacement_hub_pid=702,
+        process_snapshot=_processes(),
+        recovery_action_arguments=(
+            '-NoProfile -File "C:\\Services\\restart-hub-after-failure.ps1" -ActionIndex 1'
+        ),
+    )
+
+    assert proof["replacement_process_id"] == 700
+
+
+def test_scheduler_verifier_rejects_engine_pid_or_extra_recovery_arguments() -> None:
+    events = _valid_events()
+    events[1] = _event(
+        12,
+        200,
+        TaskName=TASK,
+        TaskInstanceId="11111111-1111-1111-1111-111111111111",
+        ActionName=ACTION,
+        EnginePID="701",
+    )
+    with pytest.raises(ValueError, match="EnginePID"):
+        verify_scheduler_restart(
+            events=events,
+            cursor_event_record_id=10,
+            full_task_name=TASK,
+            action_path=ACTION,
+            replacement_hub_pid=702,
+            process_snapshot=_processes(),
+        )
+
+    processes = _processes()
+    processes[0]["command_line"] += " -ActionIndex 10"
+    with pytest.raises(ValueError, match="command line differs"):
+        verify_scheduler_restart(
+            events=_valid_events(),
+            cursor_event_record_id=10,
+            full_task_name=TASK,
+            action_path=ACTION,
+            replacement_hub_pid=702,
+            process_snapshot=processes,
+            recovery_action_arguments=(
+                '-NoProfile -File "C:\\Services\\restart-hub-after-failure.ps1" -ActionIndex 1'
+            ),
+        )
+
+
+@pytest.mark.parametrize("result_code", ["75", "2147942476", "0x8007004B"])
+def test_scheduler_verifier_rejects_low_word_wrong_or_nondecimal_hresult(result_code: str) -> None:
+    events = _valid_events()
+    events[0] = _event(
+        11,
+        201,
+        TaskName=TASK,
+        TaskInstanceId="11111111-1111-1111-1111-111111111111",
+        ActionName=ACTION,
+        ResultCode=result_code,
+    )
+
+    with pytest.raises(ValueError):
+        verify_scheduler_restart(
+            events=events,
+            cursor_event_record_id=10,
+            full_task_name=TASK,
+            action_path=ACTION,
+            replacement_hub_pid=702,
+            process_snapshot=_processes(),
+        )
+
+
+def test_scheduler_verifier_rejects_task_completion_between_failure_and_recovery() -> None:
+    events = _valid_events()
+    events.insert(1, _event(12, 102, TaskName=TASK))
+    events[2]["event_record_id"] = 13
+    events[2]["xml"] = str(events[2]["xml"]).replace("EventRecordID>12", "EventRecordID>13")
+    events[3]["event_record_id"] = 14
+    events[3]["xml"] = str(events[3]["xml"]).replace("EventRecordID>13", "EventRecordID>14")
+
+    with pytest.raises(ValueError, match="task completion"):
+        verify_scheduler_restart(
+            events=events,
+            cursor_event_record_id=10,
+            full_task_name=TASK,
+            action_path=ACTION,
+            replacement_hub_pid=702,
+            process_snapshot=_processes(),
+        )
+
+
 def test_scheduler_verifier_allows_system_entry_without_executable_path() -> None:
     processes = _processes()
-    processes.append({"pid": 4, "parent_pid": 0, "name": "System", "executable_path": ""})
     processes.append(
-        {"pid": 0, "parent_pid": 0, "name": "System Idle Process", "executable_path": ""}
+        {
+            "pid": 4,
+            "parent_pid": 0,
+            "name": "System",
+            "executable_path": "",
+            "creation_date": "2026-08-10T19:20:00.0000000Z",
+            "command_line": "",
+        }
+    )
+    processes.append(
+        {
+            "pid": 0,
+            "parent_pid": 0,
+            "name": "System Idle Process",
+            "executable_path": "",
+            "creation_date": "2026-08-10T19:20:00.0000000Z",
+            "command_line": "",
+        }
     )
 
     proof = verify_scheduler_restart(
@@ -127,19 +314,20 @@ def test_scheduler_verifier_rejects_manual_or_triggered_replacement(
         raise AssertionError("manual launch must not satisfy automatic restart evidence")
 
 
-def test_scheduler_verifier_rejects_replacement_event_before_old_failure() -> None:
+def test_scheduler_verifier_rejects_reordered_recovery_event_before_old_failure() -> None:
     events = _valid_events()
     events.insert(
         0,
         _event(
             9,
-            100,
+            200,
             TaskName=TASK,
-            InstanceId="33333333-3333-3333-3333-333333333333",
+            TaskInstanceId="33333333-3333-3333-3333-333333333333",
+            ActionName=ACTION,
         ),
     )
 
-    with pytest.raises(ValueError, match="before old"):
+    with pytest.raises(ValueError, match="cannot precede"):
         verify_scheduler_restart(
             events=events,
             cursor_event_record_id=8,
@@ -154,7 +342,7 @@ def test_scheduler_verifier_rejects_duplicate_eligible_created_process_records()
     events = _valid_events()
     events.append(_event(15, 129, TaskName=TASK, Path=ACTION, ProcessID="700"))
 
-    with pytest.raises(ValueError, match="exactly one Event 129"):
+    with pytest.raises(ValueError, match="unexpected or reordered"):
         verify_scheduler_restart(
             events=events,
             cursor_event_record_id=10,
@@ -167,8 +355,8 @@ def test_scheduler_verifier_rejects_duplicate_eligible_created_process_records()
 
 def test_scheduler_verifier_rejects_mismatched_replacement_instance_guid() -> None:
     events = _valid_events()
-    events[2] = _event(
-        13,
+    events[1] = _event(
+        12,
         200,
         TaskName=TASK,
         TaskInstanceId="33333333-3333-3333-3333-333333333333",
@@ -194,12 +382,18 @@ def test_scheduler_verifier_rejects_a_process_not_ancestral_to_replacement_hub()
         "name": "powershell.exe",
         "executable_path": ACTION,
         "creation_date": "2026-08-10T19:20:03.1250000Z",
+            "command_line": (
+                'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe '
+                '-NoProfile -File "C:\\Services\\restart-hub-after-failure.ps1" -ActionIndex 1'
+            ),
     }
     processes[1] = {
         "pid": 701,
         "parent_pid": 4,
         "name": "python.exe",
         "executable_path": r"C:\Services\oms-study-automation-v2\.venv\Scripts\python.exe",
+        "creation_date": "2026-08-10T19:20:03.1250000Z",
+        "command_line": "python.exe -m oms_hub",
     }
 
     try:
@@ -286,7 +480,7 @@ def test_scheduler_verifier_rejects_invalid_system_time_metadata(
     replacement: str, message: str
 ) -> None:
     events = _valid_events()
-    events[3]["xml"] = str(events[3]["xml"]).replace(
+    events[2]["xml"] = str(events[2]["xml"]).replace(
         '<TimeCreated SystemTime="2026-08-10T19:20:03.2500000Z"/>', replacement
     )
 
@@ -303,7 +497,7 @@ def test_scheduler_verifier_rejects_invalid_system_time_metadata(
 
 def test_scheduler_verifier_rejects_time_created_outside_system_node() -> None:
     events = _valid_events()
-    events[3]["xml"] = str(events[3]["xml"]).replace(
+    events[2]["xml"] = str(events[2]["xml"]).replace(
         '<TimeCreated SystemTime="2026-08-10T19:20:03.2500000Z"/>', ""
     ).replace(
         "<EventData>",
@@ -325,7 +519,7 @@ def test_scheduler_verifier_rejects_time_created_outside_system_node() -> None:
 def test_scheduler_verifier_rejects_duplicate_system_identifiers(element_name: str) -> None:
     events = _valid_events()
     value = "129" if element_name == "EventID" else "14"
-    events[3]["xml"] = str(events[3]["xml"]).replace(
+    events[2]["xml"] = str(events[2]["xml"]).replace(
         "</System>", f"<{element_name}>{value}</{element_name}></System>"
     )
 
@@ -342,7 +536,7 @@ def test_scheduler_verifier_rejects_duplicate_system_identifiers(element_name: s
 
 def test_scheduler_verifier_rejects_event_identifier_outside_system_node() -> None:
     events = _valid_events()
-    events[3]["xml"] = str(events[3]["xml"]).replace(
+    events[2]["xml"] = str(events[2]["xml"]).replace(
         "<EventData>", "<EventData><EventID>129</EventID>"
     )
 

@@ -61,7 +61,7 @@ def test_f28_launcher_and_installer_bind_one_acl_restricted_gate_directory() -> 
     assert "Test-Path -LiteralPath $ClaimedArchivePath)" in launcher
     assert "Test-Path -LiteralPath $Destination)" in launcher
     assert "Test-Path -LiteralPath $ClaimedArchivePath -PathType Leaf" not in launcher
-    assert "Test-Path -LiteralPath $Destination -PathType Leaf" not in launcher
+    assert "Test-Path -LiteralPath $Destination -PathType Leaf" in launcher
     assert launcher.index("$ClaimedArchivePath") < launcher.index(
         "Move-Item -LiteralPath $ClaimPath -Destination $ClaimedArchivePath"
     )
@@ -76,9 +76,62 @@ def test_f28_launcher_and_installer_bind_one_acl_restricted_gate_directory() -> 
     assert "SetAccessRuleProtection" in installer
     assert 'S-1-5-18' in installer
     assert 'S-1-5-32-544' in installer
-    assert '-DataRoot `"$EffectiveDataRoot`"' in installer
+    assert 'Get-ExpectedRecoveryTaskArguments' in installer
     assert "ExpectedDataRoot" in installer
     assert "F28 gate directory" in installer
+
+
+def test_f28_installs_exact_four_action_authorized_recovery_chain() -> None:
+    installer = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+    launcher = (ROOT / "scripts" / "start-hub.ps1").read_text(encoding="utf-8")
+    recovery = (ROOT / "scripts" / "restart-hub-after-failure.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert '[ValidateRange(0, 3)]' in launcher
+    assert "action_index = $CurrentActionIndex" in launcher
+    assert "recovery-authorized-{0}-{1}.json" in launcher
+    assert "predecessor_evidence_sha256" in launcher
+    assert "expires_at" in launcher
+    assert "f28-primary-0" in installer
+    for index in (1, 2, 3):
+        assert f"f28-recovery-{index}" in installer
+    assert "RestartCount" not in installer
+    assert "RestartInterval" not in installer
+    assert "-DelaySeconds 60" in installer
+    assert "scheduled-task-before.xml" in installer
+    assert "PriorTaskXmlSha256" in installer
+    assert "Restore-PreviousScheduledTask" in installer
+    assert "Unregister-ScheduledTask" in installer
+    assert '[ValidateRange(1, 3)]' in recovery
+    assert '[ValidateRange(1, 60)]' in recovery
+    assert "recovery-consumed-$Nonce-$ActionIndex.json" in recovery
+    assert "[System.IO.File]::Move($AuthorizationPath, $ConsumedPath)" in recovery
+    assert "$Item.PSIsContainer" in recovery
+    assert "Get-StrictUtcTimestamp" in recovery
+    assert "Get-BytesSha256" in recovery
+    assert "Start-Sleep -Seconds $DelaySeconds" in recovery
+    assert "Test-SameRootHubRuntime" in recovery
+    assert "Start-ScheduledTask" not in recovery
+    assert "Register-ScheduledTask" not in recovery
+    assert "Stop-Process" not in recovery
+    assert "& $PowerShell -NoProfile -ExecutionPolicy Bypass -File $StartScript" in recovery
+
+
+def test_f28_acceptance_requires_exact_hresult_and_same_instance_action_order() -> None:
+    script = (ROOT / "scripts" / "accept-f28-restart.ps1").read_text(encoding="utf-8")
+    verifier = (ROOT / "src" / "oms_hub" / "task_scheduler_evidence.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "2147942475" in verifier
+    assert "old_win32_exit_code" in verifier
+    assert "exactly one Event 129 and one Event 200" in verifier
+    assert "task completion" in verifier
+    assert "command_line" in script
+    assert "--recovery-action-index" in script
+    assert "--recovery-action-arguments" in script
+    assert "0x8007004B / Win32 75" in script
 
 
 def test_f28_acceptance_script_is_two_phase_and_never_kills_or_reconfigures() -> None:
@@ -106,7 +159,8 @@ def test_f28_acceptance_script_is_two_phase_and_never_kills_or_reconfigures() ->
     assert "Event 110/manual launch" in script
     assert "Event 107/trigger launch" in script
     assert "Test-Path -LiteralPath $ActivePath" in script
-    assert "RestartCount" in script
+    assert "RestartCount" not in script
+    assert "2147942475" in script
     assert "LastTaskResult" in script
     assert "Get-WinEvent" in script
     assert "SystemTime" in verifier
@@ -161,6 +215,23 @@ def test_f28_recovery_always_rethrows_the_original_acceptance_failure() -> None:
         in script
     )
     assert script.count("[Console]::Error.WriteLine") == 1
+
+
+def test_f28_acceptance_recovery_cleanup_keeps_one_result_observation_and_strict_rollback() -> None:
+    acceptance = (ROOT / "scripts" / "accept-f28-restart.ps1").read_text(encoding="utf-8")
+    installer = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+
+    assert acceptance.count("$ObservedLastResults.Add([int]$TaskInfo.LastTaskResult)") == 1
+    assert "$RecoveryAuthorizedAt -lt $RequestIssuedAt" in acceptance
+    assert "$RecoveryAuthorizedAt -gt $RecoveryValidationNow" in acceptance
+    recovery_only = acceptance.index("RECOVERY ONLY")
+    manual_start = acceptance.index("Start-ScheduledTask -TaskName $TaskName", recovery_only)
+    diagnostic = acceptance.index(
+        "F28 beginning recovery-only manual task start.", manual_start - 200
+    )
+    assert diagnostic < manual_start
+    assert "Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue" in installer
+    assert "Unregister-ScheduledTask -TaskName $Name -Confirm:$false -ErrorAction Stop" in installer
 
 
 def test_f28_probe_failure_has_a_native_original_error_regression() -> None:
@@ -277,7 +348,9 @@ def test_windows_installer_replaces_old_root_task_action_and_verifies_it() -> No
     assert "$Task = Get-ScheduledTask -TaskName $Name -ErrorAction Stop" in script
     assert "$Actions = @($Task.Actions)" in script
     assert "@(Get-ScheduledTask -TaskName $Name -ErrorAction Stop).Actions" not in script
-    assert "does not target $ExpectedProjectRoot" in script
+    assert "exactly four ordered F28 actions" in script
+    assert '"f28-primary-0", "f28-recovery-1", "f28-recovery-2", "f28-recovery-3"' in script
+    assert "RestartCount" not in script
 
 
 def test_windows_installer_stops_and_verifies_only_same_root_hub_processes() -> None:

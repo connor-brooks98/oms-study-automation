@@ -18,6 +18,7 @@ HOTFIX_FILES = (
     "scripts/install-windows.ps1",
     "scripts/start-hub.ps1",
 )
+_RECOVERY_HOTFIX = "scripts/restart-hub-after-failure.ps1"
 _FULL_COMMIT_SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 _ZIP_TIMESTAMP = (2026, 7, 26, 0, 0, 0)
 _MANIFEST_NAME = "RELEASE-MANIFEST.json"
@@ -49,7 +50,24 @@ def build_releases(
     runtime_files = {
         path for path in source_files if path.startswith("src/oms_hub/")
     }
-    hotfix_files = tuple(sorted(set(HOTFIX_FILES) | runtime_files))
+    # A release is built from the named immutable tree, never the dirty
+    # worktree.  New fixed files become mandatory once the reviewed commit
+    # contains them; older historical commits remain reproducible.
+    missing_required = set(HOTFIX_FILES) - set(release_tree.blobs)
+    if missing_required:
+        raise ValueError(
+            f"release tree is missing required hotfix files: {sorted(missing_required)}"
+        )
+    fixed_files = set(HOTFIX_FILES)
+    if _RECOVERY_HOTFIX in release_tree.blobs:
+        fixed_files.add(_RECOVERY_HOTFIX)
+    elif any(
+        b"restart-hub-after-failure.ps1" in payload
+        for path, payload in release_tree.blobs.items()
+        if path in {"scripts/install-windows.ps1", "scripts/accept-f28-restart.ps1"}
+    ):
+        raise ValueError("action-chain release tree references missing recovery wrapper")
+    hotfix_files = tuple(sorted(fixed_files | runtime_files))
     _write_archive(release_tree, hotfix, hotfix_files)
     _write_archive(release_tree, source, source_files)
     _write_checksum(hotfix)

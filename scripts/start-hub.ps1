@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)]
-  [string]$DataRoot
+  [string]$DataRoot,
+  [ValidateRange(0, 3)]
+  [int]$ActionIndex = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -93,7 +95,8 @@ function Write-F28LauncherExitEvidence {
     [string]$Directory,
     [string]$ExpectedRevision,
     [string]$ExpectedTree,
-    [int]$NativeExitCode
+    [int]$NativeExitCode,
+    [int]$CurrentActionIndex
   )
   if ($NativeExitCode -ne 75) { return }
   $LatestPath = Join-Path $Directory "latest-server-exit.json"
@@ -158,6 +161,7 @@ function Write-F28LauncherExitEvidence {
     expected_tree = $ExpectedTree
     expected_schema = $ExpectedSchema
     exit_code = $NativeExitCode
+    action_index = $CurrentActionIndex
     claimed_latest_server_exit = $ClaimedArchiveName
     claimed_latest_server_exit_sha256 = $ClaimedHash
     launcher_pid = $PID
@@ -166,7 +170,62 @@ function Write-F28LauncherExitEvidence {
   $Temporary = Join-Path $Directory (".launcher-exit-{0}.tmp" -f [guid]::NewGuid())
   $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($Temporary, $LauncherRecord + "`n", $Utf8NoBom)
-  Move-Item -LiteralPath $Temporary -Destination $Destination
+  try {
+    [System.IO.File]::Move($Temporary, $Destination)
+  } finally {
+    if (Test-Path -LiteralPath $Temporary) { Remove-Item -LiteralPath $Temporary -Force }
+  }
+  if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+    throw "F28 launcher evidence did not publish an exact leaf."
+  }
+  return [pscustomobject]@{
+    nonce = $Nonce
+    expected_schema = $ExpectedSchema
+    sha256 = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
+  }
+}
+
+function Write-F28RecoveryAuthorization {
+  param(
+    [string]$Directory,
+    [string]$Nonce,
+    [int]$PredecessorActionIndex,
+    [int]$ExpectedSchema,
+    [string]$ExpectedRevision,
+    [string]$ExpectedTree,
+    [string]$PredecessorEvidenceSha256
+  )
+  if ($PredecessorActionIndex -lt 0 -or $PredecessorActionIndex -ge 3) { return }
+  $NextIndex = $PredecessorActionIndex + 1
+  $EvidenceName = "launcher-exit-$Nonce.json"
+  $Destination = Join-Path $Directory ("recovery-authorized-{0}-{1}.json" -f $Nonce, $NextIndex)
+  if (Test-Path -LiteralPath $Destination) { throw "F28 recovery authorization already exists." }
+  $AuthorizationTime = (Get-Date).ToUniversalTime()
+  $Authorization = [ordered]@{
+    schema_version = 1
+    nonce = $Nonce
+    expected_revision = $ExpectedRevision
+    expected_tree = $ExpectedTree
+    expected_schema = $ExpectedSchema
+    exit_code = 75
+    predecessor_action_index = $PredecessorActionIndex
+    next_action_index = $NextIndex
+    predecessor_evidence = $EvidenceName
+    predecessor_evidence_sha256 = $PredecessorEvidenceSha256
+    authorized_at = $AuthorizationTime.ToString("o")
+    expires_at = $AuthorizationTime.AddMinutes(5).ToString("o")
+  } | ConvertTo-Json -Compress
+  $Temporary = Join-Path $Directory (".recovery-authorized-{0}.tmp" -f [guid]::NewGuid())
+  $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($Temporary, $Authorization + "`n", $Utf8NoBom)
+  try {
+    [System.IO.File]::Move($Temporary, $Destination)
+  } finally {
+    if (Test-Path -LiteralPath $Temporary) { Remove-Item -LiteralPath $Temporary -Force }
+  }
+  if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+    throw "F28 recovery authorization did not publish an exact leaf."
+  }
 }
 
 Set-Location $ProjectRoot
@@ -175,11 +234,22 @@ Write-Host "Starting Study Hub from $ProjectRoot (build $BuildRevision, tree $Bu
 $ServeExitCode = $LASTEXITCODE
 if ($ServeExitCode -eq 75) {
   try {
-    Write-F28LauncherExitEvidence `
+    $LauncherEvidence = Write-F28LauncherExitEvidence `
       -Directory $GateDirectory `
       -ExpectedRevision $BuildRevision `
       -ExpectedTree $BuildTree `
-      -NativeExitCode $ServeExitCode
+      -NativeExitCode $ServeExitCode `
+      -CurrentActionIndex $ActionIndex
+    if ($ActionIndex -lt 3) {
+      Write-F28RecoveryAuthorization `
+        -Directory $GateDirectory `
+        -Nonce $LauncherEvidence.nonce `
+        -PredecessorActionIndex $ActionIndex `
+        -ExpectedSchema $LauncherEvidence.expected_schema `
+        -ExpectedRevision $BuildRevision `
+        -ExpectedTree $BuildTree `
+        -PredecessorEvidenceSha256 $LauncherEvidence.sha256
+    }
   } catch {
     [Console]::Error.WriteLine("F28 launcher evidence failure: $($_.Exception.Message)")
   }
