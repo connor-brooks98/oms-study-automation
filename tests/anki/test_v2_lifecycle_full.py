@@ -355,10 +355,19 @@ def test_m13_real_handlers_use_the_persisted_resolved_model_routes() -> None:
             "provider": routes.ledger_s2.provider,
             "model": routes.ledger_s2.model,
             "request_id": "fixture-001",
+            "request_ids": ["fixture-001"],
             "cache_prefix_sha256": products[CurationStage.CARD_LEDGER].payload["provenance"][
                 "cache_prefix_sha256"
             ],
         }
+        parameters = products[CurationStage.CARD_LEDGER].payload["generation_parameters"]
+        assert parameters["provider"] == routes.ledger_s2.provider
+        assert parameters["model"] == routes.ledger_s2.model
+        assert products[CurationStage.CARD_LEDGER].payload[
+            "generation_parameters_sha256"
+        ] == hashlib.sha256(
+            json.dumps(parameters, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
         assert (
             products[CurationStage.CARD_CLASSIFY].payload["model_config"]
             == routes.canonical_document()

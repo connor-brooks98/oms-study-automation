@@ -9,6 +9,7 @@ from sqlalchemy import inspect, select, text
 from oms_hub.config import Settings
 from oms_hub.db import Database
 from oms_hub.existing_artifact_import import ExistingArtifactImporter, ExistingArtifactImportRequest
+from oms_hub.migrations import LATEST_SCHEMA_VERSION
 from oms_hub.models import (
     ExistingArtifactImportModel,
     GenerationJobModel,
@@ -425,7 +426,7 @@ def test_v22_upgrade_adds_only_null_adoption_fields_to_existing_import_bundle(tm
         assert row == (None,) * len(fields)
         assert (
             connection.execute(text("SELECT version FROM schema_version WHERE id=1")).scalar_one()
-            == 23
+            == LATEST_SCHEMA_VERSION
         )
 
 
@@ -541,7 +542,7 @@ def test_current_v23_completed_adoption_startup_is_idempotent(tmp_path):
         assert (
             connection.execute(text("SELECT version FROM schema_version WHERE id=1")).scalar_one()
             == version
-            == 23
+            == LATEST_SCHEMA_VERSION
         )
         assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
     assert result.status == "complete"
@@ -903,7 +904,8 @@ def test_current_v23_archive_copying_phase_corruption_rejects_before_mutation(
             else:
                 audit.status = "complete"
     before = _database_snapshot(database)
-    with pytest.raises(RuntimeError, match="schema v23"):
+    expected_schema = LATEST_SCHEMA_VERSION if corruption == "archive-copying-complete-status" else 23
+    with pytest.raises(RuntimeError, match=rf"schema v{expected_schema}"):
         database.migrate()
     assert _database_snapshot(database) == before
 
@@ -1247,7 +1249,7 @@ def test_current_schema_missing_required_import_table_is_not_repaired(tmp_path):
     before = _database_snapshot(database)
     with pytest.raises(
         RuntimeError,
-        match="schema v23 imported artifact required table is missing: outline_outputs",
+        match=rf"schema v{LATEST_SCHEMA_VERSION} imported artifact required table is missing: outline_outputs",
     ):
         database.migrate()
     assert _database_snapshot(database) == before
@@ -1294,7 +1296,7 @@ def test_v21_repeat_migration_validates_without_normalizing_corruption(
     with database.engine.connect() as connection:
         assert (
             connection.execute(text("SELECT version FROM schema_version WHERE id=1")).scalar_one()
-            == 23
+            == LATEST_SCHEMA_VERSION
         )
         assert connection.execute(text(verification)).scalar_one() == corrupted
 
@@ -1366,7 +1368,7 @@ def test_raw_v21_validates_read_only_then_creates_v22_review_contract(tmp_path):
     with database.engine.connect() as connection:
         assert (
             connection.execute(text("SELECT version FROM schema_version WHERE id=1")).scalar_one()
-            == 23
+            == LATEST_SCHEMA_VERSION
         )
         assert (
             connection.execute(
@@ -1514,7 +1516,10 @@ def test_raw_v22_preflight_validates_before_v23_ddl_and_upgrades(tmp_path):
     database.migrate()
 
     with database.engine.connect() as connection:
-        assert connection.execute(text("SELECT version FROM schema_version WHERE id=1")).scalar_one() == 23
+        assert (
+            connection.execute(text("SELECT version FROM schema_version WHERE id=1")).scalar_one()
+            == LATEST_SCHEMA_VERSION
+        )
         columns = {
             row[1]
             for row in connection.execute(text("PRAGMA table_info(existing_artifact_imports)"))

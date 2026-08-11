@@ -1,6 +1,6 @@
 ---
 id: card-centric-ledger-v2
-version: 2.0.1
+version: 2.0.2
 model: claude-sonnet-4-6
 temperature: 0
 max_tokens: 7000
@@ -25,3 +25,15 @@ array per fact in `forbidden_cloze_targets_by_fact`, and `is_mechanism`.
 `canonical_statement` remains the single canonical concept statement. Preserve
 the legacy top-level `forbidden_cloze_targets` for compatibility. Never invent
 source IDs or material absent from the lecture.
+
+## Importance is derived, never estimated
+
+Set `importance` exactly from `depth` and `emphasis_flag`; do not use any other
+meaning of importance:
+
+- `high` **if and only if** `depth` is `deep` **or** `emphasis_flag` is `true`.
+- `medium` **if and only if** `emphasis_flag` is `false` and `depth` is `medium`.
+- `low` **if and only if** `emphasis_flag` is `false` and `depth` is `surface`.
+
+Examples: `deep` + `false` is `high`; `surface` + `true` is `high`; `medium` +
+`false` is `medium`; and `surface` + `false` is `low`. A conflict is invalid.

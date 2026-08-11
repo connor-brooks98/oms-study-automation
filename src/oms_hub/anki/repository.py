@@ -1,19 +1,25 @@
 import hashlib
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from oms_hub.anki.apply import ApplyOperationRecord
 from oms_hub.anki.audit import AuditCacheRecord
-from oms_hub.anki.card_centric import resolve_card_centric_scope
+from oms_hub.anki.card_centric import (
+    CardCentricLedgerAttempt,
+    _redacted_invalid_response,
+    resolve_card_centric_scope,
+    validate_s2_generation_parameters,
+)
 from oms_hub.anki.card_centric_review import (
     OverflowAcknowledgement,
     issue_acknowledgement,
@@ -69,6 +75,7 @@ from oms_hub.anki.models import (
     AnkiAgentStateModel,
     AnkiCandidateModel,
     AnkiCardAuditCacheModel,
+    AnkiCardLedgerAttemptModel,
     AnkiCoverageJudgmentCacheModel,
     AnkiCurationJobModel,
     AnkiEnvelopeModel,
@@ -1658,6 +1665,164 @@ class AnkiCurationRepository:
             )
             return None if stored is None else self._stage(stored)
 
+    def record_card_ledger_attempt(
+        self,
+        job_id: UUID,
+        attempt: CardCentricLedgerAttempt,
+        *,
+        expected_stage_attempt: int,
+        lease_owner: str | None,
+        now: datetime | None = None,
+    ) -> None:
+        """Append one S2 provider invocation without rewriting prior evidence."""
+        parameters_json = _canonical_json(attempt.generation_parameters)
+        _validate_card_ledger_attempt_for_write(attempt, parameters_json)
+        with self.database.session() as session:
+            # In WAL mode, deferred reads do not fence a subsequent writer: a
+            # stale worker can otherwise validate its lease and stage attempt,
+            # then append after a successor has reclaimed the job.  Acquire a
+            # SQLite write transaction *before* every lease/stage/primary/
+            # idempotency check.  This critical section contains only durable
+            # evidence bookkeeping; provider calls have already completed.
+            #
+            # Other supported databases use the job/stage row locks below.
+            # Keeping the fence local to this append avoids a process-global
+            # lock and preserves the normal session lifecycle.
+            is_sqlite = session.bind is not None and session.bind.dialect.name == "sqlite"
+            if is_sqlite:
+                session.execute(text("BEGIN IMMEDIATE"))
+            job_query = select(AnkiCurationJobModel).where(
+                AnkiCurationJobModel.id == str(job_id)
+            )
+            if not is_sqlite:
+                job_query = job_query.with_for_update()
+            job = session.scalar(job_query)
+            if job is None:
+                raise KeyError(str(job_id))
+            self._require_active_stage_lease(job, job_id, lease_owner, now=now)
+            stage_query = select(AnkiJobStageModel).where(
+                AnkiJobStageModel.job_id == str(job_id),
+                AnkiJobStageModel.stage == CurationStage.CARD_LEDGER.value,
+            )
+            if not is_sqlite:
+                stage_query = stage_query.with_for_update()
+            stage = session.scalar(stage_query)
+            if stage is None:
+                raise KeyError(f"{job_id}:{CurationStage.CARD_LEDGER.value}")
+            if (
+                stage.state != "running"
+                or stage.attempt_count < 1
+                or stage.attempt_count != expected_stage_attempt
+            ):
+                raise InvalidCurationTransition("card-ledger attempt is not running")
+            if (
+                (stage.provider is not None and stage.provider != attempt.provider.value)
+                or (stage.model is not None and stage.model != attempt.model)
+            ):
+                raise ValueError("card-ledger attempt does not match the stage transport")
+            if attempt.call_index == 2:
+                primary = session.scalar(
+                    select(AnkiCardLedgerAttemptModel).where(
+                        AnkiCardLedgerAttemptModel.job_id == str(job_id),
+                        AnkiCardLedgerAttemptModel.stage
+                        == CurationStage.CARD_LEDGER.value,
+                        AnkiCardLedgerAttemptModel.stage_attempt == stage.attempt_count,
+                        AnkiCardLedgerAttemptModel.call_index == 1,
+                    )
+                )
+                if primary is None:
+                    raise ValueError("card-ledger repair requires a persisted primary call")
+                if primary.outcome != "validation_failed":
+                    raise ValueError(
+                        "card-ledger repair requires a validation-failed primary call"
+                    )
+                if (
+                    primary.provider != attempt.provider.value
+                    or primary.model != attempt.model
+                    or primary.generation_parameters_json != parameters_json
+                    or primary.generation_parameters_sha256
+                    != attempt.generation_parameters_sha256
+                ):
+                    raise ValueError(
+                        "card-ledger repair must match the primary transport identity"
+                    )
+            existing = session.scalar(
+                select(AnkiCardLedgerAttemptModel).where(
+                    AnkiCardLedgerAttemptModel.job_id == str(job_id),
+                    AnkiCardLedgerAttemptModel.stage == CurationStage.CARD_LEDGER.value,
+                    AnkiCardLedgerAttemptModel.stage_attempt == stage.attempt_count,
+                    AnkiCardLedgerAttemptModel.call_index == attempt.call_index,
+                )
+            )
+            values = {
+                "kind": attempt.kind,
+                "outcome": attempt.outcome,
+                "provider": attempt.provider.value,
+                "model": attempt.model,
+                "instruction_sha256": attempt.instruction_sha256,
+                "generation_parameters_json": parameters_json,
+                "generation_parameters_sha256": attempt.generation_parameters_sha256,
+                "request_id": attempt.request_id or None,
+                "input_tokens": attempt.input_tokens,
+                "output_tokens": attempt.output_tokens,
+                "cost_microusd": attempt.cost_microusd,
+                "validation_error": attempt.validation_error,
+                "invalid_response_sha256": attempt.invalid_response_sha256,
+                "invalid_response": attempt.invalid_response,
+            }
+            if existing is not None:
+                if any(getattr(existing, key) != value for key, value in values.items()):
+                    raise ValueError(
+                        "card-ledger attempt identity was reused with different evidence"
+                    )
+                return
+            session.add(
+                AnkiCardLedgerAttemptModel(
+                    job_id=str(job_id),
+                    stage=CurationStage.CARD_LEDGER.value,
+                    stage_attempt=stage.attempt_count,
+                    call_index=attempt.call_index,
+                    **values,
+                )
+            )
+            # Surface a uniqueness violation inside the fenced transaction,
+            # rather than deferring it until the session context commits.
+            session.flush()
+
+    def list_card_ledger_attempts(self, job_id: UUID) -> list[dict[str, object]]:
+        """Return immutable S2 provider-call diagnostics in call order."""
+        with self.database.session() as session:
+            rows = session.scalars(
+                select(AnkiCardLedgerAttemptModel)
+                .where(AnkiCardLedgerAttemptModel.job_id == str(job_id))
+                .order_by(
+                    AnkiCardLedgerAttemptModel.stage_attempt,
+                    AnkiCardLedgerAttemptModel.call_index,
+                )
+            ).all()
+        return [
+            {
+                "stage": row.stage,
+                "stage_attempt": row.stage_attempt,
+                "call_index": row.call_index,
+                "kind": row.kind,
+                "outcome": row.outcome,
+                "provider": row.provider,
+                "model": row.model,
+                "instruction_sha256": row.instruction_sha256,
+                "generation_parameters": json.loads(row.generation_parameters_json),
+                "generation_parameters_sha256": row.generation_parameters_sha256,
+                "request_id": row.request_id,
+                "input_tokens": row.input_tokens,
+                "output_tokens": row.output_tokens,
+                "cost_microusd": row.cost_microusd,
+                "validation_error": row.validation_error,
+                "invalid_response_sha256": row.invalid_response_sha256,
+                "invalid_response": row.invalid_response,
+            }
+            for row in rows
+        ]
+
     def commit_stage(
         self,
         job_id: UUID,
@@ -3246,3 +3411,74 @@ class AnkiCurationRepository:
             owner_agent_id=stored.owner_agent_id,
             created_at=stored.created_at,
         )
+
+
+def _validate_card_ledger_attempt_for_write(
+    attempt: CardCentricLedgerAttempt,
+    parameters_json: str,
+) -> None:
+    """Reject evidence that current-schema startup would fail closed on."""
+    hashes = (attempt.instruction_sha256, attempt.generation_parameters_sha256)
+    if (
+        attempt.call_index not in {1, 2}
+        or (attempt.call_index == 1) != (attempt.kind == "primary")
+        or attempt.outcome not in {"accepted", "validation_failed", "transport_failed"}
+        or attempt.provider not in set(ProviderName)
+        or not isinstance(attempt.model, str)
+        or not attempt.model.strip()
+        or len(attempt.model) > 200
+        or not isinstance(attempt.request_id, str)
+        or len(attempt.request_id) > 200
+        or any(not re.fullmatch(r"[0-9a-f]{64}", item) for item in hashes)
+        or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in (
+                attempt.input_tokens,
+                attempt.output_tokens,
+                attempt.cost_microusd,
+            )
+        )
+    ):
+        raise ValueError("card-ledger attempt evidence is invalid")
+    try:
+        validate_s2_generation_parameters(
+            attempt.provider,
+            attempt.model,
+            attempt.generation_parameters,
+        )
+    except ValueError as error:
+        raise ValueError("card-ledger generation parameters are invalid") from error
+    if (
+        hashlib.sha256(parameters_json.encode()).hexdigest()
+        != attempt.generation_parameters_sha256
+    ):
+        raise ValueError("card-ledger generation parameter hash is invalid")
+    if attempt.outcome == "accepted":
+        valid_payload = (
+            attempt.validation_error is None
+            and attempt.invalid_response_sha256 is None
+            and attempt.invalid_response is None
+        )
+    elif attempt.outcome == "validation_failed":
+        valid_payload = (
+            isinstance(attempt.validation_error, str)
+            and bool(attempt.validation_error.strip())
+            and len(attempt.validation_error) <= 2_000
+            and isinstance(attempt.invalid_response, str)
+            and len(attempt.invalid_response) <= 12_000
+            and isinstance(attempt.invalid_response_sha256, str)
+            and bool(re.fullmatch(r"[0-9a-f]{64}", attempt.invalid_response_sha256))
+            and attempt.invalid_response == _redacted_invalid_response(attempt.invalid_response)
+            and hashlib.sha256(attempt.invalid_response.encode()).hexdigest()
+            == attempt.invalid_response_sha256
+        )
+    else:
+        valid_payload = (
+            isinstance(attempt.validation_error, str)
+            and bool(attempt.validation_error.strip())
+            and len(attempt.validation_error) <= 2_000
+            and attempt.invalid_response_sha256 is None
+            and attempt.invalid_response is None
+        )
+    if not valid_payload:
+        raise ValueError("card-ledger attempt outcome payload is invalid")

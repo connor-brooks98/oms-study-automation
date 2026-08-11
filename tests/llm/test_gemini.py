@@ -133,7 +133,11 @@ def test_gemini_generation_preserves_prefix_order_without_cache_telemetry() -> N
         api_key="secret",
         model="gemini-3.6-flash",
         output_schema={"type": "object"},
-        options=GenerationOptions(cacheable_source_prefix="SUM: source"),
+        options=GenerationOptions(
+            cacheable_source_prefix="SUM: source",
+            temperature=0,
+            max_tokens=7000,
+        ),
     )
 
     payload = json.loads(route.calls.last.request.content)
@@ -143,6 +147,9 @@ def test_gemini_generation_preserves_prefix_order_without_cache_telemetry() -> N
         {"text": "SUM: source"},
         {"text": "Question"},
     ]
+    assert payload["generationConfig"]["temperature"] == 0
+    assert payload["generationConfig"]["maxOutputTokens"] == 7000
+    assert "thinking" not in payload["generationConfig"]
     assert result.cache_creation_input_tokens == 0
     assert result.cache_read_input_tokens == 0
 

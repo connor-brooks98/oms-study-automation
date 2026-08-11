@@ -3,7 +3,8 @@
 import asyncio
 import hashlib
 import json
-from collections.abc import Iterable, Sequence
+import re
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -34,7 +35,13 @@ from oms_hub.anki.correction_contracts import (
 )
 from oms_hub.anki.domain import SourceKind
 from oms_hub.anki.sources import SourcePassage
-from oms_hub.llm.domain import GenerationOptions, ProviderCapabilities, ProviderName
+from oms_hub.llm.domain import (
+    GenerationOptions,
+    LLMRequestError,
+    ProviderCapabilities,
+    ProviderName,
+    ThinkingMode,
+)
 from oms_hub.llm.structured import (
     StructuredJSONResult,
     StructuredOutputError,
@@ -54,6 +61,38 @@ class CardCentricLedgerResult:
     output_tokens: int
     cost_microusd: int
     cache_prefix_sha256: str
+    generation_parameters: dict[str, object]
+    generation_parameters_sha256: str
+    request_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CardCentricLedgerAttempt:
+    """One auditable provider invocation inside the bounded S2 operation."""
+
+    call_index: Literal[1, 2]
+    kind: Literal["primary", "repair"]
+    outcome: Literal["accepted", "validation_failed", "transport_failed"]
+    provider: ProviderName
+    model: str
+    instruction_sha256: str
+    generation_parameters: dict[str, object]
+    generation_parameters_sha256: str
+    request_id: str
+    input_tokens: int
+    output_tokens: int
+    cost_microusd: int
+    validation_error: str | None
+    invalid_response_sha256: str | None
+    invalid_response: str | None
+
+
+_S2_GENERATION_OPTIONS = GenerationOptions(
+    thinking=ThinkingMode.DISABLED,
+    temperature=0,
+    max_tokens=7000,
+)
+_S2_INVALID_RESPONSE_LIMIT = 12_000
 
 
 @dataclass(slots=True)
@@ -69,6 +108,7 @@ class CardCentricLedgerService:
         source_index: CardCentricSourceIndex,
         provider: ProviderName,
         model: str,
+        record_attempt: Callable[[CardCentricLedgerAttempt], None] | None = None,
     ) -> CardCentricLedgerResult:
         summary_prefix = "\n\n".join(
             f'<passage id="{passage.passage_id}">\n{passage.text}\n</passage>'
@@ -77,35 +117,371 @@ class CardCentricLedgerService:
         )
         if not summary_prefix:
             raise CardCentricValidationError("ledger requires summary passages")
-        result = self.structured.generate_json(
-            self.instruction,
-            json.dumps(
+        input_text = json.dumps(
+            {
+                "summary_passages": [
+                    {"passage_id": passage.passage_id, "text": passage.text}
+                    for passage in source_index.passages
+                    if passage.authority == "summary"
+                ],
+                "contract": "coverage_checklist_only",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        options = GenerationOptions(
+            cacheable_source_prefix=summary_prefix,
+            thinking=_S2_GENERATION_OPTIONS.thinking,
+            temperature=_S2_GENERATION_OPTIONS.temperature,
+            max_tokens=_S2_GENERATION_OPTIONS.max_tokens,
+        )
+        parameters = s2_generation_parameters(provider, model)
+        parameters_sha256 = _canonical_sha256(parameters)
+        request_ids: tuple[str, ...]
+        try:
+            result = self.structured.generate_json(
+                self.instruction,
+                input_text,
+                output_model=CardConceptLedger,
+                provider=provider,
+                model=model,
+                # S2 is deliberately summary-only: transcript and slide text are
+                # reserved for the source-grounded S4/S6/S7 calls.
+                options=options,
+            )
+        except StructuredOutputError as error:
+            _record_ledger_attempt(
+                record_attempt,
+                call_index=1,
+                kind="primary",
+                outcome="validation_failed",
+                provider=provider,
+                model=model,
+                instruction=self.instruction,
+                parameters=parameters,
+                parameters_sha256=parameters_sha256,
+                error=error,
+            )
+            repair_instruction = _ledger_repair_instruction(self.instruction)
+            repair_input = json.dumps(
                 {
-                    "summary_passages": [
-                        {"passage_id": passage.passage_id, "text": passage.text}
-                        for passage in source_index.passages
-                        if passage.authority == "summary"
-                    ],
-                    "contract": "coverage_checklist_only",
+                    "invalid_response": error.raw_text,
+                    "validation_error": str(error),
                 },
                 sort_keys=True,
                 separators=(",", ":"),
-            ),
-            output_model=CardConceptLedger,
-            provider=provider,
-            model=model,
-            # S2 is deliberately summary-only: transcript and slide text are
-            # reserved for the source-grounded S4/S6/S7 calls.
-            options=GenerationOptions(cacheable_source_prefix=summary_prefix),
-        )
+            )
+            try:
+                result = self.structured.generate_json(
+                    repair_instruction,
+                    repair_input,
+                    output_model=CardConceptLedger,
+                    provider=provider,
+                    model=model,
+                    options=options,
+                )
+            except StructuredOutputError as repair_error:
+                _record_ledger_attempt(
+                    record_attempt,
+                    call_index=2,
+                    kind="repair",
+                    outcome="validation_failed",
+                    provider=provider,
+                    model=model,
+                    instruction=repair_instruction,
+                    parameters=parameters,
+                    parameters_sha256=parameters_sha256,
+                    error=repair_error,
+                )
+                raise
+            except Exception as repair_error:
+                _record_ledger_attempt(
+                    record_attempt,
+                    call_index=2,
+                    kind="repair",
+                    outcome="transport_failed",
+                    provider=provider,
+                    model=model,
+                    instruction=repair_instruction,
+                    parameters=parameters,
+                    parameters_sha256=parameters_sha256,
+                    transport_error=repair_error,
+                )
+                raise
+            _record_ledger_attempt(
+                record_attempt,
+                call_index=2,
+                kind="repair",
+                outcome="accepted",
+                provider=provider,
+                model=model,
+                instruction=repair_instruction,
+                parameters=parameters,
+                parameters_sha256=parameters_sha256,
+                result=result,
+            )
+            request_ids = (error.generation.request_id, result.request_id)
+            request_id = _combined_request_id(request_ids)
+            input_tokens = error.generation.input_tokens + result.input_tokens
+            output_tokens = error.generation.output_tokens + result.output_tokens
+            cost_microusd = error.generation.cost_microusd + result.cost_microusd
+        except Exception as primary_error:
+            _record_ledger_attempt(
+                record_attempt,
+                call_index=1,
+                kind="primary",
+                outcome="transport_failed",
+                provider=provider,
+                model=model,
+                instruction=self.instruction,
+                parameters=parameters,
+                parameters_sha256=parameters_sha256,
+                transport_error=primary_error,
+            )
+            raise
+        else:
+            _record_ledger_attempt(
+                record_attempt,
+                call_index=1,
+                kind="primary",
+                outcome="accepted",
+                provider=provider,
+                model=model,
+                instruction=self.instruction,
+                parameters=parameters,
+                parameters_sha256=parameters_sha256,
+                result=result,
+            )
+            request_ids = (result.request_id,)
+            request_id = result.request_id
+            input_tokens = result.input_tokens
+            output_tokens = result.output_tokens
+            cost_microusd = result.cost_microusd
         return CardCentricLedgerResult(
             ledger=result.value,
-            request_id=result.request_id,
-            input_tokens=result.input_tokens,
-            output_tokens=result.output_tokens,
-            cost_microusd=result.cost_microusd,
+            request_id=request_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_microusd=cost_microusd,
             cache_prefix_sha256=hashlib.sha256(summary_prefix.encode()).hexdigest(),
+            generation_parameters=parameters,
+            generation_parameters_sha256=parameters_sha256,
+            request_ids=request_ids,
         )
+
+
+def _combined_request_id(request_ids: tuple[str, ...]) -> str:
+    """Make repaired S2 usage identifiable without pretending it is one request."""
+    document = json.dumps(request_ids, separators=(",", ":"))
+    return f"card_ledger:{hashlib.sha256(document.encode()).hexdigest()[:24]}"
+
+
+def _ledger_repair_instruction(instruction: str) -> str:
+    return (
+        instruction
+        + "\n\n# Validation repair\n"
+        "The prior response and the exact validator error are in the user input. "
+        "Correct only the reported validation defects. Return a complete replacement "
+        "ledger that satisfies the same schema; do not omit valid concepts or "
+        "silently change unrelated content. Return JSON only."
+    )
+
+
+def _record_ledger_attempt(
+    recorder: Callable[[CardCentricLedgerAttempt], None] | None,
+    *,
+    call_index: Literal[1, 2],
+    kind: Literal["primary", "repair"],
+    outcome: Literal["accepted", "validation_failed", "transport_failed"],
+    provider: ProviderName,
+    model: str,
+    instruction: str,
+    parameters: dict[str, object],
+    parameters_sha256: str,
+    result: StructuredJSONResult[CardConceptLedger] | None = None,
+    error: StructuredOutputError | None = None,
+    transport_error: Exception | None = None,
+) -> None:
+    if recorder is None:
+        return
+    if sum(value is not None for value in (result, error, transport_error)) != 1:
+        raise AssertionError("ledger attempt must have exactly one outcome payload")
+    if result is not None:
+        recorder(
+            CardCentricLedgerAttempt(
+                call_index=call_index,
+                kind=kind,
+                outcome=outcome,
+                # The immutable attempt identity is the requested pinned S2
+                # route.  Providers may report a versioned or aliased response
+                # model, which must not silently rewrite the route or its
+                # generation-parameter hash.
+                provider=provider,
+                model=model,
+                instruction_sha256=hashlib.sha256(instruction.encode()).hexdigest(),
+                generation_parameters=parameters,
+                generation_parameters_sha256=parameters_sha256,
+                request_id=result.request_id,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                cost_microusd=result.cost_microusd,
+                validation_error=None,
+                invalid_response_sha256=None,
+                invalid_response=None,
+            )
+        )
+        return
+    if transport_error is not None:
+        recorder(
+            CardCentricLedgerAttempt(
+                call_index=call_index,
+                kind=kind,
+                outcome=outcome,
+                provider=provider,
+                model=model,
+                instruction_sha256=hashlib.sha256(instruction.encode()).hexdigest(),
+                generation_parameters=parameters,
+                generation_parameters_sha256=parameters_sha256,
+                request_id=_transport_provider_request_id(transport_error),
+                input_tokens=0,
+                output_tokens=0,
+                cost_microusd=0,
+                validation_error=_redacted_invalid_response(str(transport_error))[:2_000],
+                invalid_response_sha256=None,
+                invalid_response=None,
+            )
+        )
+        return
+    assert error is not None
+    invalid_response = _redacted_invalid_response(error.raw_text)
+    recorder(
+        CardCentricLedgerAttempt(
+            call_index=call_index,
+            kind=kind,
+            outcome=outcome,
+            provider=provider,
+            model=model,
+            instruction_sha256=hashlib.sha256(instruction.encode()).hexdigest(),
+            generation_parameters=parameters,
+            generation_parameters_sha256=parameters_sha256,
+            request_id=error.generation.request_id,
+            input_tokens=error.generation.input_tokens,
+            output_tokens=error.generation.output_tokens,
+            cost_microusd=error.generation.cost_microusd,
+            validation_error=str(error),
+            # This is the SHA-256 of the bounded, redacted bytes stored below;
+            # raw model output is neither persisted nor content-addressed.
+            invalid_response_sha256=hashlib.sha256(invalid_response.encode()).hexdigest(),
+            invalid_response=invalid_response,
+        )
+    )
+
+
+def _redacted_invalid_response(value: str) -> str:
+    """Bound and redact malformed provider output before durable storage.
+
+    The returned bytes are the sole persisted diagnostic payload and are what
+    ``invalid_response_sha256`` identifies. Raw provider output remains only in
+    memory long enough to construct the bounded repair request.
+    """
+    clipped = value[:_S2_INVALID_RESPONSE_LIMIT]
+    quoted_field = re.compile(
+        r'(?is)("(?:api[_-]?key|access[_-]?token|client[_-]?secret|password|token|authorization)"\s*:\s*")[^"]*(")'
+    )
+    redacted = quoted_field.sub(r"\1[REDACTED]\2", clipped)
+    single_quoted_field = re.compile(
+        r"(?is)('(?:api[_-]?key|access[_-]?token|client[_-]?secret|password|token|authorization)'\s*:\s*')[^']*(')"
+    )
+    redacted = single_quoted_field.sub(r"\1[REDACTED]\2", redacted)
+    redacted = re.sub(
+        r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;}\]]+",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)(\bbearer\s+)[a-z0-9._~+/=-]{8,}",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    return re.sub(
+        r"(?i)(\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|password|token)\b\s*[:=]\s*)[^\s,;}\]]+",
+        r"\1[REDACTED]",
+        redacted,
+    )
+
+
+def _canonical_sha256(value: dict[str, object]) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _canonical_json(value: dict[str, object]) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _transport_provider_request_id(error: Exception) -> str:
+    """Keep only an explicit, bounded provider request identifier."""
+    if not isinstance(error, LLMRequestError):
+        return ""
+    request_id = error.provider_request_id
+    if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 200:
+        return ""
+    return request_id
+
+
+def _s2_generation_parameters(
+    provider: ProviderName,
+    model: str,
+    options: GenerationOptions,
+) -> dict[str, object]:
+    """Describe precisely what the S2 transports send for the current call."""
+    transmitted_cache = provider is ProviderName.ANTHROPIC
+    adaptive_anthropic = provider is ProviderName.ANTHROPIC and model.casefold().startswith(
+        ("claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-5")
+    )
+    return {
+        "provider": provider.value,
+        "model": model,
+        "temperature": {"value": options.temperature, "transmission": "transmitted"},
+        "max_tokens": {"value": options.max_tokens, "transmission": "transmitted"},
+        "thinking": {
+            "requested": options.thinking.value,
+            "transmission": (
+                "transmitted_disabled" if adaptive_anthropic else "not_transmitted"
+            ),
+            **(
+                {}
+                if adaptive_anthropic
+                else {"provider_default": "unknown_provider_default"}
+            ),
+        },
+        "cache": {
+            "requested": "summary_prefix",
+            "transmission": "anthropic_ephemeral" if transmitted_cache else "prompt_context_only",
+        },
+    }
+
+
+def s2_generation_parameters(provider: ProviderName, model: str) -> dict[str, object]:
+    """Return the canonical, transport-truthful S2 generation identity."""
+    return _s2_generation_parameters(provider, model, _S2_GENERATION_OPTIONS)
+
+
+def validate_s2_generation_parameters(
+    provider: ProviderName,
+    model: str,
+    parameters: dict[str, object],
+) -> None:
+    """Require the complete, exact S2 transport identity document.
+
+    Only adaptive Anthropic models receive an explicit disabled-thinking
+    control. All other S2 routes truthfully record no transmitted control and
+    an unknown provider default.
+    """
+    expected = s2_generation_parameters(provider, model)
+    if _canonical_json(parameters) != _canonical_json(expected):
+        raise ValueError("card-ledger generation parameters are not the canonical S2 document")
 
 
 _SOURCE_ORDER = {"summary": 0, "transcript": 1, "slide": 2}

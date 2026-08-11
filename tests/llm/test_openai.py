@@ -183,13 +183,20 @@ def test_openai_generation_preserves_prefix_order_without_claiming_cache_hits() 
         api_key="secret",
         model="gpt-5.2",
         output_schema={"type": "object"},
-        options=GenerationOptions(cacheable_source_prefix="SUM: source"),
+        options=GenerationOptions(
+            cacheable_source_prefix="SUM: source",
+            temperature=0,
+            max_tokens=7000,
+        ),
     )
 
     payload = json.loads(route.calls.last.request.content)
     assert OpenAIProvider.capabilities.prompt_prefix_caching is False
     assert OpenAIProvider.capabilities.thinking is False
     assert payload["input"] == "SUM: source\n\nQuestion"
+    assert payload["temperature"] == 0
+    assert payload["max_output_tokens"] == 7000
+    assert "thinking" not in payload
     assert result.cache_creation_input_tokens == 0
     assert result.cache_read_input_tokens == 0
 

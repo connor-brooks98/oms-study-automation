@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import Any, Protocol, cast
 from uuid import UUID
 
+from oms_hub.anki.card_centric import CardCentricLedgerAttempt
 from oms_hub.anki.domain import (
     Candidate,
     CurationJob,
@@ -273,6 +274,9 @@ class StageContext:
     # untouched until its owner consumes the named replay inputs.
     replay_inputs: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     replay_inputs_sha256: str = ""
+    # The S2 recorder is supplied only by the production pipeline so evidence
+    # remains fenced to the executing stage attempt and worker lease.
+    record_card_ledger_attempt: Callable[[CardCentricLedgerAttempt], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -564,11 +568,16 @@ class CurationPipeline:
         definition = stage_definition(job.state, job.pipeline_contract_version)
         if definition is None:
             return None
+        stage_provider = job.provider
+        stage_model = job.model
+        if definition.stage is CurationStage.CARD_LEDGER:
+            stage_provider = job.resolved_model_config.ledger_s2.provider
+            stage_model = job.resolved_model_config.ledger_s2.model
         started = self.repository.start_stage(
             job_id,
             definition.stage,
-            provider=job.provider,
-            model=job.model,
+            provider=stage_provider,
+            model=stage_model,
             expected_state=definition.state,
             lease_owner=lease_owner,
             now=_lease_now(lease_clock),
@@ -603,6 +612,21 @@ class CurationPipeline:
                 committed_artifacts=committed_artifacts,
             )
             if recovered is None:
+                record_card_ledger_attempt: Callable[[CardCentricLedgerAttempt], None] | None = None
+                if definition.stage is CurationStage.CARD_LEDGER:
+                    stage_attempt = started.attempt_count
+
+                    def record_card_ledger_attempt(
+                        attempt: CardCentricLedgerAttempt,
+                    ) -> None:
+                        self.repository.record_card_ledger_attempt(
+                            job_id,
+                            attempt,
+                            expected_stage_attempt=stage_attempt,
+                            lease_owner=lease_owner,
+                            now=_lease_now(lease_clock),
+                        )
+
                 product = await self.runner.run(
                     StageContext(
                         job=job,
@@ -612,6 +636,7 @@ class CurationPipeline:
                         prior_payloads=prior_payloads,
                         replay_inputs=replay_inputs.document,
                         replay_inputs_sha256=replay_inputs.sha256,
+                        record_card_ledger_attempt=record_card_ledger_attempt,
                     )
                 )
                 artifact = self.artifacts.write(

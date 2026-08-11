@@ -1,13 +1,17 @@
+import hashlib
 import json
+import threading
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
+import oms_hub.anki.repository as anki_repository_module
 from oms_hub.anki.audit import AuditCacheRecord
+from oms_hub.anki.card_centric import CardCentricLedgerAttempt, s2_generation_parameters
 from oms_hub.anki.contracts import (
     ActionEnvelopeV2,
     SyncOperation,
@@ -65,6 +69,22 @@ from oms_hub.anki.tag_policy import TagPolicy
 from oms_hub.db import Database
 from oms_hub.llm.domain import ProviderName
 from oms_hub.models import LectureModel
+
+
+def _record_card_ledger_attempt(
+    repository: AnkiCurationRepository,
+    job_id: UUID,
+    attempt: CardCentricLedgerAttempt,
+) -> None:
+    stage = repository.get_stage(job_id, CurationStage.CARD_LEDGER)
+    assert stage is not None
+    job = repository.require_job(job_id)
+    repository.record_card_ledger_attempt(
+        job_id,
+        attempt,
+        expected_stage_attempt=stage.attempt_count,
+        lease_owner=job.lease_owner,
+    )
 
 _OPEN_DATABASES: list[Database] = []
 
@@ -953,6 +973,661 @@ def test_stage_lifecycle_records_usage_and_safe_failure(tmp_path) -> None:
     assert completed.cache_hits == 3
     assert failed.state == "failed"
     assert failed.error == "index is unavailable"
+
+
+def test_card_ledger_attempts_are_append_only_across_internal_and_manual_retries(tmp_path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    parameters = s2_generation_parameters(ProviderName.ANTHROPIC, "claude-sonnet-5")
+    parameters_json = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+    parameter_hash = hashlib.sha256(parameters_json.encode()).hexdigest()
+
+    def attempt(index: int, outcome: str) -> CardCentricLedgerAttempt:
+        return CardCentricLedgerAttempt(
+            call_index=index,  # type: ignore[arg-type]
+            kind="primary" if index == 1 else "repair",
+            outcome=outcome,  # type: ignore[arg-type]
+            provider=ProviderName.ANTHROPIC,
+            model="claude-sonnet-5",
+            instruction_sha256="a" * 64,
+            generation_parameters=parameters,
+            generation_parameters_sha256=parameter_hash,
+            request_id=f"request-{index}",
+            input_tokens=10,
+            output_tokens=5,
+            cost_microusd=1,
+            validation_error="importance conflicts" if outcome == "validation_failed" else None,
+            invalid_response_sha256=(
+                hashlib.sha256(b'{"importance":"low"}').hexdigest()
+                if outcome == "validation_failed"
+                else None
+            ),
+            invalid_response='{"importance":"low"}' if outcome == "validation_failed" else None,
+        )
+
+    repository.start_stage(job.id, CurationStage.CARD_LEDGER)
+    _record_card_ledger_attempt(repository, job.id, attempt(1, "validation_failed"))
+    _record_card_ledger_attempt(repository, job.id, attempt(2, "accepted"))
+    _record_card_ledger_attempt(repository, job.id, attempt(1, "validation_failed"))
+    repository.finish_stage(job.id, CurationStage.CARD_LEDGER)
+    repository.start_stage(job.id, CurationStage.CARD_LEDGER)
+    _record_card_ledger_attempt(repository, job.id, attempt(1, "accepted"))
+
+    rows = repository.list_card_ledger_attempts(job.id)
+    assert [(row["stage_attempt"], row["call_index"], row["outcome"]) for row in rows] == [
+        (1, 1, "validation_failed"),
+        (1, 2, "accepted"),
+        (2, 1, "accepted"),
+    ]
+    assert rows[0]["invalid_response_sha256"] == hashlib.sha256(
+        b'{"importance":"low"}'
+    ).hexdigest()
+    assert rows[0]["invalid_response"] == '{"importance":"low"}'
+    assert rows[0]["generation_parameters_sha256"] == parameter_hash
+
+    conflicting = replace(
+        attempt(1, "validation_failed"),
+        invalid_response='{"importance":"medium"}',
+        invalid_response_sha256=hashlib.sha256(
+            b'{"importance":"medium"}'
+        ).hexdigest(),
+    )
+    with pytest.raises(ValueError, match="identity was reused"):
+        _record_card_ledger_attempt(repository, job.id, conflicting)
+    assert repository.list_card_ledger_attempts(job.id)[0]["invalid_response"] == (
+        '{"importance":"low"}'
+    )
+
+
+def test_card_ledger_attempt_fence_rejects_expiry_and_reclaimed_worker_without_mutation(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    started = datetime(2026, 8, 11, 12, 0, tzinfo=UTC)
+    assert repository.claim_next_job(started, worker_id="worker-a", lease_seconds=3) is not None
+    first = repository.start_stage(
+        job.id,
+        CurationStage.CARD_LEDGER,
+        lease_owner="worker-a",
+        now=started,
+    )
+    parameters = s2_generation_parameters(ProviderName.ANTHROPIC, "claude-sonnet-5")
+    parameters_json = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+    accepted = CardCentricLedgerAttempt(
+        call_index=1,
+        kind="primary",
+        outcome="accepted",
+        provider=ProviderName.ANTHROPIC,
+        model="claude-sonnet-5",
+        instruction_sha256="a" * 64,
+        generation_parameters=parameters,
+        generation_parameters_sha256=hashlib.sha256(parameters_json.encode()).hexdigest(),
+        request_id="request-a",
+        input_tokens=1,
+        output_tokens=2,
+        cost_microusd=3,
+        validation_error=None,
+        invalid_response_sha256=None,
+        invalid_response=None,
+    )
+    expired = started + timedelta(seconds=4)
+
+    with pytest.raises(InvalidCurationTransition, match="lease expired"):
+        repository.record_card_ledger_attempt(
+            job.id,
+            accepted,
+            expected_stage_attempt=first.attempt_count,
+            lease_owner="worker-a",
+            now=expired,
+        )
+    assert repository.list_card_ledger_attempts(job.id) == []
+
+    assert repository.claim_next_job(expired, worker_id="worker-b", lease_seconds=30) is not None
+    second = repository.start_stage(
+        job.id,
+        CurationStage.CARD_LEDGER,
+        lease_owner="worker-b",
+        now=expired,
+    )
+    with pytest.raises(InvalidCurationTransition, match="no longer owns"):
+        repository.record_card_ledger_attempt(
+            job.id,
+            accepted,
+            expected_stage_attempt=first.attempt_count,
+            lease_owner="worker-a",
+            now=expired,
+        )
+    assert repository.list_card_ledger_attempts(job.id) == []
+
+    repository.record_card_ledger_attempt(
+        job.id,
+        accepted,
+        expected_stage_attempt=second.attempt_count,
+        lease_owner="worker-b",
+        now=expired,
+    )
+    # Same-attempt replay is safe only when every persisted field is identical.
+    repository.record_card_ledger_attempt(
+        job.id,
+        accepted,
+        expected_stage_attempt=second.attempt_count,
+        lease_owner="worker-b",
+        now=expired,
+    )
+    assert [row["stage_attempt"] for row in repository.list_card_ledger_attempts(job.id)] == [2]
+
+
+def test_card_ledger_sqlite_fence_rechecks_after_stale_precheck_before_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale connection cannot append after a successor reclaims S2."""
+    repository, lecture_id = _prepared_repository(tmp_path)
+    stale_repository = AnkiCurationRepository(repository.database)
+    successor_repository = AnkiCurationRepository(repository.database)
+    job = repository.create_job(_job_request(lecture_id))
+    started = datetime(2026, 8, 11, 12, 0, tzinfo=UTC)
+    assert stale_repository.claim_next_job(
+        started, worker_id="worker-a", lease_seconds=3
+    ) is not None
+    first = stale_repository.start_stage(
+        job.id,
+        CurationStage.CARD_LEDGER,
+        lease_owner="worker-a",
+        now=started,
+    )
+    parameters = s2_generation_parameters(ProviderName.ANTHROPIC, "claude-sonnet-5")
+    parameters_json = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+    accepted = CardCentricLedgerAttempt(
+        call_index=1,
+        kind="primary",
+        outcome="accepted",
+        provider=ProviderName.ANTHROPIC,
+        model="claude-sonnet-5",
+        instruction_sha256="a" * 64,
+        generation_parameters=parameters,
+        generation_parameters_sha256=hashlib.sha256(parameters_json.encode()).hexdigest(),
+        request_id="stale-request",
+        input_tokens=1,
+        output_tokens=2,
+        cost_microusd=3,
+        validation_error=None,
+        invalid_response_sha256=None,
+        invalid_response=None,
+    )
+    precheck_entered = threading.Event()
+    allow_append = threading.Event()
+    original_validate = anki_repository_module._validate_card_ledger_attempt_for_write
+
+    def pause_after_precheck(*args, **kwargs) -> None:
+        original_validate(*args, **kwargs)
+        precheck_entered.set()
+        assert allow_append.wait(timeout=2)
+
+    monkeypatch.setattr(
+        anki_repository_module,
+        "_validate_card_ledger_attempt_for_write",
+        pause_after_precheck,
+    )
+    stale_errors: list[Exception] = []
+
+    def stale_append() -> None:
+        try:
+            stale_repository.record_card_ledger_attempt(
+                job.id,
+                accepted,
+                expected_stage_attempt=first.attempt_count,
+                lease_owner="worker-a",
+                now=started,
+            )
+        except Exception as error:  # exercised from the stale DB connection
+            stale_errors.append(error)
+
+    stale_thread = threading.Thread(target=stale_append)
+    stale_thread.start()
+    assert precheck_entered.wait(timeout=2)
+
+    reclaimed_at = started + timedelta(seconds=4)
+    assert successor_repository.claim_next_job(
+        reclaimed_at, worker_id="worker-b", lease_seconds=30
+    ) is not None
+    second = successor_repository.start_stage(
+        job.id,
+        CurationStage.CARD_LEDGER,
+        lease_owner="worker-b",
+        now=reclaimed_at,
+    )
+    assert second.attempt_count == 2
+
+    allow_append.set()
+    stale_thread.join(timeout=2)
+    assert not stale_thread.is_alive()
+    assert len(stale_errors) == 1
+    assert isinstance(stale_errors[0], InvalidCurationTransition)
+    assert repository.list_card_ledger_attempts(job.id) == []
+
+
+def test_card_ledger_sqlite_fence_serializes_contention_and_replays_idempotently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    first_repository = AnkiCurationRepository(repository.database)
+    second_repository = AnkiCurationRepository(repository.database)
+    job = repository.create_job(_job_request(lecture_id))
+    stage = repository.start_stage(job.id, CurationStage.CARD_LEDGER)
+    parameters = s2_generation_parameters(ProviderName.ANTHROPIC, "claude-sonnet-5")
+    parameters_json = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+    accepted = CardCentricLedgerAttempt(
+        call_index=1,
+        kind="primary",
+        outcome="accepted",
+        provider=ProviderName.ANTHROPIC,
+        model="claude-sonnet-5",
+        instruction_sha256="a" * 64,
+        generation_parameters=parameters,
+        generation_parameters_sha256=hashlib.sha256(parameters_json.encode()).hexdigest(),
+        request_id="request-1",
+        input_tokens=1,
+        output_tokens=2,
+        cost_microusd=3,
+        validation_error=None,
+        invalid_response_sha256=None,
+        invalid_response=None,
+    )
+    first_holds_fence = threading.Event()
+    release_first = threading.Event()
+    original_lease_check = AnkiCurationRepository._require_active_stage_lease
+
+    def hold_first_fence(*args, **kwargs) -> None:
+        original_lease_check(*args, **kwargs)
+        if not first_holds_fence.is_set():
+            first_holds_fence.set()
+            assert release_first.wait(timeout=2)
+
+    monkeypatch.setattr(
+        AnkiCurationRepository,
+        "_require_active_stage_lease",
+        staticmethod(hold_first_fence),
+    )
+    errors: list[Exception] = []
+
+    def append_from(repository_for_thread: AnkiCurationRepository) -> None:
+        try:
+            repository_for_thread.record_card_ledger_attempt(
+                job.id,
+                accepted,
+                expected_stage_attempt=stage.attempt_count,
+                lease_owner=None,
+            )
+        except Exception as error:  # exercised from independent DB connections
+            errors.append(error)
+
+    first_thread = threading.Thread(target=append_from, args=(first_repository,))
+    second_thread = threading.Thread(target=append_from, args=(second_repository,))
+    first_thread.start()
+    assert first_holds_fence.wait(timeout=2)
+    second_thread.start()
+    release_first.set()
+    first_thread.join(timeout=2)
+    second_thread.join(timeout=2)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert errors == []
+    assert repository.list_card_ledger_attempts(job.id) == [
+        {
+            "stage": "card_ledger",
+            "stage_attempt": 1,
+            "call_index": 1,
+            "kind": "primary",
+            "outcome": "accepted",
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "instruction_sha256": "a" * 64,
+            "generation_parameters": parameters,
+            "generation_parameters_sha256": hashlib.sha256(
+                parameters_json.encode()
+            ).hexdigest(),
+            "request_id": "request-1",
+            "input_tokens": 1,
+            "output_tokens": 2,
+            "cost_microusd": 3,
+            "validation_error": None,
+            "invalid_response_sha256": None,
+            "invalid_response": None,
+        }
+    ]
+
+
+def test_card_ledger_attempt_rejects_partial_extra_and_mismatched_parameter_documents(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    parameters = s2_generation_parameters(ProviderName.ANTHROPIC, "claude-sonnet-5")
+    parameters_json = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+    base = CardCentricLedgerAttempt(
+        call_index=1,
+        kind="primary",
+        outcome="accepted",
+        provider=ProviderName.ANTHROPIC,
+        model="claude-sonnet-5",
+        instruction_sha256="a" * 64,
+        generation_parameters=parameters,
+        generation_parameters_sha256=hashlib.sha256(parameters_json.encode()).hexdigest(),
+        request_id="request-1",
+        input_tokens=1,
+        output_tokens=2,
+        cost_microusd=3,
+        validation_error=None,
+        invalid_response_sha256=None,
+        invalid_response=None,
+    )
+    repository.start_stage(job.id, CurationStage.CARD_LEDGER)
+    bad_documents = (
+        {key: value for key, value in parameters.items() if key != "cache"},
+        {**parameters, "unexpected": True},
+        {**parameters, "temperature": {"value": 1, "transmission": "transmitted"}},
+        {**parameters, "provider": "openai"},
+    )
+    for document in bad_documents:
+        document_json = json.dumps(document, sort_keys=True, separators=(",", ":"))
+        with pytest.raises(ValueError, match="generation parameters are invalid"):
+            _record_card_ledger_attempt(
+                repository,
+                job.id,
+                replace(
+                    base,
+                    generation_parameters=document,
+                    generation_parameters_sha256=hashlib.sha256(
+                        document_json.encode()
+                    ).hexdigest(),
+                ),
+            )
+    assert repository.list_card_ledger_attempts(job.id) == []
+
+
+def test_v24_startup_rejects_coherent_cross_row_transport_tamper(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    parameters = s2_generation_parameters(ProviderName.ANTHROPIC, "claude-sonnet-5")
+    parameters_json = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+    invalid = '{"importance":"low"}'
+    primary = CardCentricLedgerAttempt(
+        call_index=1,
+        kind="primary",
+        outcome="validation_failed",
+        provider=ProviderName.ANTHROPIC,
+        model="claude-sonnet-5",
+        instruction_sha256="a" * 64,
+        generation_parameters=parameters,
+        generation_parameters_sha256=hashlib.sha256(parameters_json.encode()).hexdigest(),
+        request_id="request-1",
+        input_tokens=1,
+        output_tokens=2,
+        cost_microusd=3,
+        validation_error="importance conflicts",
+        invalid_response_sha256=hashlib.sha256(invalid.encode()).hexdigest(),
+        invalid_response=invalid,
+    )
+    repository.start_stage(
+        job.id,
+        CurationStage.CARD_LEDGER,
+        provider="anthropic",
+        model="claude-sonnet-5",
+    )
+    _record_card_ledger_attempt(repository, job.id, primary)
+    _record_card_ledger_attempt(
+        repository,
+        job.id,
+        replace(
+            primary,
+            call_index=2,
+            kind="repair",
+            outcome="accepted",
+            request_id="request-2",
+            validation_error=None,
+            invalid_response_sha256=None,
+            invalid_response=None,
+        ),
+    )
+    tampered = s2_generation_parameters(ProviderName.OPENAI, "gpt-5.2")
+    tampered_json = json.dumps(tampered, sort_keys=True, separators=(",", ":"))
+    with repository.database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE anki_card_ledger_attempts SET "
+                "provider = 'openai', model = 'gpt-5.2', "
+                "generation_parameters_json = :parameters, "
+                "generation_parameters_sha256 = :sha256"
+            ),
+            {
+                "parameters": tampered_json,
+                "sha256": hashlib.sha256(tampered_json.encode()).hexdigest(),
+            },
+        )
+
+    with pytest.raises(RuntimeError, match="stage transport"):
+        repository.database.migrate()
+
+
+def test_card_ledger_repair_requires_validation_failed_primary_before_mutation(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    parameters = s2_generation_parameters(ProviderName.ANTHROPIC, "claude-sonnet-5")
+    parameters_json = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+    invalid = '{"importance":"low"}'
+    failed_primary = CardCentricLedgerAttempt(
+        call_index=1,
+        kind="primary",
+        outcome="validation_failed",
+        provider=ProviderName.ANTHROPIC,
+        model="claude-sonnet-5",
+        instruction_sha256="a" * 64,
+        generation_parameters=parameters,
+        generation_parameters_sha256=hashlib.sha256(parameters_json.encode()).hexdigest(),
+        request_id="request-1",
+        input_tokens=1,
+        output_tokens=2,
+        cost_microusd=3,
+        validation_error="importance conflicts",
+        invalid_response_sha256=hashlib.sha256(invalid.encode()).hexdigest(),
+        invalid_response=invalid,
+    )
+    repair = replace(
+        failed_primary,
+        call_index=2,
+        kind="repair",
+        outcome="accepted",
+        request_id="request-2",
+        validation_error=None,
+        invalid_response_sha256=None,
+        invalid_response=None,
+    )
+    accepted_primary = replace(
+        failed_primary,
+        outcome="accepted",
+        validation_error=None,
+        invalid_response_sha256=None,
+        invalid_response=None,
+    )
+    repository.start_stage(job.id, CurationStage.CARD_LEDGER)
+
+    with pytest.raises(ValueError, match="persisted primary"):
+        _record_card_ledger_attempt(repository, job.id, repair)
+    assert repository.list_card_ledger_attempts(job.id) == []
+
+    _record_card_ledger_attempt(repository, job.id, accepted_primary)
+    with pytest.raises(ValueError, match="validation-failed primary"):
+        _record_card_ledger_attempt(repository, job.id, repair)
+    assert [row["call_index"] for row in repository.list_card_ledger_attempts(job.id)] == [1]
+
+    repository.start_stage(job.id, CurationStage.CARD_LEDGER)
+    _record_card_ledger_attempt(repository, job.id, failed_primary)
+    mismatched_repair = replace(
+        repair,
+        provider=ProviderName.OPENAI,
+        model="gpt-5.2",
+        generation_parameters=s2_generation_parameters(ProviderName.OPENAI, "gpt-5.2"),
+        generation_parameters_sha256=hashlib.sha256(
+            json.dumps(
+                s2_generation_parameters(ProviderName.OPENAI, "gpt-5.2"),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
+    )
+    with pytest.raises(ValueError, match="match the primary transport identity"):
+        _record_card_ledger_attempt(repository, job.id, mismatched_repair)
+
+
+def test_card_ledger_invalid_primary_then_repair_is_valid_at_startup(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    parameters = s2_generation_parameters(ProviderName.ANTHROPIC, "claude-sonnet-5")
+    parameters_json = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+    invalid = '{"importance":"low"}'
+    failed_primary = CardCentricLedgerAttempt(
+        call_index=1,
+        kind="primary",
+        outcome="validation_failed",
+        provider=ProviderName.ANTHROPIC,
+        model="claude-sonnet-5",
+        instruction_sha256="a" * 64,
+        generation_parameters=parameters,
+        generation_parameters_sha256=hashlib.sha256(parameters_json.encode()).hexdigest(),
+        request_id="request-1",
+        input_tokens=1,
+        output_tokens=2,
+        cost_microusd=3,
+        validation_error="importance conflicts",
+        invalid_response_sha256=hashlib.sha256(invalid.encode()).hexdigest(),
+        invalid_response=invalid,
+    )
+    repair = replace(
+        failed_primary,
+        call_index=2,
+        kind="repair",
+        outcome="accepted",
+        request_id="request-2",
+        validation_error=None,
+        invalid_response_sha256=None,
+        invalid_response=None,
+    )
+    repository.start_stage(job.id, CurationStage.CARD_LEDGER)
+    _record_card_ledger_attempt(repository, job.id, failed_primary)
+    _record_card_ledger_attempt(repository, job.id, repair)
+
+    repository.database.migrate()
+    assert [
+        (row["call_index"], row["kind"], row["outcome"])
+        for row in repository.list_card_ledger_attempts(job.id)
+    ] == [(1, "primary", "validation_failed"), (2, "repair", "accepted")]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda attempt: replace(attempt, call_index=2, kind="primary"),
+        lambda attempt: replace(attempt, outcome="accepted", validation_error="error"),
+        lambda attempt: replace(attempt, input_tokens=-1),
+        lambda attempt: replace(attempt, invalid_response_sha256="0" * 64),
+        lambda attempt: replace(attempt, generation_parameters_sha256="0" * 64),
+    ],
+)
+def test_card_ledger_attempt_repository_rejects_states_current_startup_rejects(
+    tmp_path: Path,
+    mutate,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    parameters = s2_generation_parameters(ProviderName.ANTHROPIC, "claude-sonnet-5")
+    parameters_json = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+    invalid = '{"importance":"low"}'
+    attempt = CardCentricLedgerAttempt(
+        call_index=1,
+        kind="primary",
+        outcome="validation_failed",
+        provider=ProviderName.ANTHROPIC,
+        model="claude-sonnet-5",
+        instruction_sha256="a" * 64,
+        generation_parameters=parameters,
+        generation_parameters_sha256=hashlib.sha256(parameters_json.encode()).hexdigest(),
+        request_id="request-1",
+        input_tokens=1,
+        output_tokens=2,
+        cost_microusd=3,
+        validation_error="importance conflicts",
+        invalid_response_sha256=hashlib.sha256(invalid.encode()).hexdigest(),
+        invalid_response=invalid,
+    )
+    repository.start_stage(job.id, CurationStage.CARD_LEDGER)
+
+    with pytest.raises(ValueError):
+        _record_card_ledger_attempt(repository, job.id, mutate(attempt))
+    assert repository.list_card_ledger_attempts(job.id) == []
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "UPDATE anki_card_ledger_attempts SET kind = 'repair'",
+        "UPDATE anki_card_ledger_attempts SET call_index = 2, kind = 'repair'",
+        """
+        INSERT INTO anki_card_ledger_attempts (
+            job_id, stage, stage_attempt, call_index, kind, outcome, provider, model,
+            instruction_sha256, generation_parameters_json, generation_parameters_sha256,
+            request_id, input_tokens, output_tokens, cost_microusd, validation_error,
+            invalid_response_sha256, invalid_response, created_at
+        )
+        SELECT
+            job_id, stage, stage_attempt, 2, 'repair', 'accepted', provider, model,
+            instruction_sha256, generation_parameters_json, generation_parameters_sha256,
+            request_id, input_tokens, output_tokens, cost_microusd, NULL, NULL, NULL,
+            created_at
+        FROM anki_card_ledger_attempts
+        """,
+        "UPDATE anki_card_ledger_attempts SET generation_parameters_sha256 = "
+        "'0' || substr(generation_parameters_sha256, 2)",
+        "UPDATE anki_card_ledger_attempts SET invalid_response = 'unexpected'",
+    ],
+)
+def test_v24_startup_rejects_tampered_persisted_card_ledger_attempt_rows(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    parameters = s2_generation_parameters(ProviderName.ANTHROPIC, "claude-sonnet-5")
+    parameters_json = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+    accepted = CardCentricLedgerAttempt(
+        call_index=1,
+        kind="primary",
+        outcome="accepted",
+        provider=ProviderName.ANTHROPIC,
+        model="claude-sonnet-5",
+        instruction_sha256="a" * 64,
+        generation_parameters=parameters,
+        generation_parameters_sha256=hashlib.sha256(parameters_json.encode()).hexdigest(),
+        request_id="request-1",
+        input_tokens=1,
+        output_tokens=2,
+        cost_microusd=3,
+        validation_error=None,
+        invalid_response_sha256=None,
+        invalid_response=None,
+    )
+    repository.start_stage(job.id, CurationStage.CARD_LEDGER)
+    _record_card_ledger_attempt(repository, job.id, accepted)
+    with repository.database.engine.begin() as connection:
+        connection.execute(text(corruption))
+
+    with pytest.raises(RuntimeError, match="card-ledger attempt"):
+        repository.database.migrate()
 
 
 def test_failed_job_can_retry_its_failed_stage_without_losing_artifacts(

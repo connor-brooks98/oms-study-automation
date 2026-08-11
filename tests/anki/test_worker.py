@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -6,13 +8,23 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
+from oms_hub.anki.card_centric import (
+    CardCentricLedgerService,
+    _ledger_repair_instruction,
+    build_source_index,
+    s2_generation_parameters,
+)
 from oms_hub.anki.domain import (
     CreateCurationJob,
     CurationStage,
     CurationState,
     PipelineContractVersion,
+    SourceKind,
+    StageUsage,
 )
+from oms_hub.anki.models import AnkiEnvelopeModel, AnkiEnvelopeOperationModel
 from oms_hub.anki.pipeline import (
     CurationPipeline,
     PinnedInputChanged,
@@ -23,6 +35,7 @@ from oms_hub.anki.pipeline import (
 )
 from oms_hub.anki.repository import AnkiCurationRepository, InvalidCurationTransition
 from oms_hub.anki.semantic.store import SemanticSnapshotError
+from oms_hub.anki.sources import SourcePassage
 from oms_hub.anki.worker import AnkiCurationWorker, _is_retryable
 from oms_hub.app import create_app
 from oms_hub.config import Settings
@@ -30,10 +43,11 @@ from oms_hub.db import Database
 from oms_hub.llm.domain import (
     DiagnosticSource,
     GeneratedText,
+    GenerationOptions,
     LLMRequestError,
     ProviderName,
 )
-from oms_hub.llm.structured import StructuredOutputError
+from oms_hub.llm.structured import StructuredOutputError, StructuredTextService
 from oms_hub.models import LectureModel
 
 
@@ -69,6 +83,87 @@ class ControlledValidator:
         del job_id
         if self.error is not None:
             raise PinnedInputChanged(self.error)
+
+
+class LedgerServiceRunner:
+    """Run the production S2 service while keeping the worker fixture local."""
+
+    def __init__(
+        self,
+        responses: list[str],
+        *,
+        request_ids: list[str] | None = None,
+        response_model: str | None = None,
+    ) -> None:
+        self.responses = iter(responses)
+        self.request_ids = iter(request_ids or ["ledger-request"] * len(responses))
+        self.response_model = response_model
+
+    async def run(self, context: StageContext) -> StageProduct:
+        assert context.stage is CurationStage.CARD_LEDGER
+        assert context.record_card_ledger_attempt is not None
+
+        responses = self.responses
+        request_ids = self.request_ids
+        response_model = self.response_model
+
+        class Generator:
+            def generate_text(
+                self,
+                instruction: str,
+                input_text: str,
+                *,
+                output_schema: dict[str, object],
+                provider: ProviderName,
+                model: str,
+                options: GenerationOptions,
+            ) -> GeneratedText:
+                del instruction, input_text, output_schema, options
+                return GeneratedText(
+                    text=next(responses),
+                    provider=provider,
+                    model=response_model or model,
+                    request_id=next(request_ids),
+                    input_tokens=10,
+                    output_tokens=5,
+                    cost_microusd=1,
+                )
+
+        source = build_source_index(
+            [
+                SourcePassage.create(
+                    revision_id=1,
+                    lecture_id=context.job.lecture_id,
+                    artifact_id="outline:1",
+                    source_kind=SourceKind.SUMMARY,
+                    locator="summary:1",
+                    source_id="SUM:1:CORE:01",
+                    summary_section="core",
+                    text="Heme synthesis summary.",
+                )
+            ],
+            snapshot_id="worker-s2-source",
+            source_revision_hashes={1: "a" * 64},
+        )
+        route = context.job.resolved_model_config.ledger_s2
+        result = CardCentricLedgerService(
+            StructuredTextService(Generator()), "S2"
+        ).generate(
+            source_index=source,
+            provider=ProviderName(route.provider),
+            model=route.model,
+            record_attempt=context.record_card_ledger_attempt,
+        )
+        return StageProduct(
+            kind="card_centric_ledger",
+            payload={"ledger": result.ledger.model_dump(mode="json")},
+            usage=StageUsage(
+                result.request_id,
+                result.input_tokens,
+                result.output_tokens,
+                result.cost_microusd,
+            ),
+        )
 
 
 @pytest.fixture
@@ -585,6 +680,220 @@ def test_malformed_structured_output_retries_from_the_same_stage(
         retryable = repository.require_job(job.id)
         assert retryable.state is CurationState.PREFLIGHT
         assert retryable.available_at is not None
+
+    asyncio.run(scenario())
+
+
+def test_s2_importance_conflict_retries_boundedly_and_manual_retry_keeps_attempt_evidence(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        job = _create_job(
+            repository,
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+        current = [datetime(2026, 8, 11, 12, 0, tzinfo=UTC)]
+        pipeline = CurationPipeline(
+            repository,
+            StageArtifactStore(tmp_path / "artifacts"),
+            ControlledRunner(),
+            input_validator=ControlledValidator(),
+        )
+        worker = AnkiCurationWorker(
+            repository,
+            pipeline,
+            worker_id="worker-s2",
+            lease_seconds=30,
+            poll_seconds=0.01,
+            max_stage_attempts=2,
+            now=lambda: current[0],
+        )
+        # Reach S2 through the real pipeline state machine, then exercise the
+        # production S2 service with the original CardConcept importance error.
+        assert await worker.run_once()
+        assert await worker.run_once()
+        assert repository.require_job(job.id).state is CurationState.CARD_BUILDING_LEDGER
+
+        valid = (
+            '{"lecture_entity_count":1,"concepts":[{"concept_id":"C01",'
+            '"canonical_statement":"fact","primary_entity":"fact",'
+            '"aliases":[],"depth":"deep","emphasis_flag":false,'
+            '"importance":"high","fact_descriptions":["fact"],'
+            '"forbidden_cloze_targets_by_fact":[[]]}]}'
+        )
+        invalid = valid.replace('"importance":"high"', '"importance":"low"')
+        pipeline.runner = LedgerServiceRunner([invalid, invalid])
+        assert await worker.run_once()
+        deferred = repository.require_job(job.id)
+        assert deferred.state is CurationState.CARD_BUILDING_LEDGER
+        assert [
+            (row["stage_attempt"], row["call_index"], row["outcome"])
+            for row in repository.list_card_ledger_attempts(job.id)
+        ] == [(1, 1, "validation_failed"), (1, 2, "validation_failed")]
+        assert not [
+            artifact
+            for artifact in repository.list_stage_artifacts(job.id)
+            if artifact.stage is CurationStage.CARD_LEDGER
+        ]
+
+        current[0] += timedelta(seconds=6)
+        pipeline.runner = LedgerServiceRunner([invalid, invalid])
+        assert await worker.run_once()
+        assert repository.require_job(job.id).state is CurationState.FAILED
+        assert [row["stage_attempt"] for row in repository.list_card_ledger_attempts(job.id)] == [
+            1,
+            1,
+            2,
+            2,
+        ]
+
+        assert repository.retry_job(job.id).state is CurationState.CARD_BUILDING_LEDGER
+        pipeline.runner = LedgerServiceRunner([valid])
+        assert await worker.run_once()
+        assert repository.require_job(job.id).state is CurationState.CARD_AUDITING_EVIDENCE
+        assert [
+            (row["stage_attempt"], row["call_index"], row["outcome"])
+            for row in repository.list_card_ledger_attempts(job.id)
+        ] == [
+            (1, 1, "validation_failed"),
+            (1, 2, "validation_failed"),
+            (2, 1, "validation_failed"),
+            (2, 2, "validation_failed"),
+            (3, 1, "accepted"),
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_s2_invalid_primary_then_valid_repair_commits_one_causal_stage_attempt(
+    repository: AnkiCurationRepository,
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        job = _create_job(
+            repository,
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+        current = [datetime(2026, 8, 11, 12, 0, tzinfo=UTC)]
+        pipeline = CurationPipeline(
+            repository,
+            StageArtifactStore(tmp_path / "artifacts"),
+            ControlledRunner(),
+            input_validator=ControlledValidator(),
+        )
+        worker = AnkiCurationWorker(
+            repository,
+            pipeline,
+            worker_id="worker-s2",
+            lease_seconds=30,
+            poll_seconds=0.01,
+            max_stage_attempts=2,
+            now=lambda: current[0],
+        )
+        assert await worker.run_once()
+        assert await worker.run_once()
+        assert repository.require_job(job.id).state is CurationState.CARD_BUILDING_LEDGER
+
+        valid = (
+            '{"lecture_entity_count":1,"concepts":[{"concept_id":"C01",'
+            '"canonical_statement":"fact","primary_entity":"fact",'
+            '"aliases":[],"depth":"deep","emphasis_flag":false,'
+            '"importance":"high","fact_descriptions":["fact"],'
+            '"forbidden_cloze_targets_by_fact":[[]]}]}'
+        )
+        invalid = valid.replace('"importance":"high"', '"importance":"low"')
+        pipeline.runner = LedgerServiceRunner(
+            [invalid, valid],
+            request_ids=["primary-request-id", "repair-request-id"],
+            response_model="claude-sonnet-5-2026-08-01",
+        )
+
+        assert await worker.run_once()
+        advanced = repository.require_job(job.id)
+        assert advanced.state is CurationState.CARD_AUDITING_EVIDENCE
+        assert advanced.apply_state.value == "pending"
+        stage = repository.get_stage(job.id, CurationStage.CARD_LEDGER)
+        assert stage is not None
+        assert stage.state == "complete"
+        assert stage.attempt_count == 1
+        expected_request_id = "card_ledger:" + hashlib.sha256(
+            json.dumps(
+                ("primary-request-id", "repair-request-id"), separators=(",", ":")
+            ).encode()
+        ).hexdigest()[:24]
+        assert (
+            stage.request_id,
+            stage.input_tokens,
+            stage.output_tokens,
+            stage.cost_microusd,
+        ) == (expected_request_id, 20, 10, 2)
+
+        requested_provider = ProviderName.ANTHROPIC
+        requested_model = "claude-sonnet"
+        expected_parameters = s2_generation_parameters(requested_provider, requested_model)
+        expected_parameters_sha256 = hashlib.sha256(
+            json.dumps(expected_parameters, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        rows = repository.list_card_ledger_attempts(job.id)
+        assert [
+            (
+                row["stage_attempt"],
+                row["call_index"],
+                row["kind"],
+                row["outcome"],
+                row["request_id"],
+            )
+            for row in rows
+        ] == [
+            (1, 1, "primary", "validation_failed", "primary-request-id"),
+            (1, 2, "repair", "accepted", "repair-request-id"),
+        ]
+        assert [(row["provider"], row["model"]) for row in rows] == [
+            ("anthropic", requested_model),
+            ("anthropic", requested_model),
+        ]
+        assert [row["generation_parameters"] for row in rows] == [
+            expected_parameters,
+            expected_parameters,
+        ]
+        assert [row["generation_parameters_sha256"] for row in rows] == [
+            expected_parameters_sha256,
+            expected_parameters_sha256,
+        ]
+        assert [row["instruction_sha256"] for row in rows] == [
+            hashlib.sha256(b"S2").hexdigest(),
+            hashlib.sha256(_ledger_repair_instruction("S2").encode()).hexdigest(),
+        ]
+
+        artifacts = repository.list_stage_artifacts(job.id)
+        ledger_artifacts = [
+            artifact for artifact in artifacts if artifact.stage is CurationStage.CARD_LEDGER
+        ]
+        assert len(ledger_artifacts) == 1
+        artifact = ledger_artifacts[0]
+        assert artifact.kind == "card_centric_ledger"
+        assert artifact.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
+        assert artifact.model_config_sha256 == advanced.model_config_sha256
+        assert artifact.relative_path.startswith(f"{job.id}/card_ledger/")
+        with repository.database.session() as session:
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(AnkiEnvelopeModel)
+                    .where(AnkiEnvelopeModel.job_id == str(job.id))
+                )
+                == 0
+            )
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(AnkiEnvelopeOperationModel)
+                    .join(AnkiEnvelopeModel)
+                    .where(AnkiEnvelopeModel.job_id == str(job.id))
+                )
+                == 0
+            )
 
     asyncio.run(scenario())
 

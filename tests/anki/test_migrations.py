@@ -16,6 +16,7 @@ APPROVED_ANKI_TABLES = {
     "anki_curation_instructions",
     "anki_curation_jobs",
     "anki_job_stages",
+    "anki_card_ledger_attempts",
     "anki_candidates",
     "anki_gap_cards",
     "anki_verdict_cache",
@@ -137,6 +138,70 @@ def test_anki_migration_is_repeatable(tmp_path) -> None:
             assert session.execute(
                 text("SELECT COUNT(*) FROM anki_stage_settings")
             ).scalar_one() == 0
+
+
+def test_schema_v24_fails_closed_when_card_ledger_attempt_evidence_is_tampered(tmp_path) -> None:
+    with Database(f"sqlite:///{tmp_path / 'hub.db'}") as database:
+        database.migrate()
+        with database.engine.begin() as connection:
+            connection.execute(text("DROP TABLE anki_card_ledger_attempts"))
+
+        with pytest.raises(RuntimeError, match="card-ledger attempt evidence"):
+            database.migrate()
+
+
+def test_raw_v23_upgrades_only_after_its_complete_graph_validates(tmp_path) -> None:
+    with Database(f"sqlite:///{tmp_path / 'hub-v23.db'}") as database:
+        database.migrate()
+        with database.engine.begin() as connection:
+            connection.execute(text("DROP TABLE anki_card_ledger_attempts"))
+            connection.execute(text("UPDATE schema_version SET version = 23 WHERE id = 1"))
+
+        database.migrate()
+
+        with database.session() as session:
+            assert session.execute(
+                text("SELECT version FROM schema_version WHERE id = 1")
+            ).scalar_one() == LATEST_SCHEMA_VERSION
+        assert inspect(database.engine).has_table("anki_card_ledger_attempts")
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "DROP TABLE existing_artifact_imports",
+        "DROP INDEX uq_study_revisions_current_lecture_kind",
+    ],
+)
+def test_corrupt_raw_v23_fails_before_v24_ddl_and_leaves_it_unmodified(
+    tmp_path,
+    corruption: str,
+) -> None:
+    with Database(f"sqlite:///{tmp_path / 'hub-v23-corrupt.db'}") as database:
+        database.migrate()
+        with database.engine.begin() as connection:
+            connection.execute(text("DROP TABLE anki_card_ledger_attempts"))
+            connection.execute(text("UPDATE schema_version SET version = 23 WHERE id = 1"))
+            connection.execute(text(corruption))
+        with database.engine.connect() as connection:
+            before_version = connection.execute(
+                text("SELECT version FROM schema_version WHERE id = 1")
+            ).scalar_one()
+            before_schema_rows = connection.execute(
+                text("SELECT COUNT(*) FROM schema_version")
+            ).scalar_one()
+
+        with pytest.raises(RuntimeError):
+            database.migrate()
+
+        with database.engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version FROM schema_version WHERE id = 1")
+            ).scalar_one() == before_version == 23
+            assert connection.execute(
+                text("SELECT COUNT(*) FROM schema_version")
+            ).scalar_one() == before_schema_rows
+        assert not inspect(database.engine).has_table("anki_card_ledger_attempts")
 
 
 def test_schema_v19_adds_replay_input_persistence_on_clean_install(tmp_path) -> None:

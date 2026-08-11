@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -8,9 +9,11 @@ from oms_hub.anki.card_centric import (
     CardCentricClassifier,
     CardCentricLedgerService,
     CardCentricValidationError,
+    _redacted_invalid_response,
     build_snapshot_census,
     build_source_index,
     resolve_card_centric_scope,
+    s2_generation_parameters,
     scope_cards,
     select_high_yield,
     select_high_yield_v2,
@@ -31,8 +34,13 @@ from oms_hub.anki.card_centric_contracts import (
 )
 from oms_hub.anki.domain import SourceKind
 from oms_hub.anki.sources import SourcePassage
-from oms_hub.llm.domain import GeneratedText, ProviderName
-from oms_hub.llm.structured import StructuredTextService
+from oms_hub.llm.domain import (
+    DiagnosticSource,
+    GeneratedText,
+    LLMRequestError,
+    ProviderName,
+)
+from oms_hub.llm.structured import StructuredOutputError, StructuredTextService
 
 
 def _passage(kind: SourceKind, locator: str, text: str) -> SourcePassage:
@@ -766,6 +774,467 @@ def test_ledger_s2_round_trip_caches_only_the_summary_prefix() -> None:
     assert "summary-only phrase" in generator.options.cacheable_source_prefix
     assert "slide-only phrase" not in generator.options.cacheable_source_prefix
     assert "transcript-only phrase" not in generator.options.cacheable_source_prefix
+    assert generator.options.temperature == 0
+    assert generator.options.max_tokens == 7000
+
+
+def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
+    prompt = Path("src/oms_hub/anki/prompt_assets/card-centric-ledger-v2.md").read_text()
+
+    assert "version: 2.0.2" in prompt
+    assert (
+        "`high` **if and only if** `depth` is `deep` **or** `emphasis_flag` is `true`."
+        in prompt
+    )
+    assert (
+        "`medium` **if and only if** `emphasis_flag` is `false` and `depth` is `medium`."
+        in prompt
+    )
+    assert "`low` **if and only if** `emphasis_flag` is `false` and `depth` is `surface`." in prompt
+    observed_hash = hashlib.sha256(prompt.encode()).hexdigest()
+    assert observed_hash == "bed297b02ca65e1cff05af23abb7eb2e904c43a824b02cd76956fc9e3d9f5572"
+    assert observed_hash != "1561da45dd05048dcf9d92fc709ce117f994bc0f38eb075a81bf2937bd1e2580"
+
+
+@pytest.mark.parametrize(
+    ("depth", "emphasis", "importance"),
+    [
+        ("deep", False, "high"),
+        ("deep", True, "high"),
+        ("medium", True, "high"),
+        ("medium", False, "medium"),
+        ("surface", True, "high"),
+        ("surface", False, "low"),
+    ],
+)
+def test_card_concept_importance_matrix(depth, emphasis, importance) -> None:
+    concept = CardConcept(
+        concept_id="C01",
+        canonical_statement="fact",
+        primary_entity="fact",
+        depth=depth,
+        emphasis_flag=emphasis,
+        importance=importance,
+    )
+    assert concept.importance == importance
+
+
+@pytest.mark.parametrize(
+    ("depth", "emphasis", "importance"),
+    [("deep", False, "medium"), ("medium", False, "low"), ("surface", True, "low")],
+)
+def test_card_concept_rejects_importance_conflicts(depth, emphasis, importance) -> None:
+    with pytest.raises(ValueError, match="importance conflicts"):
+        CardConcept(
+            concept_id="C01",
+            canonical_statement="fact",
+            primary_entity="fact",
+            depth=depth,
+            emphasis_flag=emphasis,
+            importance=importance,
+        )
+
+
+def test_card_ledger_valid_primary_makes_one_call_and_records_transmitted_identity() -> None:
+    source = _ledger_source()
+    attempts = []
+    generator = _LedgerSequenceGenerator([_valid_ledger_text()])
+
+    result = CardCentricLedgerService(StructuredTextService(generator), "S2").generate(
+        source_index=source,
+        provider=ProviderName.ANTHROPIC,
+        model="claude-sonnet-5",
+        record_attempt=attempts.append,
+    )
+
+    assert result.ledger.concepts[0].importance == "high"
+    assert len(generator.calls) == 1
+    assert [attempt.kind for attempt in attempts] == ["primary"]
+    assert attempts[0].outcome == "accepted"
+    assert attempts[0].generation_parameters["temperature"] == {
+        "value": 0,
+        "transmission": "transmitted",
+    }
+    assert attempts[0].generation_parameters["max_tokens"] == {
+        "value": 7000,
+        "transmission": "transmitted",
+    }
+    assert attempts[0].generation_parameters["thinking"] == {
+        "requested": "disabled",
+        "transmission": "transmitted_disabled",
+    }
+    assert attempts[0].generation_parameters["cache"] == {
+        "requested": "summary_prefix",
+        "transmission": "anthropic_ephemeral",
+    }
+    assert result.generation_parameters_sha256 == attempts[0].generation_parameters_sha256
+    assert result.request_ids == ("request-1",)
+    assert result.request_id == "request-1"
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "thinking", "cache"),
+    [
+        (
+            ProviderName.ANTHROPIC,
+            "claude-sonnet-5",
+            {"requested": "disabled", "transmission": "transmitted_disabled"},
+            {"requested": "summary_prefix", "transmission": "anthropic_ephemeral"},
+        ),
+        (
+            ProviderName.ANTHROPIC,
+            "claude-3-7-sonnet-latest",
+            {
+                "requested": "disabled",
+                "transmission": "not_transmitted",
+                "provider_default": "unknown_provider_default",
+            },
+            {"requested": "summary_prefix", "transmission": "anthropic_ephemeral"},
+        ),
+        (
+            ProviderName.OPENAI,
+            "gpt-5.2",
+            {
+                "requested": "disabled",
+                "transmission": "not_transmitted",
+                "provider_default": "unknown_provider_default",
+            },
+            {"requested": "summary_prefix", "transmission": "prompt_context_only"},
+        ),
+        (
+            ProviderName.GEMINI,
+            "gemini-3.6-flash",
+            {
+                "requested": "disabled",
+                "transmission": "not_transmitted",
+                "provider_default": "unknown_provider_default",
+            },
+            {"requested": "summary_prefix", "transmission": "prompt_context_only"},
+        ),
+        (
+            ProviderName.OPENROUTER,
+            "openai/gpt-4o-mini",
+            {
+                "requested": "disabled",
+                "transmission": "not_transmitted",
+                "provider_default": "unknown_provider_default",
+            },
+            {"requested": "summary_prefix", "transmission": "prompt_context_only"},
+        ),
+    ],
+)
+def test_card_ledger_records_complete_truthful_s2_identity_for_each_route(
+    provider: ProviderName,
+    model: str,
+    thinking: dict[str, str],
+    cache: dict[str, str],
+) -> None:
+    attempts = []
+    invalid = _valid_ledger_text().replace('"importance":"high"', '"importance":"low"')
+    generator = _LedgerSequenceGenerator([invalid, _valid_ledger_text()])
+
+    CardCentricLedgerService(StructuredTextService(generator), "S2").generate(
+        source_index=_ledger_source(),
+        provider=provider,
+        model=model,
+        record_attempt=attempts.append,
+    )
+
+    expected = s2_generation_parameters(provider, model)
+    assert [attempt.generation_parameters for attempt in attempts] == [expected, expected]
+    assert [attempt.generation_parameters_sha256 for attempt in attempts] == [
+        attempts[0].generation_parameters_sha256,
+        attempts[0].generation_parameters_sha256,
+    ]
+    assert expected["temperature"] == {"value": 0, "transmission": "transmitted"}
+    assert expected["max_tokens"] == {"value": 7000, "transmission": "transmitted"}
+    assert expected["thinking"] == thinking
+    assert expected["cache"] == cache
+    assert all(call[2].temperature == 0 and call[2].max_tokens == 7000 for call in generator.calls)
+
+
+def test_card_ledger_invalid_primary_gets_one_complete_repair_and_replaces_output() -> None:
+    source = _ledger_source()
+    invalid = _valid_ledger_text().replace('"importance":"high"', '"importance":"low"')
+    attempts = []
+    generator = _LedgerSequenceGenerator([invalid, _valid_ledger_text()])
+
+    result = CardCentricLedgerService(StructuredTextService(generator), "S2").generate(
+        source_index=source,
+        provider=ProviderName.ANTHROPIC,
+        model="claude-sonnet-5",
+        record_attempt=attempts.append,
+    )
+
+    assert result.ledger.model_dump_json() == _valid_ledger_text()
+    assert len(generator.calls) == 2
+    assert [attempt.outcome for attempt in attempts] == ["validation_failed", "accepted"]
+    repair_instruction, repair_input, _ = generator.calls[1]
+    assert "Correct only the reported validation defects" in repair_instruction
+    assert json.loads(repair_input)["invalid_response"] == invalid
+    assert "importance conflicts" in json.loads(repair_input)["validation_error"]
+    assert attempts[0].invalid_response_sha256 == hashlib.sha256(invalid.encode()).hexdigest()
+    assert result.request_ids == ("request-1", "request-2")
+    assert result.request_id.startswith("card_ledger:")
+    assert (result.input_tokens, result.output_tokens, result.cost_microusd) == (20, 10, 2)
+
+
+@pytest.mark.parametrize("invalid_primary", [False, True])
+def test_card_ledger_attempts_keep_requested_route_when_response_model_is_aliased(
+    invalid_primary: bool,
+) -> None:
+    requested_provider = ProviderName.ANTHROPIC
+    requested_model = "claude-sonnet-5"
+    invalid = _valid_ledger_text().replace('"importance":"high"', '"importance":"low"')
+    generator = _LedgerSequenceGenerator(
+        [invalid, _valid_ledger_text()] if invalid_primary else [_valid_ledger_text()],
+        response_provider=ProviderName.OPENAI,
+        response_model="gpt-5.2-2026-08-01",
+    )
+    attempts = []
+
+    CardCentricLedgerService(StructuredTextService(generator), "S2").generate(
+        source_index=_ledger_source(),
+        provider=requested_provider,
+        model=requested_model,
+        record_attempt=attempts.append,
+    )
+
+    expected_parameters = s2_generation_parameters(requested_provider, requested_model)
+    expected_hash = hashlib.sha256(
+        json.dumps(expected_parameters, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert [(attempt.provider, attempt.model) for attempt in attempts] == [
+        (requested_provider, requested_model)
+    ] * len(attempts)
+    assert [attempt.generation_parameters for attempt in attempts] == [
+        expected_parameters
+    ] * len(attempts)
+    assert [attempt.generation_parameters_sha256 for attempt in attempts] == [
+        expected_hash
+    ] * len(attempts)
+
+
+@pytest.mark.parametrize(
+    "value, secret",
+    [
+        (
+            '{"api_key":"sk-json-secret-value","token":"token-json-secret"}',
+            "sk-json-secret-value",
+        ),
+        (
+            "Authorization: Bearer bearer-header-secret; access_token=access-value-secret",
+            "bearer-header-secret",
+        ),
+        (
+            "client_secret : client-secret-value, password=pass-value, token: token-value",
+            "client-secret-value",
+        ),
+        (
+            "{'api_key': 'single-quoted-secret', 'token': 'single-quoted-token'}",
+            "single-quoted-secret",
+        ),
+    ],
+)
+def test_card_ledger_invalid_response_redacts_common_malformed_secret_forms(
+    value: str,
+    secret: str,
+) -> None:
+    redacted = _redacted_invalid_response(value)
+
+    assert secret not in redacted
+    assert "[REDACTED]" in redacted
+
+
+def test_card_ledger_invalid_response_redacts_structured_failure_and_hashes_stored_bytes() -> None:
+    source = _ledger_source()
+    payload = json.loads(_valid_ledger_text())
+    payload["api_key"] = "sk-structured-secret"
+    payload["authorization"] = "Bearer structured-bearer-secret"
+    payload["concepts"][0]["importance"] = "low"
+    invalid = json.dumps(payload, separators=(",", ":"))
+    attempts = []
+    generator = _LedgerSequenceGenerator([invalid, _valid_ledger_text()])
+
+    CardCentricLedgerService(StructuredTextService(generator), "S2").generate(
+        source_index=source,
+        provider=ProviderName.ANTHROPIC,
+        model="claude-sonnet-5",
+        record_attempt=attempts.append,
+    )
+
+    stored = attempts[0].invalid_response
+    assert stored is not None
+    assert "sk-structured-secret" not in stored
+    assert "structured-bearer-secret" not in stored
+    assert attempts[0].invalid_response_sha256 == hashlib.sha256(stored.encode()).hexdigest()
+
+
+def test_card_ledger_invalid_response_is_bounded_after_redaction() -> None:
+    value = "api_key=" + ("secret-value-" * 2_000)
+    redacted = _redacted_invalid_response(value)
+
+    assert len(redacted) <= 12_000
+    assert "secret-value" not in redacted
+    assert redacted.endswith("[REDACTED]")
+
+
+@pytest.mark.parametrize("repair_kind", ["malformed", "conflict"])
+def test_card_ledger_bad_repair_fails_closed_after_two_calls(repair_kind) -> None:
+    source = _ledger_source()
+    invalid = _valid_ledger_text().replace('"importance":"high"', '"importance":"low"')
+    attempts = []
+    repair = (
+        '{"concepts":'
+        if repair_kind == "malformed"
+        else _valid_ledger_text().replace('"importance":"high"', '"importance":"low"')
+    )
+    generator = _LedgerSequenceGenerator([invalid, repair])
+
+    with pytest.raises(StructuredOutputError):
+        CardCentricLedgerService(StructuredTextService(generator), "S2").generate(
+            source_index=source,
+            provider=ProviderName.ANTHROPIC,
+            model="claude-sonnet-5",
+            record_attempt=attempts.append,
+        )
+
+    assert len(generator.calls) == 2
+    assert [attempt.outcome for attempt in attempts] == ["validation_failed", "validation_failed"]
+
+
+def test_card_ledger_repair_transport_error_keeps_primary_and_repair_attempts() -> None:
+    source = _ledger_source()
+    invalid = _valid_ledger_text().replace('"importance":"high"', '"importance":"low"')
+    attempts = []
+    generator = _LedgerSequenceGenerator([invalid, RuntimeError("Bearer sk-secret-token-value")])
+
+    with pytest.raises(RuntimeError, match="Bearer"):
+        CardCentricLedgerService(StructuredTextService(generator), "S2").generate(
+            source_index=source,
+            provider=ProviderName.ANTHROPIC,
+            model="claude-sonnet-5",
+            record_attempt=attempts.append,
+        )
+
+    assert [attempt.outcome for attempt in attempts] == ["validation_failed", "transport_failed"]
+    assert attempts[0].invalid_response is not None
+    assert attempts[1].validation_error == "Bearer [REDACTED]"
+    assert "sk-secret-token-value" not in attempts[1].validation_error
+
+
+def test_card_ledger_transport_failure_persists_safe_provider_request_id_only() -> None:
+    invalid = _valid_ledger_text().replace('"importance":"high"', '"importance":"low"')
+    attempts = []
+    generator = _LedgerSequenceGenerator(
+        [
+            invalid,
+            LLMRequestError(
+                "provider rejected Bearer repair-secret",
+                source=DiagnosticSource.NETWORK,
+                provider_request_id="safe-provider-request-42",
+            ),
+        ]
+    )
+
+    with pytest.raises(LLMRequestError):
+        CardCentricLedgerService(StructuredTextService(generator), "S2").generate(
+            source_index=_ledger_source(),
+            provider=ProviderName.ANTHROPIC,
+            model="claude-sonnet-5",
+            record_attempt=attempts.append,
+        )
+
+    assert attempts[1].request_id == "safe-provider-request-42"
+    assert attempts[1].validation_error == "provider rejected Bearer [REDACTED]"
+    assert "repair-secret" not in attempts[1].validation_error
+
+
+def test_card_ledger_repair_transport_failure_cannot_mask_attempt_persistence_failure() -> None:
+    source = _ledger_source()
+    invalid = _valid_ledger_text().replace('"importance":"high"', '"importance":"low"')
+    generator = _LedgerSequenceGenerator([invalid, RuntimeError("Bearer repair-secret")])
+    attempts = []
+
+    def recorder(attempt) -> None:
+        attempts.append(attempt)
+        if attempt.call_index == 2:
+            raise RuntimeError("attempt persistence unavailable")
+
+    with pytest.raises(RuntimeError, match="attempt persistence unavailable"):
+        CardCentricLedgerService(StructuredTextService(generator), "S2").generate(
+            source_index=source,
+            provider=ProviderName.ANTHROPIC,
+            model="claude-sonnet-5",
+            record_attempt=recorder,
+        )
+
+    assert [attempt.call_index for attempt in attempts] == [1, 2]
+
+
+def _ledger_source():
+    return build_source_index(
+        [
+            SourcePassage.create(
+                revision_id=9,
+                lecture_id=12,
+                artifact_id="outline:9",
+                source_kind=SourceKind.SUMMARY,
+                locator="summary:core:1",
+                text="summary-only phrase",
+                source_id="SUM:12:CORE:01",
+                summary_section="core",
+            )
+        ],
+        snapshot_id="snapshot-1",
+        source_revision_hashes={7: "a" * 64},
+    )
+
+
+def _valid_ledger_text() -> str:
+    return CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="fact",
+                primary_entity="fact",
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+            ),
+        ),
+    ).model_dump_json()
+
+
+class _LedgerSequenceGenerator:
+    def __init__(
+        self,
+        responses,
+        *,
+        response_provider: ProviderName | None = None,
+        response_model: str | None = None,
+    ) -> None:
+        self.responses = iter(responses)
+        self.calls = []
+        self.response_provider = response_provider
+        self.response_model = response_model
+
+    def generate_text(self, instruction, input_text, *, output_schema, provider, model, options):
+        del output_schema
+        self.calls.append((instruction, input_text, options))
+        response = next(self.responses)
+        if isinstance(response, Exception):
+            raise response
+        return GeneratedText(
+            text=response,
+            provider=self.response_provider or provider,
+            model=self.response_model or model,
+            request_id=f"request-{len(self.calls)}",
+            input_tokens=10,
+            output_tokens=5,
+            cost_microusd=1,
+        )
 
 
 class _LedgerGenerator:

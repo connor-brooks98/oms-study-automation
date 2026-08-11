@@ -142,23 +142,25 @@ class OpenAIProvider:
         options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
     ) -> GeneratedText:
         require_supported_generation_options(self.name, self.capabilities, options)
-        response = self._request(
-            api_key,
-            {
-                "model": model,
-                "store": False,
-                "instructions": instruction,
-                "input": prompt_with_cacheable_prefix(input_text, options),
-                "text": {
-                    "format": {
-                        "type": "json_schema",
-                        "name": "structured_output",
-                        "schema": openai_output_schema(output_schema),
-                        "strict": True,
-                    }
-                },
+        payload: dict[str, Any] = {
+            "model": model,
+            "store": False,
+            "instructions": instruction,
+            "input": prompt_with_cacheable_prefix(input_text, options),
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "structured_output",
+                    "schema": openai_output_schema(output_schema),
+                    "strict": True,
+                }
             },
-        )
+        }
+        if options.max_tokens is not None:
+            payload["max_output_tokens"] = options.max_tokens
+        if options.temperature is not None:
+            payload["temperature"] = options.temperature
+        response = self._request(api_key, payload)
         return self._generated_text(response, model)
 
     def test_connection(

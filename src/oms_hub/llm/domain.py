@@ -44,6 +44,10 @@ class GenerationOptions:
     cacheable_source_prefix: str | None = None
     thinking: ThinkingMode = ThinkingMode.DISABLED
     thinking_budget_tokens: int = 1024
+    # ``None`` deliberately preserves the provider's existing default for all
+    # callers that do not need a reproducibly pinned generation setting.
+    temperature: float | None = None
+    max_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.thinking, ThinkingMode):
@@ -59,6 +63,18 @@ class GenerationOptions:
             or self.thinking_budget_tokens < 1024
         ):
             raise ValueError("thinking_budget_tokens must be at least 1024")
+        if self.temperature is not None and (
+            isinstance(self.temperature, bool)
+            or not isinstance(self.temperature, (int, float))
+            or not 0 <= self.temperature <= 2
+        ):
+            raise ValueError("temperature must be between 0 and 2")
+        if self.max_tokens is not None and (
+            isinstance(self.max_tokens, bool)
+            or not isinstance(self.max_tokens, int)
+            or self.max_tokens < 1
+        ):
+            raise ValueError("max_tokens must be positive")
 
     @property
     def thinking_mode(self) -> ThinkingMode:

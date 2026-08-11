@@ -167,7 +167,11 @@ def test_openrouter_generation_preserves_prefix_order_without_cache_telemetry() 
         api_key="secret",
         model="openai/gpt-4o-mini",
         output_schema={"type": "object"},
-        options=GenerationOptions(cacheable_source_prefix="SUM: source"),
+        options=GenerationOptions(
+            cacheable_source_prefix="SUM: source",
+            temperature=0,
+            max_tokens=7000,
+        ),
     )
 
     payload = json.loads(route.calls.last.request.content)
@@ -177,6 +181,9 @@ def test_openrouter_generation_preserves_prefix_order_without_cache_telemetry() 
         {"role": "system", "content": "Return JSON."},
         {"role": "user", "content": "SUM: source\n\nQuestion"},
     ]
+    assert payload["temperature"] == 0
+    assert payload["max_tokens"] == 7000
+    assert "thinking" not in payload
     assert result.cache_creation_input_tokens == 0
     assert result.cache_read_input_tokens == 0
 

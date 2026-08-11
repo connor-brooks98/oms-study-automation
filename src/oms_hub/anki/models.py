@@ -170,6 +170,39 @@ class AnkiJobStageModel(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class AnkiCardLedgerAttemptModel(Base):
+    """Append-only provider-call evidence for one S2 stage attempt."""
+
+    __tablename__ = "anki_card_ledger_attempts"
+    __table_args__ = (
+        UniqueConstraint("job_id", "stage", "stage_attempt", "call_index"),
+        Index("ix_anki_card_ledger_attempts_job", "job_id", "stage_attempt"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("anki_curation_jobs.id"))
+    stage: Mapped[str] = mapped_column(String(30))
+    stage_attempt: Mapped[int]
+    call_index: Mapped[int]
+    kind: Mapped[str] = mapped_column(String(20))
+    outcome: Mapped[str] = mapped_column(String(30))
+    provider: Mapped[str] = mapped_column(String(30))
+    model: Mapped[str] = mapped_column(String(200))
+    instruction_sha256: Mapped[str] = mapped_column(String(64))
+    generation_parameters_json: Mapped[str] = mapped_column(Text)
+    generation_parameters_sha256: Mapped[str] = mapped_column(String(64))
+    request_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    input_tokens: Mapped[int] = mapped_column(default=0)
+    output_tokens: Mapped[int] = mapped_column(default=0)
+    cost_microusd: Mapped[int] = mapped_column(default=0)
+    validation_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # SHA-256 of ``invalid_response`` after bounding and secret redaction;
+    # raw provider output is never persisted or content-addressed.
+    invalid_response_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    invalid_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
 class AnkiCandidateModel(Base):
     __tablename__ = "anki_candidates"
     __table_args__ = (

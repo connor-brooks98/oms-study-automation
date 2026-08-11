@@ -91,7 +91,7 @@ class GeminiProvider:
             model,
             instruction,
             input_text,
-            max_output_tokens=32768,
+            max_output_tokens=options.max_tokens or 32768,
             output_schema=output_schema,
             options=options,
         )
@@ -153,6 +153,8 @@ class GeminiProvider:
         generation_config: dict[str, object] = {}
         if max_output_tokens is not None:
             generation_config["maxOutputTokens"] = max_output_tokens
+        if options.temperature is not None:
+            generation_config["temperature"] = options.temperature
         if output_schema is not None:
             generation_config["responseFormat"] = {
                 "text": {

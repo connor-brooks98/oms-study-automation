@@ -152,6 +152,10 @@ def test_s2_real_handler_propagates_provider_fault_to_worker(
             },
             CurationStage.SOURCE_INDEX: {"source_index": source.model_dump(mode="json")},
         },
+        # Direct handler tests have no pipeline lease/repository.  Preserve the
+        # production S2 invocation (including bounded malformed-output repair)
+        # while making its append-only attempt hook explicit and inert here.
+        record_card_ledger_attempt=lambda _attempt: None,
     )
 
     with pytest.raises(type(fault)) as raised:

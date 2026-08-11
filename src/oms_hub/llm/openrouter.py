@@ -114,6 +114,7 @@ class OpenRouterProvider:
             instruction,
             input_text,
             output_schema=output_schema,
+            max_tokens=options.max_tokens,
             options=options,
         )
         return self._generated_text(response, model)
@@ -155,6 +156,8 @@ class OpenRouterProvider:
         }
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+        if options.temperature is not None:
+            payload["temperature"] = options.temperature
         if output_schema is not None:
             payload["response_format"] = {
                 "type": "json_schema",

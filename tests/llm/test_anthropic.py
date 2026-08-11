@@ -85,11 +85,20 @@ def test_anthropic_structured_generation_sends_output_config():
             "properties": {"answer": {"type": "string"}},
             "required": ["answer"],
         },
+        options=GenerationOptions(
+            cacheable_source_prefix="SUM: iron is essential.",
+            thinking=ThinkingMode.DISABLED,
+            temperature=0,
+            max_tokens=7000,
+        ),
     )
 
     payload = json.loads(route.calls.last.request.content)
     assert "output_config" in payload
+    assert payload["temperature"] == 0
+    assert payload["max_tokens"] == 7000
     assert payload["thinking"] == {"type": "disabled"}
+    assert payload["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
     assert result.text == '{"answer":"iron"}'
 
 

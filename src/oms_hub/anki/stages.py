@@ -635,6 +635,7 @@ class CurationServicesRunner:
             source_index=source,
             provider=ProviderName(stage_model.provider),
             model=stage_model.model,
+            record_attempt=context.record_card_ledger_attempt,
         )
         return StageProduct(
             kind="card_centric_ledger",
@@ -648,8 +649,12 @@ class CurationServicesRunner:
                     "provider": stage_model.provider,
                     "model": stage_model.model,
                     "request_id": result.request_id,
+                    "request_ids": list(result.request_ids),
                     "cache_prefix_sha256": result.cache_prefix_sha256,
                 },
+                "generation_parameters": result.generation_parameters,
+                "generation_parameters_sha256": result.generation_parameters_sha256,
+                "request_ids": list(result.request_ids),
             },
             usage=StageUsage(
                 result.request_id, result.input_tokens, result.output_tokens, result.cost_microusd

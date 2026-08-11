@@ -165,7 +165,7 @@ class AnthropicProvider:
             model,
             instruction,
             input_text,
-            max_tokens=32768,
+            max_tokens=options.max_tokens or 32768,
             output_schema=output_schema,
             options=options,
             include_disabled_thinking=True,
@@ -232,6 +232,8 @@ class AnthropicProvider:
                 }
             ],
         }
+        if options.temperature is not None:
+            payload["temperature"] = options.temperature
         if thinking is not None:
             payload["thinking"] = thinking
         if output_schema is not None:
