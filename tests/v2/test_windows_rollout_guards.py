@@ -127,11 +127,21 @@ def test_f28_assigns_and_verifies_action_ids_before_registration() -> None:
     recovery_assignment = '$RecoveryAction.Id = "f28-recovery-$Index"'
     assert primary_assignment in installer
     assert recovery_assignment in installer
-    assert '[string]$PrimaryAction.Id -cne "f28-primary-0"' in installer
-    assert '[string]$RecoveryAction.Id -cne "f28-recovery-$Index"' in installer
-    register = installer.rindex("Register-ScheduledTask")
-    assert installer.index(primary_assignment) < register
-    assert installer.index(recovery_assignment) < register
+    primary_readback = '[string]$PrimaryAction.Id -cne "f28-primary-0"'
+    recovery_readback = '[string]$RecoveryAction.Id -cne "f28-recovery-$Index"'
+    aggregation = "$Action = @($PrimaryAction) + $RecoveryActions"
+    installation_start = installer.index(
+        'if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {'
+    )
+    installation_end = installer.index("Assert-TaskActionTargetsProjectRoot", installation_start)
+    installation = installer[installation_start:installation_end]
+    register = installation.index("Register-ScheduledTask")
+    assert installation.index("$PrimaryAction = New-ScheduledTaskAction") < installation.index(
+        primary_assignment
+    ) < installation.index(primary_readback) < installation.index(aggregation) < register
+    assert installation.index("$RecoveryAction = New-ScheduledTaskAction") < installation.index(
+        recovery_assignment
+    ) < installation.index(recovery_readback) < installation.index(aggregation) < register
 
 
 def test_f28_acceptance_requires_exact_hresult_and_same_instance_action_order() -> None:
