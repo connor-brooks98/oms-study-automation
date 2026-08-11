@@ -69,22 +69,22 @@ function Test-JsonInteger {
   param([AllowNull()][object]$Value)
   if ($null -eq $Value) { return $false }
   return (
-    $Value -is [sbyte] -or
-    $Value -is [byte] -or
-    $Value -is [short] -or
-    $Value -is [ushort] -or
-    $Value -is [int] -or
-    $Value -is [uint] -or
-    $Value -is [long] -or
-    $Value -is [ulong]
+    $Value -is [System.SByte] -or
+    $Value -is [System.Byte] -or
+    $Value -is [System.Int16] -or
+    $Value -is [System.UInt16] -or
+    $Value -is [System.Int32] -or
+    $Value -is [System.UInt32] -or
+    $Value -is [System.Int64] -or
+    $Value -is [System.UInt64]
   )
 }
 
 function Test-ExactJsonInteger {
-  param([AllowNull()][object]$Value, [long]$Expected)
+  param([AllowNull()][object]$Value, [System.Int64]$Expected)
   return (
     (Test-JsonInteger -Value $Value) -and
-    [decimal]$Value -eq [decimal]$Expected
+    [System.Decimal]$Value -eq [System.Decimal]$Expected
   )
 }
 

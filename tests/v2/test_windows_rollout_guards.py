@@ -183,6 +183,7 @@ def test_f28_probe_failure_has_a_native_original_error_regression() -> None:
     assert "F28_TEST_PATH_PROBE_FAILURE" in harness
     assert "F28_TEST_PRIMARY_ACCEPTANCE_FAILURE" in harness
     assert "F28_ORIGINAL_ERROR_PRESERVATION_VERIFIED" in harness
+    assert "F28_JSON_INTEGER_TYPES_VERIFIED" in harness
 
     powershell = next(
         (
@@ -214,6 +215,37 @@ def test_f28_probe_failure_has_a_native_original_error_regression() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "F28_ORIGINAL_ERROR_PRESERVATION_VERIFIED" in result.stdout
+
+
+def test_windows_json_integer_guards_use_powershell_51_clr_types() -> None:
+    for relative_path in (
+        "scripts/start-hub.ps1",
+        "scripts/accept-f28-restart.ps1",
+    ):
+        script = (ROOT / relative_path).read_text(encoding="utf-8")
+        integer_guard = script.split("function Test-JsonInteger", maxsplit=1)[1].split(
+            "function Test-ExactJsonInteger", maxsplit=1
+        )[0]
+
+        for clr_type in (
+            "[System.SByte]",
+            "[System.Byte]",
+            "[System.Int16]",
+            "[System.UInt16]",
+            "[System.Int32]",
+            "[System.UInt32]",
+            "[System.Int64]",
+            "[System.UInt64]",
+        ):
+            assert clr_type in integer_guard
+        for unsupported_alias in ("[short]", "[ushort]"):
+            assert unsupported_alias not in integer_guard
+        exact_guard = script.split(
+            "function Test-ExactJsonInteger", maxsplit=1
+        )[1].split("function ", maxsplit=1)[0]
+        assert "[System.Int64]$Expected" in exact_guard
+        assert "[System.Decimal]$Value" in exact_guard
+        assert "[System.Decimal]$Expected" in exact_guard
 
 
 def test_windows_revision_capture_preserves_the_complete_git_hash() -> None:

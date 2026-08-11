@@ -18,7 +18,9 @@ if (@($ParseErrors).Count -ne 0) {
 
 foreach ($FunctionName in @(
   "Write-F28Diagnostic",
-  "Invoke-F28FailurePreservingAction"
+  "Invoke-F28FailurePreservingAction",
+  "Test-JsonInteger",
+  "Test-ExactJsonInteger"
 )) {
   $Matches = @($Ast.FindAll({
     param($Node)
@@ -69,3 +71,28 @@ if ($ObservedFailure.Exception.Message -ceq $ProbeMessage) {
 }
 
 Write-Output "F28_ORIGINAL_ERROR_PRESERVATION_VERIFIED"
+
+foreach ($IntegerValue in @(
+  [System.SByte]75,
+  [System.Byte]75,
+  [System.Int16]75,
+  [System.UInt16]75,
+  [System.Int32]75,
+  [System.UInt32]75,
+  [System.Int64]75,
+  [System.UInt64]75
+)) {
+  if (-not (Test-JsonInteger -Value $IntegerValue)) {
+    throw "A supported CLR JSON integer type was rejected."
+  }
+}
+
+$JsonValues = '{"numeric":75,"quoted":"75"}' | ConvertFrom-Json
+if (-not (Test-ExactJsonInteger -Value $JsonValues.numeric -Expected 75)) {
+  throw "A native ConvertFrom-Json integer was rejected."
+}
+if (Test-ExactJsonInteger -Value $JsonValues.quoted -Expected 75) {
+  throw "A quoted JSON numeric value was accepted."
+}
+
+Write-Output "F28_JSON_INTEGER_TYPES_VERIFIED"
