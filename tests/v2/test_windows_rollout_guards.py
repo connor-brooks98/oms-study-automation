@@ -118,6 +118,22 @@ def test_f28_installs_exact_four_action_authorized_recovery_chain() -> None:
     assert "& $PowerShell -NoProfile -ExecutionPolicy Bypass -File $StartScript" in recovery
 
 
+def test_f28_assigns_and_verifies_action_ids_before_registration() -> None:
+    installer = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+
+    assert '-Id "f28-primary-0"' not in installer
+    assert '-Id "f28-recovery-$Index"' not in installer
+    primary_assignment = '$PrimaryAction.Id = "f28-primary-0"'
+    recovery_assignment = '$RecoveryAction.Id = "f28-recovery-$Index"'
+    assert primary_assignment in installer
+    assert recovery_assignment in installer
+    assert '[string]$PrimaryAction.Id -cne "f28-primary-0"' in installer
+    assert '[string]$RecoveryAction.Id -cne "f28-recovery-$Index"' in installer
+    register = installer.rindex("Register-ScheduledTask")
+    assert installer.index(primary_assignment) < register
+    assert installer.index(recovery_assignment) < register
+
+
 def test_f28_acceptance_requires_exact_hresult_and_same_instance_action_order() -> None:
     script = (ROOT / "scripts" / "accept-f28-restart.ps1").read_text(encoding="utf-8")
     verifier = (ROOT / "src" / "oms_hub" / "task_scheduler_evidence.py").read_text(

@@ -793,16 +793,22 @@ if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {
   $PrimaryAction = New-ScheduledTaskAction `
     -Execute $PowerShell `
     -Argument $PrimaryArguments `
-    -WorkingDirectory $ProjectRoot `
-    -Id "f28-primary-0"
+    -WorkingDirectory $ProjectRoot
+  $PrimaryAction.Id = "f28-primary-0"
+  if ([string]$PrimaryAction.Id -cne "f28-primary-0") {
+    throw "F28 primary action ID did not persist before task registration."
+  }
   $RecoveryActions = @()
   foreach ($Index in 1..3) {
     $RecoveryArguments = Get-ExpectedRecoveryTaskArguments -ExpectedRecoveryScript $RecoveryScript -ExpectedDataRoot $EffectiveDataRoot -ActionIndex $Index
     $RecoveryAction = New-ScheduledTaskAction `
       -Execute $PowerShell `
       -Argument $RecoveryArguments `
-      -WorkingDirectory $ProjectRoot `
-      -Id "f28-recovery-$Index"
+      -WorkingDirectory $ProjectRoot
+    $RecoveryAction.Id = "f28-recovery-$Index"
+    if ([string]$RecoveryAction.Id -cne "f28-recovery-$Index") {
+      throw "F28 recovery action $Index ID did not persist before task registration."
+    }
     $RecoveryActions += $RecoveryAction
   }
   $Action = @($PrimaryAction) + $RecoveryActions
