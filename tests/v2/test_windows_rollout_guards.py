@@ -542,11 +542,53 @@ def test_windows_installer_selects_every_descendant_of_verified_launcher() -> No
             "# Establish clean, exact source provenance"
         )
     ]
-    assert "$StopOrder = @($Conflicts)" in stop_function
-    assert "[array]::Reverse($StopOrder)" in stop_function
-    assert "foreach ($Process in $StopOrder)" in stop_function
+    # Only the deepest process from a discovery snapshot may cross a destructive
+    # boundary. Stopping it can make its parents exit naturally, so processing a
+    # reversed stale snapshot can misclassify those exiting parents as PID reuse.
+    assert "$Process = $Conflicts[-1]" in stop_function
+    assert "$StopOrder = @($Conflicts)" not in stop_function
+    assert "[array]::Reverse($StopOrder)" not in stop_function
+    assert "foreach ($Process in $StopOrder)" not in stop_function
+    assert "Re-discover before selecting another process" in stop_function
+    discovery = stop_function.index("$Conflicts = @(")
+    selection = stop_function.index("$Process = $Conflicts[-1]")
+    force_stop = stop_function.index("Stop-Process -InputObject $LiveHandle -Force")
+    settle = stop_function.index("Start-Sleep -Milliseconds 500", force_stop)
+    assert discovery < selection < force_stop < settle
+    assert stop_function.count("Stop-Process -InputObject $LiveHandle -Force") == 1
     assert "$StableClearObservations -ge 2" in stop_function
     assert "Start-Sleep -Milliseconds 500" in stop_function
+
+
+def test_windows_installer_rediscovers_after_each_destructive_stop() -> None:
+    """A child stop may make every parent in that snapshot disappear."""
+
+    snapshots = iter(
+        (
+            [101, 102, 103],
+            [],
+            [],
+        )
+    )
+    stopped: list[int] = []
+    stable_clear_observations = 0
+    discoveries = 0
+
+    while stable_clear_observations < 2:
+        conflicts = next(snapshots)
+        discoveries += 1
+        if not conflicts:
+            stable_clear_observations += 1
+            continue
+
+        stable_clear_observations = 0
+        process_id = conflicts[-1]
+        stopped.append(process_id)
+        # Model the native observation: stopping the server child causes both
+        # wrappers from this snapshot to exit without another Stop-Process call.
+
+    assert stopped == [103]
+    assert discoveries == 3
 
 
 def test_windows_installer_resolves_config_stops_tree_and_backs_up_before_pip() -> None:
