@@ -140,7 +140,7 @@ def test_anki_migration_is_repeatable(tmp_path) -> None:
             ).scalar_one() == 0
 
 
-def test_schema_v24_fails_closed_when_card_ledger_attempt_evidence_is_tampered(tmp_path) -> None:
+def test_schema_v25_fails_closed_when_card_ledger_attempt_evidence_is_tampered(tmp_path) -> None:
     with Database(f"sqlite:///{tmp_path / 'hub.db'}") as database:
         database.migrate()
         with database.engine.begin() as connection:

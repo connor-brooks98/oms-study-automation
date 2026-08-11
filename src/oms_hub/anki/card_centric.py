@@ -35,6 +35,7 @@ from oms_hub.anki.correction_contracts import (
 )
 from oms_hub.anki.domain import SourceKind
 from oms_hub.anki.sources import SourcePassage
+from oms_hub.llm.anthropic import resolve_anthropic_model_capabilities
 from oms_hub.llm.domain import (
     GenerationOptions,
     LLMRequestError,
@@ -85,6 +86,8 @@ class CardCentricLedgerAttempt:
     validation_error: str | None
     invalid_response_sha256: str | None
     invalid_response: str | None
+    diagnostic_source: str | None = None
+    http_status: int | None = None
 
 
 _S2_GENERATION_OPTIONS = GenerationOptions(
@@ -349,6 +352,8 @@ def _record_ledger_attempt(
                 validation_error=_redacted_invalid_response(str(transport_error))[:2_000],
                 invalid_response_sha256=None,
                 invalid_response=None,
+                diagnostic_source=_transport_diagnostic_source(transport_error),
+                http_status=_transport_http_status(transport_error),
             )
         )
         return
@@ -430,6 +435,17 @@ def _transport_provider_request_id(error: Exception) -> str:
     return request_id
 
 
+def _transport_diagnostic_source(error: Exception) -> str | None:
+    return error.source.value if isinstance(error, LLMRequestError) else None
+
+
+def _transport_http_status(error: Exception) -> int | None:
+    if not isinstance(error, LLMRequestError):
+        return None
+    status = error.http_status
+    return status if isinstance(status, int) and not isinstance(status, bool) else None
+
+
 def _s2_generation_parameters(
     provider: ProviderName,
     model: str,
@@ -437,13 +453,28 @@ def _s2_generation_parameters(
 ) -> dict[str, object]:
     """Describe precisely what the S2 transports send for the current call."""
     transmitted_cache = provider is ProviderName.ANTHROPIC
-    adaptive_anthropic = provider is ProviderName.ANTHROPIC and model.casefold().startswith(
-        ("claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-5")
+    anthropic_capabilities = (
+        resolve_anthropic_model_capabilities(model)
+        if provider is ProviderName.ANTHROPIC
+        else None
     )
+    adaptive_anthropic = (
+        anthropic_capabilities is not None
+        and anthropic_capabilities.thinking_capability.value == "adaptive"
+    )
+    temperature: dict[str, object]
+    if anthropic_capabilities is not None and not anthropic_capabilities.temperature:
+        temperature = {
+            "requested": options.temperature,
+            "transmission": "not_transmitted",
+            "provider_default": "unknown_provider_default",
+        }
+    else:
+        temperature = {"value": options.temperature, "transmission": "transmitted"}
     return {
         "provider": provider.value,
         "model": model,
-        "temperature": {"value": options.temperature, "transmission": "transmitted"},
+        "temperature": temperature,
         "max_tokens": {"value": options.max_tokens, "transmission": "transmitted"},
         "thinking": {
             "requested": options.thinking.value,
@@ -468,6 +499,18 @@ def s2_generation_parameters(provider: ProviderName, model: str) -> dict[str, ob
     return _s2_generation_parameters(provider, model, _S2_GENERATION_OPTIONS)
 
 
+def _legacy_s2_generation_parameters(
+    provider: ProviderName,
+    model: str,
+) -> dict[str, object]:
+    """Return the pre-remediation v24 document without rewriting its evidence."""
+    parameters = s2_generation_parameters(provider, model)
+    temperature = parameters["temperature"]
+    if isinstance(temperature, dict) and temperature.get("transmission") == "not_transmitted":
+        parameters["temperature"] = {"value": 0, "transmission": "transmitted"}
+    return parameters
+
+
 def validate_s2_generation_parameters(
     provider: ProviderName,
     model: str,
@@ -482,6 +525,21 @@ def validate_s2_generation_parameters(
     expected = s2_generation_parameters(provider, model)
     if _canonical_json(parameters) != _canonical_json(expected):
         raise ValueError("card-ledger generation parameters are not the canonical S2 document")
+
+
+def validate_persisted_s2_generation_parameters(
+    provider: ProviderName,
+    model: str,
+    parameters: dict[str, object],
+) -> None:
+    """Accept immutable v24 evidence as well as the current write contract."""
+    expected = s2_generation_parameters(provider, model)
+    legacy = _legacy_s2_generation_parameters(provider, model)
+    if _canonical_json(parameters) not in {
+        _canonical_json(expected),
+        _canonical_json(legacy),
+    }:
+        raise ValueError("card-ledger generation parameters are not canonical evidence")
 
 
 _SOURCE_ORDER = {"summary": 0, "transcript": 1, "slide": 2}

@@ -114,7 +114,12 @@ def _prepared_repository(tmp_path: Path) -> tuple[AnkiCurationRepository, int]:
     return AnkiCurationRepository(database), lecture_id
 
 
-def _job_request(lecture_id: int, *, snapshot: str = "snapshot-1") -> CreateCurationJob:
+def _job_request(
+    lecture_id: int,
+    *,
+    snapshot: str = "snapshot-1",
+    model: str = "claude-sonnet-5",
+) -> CreateCurationJob:
     return CreateCurationJob(
         lecture_id=lecture_id,
         block_id="heme-block-1",
@@ -129,7 +134,7 @@ def _job_request(lecture_id: int, *, snapshot: str = "snapshot-1") -> CreateCura
         judgment_rubric_version="judgment-v1",
         gap_prompt_version="gap-v1",
         provider="anthropic",
-        model="claude-sonnet-5",
+        model=model,
         summary_outline_id=91,
         summary_outline_sha256="b" * 64,
     )
@@ -1297,6 +1302,8 @@ def test_card_ledger_sqlite_fence_serializes_contention_and_replays_idempotently
             "validation_error": None,
             "invalid_response_sha256": None,
             "invalid_response": None,
+            "diagnostic_source": None,
+            "http_status": None,
         }
     ]
 
@@ -1329,7 +1336,7 @@ def test_card_ledger_attempt_rejects_partial_extra_and_mismatched_parameter_docu
     bad_documents = (
         {key: value for key, value in parameters.items() if key != "cache"},
         {**parameters, "unexpected": True},
-        {**parameters, "temperature": {"value": 1, "transmission": "transmitted"}},
+        {**parameters, "temperature": {"value": 0, "transmission": "transmitted"}},
         {**parameters, "provider": "openai"},
     )
     for document in bad_documents:
@@ -1347,6 +1354,170 @@ def test_card_ledger_attempt_rejects_partial_extra_and_mismatched_parameter_docu
                 ),
             )
     assert repository.list_card_ledger_attempts(job.id) == []
+
+
+def test_v24_card_ledger_evidence_survives_reopen_upgrade_without_rewriting(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    rows: list[tuple[str, str, str, str]] = []
+    fixtures = (
+        ("claude-opus-4-7suffix", "accepted"),
+        ("claude-opus-4-8suffix", "validation_failed"),
+        ("claude-sonnet-5suffix", "transport_failed"),
+    )
+    for index, (model, outcome) in enumerate(fixtures, start=1):
+        job = repository.create_job(
+            _job_request(lecture_id, snapshot=f"snapshot-{index}", model=model)
+        )
+        stage = repository.start_stage(job.id, CurationStage.CARD_LEDGER)
+        current = s2_generation_parameters(ProviderName.ANTHROPIC, model)
+        legacy = json.loads(json.dumps(current))
+        legacy["temperature"] = {"value": 0, "transmission": "transmitted"}
+        legacy_json = json.dumps(legacy, sort_keys=True, separators=(",", ":"))
+        legacy_sha256 = hashlib.sha256(legacy_json.encode()).hexdigest()
+        invalid_response = '{"importance":"low"}' if outcome == "validation_failed" else None
+        repository.record_card_ledger_attempt(
+            job.id,
+            CardCentricLedgerAttempt(
+                call_index=1,
+                kind="primary",
+                outcome=outcome,  # type: ignore[arg-type]
+                provider=ProviderName.ANTHROPIC,
+                model=model,
+                instruction_sha256="a" * 64,
+                generation_parameters=current,
+                generation_parameters_sha256=hashlib.sha256(
+                    json.dumps(current, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest(),
+                request_id=f"request-{index}",
+                input_tokens=1 if outcome != "transport_failed" else 0,
+                output_tokens=2 if outcome != "transport_failed" else 0,
+                cost_microusd=3 if outcome != "transport_failed" else 0,
+                validation_error=(
+                    "importance conflicts"
+                    if outcome == "validation_failed"
+                    else "Anthropic rejected the request"
+                    if outcome == "transport_failed"
+                    else None
+                ),
+                invalid_response_sha256=(
+                    hashlib.sha256(invalid_response.encode()).hexdigest()
+                    if invalid_response is not None
+                    else None
+                ),
+                invalid_response=invalid_response,
+            ),
+            expected_stage_attempt=stage.attempt_count,
+            lease_owner=None,
+        )
+        rows.append((str(job.id), model, legacy_json, legacy_sha256))
+    database_path = Path(str(repository.database.engine.url.database))
+    with repository.database.engine.begin() as connection:
+        for job_id, _, legacy_json, legacy_sha256 in rows:
+            connection.execute(
+                text(
+                    "UPDATE anki_card_ledger_attempts SET generation_parameters_json = :document, "
+                    "generation_parameters_sha256 = :sha256 WHERE job_id = :job_id"
+                ),
+                {
+                    "document": legacy_json,
+                    "sha256": legacy_sha256,
+                    "job_id": job_id,
+                },
+            )
+        connection.execute(text("UPDATE schema_version SET version = 24 WHERE id = 1"))
+        connection.execute(
+            text("ALTER TABLE anki_card_ledger_attempts DROP COLUMN diagnostic_source")
+        )
+        connection.execute(
+            text("ALTER TABLE anki_card_ledger_attempts DROP COLUMN http_status")
+        )
+    repository.database.close()
+
+    with Database(f"sqlite:///{database_path}") as reopened:
+        reopened.migrate()
+        with reopened.engine.connect() as connection:
+            persisted_rows = connection.execute(
+                text(
+                    "SELECT model, outcome, generation_parameters_json, "
+                    "generation_parameters_sha256, diagnostic_source, http_status "
+                    "FROM anki_card_ledger_attempts ORDER BY model"
+                )
+            ).all()
+            version = connection.execute(
+                text("SELECT version FROM schema_version WHERE id = 1")
+            ).scalar_one()
+
+    assert persisted_rows == [
+        (model, outcome, legacy_json, legacy_sha256, None, None)
+        for _, model, legacy_json, legacy_sha256 in sorted(rows, key=lambda row: row[1])
+        for candidate_model, outcome in fixtures
+        if candidate_model == model
+    ]
+    assert version == 25
+
+
+def test_card_ledger_transport_failure_persists_only_safe_diagnostics(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    stage = repository.start_stage(job.id, CurationStage.CARD_LEDGER)
+    parameters = s2_generation_parameters(ProviderName.ANTHROPIC, "claude-sonnet-5")
+    parameters_json = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+    repository.record_card_ledger_attempt(
+        job.id,
+        CardCentricLedgerAttempt(
+            call_index=1,
+            kind="primary",
+            outcome="transport_failed",
+            provider=ProviderName.ANTHROPIC,
+            model="claude-sonnet-5",
+            instruction_sha256="a" * 64,
+            generation_parameters=parameters,
+            generation_parameters_sha256=hashlib.sha256(
+                parameters_json.encode()
+            ).hexdigest(),
+            request_id="safe-provider-request-42",
+            input_tokens=0,
+            output_tokens=0,
+            cost_microusd=0,
+            validation_error="Anthropic rejected the request",
+            invalid_response_sha256=None,
+            invalid_response=None,
+            diagnostic_source="provider_request",
+            http_status=400,
+        ),
+        expected_stage_attempt=stage.attempt_count,
+        lease_owner=None,
+    )
+
+    assert repository.list_card_ledger_attempts(job.id) == [
+        {
+            "stage": "card_ledger",
+            "stage_attempt": 1,
+            "call_index": 1,
+            "kind": "primary",
+            "outcome": "transport_failed",
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "instruction_sha256": "a" * 64,
+            "generation_parameters": parameters,
+            "generation_parameters_sha256": hashlib.sha256(
+                parameters_json.encode()
+            ).hexdigest(),
+            "request_id": "safe-provider-request-42",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_microusd": 0,
+            "validation_error": "Anthropic rejected the request",
+            "invalid_response_sha256": None,
+            "invalid_response": None,
+            "diagnostic_source": "provider_request",
+            "http_status": 400,
+        }
+    ]
 
 
 def test_v24_startup_rejects_coherent_cross_row_transport_tamper(tmp_path: Path) -> None:

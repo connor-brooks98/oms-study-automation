@@ -5,7 +5,11 @@ import httpx
 import pytest
 import respx
 
-from oms_hub.llm.anthropic import AnthropicProvider
+from oms_hub.anki.card_centric import s2_generation_parameters
+from oms_hub.llm.anthropic import (
+    AnthropicProvider,
+    resolve_anthropic_model_capabilities,
+)
 from oms_hub.llm.domain import (
     DiagnosticSource,
     GenerationOptions,
@@ -95,11 +99,110 @@ def test_anthropic_structured_generation_sends_output_config():
 
     payload = json.loads(route.calls.last.request.content)
     assert "output_config" in payload
-    assert payload["temperature"] == 0
+    assert "temperature" not in payload
     assert payload["max_tokens"] == 7000
     assert payload["thinking"] == {"type": "disabled"}
     assert payload["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
     assert result.text == '{"answer":"iron"}'
+
+
+@pytest.mark.parametrize(
+    "model",
+    (
+        "claude-opus-4-7suffix",
+        "claude-opus-4-8suffix",
+        "claude-sonnet-5suffix",
+    ),
+)
+@respx.mock
+def test_anthropic_direct_adaptive_models_omit_temperature(model: str) -> None:
+    def reject_explicit_temperature(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        if "temperature" in payload:
+            return httpx.Response(
+                400,
+                request=request,
+                json={"error": {"message": "temperature is unsupported"}},
+            )
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "message-no-temperature",
+                "model": model,
+                "content": [{"type": "text", "text": '{"answer":"iron"}'}],
+                "usage": {"input_tokens": 10, "output_tokens": 4},
+            },
+        )
+
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        side_effect=reject_explicit_temperature
+    )
+
+    AnthropicProvider().generate_text(
+        "Return JSON.",
+        "Question",
+        api_key="secret",
+        model=model,
+        output_schema={"type": "object"},
+        options=GenerationOptions(
+            cacheable_source_prefix="SUM: iron.",
+            thinking=ThinkingMode.DISABLED,
+            temperature=0,
+            max_tokens=7000,
+        ),
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    assert "temperature" not in payload
+    audit = s2_generation_parameters(ProviderName.ANTHROPIC, model)
+    assert resolve_anthropic_model_capabilities(model).temperature is False
+    assert audit["temperature"] == {
+        "requested": 0,
+        "transmission": "not_transmitted",
+        "provider_default": "unknown_provider_default",
+    }
+    assert payload["max_tokens"] == 7000
+    assert payload["thinking"] == {"type": "disabled"}
+    assert payload["messages"][0]["content"][0]["cache_control"] == {
+        "type": "ephemeral"
+    }
+
+
+@respx.mock
+def test_anthropic_compatible_model_keeps_temperature_and_minimal_connection_test() -> None:
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "message-compatible",
+                "model": "claude-3-7-sonnet-latest",
+                "content": [{"type": "text", "text": "OK"}],
+                "usage": {"input_tokens": 10, "output_tokens": 4},
+            },
+        )
+    )
+    provider = AnthropicProvider()
+
+    provider.generate_text(
+        "Return JSON.",
+        "Question",
+        api_key="secret",
+        model="claude-3-7-sonnet-latest",
+        output_schema={"type": "object"},
+        options=GenerationOptions(temperature=0, max_tokens=7000),
+    )
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["temperature"] == 0
+    assert resolve_anthropic_model_capabilities("claude-3-7-sonnet-latest").temperature
+    assert s2_generation_parameters(
+        ProviderName.ANTHROPIC, "claude-3-7-sonnet-latest"
+    )["temperature"] == {"value": 0, "transmission": "transmitted"}
+
+    provider.test_connection("secret", "claude-sonnet-5")
+    connection_payload = json.loads(route.calls.last.request.content)
+    assert set(connection_payload) == {"model", "max_tokens", "system", "messages"}
+    assert "temperature" not in connection_payload
 
 
 @respx.mock

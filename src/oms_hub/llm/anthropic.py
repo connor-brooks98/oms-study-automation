@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import httpx
 
 from oms_hub.llm.domain import (
@@ -61,6 +63,27 @@ _MANUAL_THINKING_MODELS = frozenset(
 )
 _CACHE_CREATION_INPUT_MULTIPLIER = 1.25
 _CACHE_READ_INPUT_MULTIPLIER = 0.1
+
+
+@dataclass(frozen=True, slots=True)
+class AnthropicModelCapabilities:
+    """Transport controls accepted by a direct Anthropic model route."""
+
+    temperature: bool
+    thinking_capability: ThinkingCapability
+
+
+def resolve_anthropic_model_capabilities(model: str) -> AnthropicModelCapabilities:
+    """Resolve the one direct-model contract used by request and audit paths."""
+    normalized = model.strip().casefold()
+    adaptive = normalized.startswith(_ADAPTIVE_THINKING_MODEL_FAMILIES)
+    if adaptive:
+        # These releases reject an explicit temperature key.
+        return AnthropicModelCapabilities(False, ThinkingCapability.ADAPTIVE)
+    if normalized in _MANUAL_THINKING_MODELS:
+        return AnthropicModelCapabilities(True, ThinkingCapability.MANUAL)
+    # Preserve older and unknown routes instead of rewriting model selection.
+    return AnthropicModelCapabilities(True, ThinkingCapability.UNSUPPORTED)
 
 
 def anthropic_output_schema(
@@ -186,7 +209,7 @@ class AnthropicProvider:
         return openai_style_model_ids(payload, self.name, response)
 
     def capabilities_for_model(self, model: str) -> ProviderCapabilities:
-        thinking_capability = _thinking_capability(model)
+        thinking_capability = resolve_anthropic_model_capabilities(model).thinking_capability
         return ProviderCapabilities(
             prompt_prefix_caching=True,
             thinking=thinking_capability is not ThinkingCapability.UNSUPPORTED,
@@ -232,7 +255,10 @@ class AnthropicProvider:
                 }
             ],
         }
-        if options.temperature is not None:
+        if (
+            options.temperature is not None
+            and resolve_anthropic_model_capabilities(model).temperature
+        ):
             payload["temperature"] = options.temperature
         if thinking is not None:
             payload["thinking"] = thinking
@@ -262,7 +288,7 @@ class AnthropicProvider:
         *,
         include_disabled_thinking: bool,
     ) -> dict[str, object] | None:
-        capability = self.capabilities_for_model(model).thinking_capability
+        capability = resolve_anthropic_model_capabilities(model).thinking_capability
         if options.thinking is ThinkingMode.DISABLED:
             if (
                 include_disabled_thinking
@@ -369,18 +395,6 @@ class AnthropicProvider:
             cache_creation_input_tokens=cache_creation_input_tokens,
             cache_read_input_tokens=cache_read_input_tokens,
         )
-
-
-def _thinking_capability(model: str) -> ThinkingCapability:
-    normalized = model.casefold()
-    if any(
-        normalized == family or normalized.startswith(f"{family}-")
-        for family in _ADAPTIVE_THINKING_MODEL_FAMILIES
-    ):
-        return ThinkingCapability.ADAPTIVE
-    if normalized in _MANUAL_THINKING_MODELS:
-        return ThinkingCapability.MANUAL
-    return ThinkingCapability.UNSUPPORTED
 
 
 def _anthropic_estimated_cost(

@@ -97,7 +97,7 @@ from oms_hub.anki.reconciliation import (
 )
 from oms_hub.anki.replay_inputs import PreparedStageReplayInputs, canonical_json
 from oms_hub.db import Database
-from oms_hub.llm.domain import ProviderName
+from oms_hub.llm.domain import DiagnosticSource, ProviderName
 from oms_hub.models import LectureModel, utc_now
 
 ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
@@ -1769,6 +1769,8 @@ class AnkiCurationRepository:
                 "validation_error": attempt.validation_error,
                 "invalid_response_sha256": attempt.invalid_response_sha256,
                 "invalid_response": attempt.invalid_response,
+                "diagnostic_source": attempt.diagnostic_source,
+                "http_status": attempt.http_status,
             }
             if existing is not None:
                 if any(getattr(existing, key) != value for key, value in values.items()):
@@ -1819,6 +1821,8 @@ class AnkiCurationRepository:
                 "validation_error": row.validation_error,
                 "invalid_response_sha256": row.invalid_response_sha256,
                 "invalid_response": row.invalid_response,
+                "diagnostic_source": row.diagnostic_source,
+                "http_status": row.http_status,
             }
             for row in rows
         ]
@@ -3438,6 +3442,18 @@ def _validate_card_ledger_attempt_for_write(
                 attempt.cost_microusd,
             )
         )
+        or (
+            attempt.diagnostic_source is not None
+            and attempt.diagnostic_source not in {source.value for source in DiagnosticSource}
+        )
+        or (
+            attempt.http_status is not None
+            and (
+                not isinstance(attempt.http_status, int)
+                or isinstance(attempt.http_status, bool)
+                or not 100 <= attempt.http_status <= 599
+            )
+        )
     ):
         raise ValueError("card-ledger attempt evidence is invalid")
     try:
@@ -3480,5 +3496,9 @@ def _validate_card_ledger_attempt_for_write(
             and attempt.invalid_response_sha256 is None
             and attempt.invalid_response is None
         )
+    if attempt.outcome != "transport_failed" and (
+        attempt.diagnostic_source is not None or attempt.http_status is not None
+    ):
+        valid_payload = False
     if not valid_payload:
         raise ValueError("card-ledger attempt outcome payload is invalid")

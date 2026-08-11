@@ -200,6 +200,9 @@ class AnkiCardLedgerAttemptModel(Base):
     # raw provider output is never persisted or content-addressed.
     invalid_response_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     invalid_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Safe provider transport metadata only; no response body, headers, or prompt.
+    diagnostic_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    http_status: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
 
 

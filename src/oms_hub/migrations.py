@@ -10,7 +10,7 @@ from sqlalchemy import inspect, select, text
 import oms_hub.anki.models  # noqa: F401
 from oms_hub.anki.card_centric import (
     _redacted_invalid_response,
-    validate_s2_generation_parameters,
+    validate_persisted_s2_generation_parameters,
 )
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.files.trusted_paths import (
@@ -19,7 +19,7 @@ from oms_hub.files.trusted_paths import (
     trusted_managed_path,
 )
 from oms_hub.llm.catalog import FALLBACK_MODELS
-from oms_hub.llm.domain import LLMTask, ProviderName
+from oms_hub.llm.domain import DiagnosticSource, LLMTask, ProviderName
 from oms_hub.llm.repository import DEFAULT_MODELS
 from oms_hub.models import (
     LectureModel,
@@ -35,7 +35,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 24
+LATEST_SCHEMA_VERSION = 25
 
 
 def _ensure_column(
@@ -54,12 +54,12 @@ def _ensure_column(
         connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
 
 
-def _validate_card_ledger_attempts_v24(database: "Database") -> None:
-    """Require append-only S2 repair evidence on current schemas."""
+def _validate_card_ledger_attempts_v25(database: "Database") -> None:
+    """Require append-only S2 repair and transport evidence on v25 schemas."""
     inspector = inspect(database.engine)
     table = "anki_card_ledger_attempts"
     if not inspector.has_table(table):
-        raise RuntimeError("schema v24 is missing card-ledger attempt evidence")
+        raise RuntimeError("schema v25 is missing card-ledger attempt evidence")
     column_rows = {item["name"]: item for item in inspector.get_columns(table)}
     columns = set(column_rows)
     required = {
@@ -67,12 +67,13 @@ def _validate_card_ledger_attempts_v24(database: "Database") -> None:
         "provider", "model", "instruction_sha256", "generation_parameters_json",
         "generation_parameters_sha256", "request_id", "input_tokens", "output_tokens",
         "cost_microusd", "validation_error", "invalid_response_sha256", "invalid_response",
+        "diagnostic_source", "http_status",
         "created_at",
     }
     missing = sorted(required - columns)
     if missing:
         raise RuntimeError(
-            "schema v24 card-ledger attempt evidence is incomplete: "
+            "schema v25 card-ledger attempt evidence is incomplete: "
             + ", ".join(missing)
         )
     unique_sets = {
@@ -85,7 +86,7 @@ def _validate_card_ledger_attempts_v24(database: "Database") -> None:
         for constraint in inspector.get_unique_constraints(table)
     )
     if ("job_id", "stage", "stage_attempt", "call_index") not in unique_sets:
-        raise RuntimeError("schema v24 card-ledger attempt identity is not unique")
+        raise RuntimeError("schema v25 card-ledger attempt identity is not unique")
     expected_nullable = {
         "id": False,
         "job_id": False,
@@ -106,16 +107,18 @@ def _validate_card_ledger_attempts_v24(database: "Database") -> None:
         "validation_error": True,
         "invalid_response_sha256": True,
         "invalid_response": True,
+        "diagnostic_source": True,
+        "http_status": True,
         "created_at": False,
     }
     if any(
         bool(column_rows[name]["nullable"]) != nullable
         for name, nullable in expected_nullable.items()
     ):
-        raise RuntimeError("schema v24 card-ledger attempt nullability is invalid")
+        raise RuntimeError("schema v25 card-ledger attempt nullability is invalid")
     primary_key = tuple(inspector.get_pk_constraint(table).get("constrained_columns") or ())
     if primary_key != ("id",):
-        raise RuntimeError("schema v24 card-ledger attempt primary identity is invalid")
+        raise RuntimeError("schema v25 card-ledger attempt primary identity is invalid")
     expected_fk = {
         "constrained_columns": ["job_id"],
         "referred_table": "anki_curation_jobs",
@@ -128,13 +131,13 @@ def _validate_card_ledger_attempts_v24(database: "Database") -> None:
         if all(foreign_key.get(key) == value for key, value in expected_fk.items())
     ]
     if len(matching_foreign_keys) != 1:
-        raise RuntimeError("schema v24 card-ledger attempt foreign key is invalid")
+        raise RuntimeError("schema v25 card-ledger attempt foreign key is invalid")
     fk_options = matching_foreign_keys[0].get("options", {})
     if (fk_options.get("ondelete") or "NO ACTION").upper() != "NO ACTION":
-        raise RuntimeError("schema v24 card-ledger attempt foreign key action is invalid")
+        raise RuntimeError("schema v25 card-ledger attempt foreign key action is invalid")
     index_sets = {tuple(index["column_names"]) for index in inspector.get_indexes(table)}
     if ("job_id", "stage_attempt") not in index_sets:
-        raise RuntimeError("schema v24 card-ledger attempt lookup index is missing")
+        raise RuntimeError("schema v25 card-ledger attempt lookup index is missing")
     with database.engine.connect() as connection:
         rows = list(
             connection.execute(
@@ -152,10 +155,10 @@ def _validate_card_ledger_attempts_v24(database: "Database") -> None:
                 text("SELECT job_id, stage, provider, model FROM anki_job_stages")
             ).mappings()
         }
-    _validate_card_ledger_attempt_lifecycles_v24(rows, stage_transports)
+    _validate_card_ledger_attempt_lifecycles_v25(rows, stage_transports)
 
 
-def _validate_card_ledger_attempt_lifecycles_v24(
+def _validate_card_ledger_attempt_lifecycles_v25(
     rows: list[Any],
     stage_transports: dict[tuple[str, str], tuple[str | None, str | None]],
 ) -> None:
@@ -167,9 +170,9 @@ def _validate_card_ledger_attempt_lifecycles_v24(
     for attempts in attempts_by_execution.values():
         call_indexes = [row["call_index"] for row in attempts]
         if call_indexes not in ([1], [1, 2]):
-            raise RuntimeError("schema v24 card-ledger attempt lifecycle is invalid")
+            raise RuntimeError("schema v25 card-ledger attempt lifecycle is invalid")
         if len(attempts) == 2 and attempts[0]["outcome"] != "validation_failed":
-            raise RuntimeError("schema v24 card-ledger attempt lifecycle is invalid")
+            raise RuntimeError("schema v25 card-ledger attempt lifecycle is invalid")
         if len(attempts) == 2 and any(
             attempts[0][field] != attempts[1][field]
             for field in (
@@ -179,12 +182,12 @@ def _validate_card_ledger_attempt_lifecycles_v24(
                 "generation_parameters_sha256",
             )
         ):
-            raise RuntimeError("schema v24 card-ledger attempt transport identity is invalid")
+            raise RuntimeError("schema v25 card-ledger attempt transport identity is invalid")
         expected_transport = stage_transports.get((attempts[0]["job_id"], "card_ledger"))
         if expected_transport is not None and all(expected_transport) and any(
             (row["provider"], row["model"]) != expected_transport for row in attempts
         ):
-            raise RuntimeError("schema v24 card-ledger attempt stage transport is invalid")
+            raise RuntimeError("schema v25 card-ledger attempt stage transport is invalid")
 
 
 def _validate_card_ledger_attempt_row(row: Any) -> None:
@@ -220,34 +223,49 @@ def _validate_card_ledger_attempt_row(row: Any) -> None:
             for name in ("input_tokens", "output_tokens", "cost_microusd")
         )
     ):
-        raise RuntimeError("schema v24 card-ledger attempt row is invalid")
+        raise RuntimeError("schema v25 card-ledger attempt row is invalid")
     try:
         parameters = json.loads(row["generation_parameters_json"])
     except (TypeError, json.JSONDecodeError) as error:
-        raise RuntimeError("schema v24 card-ledger attempt parameters are invalid") from error
+        raise RuntimeError("schema v25 card-ledger attempt parameters are invalid") from error
     canonical = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
     if (
         not isinstance(parameters, dict)
         or canonical != row["generation_parameters_json"]
         or hashlib.sha256(canonical.encode()).hexdigest() != row["generation_parameters_sha256"]
     ):
-        raise RuntimeError("schema v24 card-ledger attempt parameters are invalid")
+        raise RuntimeError("schema v25 card-ledger attempt parameters are invalid")
     try:
-        validate_s2_generation_parameters(
+        validate_persisted_s2_generation_parameters(
             ProviderName(row["provider"]),
             row["model"],
             parameters,
         )
     except (TypeError, ValueError) as error:
-        raise RuntimeError("schema v24 card-ledger attempt parameters are invalid") from error
+        raise RuntimeError("schema v25 card-ledger attempt parameters are invalid") from error
     invalid_response = row["invalid_response"]
     invalid_hash = row["invalid_response_sha256"]
     validation_error = row["validation_error"]
+    diagnostic_source = row["diagnostic_source"]
+    http_status = row["http_status"]
+    valid_diagnostic = (
+        diagnostic_source is None
+        or diagnostic_source in {source.value for source in DiagnosticSource}
+    ) and (
+        http_status is None
+        or (
+            isinstance(http_status, int)
+            and not isinstance(http_status, bool)
+            and 100 <= http_status <= 599
+        )
+    )
     if row["outcome"] == "accepted":
         valid_payload = (
             validation_error is None
             and invalid_response is None
             and invalid_hash is None
+            and diagnostic_source is None
+            and http_status is None
         )
     elif row["outcome"] == "validation_failed":
         valid_payload = (
@@ -260,6 +278,8 @@ def _validate_card_ledger_attempt_row(row: Any) -> None:
             and bool(re.fullmatch(r"[0-9a-f]{64}", invalid_hash))
             and invalid_response == _redacted_invalid_response(invalid_response)
             and hashlib.sha256(invalid_response.encode()).hexdigest() == invalid_hash
+            and diagnostic_source is None
+            and http_status is None
         )
     else:
         valid_payload = (
@@ -268,9 +288,21 @@ def _validate_card_ledger_attempt_row(row: Any) -> None:
             and len(validation_error) <= 2_000
             and invalid_response is None
             and invalid_hash is None
+            and valid_diagnostic
         )
     if not valid_payload:
-        raise RuntimeError("schema v24 card-ledger attempt outcome payload is invalid")
+        raise RuntimeError("schema v25 card-ledger attempt outcome payload is invalid")
+
+
+def _upgrade_card_ledger_attempt_diagnostics_v25(database: "Database") -> None:
+    """Add safe S2 failure routing metadata without changing prior evidence."""
+    _ensure_column(
+        database,
+        "anki_card_ledger_attempts",
+        "diagnostic_source",
+        "VARCHAR(40)",
+    )
+    _ensure_column(database, "anki_card_ledger_attempts", "http_status", "INTEGER")
 
 
 def _rebuild_legacy_outline_outputs_v19(database: "Database") -> None:
@@ -1906,7 +1938,7 @@ def migrate_database(database: "Database") -> None:
             _validate_current_artifact_indexes(database)
             _validate_outline_replacement_reviews(database)
             _validate_imported_derived_adoptions_v23(database)
-            _validate_card_ledger_attempts_v24(database)
+            _validate_card_ledger_attempts_v25(database)
             return
         if version == 20:
             _validate_complete_v20_import_graph(database)
@@ -1943,12 +1975,13 @@ def migrate_database(database: "Database") -> None:
     _ensure_study_revision_import_fk(database)
     _upgrade_outline_replacement_reviews_v22(database)
     _upgrade_imported_derived_slide_v23(database)
+    _upgrade_card_ledger_attempt_diagnostics_v25(database)
     _validate_import_schema_structure(database, version=LATEST_SCHEMA_VERSION)
     _validate_complete_existing_artifact_graph(database)
     _validate_current_artifact_indexes(database)
     _validate_outline_replacement_reviews(database)
     _validate_imported_derived_adoptions_v23(database)
-    _validate_card_ledger_attempts_v24(database)
+    _validate_card_ledger_attempts_v25(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

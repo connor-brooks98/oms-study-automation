@@ -781,7 +781,9 @@ def test_ledger_s2_round_trip_caches_only_the_summary_prefix() -> None:
 def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     prompt = Path("src/oms_hub/anki/prompt_assets/card-centric-ledger-v2.md").read_text()
 
-    assert "version: 2.0.2" in prompt
+    assert "version: 2.0.4" in prompt
+    assert "temperature:" not in prompt.split("---", 2)[1]
+    assert "model:" not in prompt.split("---", 2)[1]
     assert (
         "`high` **if and only if** `depth` is `deep` **or** `emphasis_flag` is `true`."
         in prompt
@@ -792,7 +794,7 @@ def test_card_ledger_v2_prompt_pins_the_derived_importance_invariant() -> None:
     )
     assert "`low` **if and only if** `emphasis_flag` is `false` and `depth` is `surface`." in prompt
     observed_hash = hashlib.sha256(prompt.encode()).hexdigest()
-    assert observed_hash == "bed297b02ca65e1cff05af23abb7eb2e904c43a824b02cd76956fc9e3d9f5572"
+    assert observed_hash == "a7e68bd507ed3cd16dbb60ef2820abdb0e61710ad8e205a5d72e9ba290eb331f"
     assert observed_hash != "1561da45dd05048dcf9d92fc709ce117f994bc0f38eb075a81bf2937bd1e2580"
 
 
@@ -852,8 +854,9 @@ def test_card_ledger_valid_primary_makes_one_call_and_records_transmitted_identi
     assert [attempt.kind for attempt in attempts] == ["primary"]
     assert attempts[0].outcome == "accepted"
     assert attempts[0].generation_parameters["temperature"] == {
-        "value": 0,
-        "transmission": "transmitted",
+        "requested": 0,
+        "transmission": "not_transmitted",
+        "provider_default": "unknown_provider_default",
     }
     assert attempts[0].generation_parameters["max_tokens"] == {
         "value": 7000,
@@ -873,17 +876,23 @@ def test_card_ledger_valid_primary_makes_one_call_and_records_transmitted_identi
 
 
 @pytest.mark.parametrize(
-    ("provider", "model", "thinking", "cache"),
+    ("provider", "model", "temperature", "thinking", "cache"),
     [
         (
             ProviderName.ANTHROPIC,
             "claude-sonnet-5",
+            {
+                "requested": 0,
+                "transmission": "not_transmitted",
+                "provider_default": "unknown_provider_default",
+            },
             {"requested": "disabled", "transmission": "transmitted_disabled"},
             {"requested": "summary_prefix", "transmission": "anthropic_ephemeral"},
         ),
         (
             ProviderName.ANTHROPIC,
             "claude-3-7-sonnet-latest",
+            {"value": 0, "transmission": "transmitted"},
             {
                 "requested": "disabled",
                 "transmission": "not_transmitted",
@@ -894,6 +903,7 @@ def test_card_ledger_valid_primary_makes_one_call_and_records_transmitted_identi
         (
             ProviderName.OPENAI,
             "gpt-5.2",
+            {"value": 0, "transmission": "transmitted"},
             {
                 "requested": "disabled",
                 "transmission": "not_transmitted",
@@ -904,6 +914,7 @@ def test_card_ledger_valid_primary_makes_one_call_and_records_transmitted_identi
         (
             ProviderName.GEMINI,
             "gemini-3.6-flash",
+            {"value": 0, "transmission": "transmitted"},
             {
                 "requested": "disabled",
                 "transmission": "not_transmitted",
@@ -914,6 +925,7 @@ def test_card_ledger_valid_primary_makes_one_call_and_records_transmitted_identi
         (
             ProviderName.OPENROUTER,
             "openai/gpt-4o-mini",
+            {"value": 0, "transmission": "transmitted"},
             {
                 "requested": "disabled",
                 "transmission": "not_transmitted",
@@ -926,6 +938,7 @@ def test_card_ledger_valid_primary_makes_one_call_and_records_transmitted_identi
 def test_card_ledger_records_complete_truthful_s2_identity_for_each_route(
     provider: ProviderName,
     model: str,
+    temperature: dict[str, object],
     thinking: dict[str, str],
     cache: dict[str, str],
 ) -> None:
@@ -946,7 +959,7 @@ def test_card_ledger_records_complete_truthful_s2_identity_for_each_route(
         attempts[0].generation_parameters_sha256,
         attempts[0].generation_parameters_sha256,
     ]
-    assert expected["temperature"] == {"value": 0, "transmission": "transmitted"}
+    assert expected["temperature"] == temperature
     assert expected["max_tokens"] == {"value": 7000, "transmission": "transmitted"}
     assert expected["thinking"] == thinking
     assert expected["cache"] == cache
@@ -1123,7 +1136,7 @@ def test_card_ledger_repair_transport_error_keeps_primary_and_repair_attempts() 
     assert "sk-secret-token-value" not in attempts[1].validation_error
 
 
-def test_card_ledger_transport_failure_persists_safe_provider_request_id_only() -> None:
+def test_card_ledger_transport_failure_persists_safe_provider_diagnostics_only() -> None:
     invalid = _valid_ledger_text().replace('"importance":"high"', '"importance":"low"')
     attempts = []
     generator = _LedgerSequenceGenerator(
@@ -1132,6 +1145,7 @@ def test_card_ledger_transport_failure_persists_safe_provider_request_id_only() 
             LLMRequestError(
                 "provider rejected Bearer repair-secret",
                 source=DiagnosticSource.NETWORK,
+                http_status=400,
                 provider_request_id="safe-provider-request-42",
             ),
         ]
@@ -1146,6 +1160,8 @@ def test_card_ledger_transport_failure_persists_safe_provider_request_id_only() 
         )
 
     assert attempts[1].request_id == "safe-provider-request-42"
+    assert attempts[1].diagnostic_source == "network"
+    assert attempts[1].http_status == 400
     assert attempts[1].validation_error == "provider rejected Bearer [REDACTED]"
     assert "repair-secret" not in attempts[1].validation_error
 
