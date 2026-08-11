@@ -110,6 +110,7 @@ def test_scheduler_verifier_proves_one_automatic_restart_and_parent_chain() -> N
     )
 
     assert proof["old_action_event_record_id"] == 11
+    assert proof["schema_version"] == 3
     assert proof["old_action_id"] == PRIMARY_ACTION_ID
     assert proof["replacement_action_id"] == RECOVERY_ACTION_ID
     assert proof["replacement_process_id"] == 700
@@ -202,6 +203,20 @@ def test_scheduler_verifier_rejects_engine_pid_or_extra_recovery_arguments() -> 
             replacement_hub_pid=702,
             process_snapshot=_processes(),
         )
+    processes = _processes()
+    processes[0]["command_line"] += " -ActionIndex 10"
+    with pytest.raises(ValueError, match="command line differs"):
+        verify_scheduler_restart(
+            events=_valid_events(),
+            cursor_event_record_id=10,
+            full_task_name=TASK,
+            action_path=ACTION,
+            replacement_hub_pid=702,
+            process_snapshot=processes,
+            recovery_action_arguments=(
+                '-NoProfile -File "C:\\Services\\restart-hub-after-failure.ps1" -ActionIndex 1'
+            ),
+        )
 
 
 @pytest.mark.parametrize(
@@ -251,21 +266,6 @@ def test_scheduler_verifier_rejects_recovery_action_id_for_wrong_index() -> None
             recovery_action_index=2,
         )
 
-    processes = _processes()
-    processes[0]["command_line"] += " -ActionIndex 10"
-    with pytest.raises(ValueError, match="command line differs"):
-        verify_scheduler_restart(
-            events=_valid_events(),
-            cursor_event_record_id=10,
-            full_task_name=TASK,
-            action_path=ACTION,
-            replacement_hub_pid=702,
-            process_snapshot=processes,
-            recovery_action_arguments=(
-                '-NoProfile -File "C:\\Services\\restart-hub-after-failure.ps1" -ActionIndex 1'
-            ),
-        )
-
 
 @pytest.mark.parametrize("result_code", ["75", "2147942476", "0x8007004B"])
 def test_scheduler_verifier_rejects_low_word_wrong_or_nondecimal_hresult(result_code: str) -> None:
@@ -275,7 +275,7 @@ def test_scheduler_verifier_rejects_low_word_wrong_or_nondecimal_hresult(result_
         201,
         TaskName=TASK,
         TaskInstanceId="11111111-1111-1111-1111-111111111111",
-        ActionName=ACTION,
+        ActionName=PRIMARY_ACTION_ID,
         ResultCode=result_code,
     )
 
@@ -375,7 +375,7 @@ def test_scheduler_verifier_rejects_reordered_recovery_event_before_old_failure(
             200,
             TaskName=TASK,
             TaskInstanceId="33333333-3333-3333-3333-333333333333",
-            ActionName=ACTION,
+            ActionName=RECOVERY_ACTION_ID,
         ),
     )
 
@@ -412,7 +412,8 @@ def test_scheduler_verifier_rejects_mismatched_replacement_instance_guid() -> No
         200,
         TaskName=TASK,
         TaskInstanceId="33333333-3333-3333-3333-333333333333",
-        ActionName=ACTION,
+        ActionName=RECOVERY_ACTION_ID,
+        EnginePID="700",
     )
 
     with pytest.raises(ValueError, match="Event 200"):
