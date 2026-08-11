@@ -1,11 +1,19 @@
 import hashlib
 import json
+import re
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from sqlalchemy import inspect, select, text
 
 import oms_hub.anki.models  # noqa: F401
 from oms_hub.domain import StepStatus, V2StepName
+from oms_hub.files.trusted_paths import (
+    is_indirection,
+    trusted_existing_directory,
+    trusted_managed_path,
+)
 from oms_hub.llm.catalog import FALLBACK_MODELS
 from oms_hub.llm.domain import LLMTask, ProviderName
 from oms_hub.llm.repository import DEFAULT_MODELS
@@ -23,7 +31,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 22
+LATEST_SCHEMA_VERSION = 23
 
 
 def _ensure_column(
@@ -80,12 +88,14 @@ def _rebuild_legacy_outline_outputs_v19(database: "Database") -> None:
     # audit table before this rename is what retargeted its FK in SQLite.
     database.create_schema()
     with database.engine.begin() as connection:
-        connection.execute(text("""
+        connection.execute(
+            text("""
             INSERT INTO outline_outputs
             (id, lecture_id, job_id, path, sha256, current, created_at)
             SELECT id, lecture_id, job_id, path, sha256, current, created_at
             FROM outline_outputs_v19
-        """))
+        """)
+        )
         connection.execute(text("DROP TABLE outline_outputs_v19"))
 
 
@@ -292,7 +302,8 @@ def _validate_v20_legacy_slide_identity(database: "Database") -> None:
     if "slide_sha256" not in audit_columns or "slide_sha256" not in outline_columns:
         return
     with database.engine.connect() as connection:
-        invalid = connection.execute(text("""
+        invalid = connection.execute(
+            text("""
             SELECT a.id
             FROM existing_artifact_imports a
             LEFT JOIN study_revisions s ON s.id=a.slide_revision_id
@@ -303,7 +314,8 @@ def _validate_v20_legacy_slide_identity(database: "Database") -> None:
                 OR (o.id IS NOT NULL AND o.provenance_kind='imported_notebooklm'
                     AND o.slide_sha256 IS NOT NULL AND o.slide_sha256 != s.derived_sha256)
             ) LIMIT 1
-        """)).first()
+        """)
+        ).first()
     if invalid is not None:
         raise RuntimeError("schema v21 legacy imported slide identity is invalid")
 
@@ -321,6 +333,363 @@ def _validate_complete_v21_import_graph(database: "Database") -> None:
 def _validate_complete_existing_artifact_graph(database: "Database") -> None:
     """Fail closed unless every completed offline import is one coherent graph."""
     _validate_existing_artifact_graph(database, version=LATEST_SCHEMA_VERSION)
+
+
+def _upgrade_imported_derived_slide_v23(database: "Database") -> None:
+    """Add the all-or-none audit identity for explicit derived-PDF adoption."""
+    for name, definition in {
+        "expected_current_pdf_sha256": "VARCHAR(64)",
+        "previous_pdf_sha256": "VARCHAR(64)",
+        "previous_immutable_pdf_path": "TEXT",
+        "imported_pdf_sha256": "VARCHAR(64)",
+        "imported_immutable_pdf_path": "TEXT",
+        "derived_provenance": "VARCHAR(40)",
+        "adoption_operator": "VARCHAR(200)",
+        "adoption_reason": "TEXT",
+        "adoption_confirmed_at": "VARCHAR(40)",
+        "recovery_phase": "VARCHAR(30)",
+    }.items():
+        _ensure_column(database, "existing_artifact_imports", name, definition)
+
+
+def _validate_imported_derived_adoptions_v23(database: "Database") -> None:
+    """Validate without repairing: v23 data is evidence, not input to normalize."""
+    inspector = inspect(database.engine)
+    if not inspector.has_table("existing_artifact_imports"):
+        return
+    fields = (
+        "expected_current_pdf_sha256",
+        "previous_pdf_sha256",
+        "previous_immutable_pdf_path",
+        "imported_pdf_sha256",
+        "imported_immutable_pdf_path",
+        "derived_provenance",
+        "adoption_operator",
+        "adoption_reason",
+        "adoption_confirmed_at",
+        "recovery_phase",
+    )
+    with database.engine.connect() as connection:
+        rows = connection.execute(
+            text("""
+            SELECT a.*, s.source_sha256 AS slide_source,
+                s.derived_sha256 AS slide_pdf, s.immutable_source_path AS slide_immutable_source,
+                s.canonical_source_path AS slide_canonical_source,
+                s.immutable_derived_path AS slide_path,
+                s.provenance_kind AS slide_provenance, s.import_id AS slide_import,
+                s.lecture_id AS slide_lecture, s.current AS slide_current, s.kind AS slide_kind,
+                s.canonical_derived_path AS slide_canonical, s.icloud_path AS slide_icloud
+            FROM existing_artifact_imports a
+            LEFT JOIN study_revisions s ON s.id=a.slide_revision_id
+        """)
+        ).mappings()
+        for row in rows:
+            values = [row[field] for field in fields]
+            has_any = any(value is not None for value in values)
+            if not has_any:
+                continue
+            if has_any and not all(value is not None for value in values):
+                raise RuntimeError("schema v23 imported-derived adoption fields are partial")
+            if (
+                any(
+                    value is None or (isinstance(value, str) and not value.strip())
+                    for value in values
+                )
+                or row["derived_provenance"] != "imported_derived"
+                or row["recovery_phase"]
+                not in {
+                    "preparing",
+                    "archive_copying",
+                    "archived",
+                    "canonical_promoted",
+                    "icloud_promoted",
+                    "precommit",
+                    "recovery_required",
+                    "committed",
+                }
+                or row["previous_pdf_sha256"] != row["expected_current_pdf_sha256"]
+                or row["status"] not in {"preparing", "failed", "complete"}
+            ):
+                raise RuntimeError("schema v23 imported-derived adoption fields are invalid")
+            for field in (
+                "expected_current_pdf_sha256",
+                "previous_pdf_sha256",
+                "imported_pdf_sha256",
+            ):
+                if not re.fullmatch(r"[0-9a-f]{64}", str(row[field])):
+                    raise RuntimeError("schema v23 imported-derived adoption hash is invalid")
+            try:
+                if str(UUID(str(row["id"]))) != row["id"]:
+                    raise ValueError
+            except ValueError as error:
+                raise RuntimeError("schema v23 imported-derived adoption ID is invalid") from error
+            complete = row["status"] == "complete"
+            incomplete = row["status"] in {"preparing", "failed"}
+            if (complete and row["recovery_phase"] != "committed") or (
+                incomplete and row["recovery_phase"] == "committed"
+            ):
+                raise RuntimeError("schema v23 imported-derived adoption phase is invalid")
+            if complete and (
+                row["slide_kind"] != "slides"
+                or not row["slide_current"]
+                or row["slide_pdf"] != row["imported_pdf_sha256"]
+                or row["slide_path"] != row["imported_immutable_pdf_path"]
+                or row["slide_provenance"] != "imported_derived"
+                or row["slide_import"] != row["id"]
+            ):
+                raise RuntimeError("schema v23 imported-derived adoption graph is invalid")
+            if incomplete and (
+                row["slide_kind"] != "slides"
+                or not row["slide_current"]
+                or row["slide_source"] != row["slide_source_sha256"]
+                or row["slide_pdf_sha256"] != row["imported_pdf_sha256"]
+                or row["slide_lecture"] != row["lecture_id"]
+                or row["slide_pdf"] != row["previous_pdf_sha256"]
+                or row["slide_path"] != row["previous_immutable_pdf_path"]
+                or row["slide_provenance"] == "imported_derived"
+                or row["slide_import"] is not None
+            ):
+                raise RuntimeError("schema v23 incomplete adoption graph is invalid")
+            transcript_path = Path(str(row["immutable_transcript_path"]))
+            imported = Path(str(row["imported_immutable_pdf_path"]))
+            previous = Path(str(row["previous_immutable_pdf_path"]))
+            slide_immutable_source = Path(str(row["slide_immutable_source"]))
+            slide_canonical_source = Path(str(row["slide_canonical_source"]))
+            canonical = Path(str(row["slide_canonical"]))
+            icloud = Path(str(row["slide_icloud"]))
+            transcript_canonical = Path(str(row["canonical_transcript_path"]))
+            outline_immutable = Path(str(row["immutable_outline_path"]))
+            outline_canonical = Path(str(row["canonical_outline_path"]))
+            audit_root = transcript_path.parent
+
+            def immutable_root(path: Path) -> Path | None:
+                for candidate in path.parents:
+                    if candidate.name == "v2" and candidate.parent.name == "artifacts":
+                        return candidate
+                return None
+
+            v2_root = immutable_root(slide_immutable_source)
+            import_root = v2_root.parent / "existing-imports" if v2_root is not None else None
+
+            def safe_path(path: Path, *, require_regular_file: bool) -> bool:
+                try:
+                    if not path.is_absolute() or any(
+                        is_indirection(component) for component in (path, *path.parents)
+                    ):
+                        return False
+                    if not path.parent.is_dir():
+                        return False
+                    return not require_regular_file or path.is_file()
+                except OSError:
+                    return False
+
+            def safe_future_path(path: Path) -> bool:
+                """Validate a not-yet-created output through every extant ancestor."""
+                try:
+                    if not path.is_absolute() or any(
+                        part in {"", ".", ".."} for part in path.parts
+                    ):
+                        return False
+                    for component in (path, *path.parents):
+                        if is_indirection(component):
+                            return False
+                        if component != path and component.exists() and not component.is_dir():
+                            return False
+                    return not path.exists() or path.is_file()
+                except OSError:
+                    return False
+
+            all_paths = (
+                slide_immutable_source,
+                slide_canonical_source,
+                previous,
+                imported,
+                canonical,
+                icloud,
+                transcript_path,
+                transcript_canonical,
+                outline_immutable,
+                outline_canonical,
+            )
+            mandatory_complete_paths = all_paths
+            mandatory_incomplete_paths = (
+                slide_immutable_source,
+                slide_canonical_source,
+                previous,
+                canonical,
+                icloud,
+            )
+            preparing_precursor = (
+                incomplete
+                and row["status"] in {"preparing", "failed"}
+                and row["recovery_phase"] == "preparing"
+            )
+            archive_copying = incomplete and row["recovery_phase"] == "archive_copying"
+            # The audit transaction precedes four immutable/canonical writes.
+            # A process death or fenced-claim loss can therefore leave any
+            # exact prefix of those writes behind.  Their persisted spellings
+            # still need component-by-component validation, even when their
+            # parent directory has not yet been created.
+            safe_incomplete_paths = (
+                mandatory_incomplete_paths if preparing_precursor else all_paths
+            )
+            future_paths = (
+                transcript_path,
+                outline_immutable,
+                imported,
+                transcript_canonical,
+                outline_canonical,
+            )
+            if (
+                transcript_path.name != "cleaned.txt"
+                or audit_root.name != row["id"]
+                or transcript_path != audit_root / "cleaned.txt"
+                or outline_immutable != audit_root / "outline.pdf"
+                or imported != audit_root / "derived-slide.pdf"
+                or previous == imported
+                or is_indirection(audit_root)
+                or v2_root is None
+                or import_root is None
+                or is_indirection(v2_root)
+                or is_indirection(import_root)
+                or not trusted_existing_directory(import_root)
+                or audit_root != import_root / row["id"]
+                or not trusted_managed_path(
+                    slide_immutable_source,
+                    v2_root,
+                    require_regular_file=complete,
+                )
+                or not trusted_managed_path(
+                    previous,
+                    v2_root,
+                    require_regular_file=True,
+                )
+                or not all(
+                    trusted_managed_path(path, import_root, require_regular_file=complete)
+                    for path in (imported, transcript_path, outline_immutable)
+                )
+                or not all(
+                    safe_path(path, require_regular_file=False)
+                    for path in (all_paths if complete else safe_incomplete_paths)
+                )
+                or (
+                    preparing_precursor
+                    and not all(safe_future_path(path) for path in future_paths)
+                )
+                or (
+                    complete
+                    and not all(
+                        safe_path(path, require_regular_file=True)
+                        for path in mandatory_complete_paths
+                    )
+                )
+                or (
+                    incomplete
+                    and not all(
+                        safe_path(path, require_regular_file=True)
+                        for path in mandatory_incomplete_paths
+                    )
+                )
+            ):
+                raise RuntimeError("schema v23 imported-derived adoption path is invalid")
+
+            def digest(path: Path) -> str:
+                return hashlib.sha256(path.read_bytes()).hexdigest()
+
+            try:
+                if preparing_precursor:
+                    precursor_files = (
+                        (transcript_path, row["transcript_sha256"]),
+                        (outline_immutable, row["outline_sha256"]),
+                        (transcript_canonical, row["transcript_sha256"]),
+                        (outline_canonical, row["outline_sha256"]),
+                    )
+                    present = tuple(path.exists() for path, _digest in precursor_files)
+                    # The importer's order is immutable transcript, immutable
+                    # outline, canonical transcript, canonical outline.  A
+                    # later persisted output without every predecessor is not
+                    # evidence this retry may normalize.
+                    if any(present[index] and not all(present[:index]) for index in range(1, 4)):
+                        raise RuntimeError(
+                            "schema v23 imported-derived adoption precursor state is invalid"
+                        )
+                    if imported.exists() or any(
+                        path.exists() and digest(path) != expected_digest
+                        for path, expected_digest in precursor_files
+                    ):
+                        raise RuntimeError(
+                            "schema v23 imported-derived adoption precursor files are invalid"
+                        )
+                elif archive_copying:
+                    precursor_files = (
+                        (transcript_path, row["transcript_sha256"]),
+                        (outline_immutable, row["outline_sha256"]),
+                        (transcript_canonical, row["transcript_sha256"]),
+                        (outline_canonical, row["outline_sha256"]),
+                    )
+                    if any(
+                        not path.is_file() or digest(path) != expected_digest
+                        for path, expected_digest in precursor_files
+                    ):
+                        raise RuntimeError(
+                            "schema v23 imported-derived adoption "
+                            "archive-copying precursors are invalid"
+                        )
+                if digest(previous) != row["previous_pdf_sha256"] or (
+                    imported.exists() and digest(imported) != row["imported_pdf_sha256"]
+                ):
+                    raise RuntimeError("schema v23 imported-derived adoption files are invalid")
+                if complete and any(
+                    digest(path) != expected_digest
+                    for path, expected_digest in (
+                        (slide_immutable_source, row["slide_source_sha256"]),
+                        (slide_canonical_source, row["slide_source_sha256"]),
+                        (previous, row["previous_pdf_sha256"]),
+                        (imported, row["imported_pdf_sha256"]),
+                        (canonical, row["imported_pdf_sha256"]),
+                        (icloud, row["imported_pdf_sha256"]),
+                        (transcript_path, row["transcript_sha256"]),
+                        (transcript_canonical, row["transcript_sha256"]),
+                        (outline_immutable, row["outline_sha256"]),
+                        (outline_canonical, row["outline_sha256"]),
+                    )
+                ):
+                    raise RuntimeError("schema v23 imported-derived adoption files are invalid")
+                expected_states: tuple[tuple[object, object], ...]
+                if complete:
+                    expected_states = ((row["imported_pdf_sha256"], row["imported_pdf_sha256"]),)
+                elif row["recovery_phase"] == "recovery_required":
+                    expected_states = (
+                        (row["previous_pdf_sha256"], row["previous_pdf_sha256"]),
+                        (row["imported_pdf_sha256"], row["previous_pdf_sha256"]),
+                        (row["previous_pdf_sha256"], row["imported_pdf_sha256"]),
+                        (row["imported_pdf_sha256"], row["imported_pdf_sha256"]),
+                    )
+                elif row["recovery_phase"] == "archived":
+                    expected_states = (
+                        (row["previous_pdf_sha256"], row["previous_pdf_sha256"]),
+                        (row["imported_pdf_sha256"], row["previous_pdf_sha256"]),
+                    )
+                elif row["recovery_phase"] == "canonical_promoted":
+                    expected_states = (
+                        (row["imported_pdf_sha256"], row["previous_pdf_sha256"]),
+                        (row["imported_pdf_sha256"], row["imported_pdf_sha256"]),
+                    )
+                elif row["recovery_phase"] in {"icloud_promoted", "precommit"}:
+                    expected_states = ((row["imported_pdf_sha256"], row["imported_pdf_sha256"]),)
+                else:
+                    expected_states = ((row["previous_pdf_sha256"], row["previous_pdf_sha256"]),)
+                if (digest(canonical), digest(icloud)) not in expected_states:
+                    raise RuntimeError("schema v23 imported-derived adoption files are invalid")
+                if (
+                    row["recovery_phase"] not in {"preparing", "archive_copying"}
+                    and not imported.is_file()
+                ):
+                    raise RuntimeError("schema v23 imported-derived archive is unavailable")
+            except OSError as error:
+                raise RuntimeError(
+                    "schema v23 imported-derived adoption files are unavailable"
+                ) from error
 
 
 def _validate_existing_artifact_graph(database: "Database", *, version: int) -> None:
@@ -347,15 +716,14 @@ def _validate_existing_artifact_graph(database: "Database", *, version: int) -> 
         else "NULL AS audit_source, a.slide_sha256 AS audit_pdf,"
     )
     outline_slide_columns = (
-        "o.slide_source_sha256 AS outline_source,"
-        if version >= 21
-        else "NULL AS outline_source,"
+        "o.slide_source_sha256 AS outline_source," if version >= 21 else "NULL AS outline_source,"
     )
     with database.engine.connect() as connection:
         foreign_key_errors = connection.execute(text("PRAGMA foreign_key_check")).first()
         if foreign_key_errors is not None:
             raise RuntimeError(f"schema v{version} imported artifact foreign-key check failed")
-        rows = connection.execute(text(f"""
+        rows = connection.execute(
+            text(f"""
             SELECT
                 a.id AS audit_id, a.lecture_id AS audit_lecture, a.slide_revision_id,
                 {audit_slide_columns}
@@ -401,15 +769,25 @@ def _validate_existing_artifact_graph(database: "Database", *, version: int) -> 
             LEFT JOIN upload_batches b ON b.id=i.batch_id
             LEFT JOIN outline_outputs o ON o.id=a.outline_id
             WHERE a.status='complete'
-        """)).mappings()
+        """)
+        ).mappings()
         for row in rows:
             audit_id = row["audit_id"]
             required = [
-                "slide_revision_id", "audit_pdf", "audit_transcript", "audit_outline",
-                "audit_transcript_id", "audit_outline_id", "audit_subject", "audit_topic",
-                "canonical_transcript_path", "canonical_outline_path",
-                "immutable_transcript_path", "immutable_outline_path",
-                "transcript_filename", "outline_filename",
+                "slide_revision_id",
+                "audit_pdf",
+                "audit_transcript",
+                "audit_outline",
+                "audit_transcript_id",
+                "audit_outline_id",
+                "audit_subject",
+                "audit_topic",
+                "canonical_transcript_path",
+                "canonical_outline_path",
+                "immutable_transcript_path",
+                "immutable_outline_path",
+                "transcript_filename",
+                "outline_filename",
             ]
             if version >= 21:
                 required.append("audit_source")
@@ -509,7 +887,24 @@ def _validate_import_schema_structure(database: "Database", *, version: int) -> 
     }
     if version >= 22:
         expected_columns["outline_replacement_reviews"] = {
-            "generation_job_id", "lecture_id", "import_id", "operator", "reason"
+            "generation_job_id",
+            "lecture_id",
+            "import_id",
+            "operator",
+            "reason",
+        }
+    if version >= 23:
+        expected_columns["existing_artifact_imports"] |= {
+            "expected_current_pdf_sha256",
+            "previous_pdf_sha256",
+            "previous_immutable_pdf_path",
+            "imported_pdf_sha256",
+            "imported_immutable_pdf_path",
+            "derived_provenance",
+            "adoption_operator",
+            "adoption_reason",
+            "adoption_confirmed_at",
+            "recovery_phase",
         }
     for table, columns in expected_columns.items():
         actual = {column["name"] for column in inspector.get_columns(table)}
@@ -540,9 +935,7 @@ def _validate_import_schema_structure(database: "Database", *, version: int) -> 
         },
     }
     if version >= 22:
-        expected_fks["study_revisions"] = {
-            "import_id": ("existing_artifact_imports", "RESTRICT")
-        }
+        expected_fks["study_revisions"] = {"import_id": ("existing_artifact_imports", "RESTRICT")}
         expected_fks["outline_replacement_reviews"] = {
             "generation_job_id": ("generation_jobs", "RESTRICT"),
             "lecture_id": ("lectures", "RESTRICT"),
@@ -560,8 +953,7 @@ def _validate_import_schema_structure(database: "Database", *, version: int) -> 
                 if not index[2]:
                     continue
                 found = tuple(
-                    row[2]
-                    for row in connection.execute(text(f"PRAGMA index_info({index[1]})"))
+                    row[2] for row in connection.execute(text(f"PRAGMA index_info({index[1]})"))
                 )
                 if found == columns:
                     return True
@@ -729,16 +1121,17 @@ def _validate_outline_replacement_reviews(database: "Database") -> None:
                     text("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=:name"),
                     {"name": name},
                 ).scalar_one_or_none()
+
                 def normalize(value: str) -> str:
                     return " ".join(value.split()).casefold()
 
                 if actual is None or normalize(actual) != normalize(expected):
                     raise RuntimeError(
-                        "schema v22 outline replacement review trigger is invalid: "
-                        f"{name}"
+                        f"schema v22 outline replacement review trigger is invalid: {name}"
                     )
     with database.engine.connect() as connection:
-        rows = connection.execute(text("""
+        rows = connection.execute(
+            text("""
             SELECT r.generation_job_id, r.lecture_id AS review_lecture, r.import_id,
                 r.operator, r.reason, j.lecture_id AS job_lecture, j.kind AS job_kind,
                 j.stage AS job_stage, j.notebook_answer, j.pdf_revision_id,
@@ -781,7 +1174,8 @@ def _validate_outline_replacement_reviews(database: "Database") -> None:
                 ON ct.lecture_id=r.lecture_id AND ct.kind='transcripts' AND ct.current=1
             LEFT JOIN outline_outputs co
                 ON co.lecture_id=r.lecture_id AND co.current=1
-        """)).mappings()
+        """)
+        ).mappings()
         for row in rows:
             invalid = (
                 row["job_lecture"] != row["review_lecture"]
@@ -830,8 +1224,7 @@ def _validate_outline_replacement_reviews(database: "Database") -> None:
                             not row["consumed_current"]
                             and (
                                 row["current_generated_id"] is None
-                                or row["current_generated_provenance"]
-                                != "notebooklm_generated"
+                                or row["current_generated_provenance"] != "notebooklm_generated"
                                 or row["current_generated_import"] is not None
                             )
                         )
@@ -1289,6 +1682,7 @@ def migrate_database(database: "Database") -> None:
             _validate_complete_existing_artifact_graph(database)
             _validate_current_artifact_indexes(database)
             _validate_outline_replacement_reviews(database)
+            _validate_imported_derived_adoptions_v23(database)
             return
         if version == 20:
             _validate_complete_v20_import_graph(database)
@@ -1296,6 +1690,11 @@ def migrate_database(database: "Database") -> None:
             _validate_import_schema_structure(database, version=version)
             _validate_complete_v21_import_graph(database)
             _validate_current_artifact_indexes(database)
+        if version == 22:
+            _validate_import_schema_structure(database, version=version)
+            _validate_existing_artifact_graph(database, version=version)
+            _validate_current_artifact_indexes(database)
+            _validate_outline_replacement_reviews(database)
     _preflight_current_artifact_uniqueness(database)
     _rebuild_legacy_outline_outputs_v19(database)
     database.create_schema()
@@ -1311,10 +1710,12 @@ def migrate_database(database: "Database") -> None:
     _upgrade_existing_artifact_slide_identity_v21(database)
     _ensure_study_revision_import_fk(database)
     _upgrade_outline_replacement_reviews_v22(database)
+    _upgrade_imported_derived_slide_v23(database)
     _validate_import_schema_structure(database, version=LATEST_SCHEMA_VERSION)
     _validate_complete_existing_artifact_graph(database)
     _validate_current_artifact_indexes(database)
     _validate_outline_replacement_reviews(database)
+    _validate_imported_derived_adoptions_v23(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

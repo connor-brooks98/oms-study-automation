@@ -512,7 +512,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.llm_service,
     )
     app.state.catalog_repository = CatalogRepository(database)
-    app.state.ingestion_repository = IngestionRepository(database)
+    app.state.ingestion_repository = IngestionRepository(
+        database,
+        artifact_v2_root=expanded_path(resolved.data_dir) / "artifacts" / "v2",
+        study_root=expanded_path(resolved.study_root),
+        icloud_root=(
+            expanded_path(resolved.icloud_staging_root)
+            if resolved.icloud_staging_root is not None
+            else None
+        ),
+    )
     app.state.generation_repository = GenerationRepository(
         database,
         app.state.medical_accuracy_gate,

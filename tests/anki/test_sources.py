@@ -25,6 +25,13 @@ class FakeRevisionRepository:
     def get_study_revision(self, revision_id: int) -> StudyRevision:
         return self.revisions[revision_id]
 
+    def has_imported_derived_audit(self, revision_id: int) -> bool:
+        del revision_id
+        return False
+
+    def imported_derived_audit_matches(self, revision: StudyRevision) -> bool:
+        raise AssertionError(f"unexpected imported-derived audit check: {revision.id}")
+
 
 class FakeOutlineRepository:
     def __init__(self, outlines: dict[int, OutlineRecord]) -> None:

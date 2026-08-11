@@ -55,9 +55,11 @@ from oms_hub.anki.stages import revision_fingerprint
 from oms_hub.anki.tag_policy import TagPolicy, tag_hash
 from oms_hub.app import create_app
 from oms_hub.config import Settings
+from oms_hub.ingestion.domain import UploadKind
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.llm.domain import LLMTask, ProviderName
 from oms_hub.models import (
+    ExistingArtifactImportModel,
     LectureModel,
     StudyRevisionModel,
     UploadBatchModel,
@@ -69,6 +71,7 @@ from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.web.anki_routes import (
     _concept_review_groups,
     _convergence_summary,
+    _outline_ready_for_curation,
     _reconciliation_summary,
     _review_reconciliation_summary,
 )
@@ -1186,6 +1189,91 @@ def test_create_job_requires_complete_three_source_bundle(
 
     assert response.status_code == 409
     assert "slides, transcript" in response.json()["detail"]
+
+
+def test_adopted_outline_readiness_keeps_base_link_checks_when_audit_matches(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "outline.pdf"
+    payload = b"outline"
+    path.write_bytes(payload)
+    slide = SimpleNamespace(
+        id=11,
+        current=True,
+        kind=UploadKind.SLIDES,
+        source_sha256="a" * 64,
+        derived_sha256="b" * 64,
+        provenance_kind="imported_derived",
+    )
+    transcript = SimpleNamespace(
+        id=12,
+        current=False,  # A base curation link is stale even though the audit matches.
+        kind=UploadKind.TRANSCRIPTS,
+        derived_sha256="c" * 64,
+        provenance_kind="imported_cleaned",
+        import_id="import-id",
+    )
+    outline = SimpleNamespace(
+        current=True,
+        path=path,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        provenance_kind="imported_notebooklm",
+        immutable_path=path,
+        slide_revision_id=slide.id,
+        transcript_revision_id=transcript.id,
+        slide_sha256=slide.derived_sha256,
+        slide_source_sha256=slide.source_sha256,
+        transcript_sha256=transcript.derived_sha256,
+        import_id="import-id",
+    )
+
+    class Revisions:
+        def get_study_revision(self, revision_id: int) -> object:
+            return slide if revision_id == slide.id else transcript
+
+        def has_imported_derived_audit(self, _revision_id: int) -> bool:
+            return True
+
+        def imported_derived_audit_matches(self, _revision: object) -> bool:
+            return True
+
+    assert not _outline_ready_for_curation(outline, Revisions())  # type: ignore[arg-type]
+
+
+def test_adopted_slide_with_corrupt_audit_is_not_ready_and_cannot_create_job(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, lecture_id, revision_id, _ = prepared_app
+    import_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    with app.state.database.session() as session:
+        session.add(
+            ExistingArtifactImportModel(
+                id=import_id,
+                bundle_sha256="b" * 64,
+                lecture_id=lecture_id,
+                slide_revision_id=revision_id,
+                transcript_sha256="c" * 64,
+                outline_sha256="d" * 64,
+                status="complete",
+                derived_provenance="imported_derived",
+            )
+        )
+        session.flush()
+        slide = session.get(StudyRevisionModel, revision_id)
+        assert slide is not None
+        slide.provenance_kind = "imported_derived"
+        slide.import_id = import_id
+
+    bootstrap = client.get("/api/anki/bootstrap")
+    assert bootstrap.status_code == 200
+    lecture = next(item for item in bootstrap.json()["lectures"] if item["id"] == lecture_id)
+    assert lecture["source_ready"] is False
+    assert lecture["source_status"]["slides"] is False
+    before = app.state.anki_repository.list_jobs()
+    response = client.post("/api/anki/jobs", json=_create_payload(lecture_id, revision_id))
+    assert response.status_code == 409
+    assert "imported-derived audit is not ready" in response.json()["detail"]
+    assert app.state.anki_repository.list_jobs() == before
 
 
 def test_create_job_rejects_malformed_notebook_summary_before_queueing(

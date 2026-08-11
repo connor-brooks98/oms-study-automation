@@ -733,6 +733,19 @@ class ExistingArtifactImportModel(Base):
     )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # These fields are deliberately nullable as a group.  Ordinary offline
+    # transcript/outline imports predate, and do not claim, a slide-PDF
+    # replacement.  A v23 adoption fills every field below.
+    expected_current_pdf_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    previous_pdf_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    previous_immutable_pdf_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imported_pdf_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    imported_immutable_pdf_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    derived_provenance: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    adoption_operator: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    adoption_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    adoption_confirmed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    recovery_phase: Mapped[str | None] = mapped_column(String(30), nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
     updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)
 

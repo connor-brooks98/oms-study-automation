@@ -1,4 +1,5 @@
 import hashlib
+import json
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -67,6 +68,15 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _revisions(bundle: ImportedBundle) -> IngestionRepository:
+    return IngestionRepository(
+        bundle.database,
+        artifact_v2_root=bundle.settings.data_dir / "artifacts" / "v2",
+        study_root=bundle.settings.study_root,
+        icloud_root=bundle.settings.icloud_staging_root,
+    )
+
+
 def _write_slides(path: Path) -> None:
     deck = Presentation()
     slide = deck.slides.add_slide(deck.slide_layouts[1])
@@ -75,13 +85,13 @@ def _write_slides(path: Path) -> None:
     deck.save(path)
 
 
-@pytest.fixture
-def imported_bundle(tmp_path: Path) -> ImportedBundle:
+def _build_imported_bundle(tmp_path: Path, *, adopt_derived_pdf: bool) -> ImportedBundle:
     settings = Settings(
         _env_file=None,
         data_dir=tmp_path / "data",
         database_url=f"sqlite:///{tmp_path / 'hub.db'}",
         study_root=tmp_path / "study",
+        icloud_staging_root=tmp_path / "icloud",
     )
     database = Database(settings.database_url)
     database.migrate()
@@ -99,6 +109,9 @@ def imported_bundle(tmp_path: Path) -> ImportedBundle:
     slide_pdf.write_bytes(OutlinePdfRenderer().render("Slides", "# CORE CONCEPTS\n- source"))
     canonical_slide_pdf = settings.study_root / "Neuro" / "slides.pdf"
     canonical_slide_pdf.write_bytes(slide_pdf.read_bytes())
+    icloud_slide_pdf = settings.icloud_staging_root / "Neuro" / "slides.pdf"
+    icloud_slide_pdf.parent.mkdir(parents=True, exist_ok=True)
+    icloud_slide_pdf.write_bytes(slide_pdf.read_bytes())
     slide_pdf_sha = _sha256(slide_pdf)
     with database.session() as session:
         session.add(UploadBatchModel(id="slides-batch", kind="slides", state="complete"))
@@ -129,6 +142,7 @@ def imported_bundle(tmp_path: Path) -> ImportedBundle:
             immutable_derived_path=str(slide_pdf),
             canonical_source_path=str(canonical_slides),
             canonical_derived_path=str(canonical_slide_pdf),
+            icloud_path=str(icloud_slide_pdf),
             state="current",
             current=True,
         )
@@ -146,19 +160,27 @@ def imported_bundle(tmp_path: Path) -> ImportedBundle:
             "# PROFESSOR EMPHASIS FLAGS\n- Repeated: calcium entry [3]",
         )
     )
-    imported = ExistingArtifactImporter(database, settings).import_artifacts(
-        ExistingArtifactImportRequest(
-            lecture_id,
-            slide_revision_id,
-            slide_sha,
-            slide_pdf_sha,
-            transcript,
-            _sha256(transcript),
-            outline,
-            _sha256(outline),
-        )
+    target_pdf = tmp_path / "adopted-slides.pdf"
+    target_pdf.write_bytes(
+        OutlinePdfRenderer().render("Adopted slides", "# CORE CONCEPTS\n- adopted")
     )
-    yield ImportedBundle(
+    request = ExistingArtifactImportRequest(
+        lecture_id,
+        slide_revision_id,
+        slide_sha,
+        _sha256(target_pdf) if adopt_derived_pdf else slide_pdf_sha,
+        transcript,
+        _sha256(transcript),
+        outline,
+        _sha256(outline),
+        authoritative_derived_pdf=target_pdf if adopt_derived_pdf else None,
+        expected_current_pdf_sha256=slide_pdf_sha if adopt_derived_pdf else None,
+        adoption_operator="anki-test" if adopt_derived_pdf else None,
+        adoption_reason="adopted PDF test" if adopt_derived_pdf else None,
+        confirm_derived_adoption=adopt_derived_pdf,
+    )
+    imported = ExistingArtifactImporter(database, settings).import_artifacts(request)
+    return ImportedBundle(
         database,
         settings,
         lecture_id,
@@ -171,7 +193,20 @@ def imported_bundle(tmp_path: Path) -> ImportedBundle:
         imported.immutable_transcript_path,
         imported.immutable_outline_path,
     )
-    database.close()
+
+
+@pytest.fixture
+def imported_bundle(tmp_path: Path) -> ImportedBundle:
+    bundle = _build_imported_bundle(tmp_path, adopt_derived_pdf=False)
+    yield bundle
+    bundle.database.close()
+
+
+@pytest.fixture
+def imported_derived_bundle(tmp_path: Path) -> ImportedBundle:
+    bundle = _build_imported_bundle(tmp_path, adopt_derived_pdf=True)
+    yield bundle
+    bundle.database.close()
 
 
 class _Companion:
@@ -187,7 +222,7 @@ class _Semantic:
 
 
 def _queued_job(bundle: ImportedBundle):
-    revisions = IngestionRepository(bundle.database)
+    revisions = _revisions(bundle)
     slide = revisions.get_study_revision(bundle.slide_revision_id)
     transcript = revisions.get_study_revision(bundle.imported_transcript_id)
     outline = GenerationRepository(bundle.database).outline(bundle.outline_id)
@@ -241,7 +276,7 @@ def _failed_imported_outline_job(
     bundle: ImportedBundle, repository: GenerationRepository, answer: str
 ):
     job = repository.queue(bundle.lecture_id, GenerationKind.OUTLINE)
-    revisions = IngestionRepository(bundle.database)
+    revisions = _revisions(bundle)
     slide = revisions.get_study_revision(bundle.slide_revision_id)
     transcript = revisions.get_study_revision(bundle.imported_transcript_id)
     mapping = repository.save_notebook_mapping(
@@ -335,6 +370,460 @@ def test_imported_bundle_uses_ordinary_anki_source_snapshot_and_replay(
     validator.validate(pinned_job.id)
 
 
+def test_imported_derived_bundle_pins_source_snapshot_and_replay(
+    imported_derived_bundle: ImportedBundle,
+) -> None:
+    job, revisions, outlines = _queued_job(imported_derived_bundle)
+    slide = revisions.get_study_revision(imported_derived_bundle.slide_revision_id)
+    transcript = revisions.get_study_revision(imported_derived_bundle.imported_transcript_id)
+    outline = outlines.outline(imported_derived_bundle.outline_id)
+    assert outline is not None
+    assert (slide.provenance_kind, slide.import_id) == (
+        "imported_derived",
+        imported_derived_bundle.import_id,
+    )
+    legacy_payload = {
+        "revision_id": slide.id,
+        "lecture_id": slide.lecture_id,
+        "kind": slide.kind.value,
+        "source_sha256": slide.source_sha256,
+        "derived_sha256": slide.derived_sha256,
+        "prompt_sha256": slide.prompt_sha256,
+    }
+    legacy_digest = hashlib.sha256(
+        json.dumps(legacy_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert revision_fingerprint(slide) != legacy_digest
+    extractor = LectureSourceExtractor(revisions, outlines=outlines)
+    passages = extractor.extract(job.source_revision_ids, summary_outline_id=outline.id)
+    assert {passage.revision_id for passage in passages} >= {
+        slide.id,
+        transcript.id,
+        outline.id,
+    }
+    assert job.source_revision_hashes[slide.id] == revision_fingerprint(slide)
+    replay = AnkiCurationRepository(imported_derived_bundle.database).prepare_stage_replay_inputs(
+        job.id, stage=CurationStage.PREFLIGHT
+    )
+    assert replay.sha256
+    validator = PinnedCurationInputValidator(
+        AnkiCurationRepository(imported_derived_bundle.database),
+        revisions,
+        _Companion(),  # type: ignore[arg-type]
+        _Semantic(),  # type: ignore[arg-type]
+        lambda _job_id: (_ for _ in ()).throw(AssertionError("source index is not pinned")),
+        outlines=outlines,
+        semantic_model="voyage-4-large",
+        semantic_dimensions=1024,
+    )
+    validator.validate(job.id)
+
+
+def test_imported_audit_reference_prevents_ordinary_source_extraction_fallback(
+    imported_derived_bundle: ImportedBundle,
+) -> None:
+    job, revisions, outlines = _queued_job(imported_derived_bundle)
+    validator = PinnedCurationInputValidator(
+        AnkiCurationRepository(imported_derived_bundle.database),
+        revisions,
+        _Companion(),  # type: ignore[arg-type]
+        _Semantic(),  # type: ignore[arg-type]
+        lambda _job_id: (_ for _ in ()).throw(AssertionError("source index is not pinned")),
+        outlines=outlines,
+        semantic_model="voyage-4-large",
+        semantic_dimensions=1024,
+    )
+    with imported_derived_bundle.database.session() as session:
+        slide = session.get(StudyRevisionModel, imported_derived_bundle.slide_revision_id)
+        assert slide is not None
+        slide.provenance_kind = "llm_cleaned"
+        slide.import_id = None
+    with pytest.raises(ValueError, match="imported-derived"):
+        LectureSourceExtractor(revisions, outlines=outlines).extract(job.source_revision_ids)
+    with pytest.raises(PinnedInputChanged):
+        validator.validate(job.id)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "slide-archive-missing",
+        "slide-archive-tamper",
+        "old-archive-missing",
+        "old-archive-tamper",
+        "canonical-mismatch",
+        "icloud-mismatch",
+        "audit-previous-hash",
+        "audit-target-hash",
+        "audit-previous-path",
+        "audit-target-path",
+        "audit-transcript-path",
+        "audit-outline-path",
+        "audit-phase",
+        "audit-status",
+        "audit-operator",
+        "audit-provenance",
+        "slide-source",
+        "slide-derived",
+        "slide-path",
+        "slide-provenance",
+        "slide-import",
+        "slide-current",
+        "transcript-import",
+        "transcript-hash",
+        "transcript-current",
+        "outline-import",
+        "outline-edge",
+        "outline-hash",
+        "outline-current",
+    ],
+)
+def test_imported_derived_anki_pin_rejects_complete_audit_graph_tampering(
+    imported_derived_bundle: ImportedBundle,
+    tamper: str,
+) -> None:
+    validator, job = _validator(imported_derived_bundle)
+    pinned_hashes = dict(job.source_revision_hashes)
+    with imported_derived_bundle.database.session() as session:
+        audit = session.get(ExistingArtifactImportModel, imported_derived_bundle.import_id)
+        slide = session.get(StudyRevisionModel, imported_derived_bundle.slide_revision_id)
+        transcript = session.get(StudyRevisionModel, imported_derived_bundle.imported_transcript_id)
+        outline = session.get(OutlineOutputModel, imported_derived_bundle.outline_id)
+        assert audit is not None and slide is not None and transcript is not None
+        assert outline is not None
+        if tamper == "slide-archive-missing":
+            Path(audit.imported_immutable_pdf_path or "").unlink()
+        elif tamper == "slide-archive-tamper":
+            Path(audit.imported_immutable_pdf_path or "").write_bytes(b"tampered")
+        elif tamper == "old-archive-missing":
+            Path(audit.previous_immutable_pdf_path or "").unlink()
+        elif tamper == "old-archive-tamper":
+            Path(audit.previous_immutable_pdf_path or "").write_bytes(b"tampered")
+        elif tamper == "canonical-mismatch":
+            Path(slide.canonical_derived_path or "").write_bytes(b"tampered")
+        elif tamper == "icloud-mismatch":
+            Path(slide.icloud_path or "").write_bytes(b"tampered")
+        elif tamper == "audit-previous-hash":
+            audit.previous_pdf_sha256 = "0" * 64
+        elif tamper == "audit-target-hash":
+            audit.imported_pdf_sha256 = "0" * 64
+        elif tamper == "audit-previous-path":
+            audit.previous_immutable_pdf_path = audit.imported_immutable_pdf_path
+        elif tamper == "audit-target-path":
+            audit.imported_immutable_pdf_path = str(
+                Path(audit.immutable_transcript_path or "").parent / "wrong.pdf"
+            )
+        elif tamper == "audit-transcript-path":
+            original = Path(audit.immutable_transcript_path or "")
+            repointed = original.with_name("same-audit-transcript.txt")
+            repointed.write_bytes(original.read_bytes())
+            audit.immutable_transcript_path = str(repointed)
+        elif tamper == "audit-outline-path":
+            original = Path(audit.immutable_outline_path or "")
+            repointed = original.parent / "nested" / "outline.pdf"
+            repointed.parent.mkdir()
+            repointed.write_bytes(original.read_bytes())
+            audit.immutable_outline_path = str(repointed)
+        elif tamper == "audit-phase":
+            audit.recovery_phase = "precommit"
+        elif tamper == "audit-status":
+            audit.status = "failed"
+        elif tamper == "audit-operator":
+            audit.adoption_operator = ""
+        elif tamper == "audit-provenance":
+            audit.derived_provenance = "other"
+        elif tamper == "slide-source":
+            slide.source_sha256 = "0" * 64
+        elif tamper == "slide-derived":
+            slide.derived_sha256 = "0" * 64
+        elif tamper == "slide-path":
+            slide.immutable_derived_path = str(
+                Path(audit.imported_immutable_pdf_path or "").with_name("wrong.pdf")
+            )
+        elif tamper == "slide-provenance":
+            slide.provenance_kind = "llm_cleaned"
+        elif tamper == "slide-import":
+            slide.import_id = None
+        elif tamper == "slide-current":
+            slide.current = False
+        elif tamper == "transcript-import":
+            transcript.import_id = None
+        elif tamper == "transcript-hash":
+            transcript.derived_sha256 = "0" * 64
+        elif tamper == "transcript-current":
+            transcript.current = False
+        elif tamper == "outline-import":
+            outline.import_id = None
+        elif tamper == "outline-edge":
+            outline.transcript_revision_id = None
+        elif tamper == "outline-hash":
+            outline.slide_sha256 = "0" * 64
+        else:
+            outline.current = False
+    with pytest.raises(PinnedInputChanged):
+        validator.validate(job.id)
+    assert (
+        AnkiCurationRepository(imported_derived_bundle.database)
+        .require_job(job.id)
+        .source_revision_hashes
+        == pinned_hashes
+    )
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "previous-outside-root",
+        "imported-outside-root",
+        "transcript-outside-root",
+        "outline-outside-root",
+        "immutable-root-symlink",
+        "imports-root-symlink",
+        "artifacts-parent-symlink",
+    ],
+)
+def test_imported_derived_anki_readiness_rejects_unmanaged_archives_and_roots(
+    imported_derived_bundle: ImportedBundle,
+    tamper: str,
+    tmp_path: Path,
+) -> None:
+    revisions = _revisions(imported_derived_bundle)
+    validator, job = _validator(imported_derived_bundle)
+    with imported_derived_bundle.database.session() as session:
+        audit = session.get(ExistingArtifactImportModel, imported_derived_bundle.import_id)
+        slide = session.get(StudyRevisionModel, imported_derived_bundle.slide_revision_id)
+        transcript = session.get(StudyRevisionModel, imported_derived_bundle.imported_transcript_id)
+        outline = session.get(OutlineOutputModel, imported_derived_bundle.outline_id)
+        assert audit is not None and slide is not None
+        assert transcript is not None and outline is not None
+        if tamper == "previous-outside-root":
+            outside = tmp_path / "outside-old.pdf"
+            outside.write_bytes(Path(audit.previous_immutable_pdf_path or "").read_bytes())
+            audit.previous_immutable_pdf_path = str(outside)
+        elif tamper == "imported-outside-root":
+            outside = tmp_path / "outside-imported.pdf"
+            outside.write_bytes(Path(audit.imported_immutable_pdf_path or "").read_bytes())
+            audit.imported_immutable_pdf_path = str(outside)
+            slide.immutable_derived_path = str(outside)
+        elif tamper == "transcript-outside-root":
+            outside = tmp_path / "outside-cleaned.txt"
+            outside.write_bytes(Path(audit.immutable_transcript_path or "").read_bytes())
+            audit.immutable_transcript_path = str(outside)
+            transcript.immutable_source_path = str(outside)
+            transcript.immutable_derived_path = str(outside)
+        elif tamper == "outline-outside-root":
+            outside = tmp_path / "outside-outline.pdf"
+            outside.write_bytes(Path(audit.immutable_outline_path or "").read_bytes())
+            audit.immutable_outline_path = str(outside)
+            outline.immutable_path = str(outside)
+        elif tamper == "immutable-root-symlink":
+            root = imported_derived_bundle.settings.data_dir / "artifacts" / "v2"
+            moved = tmp_path / "v2-real"
+            try:
+                root.rename(moved)
+                root.symlink_to(moved, target_is_directory=True)
+            except OSError as error:
+                pytest.skip(f"symlink support unavailable: {error}")
+        elif tamper == "imports-root-symlink":
+            root = imported_derived_bundle.settings.data_dir / "artifacts" / "existing-imports"
+            moved = tmp_path / "existing-imports-real"
+            try:
+                root.rename(moved)
+                root.symlink_to(moved, target_is_directory=True)
+            except OSError as error:
+                pytest.skip(f"symlink support unavailable: {error}")
+        else:
+            root = imported_derived_bundle.settings.data_dir / "artifacts"
+            moved = tmp_path / "artifacts-real"
+            try:
+                root.rename(moved)
+                root.symlink_to(moved, target_is_directory=True)
+            except OSError as error:
+                pytest.skip(f"symlink support unavailable: {error}")
+
+    refreshed = revisions.get_study_revision(imported_derived_bundle.slide_revision_id)
+    assert not revisions.imported_derived_audit_matches(refreshed)
+    with pytest.raises(PinnedInputChanged):
+        validator.validate(job.id)
+
+
+def test_imported_derived_anki_readiness_requires_canonical_audit_uuid(
+    imported_derived_bundle: ImportedBundle,
+) -> None:
+    database = imported_derived_bundle.database
+    canonical = imported_derived_bundle.import_id
+    noncanonical = canonical.upper()
+    raw = database.engine.raw_connection()
+    try:
+        cursor = raw.cursor()
+        cursor.execute("PRAGMA foreign_keys=OFF")
+        for table in ("study_revisions", "outline_outputs"):
+            cursor.execute(
+                f"UPDATE {table} SET import_id=? WHERE import_id=?", (noncanonical, canonical)
+            )
+        cursor.execute(
+            "UPDATE existing_artifact_imports SET id=? WHERE id=?", (noncanonical, canonical)
+        )
+        raw.commit()
+        cursor.execute("PRAGMA foreign_keys=ON")
+    finally:
+        raw.close()
+    revisions = _revisions(imported_derived_bundle)
+    validator, job = _validator(imported_derived_bundle)
+    refreshed = revisions.get_study_revision(imported_derived_bundle.slide_revision_id)
+    assert not revisions.imported_derived_audit_matches(refreshed)
+    with pytest.raises(PinnedInputChanged):
+        validator.validate(job.id)
+
+
+@pytest.mark.parametrize(
+    "path_name",
+    [
+        "slide-immutable-source",
+        "slide-canonical-source",
+        "imported-pdf",
+        "previous-pdf",
+        "slide-canonical-pdf",
+        "slide-icloud-pdf",
+        "transcript-immutable",
+        "transcript-canonical",
+        "outline-immutable",
+        "outline-canonical",
+    ],
+)
+def test_imported_derived_anki_readiness_rejects_every_symlinked_graph_path(
+    imported_derived_bundle: ImportedBundle,
+    monkeypatch: pytest.MonkeyPatch,
+    path_name: str,
+) -> None:
+    revisions = _revisions(imported_derived_bundle)
+    validator, job = _validator(imported_derived_bundle)
+    with imported_derived_bundle.database.session() as session:
+        audit = session.get(ExistingArtifactImportModel, imported_derived_bundle.import_id)
+        slide = session.get(StudyRevisionModel, imported_derived_bundle.slide_revision_id)
+        assert audit is not None and slide is not None
+        paths = {
+            "slide-immutable-source": Path(slide.immutable_source_path),
+            "slide-canonical-source": Path(slide.canonical_source_path or ""),
+            "imported-pdf": Path(audit.imported_immutable_pdf_path or ""),
+            "previous-pdf": Path(audit.previous_immutable_pdf_path or ""),
+            "slide-canonical-pdf": Path(slide.canonical_derived_path or ""),
+            "slide-icloud-pdf": Path(slide.icloud_path or ""),
+            "transcript-immutable": Path(audit.immutable_transcript_path or ""),
+            "transcript-canonical": Path(audit.canonical_transcript_path or ""),
+            "outline-immutable": Path(audit.immutable_outline_path or ""),
+            "outline-canonical": Path(audit.canonical_outline_path or ""),
+        }
+    target = paths[path_name]
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda path: original_is_symlink(path) or path == target,
+    )
+
+    refreshed = revisions.get_study_revision(imported_derived_bundle.slide_revision_id)
+    assert not revisions.imported_derived_audit_matches(refreshed)
+    with pytest.raises(PinnedInputChanged):
+        validator.validate(job.id)
+
+
+@pytest.mark.parametrize(
+    "component",
+    ["v2-root", "slide-ancestor", "study-root", "icloud-root", "imports-ancestor"],
+)
+def test_imported_derived_anki_readiness_rejects_mocked_windows_junction_components(
+    imported_derived_bundle: ImportedBundle,
+    monkeypatch: pytest.MonkeyPatch,
+    component: str,
+) -> None:
+    revisions = _revisions(imported_derived_bundle)
+    validator, job = _validator(imported_derived_bundle)
+    with imported_derived_bundle.database.session() as session:
+        audit = session.get(ExistingArtifactImportModel, imported_derived_bundle.import_id)
+        assert audit is not None
+        components = {
+            "v2-root": imported_derived_bundle.settings.data_dir / "artifacts" / "v2",
+            "slide-ancestor": (
+                imported_derived_bundle.settings.data_dir / "artifacts" / "v2" / "slides"
+            ),
+            "study-root": imported_derived_bundle.settings.study_root,
+            "icloud-root": imported_derived_bundle.settings.icloud_staging_root,
+            "imports-ancestor": Path(audit.immutable_transcript_path or "").parent.parent,
+        }
+    target = components[component]
+    original_is_junction = getattr(Path, "is_junction", None)
+
+    def is_junction(path: Path) -> bool:
+        return path == target or (
+            callable(original_is_junction) and bool(original_is_junction(path))
+        )
+
+    monkeypatch.setattr(Path, "is_junction", is_junction, raising=False)
+
+    refreshed = revisions.get_study_revision(imported_derived_bundle.slide_revision_id)
+    assert not revisions.imported_derived_audit_matches(refreshed)
+    with pytest.raises(PinnedInputChanged):
+        validator.validate(job.id)
+
+
+@pytest.mark.parametrize("root_name", ["v2", "study", "icloud"])
+@pytest.mark.parametrize("indirection", ["junction", "symlink"])
+def test_imported_derived_anki_readiness_rejects_mocked_parent_indirection_above_root(
+    imported_derived_bundle: ImportedBundle,
+    monkeypatch: pytest.MonkeyPatch,
+    root_name: str,
+    indirection: str,
+) -> None:
+    revisions = _revisions(imported_derived_bundle)
+    validator, job = _validator(imported_derived_bundle)
+    parents = {
+        "v2": imported_derived_bundle.settings.data_dir / "artifacts",
+        "study": imported_derived_bundle.settings.study_root.parent,
+        "icloud": imported_derived_bundle.settings.icloud_staging_root.parent,
+    }
+    target = parents[root_name]
+    if indirection == "junction":
+        original_is_junction = getattr(Path, "is_junction", None)
+
+        def is_junction(path: Path) -> bool:
+            return path == target or (
+                callable(original_is_junction) and bool(original_is_junction(path))
+            )
+
+        monkeypatch.setattr(Path, "is_junction", is_junction, raising=False)
+    else:
+        original_is_symlink = Path.is_symlink
+        monkeypatch.setattr(
+            Path,
+            "is_symlink",
+            lambda path: path == target or original_is_symlink(path),
+        )
+    refreshed = revisions.get_study_revision(imported_derived_bundle.slide_revision_id)
+    assert not revisions.imported_derived_audit_matches(refreshed)
+    with pytest.raises(PinnedInputChanged):
+        validator.validate(job.id)
+
+
+def test_imported_derived_anki_readiness_rejects_lexical_escape_resolving_inside(
+    imported_derived_bundle: ImportedBundle,
+) -> None:
+    revisions = _revisions(imported_derived_bundle)
+    validator, job = _validator(imported_derived_bundle)
+    with imported_derived_bundle.database.session() as session:
+        slide = session.get(StudyRevisionModel, imported_derived_bundle.slide_revision_id)
+        assert slide is not None
+        canonical = Path(slide.canonical_source_path or "")
+        slide.canonical_source_path = str(
+            canonical.parent / ".." / canonical.parent.name / canonical.name
+        )
+
+    refreshed = revisions.get_study_revision(imported_derived_bundle.slide_revision_id)
+    assert not revisions.imported_derived_audit_matches(refreshed)
+    with pytest.raises(PinnedInputChanged):
+        validator.validate(job.id)
+
+
 @pytest.mark.parametrize(
     "tamper",
     [
@@ -413,7 +902,7 @@ def test_imported_anki_pins_fail_closed_on_identity_tampering(imported_bundle, t
 def test_imported_outline_readiness_requires_complete_links(
     imported_bundle: ImportedBundle,
 ) -> None:
-    revisions = IngestionRepository(imported_bundle.database)
+    revisions = _revisions(imported_bundle)
     outlines = GenerationRepository(imported_bundle.database)
     outline = outlines.outline(imported_bundle.outline_id)
     assert outline is not None
@@ -570,8 +1059,7 @@ def test_replacement_approval_cli_rejects_ineligible_job_without_review_write(
 
     assert args.handler(args) == 2
     assert (
-        repository.imported_outline_replacement_review(imported_bundle.lecture_id, job.id)
-        is None
+        repository.imported_outline_replacement_review(imported_bundle.lecture_id, job.id) is None
     )
     rejected = repository.get(job.id)
     assert getattr(rejected, field) == value

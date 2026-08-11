@@ -4,13 +4,19 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from reportlab.pdfgen.canvas import Canvas
 from sqlalchemy import select
 
 from oms_hub import cli
-from oms_hub.artifact_writes import ArtifactWriteClaimLost, ArtifactWriteContended
+from oms_hub.anki.models import AnkiCurationJobModel
+from oms_hub.artifact_writes import (
+    ArtifactWriteClaimLost,
+    ArtifactWriteContended,
+    ArtifactWriteCoordinator,
+)
 from oms_hub.config import Settings
 from oms_hub.db import Database
 from oms_hub.existing_artifact_import import (
@@ -21,8 +27,10 @@ from oms_hub.existing_artifact_import import (
     ExistingArtifactImporter,
     ExistingArtifactImportError,
     ExistingArtifactImportRequest,
+    ExistingArtifactRecoveryError,
     verify_a0_operator_files,
 )
+from oms_hub.files.handle_relative import set_hardened_write_hook
 from oms_hub.ingestion.domain import UploadKind
 from oms_hub.models import (
     ExistingArtifactImportModel,
@@ -62,6 +70,7 @@ def _request_fixture(tmp_path):
         data_dir=tmp_path / "data",
         database_url=f"sqlite:///{tmp_path / 'hub.db'}",
         study_root=tmp_path / "study",
+        icloud_staging_root=tmp_path / "icloud",
     )
     database = Database(settings.database_url)
     database.migrate()
@@ -571,15 +580,11 @@ def test_failed_resume_refuses_intervening_current_artifact_without_copying(tmp_
 
 
 @pytest.mark.parametrize("after_failure", [True, False])
-def test_renamed_same_byte_sources_fail_closed_without_reusing_provenance(
-    tmp_path, after_failure
-):
+def test_renamed_same_byte_sources_fail_closed_without_reusing_provenance(tmp_path, after_failure):
     database, settings, importer, request = _request_fixture(tmp_path)
     if after_failure:
         importer.checkpoint = lambda phase: (
-            (_ for _ in ()).throw(RuntimeError("forced"))
-            if phase == "after-copy"
-            else None
+            (_ for _ in ()).throw(RuntimeError("forced")) if phase == "after-copy" else None
         )
         with pytest.raises(RuntimeError, match="forced"):
             importer.import_artifacts(request)
@@ -783,9 +788,7 @@ def _cli_args(request: ExistingArtifactImportRequest):
 
 def test_windows_cli_contract_requires_authoritative_pptx_and_explicit_pdf_hash(tmp_path):
     _, _, _, request = _request_fixture(tmp_path)
-    authoritative_pptx_sha256 = (
-        "b1c7abc3fb5d86476a3477d397e679ec42e61cff982fcec9dcb55a9d0a9c5469"
-    )
+    authoritative_pptx_sha256 = "b1c7abc3fb5d86476a3477d397e679ec42e61cff982fcec9dcb55a9d0a9c5469"
     args = cli.build_parser().parse_args(
         [
             "import-existing-lecture-artifacts",
@@ -814,8 +817,7 @@ def test_windows_cli_contract_requires_authoritative_pptx_and_explicit_pdf_hash(
 def test_a0_operator_file_gate_hash_contract_is_exact_and_separate(tmp_path, monkeypatch):
     """Contract test only; A0 verifies the real shared files separately."""
     files = tuple(
-        tmp_path / name
-        for name in ("slides.pptx", "slides.pdf", "cleaned.txt", "outline.pdf")
+        tmp_path / name for name in ("slides.pptx", "slides.pdf", "cleaned.txt", "outline.pdf")
     )
     for path in files:
         path.touch()
@@ -840,14 +842,17 @@ def test_a0_operator_file_gate_hash_contract_is_exact_and_separate(tmp_path, mon
     import oms_hub.existing_artifact_import as import_module
 
     monkeypatch.setattr(import_module, "sha256_file", contract_hasher)
-    assert len(
-        {
-            A0_PPTX_SHA256,
-            A0_PDF_SHA256,
-            A0_CLEANED_TRANSCRIPT_SHA256,
-            A0_OUTLINE_SHA256,
-        }
-    ) == 4
+    assert (
+        len(
+            {
+                A0_PPTX_SHA256,
+                A0_PDF_SHA256,
+                A0_CLEANED_TRANSCRIPT_SHA256,
+                A0_OUTLINE_SHA256,
+            }
+        )
+        == 4
+    )
     verify_a0_operator_files(*files)
     assert checked == list(files)
 
@@ -979,6 +984,64 @@ def test_import_cli_parser_validation_error_is_stable_json(tmp_path, monkeypatch
     }
 
 
+@pytest.mark.parametrize("operation", ["ReadFile", "WriteFile", "FlushFileBuffers", "final hash"])
+def test_importer_normalizes_hardened_native_copy_failures(tmp_path, monkeypatch, operation):
+    database, _settings, importer, request = _request_fixture(tmp_path)
+    import oms_hub.existing_artifact_import as import_module
+    from oms_hub.files.handle_relative import HardenedWriteError
+
+    def fail_copy(*_args: object, **_kwargs: object) -> str:
+        raise HardenedWriteError(f"pinned Windows {operation} failed") from OSError(operation)
+
+    monkeypatch.setattr(import_module, "hardened_verified_copy", fail_copy)
+    with pytest.raises(ExistingArtifactImportError, match="pinned atomic copy could not complete"):
+        importer.import_artifacts(request)
+    assert database is importer.database
+
+
+def test_import_cli_hardened_import_failure_is_stable_json(tmp_path, monkeypatch, capsys):
+    database, settings, _importer, request = _request_fixture(tmp_path)
+
+    class FailingImporter:
+        def __init__(self, _database: Database, _settings: Settings) -> None:
+            return None
+
+        def import_artifacts(self, _request: ExistingArtifactImportRequest) -> object:
+            raise ExistingArtifactImportError("pinned atomic copy could not complete")
+
+    monkeypatch.setattr(cli, "Settings", lambda: settings)
+    monkeypatch.setattr(cli, "Database", lambda _url: database)
+    monkeypatch.setattr(cli, "ExistingArtifactImporter", FailingImporter)
+    args = _cli_args(request)
+    assert args.handler(args) == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "error": "pinned atomic copy could not complete",
+        "status": "error",
+    }
+
+
+def test_import_cli_normalizes_hardened_posix_copy_failure_to_stable_json(
+    tmp_path, monkeypatch, capsys
+):
+    database, settings, _importer, request = _request_fixture(tmp_path)
+    import oms_hub.existing_artifact_import as import_module
+    from oms_hub.files.handle_relative import HardenedWriteError
+
+    def fail_copy(*_args: object, **_kwargs: object) -> str:
+        raise HardenedWriteError("pinned POSIX copy failed") from PermissionError("forced")
+
+    monkeypatch.setattr(import_module, "hardened_verified_copy", fail_copy)
+    monkeypatch.setattr(cli, "Settings", lambda: settings)
+    monkeypatch.setattr(cli, "Database", lambda _url: database)
+    args = _cli_args(request)
+
+    assert args.handler(args) == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "error": "pinned atomic copy could not complete",
+        "status": "error",
+    }
+
+
 @pytest.mark.parametrize("error", [ArtifactWriteContended("held"), ArtifactWriteClaimLost("lost")])
 def test_import_cli_fencing_errors_are_retryable_json(tmp_path, monkeypatch, capsys, error):
     database, settings, _, request = _request_fixture(tmp_path)
@@ -1027,3 +1090,1778 @@ def test_import_cli_success_identity_and_idempotent_retry(tmp_path, monkeypatch,
     assert first["transcript"]["provenance_kind"] == "imported_cleaned"
     assert first["outline"]["provenance_kind"] == "imported_notebooklm"
     assert _generation_counts(database) == (0, 0)
+
+
+def test_explicit_derived_pdf_adoption_archives_target_and_preserves_office_pdf(tmp_path):
+    database, settings, importer, request = _request_fixture(tmp_path)
+    old_immutable = settings.data_dir / "artifacts" / "v2" / "slides" / "source.pdf"
+    old_bytes = old_immutable.read_bytes()
+    icloud = settings.icloud_staging_root / "Neuro" / "iCloud-slides.pdf"
+    icloud.parent.mkdir(parents=True, exist_ok=True)
+    icloud.write_bytes(old_bytes)
+    with database.session() as session:
+        slide = session.get(StudyRevisionModel, request.slides_revision_id)
+        assert slide is not None
+        slide.icloud_path = str(icloud)
+    target = tmp_path / "authoritative.pdf"
+    _write_outline(target)
+    adopted = replace(
+        request,
+        slides_pdf_sha256=_sha256(target),
+        authoritative_derived_pdf=target,
+        expected_current_pdf_sha256=_sha256(old_immutable),
+        adoption_operator="operator",
+        adoption_reason="A0 verified source",
+        confirm_derived_adoption=True,
+    )
+    result = importer.import_artifacts(adopted)
+    assert result.adoption is not None
+    assert result.adoption["phase"] == "committed"
+    assert old_immutable.read_bytes() == old_bytes
+    with database.session() as session:
+        slide = session.get(StudyRevisionModel, request.slides_revision_id)
+        audit = session.get(ExistingArtifactImportModel, result.import_id)
+        assert slide is not None and audit is not None
+        assert slide.immutable_derived_path == audit.imported_immutable_pdf_path
+        assert Path(audit.imported_immutable_pdf_path or "").read_bytes() == target.read_bytes()
+        assert slide.provenance_kind == "imported_derived"
+        assert slide.import_id == audit.id
+    assert icloud.read_bytes() == target.read_bytes()
+    assert importer.import_artifacts(adopted).idempotent is True
+
+
+def _adoption_fixture(tmp_path):
+    database, settings, importer, request = _request_fixture(tmp_path)
+    old = settings.data_dir / "artifacts" / "v2" / "slides" / "source.pdf"
+    icloud = settings.icloud_staging_root / "Neuro" / "iCloud-slides.pdf"
+    icloud.parent.mkdir(parents=True, exist_ok=True)
+    icloud.write_bytes(old.read_bytes())
+    with database.session() as session:
+        slide = session.get(StudyRevisionModel, request.slides_revision_id)
+        assert slide is not None
+        slide.icloud_path = str(icloud)
+    target = tmp_path / "authoritative.pdf"
+    _write_outline(target)
+    return (
+        database,
+        settings,
+        importer,
+        request,
+        old,
+        icloud,
+        target,
+        replace(
+            request,
+            slides_pdf_sha256=_sha256(target),
+            authoritative_derived_pdf=target,
+            expected_current_pdf_sha256=_sha256(old),
+            adoption_operator="operator",
+            adoption_reason="verified adoption",
+            confirm_derived_adoption=True,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("authoritative_derived_pdf", None),
+        ("expected_current_pdf_sha256", None),
+        ("adoption_operator", ""),
+        ("adoption_reason", ""),
+        ("confirm_derived_adoption", False),
+        ("expected_current_pdf_sha256", "A" * 64),
+        ("slides_pdf_sha256", "bad"),
+    ],
+)
+def test_adoption_incomplete_or_malformed_intent_has_no_mutation(tmp_path, field, value):
+    (database, settings, importer, request, _old, _icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    before = _import_state(database, settings)
+    with pytest.raises(ExistingArtifactImportError):
+        importer.import_artifacts(replace(adopted, **{field: value}))
+    assert _import_state(database, settings) == before
+
+
+@pytest.mark.parametrize("path_name", ["immutable", "canonical", "icloud"])
+def test_adoption_rejects_current_old_path_mismatch_without_mutation(tmp_path, path_name):
+    (database, settings, importer, request, old, icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    paths = {
+        "immutable": old,
+        "canonical": settings.study_root / "Neuro" / "slides.pdf",
+        "icloud": icloud,
+    }
+    paths[path_name].write_bytes(b"different")
+    before = _import_state(database, settings)
+    with pytest.raises(ExistingArtifactImportError, match="path/hash is not exact"):
+        importer.import_artifacts(adopted)
+    assert _import_state(database, settings) == before
+
+
+@pytest.mark.parametrize(
+    "field,path_name",
+    [
+        ("immutable_source_path", "immutable-pptx"),
+        ("immutable_derived_path", "immutable-old-pdf"),
+        ("canonical_source_path", "canonical-pptx"),
+        ("canonical_derived_path", "canonical-pdf"),
+        ("icloud_path", "icloud-pdf"),
+    ],
+)
+@pytest.mark.parametrize("path_form", ["symlink", "relative"])
+def test_adoption_rejects_untrusted_persisted_slide_paths_before_any_mutation(
+    tmp_path, field, path_name, path_form
+):
+    (database, settings, importer, _request, _old, icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    paths = {
+        "immutable-pptx": settings.data_dir / "artifacts" / "v2" / "slides" / "source.pptx",
+        "immutable-old-pdf": settings.data_dir / "artifacts" / "v2" / "slides" / "source.pdf",
+        "canonical-pptx": settings.study_root / "Neuro" / "slides.pptx",
+        "canonical-pdf": settings.study_root / "Neuro" / "slides.pdf",
+        "icloud-pdf": icloud,
+    }
+    path = paths[path_name]
+    before_bytes = {name: candidate.read_bytes() for name, candidate in paths.items()}
+    if path_form == "symlink":
+        moved = tmp_path / f"{path_name}-real{path.suffix}"
+        try:
+            path.rename(moved)
+            path.symlink_to(moved)
+        except OSError as error:
+            pytest.skip(f"symlink support unavailable: {error}")
+    else:
+        with database.session() as session:
+            slide = session.get(StudyRevisionModel, adopted.slides_revision_id)
+            assert slide is not None
+            setattr(slide, field, f"relative/{path.name}")
+    before = _import_state(database, settings)
+
+    with pytest.raises(ExistingArtifactImportError, match="absolute regular non-symlink"):
+        importer.import_artifacts(adopted)
+
+    assert _import_state(database, settings) == before
+    assert {name: candidate.read_bytes() for name, candidate in paths.items()} == before_bytes
+
+
+@pytest.mark.parametrize(
+    "path_name",
+    [
+        "immutable-pptx",
+        "immutable-old-pdf",
+        "canonical-pptx",
+        "canonical-pdf",
+        "icloud-pdf",
+    ],
+)
+def test_adoption_rejects_mocked_windows_junction_graph_paths_before_mutation(
+    tmp_path, monkeypatch, path_name
+):
+    """This is intentionally mocked so Windows coverage never depends on symlink support."""
+    database, settings, importer, _request, _old, icloud, _target, adopted = _adoption_fixture(
+        tmp_path
+    )
+    paths = {
+        "immutable-pptx": settings.data_dir / "artifacts" / "v2" / "slides" / "source.pptx",
+        "immutable-old-pdf": settings.data_dir / "artifacts" / "v2" / "slides" / "source.pdf",
+        "canonical-pptx": settings.study_root / "Neuro" / "slides.pptx",
+        "canonical-pdf": settings.study_root / "Neuro" / "slides.pdf",
+        "icloud-pdf": icloud,
+    }
+    target = paths[path_name]
+    original_is_junction = getattr(Path, "is_junction", None)
+
+    def is_junction(path: Path) -> bool:
+        return path == target or (
+            callable(original_is_junction) and bool(original_is_junction(path))
+        )
+
+    monkeypatch.setattr(Path, "is_junction", is_junction, raising=False)
+    before = _import_state(database, settings)
+
+    with pytest.raises(ExistingArtifactImportError, match="absolute regular non-symlink"):
+        importer.import_artifacts(adopted)
+
+    assert _import_state(database, settings) == before
+
+
+@pytest.mark.parametrize("root_name", ["v2", "study", "icloud"])
+@pytest.mark.parametrize("indirection", ["junction", "symlink"])
+def test_adoption_rejects_mocked_parent_indirection_above_each_configured_root(
+    tmp_path, monkeypatch, root_name, indirection
+):
+    database, settings, importer, _request, _old, _icloud, _target, adopted = _adoption_fixture(
+        tmp_path
+    )
+    parents = {
+        "v2": settings.data_dir / "artifacts",
+        "study": settings.study_root.parent,
+        "icloud": settings.icloud_staging_root.parent,
+    }
+    target = parents[root_name]
+    if indirection == "junction":
+        original_is_junction = getattr(Path, "is_junction", None)
+
+        def is_junction(path: Path) -> bool:
+            return path == target or (
+                callable(original_is_junction) and bool(original_is_junction(path))
+            )
+
+        monkeypatch.setattr(Path, "is_junction", is_junction, raising=False)
+    else:
+        original_is_symlink = Path.is_symlink
+        monkeypatch.setattr(
+            Path,
+            "is_symlink",
+            lambda path: path == target or original_is_symlink(path),
+        )
+    before = _import_state(database, settings)
+    with pytest.raises(ExistingArtifactImportError):
+        importer.import_artifacts(adopted)
+    assert _import_state(database, settings) == before
+
+
+@pytest.mark.parametrize("adoption", [False, True])
+@pytest.mark.parametrize("indirection", ["symlink", "junction"])
+def test_first_import_rejects_untrusted_existing_imports_root_before_audit_or_copy(
+    tmp_path, monkeypatch, adoption, indirection
+):
+    if adoption:
+        database, settings, importer, _request, _old, icloud, _target, request = _adoption_fixture(
+            tmp_path
+        )
+        watched = [
+            settings.study_root / "Neuro" / "slides.pdf",
+            icloud,
+        ]
+    else:
+        database, settings, importer, request = _request_fixture(tmp_path)
+        watched = [settings.study_root / "Neuro" / "slides.pdf"]
+    imports_root = settings.data_dir / "artifacts" / "existing-imports"
+    link_target = tmp_path / "linked-existing-imports"
+    link_target.mkdir()
+    if indirection == "symlink":
+        try:
+            imports_root.symlink_to(link_target, target_is_directory=True)
+        except OSError as error:
+            pytest.skip(f"symlink support unavailable: {error}")
+    else:
+        imports_root.mkdir()
+        original_is_junction = getattr(Path, "is_junction", None)
+
+        def is_junction(path: Path) -> bool:
+            return path == imports_root or (
+                callable(original_is_junction) and bool(original_is_junction(path))
+            )
+
+        monkeypatch.setattr(Path, "is_junction", is_junction, raising=False)
+    before = {path: path.read_bytes() for path in watched}
+
+    with pytest.raises(ExistingArtifactImportError, match="existing-import managed root"):
+        importer.import_artifacts(request)
+
+    with database.session() as session:
+        assert session.query(ExistingArtifactImportModel).count() == 0
+    assert list(link_target.iterdir()) == []
+    assert {path: path.read_bytes() for path in watched} == before
+
+
+def test_first_import_rejects_indirect_artifacts_parent_before_audit_or_copy(tmp_path):
+    database, settings, importer, request = _request_fixture(tmp_path)
+    artifacts = settings.data_dir / "artifacts"
+    moved = tmp_path / "artifacts-real"
+    try:
+        artifacts.rename(moved)
+        artifacts.symlink_to(moved, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"symlink support unavailable: {error}")
+    canonical = settings.study_root / "Neuro" / "slides.pdf"
+    before = canonical.read_bytes()
+
+    with pytest.raises(ExistingArtifactImportError):
+        importer.import_artifacts(request)
+
+    with database.session() as session:
+        assert session.query(ExistingArtifactImportModel).count() == 0
+    assert canonical.read_bytes() == before
+    assert not (moved / "existing-imports").exists()
+
+
+def test_first_import_creates_missing_honest_existing_imports_root_and_succeeds(tmp_path):
+    database, settings, importer, request = _request_fixture(tmp_path)
+    imports_root = settings.data_dir / "artifacts" / "existing-imports"
+    assert not imports_root.exists()
+
+    result = importer.import_artifacts(request)
+
+    assert result.status == "complete"
+    assert imports_root.is_dir() and not imports_root.is_symlink()
+
+
+def test_adoption_archive_copy_parent_swap_never_writes_outside_pinned_audit_dir(tmp_path):
+    database, settings, importer, _request, _old, icloud, _target, adopted = _adoption_fixture(
+        tmp_path
+    )
+    imports_root = settings.data_dir / "artifacts" / "existing-imports"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    moved = tmp_path / "moved-audit"
+    canonical = settings.study_root / "Neuro" / "slides.pdf"
+    before = (canonical.read_bytes(), icloud.read_bytes())
+    parent_pins = 0
+
+    def hook(name: str) -> None:
+        nonlocal parent_pins
+        if name != "destination-parent-pinned":
+            return
+        parent_pins += 1
+        # transcript, outline, canonical transcript, canonical outline, archive
+        if parent_pins == 5:
+            audit_root = next(path for path in imports_root.iterdir() if path.is_dir())
+            audit_root.rename(moved)
+            audit_root.symlink_to(outside, target_is_directory=True)
+
+    set_hardened_write_hook(hook)
+    try:
+        with pytest.raises(ExistingArtifactImportError):
+            importer.import_artifacts(adopted)
+    finally:
+        set_hardened_write_hook(None)
+
+    assert list(outside.iterdir()) == []
+    assert (canonical.read_bytes(), icloud.read_bytes()) == before
+    assert (moved / "derived-slide.pdf").is_file()
+    with database.session() as session:
+        assert session.query(ExistingArtifactImportModel).count() == 1
+
+
+@pytest.mark.parametrize("component", ["v2-root", "slide-ancestor", "study-root", "icloud-root"])
+def test_adoption_rejects_indirect_managed_root_or_ancestor_before_mutation(
+    tmp_path, component
+):
+    database, settings, importer, _request, _old, _icloud, _target, adopted = _adoption_fixture(
+        tmp_path
+    )
+    paths = {
+        "v2-root": settings.data_dir / "artifacts" / "v2",
+        "slide-ancestor": settings.data_dir / "artifacts" / "v2" / "slides",
+        "study-root": settings.study_root,
+        "icloud-root": settings.icloud_staging_root,
+    }
+    path = paths[component]
+    moved = tmp_path / f"{component}-real"
+    try:
+        path.rename(moved)
+        path.symlink_to(moved, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"symlink support unavailable: {error}")
+    before = _import_state(database, settings)
+
+    with pytest.raises(ExistingArtifactImportError):
+        importer.import_artifacts(adopted)
+
+    assert _import_state(database, settings) == before
+
+
+def test_adoption_rejects_lexically_outside_path_resolving_back_inside_before_mutation(tmp_path):
+    database, settings, importer, _request, _old, _icloud, _target, adopted = _adoption_fixture(
+        tmp_path
+    )
+    with database.session() as session:
+        slide = session.get(StudyRevisionModel, adopted.slides_revision_id)
+        assert slide is not None
+        slide.canonical_source_path = str(
+            settings.study_root / "Neuro" / ".." / "Neuro" / "slides.pptx"
+        )
+    before = _import_state(database, settings)
+
+    with pytest.raises(ExistingArtifactImportError, match="absolute regular non-symlink"):
+        importer.import_artifacts(adopted)
+
+    assert _import_state(database, settings) == before
+
+
+@pytest.mark.parametrize(
+    "field,path_name",
+    [
+        ("immutable_source_path", "immutable-pptx"),
+        ("immutable_derived_path", "immutable-pdf"),
+        ("canonical_source_path", "canonical-pptx"),
+        ("canonical_derived_path", "canonical-pdf"),
+    ],
+)
+def test_ordinary_import_rejects_symlinked_slide_paths_before_any_mutation(
+    tmp_path, field, path_name
+):
+    database, settings, importer, request = _request_fixture(tmp_path)
+    paths = {
+        "immutable-pptx": settings.data_dir / "artifacts" / "v2" / "slides" / "source.pptx",
+        "immutable-pdf": settings.data_dir / "artifacts" / "v2" / "slides" / "source.pdf",
+        "canonical-pptx": settings.study_root / "Neuro" / "slides.pptx",
+        "canonical-pdf": settings.study_root / "Neuro" / "slides.pdf",
+    }
+    path = paths[path_name]
+    before_bytes = {name: candidate.read_bytes() for name, candidate in paths.items()}
+    moved = tmp_path / f"ordinary-{path_name}-real{path.suffix}"
+    try:
+        path.rename(moved)
+        path.symlink_to(moved)
+    except OSError as error:
+        pytest.skip(f"symlink support unavailable: {error}")
+    before = _import_state(database, settings)
+
+    with pytest.raises(ExistingArtifactImportError, match="absolute regular non-symlink"):
+        importer.import_artifacts(request)
+
+    assert _import_state(database, settings) == before
+    assert {name: candidate.read_bytes() for name, candidate in paths.items()} == before_bytes
+
+
+def test_adoption_exact_target_file_with_literal_incident_old_hash_fails_before_mutation(tmp_path):
+    (database, settings, importer, request, _old, _icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    copied = tmp_path / "Lecture 02 - Hemoglobin Synthesis and Function.pdf"
+    copied.write_bytes(_target.read_bytes())
+    literal = replace(
+        adopted,
+        authoritative_derived_pdf=copied,
+        slides_pdf_sha256=A0_PDF_SHA256,
+        expected_current_pdf_sha256="0bf098df3518a9cc7f3c0657f109eb9a802e5e1681123e1d194aec5b31ea5de8",
+    )
+    before = _import_state(database, settings)
+    with pytest.raises(ExistingArtifactImportError, match="authoritative derived PDF SHA-256"):
+        importer.import_artifacts(literal)
+    assert _import_state(database, settings) == before
+
+
+def test_adoption_changed_operator_reason_or_filename_is_not_idempotent(tmp_path):
+    (database, settings, importer, request, _old, _icloud, target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    importer.import_artifacts(adopted)
+    renamed = tmp_path / "renamed.pdf"
+    renamed.write_bytes(target.read_bytes())
+    for changed in (
+        replace(adopted, adoption_operator="other"),
+        replace(adopted, adoption_reason="other"),
+        replace(adopted, authoritative_derived_pdf=renamed),
+    ):
+        before = _import_state(database, settings)
+        with pytest.raises(ExistingArtifactImportError):
+            importer.import_artifacts(changed)
+        assert _import_state(database, settings) == before
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "after-adoption-archive",
+        "after-adoption-canonical_promoted",
+        "after-adoption-icloud_promoted",
+        "after-adoption-precommit",
+    ],
+)
+def test_adoption_owned_failure_at_each_boundary_rolls_back_and_retries(tmp_path, boundary):
+    (database, settings, importer, request, old, icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    old_bytes = old.read_bytes()
+    failed = False
+
+    def checkpoint(phase: str) -> None:
+        nonlocal failed
+        if phase == boundary and not failed:
+            failed = True
+            raise RuntimeError(f"forced {boundary}")
+
+    importer.checkpoint = checkpoint
+    with pytest.raises(RuntimeError, match="forced"):
+        importer.import_artifacts(adopted)
+    assert old.read_bytes() == old_bytes
+    assert (settings.study_root / "Neuro" / "slides.pdf").read_bytes() == old_bytes
+    assert icloud.read_bytes() == old_bytes
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        assert audit.status == "preparing"
+        assert audit.recovery_phase == "archived"
+        assert Path(audit.imported_immutable_pdf_path or "").is_file()
+    result = importer.import_artifacts(adopted)
+    assert result.status == "complete"
+
+
+@pytest.mark.parametrize(
+    ("boundary", "copy_index"),
+    [
+        *( ("after-copy", index) for index in range(1, 5) ),
+        ("after-adoption-archive_copying", 1),
+    ],
+)
+def test_adoption_owned_pre_archive_failure_returns_to_preparing_and_retries(
+    tmp_path, boundary, copy_index
+):
+    database, settings, importer, _request, old, icloud, target, adopted = _adoption_fixture(
+        tmp_path
+    )
+    calls = 0
+
+    def checkpoint(phase: str) -> None:
+        nonlocal calls
+        if phase == boundary:
+            calls += 1
+            if calls == copy_index:
+                raise RuntimeError("owned pre-archive failure")
+
+    importer.checkpoint = checkpoint
+    with pytest.raises(RuntimeError, match="owned pre-archive failure"):
+        importer.import_artifacts(adopted)
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        precursors = (
+            Path(audit.immutable_transcript_path or ""),
+            Path(audit.immutable_outline_path or ""),
+            Path(audit.canonical_transcript_path or ""),
+            Path(audit.canonical_outline_path or ""),
+        )
+        assert (audit.status, audit.recovery_phase) == ("preparing", "preparing")
+        assert not Path(audit.imported_immutable_pdf_path or "").exists()
+        assert not any(path.exists() for path in precursors)
+    assert (settings.study_root / "Neuro" / "slides.pdf").read_bytes() == old.read_bytes()
+    assert icloud.read_bytes() == old.read_bytes()
+    fresh_database, _fresh_settings, fresh_importer = _fresh_adoption_importer(settings)
+    assert fresh_importer.import_artifacts(adopted).status == "complete"
+    assert (settings.study_root / "Neuro" / "slides.pdf").read_bytes() == target.read_bytes()
+    fresh_database.close()
+
+
+def test_adoption_owned_post_archive_failure_retains_archived_evidence_and_retries(tmp_path):
+    database, settings, importer, _request, old, icloud, target, adopted = _adoption_fixture(
+        tmp_path
+    )
+    importer.checkpoint = lambda phase: (
+        (_ for _ in ()).throw(RuntimeError("owned post-archive failure"))
+        if phase == "after-adoption-archive-copy"
+        else None
+    )
+    with pytest.raises(RuntimeError, match="owned post-archive failure"):
+        importer.import_artifacts(adopted)
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        archive = Path(audit.imported_immutable_pdf_path or "")
+        assert (audit.status, audit.recovery_phase) == ("preparing", "archived")
+        assert archive.is_file() and _sha256(archive) == adopted.slides_pdf_sha256
+    assert (settings.study_root / "Neuro" / "slides.pdf").read_bytes() == old.read_bytes()
+    assert icloud.read_bytes() == old.read_bytes()
+    fresh_database, _fresh_settings, fresh_importer = _fresh_adoption_importer(settings)
+    assert fresh_importer.import_artifacts(adopted).status == "complete"
+    assert (settings.study_root / "Neuro" / "slides.pdf").read_bytes() == target.read_bytes()
+    fresh_database.close()
+
+
+@pytest.mark.parametrize("corruption", ["wrong-bytes", "directory", "symlink"])
+def test_adoption_owned_rollback_refuses_nonexact_archive_evidence(tmp_path, corruption):
+    database, _settings, importer, _request, _old, _icloud, _target, adopted = _adoption_fixture(
+        tmp_path
+    )
+
+    def checkpoint(phase: str) -> None:
+        if phase != "after-adoption-archive-copy":
+            return
+        with database.session() as session:
+            audit = session.scalar(select(ExistingArtifactImportModel))
+            assert audit is not None
+            archive = Path(audit.imported_immutable_pdf_path or "")
+        if corruption == "wrong-bytes":
+            archive.write_bytes(b"wrong archive")
+        elif corruption == "directory":
+            archive.unlink()
+            archive.mkdir()
+        else:
+            outside = tmp_path / "outside-archive.pdf"
+            outside.write_bytes(archive.read_bytes())
+            archive.unlink()
+            try:
+                archive.symlink_to(outside)
+            except OSError as error:
+                pytest.skip(f"symlink support unavailable: {error}")
+        raise RuntimeError("owned post-archive failure")
+
+    importer.checkpoint = checkpoint
+    with pytest.raises(ExistingArtifactRecoveryError, match="rollback could not restore"):
+        importer.import_artifacts(adopted)
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        assert (audit.status, audit.recovery_phase) == ("preparing", "recovery_required")
+
+
+@pytest.mark.parametrize(
+    ("failure_boundary", "expected_phase"),
+    [("after-copy", "preparing"), ("after-adoption-archive-copy", "recovery_required")],
+)
+def test_adoption_process_death_after_failure_state_migrates_then_retries(
+    tmp_path, failure_boundary, expected_phase
+):
+    database, settings, importer, _request, _old, _icloud, target, adopted = _adoption_fixture(
+        tmp_path
+    )
+
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    failed = False
+
+    def checkpoint(phase: str) -> None:
+        nonlocal failed
+        if phase == failure_boundary and not failed:
+            failed = True
+            raise RuntimeError("ordinary failure")
+        if phase == "after-adoption-failure-state":
+            raise SimulatedProcessDeath("process terminated")
+
+    importer.checkpoint = checkpoint
+    with pytest.raises(SimulatedProcessDeath, match="process terminated"):
+        importer.import_artifacts(adopted)
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        assert audit.recovery_phase == expected_phase
+    fresh_database, _fresh_settings, fresh_importer = _fresh_adoption_importer(settings)
+    assert fresh_importer.import_artifacts(adopted).status == "complete"
+    assert (settings.study_root / "Neuro" / "slides.pdf").read_bytes() == target.read_bytes()
+    fresh_database.close()
+
+
+def test_adoption_first_write_process_death_migrates_then_retries(tmp_path):
+    database, settings, importer, _request, old, icloud, target, adopted = _adoption_fixture(
+        tmp_path
+    )
+
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    def checkpoint(phase: str) -> None:
+        if phase == "after-audit-commit-before-first-copy":
+            raise SimulatedProcessDeath
+
+    importer.checkpoint = checkpoint
+    with pytest.raises(SimulatedProcessDeath):
+        importer.import_artifacts(adopted)
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        audit_root = Path(audit.immutable_transcript_path or "").parent
+        assert (audit.status, audit.recovery_phase) == ("preparing", "preparing")
+        assert not audit_root.exists()
+        assert not Path(audit.imported_immutable_pdf_path or "").exists()
+    # This is a fresh startup validation, before a new importer resumes writes.
+    Database(settings.database_url).migrate()
+
+    result = ExistingArtifactImporter(database, settings).import_artifacts(adopted)
+    assert result.status == "complete"
+    assert (settings.study_root / "Neuro" / "slides.pdf").read_bytes() == target.read_bytes()
+    assert icloud.read_bytes() == target.read_bytes()
+    assert old.is_file()
+
+
+@pytest.mark.parametrize("copy_index", range(1, 5))
+def test_adoption_precursor_copy_process_death_migrates_then_retries(tmp_path, copy_index):
+    database, settings, importer, _request, old, icloud, target, adopted = _adoption_fixture(
+        tmp_path
+    )
+
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    copies = 0
+
+    def checkpoint(phase: str) -> None:
+        nonlocal copies
+        if phase == "after-copy":
+            copies += 1
+            if copies == copy_index:
+                raise SimulatedProcessDeath("process terminated")
+
+    importer.checkpoint = checkpoint
+    with pytest.raises(SimulatedProcessDeath, match="process terminated"):
+        importer.import_artifacts(adopted)
+
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        precursor_paths = (
+            Path(audit.immutable_transcript_path or ""),
+            Path(audit.immutable_outline_path or ""),
+            Path(audit.canonical_transcript_path or ""),
+            Path(audit.canonical_outline_path or ""),
+        )
+        assert (audit.status, audit.recovery_phase) == ("preparing", "preparing")
+        assert tuple(path.exists() for path in precursor_paths) == tuple(
+            index < copy_index for index in range(4)
+        )
+        expected_bytes = (
+            adopted.cleaned_transcript.read_bytes(),
+            adopted.notebooklm_outline.read_bytes(),
+            adopted.cleaned_transcript.read_bytes(),
+            adopted.notebooklm_outline.read_bytes(),
+        )
+        assert tuple(path.read_bytes() for path in precursor_paths[:copy_index]) == expected_bytes[
+            :copy_index
+        ]
+        assert not Path(audit.imported_immutable_pdf_path or "").exists()
+    assert (settings.study_root / "Neuro" / "slides.pdf").read_bytes() == old.read_bytes()
+    assert icloud.read_bytes() == old.read_bytes()
+
+    fresh_database, _fresh_settings, fresh_importer = _fresh_adoption_importer(settings)
+    assert fresh_importer.import_artifacts(adopted).status == "complete"
+    assert (settings.study_root / "Neuro" / "slides.pdf").read_bytes() == target.read_bytes()
+    assert icloud.read_bytes() == target.read_bytes()
+    fresh_database.close()
+
+
+@pytest.mark.parametrize("copy_index", range(1, 5))
+def test_adoption_precursor_copy_claim_loss_migrates_then_retries(tmp_path, copy_index):
+    database, settings, importer, _request, old, icloud, target, adopted = _adoption_fixture(
+        tmp_path
+    )
+    writes = _FencedWrites()
+    importer.writes = writes
+    copies = 0
+
+    def checkpoint(phase: str) -> None:
+        nonlocal copies
+        if phase == "after-copy":
+            copies += 1
+            if copies == copy_index:
+                writes.current.lost = True
+
+    importer.checkpoint = checkpoint
+    with pytest.raises(ArtifactWriteClaimLost, match="forced claim loss"):
+        importer.import_artifacts(adopted)
+
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        precursor_paths = (
+            Path(audit.immutable_transcript_path or ""),
+            Path(audit.immutable_outline_path or ""),
+            Path(audit.canonical_transcript_path or ""),
+            Path(audit.canonical_outline_path or ""),
+        )
+        assert (audit.owner, audit.status, audit.recovery_phase, audit.error) == (
+            "fault-owner",
+            "failed",
+            "preparing",
+            "forced claim loss",
+        )
+        assert tuple(path.exists() for path in precursor_paths) == tuple(
+            index < copy_index for index in range(4)
+        )
+        expected_bytes = (
+            adopted.cleaned_transcript.read_bytes(),
+            adopted.notebooklm_outline.read_bytes(),
+            adopted.cleaned_transcript.read_bytes(),
+            adopted.notebooklm_outline.read_bytes(),
+        )
+        assert tuple(path.read_bytes() for path in precursor_paths[:copy_index]) == expected_bytes[
+            :copy_index
+        ]
+        assert not Path(audit.imported_immutable_pdf_path or "").exists()
+    assert (settings.study_root / "Neuro" / "slides.pdf").read_bytes() == old.read_bytes()
+    assert icloud.read_bytes() == old.read_bytes()
+
+    fresh_database, _fresh_settings, fresh_importer = _fresh_adoption_importer(settings)
+    assert fresh_importer.import_artifacts(adopted).status == "complete"
+    assert (settings.study_root / "Neuro" / "slides.pdf").read_bytes() == target.read_bytes()
+    assert icloud.read_bytes() == target.read_bytes()
+    fresh_database.close()
+
+
+@pytest.mark.parametrize(
+    ("boundary", "archive_present"),
+    [
+        ("after-adoption-archive_copying", False),
+        ("after-adoption-archive-copy", True),
+    ],
+)
+def test_adoption_archive_copying_process_death_migrates_then_retries(
+    tmp_path, boundary, archive_present
+):
+    database, settings, importer, _request, old, icloud, target, adopted = _adoption_fixture(
+        tmp_path
+    )
+
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    importer.checkpoint = lambda phase: (
+        (_ for _ in ()).throw(SimulatedProcessDeath("process terminated"))
+        if phase == boundary
+        else None
+    )
+    with pytest.raises(SimulatedProcessDeath, match="process terminated"):
+        importer.import_artifacts(adopted)
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        precursors = (
+            Path(audit.immutable_transcript_path or ""),
+            Path(audit.immutable_outline_path or ""),
+            Path(audit.canonical_transcript_path or ""),
+            Path(audit.canonical_outline_path or ""),
+        )
+        assert (audit.status, audit.recovery_phase) == ("preparing", "archive_copying")
+        assert all(path.is_file() for path in precursors)
+        assert Path(audit.imported_immutable_pdf_path or "").is_file() is archive_present
+    assert (settings.study_root / "Neuro" / "slides.pdf").read_bytes() == old.read_bytes()
+    assert icloud.read_bytes() == old.read_bytes()
+    fresh_database, _fresh_settings, fresh_importer = _fresh_adoption_importer(settings)
+    assert fresh_importer.import_artifacts(adopted).status == "complete"
+    assert (settings.study_root / "Neuro" / "slides.pdf").read_bytes() == target.read_bytes()
+    fresh_database.close()
+
+
+@pytest.mark.parametrize(
+    ("boundary", "archive_present"),
+    [
+        ("after-adoption-archive_copying", False),
+        ("after-adoption-archive-copy", True),
+    ],
+)
+def test_adoption_archive_copying_claim_loss_migrates_then_retries(
+    tmp_path, boundary, archive_present
+):
+    database, settings, importer, _request, old, icloud, target, adopted = _adoption_fixture(
+        tmp_path
+    )
+    writes = _FencedWrites()
+    importer.writes = writes
+
+    def checkpoint(phase: str) -> None:
+        if phase == boundary:
+            writes.current.lost = True
+
+    importer.checkpoint = checkpoint
+    with pytest.raises(ArtifactWriteClaimLost, match="forced claim loss"):
+        importer.import_artifacts(adopted)
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        assert (audit.status, audit.recovery_phase, audit.error) == (
+            "failed",
+            "archive_copying",
+            "forced claim loss",
+        )
+        assert Path(audit.imported_immutable_pdf_path or "").is_file() is archive_present
+    assert (settings.study_root / "Neuro" / "slides.pdf").read_bytes() == old.read_bytes()
+    assert icloud.read_bytes() == old.read_bytes()
+    fresh_database, _fresh_settings, fresh_importer = _fresh_adoption_importer(settings)
+    assert fresh_importer.import_artifacts(adopted).status == "complete"
+    assert (settings.study_root / "Neuro" / "slides.pdf").read_bytes() == target.read_bytes()
+    fresh_database.close()
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "preparing-archive",
+        "missing-precursor",
+        "wrong-archive",
+        "wrong-mutable",
+    ],
+)
+def test_adoption_archive_copying_runtime_corruption_rejects_before_retry(tmp_path, corruption):
+    database, settings, importer, _request, _old, _icloud, _target, adopted = _adoption_fixture(
+        tmp_path
+    )
+
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    boundary = (
+        "after-adoption-archive-copy"
+        if corruption == "preparing-archive"
+        else "after-adoption-archive_copying"
+    )
+    importer.checkpoint = lambda phase: (
+        (_ for _ in ()).throw(SimulatedProcessDeath("process terminated"))
+        if phase == boundary
+        else None
+    )
+    with pytest.raises(SimulatedProcessDeath, match="process terminated"):
+        importer.import_artifacts(adopted)
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        if corruption == "preparing-archive":
+            audit.recovery_phase = "preparing"
+        elif corruption == "missing-precursor":
+            Path(audit.canonical_outline_path or "").unlink()
+        elif corruption == "wrong-archive":
+            Path(audit.imported_immutable_pdf_path or "").write_bytes(b"wrong archive")
+        else:
+            (settings.study_root / "Neuro" / "slides.pdf").write_bytes(b"third state")
+    before = _import_state(database, settings)
+    importer.checkpoint = lambda _phase: None
+    with pytest.raises(ExistingArtifactImportError):
+        importer.import_artifacts(adopted)
+    assert _import_state(database, settings) == before
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "after-adoption-archive",
+        "after-adoption-canonical_promoted",
+        "after-adoption-icloud_promoted",
+        "after-adoption-precommit",
+    ],
+)
+def test_adoption_claim_loss_manual_old_state_respects_durable_phase(tmp_path, boundary):
+    (database, settings, importer, request, old, icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    writes = _FencedWrites()
+    importer.writes = writes
+    canonical = settings.study_root / "Neuro" / "slides.pdf"
+
+    def checkpoint(phase: str) -> None:
+        if phase != boundary:
+            return
+        canonical.write_bytes(b"successor canonical")
+        icloud.write_bytes(b"successor icloud")
+        writes.current.lost = True
+
+    importer.checkpoint = checkpoint
+    with pytest.raises(ArtifactWriteClaimLost, match="forced claim loss"):
+        importer.import_artifacts(adopted)
+    assert canonical.read_bytes() == b"successor canonical"
+    assert icloud.read_bytes() == b"successor icloud"
+    assert old.is_file()
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        assert audit.status == "failed"
+        assert audit.error == "forced claim loss"
+        assert Path(audit.imported_immutable_pdf_path or "").is_file()
+    # Only the archived phase admits a return to old/old.  Later durable
+    # phases reject a manually forced third state rather than normalizing it.
+    canonical.write_bytes(old.read_bytes())
+    icloud.write_bytes(old.read_bytes())
+    importer.writes = ArtifactWriteCoordinator(database, settings)
+    importer.checkpoint = lambda _phase: None
+    if boundary == "after-adoption-archive":
+        assert importer.import_artifacts(adopted).status == "complete"
+    else:
+        before = _import_state(database, settings)
+        with pytest.raises(ExistingArtifactImportError, match="mutable PDF state is not resumable"):
+            importer.import_artifacts(adopted)
+        assert _import_state(database, settings) == before
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "after-adoption-archive",
+        "after-adoption-canonical_promoted",
+        "after-adoption-icloud_promoted",
+        "after-adoption-precommit",
+    ],
+)
+def test_adoption_claim_loss_boundary_retries_without_manual_file_repair(tmp_path, boundary):
+    (database, settings, importer, _request, old, icloud, target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    writes = _FencedWrites()
+    importer.writes = writes
+
+    def checkpoint(phase: str) -> None:
+        if phase == boundary:
+            writes.current.lost = True
+
+    importer.checkpoint = checkpoint
+    with pytest.raises(ArtifactWriteClaimLost, match="forced claim loss"):
+        importer.import_artifacts(adopted)
+    importer.writes = ArtifactWriteCoordinator(database, settings)
+    importer.checkpoint = lambda _phase: None
+    result = importer.import_artifacts(adopted)
+    assert result.status == "complete"
+    canonical = settings.study_root / "Neuro" / "slides.pdf"
+    assert canonical.read_bytes() == target.read_bytes()
+    assert icloud.read_bytes() == target.read_bytes()
+    assert old.read_bytes() != target.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "boundary,expected_state",
+    [
+        ("after-adoption-canonical_promoted-copy", ("target", "old")),
+        ("after-adoption-icloud_promoted-copy", ("target", "target")),
+    ],
+)
+def test_adoption_claim_loss_immediately_after_mutable_copy_retries_from_adjacent_state(
+    tmp_path, boundary, expected_state
+):
+    """A lost writer may leave only the copy's adjacent durable phase behind."""
+    (database, settings, importer, _request, old, icloud, target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    writes = _FencedWrites()
+    importer.writes = writes
+
+    def checkpoint(phase: str) -> None:
+        if phase == boundary:
+            writes.current.lost = True
+
+    importer.checkpoint = checkpoint
+    with pytest.raises(ArtifactWriteClaimLost, match="forced claim loss"):
+        importer.import_artifacts(adopted)
+
+    canonical = settings.study_root / "Neuro" / "slides.pdf"
+    expected_bytes = {"old": old.read_bytes(), "target": target.read_bytes()}
+    assert (canonical.read_bytes(), icloud.read_bytes()) == tuple(
+        expected_bytes[state] for state in expected_state
+    )
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        assert audit.status == "failed"
+        assert audit.recovery_phase == (
+            "archived" if boundary.startswith("after-adoption-canonical") else "canonical_promoted"
+        )
+
+    # A new owner resumes the exact adjacent state without any operator repair.
+    importer.writes = ArtifactWriteCoordinator(database, settings)
+    importer.checkpoint = lambda _phase: None
+    assert importer.import_artifacts(adopted).status == "complete"
+
+
+def _fresh_adoption_importer(
+    settings: Settings,
+) -> tuple[Database, Settings, ExistingArtifactImporter]:
+    """Open the same persistent store exactly as a replacement process would."""
+    fresh_settings = Settings(
+        _env_file=None,
+        data_dir=settings.data_dir,
+        database_url=settings.database_url,
+        study_root=settings.study_root,
+        icloud_staging_root=settings.icloud_staging_root,
+    )
+    fresh_database = Database(fresh_settings.database_url)
+    fresh_database.migrate()
+    return (
+        fresh_database,
+        fresh_settings,
+        ExistingArtifactImporter(fresh_database, fresh_settings),
+    )
+
+
+def _resume_phase_fixture(tmp_path, phase: str, pair: tuple[str, str], archive: bool):
+    """Create a real incomplete adoption, then arrange one accepted durable state."""
+    database, settings, importer, _request, old, icloud, target, adopted = _adoption_fixture(
+        tmp_path
+    )
+
+    class ProcessDeath(BaseException):
+        pass
+
+    importer.checkpoint = lambda name: (
+        (_ for _ in ()).throw(ProcessDeath())
+        if name == "after-adoption-archive-copy"
+        else None
+    )
+    with pytest.raises(ProcessDeath):
+        importer.import_artifacts(adopted)
+    canonical = settings.study_root / "Neuro" / "slides.pdf"
+    payloads = {"old": old.read_bytes(), "target": target.read_bytes()}
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        audit.status = "preparing"
+        audit.recovery_phase = phase
+        Path(audit.imported_immutable_pdf_path or "").unlink(missing_ok=not archive)
+        if archive:
+            Path(audit.imported_immutable_pdf_path or "").write_bytes(target.read_bytes())
+    canonical.write_bytes(payloads[pair[0]])
+    icloud.write_bytes(payloads[pair[1]])
+    return database, settings, importer, canonical, icloud, adopted
+
+
+_RESUME_PHASES = [
+    ("archive_copying", ("old", "old"), False, "after-adoption-archive-copy"),
+    ("archive_copying", ("old", "old"), True, "after-adoption-archive-copy"),
+    ("archived", ("old", "old"), True, "after-adoption-canonical_promoted-copy"),
+    ("archived", ("target", "old"), True, "after-adoption-canonical_promoted-copy"),
+    ("canonical_promoted", ("target", "old"), True, "after-adoption-icloud_promoted-copy"),
+    ("canonical_promoted", ("target", "target"), True, "after-adoption-icloud_promoted-copy"),
+    ("icloud_promoted", ("target", "target"), True, "after-adoption-precommit"),
+    ("precommit", ("target", "target"), True, "after-adoption-precommit"),
+    ("recovery_required", ("old", "old"), True, "after-adoption-canonical_promoted-copy"),
+    ("recovery_required", ("target", "old"), True, "after-adoption-icloud_promoted-copy"),
+    ("recovery_required", ("old", "target"), True, "after-adoption-precommit"),
+    ("recovery_required", ("target", "target"), True, "after-adoption-precommit"),
+]
+
+
+@pytest.mark.parametrize(("phase", "pair", "archive", "boundary"), _RESUME_PHASES)
+def test_adoption_resume_phase_second_process_death_migrates_then_completes(
+    tmp_path, phase, pair, archive, boundary
+):
+    database, settings, importer, _canonical, _icloud, adopted = _resume_phase_fixture(
+        tmp_path, phase, pair, archive
+    )
+
+    class ProcessDeath(BaseException):
+        pass
+
+    importer.checkpoint = lambda name: (
+        (_ for _ in ()).throw(ProcessDeath()) if name == boundary else None
+    )
+    with pytest.raises(ProcessDeath):
+        importer.import_artifacts(adopted)
+    fresh_database, _fresh_settings, fresh_importer = _fresh_adoption_importer(settings)
+    assert fresh_importer.import_artifacts(adopted).status == "complete"
+    fresh_database.close()
+
+
+@pytest.mark.parametrize(("phase", "pair", "archive", "boundary"), _RESUME_PHASES)
+def test_adoption_resume_phase_claim_loss_migrates_then_completes(
+    tmp_path, phase, pair, archive, boundary
+):
+    database, settings, importer, _canonical, _icloud, adopted = _resume_phase_fixture(
+        tmp_path, phase, pair, archive
+    )
+    writes = _FencedWrites()
+    importer.writes = writes
+
+    def checkpoint(name: str) -> None:
+        if name == boundary:
+            writes.current.lost = True
+
+    importer.checkpoint = checkpoint
+    with pytest.raises(ArtifactWriteClaimLost):
+        importer.import_artifacts(adopted)
+    fresh_database, _fresh_settings, fresh_importer = _fresh_adoption_importer(settings)
+    assert fresh_importer.import_artifacts(adopted).status == "complete"
+    fresh_database.close()
+
+
+@pytest.mark.parametrize(
+    "boundary,expected_phase",
+    [
+        ("after-adoption-canonical_promoted-copy", "archived"),
+        ("after-adoption-icloud_promoted-copy", "canonical_promoted"),
+    ],
+)
+def test_adoption_process_death_after_mutable_copy_migrates_and_retries(
+    tmp_path, boundary, expected_phase
+):
+    (database, settings, importer, _request, old, icloud, target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    def checkpoint(phase: str) -> None:
+        if phase == boundary:
+            raise SimulatedProcessDeath("process terminated")
+
+    importer.checkpoint = checkpoint
+    with pytest.raises(SimulatedProcessDeath, match="process terminated"):
+        importer.import_artifacts(adopted)
+
+    canonical = settings.study_root / "Neuro" / "slides.pdf"
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        assert (audit.status, audit.recovery_phase) == ("preparing", expected_phase)
+    expected = (
+        (target.read_bytes(), old.read_bytes())
+        if expected_phase == "archived"
+        else (target.read_bytes(), target.read_bytes())
+    )
+    assert (canonical.read_bytes(), icloud.read_bytes()) == expected
+
+    fresh_database, _fresh_settings, fresh_importer = _fresh_adoption_importer(settings)
+    assert fresh_importer.import_artifacts(adopted).status == "complete"
+    fresh_database.close()
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "after-adoption-canonical_promoted-copy",
+        "after-adoption-icloud_promoted-copy",
+    ],
+)
+def test_adoption_claim_loss_after_mutable_copy_migrates_and_retries(tmp_path, boundary):
+    (_database, settings, importer, _request, _old, _icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    writes = _FencedWrites()
+    importer.writes = writes
+
+    def checkpoint(phase: str) -> None:
+        if phase == boundary:
+            writes.current.lost = True
+
+    importer.checkpoint = checkpoint
+    with pytest.raises(ArtifactWriteClaimLost, match="forced claim loss"):
+        importer.import_artifacts(adopted)
+
+    fresh_database, _fresh_settings, fresh_importer = _fresh_adoption_importer(settings)
+    assert fresh_importer.import_artifacts(adopted).status == "complete"
+    fresh_database.close()
+
+
+@pytest.mark.parametrize(
+    "boundary,successor_path",
+    [
+        ("after-adoption-canonical_promoted-copy", "canonical"),
+        ("after-adoption-icloud_promoted-copy", "icloud"),
+    ],
+)
+def test_lost_adoption_owner_never_cleans_successor_bytes_after_mutable_copy(
+    tmp_path, boundary, successor_path
+):
+    (database, settings, importer, _request, old, icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    writes = _FencedWrites()
+    importer.writes = writes
+    canonical = settings.study_root / "Neuro" / "slides.pdf"
+    successor = canonical if successor_path == "canonical" else icloud
+
+    def checkpoint(phase: str) -> None:
+        if phase == boundary:
+            successor.write_bytes(b"successor bytes")
+            writes.current.lost = True
+
+    importer.checkpoint = checkpoint
+    with pytest.raises(ArtifactWriteClaimLost, match="forced claim loss"):
+        importer.import_artifacts(adopted)
+    assert successor.read_bytes() == b"successor bytes"
+    # Third bytes are never treated as an operator-repairable retry state.
+    importer.writes = ArtifactWriteCoordinator(database, settings)
+    importer.checkpoint = lambda _phase: None
+    with pytest.raises(ExistingArtifactImportError, match="not resumable"):
+        importer.import_artifacts(adopted)
+    assert successor.read_bytes() == b"successor bytes"
+    assert old.is_file()
+
+
+@pytest.mark.parametrize(
+    "canonical_target,icloud_target",
+    [(False, False), (True, False), (False, True), (True, True)],
+)
+def test_adoption_recovery_required_accepts_exact_old_target_pairs(
+    tmp_path, canonical_target, icloud_target
+):
+    (database, settings, importer, _request, old, icloud, target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    importer.checkpoint = lambda phase: (
+        (_ for _ in ()).throw(RuntimeError("force recovery"))
+        if phase == "after-adoption-archive"
+        else None
+    )
+    with pytest.raises(RuntimeError, match="force recovery"):
+        importer.import_artifacts(adopted)
+    canonical = settings.study_root / "Neuro" / "slides.pdf"
+    canonical.write_bytes(target.read_bytes() if canonical_target else old.read_bytes())
+    icloud.write_bytes(target.read_bytes() if icloud_target else old.read_bytes())
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        audit.status = "preparing"
+        audit.recovery_phase = "recovery_required"
+    importer.checkpoint = lambda _phase: None
+    assert importer.import_artifacts(adopted).status == "complete"
+
+
+def test_adoption_recovery_required_rejects_third_state_before_owner_mutation(tmp_path):
+    (database, settings, importer, _request, old, icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    importer.checkpoint = lambda phase: (
+        (_ for _ in ()).throw(RuntimeError("force recovery"))
+        if phase == "after-adoption-archive"
+        else None
+    )
+    with pytest.raises(RuntimeError, match="force recovery"):
+        importer.import_artifacts(adopted)
+    canonical = settings.study_root / "Neuro" / "slides.pdf"
+    canonical.write_bytes(b"third canonical state")
+    icloud.write_bytes(old.read_bytes())
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        audit.status = "preparing"
+        audit.recovery_phase = "recovery_required"
+        before = (audit.owner, audit.status, audit.recovery_phase, audit.error)
+    with pytest.raises(ExistingArtifactImportError, match="not resumable"):
+        importer.import_artifacts(adopted)
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        assert (audit.owner, audit.status, audit.recovery_phase, audit.error) == before
+    assert canonical.read_bytes() == b"third canonical state"
+
+
+def test_adoption_rollback_failure_retains_recovery_evidence(tmp_path, monkeypatch):
+    (database, settings, importer, request, old, _icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    canonical = settings.study_root / "Neuro" / "slides.pdf"
+    original = importer._replace_exact
+
+    def replacement(claim, source, destination, digest):
+        if source == old and destination == canonical:
+            raise OSError("rollback destination unavailable")
+        return original(claim, source, destination, digest)
+
+    monkeypatch.setattr(importer, "_replace_exact", replacement)
+    importer.checkpoint = lambda phase: (
+        (_ for _ in ()).throw(RuntimeError("force rollback"))
+        if phase == "after-adoption-canonical_promoted"
+        else None
+    )
+    with pytest.raises(ExistingArtifactRecoveryError, match="rollback could not restore"):
+        importer.import_artifacts(adopted)
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        assert audit.status == "preparing"
+        assert audit.recovery_phase == "recovery_required"
+        assert Path(audit.previous_immutable_pdf_path or "").is_file()
+        assert Path(audit.imported_immutable_pdf_path or "").is_file()
+
+
+@pytest.mark.parametrize(
+    "consumer",
+    [
+        "completed-import",
+        "generated-outline",
+        "imported-outline",
+        "generation-job",
+        "anki-pin",
+        "anki-malformed",
+    ],
+)
+def test_adoption_consumers_reject_before_audit_or_file_mutation(tmp_path, consumer):
+    (database, settings, importer, request, old, _icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    with database.session() as session:
+        if consumer == "completed-import":
+            session.add(
+                ExistingArtifactImportModel(
+                    id=str(uuid4()),
+                    bundle_sha256="f" * 64,
+                    lecture_id=request.lecture_id,
+                    slide_revision_id=request.slides_revision_id,
+                    transcript_sha256="a" * 64,
+                    outline_sha256="b" * 64,
+                    status="complete",
+                )
+            )
+        elif consumer in {"generated-outline", "imported-outline"}:
+            session.add(
+                OutlineOutputModel(
+                    lecture_id=request.lecture_id,
+                    path=str(tmp_path / f"{consumer}.pdf"),
+                    sha256="c" * 64,
+                    current=False,
+                    provenance_kind=(
+                        "imported_notebooklm"
+                        if consumer == "imported-outline"
+                        else "notebooklm_generated"
+                    ),
+                    slide_revision_id=request.slides_revision_id,
+                    slide_sha256=_sha256(old),
+                    slide_source_sha256=request.slides_source_sha256,
+                )
+            )
+        elif consumer == "generation-job":
+            session.add(
+                GenerationJobModel(
+                    id=str(uuid4()),
+                    lecture_id=request.lecture_id,
+                    kind="outline",
+                    pdf_revision_id=request.slides_revision_id,
+                )
+            )
+        else:
+            session.add(
+                AnkiCurationJobModel(
+                    id=str(uuid4()),
+                    lecture_id=request.lecture_id,
+                    target_deck="deck",
+                    target_tag="tag",
+                    index_snapshot_id="snapshot",
+                    source_revision_ids_json=(
+                        "not-json"
+                        if consumer == "anki-malformed"
+                        else json.dumps([request.slides_revision_id])
+                    ),
+                    instruction_sha256="d" * 64,
+                    lcl_prompt_version="lcl",
+                    judgment_rubric_version="judgment",
+                    gap_prompt_version="gap",
+                )
+            )
+    before = _import_state(database, settings)
+    with pytest.raises(ExistingArtifactImportError):
+        importer.import_artifacts(adopted)
+    assert _import_state(database, settings) == before
+
+
+@pytest.mark.parametrize(
+    "source_pins",
+    [
+        '{"revision": 1}',
+        '"not-a-list"',
+        "1",
+        "true",
+        '["1"]',
+        "[true]",
+        "[0]",
+        "[-1]",
+        "[7, 7]",
+    ],
+)
+def test_adoption_rejects_structurally_malformed_anki_source_pins_before_mutation(
+    tmp_path, source_pins
+):
+    (database, settings, importer, request, _old, _icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    with database.session() as session:
+        session.add(
+            AnkiCurationJobModel(
+                id=str(uuid4()),
+                lecture_id=request.lecture_id,
+                target_deck="deck",
+                target_tag="tag",
+                index_snapshot_id="snapshot",
+                source_revision_ids_json=source_pins,
+                instruction_sha256="d" * 64,
+                lcl_prompt_version="lcl",
+                judgment_rubric_version="judgment",
+                gap_prompt_version="gap",
+            )
+        )
+    before = _import_state(database, settings)
+    with pytest.raises(ExistingArtifactImportError, match="Anki source pin is malformed"):
+        importer.import_artifacts(adopted)
+    assert _import_state(database, settings) == before
+
+
+def test_adoption_rejects_anki_pin_of_the_current_slide_before_mutation(tmp_path):
+    (database, settings, importer, request, _old, _icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    with database.session() as session:
+        session.add(
+            AnkiCurationJobModel(
+                id=str(uuid4()),
+                lecture_id=request.lecture_id,
+                target_deck="deck",
+                target_tag="tag",
+                index_snapshot_id="snapshot",
+                source_revision_ids_json=json.dumps([request.slides_revision_id]),
+                instruction_sha256="d" * 64,
+                lcl_prompt_version="lcl",
+                judgment_rubric_version="judgment",
+                gap_prompt_version="gap",
+            )
+        )
+    before = _import_state(database, settings)
+    with pytest.raises(ExistingArtifactImportError, match="already consumed"):
+        importer.import_artifacts(adopted)
+    assert _import_state(database, settings) == before
+
+
+def test_adoption_exact_completed_bundle_is_idempotent_after_downstream_consumer(tmp_path):
+    (database, settings, importer, request, _old, _icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    importer.import_artifacts(adopted)
+    with database.session() as session:
+        session.add(
+            GenerationJobModel(
+                id=str(uuid4()),
+                lecture_id=request.lecture_id,
+                kind="outline",
+                pdf_revision_id=request.slides_revision_id,
+            )
+        )
+    before = _import_state(database, settings)
+    retried = importer.import_artifacts(adopted)
+    assert retried.idempotent is True
+    assert _import_state(database, settings) == before
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("immutable_transcript_path", "same-audit-transcript.txt"),
+        ("immutable_outline_path", "nested/outline.pdf"),
+    ],
+)
+def test_completed_adoption_idempotency_rejects_same_byte_repointed_audit_evidence(
+    tmp_path, field, replacement
+):
+    (database, _settings, importer, _request, _old, _icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    result = importer.import_artifacts(adopted)
+    with database.session() as session:
+        audit = session.get(ExistingArtifactImportModel, result.import_id)
+        assert audit is not None
+        original = Path(getattr(audit, field) or "")
+        repointed = original.parent / replacement
+        repointed.parent.mkdir(parents=True, exist_ok=True)
+        repointed.write_bytes(original.read_bytes())
+        setattr(audit, field, str(repointed))
+    before = _import_state(database, importer.settings)
+
+    with pytest.raises(ExistingArtifactImportError, match="exact current artifact identity"):
+        importer.import_artifacts(adopted)
+
+    assert _import_state(database, importer.settings) == before
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        "old-office-pdf",
+        "imported-pdf",
+        "pptx-immutable",
+        "pptx-canonical",
+        "pdf-canonical",
+        "pdf-icloud",
+        "transcript-immutable",
+        "transcript-canonical",
+        "outline-immutable",
+        "outline-canonical",
+    ],
+)
+@pytest.mark.parametrize("operation", ["delete", "tamper", "same-byte-symlink", "ancestor-symlink"])
+def test_completed_adoption_idempotency_rejects_each_required_file(
+    tmp_path, artifact, operation
+):
+    (database, settings, importer, request, _old, icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    result = importer.import_artifacts(adopted)
+    with database.session() as session:
+        audit = session.get(ExistingArtifactImportModel, result.import_id)
+        slide = session.get(StudyRevisionModel, request.slides_revision_id)
+        assert audit is not None and slide is not None
+        paths = {
+            "old-office-pdf": Path(audit.previous_immutable_pdf_path or ""),
+            "imported-pdf": Path(audit.imported_immutable_pdf_path or ""),
+            "pptx-immutable": Path(slide.immutable_source_path),
+            "pptx-canonical": Path(slide.canonical_source_path or ""),
+            "pdf-canonical": Path(slide.canonical_derived_path or ""),
+            "pdf-icloud": icloud,
+            "transcript-immutable": Path(audit.immutable_transcript_path or ""),
+            "transcript-canonical": Path(audit.canonical_transcript_path or ""),
+            "outline-immutable": Path(audit.immutable_outline_path or ""),
+            "outline-canonical": Path(audit.canonical_outline_path or ""),
+        }
+    path = paths[artifact]
+    if operation == "delete":
+        path.unlink()
+    elif operation == "tamper":
+        path.write_bytes(b"tampered")
+    else:
+        try:
+            if operation == "same-byte-symlink":
+                moved = tmp_path / f"{artifact}-same-bytes{path.suffix}"
+                path.rename(moved)
+                path.symlink_to(moved)
+            else:
+                moved = tmp_path / f"{artifact}-parent"
+                path.parent.rename(moved)
+                path.parent.symlink_to(moved, target_is_directory=True)
+        except OSError as error:
+            pytest.skip(f"symlink support unavailable: {error}")
+    before = _import_state(database, settings)
+    with pytest.raises(ExistingArtifactImportError):
+        importer.import_artifacts(adopted)
+    assert _import_state(database, settings) == before
+
+
+def _failed_adoption_for_retry(tmp_path):
+    (database, settings, importer, request, old, icloud, target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    importer.checkpoint = lambda phase: (
+        (_ for _ in ()).throw(RuntimeError("interrupted"))
+        if phase == "after-adoption-archive"
+        else None
+    )
+    with pytest.raises(RuntimeError, match="interrupted"):
+        importer.import_artifacts(adopted)
+    importer.checkpoint = lambda _phase: None
+    return database, settings, importer, request, old, icloud, target, adopted
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "imported-path",
+        "previous-path",
+        "operator",
+        "reason",
+        "confirmation",
+        "phase",
+        "status",
+    ],
+)
+def test_hostile_adoption_retry_metadata_rejects_before_mutation(tmp_path, tamper):
+    (database, settings, importer, request, old, _icloud, _target, adopted) = (
+        _failed_adoption_for_retry(tmp_path)
+    )
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        if tamper == "imported-path":
+            audit.imported_immutable_pdf_path = str(tmp_path / "escape.pdf")
+        elif tamper == "previous-path":
+            audit.previous_immutable_pdf_path = str(tmp_path / "other.pdf")
+        elif tamper == "operator":
+            audit.adoption_operator = "other"
+        elif tamper == "reason":
+            audit.adoption_reason = "other"
+        elif tamper == "confirmation":
+            audit.adoption_confirmed_at = ""
+        elif tamper == "phase":
+            audit.recovery_phase = "committed"
+        else:
+            audit.status = "complete"
+    before = _import_state(database, settings)
+    with pytest.raises(ExistingArtifactImportError):
+        importer.import_artifacts(adopted)
+    assert _import_state(database, settings) == before
+
+
+@pytest.mark.parametrize("destination", ["canonical", "icloud"])
+def test_hostile_adoption_retry_third_state_bytes_reject_before_mutation(tmp_path, destination):
+    (database, settings, importer, request, old, icloud, _target, adopted) = (
+        _failed_adoption_for_retry(tmp_path)
+    )
+    path = settings.study_root / "Neuro" / "slides.pdf" if destination == "canonical" else icloud
+    path.write_bytes(b"third state")
+    before = _import_state(database, settings)
+    with pytest.raises(ExistingArtifactImportError):
+        importer.import_artifacts(adopted)
+    assert _import_state(database, settings) == before
+
+
+def test_adoption_real_same_lecture_claim_contention_has_no_mutation(tmp_path):
+    (database, settings, importer, request, _old, _icloud, _target, adopted) = _adoption_fixture(
+        tmp_path
+    )
+    before = _import_state(database, settings)
+    with ArtifactWriteCoordinator(database, settings).claim(request.lecture_id, "holder"):
+        with pytest.raises(ArtifactWriteContended):
+            importer.import_artifacts(adopted)
+    assert _import_state(database, settings) == before
+
+
+@pytest.mark.parametrize("status", ["failed", "preparing"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "audit-id",
+        "slide-source",
+        "transcript-filename",
+        "transcript-hash",
+        "outline-filename",
+        "outline-hash",
+    ],
+)
+def test_hostile_adoption_retry_identity_changes_reject_before_mutation(tmp_path, status, change):
+    (database, settings, importer, request, old, _icloud, _target, adopted) = (
+        _failed_adoption_for_retry(tmp_path)
+    )
+    changed = adopted
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        audit.status = status
+        if change == "audit-id":
+            audit.id = "not-a-canonical-uuid"
+        elif change == "slide-source":
+            changed = replace(adopted, slides_source_sha256="e" * 64)
+        elif change == "transcript-filename":
+            renamed = tmp_path / "renamed.txt"
+            renamed.write_bytes(adopted.cleaned_transcript.read_bytes())
+            changed = replace(adopted, cleaned_transcript=renamed)
+        elif change == "transcript-hash":
+            changed = replace(adopted, cleaned_transcript_sha256="e" * 64)
+        elif change == "outline-filename":
+            renamed = tmp_path / "renamed.pdf"
+            renamed.write_bytes(adopted.notebooklm_outline.read_bytes())
+            changed = replace(adopted, notebooklm_outline=renamed)
+        else:
+            changed = replace(adopted, notebooklm_outline_sha256="e" * 64)
+    before = _import_state(database, settings)
+    with pytest.raises(ExistingArtifactImportError):
+        importer.import_artifacts(changed)
+    assert _import_state(database, settings) == before
+
+
+@pytest.mark.parametrize("symlink_kind", ["root", "audit", "destination"])
+def test_hostile_adoption_retry_symlink_paths_reject_before_mutation(tmp_path, symlink_kind):
+    (database, settings, importer, request, _old, _icloud, _target, adopted) = (
+        _failed_adoption_for_retry(tmp_path)
+    )
+    root = settings.data_dir / "artifacts" / "existing-imports"
+    with database.session() as session:
+        audit = session.scalar(select(ExistingArtifactImportModel))
+        assert audit is not None
+        audit_dir = root / audit.id
+    try:
+        if symlink_kind == "root":
+            moved = tmp_path / "imports-real"
+            root.rename(moved)
+            root.symlink_to(moved, target_is_directory=True)
+        elif symlink_kind == "audit":
+            moved = tmp_path / "audit-real"
+            audit_dir.rename(moved)
+            audit_dir.symlink_to(moved, target_is_directory=True)
+        else:
+            destination = audit_dir / "derived-slide.pdf"
+            moved = tmp_path / "derived-real.pdf"
+            destination.rename(moved)
+            destination.symlink_to(moved)
+    except OSError as error:
+        pytest.skip(f"symlink support unavailable: {error}")
+    before = _import_state(database, settings)
+    with pytest.raises(ExistingArtifactImportError):
+        importer.import_artifacts(adopted)
+    assert _import_state(database, settings) == before
+
+
+def test_real_artifact_claim_is_independent_for_distinct_lectures(tmp_path):
+    (database, settings, importer, request, _old, _icloud, _target, _adopted) = _adoption_fixture(
+        tmp_path
+    )
+    second = CatalogRepository(database).upsert_lecture(
+        LectureInput("Neuro", 1, 25, "Other", "", None)
+    )
+    with importer.writes.claim(request.lecture_id, "first"):
+        with importer.writes.claim(second, "second") as second_claim:
+            second_claim.assert_owned()

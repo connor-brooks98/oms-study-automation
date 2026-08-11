@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.engine import CursorResult
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from oms_hub.db import Database
 from oms_hub.files.atomic import sha256_file
+from oms_hub.files.trusted_paths import is_indirection, trusted_managed_path
 from oms_hub.ingestion.domain import (
     IngestionJob,
     MatchDecision,
@@ -22,7 +23,9 @@ from oms_hub.ingestion.domain import (
     UploadState,
 )
 from oms_hub.models import (
+    ExistingArtifactImportModel,
     IngestionJobModel,
+    OutlineOutputModel,
     StudyRevisionModel,
     StudyUsageModel,
     UploadBatchModel,
@@ -65,8 +68,218 @@ def _immutable_derived_matches(revision: StudyRevisionModel) -> bool:
 
 
 class IngestionRepository:
-    def __init__(self, database: Database):
+    def __init__(
+        self,
+        database: Database,
+        *,
+        artifact_v2_root: Path | None = None,
+        study_root: Path | None = None,
+        icloud_root: Path | None = None,
+    ):
         self.database = database
+        self.artifact_v2_root = artifact_v2_root
+        self.study_root = study_root
+        self.icloud_root = icloud_root
+
+    def imported_derived_audit_matches(
+        self,
+        revision: StudyRevision,
+        *,
+        allow_repair_destinations: bool = False,
+    ) -> bool:
+        """Return whether a slide replacement still has its complete audit graph.
+
+        Slide repair alone may tolerate a damaged mutable PDF destination; it is
+        the operation that restores those exact bytes.  All immutable evidence
+        and all persisted graph identities remain mandatory.
+        """
+        if revision.provenance_kind != "imported_derived" or revision.import_id is None:
+            return False
+        if (
+            revision.kind is not UploadKind.SLIDES
+            or revision.derived_sha256 is None
+            or revision.immutable_derived_path is None
+            or revision.canonical_source_path is None
+            or revision.canonical_derived_path is None
+            or revision.icloud_path is None
+        ):
+            return False
+        with self.database.session() as session:
+            audit = session.get(ExistingArtifactImportModel, revision.import_id)
+            model = session.get(StudyRevisionModel, revision.id)
+            transcript = (
+                session.get(StudyRevisionModel, audit.transcript_revision_id)
+                if audit is not None and audit.transcript_revision_id is not None
+                else None
+            )
+            outline = (
+                session.get(OutlineOutputModel, audit.outline_id)
+                if audit is not None and audit.outline_id is not None
+                else None
+            )
+            valid = (
+                audit is not None
+                and model is not None
+                and audit.status == "complete"
+                and audit.recovery_phase == "committed"
+                and audit.slide_revision_id == revision.id
+                and audit.slide_source_sha256 == revision.source_sha256
+                and audit.slide_pdf_sha256 == revision.derived_sha256
+                and audit.expected_current_pdf_sha256 is not None
+                and audit.previous_pdf_sha256 == audit.expected_current_pdf_sha256
+                and audit.previous_immutable_pdf_path is not None
+                and audit.imported_pdf_sha256 == revision.derived_sha256
+                and audit.imported_immutable_pdf_path == str(revision.immutable_derived_path)
+                and audit.derived_provenance == "imported_derived"
+                and model.current
+                and model.kind == UploadKind.SLIDES.value
+                and model.source_sha256 == audit.slide_source_sha256
+                and model.derived_sha256 == audit.imported_pdf_sha256
+                and model.immutable_derived_path == audit.imported_immutable_pdf_path
+                and model.canonical_derived_path == str(revision.canonical_derived_path)
+                and model.icloud_path == str(revision.icloud_path)
+                and model.provenance_kind == "imported_derived"
+                and model.import_id == audit.id
+                and transcript is not None
+                and transcript.current
+                and transcript.kind == UploadKind.TRANSCRIPTS.value
+                and transcript.provenance_kind == "imported_cleaned"
+                and transcript.import_id == audit.id
+                and transcript.source_sha256 == audit.transcript_sha256
+                and transcript.derived_sha256 == audit.transcript_sha256
+                and transcript.immutable_source_path == audit.immutable_transcript_path
+                and transcript.immutable_derived_path == audit.immutable_transcript_path
+                and transcript.canonical_source_path == audit.canonical_transcript_path
+                and transcript.canonical_derived_path == audit.canonical_transcript_path
+                and outline is not None
+                and outline.current
+                and outline.provenance_kind == "imported_notebooklm"
+                and outline.import_id == audit.id
+                and outline.lecture_id == audit.lecture_id
+                and outline.job_id is None
+                and outline.path == audit.canonical_outline_path
+                and outline.sha256 == audit.outline_sha256
+                and outline.immutable_path == audit.immutable_outline_path
+                and outline.slide_revision_id == revision.id
+                and outline.slide_source_sha256 == revision.source_sha256
+                and outline.slide_sha256 == revision.derived_sha256
+                and outline.transcript_revision_id == transcript.id
+                and outline.transcript_sha256 == transcript.derived_sha256
+            )
+        if not valid:
+            return False
+        assert audit is not None
+        assert transcript is not None
+        assert outline is not None
+        try:
+            canonical_id = str(UUID(audit.id))
+            immutable_root = self.artifact_v2_root
+            study_root = self.study_root
+            icloud_root = self.icloud_root
+            if (
+                canonical_id != audit.id
+                or immutable_root is None
+                or study_root is None
+                or icloud_root is None
+            ):
+                return False
+            import_root = immutable_root.parent / "existing-imports"
+            audit_root = Path(audit.immutable_transcript_path or "").parent
+            imported_archive = Path(audit.imported_immutable_pdf_path or "")
+            previous_archive = Path(audit.previous_immutable_pdf_path or "")
+            transcript_archive = Path(audit.immutable_transcript_path or "")
+            outline_archive = Path(audit.immutable_outline_path or "")
+            slide_immutable_source = revision.immutable_source_path
+            slide_canonical_source = revision.canonical_source_path
+            slide_immutable_pdf = revision.immutable_derived_path
+            slide_canonical_pdf = revision.canonical_derived_path
+            slide_icloud_pdf = revision.icloud_path
+            transcript_canonical = Path(audit.canonical_transcript_path or "")
+            outline_canonical = Path(audit.canonical_outline_path or "")
+            if (
+                not audit.adoption_operator
+                or not audit.adoption_operator.strip()
+                or not audit.adoption_reason
+                or not audit.adoption_reason.strip()
+                or not audit.adoption_confirmed_at
+                or not audit.adoption_confirmed_at.strip()
+                or any(
+                    is_indirection(path) or not path.is_dir()
+                    for path in (immutable_root, import_root, audit_root, study_root, icloud_root)
+                )
+                or audit_root != import_root / canonical_id
+                or imported_archive != audit_root / "derived-slide.pdf"
+                or transcript_archive != audit_root / "cleaned.txt"
+                or outline_archive != audit_root / "outline.pdf"
+                or imported_archive == previous_archive
+                or not all(
+                    trusted_managed_path(path, immutable_root, require_regular_file=True)
+                    for path in (slide_immutable_source, previous_archive)
+                )
+                or not all(
+                    trusted_managed_path(path, import_root, require_regular_file=True)
+                    for path in (
+                        slide_immutable_pdf,
+                        imported_archive,
+                        transcript_archive,
+                        outline_archive,
+                    )
+                )
+                or not all(
+                    trusted_managed_path(path, study_root, require_regular_file=True)
+                    for path in (
+                        slide_canonical_source,
+                        transcript_canonical,
+                        outline_canonical,
+                    )
+                )
+                or not trusted_managed_path(
+                    slide_canonical_pdf,
+                    study_root,
+                    require_regular_file=not allow_repair_destinations,
+                )
+                or not trusted_managed_path(
+                    slide_icloud_pdf,
+                    icloud_root,
+                    require_regular_file=not allow_repair_destinations,
+                )
+            ):
+                return False
+            immutable_graph_matches = (
+                sha256_file(revision.immutable_source_path) == revision.source_sha256
+                and sha256_file(revision.canonical_source_path) == revision.source_sha256
+                and sha256_file(revision.immutable_derived_path) == revision.derived_sha256
+                and sha256_file(previous_archive) == audit.previous_pdf_sha256
+                and sha256_file(imported_archive) == audit.imported_pdf_sha256
+                and sha256_file(Path(audit.immutable_transcript_path or ""))
+                == audit.transcript_sha256
+                and sha256_file(Path(audit.canonical_transcript_path or ""))
+                == audit.transcript_sha256
+                and sha256_file(Path(audit.immutable_outline_path or "")) == audit.outline_sha256
+                and sha256_file(Path(audit.canonical_outline_path or "")) == audit.outline_sha256
+            )
+            if not immutable_graph_matches:
+                return False
+            if allow_repair_destinations:
+                return True
+            return (
+                sha256_file(revision.canonical_derived_path) == revision.derived_sha256
+                and sha256_file(revision.icloud_path) == revision.derived_sha256
+            )
+        except OSError:
+            return False
+
+    def has_imported_derived_audit(self, revision_id: int) -> bool:
+        with self.database.session() as session:
+            return (
+                session.scalar(
+                    select(ExistingArtifactImportModel.id).where(
+                        ExistingArtifactImportModel.slide_revision_id == revision_id,
+                        ExistingArtifactImportModel.derived_provenance == "imported_derived",
+                    )
+                )
+                is not None
+            )
 
     def create_batch(
         self,

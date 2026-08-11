@@ -72,6 +72,7 @@ from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.llm.domain import LLMTask, ProviderName
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.repositories import CatalogRepository
+from oms_hub.routing import expanded_path
 from oms_hub.study_generation.repository import GenerationRepository
 
 router = APIRouter()
@@ -133,7 +134,7 @@ def _outline_ready_for_curation(
         transcript = revisions.get_study_revision(transcript_id)
     except (KeyError, OSError):
         return False
-    return (
+    base_conditions = (
         slide.current
         and transcript.current
         and slide.kind is UploadKind.SLIDES
@@ -143,6 +144,13 @@ def _outline_ready_for_curation(
         and transcript.derived_sha256 == transcript_sha256
         and transcript.provenance_kind == "imported_cleaned"
         and transcript.import_id == import_id
+    )
+    adopted_or_referenced = (
+        slide.provenance_kind == "imported_derived"
+        or revisions.has_imported_derived_audit(slide.id)
+    )
+    return base_conditions and (
+        not adopted_or_referenced or revisions.imported_derived_audit_matches(slide)
     )
 
 
@@ -375,7 +383,16 @@ def create_anki_job(
             ),
         )
 
-    revisions = IngestionRepository(request.app.state.database)
+    revisions = IngestionRepository(
+        request.app.state.database,
+        artifact_v2_root=expanded_path(request.app.state.settings.data_dir) / "artifacts" / "v2",
+        study_root=expanded_path(request.app.state.settings.study_root),
+        icloud_root=(
+            expanded_path(request.app.state.settings.icloud_staging_root)
+            if request.app.state.settings.icloud_staging_root is not None
+            else None
+        ),
+    )
     hashes: dict[int, str] = {}
     selected_kinds: set[UploadKind] = set()
     for revision_id in payload.source_revision_ids:
@@ -400,6 +417,14 @@ def create_anki_job(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Source revision {revision_id} file is unavailable",
+            )
+        if (
+            revision.provenance_kind == "imported_derived"
+            or revisions.has_imported_derived_audit(revision.id)
+        ) and not revisions.imported_derived_audit_matches(revision):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Source revision {revision_id} imported-derived audit is not ready",
             )
         selected_kinds.add(revision.kind)
         hashes[revision_id] = revision_fingerprint(revision)
@@ -1109,13 +1134,31 @@ async def retry_anki_sync(
 def _page_context(request: Request) -> dict[str, Any]:
     catalog = CatalogRepository(request.app.state.database)
     anki_repository = _repository(request)
-    revisions = IngestionRepository(request.app.state.database)
+    revisions = IngestionRepository(
+        request.app.state.database,
+        artifact_v2_root=expanded_path(request.app.state.settings.data_dir) / "artifacts" / "v2",
+        study_root=expanded_path(request.app.state.settings.study_root),
+        icloud_root=(
+            expanded_path(request.app.state.settings.icloud_staging_root)
+            if request.app.state.settings.icloud_staging_root is not None
+            else None
+        ),
+    )
     outlines = GenerationRepository(request.app.state.database)
     lectures: list[dict[str, Any]] = []
     for lecture in catalog.list_lectures():
         current = revisions.list_current_revisions(lecture.id)
         outline = outlines.current_outline(lecture.id)
         current_kinds = {revision.kind for revision in current}
+        slides_ready = UploadKind.SLIDES in current_kinds and all(
+            not (
+                revision.provenance_kind == "imported_derived"
+                or revisions.has_imported_derived_audit(revision.id)
+            )
+            or revisions.imported_derived_audit_matches(revision)
+            for revision in current
+            if revision.kind is UploadKind.SLIDES
+        )
         outline_available = outline is not None and _outline_ready_for_curation(outline, revisions)
         identity = LectureIdentity(
             course=lecture.subject,
@@ -1150,11 +1193,12 @@ def _page_context(request: Request) -> dict[str, Any]:
                     else None
                 ),
                 "source_ready": (
-                    {UploadKind.SLIDES, UploadKind.TRANSCRIPTS}.issubset(current_kinds)
+                    slides_ready
+                    and UploadKind.TRANSCRIPTS in current_kinds
                     and outline_available
                 ),
                 "source_status": {
-                    "slides": UploadKind.SLIDES in current_kinds,
+                    "slides": slides_ready,
                     "transcripts": UploadKind.TRANSCRIPTS in current_kinds,
                     "summary": outline_available,
                 },

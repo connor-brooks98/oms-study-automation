@@ -74,6 +74,15 @@ def import_existing_lecture_artifacts(args: argparse.Namespace) -> int:
             cleaned_transcript_sha256=args.cleaned_transcript_sha256,
             notebooklm_outline=Path(args.notebooklm_outline),
             notebooklm_outline_sha256=args.notebooklm_outline_sha256,
+            authoritative_derived_pdf=(
+                Path(args.authoritative_derived_pdf)
+                if args.authoritative_derived_pdf
+                else None
+            ),
+            expected_current_pdf_sha256=args.expected_current_pdf_sha256,
+            adoption_operator=args.adoption_operator,
+            adoption_reason=args.adoption_reason,
+            confirm_derived_adoption=args.confirm_derived_adoption,
         )
         if args.a0_operator_files:
             if not args.a0_authoritative_pptx or not args.a0_derived_pdf:
@@ -394,6 +403,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     existing.add_argument("--a0-authoritative-pptx")
     existing.add_argument("--a0-derived-pdf")
+    existing.add_argument(
+        "--authoritative-derived-pdf",
+        help="Explicit authoritative PDF to adopt for this exact current slide revision.",
+    )
+    existing.add_argument(
+        "--expected-current-pdf-sha256",
+        help="SHA-256 of the current Office-derived PDF being displaced.",
+    )
+    existing.add_argument("--adoption-operator")
+    existing.add_argument("--adoption-reason")
+    existing.add_argument(
+        "--confirm-derived-adoption",
+        action="store_true",
+        help="Affirm that the supplied authoritative PDF may replace the current derived PDF.",
+    )
     existing.set_defaults(handler=import_existing_lecture_artifacts)
 
     replacement = commands.add_parser("approve-imported-outline-replacement")

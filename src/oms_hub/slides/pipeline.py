@@ -13,6 +13,7 @@ from oms_hub.document_processing.router import ParserMode
 from oms_hub.document_processing.shadow import DocumentShadowEvaluator
 from oms_hub.domain import LectureKey, StepStatus, V2StepName
 from oms_hub.files.atomic import sha256_file, verified_atomic_copy
+from oms_hub.files.handle_relative import hardened_promote_with_rollback
 from oms_hub.files.office import (
     OfficeConversionError,
     OfficeConverter,
@@ -53,7 +54,16 @@ class SlidePipeline:
         self.writes = artifact_writes or ArtifactWriteCoordinator(database, settings)
         self.converter = converter
         self.promotion = PromotionCoordinator()
-        self.repository = IngestionRepository(database)
+        self.repository = IngestionRepository(
+            database,
+            artifact_v2_root=expanded_path(settings.data_dir) / "artifacts" / "v2",
+            study_root=expanded_path(settings.study_root),
+            icloud_root=(
+                expanded_path(settings.icloud_staging_root)
+                if settings.icloud_staging_root is not None
+                else None
+            ),
+        )
         self.catalog = CatalogRepository(database)
         self.document_evaluator = document_evaluator
         self.last_document: ParsedDocument | None = None
@@ -339,6 +349,11 @@ class SlidePipeline:
         derived: Path,
         claim: ArtifactWriteClaim,
     ) -> StudyRevision:
+        if (
+            revision.provenance_kind == "imported_derived"
+            or self.repository.has_imported_derived_audit(revision.id)
+        ):
+            return self._repair_imported_derived_revision(revision, claim)
         self._preserve_source(
             staged,
             revision.immutable_source_path,
@@ -364,6 +379,52 @@ class SlidePipeline:
             lambda: revision,
             claim,
         )
+
+    def _repair_imported_derived_revision(
+        self, revision: StudyRevision, claim: ArtifactWriteClaim
+    ) -> StudyRevision:
+        """Repair only from the audited imported archive, never Office."""
+        if (
+            revision.import_id is None
+            or revision.immutable_derived_path is None
+            or not self.repository.imported_derived_audit_matches(
+                revision,
+                allow_repair_destinations=True,
+            )
+        ):
+            raise PromotionSourceError("imported-derived slide audit is incomplete")
+        if revision.derived_sha256 is None:
+            raise PromotionSourceError("imported-derived slide audit is invalid")
+        archived = revision.immutable_derived_path
+        if revision.canonical_derived_path is None or revision.icloud_path is None:
+            raise PromotionSourceError("imported-derived slide destinations are incomplete")
+        claim.assert_owned()
+        if self.settings.icloud_staging_root is None:
+            raise PromotionSourceError("imported-derived slide destinations are incomplete")
+        try:
+            return hardened_promote_with_rollback(
+                [
+                    (
+                        archived,
+                        revision.canonical_derived_path,
+                        expanded_path(self.settings.study_root),
+                        revision.derived_sha256,
+                    ),
+                    (
+                        archived,
+                        revision.icloud_path,
+                        expanded_path(self.settings.icloud_staging_root),
+                        revision.derived_sha256,
+                    ),
+                ],
+                revision.id,
+                lambda: revision,
+                claim.assert_owned,
+            )
+        except OSError as error:
+            raise PromotionRecoveryError(
+                "slide file promotion could not complete"
+            ) from error
 
     def _commit_promotion(self, revision_id: int, claim: ArtifactWriteClaim) -> StudyRevision:
         claim.assert_owned()

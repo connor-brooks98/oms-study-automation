@@ -254,6 +254,11 @@ class PinnedCurationInputValidator:
                 )
             if revision.provenance_kind == "imported_cleaned":
                 self._validate_imported_transcript(revision)
+            if (
+                revision.provenance_kind == "imported_derived"
+                or self.revisions.has_imported_derived_audit(revision.id)
+            ) and not self.revisions.imported_derived_audit_matches(revision):
+                raise PinnedInputChanged("Pinned imported-derived slide provenance changed")
             pinned_revisions[revision_id] = revision
 
         if job.summary_outline_id is not None:

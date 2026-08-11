@@ -524,6 +524,13 @@ def test_production_input_validator_detects_revision_and_semantic_drift(
             assert revision_id == 11
             return self.current
 
+        def has_imported_derived_audit(self, revision_id: int) -> bool:
+            assert revision_id == 11
+            return False
+
+        def imported_derived_audit_matches(self, selected: StudyRevision) -> bool:
+            raise AssertionError(f"unexpected imported-derived audit check: {selected.id}")
+
     class Companion:
         def snapshot_id(self) -> str:
             return "companion-1"

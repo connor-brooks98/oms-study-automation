@@ -259,6 +259,10 @@ class RevisionRepository(Protocol):
         revision_id: int,
     ) -> StudyRevision: ...
 
+    def imported_derived_audit_matches(self, revision: StudyRevision) -> bool: ...
+
+    def has_imported_derived_audit(self, revision_id: int) -> bool: ...
+
 
 class OutlineRepository(Protocol):
     def outline(self, outline_id: int) -> OutlineRecord | None: ...
@@ -314,6 +318,11 @@ class LectureSourceExtractor:
         passages: list[SourcePassage] = []
         for revision_id in revision_ids:
             revision = self.revisions.get_study_revision(revision_id)
+            if (
+                revision.provenance_kind == "imported_derived"
+                or self.revisions.has_imported_derived_audit(revision.id)
+            ) and not self.revisions.imported_derived_audit_matches(revision):
+                raise ValueError("imported-derived slide provenance is no longer ready")
             if revision.kind is UploadKind.SLIDES:
                 passages.extend(self._extract_slides(revision))
             elif revision.kind is UploadKind.TRANSCRIPTS:
