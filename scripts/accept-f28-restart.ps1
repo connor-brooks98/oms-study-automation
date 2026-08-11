@@ -93,6 +93,22 @@ function Test-ExactUtcTimestamp {
   return [datetime]::TryParseExact([string]$Value, "o", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$Parsed) -and $Parsed.Kind -eq [System.DateTimeKind]::Utc
 }
 
+function Get-F28SystemPowerShell {
+  $SystemDirectory = [System.Environment]::SystemDirectory
+  if ([string]::IsNullOrWhiteSpace($SystemDirectory)) { throw "Windows system directory is unavailable." }
+  $PowerShellPath = [System.IO.Path]::GetFullPath(
+    (Join-Path $SystemDirectory "WindowsPowerShell\v1.0\powershell.exe")
+  )
+  if (-not (Test-Path -LiteralPath $PowerShellPath -PathType Leaf)) {
+    throw "Pinned Windows PowerShell executable is missing: $PowerShellPath"
+  }
+  $Item = Get-Item -LiteralPath $PowerShellPath -Force -ErrorAction Stop
+  if ($Item.PSIsContainer -or ($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Pinned Windows PowerShell executable must be a non-reparse-point leaf."
+  }
+  return $PowerShellPath
+}
+
 function Write-F28Diagnostic {
   param([string]$Message)
   try {
@@ -203,7 +219,7 @@ function Get-TaskContract {
   if ($Actions.Count -ne 4) { throw "Scheduled task must have exactly four F28 actions." }
   $StartScript = Join-Path $Root "scripts\start-hub.ps1"
   $RecoveryScript = Join-Path $Root "scripts\restart-hub-after-failure.ps1"
-  $ExpectedPowerShell = (Get-Command powershell.exe -ErrorAction Stop).Source
+  $ExpectedPowerShell = Get-F28SystemPowerShell
   $ExpectedIds = @("f28-primary-0", "f28-recovery-1", "f28-recovery-2", "f28-recovery-3")
   foreach ($Index in 0..3) {
     $ExpectedArguments = if ($Index -eq 0) {

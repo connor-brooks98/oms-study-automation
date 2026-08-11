@@ -67,6 +67,22 @@ function Get-StrictUtcTimestamp {
   return $Parsed
 }
 
+function Get-F28SystemPowerShell {
+  $SystemDirectory = [System.Environment]::SystemDirectory
+  if ([string]::IsNullOrWhiteSpace($SystemDirectory)) { throw "Windows system directory is unavailable." }
+  $PowerShellPath = [System.IO.Path]::GetFullPath(
+    (Join-Path $SystemDirectory "WindowsPowerShell\v1.0\powershell.exe")
+  )
+  if (-not (Test-Path -LiteralPath $PowerShellPath -PathType Leaf)) {
+    throw "Pinned Windows PowerShell executable is missing: $PowerShellPath"
+  }
+  $Item = Get-Item -LiteralPath $PowerShellPath -Force -ErrorAction Stop
+  if ($Item.PSIsContainer -or ($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Pinned Windows PowerShell executable must be a non-reparse-point leaf."
+  }
+  return $PowerShellPath
+}
+
 function Assert-ExactRuntimeIdentity {
   $Git = Get-Command git.exe -ErrorAction SilentlyContinue
   if (-not $Git) { $Git = Get-Command git -ErrorAction Stop }
@@ -157,7 +173,7 @@ try {
   if ($Identity.revision -cne [string]$Authorization.expected_revision -or $Identity.tree -cne [string]$Authorization.expected_tree) { throw "F28 source identity changed during recovery delay." }
   if ((Get-FileSha256 $EvidencePath) -cne [string]$Authorization.predecessor_evidence_sha256) { throw "F28 predecessor evidence changed during delay." }
   if (Test-SameRootHubRuntime -ExpectedRoot $ProjectRoot) { Write-Host "F28 recovery no-op: same-root Hub is already running."; exit 0 }
-  $PowerShell = (Get-Command powershell.exe -ErrorAction Stop).Source
+  $PowerShell = Get-F28SystemPowerShell
   $StartScript = Join-Path $ProjectRoot "scripts\start-hub.ps1"
   & $PowerShell -NoProfile -ExecutionPolicy Bypass -File $StartScript -DataRoot $ResolvedDataRoot -ActionIndex $ActionIndex
   $ExitCode = $LASTEXITCODE

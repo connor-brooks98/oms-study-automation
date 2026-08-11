@@ -247,6 +247,22 @@ def test_windows_installer_defines_its_restored_task_xml_hash_helper_before_use(
     assert "SHA256" in helper
 
 
+def test_f28_pins_windows_powershell_from_system_directory_without_path_lookup() -> None:
+    for relative_path in (
+        "scripts/install-windows.ps1",
+        "scripts/accept-f28-restart.ps1",
+        "scripts/restart-hub-after-failure.ps1",
+    ):
+        script = (ROOT / relative_path).read_text(encoding="utf-8")
+        assert "function Get-F28SystemPowerShell" in script
+        assert "[System.Environment]::SystemDirectory" in script
+        assert '"WindowsPowerShell\\v1.0\\powershell.exe"' in script
+        assert "[System.IO.Path]::GetFullPath" in script
+        assert "-PathType Leaf" in script
+        assert "ReparsePoint" in script
+        assert "Get-Command powershell.exe" not in script
+
+
 def test_f28_probe_failure_has_a_native_original_error_regression() -> None:
     script_path = ROOT / "scripts" / "accept-f28-restart.ps1"
     harness_path = ROOT / "tests" / "v2" / "f28_original_error_preservation.ps1"

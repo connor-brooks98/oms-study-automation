@@ -125,6 +125,22 @@ function Get-StringSha256 {
   }
 }
 
+function Get-F28SystemPowerShell {
+  $SystemDirectory = [System.Environment]::SystemDirectory
+  if ([string]::IsNullOrWhiteSpace($SystemDirectory)) { throw "Windows system directory is unavailable." }
+  $PowerShellPath = [System.IO.Path]::GetFullPath(
+    (Join-Path $SystemDirectory "WindowsPowerShell\v1.0\powershell.exe")
+  )
+  if (-not (Test-Path -LiteralPath $PowerShellPath -PathType Leaf)) {
+    throw "Pinned Windows PowerShell executable is missing: $PowerShellPath"
+  }
+  $Item = Get-Item -LiteralPath $PowerShellPath -Force -ErrorAction Stop
+  if ($Item.PSIsContainer -or ($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Pinned Windows PowerShell executable must be a non-reparse-point leaf."
+  }
+  return $PowerShellPath
+}
+
 function Get-ExpectedTaskArguments {
   param(
     [string]$ExpectedStartScript,
@@ -772,7 +788,7 @@ if ($PSCmdlet.ShouldProcess($TaskName, "Install scheduled startup")) {
     -ExpectedProjectRoot $ProjectRoot `
     -ExpectedBuildRevision $PreflightBuildRevision `
     -ExpectedBuildTree $PreflightBuildTree
-  $PowerShell = (Get-Command powershell.exe).Source
+  $PowerShell = Get-F28SystemPowerShell
   $PrimaryArguments = Get-ExpectedTaskArguments -ExpectedStartScript $StartScript -ExpectedDataRoot $EffectiveDataRoot -ActionIndex 0
   $PrimaryAction = New-ScheduledTaskAction `
     -Execute $PowerShell `
