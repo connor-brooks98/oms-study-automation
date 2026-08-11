@@ -234,6 +234,19 @@ def test_f28_acceptance_recovery_cleanup_keeps_one_result_observation_and_strict
     assert "Unregister-ScheduledTask -TaskName $Name -Confirm:$false -ErrorAction Stop" in installer
 
 
+def test_windows_installer_defines_its_restored_task_xml_hash_helper_before_use() -> None:
+    installer = (ROOT / "scripts" / "install-windows.ps1").read_text(encoding="utf-8")
+
+    definition = "function Get-StringSha256"
+    use = "Get-StringSha256 -Value $RestoredXml"
+    assert definition in installer
+    assert installer.index(definition) < installer.index(use)
+    helper_end = installer.index("function Get-ExpectedTaskArguments")
+    helper = installer[installer.index(definition) : helper_end]
+    assert "UTF8Encoding($false, $true)" in helper
+    assert "SHA256" in helper
+
+
 def test_f28_probe_failure_has_a_native_original_error_regression() -> None:
     script_path = ROOT / "scripts" / "accept-f28-restart.ps1"
     harness_path = ROOT / "tests" / "v2" / "f28_original_error_preservation.ps1"

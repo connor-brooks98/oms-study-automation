@@ -113,6 +113,18 @@ $BackupRoot = Join-Path $EffectiveDataRoot "backups"
 $BackupPath = Join-Path $BackupRoot $Timestamp
 $F28GateDirectory = Join-Path $EffectiveDataRoot "acceptance\f28"
 
+function Get-StringSha256 {
+  param([string]$Value)
+  $StrictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+  $Hasher = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $Bytes = $StrictUtf8.GetBytes($Value)
+    return ([BitConverter]::ToString($Hasher.ComputeHash($Bytes))).Replace("-", "").ToLowerInvariant()
+  } finally {
+    $Hasher.Dispose()
+  }
+}
+
 function Get-ExpectedTaskArguments {
   param(
     [string]$ExpectedStartScript,
