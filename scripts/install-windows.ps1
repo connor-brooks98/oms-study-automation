@@ -461,11 +461,53 @@ function Stop-ConflictingHubProcesses {
     }
 
     $StableClearObservations = 0
-    # The verified launcher is discovered before its descendants. Select only
-    # the deepest process from this snapshot. Stopping it can make its parents
-    # exit naturally; using the remainder of this snapshot would then mistake a
-    # terminating parent for PID reuse. Re-discover before selecting another process.
-    $Process = $Conflicts[-1]
+    # Select the deepest process from the verified parent graph rather than
+    # relying on CIM or launcher seed order. A child oms-hub.exe can be returned
+    # before its parent, and stopping a shallower wrapper could orphan a helper.
+    $ConflictsById = @{}
+    foreach ($Conflict in $Conflicts) {
+      $ConflictKey = [string]([int]$Conflict.ProcessId)
+      if ($ConflictsById.ContainsKey($ConflictKey)) {
+        throw "Duplicate process $ConflictKey appeared in the same-root snapshot."
+      }
+      $ConflictsById[$ConflictKey] = $Conflict
+    }
+
+    $DeepestProcess = $null
+    $DeepestDepth = -1
+    $DeepestProcessId = -1
+    foreach ($Conflict in $Conflicts) {
+      $Depth = 0
+      $Lineage = [System.Collections.Generic.HashSet[int]]::new()
+      $Cursor = $Conflict
+      while ($true) {
+        $CursorId = [int]$Cursor.ProcessId
+        if (-not $Lineage.Add($CursorId)) {
+          throw "Cycle detected in same-root process ancestry at process $CursorId."
+        }
+        $ParentKey = [string]([int]$Cursor.ParentProcessId)
+        if (-not $ConflictsById.ContainsKey($ParentKey)) { break }
+        $Depth += 1
+        $Cursor = $ConflictsById[$ParentKey]
+      }
+
+      $ConflictId = [int]$Conflict.ProcessId
+      if (
+        $Depth -gt $DeepestDepth -or
+        ($Depth -eq $DeepestDepth -and $ConflictId -gt $DeepestProcessId)
+      ) {
+        $DeepestProcess = $Conflict
+        $DeepestDepth = $Depth
+        $DeepestProcessId = $ConflictId
+      }
+    }
+    if ($null -eq $DeepestProcess) {
+      throw "Same-root process discovery returned no selectable process."
+    }
+
+    # Stop only this exact process. Its parents may exit naturally, so wait and
+    # Re-discover before selecting another process from a fresh snapshot.
+    $Process = $DeepestProcess
     $ProcessId = [int]$Process.ProcessId
     $LiveProcess = Get-CimInstance Win32_Process `
       -Filter "ProcessId = $ProcessId" `

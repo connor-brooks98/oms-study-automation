@@ -545,16 +545,23 @@ def test_windows_installer_selects_every_descendant_of_verified_launcher() -> No
     # Only the deepest process from a discovery snapshot may cross a destructive
     # boundary. Stopping it can make its parents exit naturally, so processing a
     # reversed stale snapshot can misclassify those exiting parents as PID reuse.
-    assert "$Process = $Conflicts[-1]" in stop_function
+    # Depth must come from the selected parent graph rather than CIM/seed order.
+    assert "$ConflictsById = @{}" in stop_function
+    assert "$DeepestDepth = -1" in stop_function
+    assert "$Lineage.Add($CursorId)" in stop_function
+    assert "$ConflictsById.ContainsKey($ParentKey)" in stop_function
+    assert "$Process = $DeepestProcess" in stop_function
+    assert "$Process = $Conflicts[-1]" not in stop_function
     assert "$StopOrder = @($Conflicts)" not in stop_function
     assert "[array]::Reverse($StopOrder)" not in stop_function
     assert "foreach ($Process in $StopOrder)" not in stop_function
     assert "Re-discover before selecting another process" in stop_function
     discovery = stop_function.index("$Conflicts = @(")
-    selection = stop_function.index("$Process = $Conflicts[-1]")
+    depth_map = stop_function.index("$ConflictsById = @{}")
+    selection = stop_function.index("$Process = $DeepestProcess")
     force_stop = stop_function.index("Stop-Process -InputObject $LiveHandle -Force")
     settle = stop_function.index("Start-Sleep -Milliseconds 500", force_stop)
-    assert discovery < selection < force_stop < settle
+    assert discovery < depth_map < selection < force_stop < settle
     assert stop_function.count("Stop-Process -InputObject $LiveHandle -Force") == 1
     assert "$StableClearObservations -ge 2" in stop_function
     assert "Start-Sleep -Milliseconds 500" in stop_function
@@ -589,6 +596,34 @@ def test_windows_installer_rediscovers_after_each_destructive_stop() -> None:
 
     assert stopped == [103]
     assert discoveries == 3
+
+
+def test_windows_installer_depth_selection_ignores_nested_launcher_seed_order() -> None:
+    """A child launcher may appear before its same-root parent in CIM output."""
+
+    parents = {101: 1, 102: 101, 103: 102, 201: 1, 202: 201}
+
+    def select_deepest(conflicts: list[int]) -> int:
+        conflict_ids = set(conflicts)
+        depths: dict[int, int] = {}
+        for process_id in conflicts:
+            lineage: set[int] = set()
+            cursor = process_id
+            depth = 0
+            while cursor in conflict_ids:
+                if cursor in lineage:
+                    raise AssertionError("cycle in selected process graph")
+                lineage.add(cursor)
+                parent_id = parents[cursor]
+                if parent_id not in conflict_ids:
+                    break
+                depth += 1
+                cursor = parent_id
+            depths[process_id] = depth
+        return max(conflicts, key=lambda process_id: (depths[process_id], process_id))
+
+    assert select_deepest([102, 101, 103, 201, 202]) == 103
+    assert select_deepest([201, 202, 103, 102, 101]) == 103
 
 
 def test_windows_installer_resolves_config_stops_tree_and_backs_up_before_pip() -> None:
