@@ -46,7 +46,24 @@ def test_f28_launcher_and_installer_bind_one_acl_restricted_gate_directory() -> 
     assert "CONTROLLED_RESTART_EXIT_CODE" not in launcher
     assert "$ServeExitCode -eq 75" in launcher
     assert "latest-server-exit.json" in launcher
+    assert "consumed-launcher-server-exit-$Nonce.json" in launcher
+    assert "claimed_latest_server_exit_sha256" in launcher
+    assert "latest_server_exit_sha256" in launcher
+    assert "expected_schema" in launcher
     assert "launcher-exit-$Nonce.json" in launcher
+    assert "UTF8Encoding($false, $true)" in launcher
+    assert "Test-Path -LiteralPath $ClaimedArchivePath)" in launcher
+    assert "Test-Path -LiteralPath $Destination)" in launcher
+    assert "Test-Path -LiteralPath $ClaimedArchivePath -PathType Leaf" not in launcher
+    assert "Test-Path -LiteralPath $Destination -PathType Leaf" not in launcher
+    assert launcher.index("$ClaimedArchivePath") < launcher.index(
+        "Move-Item -LiteralPath $ClaimPath -Destination $ClaimedArchivePath"
+    )
+    launcher_destination = (
+        "$Destination = Join-Path $Directory \"launcher-exit-$Nonce.json\""
+    )
+    archive_move = "Move-Item -LiteralPath $ClaimPath -Destination $ClaimedArchivePath"
+    assert launcher.index(launcher_destination) < launcher.index(archive_move)
     assert "exit $ServeExitCode" in launcher
 
     assert "Initialize-F28GateDirectory" in installer
@@ -66,10 +83,19 @@ def test_f28_acceptance_script_is_two_phase_and_never_kills_or_reconfigures() ->
     assert "armed-$Nonce.json" in script
     assert "fire-$Nonce.json" in script
     assert "server-exit-$Nonce.json" in script
+    assert "consumed-launcher-server-exit-$Nonce.json" in script
     assert "launcher-exit-$Nonce.json" in script
     assert "consumed-$Nonce.json" in script
     assert "finalized-$Nonce.json" in script
     assert "latest_server_exit_sha256" in script
+    assert "claimed_latest_server_exit_sha256" in script
+    assert "EventRecordID" in script
+    assert ".ToXml()" in script
+    assert ".Message" not in script
+    assert "CreatedTaskProcess" in script
+    assert "task_scheduler_evidence" in script
+    assert "Event 110/manual launch" in script
+    assert "Event 107/trigger launch" in script
     assert "Test-Path -LiteralPath $ActivePath" in script
     assert "RestartCount" in script
     assert "LastTaskResult" in script

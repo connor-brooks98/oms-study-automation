@@ -79,41 +79,68 @@ function Write-F28LauncherExitEvidence {
   }
   $ClaimPath = Join-Path $Directory (".launcher-claim-{0}.json" -f [guid]::NewGuid())
   Move-Item -LiteralPath $LatestPath -Destination $ClaimPath
+  $ClaimedBytes = [System.IO.File]::ReadAllBytes($ClaimPath)
+  $Hasher = [System.Security.Cryptography.SHA256]::Create()
   try {
-    $Record = Get-Content -LiteralPath $ClaimPath -Raw | ConvertFrom-Json
-    $Nonce = [string]$Record.nonce
-    $ParsedNonce = [guid]::Empty
-    if (-not [guid]::TryParseExact($Nonce, "D", [ref]$ParsedNonce)) {
-      throw "F28 server exit nonce is not canonical."
-    }
-    if (
-      [int]$Record.exit_code -ne 75 -or
-      [string]$Record.expected_revision -cne $ExpectedRevision -or
-      [string]$Record.expected_tree -cne $ExpectedTree
-    ) {
-      throw "F28 server exit evidence does not match this launcher."
-    }
-    $LauncherRecord = [ordered]@{
-      schema_version = 1
-      nonce = $Nonce
-      expected_revision = $ExpectedRevision
-      expected_tree = $ExpectedTree
-      exit_code = $NativeExitCode
-      launcher_pid = $PID
-      recorded_at = (Get-Date).ToUniversalTime().ToString("o")
-    } | ConvertTo-Json -Compress
-    $Destination = Join-Path $Directory "launcher-exit-$Nonce.json"
-    $Temporary = Join-Path $Directory (".launcher-exit-{0}.tmp" -f [guid]::NewGuid())
-    $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($Temporary, $LauncherRecord + "`n", $Utf8NoBom)
-    Move-Item -LiteralPath $Temporary -Destination $Destination
+    $ClaimedHash = ([BitConverter]::ToString($Hasher.ComputeHash($ClaimedBytes))).Replace("-", "").ToLowerInvariant()
   } finally {
-    if (Test-Path -LiteralPath $ClaimPath) {
-      Move-Item -LiteralPath $ClaimPath -Destination (
-        Join-Path $Directory "consumed-launcher-server-exit-$([guid]::NewGuid()).json"
-      )
-    }
+    $Hasher.Dispose()
   }
+  $StrictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+  $Record = $StrictUtf8.GetString($ClaimedBytes) | ConvertFrom-Json
+  $Nonce = [string]$Record.nonce
+  $ParsedNonce = [guid]::Empty
+  if (-not [guid]::TryParseExact($Nonce, "D", [ref]$ParsedNonce)) {
+    throw "F28 server exit nonce is not canonical."
+  }
+  $ClaimedArchiveName = "consumed-launcher-server-exit-$Nonce.json"
+  $ClaimedArchivePath = Join-Path $Directory $ClaimedArchiveName
+  $Destination = Join-Path $Directory "launcher-exit-$Nonce.json"
+  if (
+    (Test-Path -LiteralPath $ClaimedArchivePath) -or
+    (Test-Path -LiteralPath $Destination)
+  ) {
+    throw "F28 launcher evidence already exists for this nonce."
+  }
+  $FinalizedPath = Join-Path $Directory "finalized-$Nonce.json"
+  if (-not (Test-Path -LiteralPath $FinalizedPath -PathType Leaf)) {
+    throw "F28 finalized server exit evidence is missing."
+  }
+  $Finalized = Get-Content -LiteralPath $FinalizedPath -Raw | ConvertFrom-Json
+  $ExpectedSchema = [int]$Record.expected_schema
+  if (
+    [int]$Record.schema_version -ne 1 -or
+    $ExpectedSchema -le 0 -or
+    [int]$Record.exit_code -ne 75 -or
+    [string]$Record.expected_revision -cne $ExpectedRevision -or
+    [string]$Record.expected_tree -cne $ExpectedTree -or
+    [int]$Finalized.schema_version -ne 1 -or
+    [string]$Finalized.nonce -cne $Nonce -or
+    [int]$Finalized.expected_schema -ne $ExpectedSchema -or
+    [int]$Finalized.exit_code -ne 75 -or
+    [string]$Finalized.expected_revision -cne $ExpectedRevision -or
+    [string]$Finalized.expected_tree -cne $ExpectedTree -or
+    [string]$Finalized.latest_server_exit_sha256 -cne $ClaimedHash
+  ) {
+    throw "F28 server exit evidence does not match this launcher."
+  }
+  Move-Item -LiteralPath $ClaimPath -Destination $ClaimedArchivePath
+  $LauncherRecord = [ordered]@{
+    schema_version = 1
+    nonce = $Nonce
+    expected_revision = $ExpectedRevision
+    expected_tree = $ExpectedTree
+    expected_schema = $ExpectedSchema
+    exit_code = $NativeExitCode
+    claimed_latest_server_exit = $ClaimedArchiveName
+    claimed_latest_server_exit_sha256 = $ClaimedHash
+    launcher_pid = $PID
+    recorded_at = (Get-Date).ToUniversalTime().ToString("o")
+  } | ConvertTo-Json -Compress
+  $Temporary = Join-Path $Directory (".launcher-exit-{0}.tmp" -f [guid]::NewGuid())
+  $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($Temporary, $LauncherRecord + "`n", $Utf8NoBom)
+  Move-Item -LiteralPath $Temporary -Destination $Destination
 }
 
 Set-Location $ProjectRoot

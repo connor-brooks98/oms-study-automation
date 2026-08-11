@@ -20,7 +20,6 @@ $FixedExitCode = 75
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $FireWritten = $false
 $Nonce = ([guid]::NewGuid()).ToString("D").ToLowerInvariant()
-$StartedAt = (Get-Date).ToUniversalTime()
 
 function Assert-NotReparsePoint {
   param([string]$Path, [string]$Label)
@@ -130,6 +129,7 @@ function Get-TaskContract {
   }
   $TaskXml = Export-ScheduledTask -TaskName $Name
   return [ordered]@{
+    full_task_name = "{0}{1}" -f [string]$Task.TaskPath, [string]$Task.TaskName
     action = [string]$Actions[0].Execute
     arguments = [string]$Actions[0].Arguments
     principal = [string]$Task.Principal.UserId
@@ -255,7 +255,7 @@ function Assert-VerifiedRollbackBackup {
   }
 }
 
-function Get-RuntimeTree {
+function Get-RuntimeEvidence {
   param([string]$Root)
   $Processes = @(Get-CimInstance Win32_Process)
   $Children = @{}
@@ -296,7 +296,50 @@ function Get-RuntimeTree {
       foreach ($Child in $Children[$Key]) { $Pending.Enqueue($Child) }
     }
   }
-  return @($Result)
+  $Snapshot = @($Processes | ForEach-Object {
+    [ordered]@{
+      pid = [int]$_.ProcessId
+      parent_pid = [int]$_.ParentProcessId
+      name = [string]$_.Name
+      executable_path = [string]$_.ExecutablePath
+      creation_date = [string]$_.CreationDate
+    }
+  })
+  return [ordered]@{
+    runtime = @($Result)
+    process_snapshot = $Snapshot
+  }
+}
+
+function Get-TaskSchedulerEventCursor {
+  $RecordIds = @(
+    Get-WinEvent -LogName "Microsoft-Windows-TaskScheduler/Operational" -ErrorAction Stop |
+      ForEach-Object {
+        if ($null -eq $_.RecordId) {
+          throw "Task Scheduler operational EventRecordID cursor could not be captured."
+        }
+        [long]$_.RecordId
+      }
+  )
+  if ($RecordIds.Count -eq 0) {
+    return [long]0
+  }
+  return [long](($RecordIds | Measure-Object -Maximum).Maximum)
+}
+
+function Get-TaskSchedulerXmlEvidence {
+  param([long]$Cursor)
+  return @(
+    Get-WinEvent -LogName "Microsoft-Windows-TaskScheduler/Operational" -ErrorAction Stop |
+      Where-Object { [long]$_.RecordId -gt $Cursor } |
+      Sort-Object RecordId |
+      ForEach-Object {
+        [ordered]@{
+          event_record_id = [long]$_.RecordId
+          xml = $_.ToXml()
+        }
+      }
+  )
 }
 
 function Get-ReadyHealth {
@@ -405,7 +448,8 @@ if (-not $DatabaseUrl) { $DatabaseUrl = "sqlite:///C:/ProgramData/OMSStudyHub/hu
 $DatabasePath = Resolve-DatabasePath -DatabaseUrl $DatabaseUrl -Root $ProjectRoot
 if (-not (Test-Path -LiteralPath $DatabasePath -PathType Leaf)) { throw "Live database is missing." }
 Assert-NotReparsePoint -Path $DatabasePath -Label "Live database"
-$OldProcesses = Get-RuntimeTree -Root $ProjectRoot
+$OldRuntimeEvidence = Get-RuntimeEvidence -Root $ProjectRoot
+$OldProcesses = @($OldRuntimeEvidence.runtime)
 $HealthBefore = Get-ReadyHealth -Port $Port
 Assert-ExactHealth -Health $HealthBefore
 
@@ -438,11 +482,18 @@ if ((Test-Path -LiteralPath $RequestPath) -or (Test-Path -LiteralPath $ActivePat
 $ArmedPath = Join-Path $GateDirectory "armed-$Nonce.json"
 $FirePath = Join-Path $GateDirectory "fire-$Nonce.json"
 $ServerExitPath = Join-Path $GateDirectory "server-exit-$Nonce.json"
+$ConsumedLauncherServerExitPath = Join-Path $GateDirectory "consumed-launcher-server-exit-$Nonce.json"
 $LauncherExitPath = Join-Path $GateDirectory "launcher-exit-$Nonce.json"
 $ConsumedPath = Join-Path $GateDirectory "consumed-$Nonce.json"
 $FinalizedPath = Join-Path $GateDirectory "finalized-$Nonce.json"
 $DatabaseBeforePath = Join-Path $GateDirectory ".database-before-$Nonce.db"
 $DatabaseAfterPath = Join-Path $GateDirectory ".database-after-$Nonce.db"
+$SchedulerEvidencePath = Join-Path $GateDirectory "scheduler-evidence-$Nonce.json"
+$SchedulerProofPath = Join-Path $GateDirectory "scheduler-proof-$Nonce.json"
+$PythonExecutable = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $PythonExecutable -PathType Leaf)) {
+  throw "F28 scheduler evidence verifier Python executable is missing."
+}
 
 try {
   $RequestIssuedAt = (Get-Date).ToUniversalTime()
@@ -471,6 +522,7 @@ try {
   Assert-ExactHealth -Health $Armed.health
   $DatabaseHashBefore = New-DatabaseSnapshotHash -Destination $DatabaseBeforePath
   $ArmedHash = (Get-FileHash -LiteralPath $ArmedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $TaskSchedulerCursor = Get-TaskSchedulerEventCursor
   Write-AtomicJson -Path $FirePath -Value ([ordered]@{
     schema_version = 1
     nonce = $Nonce
@@ -480,6 +532,10 @@ try {
 
   $RestartDeadline = (Get-Date).ToUniversalTime().AddSeconds($RestartTimeoutSeconds)
   Wait-ForFile -Path $ServerExitPath -Deadline $RestartDeadline -Label "server exit record"
+  Wait-ForFile `
+    -Path $ConsumedLauncherServerExitPath `
+    -Deadline $RestartDeadline `
+    -Label "consumed launcher server exit record"
   Wait-ForFile -Path $LauncherExitPath -Deadline $RestartDeadline -Label "launcher exit record"
   Wait-ForFile -Path $FinalizedPath -Deadline $RestartDeadline -Label "finalized exit record"
   if (Test-Path -LiteralPath $ActivePath) {
@@ -489,15 +545,18 @@ try {
     throw "F28 consumed request record is missing after server finalization."
   }
   $ServerExit = Get-Content -LiteralPath $ServerExitPath -Raw | ConvertFrom-Json
+  $ConsumedLauncherServerExit = Get-Content -LiteralPath $ConsumedLauncherServerExitPath -Raw | ConvertFrom-Json
   $LauncherExit = Get-Content -LiteralPath $LauncherExitPath -Raw | ConvertFrom-Json
   $Consumed = Get-Content -LiteralPath $ConsumedPath -Raw | ConvertFrom-Json
   $Finalized = Get-Content -LiteralPath $FinalizedPath -Raw | ConvertFrom-Json
-  foreach ($Record in @($ServerExit, $LauncherExit)) {
+  foreach ($Record in @($ServerExit, $ConsumedLauncherServerExit, $LauncherExit)) {
     if (
+      [int]$Record.schema_version -ne 1 -or
       [string]$Record.nonce -cne $Nonce -or
       [int]$Record.exit_code -ne $FixedExitCode -or
       [string]$Record.expected_revision -cne $ExpectedRevision -or
-      [string]$Record.expected_tree -cne $ExpectedTree
+      [string]$Record.expected_tree -cne $ExpectedTree -or
+      [int]$Record.expected_schema -ne $ExpectedSchema
     ) { throw "Native exit evidence differs from the exact F28 request." }
   }
   if (
@@ -509,7 +568,16 @@ try {
     [int]$Consumed.expected_schema -ne $ExpectedSchema
   ) { throw "Consumed request record differs from the exact F28 request." }
   $ServerExitHash = (Get-FileHash -LiteralPath $ServerExitPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $ConsumedLauncherServerExitHash = (
+    Get-FileHash -LiteralPath $ConsumedLauncherServerExitPath -Algorithm SHA256
+  ).Hash.ToLowerInvariant()
   $ConsumedHash = (Get-FileHash -LiteralPath $ConsumedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  if (
+    [string]$LauncherExit.claimed_latest_server_exit -cne "consumed-launcher-server-exit-$Nonce.json" -or
+    [string]$LauncherExit.claimed_latest_server_exit_sha256 -cne $ConsumedLauncherServerExitHash -or
+    $ConsumedLauncherServerExitHash -cne [string]$Finalized.latest_server_exit_sha256 -or
+    $ConsumedLauncherServerExitHash -cne $ServerExitHash
+  ) { throw "Launcher evidence does not cryptographically bind the finalized server exit record." }
   if (
     [int]$Finalized.schema_version -ne 1 -or
     [string]$Finalized.nonce -cne $Nonce -or
@@ -520,7 +588,7 @@ try {
     [string]$Finalized.consumed -cne "consumed-$Nonce.json" -or
     [string]$Finalized.consumed_sha256 -cne $ConsumedHash -or
     [string]$Finalized.server_exit_sha256 -cne $ServerExitHash -or
-    [string]$Finalized.latest_server_exit_sha256 -cne $ServerExitHash
+    [string]$Finalized.latest_server_exit_sha256 -cne $ConsumedLauncherServerExitHash
   ) { throw "Finalized exit record does not prove exact consumed state." }
   $OldPids = @($OldProcesses | ForEach-Object { [int]$_.pid })
   if ([int]$ServerExit.server_pid -notin $OldPids) {
@@ -529,17 +597,20 @@ try {
 
   $ObservedLastResults = [System.Collections.Generic.List[int]]::new()
   $ReplacementProcesses = $null
+  $ReplacementProcessSnapshot = $null
   $HealthAfter = $null
   while ((Get-Date).ToUniversalTime() -lt $RestartDeadline) {
     $TaskInfo = Get-ScheduledTaskInfo -TaskName $TaskName
     $ObservedLastResults.Add([int]$TaskInfo.LastTaskResult)
     try {
-      $CandidateProcesses = Get-RuntimeTree -Root $ProjectRoot
+      $CandidateRuntimeEvidence = Get-RuntimeEvidence -Root $ProjectRoot
+      $CandidateProcesses = @($CandidateRuntimeEvidence.runtime)
       $NewPids = @($CandidateProcesses | ForEach-Object { [int]$_.pid })
       if (@($NewPids | Where-Object { $_ -in $OldPids }).Count -eq 0) {
         $CandidateHealth = Get-ReadyHealth -Port $Port
         Assert-ExactHealth -Health $CandidateHealth
         $ReplacementProcesses = $CandidateProcesses
+        $ReplacementProcessSnapshot = @($CandidateRuntimeEvidence.process_snapshot)
         $HealthAfter = $CandidateHealth
         break
       }
@@ -548,19 +619,45 @@ try {
     }
     Start-Sleep -Milliseconds 250
   }
-  if ($null -eq $ReplacementProcesses -or $null -eq $HealthAfter) {
+  if (
+    $null -eq $ReplacementProcesses -or
+    $null -eq $ReplacementProcessSnapshot -or
+    $null -eq $HealthAfter
+  ) {
     throw "Task Scheduler did not restore a new exact healthy runtime before timeout."
   }
   if ($FixedExitCode -notin @($ObservedLastResults)) {
     throw "Task Scheduler LastTaskResult never exposed native exit code 75."
   }
-  $TaskEvents = @(
-    Get-WinEvent -FilterHashtable @{
-      LogName = "Microsoft-Windows-TaskScheduler/Operational"
-      StartTime = $StartedAt.ToLocalTime()
-    } -ErrorAction Stop | Where-Object { $_.Message -match [regex]::Escape($TaskName) }
-  )
-  if ($TaskEvents.Count -eq 0) { throw "No Task Scheduler operational event was recorded." }
+  $ReplacementHubProcesses = @($ReplacementProcesses | Where-Object {
+    [string]$_.name -ieq "oms-hub.exe"
+  })
+  if ($ReplacementHubProcesses.Count -ne 1) {
+    throw "Replacement runtime does not expose exactly one oms-hub.exe PID."
+  }
+  $TaskSchedulerEvents = Get-TaskSchedulerXmlEvidence -Cursor $TaskSchedulerCursor
+  if ($TaskSchedulerEvents.Count -eq 0) { throw "No Task Scheduler operational XML evidence was recorded." }
+  # The typed verifier rejects Event 110/manual launch and Event 107/trigger launch,
+  # then correlates Event 129 CreatedTaskProcess XML to the replacement process tree.
+  Write-AtomicJson -Path $SchedulerEvidencePath -Value ([ordered]@{
+    schema_version = 1
+    nonce = $Nonce
+    expected_revision = $ExpectedRevision
+    expected_tree = $ExpectedTree
+    cursor_event_record_id = $TaskSchedulerCursor
+    events = $TaskSchedulerEvents
+    process_snapshot = $ReplacementProcessSnapshot
+  })
+  & $PythonExecutable -m oms_hub.task_scheduler_evidence `
+    --input $SchedulerEvidencePath `
+    --output $SchedulerProofPath `
+    --full-task-name $TaskBefore.full_task_name `
+    --action-path $TaskBefore.action `
+    --replacement-hub-pid ([int]$ReplacementHubProcesses[0].pid)
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $SchedulerProofPath -PathType Leaf)) {
+    throw "Task Scheduler XML evidence did not prove automatic failure restart."
+  }
+  $SchedulerProof = Get-Content -LiteralPath $SchedulerProofPath -Raw | ConvertFrom-Json
 
   $DatabaseHashAfter = New-DatabaseSnapshotHash -Destination $DatabaseAfterPath
   if ($DatabaseHashAfter -cne $DatabaseHashBefore) { throw "Live database changed during F28 acceptance." }
@@ -594,7 +691,7 @@ try {
     replacement_processes = $ReplacementProcesses
     workers = $HealthAfter.workers
     task_last_results = @($ObservedLastResults)
-    task_event_ids = @($TaskEvents | ForEach-Object { $_.Id })
+    scheduler = $SchedulerProof
     database_sha256 = $DatabaseHashAfter
     env_sha256 = $EnvHashAfter
     rollback_backup = $ExpectedBackupPath
