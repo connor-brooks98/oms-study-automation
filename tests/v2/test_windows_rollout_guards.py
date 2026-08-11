@@ -52,6 +52,10 @@ def test_f28_launcher_and_installer_bind_one_acl_restricted_gate_directory() -> 
     assert "expected_schema" in launcher
     assert "launcher-exit-$Nonce.json" in launcher
     assert "UTF8Encoding($false, $true)" in launcher
+    assert "function Test-JsonInteger" in launcher
+    assert "function Test-ExactJsonInteger" in launcher
+    assert "[int]$Record." not in launcher
+    assert "[int]$Finalized." not in launcher
     assert "Test-Path -LiteralPath $ClaimedArchivePath)" in launcher
     assert "Test-Path -LiteralPath $Destination)" in launcher
     assert "Test-Path -LiteralPath $ClaimedArchivePath -PathType Leaf" not in launcher
@@ -77,6 +81,9 @@ def test_f28_launcher_and_installer_bind_one_acl_restricted_gate_directory() -> 
 
 def test_f28_acceptance_script_is_two_phase_and_never_kills_or_reconfigures() -> None:
     script = (ROOT / "scripts" / "accept-f28-restart.ps1").read_text(encoding="utf-8")
+    verifier = (ROOT / "src" / "oms_hub" / "task_scheduler_evidence.py").read_text(
+        encoding="utf-8"
+    )
 
     assert "SupportsShouldProcess" in script
     assert "request.json" in script
@@ -100,6 +107,16 @@ def test_f28_acceptance_script_is_two_phase_and_never_kills_or_reconfigures() ->
     assert "RestartCount" in script
     assert "LastTaskResult" in script
     assert "Get-WinEvent" in script
+    assert "SystemTime" in verifier
+    assert "creation_date" in script
+    assert "function Test-JsonInteger" in script
+    assert "function Test-ExactJsonInteger" in script
+    assert "[int]$Record." not in script
+    assert "[int]$Consumed." not in script
+    assert "[int]$Finalized." not in script
+    assert "Test-ExactJsonInteger -Value $Record.exit_code" in script
+    assert "Test-ExactJsonInteger -Value $Finalized.expected_schema" in script
+    assert "Test-ExactJsonInteger -Value $Armed.schema_version" in script
     assert "backup-sqlite.py" in script
     assert "F28_NATIVE_RESTART_" in script
     assert "Start-ScheduledTask" in script
@@ -108,6 +125,32 @@ def test_f28_acceptance_script_is_two_phase_and_never_kills_or_reconfigures() ->
     assert "Stop-ScheduledTask" not in script
     assert "Register-ScheduledTask" not in script
     assert "Set-Content" not in script
+
+
+def test_f28_acceptance_publishes_exact_success_leaf_before_printing_marker() -> None:
+    script = (ROOT / "scripts" / "accept-f28-restart.ps1").read_text(encoding="utf-8")
+
+    assert "if (Test-Path -LiteralPath $Path)" in script
+    assert "[System.IO.File]::Move($Temporary, $Path)" in script
+    assert "Test-Path -LiteralPath $Path -PathType Leaf" in script
+    assert "F28 atomic JSON publication did not create the exact destination file" in script
+    assert script.index("Write-AtomicJson -Path $SuccessPath -Value $Result") < script.index(
+        "$Result | ConvertTo-Json -Depth 20"
+    )
+
+
+def test_f28_recovery_always_rethrows_the_original_acceptance_failure() -> None:
+    script = (ROOT / "scripts" / "accept-f28-restart.ps1").read_text(encoding="utf-8")
+
+    assert "F28 recovery attempt failed; rethrowing the original acceptance failure." in script
+    recovery_start = script.index("if ($FireWritten) {")
+    recovery_throw = script.index("throw $Failure", recovery_start)
+    task_start = script.index("Start-ScheduledTask -TaskName $TaskName", recovery_start)
+    recovery_guard = script.index(
+        "F28 recovery attempt failed; rethrowing the original acceptance failure.",
+        task_start,
+    )
+    assert task_start < recovery_guard < recovery_throw
 
 
 def test_windows_revision_capture_preserves_the_complete_git_hash() -> None:

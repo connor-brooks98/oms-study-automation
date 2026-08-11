@@ -65,6 +65,29 @@ $env:OMS_HUB_BUILD_REVISION = $BuildRevision
 $env:OMS_HUB_BUILD_TREE = $BuildTree
 $env:OMS_HUB_F28_GATE_DIR = $GateDirectory
 
+function Test-JsonInteger {
+  param([AllowNull()][object]$Value)
+  if ($null -eq $Value) { return $false }
+  return (
+    $Value -is [sbyte] -or
+    $Value -is [byte] -or
+    $Value -is [short] -or
+    $Value -is [ushort] -or
+    $Value -is [int] -or
+    $Value -is [uint] -or
+    $Value -is [long] -or
+    $Value -is [ulong]
+  )
+}
+
+function Test-ExactJsonInteger {
+  param([AllowNull()][object]$Value, [long]$Expected)
+  return (
+    (Test-JsonInteger -Value $Value) -and
+    [decimal]$Value -eq [decimal]$Expected
+  )
+}
+
 function Write-F28LauncherExitEvidence {
   param(
     [string]$Directory,
@@ -107,17 +130,20 @@ function Write-F28LauncherExitEvidence {
     throw "F28 finalized server exit evidence is missing."
   }
   $Finalized = Get-Content -LiteralPath $FinalizedPath -Raw | ConvertFrom-Json
-  $ExpectedSchema = [int]$Record.expected_schema
+  if (-not (Test-JsonInteger -Value $Record.expected_schema)) {
+    throw "F28 server exit expected_schema must be a JSON integer."
+  }
+  $ExpectedSchema = [long]$Record.expected_schema
   if (
-    [int]$Record.schema_version -ne 1 -or
+    -not (Test-ExactJsonInteger -Value $Record.schema_version -Expected 1) -or
     $ExpectedSchema -le 0 -or
-    [int]$Record.exit_code -ne 75 -or
+    -not (Test-ExactJsonInteger -Value $Record.exit_code -Expected 75) -or
     [string]$Record.expected_revision -cne $ExpectedRevision -or
     [string]$Record.expected_tree -cne $ExpectedTree -or
-    [int]$Finalized.schema_version -ne 1 -or
+    -not (Test-ExactJsonInteger -Value $Finalized.schema_version -Expected 1) -or
     [string]$Finalized.nonce -cne $Nonce -or
-    [int]$Finalized.expected_schema -ne $ExpectedSchema -or
-    [int]$Finalized.exit_code -ne 75 -or
+    -not (Test-ExactJsonInteger -Value $Finalized.expected_schema -Expected $ExpectedSchema) -or
+    -not (Test-ExactJsonInteger -Value $Finalized.exit_code -Expected 75) -or
     [string]$Finalized.expected_revision -cne $ExpectedRevision -or
     [string]$Finalized.expected_tree -cne $ExpectedTree -or
     [string]$Finalized.latest_server_exit_sha256 -cne $ClaimedHash

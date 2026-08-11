@@ -10,8 +10,11 @@ import tempfile
 import uuid
 import xml.etree.ElementTree as element_tree
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
+
+_MAX_EVENT_PROCESS_LAG = timedelta(seconds=30)
 
 
 def _local_name(tag: str) -> str:
@@ -54,6 +57,18 @@ def _canonical_windows_path(value: str, label: str) -> str:
     return ntpath.normcase(ntpath.normpath(value))
 
 
+def _utc_timestamp(value: object, label: str) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ValueError(f"{label} must be an ISO 8601 UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as error:
+        raise ValueError(f"{label} must be an ISO 8601 UTC timestamp") from error
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError(f"{label} must be an ISO 8601 UTC timestamp")
+    return parsed.astimezone(UTC)
+
+
 def _parse_event(raw_event: Mapping[str, object]) -> dict[str, object]:
     record_id = _strict_int(raw_event.get("event_record_id"), "event_record_id", minimum=1)
     xml = raw_event.get("xml")
@@ -66,6 +81,7 @@ def _parse_event(raw_event: Mapping[str, object]) -> dict[str, object]:
 
     system_values: dict[str, str] = {}
     fields: dict[str, str] = {}
+    system_time: str | None = None
     for element in root.iter():
         name = _local_name(element.tag)
         if name in {"EventID", "EventRecordID"}:
@@ -75,13 +91,23 @@ def _parse_event(raw_event: Mapping[str, object]) -> dict[str, object]:
             if field_name is None or field_name in fields:
                 raise ValueError("event XML has invalid EventData fields")
             fields[field_name] = element.text or ""
+        if name == "TimeCreated":
+            if system_time is not None or "SystemTime" not in element.attrib:
+                raise ValueError("event XML has invalid TimeCreated metadata")
+            system_time = element.attrib["SystemTime"]
     event_id = _strict_decimal(system_values.get("EventID"), "EventID", minimum=1)
     xml_record_id = _strict_decimal(
         system_values.get("EventRecordID"), "EventRecordID", minimum=1
     )
     if xml_record_id != record_id:
         raise ValueError("event record identifier differs from EventRecordID XML")
-    return {"record_id": record_id, "event_id": event_id, "fields": fields}
+    _utc_timestamp(system_time, "TimeCreated SystemTime")
+    return {
+        "record_id": record_id,
+        "event_id": event_id,
+        "system_time": system_time,
+        "fields": fields,
+    }
 
 
 def _event_field(event: Mapping[str, object], name: str) -> str | None:
@@ -95,6 +121,10 @@ def _event_record_id(event: Mapping[str, object]) -> int:
 
 def _event_id(event: Mapping[str, object]) -> int:
     return cast(int, event["event_id"])
+
+
+def _event_system_time(event: Mapping[str, object]) -> str:
+    return cast(str, event["system_time"])
 
 
 def _task_events_after_cursor(
@@ -119,9 +149,11 @@ def _replacement_ancestor_chain(
     replacement_process_id: int,
     replacement_hub_pid: int,
     expected_action: str,
-) -> list[int]:
+    created_process_event_time: str,
+) -> tuple[list[int], str]:
     parents: dict[int, int] = {}
     replacement_executable_path: str | None = None
+    replacement_creation_date: str | None = None
     for process in process_snapshot:
         pid = _strict_int(process.get("pid"), "process pid", minimum=0)
         parent_pid = _strict_int(process.get("parent_pid"), "process parent_pid", minimum=0)
@@ -135,10 +167,24 @@ def _replacement_ancestor_chain(
             replacement_executable_path = _canonical_windows_path(
                 executable_path, "Task Scheduler process executable_path"
             )
+            creation_date = process.get("creation_date")
+            if not isinstance(creation_date, str):
+                raise ValueError("Task Scheduler process creation_date must be a string")
+            replacement_creation_date = creation_date
     if replacement_process_id not in parents or replacement_hub_pid not in parents:
         raise ValueError("scheduler process is absent from the same-snapshot process list")
     if replacement_executable_path != expected_action:
         raise ValueError("Task Scheduler created process executable differs from exact action path")
+    event_time = _utc_timestamp(created_process_event_time, "Event 129 SystemTime")
+    process_time = _utc_timestamp(
+        replacement_creation_date, "Task Scheduler process creation_date"
+    )
+    if process_time > event_time:
+        raise ValueError("Task Scheduler process creation postdates Event 129")
+    if event_time - process_time > _MAX_EVENT_PROCESS_LAG:
+        raise ValueError(
+            "Task Scheduler process creation is outside the Event 129 correlation window"
+        )
     chain = [replacement_hub_pid]
     seen = {replacement_hub_pid}
     while chain[-1] in parents and parents[chain[-1]] != 0:
@@ -149,7 +195,10 @@ def _replacement_ancestor_chain(
         seen.add(parent)
     if replacement_process_id not in chain:
         raise ValueError("Task Scheduler created process is not an ancestor of replacement oms-hub")
-    return list(reversed(chain[: chain.index(replacement_process_id) + 1]))
+    return (
+        list(reversed(chain[: chain.index(replacement_process_id) + 1])),
+        cast(str, replacement_creation_date),
+    )
 
 
 def verify_scheduler_restart(
@@ -235,8 +284,13 @@ def verify_scheduler_restart(
     created_pid = _strict_decimal(
         _event_field(created_process, "ProcessID"), "Event 129 ProcessID", minimum=1
     )
-    ancestor_pids = _replacement_ancestor_chain(
-        process_snapshot, created_pid, hub_pid, expected_action
+    created_process_event_time = _event_system_time(created_process)
+    ancestor_pids, created_process_creation_time = _replacement_ancestor_chain(
+        process_snapshot,
+        created_pid,
+        hub_pid,
+        expected_action,
+        created_process_event_time,
     )
     return {
         "schema_version": 1,
@@ -249,7 +303,9 @@ def verify_scheduler_restart(
         "replacement_action_event_record_id": _event_record_id(replacement_action),
         "replacement_task_instance_id": replacement_instance,
         "replacement_process_event_record_id": _event_record_id(created_process),
+        "replacement_process_event_time": created_process_event_time,
         "replacement_process_id": created_pid,
+        "replacement_process_creation_time": created_process_creation_time,
         "replacement_hub_pid": hub_pid,
         "replacement_hub_ancestor_pids": ancestor_pids,
     }

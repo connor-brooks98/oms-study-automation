@@ -31,13 +31,60 @@ function Assert-NotReparsePoint {
 
 function Write-AtomicJson {
   param([string]$Path, [object]$Value)
+  if (Test-Path -LiteralPath $Path) {
+    throw "F28 atomic JSON destination already exists: $Path"
+  }
   $Directory = Split-Path -Parent $Path
   $Temporary = Join-Path $Directory (".{0}.{1}.tmp" -f (
     Split-Path -Leaf $Path
   ), [guid]::NewGuid())
   $Payload = $Value | ConvertTo-Json -Depth 20 -Compress
   [System.IO.File]::WriteAllText($Temporary, $Payload + "`n", $Utf8NoBom)
-  Move-Item -LiteralPath $Temporary -Destination $Path
+  try {
+    # File.Move targets this exact path and never treats an existing directory
+    # as a container. It also refuses to overwrite an existing file.
+    [System.IO.File]::Move($Temporary, $Path)
+  } finally {
+    if (Test-Path -LiteralPath $Temporary -PathType Leaf) {
+      Remove-Item -LiteralPath $Temporary -Force -ErrorAction SilentlyContinue
+    }
+  }
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "F28 atomic JSON publication did not create the exact destination file."
+  }
+  $Published = [System.IO.File]::ReadAllText($Path, $Utf8NoBom)
+  if ($Published -cne ($Payload + "`n")) {
+    throw "F28 atomic JSON publication differs from the requested payload."
+  }
+}
+
+function Test-JsonInteger {
+  param([AllowNull()][object]$Value)
+  if ($null -eq $Value) { return $false }
+  return (
+    $Value -is [sbyte] -or
+    $Value -is [byte] -or
+    $Value -is [short] -or
+    $Value -is [ushort] -or
+    $Value -is [int] -or
+    $Value -is [uint] -or
+    $Value -is [long] -or
+    $Value -is [ulong]
+  )
+}
+
+function Test-ExactJsonInteger {
+  param([AllowNull()][object]$Value, [long]$Expected)
+  return (
+    (Test-JsonInteger -Value $Value) -and
+    [decimal]$Value -eq [decimal]$Expected
+  )
+}
+
+function ConvertTo-UtcIso8601 {
+  param([AllowNull()][object]$Value)
+  if ($null -eq $Value) { return $null }
+  return ([datetime]$Value).ToUniversalTime().ToString("o")
 }
 
 function Get-DotEnvValue {
@@ -289,7 +336,7 @@ function Get-RuntimeEvidence {
       parent_pid = [int]$Process.ParentProcessId
       name = [string]$Process.Name
       executable_path = [string]$Process.ExecutablePath
-      creation_date = [string]$Process.CreationDate
+      creation_date = (ConvertTo-UtcIso8601 -Value $Process.CreationDate)
     })
     $Key = [string]$Process.ProcessId
     if ($Children.ContainsKey($Key)) {
@@ -302,7 +349,7 @@ function Get-RuntimeEvidence {
       parent_pid = [int]$_.ParentProcessId
       name = [string]$_.Name
       executable_path = [string]$_.ExecutablePath
-      creation_date = [string]$_.CreationDate
+      creation_date = (ConvertTo-UtcIso8601 -Value $_.CreationDate)
     }
   })
   return [ordered]@{
@@ -354,7 +401,7 @@ function Assert-ExactHealth {
     $Health.database_reachable -ne $true -or
     [string]$Health.build_revision -cne $ExpectedRevision -or
     [string]$Health.build_tree -cne $ExpectedTree -or
-    [int]$Health.schema_version -ne $ExpectedSchema
+    -not (Test-ExactJsonInteger -Value $Health.schema_version -Expected $ExpectedSchema)
   ) { throw "Readiness identity or schema differs from the approved runtime." }
   $WorkerNames = @($Health.workers.PSObject.Properties.Name | Sort-Object)
   if (($WorkerNames -join "|") -cne (($ExpectedWorkers | Sort-Object) -join "|")) {
@@ -364,7 +411,7 @@ function Assert-ExactHealth {
     $Worker = $Health.workers.$Name
     if (
       $Worker.alive -ne $true -or
-      [int]$Worker.start_count -ne 1 -or
+      -not (Test-ExactJsonInteger -Value $Worker.start_count -Expected 1) -or
       $null -ne $Worker.active_work_age_seconds
     ) { throw "Worker $Name is not one healthy idle generation." }
   }
@@ -513,11 +560,12 @@ try {
     -Label "worker-quiesced arm record"
   $Armed = Get-Content -LiteralPath $ArmedPath -Raw | ConvertFrom-Json
   if (
+    -not (Test-ExactJsonInteger -Value $Armed.schema_version -Expected 1) -or
     [string]$Armed.nonce -cne $Nonce -or
-    [int]$Armed.exit_code -ne $FixedExitCode -or
+    -not (Test-ExactJsonInteger -Value $Armed.exit_code -Expected $FixedExitCode) -or
     [string]$Armed.expected_revision -cne $ExpectedRevision -or
     [string]$Armed.expected_tree -cne $ExpectedTree -or
-    [int]$Armed.expected_schema -ne $ExpectedSchema
+    -not (Test-ExactJsonInteger -Value $Armed.expected_schema -Expected $ExpectedSchema)
   ) { throw "Armed record differs from the exact request." }
   Assert-ExactHealth -Health $Armed.health
   $DatabaseHashBefore = New-DatabaseSnapshotHash -Destination $DatabaseBeforePath
@@ -551,21 +599,21 @@ try {
   $Finalized = Get-Content -LiteralPath $FinalizedPath -Raw | ConvertFrom-Json
   foreach ($Record in @($ServerExit, $ConsumedLauncherServerExit, $LauncherExit)) {
     if (
-      [int]$Record.schema_version -ne 1 -or
+      -not (Test-ExactJsonInteger -Value $Record.schema_version -Expected 1) -or
       [string]$Record.nonce -cne $Nonce -or
-      [int]$Record.exit_code -ne $FixedExitCode -or
+      -not (Test-ExactJsonInteger -Value $Record.exit_code -Expected $FixedExitCode) -or
       [string]$Record.expected_revision -cne $ExpectedRevision -or
       [string]$Record.expected_tree -cne $ExpectedTree -or
-      [int]$Record.expected_schema -ne $ExpectedSchema
+      -not (Test-ExactJsonInteger -Value $Record.expected_schema -Expected $ExpectedSchema)
     ) { throw "Native exit evidence differs from the exact F28 request." }
   }
   if (
-    [int]$Consumed.schema_version -ne 1 -or
+    -not (Test-ExactJsonInteger -Value $Consumed.schema_version -Expected 1) -or
     [string]$Consumed.nonce -cne $Nonce -or
-    [int]$Consumed.exit_code -ne $FixedExitCode -or
+    -not (Test-ExactJsonInteger -Value $Consumed.exit_code -Expected $FixedExitCode) -or
     [string]$Consumed.expected_revision -cne $ExpectedRevision -or
     [string]$Consumed.expected_tree -cne $ExpectedTree -or
-    [int]$Consumed.expected_schema -ne $ExpectedSchema
+    -not (Test-ExactJsonInteger -Value $Consumed.expected_schema -Expected $ExpectedSchema)
   ) { throw "Consumed request record differs from the exact F28 request." }
   $ServerExitHash = (Get-FileHash -LiteralPath $ServerExitPath -Algorithm SHA256).Hash.ToLowerInvariant()
   $ConsumedLauncherServerExitHash = (
@@ -579,19 +627,22 @@ try {
     $ConsumedLauncherServerExitHash -cne $ServerExitHash
   ) { throw "Launcher evidence does not cryptographically bind the finalized server exit record." }
   if (
-    [int]$Finalized.schema_version -ne 1 -or
+    -not (Test-ExactJsonInteger -Value $Finalized.schema_version -Expected 1) -or
     [string]$Finalized.nonce -cne $Nonce -or
-    [int]$Finalized.exit_code -ne $FixedExitCode -or
+    -not (Test-ExactJsonInteger -Value $Finalized.exit_code -Expected $FixedExitCode) -or
     [string]$Finalized.expected_revision -cne $ExpectedRevision -or
     [string]$Finalized.expected_tree -cne $ExpectedTree -or
-    [int]$Finalized.expected_schema -ne $ExpectedSchema -or
+    -not (Test-ExactJsonInteger -Value $Finalized.expected_schema -Expected $ExpectedSchema) -or
     [string]$Finalized.consumed -cne "consumed-$Nonce.json" -or
     [string]$Finalized.consumed_sha256 -cne $ConsumedHash -or
     [string]$Finalized.server_exit_sha256 -cne $ServerExitHash -or
     [string]$Finalized.latest_server_exit_sha256 -cne $ConsumedLauncherServerExitHash
   ) { throw "Finalized exit record does not prove exact consumed state." }
   $OldPids = @($OldProcesses | ForEach-Object { [int]$_.pid })
-  if ([int]$ServerExit.server_pid -notin $OldPids) {
+  if (
+    -not (Test-JsonInteger -Value $ServerExit.server_pid) -or
+    [long]$ServerExit.server_pid -notin $OldPids
+  ) {
     throw "Server exit evidence does not identify the recorded old runtime tree."
   }
 
@@ -698,7 +749,8 @@ try {
     protected_pdf_count = $PdfAfter.Count
     completed_at = (Get-Date).ToUniversalTime().ToString("o")
   }
-  Write-AtomicJson -Path (Join-Path $GateDirectory "success-$Nonce.json") -Value $Result
+  $SuccessPath = Join-Path $GateDirectory "success-$Nonce.json"
+  Write-AtomicJson -Path $SuccessPath -Value $Result
   $Result | ConvertTo-Json -Depth 20
 } catch {
   $Failure = $_
@@ -710,26 +762,32 @@ try {
   }
   if ($FireWritten) {
     try {
-      $RecoveryHealth = Get-ReadyHealth -Port $Port
-      Assert-ExactHealth -Health $RecoveryHealth
-    } catch {
-      # RECOVERY ONLY: request the unchanged registered task when automatic
-      # restart failed. Never stop, kill, register, or rewrite the task.
-      Start-ScheduledTask -TaskName $TaskName
-      $RecoveryDeadline = (Get-Date).ToUniversalTime().AddSeconds($RestartTimeoutSeconds)
-      do {
-        Start-Sleep -Seconds 1
-        try {
-          $RecoveryHealth = Get-ReadyHealth -Port $Port
-          Assert-ExactHealth -Health $RecoveryHealth
-          break
-        } catch {
-          if ((Get-Date).ToUniversalTime() -ge $RecoveryDeadline) {
-            [Console]::Error.WriteLine("F28 recovery could not restore exact readiness.")
+      try {
+        $RecoveryHealth = Get-ReadyHealth -Port $Port
+        Assert-ExactHealth -Health $RecoveryHealth
+      } catch {
+        # RECOVERY ONLY: request the unchanged registered task when automatic
+        # restart failed. Never stop, kill, register, or rewrite the task.
+        Start-ScheduledTask -TaskName $TaskName
+        $RecoveryDeadline = (Get-Date).ToUniversalTime().AddSeconds($RestartTimeoutSeconds)
+        do {
+          Start-Sleep -Seconds 1
+          try {
+            $RecoveryHealth = Get-ReadyHealth -Port $Port
+            Assert-ExactHealth -Health $RecoveryHealth
             break
+          } catch {
+            if ((Get-Date).ToUniversalTime() -ge $RecoveryDeadline) {
+              [Console]::Error.WriteLine("F28 recovery could not restore exact readiness.")
+              break
+            }
           }
-        }
-      } while ($true)
+        } while ($true)
+      }
+    } catch {
+      [Console]::Error.WriteLine(
+        "F28 recovery attempt failed; rethrowing the original acceptance failure."
+      )
     }
   }
   throw $Failure

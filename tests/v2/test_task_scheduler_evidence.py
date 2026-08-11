@@ -6,7 +6,13 @@ TASK = r"\OMS Study Hub V2"
 ACTION = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 
 
-def _event(record_id: int, event_id: int, **data: object) -> dict[str, object]:
+def _event(
+    record_id: int,
+    event_id: int,
+    *,
+    system_time: str = "2026-08-10T19:20:00.0000000Z",
+    **data: object,
+) -> dict[str, object]:
     fields = "".join(
         f'<Data Name="{name}">{value}</Data>' for name, value in data.items()
     )
@@ -15,6 +21,7 @@ def _event(record_id: int, event_id: int, **data: object) -> dict[str, object]:
         "xml": (
             '<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">'
             f"<System><EventID>{event_id}</EventID><EventRecordID>{record_id}</EventRecordID>"
+            f'<TimeCreated SystemTime="{system_time}"/>'
             f"</System><EventData>{fields}</EventData></Event>"
         ),
     }
@@ -27,7 +34,14 @@ def _valid_events() -> list[dict[str, object]]:
         _event(11, 201, TaskName=TASK, TaskInstanceId=old, ActionName=ACTION, ResultCode="75"),
         _event(12, 100, TaskName=TASK, InstanceId=replacement),
         _event(13, 200, TaskName=TASK, TaskInstanceId=replacement, ActionName=ACTION),
-        _event(14, 129, TaskName=TASK, Path=ACTION, ProcessID="700"),
+        _event(
+            14,
+            129,
+            system_time="2026-08-10T19:20:03.2500000Z",
+            TaskName=TASK,
+            Path=ACTION,
+            ProcessID="700",
+        ),
     ]
 
 
@@ -38,6 +52,7 @@ def _processes() -> list[dict[str, object]]:
             "parent_pid": 4,
             "name": "powershell.exe",
             "executable_path": ACTION,
+            "creation_date": "2026-08-10T19:20:03.1250000Z",
         },
         {
             "pid": 701,
@@ -67,6 +82,8 @@ def test_scheduler_verifier_proves_one_automatic_restart_and_parent_chain() -> N
     assert proof["old_action_event_record_id"] == 11
     assert proof["replacement_process_id"] == 700
     assert proof["replacement_hub_ancestor_pids"] == [700, 701, 702]
+    assert proof["replacement_process_event_time"] == "2026-08-10T19:20:03.2500000Z"
+    assert proof["replacement_process_creation_time"] == "2026-08-10T19:20:03.1250000Z"
 
 
 def test_scheduler_verifier_allows_system_entry_without_executable_path() -> None:
@@ -176,6 +193,7 @@ def test_scheduler_verifier_rejects_a_process_not_ancestral_to_replacement_hub()
         "parent_pid": 4,
         "name": "powershell.exe",
         "executable_path": ACTION,
+        "creation_date": "2026-08-10T19:20:03.1250000Z",
     }
     processes[1] = {
         "pid": 701,
@@ -216,3 +234,33 @@ def test_scheduler_verifier_rejects_ancestral_pid_with_wrong_action_executable()
         assert "executable" in str(error)
     else:
         raise AssertionError("ancestral PID with the wrong executable must be rejected")
+
+
+def test_scheduler_verifier_rejects_reused_pid_created_after_event_129() -> None:
+    processes = _processes()
+    processes[0]["creation_date"] = "2026-08-10T19:20:03.5000000Z"
+
+    with pytest.raises(ValueError, match="postdates Event 129"):
+        verify_scheduler_restart(
+            events=_valid_events(),
+            cursor_event_record_id=10,
+            full_task_name=TASK,
+            action_path=ACTION,
+            replacement_hub_pid=702,
+            process_snapshot=processes,
+        )
+
+
+def test_scheduler_verifier_rejects_process_created_too_early_for_event_129() -> None:
+    processes = _processes()
+    processes[0]["creation_date"] = "2026-08-10T19:19:00.0000000Z"
+
+    with pytest.raises(ValueError, match="outside the Event 129 correlation window"):
+        verify_scheduler_restart(
+            events=_valid_events(),
+            cursor_event_record_id=10,
+            full_task_name=TASK,
+            action_path=ACTION,
+            replacement_hub_pid=702,
+            process_snapshot=processes,
+        )
