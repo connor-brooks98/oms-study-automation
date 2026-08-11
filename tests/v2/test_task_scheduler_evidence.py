@@ -6,6 +6,8 @@ from oms_hub.task_scheduler_evidence import verify_scheduler_restart as _verify_
 
 TASK = r"\OMS Study Hub V2"
 ACTION = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+PRIMARY_ACTION_ID = "f28-primary-0"
+RECOVERY_ACTION_ID = "f28-recovery-1"
 RECOVERY_ARGUMENTS = '-NoProfile -File "C:\\Services\\restart-hub-after-failure.ps1" -ActionIndex 1'
 
 
@@ -43,7 +45,7 @@ def _valid_events() -> list[dict[str, object]]:
             201,
             TaskName=TASK,
             TaskInstanceId=old,
-            ActionName=ACTION,
+            ActionName=PRIMARY_ACTION_ID,
             ResultCode="2147942475",
         ),
         _event(
@@ -51,7 +53,7 @@ def _valid_events() -> list[dict[str, object]]:
             200,
             TaskName=TASK,
             TaskInstanceId=old,
-            ActionName=ACTION,
+            ActionName=RECOVERY_ACTION_ID,
             EnginePID="700",
         ),
         _event(
@@ -108,6 +110,8 @@ def test_scheduler_verifier_proves_one_automatic_restart_and_parent_chain() -> N
     )
 
     assert proof["old_action_event_record_id"] == 11
+    assert proof["old_action_id"] == PRIMARY_ACTION_ID
+    assert proof["replacement_action_id"] == RECOVERY_ACTION_ID
     assert proof["replacement_process_id"] == 700
     assert proof["replacement_hub_ancestor_pids"] == [700, 701, 702]
     assert proof["replacement_process_event_time"] == "2026-08-10T19:20:03.2500000Z"
@@ -129,7 +133,7 @@ def test_scheduler_verifier_requires_the_native_exit_75_hresult_not_a_low_word()
         201,
         TaskName=TASK,
         TaskInstanceId="11111111-1111-1111-1111-111111111111",
-        ActionName=ACTION,
+        ActionName=PRIMARY_ACTION_ID,
         ResultCode="2147942475",
     )
 
@@ -160,7 +164,7 @@ def test_scheduler_verifier_allows_native_129_then_200_recovery_order() -> None:
         200,
         TaskName=TASK,
         TaskInstanceId="11111111-1111-1111-1111-111111111111",
-        ActionName=ACTION,
+        ActionName=RECOVERY_ACTION_ID,
         EnginePID="700",
     )
 
@@ -186,7 +190,7 @@ def test_scheduler_verifier_rejects_engine_pid_or_extra_recovery_arguments() -> 
         200,
         TaskName=TASK,
         TaskInstanceId="11111111-1111-1111-1111-111111111111",
-        ActionName=ACTION,
+        ActionName=RECOVERY_ACTION_ID,
         EnginePID="701",
     )
     with pytest.raises(ValueError, match="EnginePID"):
@@ -197,6 +201,54 @@ def test_scheduler_verifier_rejects_engine_pid_or_extra_recovery_arguments() -> 
             action_path=ACTION,
             replacement_hub_pid=702,
             process_snapshot=_processes(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("event_index", "action_id"),
+    [
+        (0, "F28-primary-0"),
+        (0, ACTION),
+        (1, "f28-recovery-2"),
+        (1, "F28-recovery-1"),
+        (1, ACTION),
+    ],
+)
+def test_scheduler_verifier_rejects_wrong_or_case_varied_native_action_ids(
+    event_index: int, action_id: str
+) -> None:
+    events = _valid_events()
+    replacement = _event(
+        11 + event_index,
+        201 if event_index == 0 else 200,
+        TaskName=TASK,
+        TaskInstanceId="11111111-1111-1111-1111-111111111111",
+        ActionName=action_id,
+        **({"ResultCode": "2147942475"} if event_index == 0 else {"EnginePID": "700"}),
+    )
+    events[event_index] = replacement
+
+    with pytest.raises(ValueError, match="exact .* action"):
+        verify_scheduler_restart(
+            events=events,
+            cursor_event_record_id=10,
+            full_task_name=TASK,
+            action_path=ACTION,
+            replacement_hub_pid=702,
+            process_snapshot=_processes(),
+        )
+
+
+def test_scheduler_verifier_rejects_recovery_action_id_for_wrong_index() -> None:
+    with pytest.raises(ValueError, match="exact task action"):
+        verify_scheduler_restart(
+            events=_valid_events(),
+            cursor_event_record_id=10,
+            full_task_name=TASK,
+            action_path=ACTION,
+            replacement_hub_pid=702,
+            process_snapshot=_processes(),
+            recovery_action_index=2,
         )
 
     processes = _processes()

@@ -17,6 +17,7 @@ from typing import cast
 _MAX_EVENT_PROCESS_LAG = timedelta(seconds=30)
 _EVENT_NAMESPACE = "http://schemas.microsoft.com/win/2004/08/events/event"
 _EXIT_75_HRESULT = 2147942475  # 0x8007004B: HRESULT_FROM_WIN32(75)
+_PRIMARY_ACTION_ID = "f28-primary-0"
 
 
 def _event_tag(local_name: str) -> str:
@@ -266,6 +267,7 @@ def verify_scheduler_restart(
         raise ValueError("recovery_action_arguments must be a non-empty string")
     if recovery_index > 3:
         raise ValueError("recovery_action_index must be at most 3")
+    expected_recovery_action_id = f"f28-recovery-{recovery_index}"
     task_events = _task_events_after_cursor(events, cursor, full_task_name)
     if not task_events:
         raise ValueError("no exact task events occurred after the event cursor")
@@ -280,8 +282,7 @@ def verify_scheduler_restart(
     old_action = old_actions[0]
     if (
         _strict_decimal(_event_field(old_action, "ResultCode"), "ResultCode") != _EXIT_75_HRESULT
-        or _canonical_windows_path(_event_field(old_action, "ActionName") or "", "ActionName")
-        != expected_action
+        or _event_field(old_action, "ActionName") != _PRIMARY_ACTION_ID
     ):
         raise ValueError("old Event 201 does not match exact failure action")
     old_instance = _canonical_guid(_event_field(old_action, "TaskInstanceId"), "old TaskInstanceId")
@@ -313,10 +314,7 @@ def verify_scheduler_restart(
             _event_field(replacement_action, "TaskInstanceId"), "Event 200 TaskInstanceId"
         )
         != old_instance
-        or _canonical_windows_path(
-            _event_field(replacement_action, "ActionName") or "", "ActionName"
-        )
-        != expected_action
+        or _event_field(replacement_action, "ActionName") != expected_recovery_action_id
     ):
         raise ValueError("replacement Event 200 does not match exact task action")
 
@@ -351,16 +349,18 @@ def verify_scheduler_restart(
         created_process_event_time,
     )
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "event_cursor_record_id": cursor,
         "full_task_name": full_task_name,
         "action_path": action_path,
         "old_action_event_record_id": failure_record_id,
         "old_task_instance_id": old_instance,
+        "old_action_id": _PRIMARY_ACTION_ID,
         "old_result_code": _EXIT_75_HRESULT,
         "old_win32_exit_code": 75,
         "replacement_action_event_record_id": _event_record_id(replacement_action),
         "replacement_task_instance_id": old_instance,
+        "replacement_action_id": expected_recovery_action_id,
         "replacement_engine_pid": engine_pid,
         "recovery_action_arguments": recovery_action_arguments,
         "recovery_action_index": recovery_index,
