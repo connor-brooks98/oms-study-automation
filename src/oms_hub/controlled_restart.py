@@ -247,9 +247,14 @@ class ControlledRestartController:
     def finalize_server_exit(self) -> int:
         if not self._fired or self._request is None or self._active_path is None:
             return 0
+        nonce = self._request.nonce
+        server_exit_path = self.gate_directory / f"server-exit-{nonce}.json"
+        latest_server_exit_path = self.gate_directory / "latest-server-exit.json"
+        consumed_path = self.gate_directory / f"consumed-{nonce}.json"
+        finalized_path = self.gate_directory / f"finalized-{nonce}.json"
         record = {
             "schema_version": _REQUEST_SCHEMA_VERSION,
-            "nonce": self._request.nonce,
+            "nonce": nonce,
             "expected_revision": self.expected_revision,
             "expected_tree": self.expected_tree,
             "expected_schema": self.expected_schema,
@@ -257,13 +262,26 @@ class ControlledRestartController:
             "server_pid": os.getpid(),
             "server_shutdown_completed_at": _timestamp(self._now()),
         }
+        _atomic_json(server_exit_path, record)
+        self._active_path.replace(consumed_path)
+        _atomic_json(latest_server_exit_path, record)
         _atomic_json(
-            self.gate_directory / f"server-exit-{self._request.nonce}.json",
-            record,
-        )
-        _atomic_json(self.gate_directory / "latest-server-exit.json", record)
-        self._active_path.replace(
-            self.gate_directory / f"consumed-{self._request.nonce}.json"
+            finalized_path,
+            {
+                "schema_version": _REQUEST_SCHEMA_VERSION,
+                "nonce": nonce,
+                "expected_revision": self.expected_revision,
+                "expected_tree": self.expected_tree,
+                "expected_schema": self.expected_schema,
+                "exit_code": CONTROLLED_RESTART_EXIT_CODE,
+                "consumed": consumed_path.name,
+                "consumed_sha256": _sha256_file(consumed_path),
+                "server_exit_sha256": _sha256_file(server_exit_path),
+                "latest_server_exit_sha256": _sha256_file(
+                    latest_server_exit_path
+                ),
+                "finalized_at": _timestamp(self._now()),
+            },
         )
         return CONTROLLED_RESTART_EXIT_CODE
 
@@ -448,6 +466,10 @@ def _atomic_json(path: Path, value: Mapping[str, object]) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _canonical_uuid(value: object) -> str:

@@ -176,6 +176,76 @@ def test_controller_arms_fires_and_records_one_exact_native_exit(tmp_path: Path)
     assert server_exit["expected_tree"] == TREE
     assert not (gate / "request.json").exists()
     assert next(gate.glob("consumed-*.json")).exists()
+    finalized = json.loads(
+        next(gate.glob("finalized-*.json")).read_text(encoding="utf-8")
+    )
+    assert finalized["nonce"] == controller.active_nonce
+    assert finalized["consumed"] == f"consumed-{controller.active_nonce}.json"
+    assert finalized["consumed_sha256"] == hashlib.sha256(
+        next(gate.glob("consumed-*.json")).read_bytes()
+    ).hexdigest()
+    assert finalized["server_exit_sha256"] == hashlib.sha256(
+        next(gate.glob("server-exit-*.json")).read_bytes()
+    ).hexdigest()
+    assert finalized["latest_server_exit_sha256"] == hashlib.sha256(
+        (gate / "latest-server-exit.json").read_bytes()
+    ).hexdigest()
+
+
+def test_finalize_does_not_publish_launcher_evidence_when_consume_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 8, 10, 20, 0, tzinfo=UTC)
+    data_root = tmp_path / "data"
+    gate = data_root / "acceptance" / "f28"
+    gate.mkdir(parents=True)
+    (gate / "request.json").write_text(
+        json.dumps(_request(now), sort_keys=True),
+        encoding="utf-8",
+    )
+    server = SimpleNamespace(should_exit=False)
+    controller = ControlledRestartController(
+        gate_directory=gate,
+        data_directory=data_root,
+        expected_revision=REVISION,
+        expected_tree=TREE,
+        expected_schema=SCHEMA,
+        supervisor=_Supervisor(),
+        server=server,
+        readiness_probe=_health,
+        now=lambda: now,
+    )
+    controller.poll_once()
+    controller.poll_once()
+    armed = next(gate.glob("armed-*.json"))
+    (gate / f"fire-{controller.active_nonce}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "nonce": controller.active_nonce,
+                "armed_sha256": hashlib.sha256(armed.read_bytes()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    controller.poll_once()
+    original_replace = Path.replace
+
+    def fail_active_consume(source: Path, destination: Path) -> Path:
+        if source.name == "active.json":
+            raise OSError("injected active consume failure")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_active_consume)
+
+    with pytest.raises(OSError, match="injected active consume failure"):
+        controller.finalize_server_exit()
+
+    assert (gate / "active.json").exists()
+    assert next(gate.glob("server-exit-*.json")).exists()
+    assert not (gate / "latest-server-exit.json").exists()
+    assert not list(gate.glob("finalized-*.json"))
 
 
 def test_controller_rejects_identity_drift_without_exiting(tmp_path: Path) -> None:

@@ -67,6 +67,10 @@ def test_f28_acceptance_script_is_two_phase_and_never_kills_or_reconfigures() ->
     assert "fire-$Nonce.json" in script
     assert "server-exit-$Nonce.json" in script
     assert "launcher-exit-$Nonce.json" in script
+    assert "consumed-$Nonce.json" in script
+    assert "finalized-$Nonce.json" in script
+    assert "latest_server_exit_sha256" in script
+    assert "Test-Path -LiteralPath $ActivePath" in script
     assert "RestartCount" in script
     assert "LastTaskResult" in script
     assert "Get-WinEvent" in script

@@ -439,6 +439,8 @@ $ArmedPath = Join-Path $GateDirectory "armed-$Nonce.json"
 $FirePath = Join-Path $GateDirectory "fire-$Nonce.json"
 $ServerExitPath = Join-Path $GateDirectory "server-exit-$Nonce.json"
 $LauncherExitPath = Join-Path $GateDirectory "launcher-exit-$Nonce.json"
+$ConsumedPath = Join-Path $GateDirectory "consumed-$Nonce.json"
+$FinalizedPath = Join-Path $GateDirectory "finalized-$Nonce.json"
 $DatabaseBeforePath = Join-Path $GateDirectory ".database-before-$Nonce.db"
 $DatabaseAfterPath = Join-Path $GateDirectory ".database-after-$Nonce.db"
 
@@ -479,8 +481,17 @@ try {
   $RestartDeadline = (Get-Date).ToUniversalTime().AddSeconds($RestartTimeoutSeconds)
   Wait-ForFile -Path $ServerExitPath -Deadline $RestartDeadline -Label "server exit record"
   Wait-ForFile -Path $LauncherExitPath -Deadline $RestartDeadline -Label "launcher exit record"
+  Wait-ForFile -Path $FinalizedPath -Deadline $RestartDeadline -Label "finalized exit record"
+  if (Test-Path -LiteralPath $ActivePath) {
+    throw "F28 active state remains after server finalization."
+  }
+  if (-not (Test-Path -LiteralPath $ConsumedPath -PathType Leaf)) {
+    throw "F28 consumed request record is missing after server finalization."
+  }
   $ServerExit = Get-Content -LiteralPath $ServerExitPath -Raw | ConvertFrom-Json
   $LauncherExit = Get-Content -LiteralPath $LauncherExitPath -Raw | ConvertFrom-Json
+  $Consumed = Get-Content -LiteralPath $ConsumedPath -Raw | ConvertFrom-Json
+  $Finalized = Get-Content -LiteralPath $FinalizedPath -Raw | ConvertFrom-Json
   foreach ($Record in @($ServerExit, $LauncherExit)) {
     if (
       [string]$Record.nonce -cne $Nonce -or
@@ -489,6 +500,28 @@ try {
       [string]$Record.expected_tree -cne $ExpectedTree
     ) { throw "Native exit evidence differs from the exact F28 request." }
   }
+  if (
+    [int]$Consumed.schema_version -ne 1 -or
+    [string]$Consumed.nonce -cne $Nonce -or
+    [int]$Consumed.exit_code -ne $FixedExitCode -or
+    [string]$Consumed.expected_revision -cne $ExpectedRevision -or
+    [string]$Consumed.expected_tree -cne $ExpectedTree -or
+    [int]$Consumed.expected_schema -ne $ExpectedSchema
+  ) { throw "Consumed request record differs from the exact F28 request." }
+  $ServerExitHash = (Get-FileHash -LiteralPath $ServerExitPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $ConsumedHash = (Get-FileHash -LiteralPath $ConsumedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  if (
+    [int]$Finalized.schema_version -ne 1 -or
+    [string]$Finalized.nonce -cne $Nonce -or
+    [int]$Finalized.exit_code -ne $FixedExitCode -or
+    [string]$Finalized.expected_revision -cne $ExpectedRevision -or
+    [string]$Finalized.expected_tree -cne $ExpectedTree -or
+    [int]$Finalized.expected_schema -ne $ExpectedSchema -or
+    [string]$Finalized.consumed -cne "consumed-$Nonce.json" -or
+    [string]$Finalized.consumed_sha256 -cne $ConsumedHash -or
+    [string]$Finalized.server_exit_sha256 -cne $ServerExitHash -or
+    [string]$Finalized.latest_server_exit_sha256 -cne $ServerExitHash
+  ) { throw "Finalized exit record does not prove exact consumed state." }
   $OldPids = @($OldProcesses | ForEach-Object { [int]$_.pid })
   if ([int]$ServerExit.server_pid -notin $OldPids) {
     throw "Server exit evidence does not identify the recorded old runtime tree."
