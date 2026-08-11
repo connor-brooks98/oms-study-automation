@@ -1,3 +1,5 @@
+import shutil
+import subprocess
 from pathlib import Path
 
 from oms_hub.config import Settings
@@ -159,6 +161,59 @@ def test_f28_recovery_always_rethrows_the_original_acceptance_failure() -> None:
         in script
     )
     assert script.count("[Console]::Error.WriteLine") == 1
+
+
+def test_f28_probe_failure_has_a_native_original_error_regression() -> None:
+    script_path = ROOT / "scripts" / "accept-f28-restart.ps1"
+    harness_path = ROOT / "tests" / "v2" / "f28_original_error_preservation.ps1"
+    script = script_path.read_text(encoding="utf-8")
+    harness = harness_path.read_text(encoding="utf-8")
+
+    helper = "function Invoke-F28FailurePreservingAction"
+    pre_fire = "if (-not $FireWritten) {"
+    probe = "Test-Path -LiteralPath $RequestPath -PathType Leaf"
+    original_throw = "throw $Failure"
+    assert helper in script
+    pre_fire_index = script.index(pre_fire)
+    protected_index = script.index("Invoke-F28FailurePreservingAction", pre_fire_index)
+    probe_index = script.index(probe, protected_index)
+    original_throw_index = script.index(original_throw, probe_index)
+    assert pre_fire_index < protected_index < probe_index < original_throw_index
+    assert probe not in script[pre_fire_index:protected_index]
+    assert "F28_TEST_PATH_PROBE_FAILURE" in harness
+    assert "F28_TEST_PRIMARY_ACCEPTANCE_FAILURE" in harness
+    assert "F28_ORIGINAL_ERROR_PRESERVATION_VERIFIED" in harness
+
+    powershell = next(
+        (
+            executable
+            for name in ("powershell.exe", "powershell", "pwsh")
+            if (executable := shutil.which(name)) is not None
+        ),
+        None,
+    )
+    if powershell is None:
+        # macOS cannot execute the native regression. Its absence is not a skip:
+        # the source contract above remains mandatory, and Windows runs this harness.
+        return
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(harness_path),
+            "-AcceptanceScript",
+            str(script_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "F28_ORIGINAL_ERROR_PRESERVATION_VERIFIED" in result.stdout
 
 
 def test_windows_revision_capture_preserves_the_complete_git_hash() -> None:

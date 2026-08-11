@@ -96,6 +96,15 @@ function Write-F28Diagnostic {
   }
 }
 
+function Invoke-F28FailurePreservingAction {
+  param([scriptblock]$Action, [string]$Diagnostic)
+  try {
+    & $Action
+  } catch {
+    Write-F28Diagnostic -Message $Diagnostic
+  }
+}
+
 function Remove-F28TemporaryDatabaseSnapshots {
   param([string[]]$Paths, [switch]$BestEffort)
   foreach ($Path in $Paths) {
@@ -793,49 +802,53 @@ try {
   $Result | ConvertTo-Json -Depth 20
 } catch {
   $Failure = $_
-  if (-not $FireWritten -and (Test-Path -LiteralPath $RequestPath -PathType Leaf)) {
-    # Retain the unclaimed request as evidence; never delete acceptance records.
-    try {
-      $FailedBeforeFirePath = Join-Path $GateDirectory "failed-before-fire-$Nonce.json"
-      if (Test-Path -LiteralPath $FailedBeforeFirePath) {
-        throw "F28 pre-fire failure evidence destination already exists."
-      }
-      [System.IO.File]::Move($RequestPath, $FailedBeforeFirePath)
-    } catch {
-      Write-F28Diagnostic -Message (
+  if (-not $FireWritten) {
+    Invoke-F28FailurePreservingAction `
+      -Action {
+        if (Test-Path -LiteralPath $RequestPath -PathType Leaf) {
+          # Retain the unclaimed request as evidence; never delete acceptance records.
+          $FailedBeforeFirePath = Join-Path `
+            $GateDirectory `
+            "failed-before-fire-$Nonce.json"
+          if (Test-Path -LiteralPath $FailedBeforeFirePath) {
+            throw "F28 pre-fire failure evidence destination already exists."
+          }
+          [System.IO.File]::Move($RequestPath, $FailedBeforeFirePath)
+        }
+      } `
+      -Diagnostic (
         "F28 pre-fire request archival failed; rethrowing the original acceptance failure."
       )
-    }
   }
   if ($FireWritten) {
-    try {
-      try {
-        $RecoveryHealth = Get-ReadyHealth -Port $Port
-        Assert-ExactHealth -Health $RecoveryHealth
-      } catch {
-        # RECOVERY ONLY: request the unchanged registered task when automatic
-        # restart failed. Never stop, kill, register, or rewrite the task.
-        Start-ScheduledTask -TaskName $TaskName
-        $RecoveryDeadline = (Get-Date).ToUniversalTime().AddSeconds($RestartTimeoutSeconds)
-        do {
-          Start-Sleep -Seconds 1
-          try {
-            $RecoveryHealth = Get-ReadyHealth -Port $Port
-            Assert-ExactHealth -Health $RecoveryHealth
-            break
-          } catch {
-            if ((Get-Date).ToUniversalTime() -ge $RecoveryDeadline) {
-              Write-F28Diagnostic -Message "F28 recovery could not restore exact readiness."
+    Invoke-F28FailurePreservingAction `
+      -Action {
+        try {
+          $RecoveryHealth = Get-ReadyHealth -Port $Port
+          Assert-ExactHealth -Health $RecoveryHealth
+        } catch {
+          # RECOVERY ONLY: request the unchanged registered task when automatic
+          # restart failed. Never stop, kill, register, or rewrite the task.
+          Start-ScheduledTask -TaskName $TaskName
+          $RecoveryDeadline = (Get-Date).ToUniversalTime().AddSeconds($RestartTimeoutSeconds)
+          do {
+            Start-Sleep -Seconds 1
+            try {
+              $RecoveryHealth = Get-ReadyHealth -Port $Port
+              Assert-ExactHealth -Health $RecoveryHealth
               break
+            } catch {
+              if ((Get-Date).ToUniversalTime() -ge $RecoveryDeadline) {
+                Write-F28Diagnostic -Message "F28 recovery could not restore exact readiness."
+                break
+              }
             }
-          }
-        } while ($true)
-      }
-    } catch {
-      Write-F28Diagnostic -Message (
+          } while ($true)
+        }
+      } `
+      -Diagnostic (
         "F28 recovery attempt failed; rethrowing the original acceptance failure."
       )
-    }
   }
   throw $Failure
 } finally {
