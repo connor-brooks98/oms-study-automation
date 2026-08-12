@@ -373,7 +373,13 @@
     updateStartAvailability(container.closest("form"));
   };
 
-  const jobRow = (documentRef, job) => {
+  const lectureDisplayLabel = (lectures, lectureId) => {
+    const lecture = resolveLecture(lectures || [], lectureId);
+    if (!lecture) return `Lecture ${lectureId}`;
+    return `${lecture.subject} Lecture ${String(lecture.lecture_number).padStart(2, "0")}`;
+  };
+
+  const jobRow = (documentRef, job, lectures = []) => {
     const row = element(documentRef, "div", "anki-job-row sh-row");
     row.dataset.jobId = job.id;
     const link = element(documentRef, "a", "anki-job-link");
@@ -385,7 +391,7 @@
     );
     const description = element(documentRef, "span");
     description.append(
-      element(documentRef, "strong", "", `Lecture ${job.lecture_id}`),
+      element(documentRef, "strong", "", lectureDisplayLabel(lectures, job.lecture_id)),
       element(documentRef, "small", "", job.target_deck),
     );
     const state = element(
@@ -454,7 +460,7 @@
     throw new Error("Unsupported failed-run action.");
   };
 
-  const refreshJobs = async (documentRef, fetchImpl) => {
+  const refreshJobs = async (documentRef, fetchImpl, lectures = []) => {
     const container = documentRef.querySelector("#anki-job-list");
     if (!container) return;
     const payload = await requestJson(
@@ -477,7 +483,7 @@
       container.append(empty);
       return;
     }
-    payload.jobs.forEach((job) => container.append(jobRow(documentRef, job)));
+    payload.jobs.forEach((job) => container.append(jobRow(documentRef, job, lectures)));
   };
 
   const initializeHome = (documentRef, fetchImpl) => {
@@ -574,7 +580,7 @@
         exam.value ? "Choose a lecture…" : "Choose an exam first",
         scopedLectures.map((lecture) => ({
           value: lecture.id,
-          label: `Lecture ${lecture.lecture_number} — ${lecture.topic}`,
+          label: `Lecture ${String(lecture.lecture_number).padStart(2, "0")} — ${lecture.topic}`,
         })),
       );
       lectureSelect.disabled = !exam.value || scopedLectures.length === 0;
@@ -592,8 +598,8 @@
       targetTag.value = String(lecture.target_tag || "");
       if (selectedLabel) {
         selectedLabel.textContent = (
-          `${lecture.subject} · Exam ${lecture.exam_number} · `
-          + `Lecture ${lecture.lecture_number} — ${lecture.topic}`
+          `${lecture.subject} Lecture ${String(lecture.lecture_number).padStart(2, "0")} · `
+          + `Exam ${lecture.exam_number} — ${lecture.topic}`
         );
       }
       renderSourceChoices(documentRef, lecture);
@@ -739,7 +745,7 @@
       refresh.disabled = true;
       const message = documentRef.querySelector("#anki-jobs-message");
       try {
-        await refreshJobs(documentRef, fetchImpl);
+        await refreshJobs(documentRef, fetchImpl, lectures);
         if (message) message.textContent = "";
       } catch (error) {
         if (message) message.textContent = error.message;
@@ -1765,6 +1771,7 @@
     initialize,
     initializeReview,
     jobRow,
+    lectureDisplayLabel,
     lectureOptions,
     loadModelOptions,
     matchesReviewSearch,

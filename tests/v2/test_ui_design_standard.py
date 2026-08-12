@@ -279,7 +279,7 @@ def test_visual_followups_keep_layout_and_restart_controls_in_their_owners() -> 
     library = source("public_quiz_library.html")
 
     assert "a.sh-btn--primary:hover { color: white; }" in app_css
-    assert ".anki-source-field:not(.sh-card)" in app_css
+    assert ".anki-workbench-panel" in app_css
     assert ".provider-card-heading > :first-child" in app_css
     assert ".exam-card { margin-top: var(--sp-2); padding: 0;" in library_css
     assert ".sh-topbar .sh-nav { width: 100%; flex-wrap: wrap; overflow: visible; }" in library_css
@@ -400,7 +400,7 @@ def test_final_visual_corrections_preserve_locked_chrome() -> None:
     assert "[hidden] { display: none !important; }" in library_css
     disclosure = library_css.split(".disclosure {", 1)[1].split("}", 1)[0]
     assert "border: 0;" in disclosure and "background: transparent;" in disclosure
-    assert 'class="anki-advanced sh-card"' in anki
+    assert 'class="anki-advanced"' in anki
     assert ".anki-advanced:not(.sh-card)" in app_css
     assert ".checkbox-inline:not(.sh-check) input[type=\"checkbox\"]" in app_css
     selected_medallion = player_css.split(
