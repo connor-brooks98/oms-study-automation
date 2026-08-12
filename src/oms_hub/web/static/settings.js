@@ -107,7 +107,9 @@
   };
 
   const syncCustomModelVisibility = (select, customInput) => {
-    customInput.hidden = select.value !== CUSTOM_MODEL_VALUE;
+    const hidden = select.value !== CUSTOM_MODEL_VALUE;
+    customInput.hidden = hidden;
+    Array.from(customInput.labels || []).forEach((label) => { label.hidden = hidden; });
   };
 
   const populateModelSelect = (documentRef, select, customInput, models, currentModel) => {

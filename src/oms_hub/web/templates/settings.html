@@ -15,7 +15,7 @@
       <span class="sh-disclose" aria-hidden="true">▸</span>
       <span class="settings-disclosure-summary">
         <span class="mono-label">Credentials and connections</span>
-        <span id="ai-provider-heading" class="settings-disclosure-title">AI Providers</span>
+        <h2 id="ai-provider-heading" class="settings-disclosure-title">AI Providers</h2>
         <span class="settings-disclosure-description">Secure credentials, embedding access, and the Gemini Notebook connection.</span>
       </span>
     </summary>
@@ -49,7 +49,8 @@
               </select>
               <button class="button secondary sh-btn sh-btn--secondary compact-button" type="button" data-save-model>Save model</button>
             </div>
-            <input class="sh-input" type="text" maxlength="200" autocomplete="off" placeholder="provider/model-id" value="" data-model-custom hidden>
+            <label class="sh-field-label" for="custom-model-{{ provider.name }}" hidden>Custom model ID</label>
+            <input class="sh-input" id="custom-model-{{ provider.name }}" type="text" maxlength="200" autocomplete="off" placeholder="provider/model-id" value="" data-model-custom hidden>
           </div>
 
           <div class="provider-field">
@@ -124,7 +125,7 @@
       <span class="sh-disclose" aria-hidden="true">▸</span>
       <span class="settings-disclosure-summary">
         <span class="mono-label">Per-task routing</span>
-        <span id="assignments-heading" class="settings-disclosure-title">Task Assignments</span>
+        <h2 id="assignments-heading" class="settings-disclosure-title">Task Assignments</h2>
         <span class="settings-disclosure-description">Choose the configured provider and model for each part of the pipeline.</span>
       </span>
     </summary>
@@ -146,7 +147,8 @@
           <div class="provider-field">
             <label for="assignment-model-{{ row.task }}">Model</label>
             <div class="provider-action-row"><select class="sh-select" id="assignment-model-{{ row.task }}" data-assignment-model><option value="{{ row.model }}">{{ row.model }}</option></select><button class="button secondary sh-btn sh-btn--secondary compact-button" type="button" data-save-assignment>Save assignment</button></div>
-            <input class="sh-input" type="text" maxlength="200" autocomplete="off" placeholder="provider/model-id" value="" data-assignment-custom hidden>
+            <label class="sh-field-label" for="assignment-custom-{{ row.task }}" hidden>Custom model ID</label>
+            <input class="sh-input" id="assignment-custom-{{ row.task }}" type="text" maxlength="200" autocomplete="off" placeholder="provider/model-id" value="" data-assignment-custom hidden>
           </div>
           {% if row.task == "accuracy_review" %}<label class="checkbox-inline sh-check"><input type="checkbox" data-openrouter-gate {% if openrouter.accuracy_gate_enabled %}checked{% endif %}> Block publication unless every question passes review</label>{% endif %}
           <p class="field-message" data-assignment-message aria-live="polite"></p>
@@ -161,7 +163,7 @@
       <span class="sh-disclose" aria-hidden="true">▸</span>
       <span class="settings-disclosure-summary">
         <span class="mono-label">Prompt configuration</span>
-        <span id="prompt-files-heading" class="settings-disclosure-title">Prompt Files</span>
+        <h2 id="prompt-files-heading" class="settings-disclosure-title">Prompt Files</h2>
         <span class="settings-disclosure-description">Prompt files: manage the Obsidian files and Anki AI prompt directory.</span>
       </span>
     </summary>
@@ -193,7 +195,7 @@
       <span class="sh-disclose" aria-hidden="true">▸</span>
       <span class="settings-disclosure-summary">
         <span class="mono-label">Course structure</span>
-        <span id="tracker-heading" class="settings-disclosure-title">Lecture exam tracker</span>
+        <h2 id="tracker-heading" class="settings-disclosure-title">Lecture exam tracker</h2>
         <span class="settings-disclosure-description">Lecture Exam Tracker workbook: preview course, exam, and lecture changes before applying it.</span>
       </span>
     </summary>
@@ -212,7 +214,7 @@
       <span class="sh-disclose" aria-hidden="true">▸</span>
       <span class="settings-disclosure-summary">
         <span class="mono-label">Read-only recovery boundary</span>
-        <span id="runtime-heading" class="settings-disclosure-title">Runtime &amp; Remote Access</span>
+        <h2 id="runtime-heading" class="settings-disclosure-title">Runtime &amp; Remote Access</h2>
         <span class="settings-disclosure-description">Stage the local AnkiConnect port; recovery and access settings remain read-only.</span>
       </span>
     </summary>
