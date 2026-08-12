@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from oms_hub.task_scheduler_evidence import verify_scheduler_restart as _verify_scheduler_restart
+from oms_hub.task_scheduler_evidence import _decode_recovery_action_arguments
+from oms_hub.task_scheduler_evidence import (
+    verify_scheduler_restart as _verify_scheduler_restart,
+)
 
 TASK = r"\OMS Study Hub V2"
 ACTION = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -180,21 +183,8 @@ def test_scheduler_verifier_cli_preserves_quoted_recovery_arguments(
     assert proof["recovery_action_arguments"] == RECOVERY_ARGUMENTS
 
 
-@pytest.mark.parametrize(
-    "encoded_arguments",
-    [
-        "not-base64!",
-        "ZE==",
-        base64.b64encode(b"\xff\xfe").decode("ascii"),
-        base64.b64encode(b"").decode("ascii"),
-        base64.b64encode(b" leading-space").decode("ascii"),
-        base64.b64encode(b"trailing-space ").decode("ascii"),
-        base64.b64encode(b"line\nbreak").decode("ascii"),
-        base64.b64encode(b"nul\x00byte").decode("ascii"),
-    ],
-)
-def test_scheduler_verifier_cli_rejects_malformed_encoded_recovery_arguments(
-    tmp_path: Path, encoded_arguments: str
+def test_scheduler_verifier_cli_rejects_legacy_raw_argument_option(
+    tmp_path: Path,
 ) -> None:
     input_path = tmp_path / "scheduler-evidence.json"
     output_path = tmp_path / "scheduler-proof.json"
@@ -207,6 +197,9 @@ def test_scheduler_verifier_cli_rejects_malformed_encoded_recovery_arguments(
             }
         ),
         encoding="utf-8",
+    )
+    encoded_arguments = base64.b64encode(RECOVERY_ARGUMENTS.encode("utf-8")).decode(
+        "ascii"
     )
 
     completed = subprocess.run(
@@ -226,6 +219,8 @@ def test_scheduler_verifier_cli_rejects_malformed_encoded_recovery_arguments(
             "1",
             "--recovery-action-arguments-base64",
             encoded_arguments,
+            "--recovery-action-arguments",
+            encoded_arguments,
             "--replacement-hub-pid",
             "702",
         ],
@@ -234,8 +229,49 @@ def test_scheduler_verifier_cli_rejects_malformed_encoded_recovery_arguments(
         text=True,
     )
 
-    assert completed.returncode != 0
+    assert completed.returncode == 2
+    assert "unrecognized arguments: --recovery-action-arguments" in completed.stderr
     assert not output_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("encoded_arguments", "expected_message"),
+    [
+        ("not-base64!", "recovery_action_arguments_base64 must be canonical Base64"),
+        ("ZE==", "recovery_action_arguments_base64 must be canonical Base64"),
+        (
+            base64.b64encode(b"\xff\xfe").decode("ascii"),
+            "recovery_action_arguments_base64 must contain strict UTF-8",
+        ),
+        (
+            base64.b64encode(b"").decode("ascii"),
+            "decoded recovery action arguments must be one non-empty trimmed line",
+        ),
+        (
+            base64.b64encode(b" leading-space").decode("ascii"),
+            "decoded recovery action arguments must be one non-empty trimmed line",
+        ),
+        (
+            base64.b64encode(b"trailing-space ").decode("ascii"),
+            "decoded recovery action arguments must be one non-empty trimmed line",
+        ),
+        (
+            base64.b64encode(b"line\nbreak").decode("ascii"),
+            "decoded recovery action arguments must be one non-empty trimmed line",
+        ),
+        (
+            base64.b64encode(b"nul\x00byte").decode("ascii"),
+            "decoded recovery action arguments must be one non-empty trimmed line",
+        ),
+    ],
+)
+def test_scheduler_verifier_rejects_malformed_encoded_recovery_arguments_at_decoder(
+    encoded_arguments: str, expected_message: str
+) -> None:
+    with pytest.raises(ValueError) as raised:
+        _decode_recovery_action_arguments(encoded_arguments)
+
+    assert str(raised.value) == expected_message
 
 
 def test_scheduler_verifier_requires_the_native_exit_75_hresult_not_a_low_word() -> None:

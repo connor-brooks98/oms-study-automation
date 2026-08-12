@@ -161,7 +161,11 @@ def test_f28_acceptance_requires_exact_hresult_and_same_instance_action_order() 
     assert "--recovery-action-arguments-base64" in script
     assert "--recovery-action-arguments $TaskBefore.arguments" not in script
     assert "base64.b64decode" in verifier
+    assert "validate=True" in verifier
+    assert "base64.b64encode(decoded_bytes) != encoded_bytes" in verifier
     assert 'decode("utf-8")' in verifier
+    assert "decoded != decoded.strip()" in verifier
+    assert "argparse.ArgumentParser(allow_abbrev=False)" in verifier
     assert "0x8007004B / Win32 75" in script
 
 

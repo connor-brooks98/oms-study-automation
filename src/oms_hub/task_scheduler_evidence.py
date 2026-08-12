@@ -426,7 +426,7 @@ def _decode_recovery_action_arguments(encoded: str) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--full-task-name", required=True)
