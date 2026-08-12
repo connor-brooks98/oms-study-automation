@@ -186,13 +186,26 @@ def test_quiz_builder_import_forms_use_locked_controls_without_losing_hooks() ->
     studio = source("notebook_studio.html")
     assert "<fieldset" not in studio and "<legend" not in studio
     assert studio.count("data-import-source-form") == 3
-    assert studio.count('class="sh-card" data-import-source-form') == 3
+    assert studio.count('class="studio-intake-form" data-import-source-form') == 3
     assert studio.count('class="sh-check"') >= 3
     assert 'class="sh-validation" data-import-source-list' in studio
     for tag, required in (("select", "sh-select"), ("textarea", "sh-textarea")):
         assert all(required in line for line in studio.splitlines() if f"<{tag}" in line)
     assert "data-import-destination-course" in studio
     assert "data-import-destination-exam" in studio
+    assert "Add one source at a time" in studio
+    assert "Add related files in separate passes" in studio
+
+
+def test_settings_custom_models_have_connected_visible_labels() -> None:
+    settings = source("settings.html")
+    settings_js = static_source("settings.js")
+
+    assert 'for="custom-model-{{ provider.name }}" hidden>Custom model ID</label>' in settings
+    assert 'id="custom-model-{{ provider.name }}"' in settings
+    assert 'for="assignment-custom-{{ row.task }}" hidden>Custom model ID</label>' in settings
+    assert 'id="assignment-custom-{{ row.task }}"' in settings
+    assert "customInput.labels || []" in settings_js
 
 
 def test_locked_components_are_not_repainted_by_late_legacy_css() -> None:

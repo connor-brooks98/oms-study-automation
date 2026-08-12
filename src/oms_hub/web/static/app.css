@@ -1973,3 +1973,54 @@ button.sh-command-trigger { min-height: 40px; padding: var(--sp-2) var(--sp-3); 
   .duplicate-actions { flex-direction: column; }
   .duplicate-actions .sh-btn { width: 100%; }
 }
+
+/* Blue Workbench · settings and Quiz Builder */
+.settings-page { padding-block-end: var(--sp-16); }
+.settings-disclosure {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+.settings-disclosure:last-of-type { border-bottom: 1px solid var(--border); }
+.settings-disclosure > summary { min-height: 88px; padding: var(--sp-4) 0; }
+.settings-disclosure-title { margin: 0; font-size: var(--fs-h3); line-height: 1.25; }
+.settings-disclosure-content { padding: 0 0 var(--sp-8) calc(var(--sp-5) + var(--sp-2)); }
+.provider-card.sh-card { box-shadow: none; }
+.provider-field > .sh-field-label[hidden] { display: none; }
+.provider-field > .sh-field-label:not([hidden]) { margin-block: var(--sp-3) var(--sp-2); }
+.field-help,
+.field-message,
+.provider-kicker,
+.last-tested { color: var(--text-3-strong); }
+
+.studio-scope.sh-card,
+.studio-status.sh-card,
+.studio-runner.sh-card,
+.studio-runs.sh-card { box-shadow: none; }
+.studio-workflow-switch { margin-block: var(--sp-5); }
+.studio-workflow-switch .sh-btn { min-width: 11rem; }
+.studio-source-picker-group {
+  padding: var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.studio-intake-form {
+  min-width: 0;
+  padding: var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.studio-intake-form h3 { margin-block-end: var(--sp-2); }
+.studio-import-intake > p:not(.eyebrow) { max-width: 58rem; color: var(--text-2); }
+.studio-import-intake .studio-source-grid { align-items: start; }
+.studio-image-requirements > .sh-card,
+.studio-review-checks.sh-card { box-shadow: none; }
+
+@media (max-width: 42rem) {
+  .settings-disclosure > summary { min-height: 76px; }
+  .settings-disclosure-content { padding-inline-start: 0; }
+  .studio-workflow-switch { width: 100%; }
+  .studio-workflow-switch .sh-btn { min-width: 0; flex: 1; }
+}
