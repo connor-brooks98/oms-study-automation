@@ -23,7 +23,7 @@ def test_shared_stylesheet_is_the_approved_blue_workbench_source() -> None:
 
     assert installed.exists()
     assert (
-        "9ebb8c77d712d8a58acf6cc6812932948ab276d613f73e30005457a248becb65"
+        "0bf617b203d2d91bedfec046b23be45e89cad9bdf67a47aa9c65d80749cfbd80"
         == sha256(installed.read_bytes()).hexdigest()
     )
 
@@ -118,7 +118,7 @@ def test_public_library_separates_public_identity_while_players_remain_focus_mod
     library = source("public_quiz_library.html")
     assert "sh-nav" in library
     assert "Study Hub Quizzes" in library
-    assert "{% if management_mode %}" in library
+    assert "{% if owner_navigation %}" in library
     assert "NUC online" not in library
     assert 'class="sh-title"' in library
     for hook in (

@@ -131,18 +131,18 @@ def test_public_library_starts_all_courses_and_exams_collapsed(tmp_path):
     assert response.text.count('class="lecture-list" hidden') == 2
 
 
-def test_public_library_is_read_only_and_private_library_keeps_management(tmp_path):
+def test_local_owner_library_keeps_private_navigation_without_management_controls(tmp_path):
     app, published = _published_app(tmp_path)
 
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1") as client:
         public = client.get("/public/quizzes")
         managed = client.get("/studio/library/quizzes")
 
     assert public.status_code == 200
     assert managed.status_code == 200
     assert published.token in public.text
-    assert "Study Hub Quizzes" in public.text
-    assert 'href="/">Dashboard</a>' not in public.text
+    assert "Study Hub Quizzes" not in public.text
+    assert 'href="/">Dashboard</a>' in public.text
     assert "NUC online" not in public.text
     assert 'href="/">Dashboard</a>' in managed.text
     assert "Study Hub Quizzes" not in managed.text
@@ -159,6 +159,22 @@ def test_public_library_is_read_only_and_private_library_keeps_management(tmp_pa
     assert "Quiz Builder management" in managed.text
     assert "/studio/library/practice-questions" in managed.text
     assert "Reset quiz progress" not in public.text
+
+
+def test_public_host_library_hides_private_owner_navigation(tmp_path):
+    app, published = _published_app(tmp_path, public=True)
+
+    response = TestClient(app, base_url="https://study.example.com").get(
+        "/public/quizzes",
+        headers={"host": "study.example.com"},
+    )
+
+    assert response.status_code == 200
+    assert published.token in response.text
+    assert "Study Hub Quizzes" in response.text
+    assert 'href="/">Dashboard</a>' not in response.text
+    assert 'href="/anki">Anki</a>' not in response.text
+    assert 'href="/settings">Settings</a>' not in response.text
 
 
 def test_public_library_uses_current_lecture_scope_and_repository_order(tmp_path):

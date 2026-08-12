@@ -73,7 +73,10 @@
   gap: var(--sp-3);
   align-items: center;
 }
-.lecture-row[data-quiz-order-row] { grid-template-columns: 32px minmax(0, 1fr) auto; }
+.lecture-row[data-quiz-order-row] {
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  column-gap: var(--sp-2);
+}
 .quiz-link {
   display: flex;
   min-width: 0;
@@ -92,7 +95,7 @@
   white-space: nowrap;
 }
 .progress-pill { flex: none; white-space: nowrap; }
-.quiz-drag-handle { padding: 0; color: var(--text-2); cursor: grab; font-size: 1.1rem; }
+.quiz-drag-handle { align-self: center; padding: 0; color: var(--text-2); cursor: grab; font-size: 1.1rem; }
 .quiz-drag-handle:active, .lecture-row.is-dragging .quiz-drag-handle { cursor: grabbing; }
 .lecture-row.is-dragging { opacity: .62; }
 .quiz-row-actions { display: flex; align-items: center; gap: var(--sp-2); }

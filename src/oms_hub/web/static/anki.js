@@ -271,6 +271,13 @@
     return typeof model === "string" ? model : "";
   };
 
+  const providerLabel = (provider) => ({
+    anthropic: "Anthropic",
+    openai: "OpenAI",
+    gemini: "Gemini",
+    openrouter: "OpenRouter",
+  })[String(provider || "")] || "provider";
+
   const modelOptionValues = (models, currentModel) => {
     const list = Array.isArray(models) ? models.map((model) => String(model)) : [];
     const unique = [...new Set(list)];
@@ -306,6 +313,9 @@
     currentModel,
   ) => {
     let models = [];
+    const status = documentRef.querySelector?.("[data-anki-model-status]");
+    select.disabled = true;
+    if (status) status.textContent = `Loading ${providerLabel(provider)} models…`;
     try {
       const result = await requestJson(
         documentRef,
@@ -317,6 +327,12 @@
       models = [];
     }
     populateModelOptions(documentRef, select, models, currentModel);
+    select.disabled = false;
+    if (status) {
+      status.textContent = models.length
+        ? `${models.length} ${providerLabel(provider)} models available.`
+        : `No ${providerLabel(provider)} models are available. Check the provider credential in Settings.`;
+    }
   };
 
   const collectSourceRevisionIds = (form) => [

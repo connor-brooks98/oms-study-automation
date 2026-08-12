@@ -147,6 +147,15 @@ def _normalized_subject(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
+def _owner_library_navigation(request: Request, management_mode: bool) -> bool:
+    if management_mode:
+        return True
+    return (request.url.hostname or "").casefold().rstrip(".") in {
+        "127.0.0.1",
+        "localhost",
+    }
+
+
 def _quiz_library(
     request: Request,
     content_kinds: frozenset[QuizContentKind],
@@ -240,6 +249,7 @@ def _quiz_library(
             "empty_summary": empty_summary,
             "library_path": library_path,
             "management_mode": management_mode,
+            "owner_navigation": _owner_library_navigation(request, management_mode),
             "quiz_library_path": (
                 "/studio/library/quizzes" if management_mode else "/public/quizzes"
             ),
