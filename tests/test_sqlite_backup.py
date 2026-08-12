@@ -99,12 +99,18 @@ def test_installer_backup_logical_digest_ignores_physical_sqlite_churn(tmp_path)
         connection.commit()
 
     before_physical = helper.backup_database(source, before)
-    with closing(sqlite3.connect(source)) as connection:
-        connection.execute("UPDATE sentinel SET value = 'temporary' WHERE id = 1")
-        connection.commit()
-        connection.execute("UPDATE sentinel SET value = 'stable' WHERE id = 1")
-        connection.commit()
-    after_physical = helper.backup_database(source, after)
+    helper.backup_database(source, after)
+    # Simulate physical-only SQLite header churn while preserving a valid
+    # database. The change counter and version-valid-for fields form a pair.
+    with after.open("r+b") as stream:
+        stream.seek(24)
+        change_counter = int.from_bytes(stream.read(4), "big")
+        updated_counter = ((change_counter + 1) % (2**32)).to_bytes(4, "big")
+        stream.seek(24)
+        stream.write(updated_counter)
+        stream.seek(92)
+        stream.write(updated_counter)
+    after_physical = helper._sha256(after)
 
     assert before_physical != after_physical
     assert helper.logical_sha256(before) == helper.logical_sha256(after)
