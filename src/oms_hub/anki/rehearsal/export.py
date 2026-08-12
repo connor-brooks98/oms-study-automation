@@ -169,6 +169,10 @@ def export_capsule(
         semantic = SemanticSnapshotStore(temporary / "anki" / "semantic").load()
         semantic_generation = str(semantic.manifest.generation)
         semantic_count = len(semantic.manifest.note_ids)
+        # ``load`` validates vectors through a read-only NumPy memmap.  Closing
+        # it before renaming the containing directory is required on Windows,
+        # where an open mapped file prevents the capsule directory move.
+        _close_read_only_memmap(semantic.matrix)
         if companion_generation is None:
             raise CapsuleIntegrityError("companion snapshot identity is unavailable")
         if companion_generation != job.companion_generation:
@@ -322,6 +326,13 @@ def _online_backup(source: Path, destination: Path) -> None:
     with closing(sqlite3.connect(source_uri, uri=True)) as reader:
         with closing(sqlite3.connect(destination)) as writer:
             reader.backup(writer)
+
+
+def _close_read_only_memmap(matrix: object) -> None:
+    """Release a NumPy memmap file handle after export-only validation."""
+    mapping = getattr(matrix, "_mmap", None)
+    if mapping is not None:
+        mapping.close()
 
 
 def _export_job_scoped_database(source: Path, destination: Path, job_id: UUID) -> None:

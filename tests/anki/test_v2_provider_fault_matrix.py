@@ -101,6 +101,18 @@ def _source() -> tuple[object, CardRecord, CardConceptLedger]:
     return source, card, ledger
 
 
+def _assert_provider_fault_propagated(actual: Exception, expected: Exception) -> None:
+    """Keep identity coverage for provider errors, not CPython's timeout wrapper."""
+    if isinstance(expected, TimeoutError):
+        # Python 3.12 may recreate the builtin timeout while delivering it
+        # across asyncio's thread boundary.  Its concrete type and payload,
+        # which drive worker retryability, are the stable contract.
+        assert type(actual) is type(expected)
+        assert actual.args == expected.args
+        return
+    assert actual is expected
+
+
 @pytest.mark.parametrize(
     ("fault", "retryable"),
     [
@@ -162,7 +174,7 @@ def test_s2_real_handler_propagates_provider_fault_to_worker(
     with pytest.raises(type(fault)) as raised:
         asyncio.run(runner._card_ledger(context))
 
-    assert raised.value is fault
+    _assert_provider_fault_propagated(raised.value, fault)
     assert _is_retryable(raised.value) is retryable
 
 
@@ -287,7 +299,7 @@ def test_s4c_s6_classifier_adapter_propagates_provider_fault_to_worker(
             )
         )
 
-    assert raised.value is fault
+    _assert_provider_fault_propagated(raised.value, fault)
     assert _is_retryable(raised.value) is retryable
 
 
@@ -509,7 +521,7 @@ def test_m6_d8_s4a_classifies_embedding_and_snapshot_failures_at_worker_boundary
     with pytest.raises(type(fault)) as raised:
         asyncio.run(runner._card_prefilter(context))
 
-    assert raised.value is fault
+    _assert_provider_fault_propagated(raised.value, fault)
     assert _is_retryable(raised.value) is retryable
 
 
@@ -776,7 +788,7 @@ def test_s8_dedupe_adapter_propagates_semantic_provider_fault_to_worker(
     with pytest.raises(type(fault)) as raised:
         asyncio.run(deduper.classify(proposal, (), (proposal, comparison)))
 
-    assert raised.value is fault
+    _assert_provider_fault_propagated(raised.value, fault)
     assert _is_retryable(raised.value) is retryable
 
 
@@ -852,7 +864,7 @@ def test_s7_real_handler_propagates_provider_fault_to_worker(
     with pytest.raises(type(fault)) as raised:
         asyncio.run(runner._card_gap_fill(context))
 
-    assert raised.value is fault
+    _assert_provider_fault_propagated(raised.value, fault)
     assert _is_retryable(raised.value) is retryable
 
 

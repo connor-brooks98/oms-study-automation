@@ -17,8 +17,30 @@ from oms_hub.anki.rehearsal.capsule import (
     verify_capsule_zip,
     write_deterministic_capsule_zip,
 )
-from oms_hub.anki.rehearsal.materialize import _PATH_COLUMNS, materialize_capsule
+from oms_hub.anki.rehearsal.materialize import (
+    _PATH_COLUMNS,
+    _is_materialized_logical_path,
+    materialize_capsule,
+)
 from oms_hub.migrations import LATEST_SCHEMA_VERSION
+
+
+@pytest.fixture(autouse=True)
+def _restore_tmp_path_permissions(tmp_path: Path) -> None:
+    """Keep deliberately read-only capsule fixtures removable on Windows."""
+    yield
+    try:
+        for path in sorted(tmp_path.rglob("*"), reverse=True):
+            mode = stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR
+            if path.is_dir():
+                mode |= stat.S_IRUSR | stat.S_IXUSR
+            os.chmod(path, mode)
+    except OSError:
+        pass
+    try:
+        os.chmod(tmp_path, stat.S_IMODE(tmp_path.stat().st_mode) | stat.S_IWUSR | stat.S_IXUSR)
+    except OSError:
+        pass
 
 
 def _write_minimal_database(path: Path, source: Path, *, schema: int = 25) -> None:
@@ -129,6 +151,18 @@ def test_materializer_path_registry_tracks_current_schema_and_supports_v27(tmp_p
     root = _capsule(tmp_path, database_schema=27)
     overlay = materialize_capsule(root, tmp_path / "overlay")
     assert overlay.path_audit
+
+
+def test_materialized_windows_overlay_path_is_not_rejected_as_source_residue(
+    tmp_path: Path,
+) -> None:
+    logical_root = Path(r"C:\overlay\roots\study")
+    assert _is_materialized_logical_path(
+        r"C:\overlay\roots\study\lecture.txt", {"study": logical_root}
+    )
+    assert not _is_materialized_logical_path(
+        r"C:\Study\lecture.txt", {"study": logical_root}
+    )
 
 
 def test_materializer_rejects_unknown_future_schema_v28(tmp_path: Path) -> None:

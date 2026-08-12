@@ -176,11 +176,7 @@ def _atomic_json(path: Path, payload: dict[str, object]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, target)
-        directory = os.open(parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        _fsync_directory(parent)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -188,6 +184,17 @@ def _atomic_json(path: Path, payload: dict[str, object]) -> None:
 
 def _timestamp() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _fsync_directory(path: Path) -> None:
+    """Durably sync a POSIX directory; Windows has no compatible directory handle."""
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 class NoopLauncher:

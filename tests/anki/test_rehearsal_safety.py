@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import numpy as np
@@ -16,6 +17,8 @@ from oms_hub.anki.provider_attempts import (
     bind_provider_attempts,
     provider_call_scope,
 )
+from oms_hub.anki.rehearsal import network as rehearsal_network
+from oms_hub.anki.rehearsal import runtime as rehearsal_runtime
 from oms_hub.anki.rehearsal.network import (
     EgressDenied,
     EgressEvidenceLedger,
@@ -327,6 +330,231 @@ def test_egress_ledger_records_lifecycle_and_denial_before_raising(tmp_path: Pat
         "shutdown",
     ]
     assert evidence["records"][1]["allowed"] is False
+
+
+def test_windows_runtime_ledgers_do_not_attempt_posix_directory_fsync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Directory handles are not openable/fdatasyncable on Windows."""
+    with monkeypatch.context() as scoped:
+        scoped.setattr(rehearsal_network.os, "name", "nt")
+
+        def unexpected_open(*_args: object, **_kwargs: object) -> int:
+            raise AssertionError("Windows directory fsync must not open a directory handle")
+
+        scoped.setattr(rehearsal_network.os, "open", unexpected_open)
+        rehearsal_network._fsync_directory(tmp_path)
+        rehearsal_runtime._fsync_directory(tmp_path)
+
+
+@pytest.mark.parametrize("module", (rehearsal_network, rehearsal_runtime))
+def test_posix_runtime_directory_fsync_open_failure_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module: object
+) -> None:
+    with monkeypatch.context() as scoped:
+        scoped.setattr(module.os, "name", "posix")
+
+        def deny_open(*_args: object, **_kwargs: object) -> int:
+            raise OSError("directory open failed")
+
+        scoped.setattr(module.os, "open", deny_open)
+        with pytest.raises(OSError, match="directory open failed"):
+            module._fsync_directory(tmp_path)
+
+
+@pytest.mark.parametrize("module", (rehearsal_network, rehearsal_runtime))
+def test_posix_runtime_directory_fsync_failure_propagates_and_closes_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module: object
+) -> None:
+    closed: list[int] = []
+    with monkeypatch.context() as scoped:
+        scoped.setattr(module.os, "name", "posix")
+        scoped.setattr(module.os, "open", lambda *_args, **_kwargs: 17)
+
+        def fail_fsync(_descriptor: int) -> None:
+            raise OSError("directory fsync failed")
+
+        scoped.setattr(module.os, "fsync", fail_fsync)
+        scoped.setattr(module.os, "close", closed.append)
+        with pytest.raises(OSError, match="directory fsync failed"):
+            module._fsync_directory(tmp_path)
+    assert closed == [17]
+
+
+def test_failed_guard_startup_leaves_new_provider_lifecycle_unpatched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed evidence write must not leak process-wide socket patches."""
+    import socket
+
+    originals = (
+        socket.getaddrinfo,
+        socket.socket.connect,
+        socket.socket.connect_ex,
+        socket.socket.send,
+        socket.socket.sendto,
+    )
+    first = SocketEgressGuard(
+        EgressPolicy.deterministic(
+            EgressEvidenceLedger(
+                tmp_path / "failed-runtime-evidence",
+                mode="deterministic",
+                run_nonce="first-nonce",
+            )
+        )
+    )
+    with monkeypatch.context() as scoped:
+        def deny_evidence_write(*_args: object, **_kwargs: object) -> None:
+            raise PermissionError("denied")
+
+        scoped.setattr(rehearsal_network, "_atomic_json", deny_evidence_write)
+        with pytest.raises(PermissionError, match="denied"):
+            first.install()
+
+    assert SocketEgressGuard._active is None
+    assert (
+        socket.getaddrinfo,
+        socket.socket.connect,
+        socket.socket.connect_ex,
+        socket.socket.send,
+        socket.socket.sendto,
+    ) == originals
+
+    # This is deliberately a fresh path and an async provider adapter: before
+    # the rollback, the leaked guard broke Windows Proactor event-loop setup.
+    second = EgressEvidenceLedger(
+        tmp_path / "provider-runtime-evidence",
+        mode="deterministic",
+        run_nonce="second-nonce",
+    )
+    second.startup()
+    try:
+        client = ReplayEmbeddingClient(
+            tmp_path / "provider-replay", model="voyage-4-large", dimensions=2
+        )
+        client.seed(
+            ["provider input"],
+            input_type="document",
+            vectors=np.array([[1, 0]], dtype=np.float32),
+        )
+        assert asyncio.run(client.embed(["provider input"], input_type="document")).shape == (1, 2)
+    finally:
+        second.shutdown()
+
+
+def test_guard_patch_assignment_failure_restores_every_socket_method(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rollback is transactional even when a socket class rejects a patch."""
+
+    class FailingSocketMeta(type):
+        fail_connect_assignment = True
+
+        def __setattr__(cls, name: str, value: object) -> None:
+            if name == "connect" and cls.fail_connect_assignment:
+                super().__setattr__("fail_connect_assignment", False)
+                raise RuntimeError("socket patch denied")
+            super().__setattr__(name, value)
+
+    class FakeSocket(metaclass=FailingSocketMeta):
+        def connect(self, _address: object) -> None:
+            return None
+
+        def connect_ex(self, _address: object) -> int:
+            return 0
+
+        def send(self, _data: bytes, _flags: int = 0) -> int:
+            return 0
+
+        def sendto(self, _data: bytes, *_args: object) -> int:
+            return 0
+
+    def getaddrinfo(*_args: object, **_kwargs: object) -> list[tuple[object, ...]]:
+        return []
+
+    fake_socket = SimpleNamespace(
+        getaddrinfo=getaddrinfo,
+        socket=FakeSocket,
+        SOCK_STREAM=1,
+        IPPROTO_TCP=6,
+    )
+    originals = (
+        fake_socket.getaddrinfo,
+        FakeSocket.connect,
+        FakeSocket.connect_ex,
+        FakeSocket.send,
+        FakeSocket.sendto,
+    )
+    with monkeypatch.context() as scoped:
+        scoped.setattr(rehearsal_network, "socket", fake_socket)
+        guard = SocketEgressGuard(EgressPolicy.deterministic())
+        with pytest.raises(RuntimeError, match="socket patch denied"):
+            guard.install()
+
+    assert SocketEgressGuard._active is None
+    assert (
+        fake_socket.getaddrinfo,
+        FakeSocket.connect,
+        FakeSocket.connect_ex,
+        FakeSocket.send,
+        FakeSocket.sendto,
+    ) == originals
+
+
+def test_guard_patch_failure_remains_primary_when_socket_restore_also_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingSocketMeta(type):
+        fail_connect_assignment = True
+
+        def __setattr__(cls, name: str, value: object) -> None:
+            if name == "connect" and cls.fail_connect_assignment:
+                super().__setattr__("fail_connect_assignment", False)
+                raise RuntimeError("socket patch denied")
+            super().__setattr__(name, value)
+
+    class FakeSocket(metaclass=FailingSocketMeta):
+        def connect(self, _address: object) -> None:
+            return None
+
+        def connect_ex(self, _address: object) -> int:
+            return 0
+
+        def send(self, _data: bytes, _flags: int = 0) -> int:
+            return 0
+
+        def sendto(self, _data: bytes, *_args: object) -> int:
+            return 0
+
+    class FailingSocketModule(SimpleNamespace):
+        original_getaddrinfo: object
+        reject_restore: bool = False
+
+        def __setattr__(self, name: str, value: object) -> None:
+            if name == "getaddrinfo" and self.reject_restore and value is self.original_getaddrinfo:
+                raise RuntimeError("socket restore denied")
+            super().__setattr__(name, value)
+
+    def getaddrinfo(*_args: object, **_kwargs: object) -> list[tuple[object, ...]]:
+        return []
+
+    fake_socket = FailingSocketModule(
+        getaddrinfo=getaddrinfo,
+        socket=FakeSocket,
+        SOCK_STREAM=1,
+        IPPROTO_TCP=6,
+    )
+    fake_socket.original_getaddrinfo = getaddrinfo
+    fake_socket.reject_restore = True
+    originals = (FakeSocket.connect_ex, FakeSocket.send, FakeSocket.sendto)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(rehearsal_network, "socket", fake_socket)
+        guard = SocketEgressGuard(EgressPolicy.deterministic())
+        with pytest.raises(RuntimeError, match="socket patch denied"):
+            guard.install()
+
+    assert SocketEgressGuard._active is None
+    assert (FakeSocket.connect_ex, FakeSocket.send, FakeSocket.sendto) == originals
 
 
 def test_egress_ledger_accumulates_across_rehearsal_restarts(tmp_path: Path) -> None:

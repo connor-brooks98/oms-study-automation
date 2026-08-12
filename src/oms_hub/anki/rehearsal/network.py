@@ -261,6 +261,12 @@ class SocketEgressGuard:
             if self.__class__._active is not None:
                 raise RuntimeError("a socket egress guard is already installed")
 
+            # Evidence initialization can fail (notably, Windows does not support
+            # the POSIX directory-fsync pattern).  Do it before touching global
+            # socket methods so a failed startup cannot leak this guard into the
+            # next test or process lifecycle.
+            self.policy.record_startup()
+
             def guarded_getaddrinfo(
                 host: str | bytes | None,
                 port: str | int | None,
@@ -316,29 +322,59 @@ class SocketEgressGuard:
                 assert self._original_sendmsg is not None
                 return cast(int, self._original_sendmsg(sock, *args, **kwargs))
 
-            socket.getaddrinfo = guarded_getaddrinfo  # type: ignore[assignment]
-            socket.socket.connect = guarded_connect  # type: ignore[assignment,method-assign]
-            socket.socket.connect_ex = guarded_connect_ex  # type: ignore[assignment,method-assign]
-            socket.socket.send = guarded_send  # type: ignore[assignment,method-assign]
-            socket.socket.sendto = guarded_sendto  # type: ignore[assignment,method-assign]
-            if self._original_sendmsg is not None:
-                socket.socket.sendmsg = guarded_sendmsg  # type: ignore[assignment,method-assign]
-            self.__class__._active = self
-            self.policy.record_startup()
+            try:
+                socket.getaddrinfo = guarded_getaddrinfo  # type: ignore[assignment]
+                socket.socket.connect = guarded_connect  # type: ignore[assignment,method-assign]
+                socket.socket.connect_ex = guarded_connect_ex  # type: ignore[assignment,method-assign]
+                socket.socket.send = guarded_send  # type: ignore[assignment,method-assign]
+                socket.socket.sendto = guarded_sendto  # type: ignore[assignment,method-assign]
+                if self._original_sendmsg is not None:
+                    socket.socket.sendmsg = guarded_sendmsg  # type: ignore[assignment,method-assign]
+                self.__class__._active = self
+            except BaseException:
+                self.__class__._active = None
+                try:
+                    self._restore_socket_methods()
+                except BaseException:
+                    # A broken socket implementation can reject restoration
+                    # too.  The patch-assignment error remains authoritative.
+                    pass
+                try:
+                    self.policy.record_shutdown()
+                except BaseException:
+                    # Preserve the installation failure; cleanup evidence must
+                    # never conceal the exception that triggered rollback.
+                    pass
+                raise
 
     def uninstall(self) -> None:
         with self._lock:
             if self.__class__._active is not self:
                 return
-            socket.getaddrinfo = self._original_getaddrinfo
-            socket.socket.connect = self._original_connect  # type: ignore[method-assign]
-            socket.socket.connect_ex = self._original_connect_ex  # type: ignore[method-assign]
-            socket.socket.send = self._original_send  # type: ignore[method-assign]
-            socket.socket.sendto = self._original_sendto  # type: ignore[method-assign]
-            if self._original_sendmsg is not None:
-                socket.socket.sendmsg = self._original_sendmsg  # type: ignore[method-assign]
-            self.__class__._active = None
+            try:
+                self._restore_socket_methods()
+            finally:
+                self.__class__._active = None
             self.policy.record_shutdown()
+
+    def _restore_socket_methods(self) -> None:
+        errors: list[BaseException] = []
+        restorations: list[tuple[object, str, object]] = [
+            (socket, "getaddrinfo", self._original_getaddrinfo),
+            (socket.socket, "connect", self._original_connect),
+            (socket.socket, "connect_ex", self._original_connect_ex),
+            (socket.socket, "send", self._original_send),
+            (socket.socket, "sendto", self._original_sendto),
+        ]
+        if self._original_sendmsg is not None:
+            restorations.append((socket.socket, "sendmsg", self._original_sendmsg))
+        for owner, name, original in restorations:
+            try:
+                setattr(owner, name, original)
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            raise errors[0]
 
 
 def _socket_destination(address: object) -> tuple[str, int]:
@@ -465,11 +501,7 @@ def _atomic_json(path: Path, payload: dict[str, object]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, target)
-        directory = os.open(parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        _fsync_directory(parent)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -477,3 +509,14 @@ def _atomic_json(path: Path, payload: dict[str, object]) -> None:
 
 def _timestamp() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _fsync_directory(path: Path) -> None:
+    """Durably sync a POSIX directory; Windows has no compatible directory handle."""
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)

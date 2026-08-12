@@ -216,7 +216,7 @@ def _materialize_paths(
                         new_path=str(target),
                     )
                 )
-        _reject_unregistered_windows_paths(connection, registered)
+        _reject_unregistered_windows_paths(connection, registered, logical_roots)
         foreign_key_rows = list(connection.execute("PRAGMA foreign_key_check"))
         if foreign_key_rows:
             raise CapsuleIntegrityError("materialized database foreign key check failed")
@@ -253,6 +253,7 @@ def _resolve_logical_path(
 def _reject_unregistered_windows_paths(
     connection: sqlite3.Connection,
     registered: set[tuple[str, str]],
+    logical_roots: dict[str, Path],
 ) -> None:
     tables = [
         str(row[0])
@@ -273,12 +274,30 @@ def _reject_unregistered_windows_paths(
             ):
                 if isinstance(value, str) and _WINDOWS_ABSOLUTE.search(value):
                     if (table, column) in registered:
+                        if _is_materialized_logical_path(value, logical_roots):
+                            continue
                         raise CapsuleIntegrityError(
                             f"registered Windows path was not materialized: {table}.{column}"
                         )
                     raise CapsuleIntegrityError(
                         f"unregistered Windows path remains in {table}.{column}"
                     )
+
+
+def _is_materialized_logical_path(value: str, logical_roots: dict[str, Path]) -> bool:
+    """Accept only a rewritten path beneath this overlay's known logical roots.
+
+    A source database records Windows paths, but on Windows the materialized
+    overlay is also a Windows path.  Treating every remaining drive-qualified
+    value as source residue incorrectly rejects the safe rewritten target.
+    ``PureWindowsPath`` makes this containment check deterministic in the
+    portable test suite too.
+    """
+    candidate = PureWindowsPath(value)
+    return any(
+        candidate == (root_path := PureWindowsPath(str(root))) or root_path in candidate.parents
+        for root in logical_roots.values()
+    )
 
 
 def _path_like_column(column: str) -> bool:

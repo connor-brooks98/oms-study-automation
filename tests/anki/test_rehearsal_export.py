@@ -19,6 +19,7 @@ from oms_hub.anki.index import AnkiIndex
 from oms_hub.anki.normalize import NormalizedNote
 from oms_hub.anki.rehearsal.capsule import CapsuleIntegrityError, verify_capsule
 from oms_hub.anki.rehearsal.export import (
+    _close_read_only_memmap,
     _online_backup,
     _registered_root_relative,
     export_capsule,
@@ -33,6 +34,24 @@ from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.models import LectureModel
 from oms_hub.study_generation.domain import GenerationKind
 from oms_hub.study_generation.repository import GenerationRepository
+
+
+@pytest.fixture(autouse=True)
+def _restore_tmp_path_permissions(tmp_path: Path) -> None:
+    """Keep deliberately read-only export results removable on Windows."""
+    yield
+    try:
+        for path in sorted(tmp_path.rglob("*"), reverse=True):
+            mode = stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR
+            if path.is_dir():
+                mode |= stat.S_IRUSR | stat.S_IXUSR
+            os.chmod(path, mode)
+    except OSError:
+        pass
+    try:
+        os.chmod(tmp_path, stat.S_IMODE(tmp_path.stat().st_mode) | stat.S_IWUSR | stat.S_IXUSR)
+    except OSError:
+        pass
 
 
 class _FixedEmbedder:
@@ -318,6 +337,42 @@ def test_export_is_hash_verified_complete_read_only_and_source_immutable(tmp_pat
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         connection.close()
+
+
+def test_export_validation_closes_mapped_semantic_vectors_before_directory_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _failed_job_fixture(tmp_path)
+    destination = tmp_path / "capsule"
+    captured: dict[str, object] = {}
+    original_load = SemanticSnapshotStore.load
+    original_rename = Path.rename
+
+    def tracked_load(store: SemanticSnapshotStore, **kwargs: object) -> object:
+        snapshot = original_load(store, **kwargs)
+        captured["snapshot"] = snapshot
+        return snapshot
+
+    def checked_rename(source: Path, target: Path) -> Path:
+        if target == destination:
+            snapshot = captured["snapshot"]
+            mapping = snapshot.matrix._mmap  # type: ignore[attr-defined]
+            assert mapping.closed
+        return original_rename(source, target)
+
+    monkeypatch.setattr(SemanticSnapshotStore, "load", tracked_load)
+    monkeypatch.setattr(Path, "rename", checked_rename)
+    assert _export(fixture, destination) == destination
+
+
+def test_close_read_only_memmap_releases_mapping(tmp_path: Path) -> None:
+    matrix_path = tmp_path / "vectors.npy"
+    np.save(matrix_path, np.array([[1, 0]], dtype=np.float16), allow_pickle=False)
+    matrix = np.load(matrix_path, mmap_mode="r", allow_pickle=False)
+    mapping = matrix._mmap
+    assert mapping is not None and not mapping.closed
+    _close_read_only_memmap(matrix)
+    assert mapping.closed
 
 
 def test_export_closes_real_existing_artifact_fk_cycle_without_unrelated_rows(
