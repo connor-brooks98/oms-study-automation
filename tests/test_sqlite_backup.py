@@ -3,6 +3,8 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+import pytest
+
 from oms_hub.db import backup_sqlite_database
 
 
@@ -57,8 +59,25 @@ def test_installer_backup_helper_includes_wal_only_committed_page(tmp_path):
         writer.close()
 
     assert len(digest) == 64
-    with closing(sqlite3.connect(destination)) as restored:
+    assert not destination.with_name(f"{destination.name}-wal").exists()
+    assert not destination.with_name(f"{destination.name}-shm").exists()
+    with closing(
+        sqlite3.connect(f"{destination.resolve().as_uri()}?mode=ro", uri=True)
+    ) as restored:
+        assert restored.execute("PRAGMA journal_mode").fetchone() == ("delete",)
         assert restored.execute("SELECT value FROM sentinel").fetchall() == [
             ("committed-in-wal",)
         ]
         assert restored.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+    assert not destination.with_name(f"{destination.name}-wal").exists()
+    assert not destination.with_name(f"{destination.name}-shm").exists()
+
+
+def test_installer_backup_helper_rejects_transient_destination_sidecar(tmp_path):
+    helper = _load_installer_backup_helper()
+    destination = tmp_path / "hub.db"
+    sidecar = destination.with_name(f"{destination.name}-shm")
+    sidecar.write_bytes(b"transient")
+
+    with pytest.raises(sqlite3.DatabaseError, match="retained transient sidecars"):
+        helper._assert_no_sidecars(destination)

@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 def backup_database(source: Path, destination: Path) -> str:
-    """Copy committed SQLite state, including WAL pages, into one verified file."""
+    """Copy committed SQLite state into one standalone, verified database file."""
     if not source.is_file():
         raise FileNotFoundError(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -24,6 +24,16 @@ def backup_database(source: Path, destination: Path) -> str:
             with closing(sqlite3.connect(temporary)) as destination_connection:
                 source_connection.backup(destination_connection)
                 _assert_integrity(destination_connection, temporary)
+                journal_mode = destination_connection.execute(
+                    "PRAGMA journal_mode=DELETE"
+                ).fetchone()
+                if journal_mode != ("delete",):
+                    raise sqlite3.DatabaseError(
+                        "SQLite backup could not be normalized to DELETE journal mode "
+                        f"for {temporary}: {journal_mode}"
+                    )
+                _assert_integrity(destination_connection, temporary)
+        _assert_no_sidecars(temporary)
         os.replace(temporary, destination)
         with closing(
             sqlite3.connect(
@@ -32,9 +42,17 @@ def backup_database(source: Path, destination: Path) -> str:
             )
         ) as check_connection:
             _assert_integrity(check_connection, destination)
+            journal_mode = check_connection.execute("PRAGMA journal_mode").fetchone()
+            if journal_mode != ("delete",):
+                raise sqlite3.DatabaseError(
+                    "Published SQLite backup is not in DELETE journal mode "
+                    f"for {destination}: {journal_mode}"
+                )
+        _assert_no_sidecars(destination)
         return _sha256(destination)
     finally:
-        temporary.unlink(missing_ok=True)
+        for path in (temporary, *_sidecar_paths(temporary)):
+            path.unlink(missing_ok=True)
 
 
 def _assert_integrity(connection: sqlite3.Connection, path: Path) -> None:
@@ -42,6 +60,21 @@ def _assert_integrity(connection: sqlite3.Connection, path: Path) -> None:
     if result != ["ok"]:
         raise sqlite3.DatabaseError(
             f"SQLite backup integrity check failed for {path}: {result}"
+        )
+
+
+def _sidecar_paths(path: Path) -> tuple[Path, Path]:
+    return (
+        path.with_name(f"{path.name}-wal"),
+        path.with_name(f"{path.name}-shm"),
+    )
+
+
+def _assert_no_sidecars(path: Path) -> None:
+    present = [sidecar for sidecar in _sidecar_paths(path) if sidecar.exists()]
+    if present:
+        raise sqlite3.DatabaseError(
+            f"SQLite backup retained transient sidecars for {path}: {present}"
         )
 
 
