@@ -23,7 +23,7 @@ def test_shared_stylesheet_is_the_approved_blue_workbench_source() -> None:
 
     assert installed.exists()
     assert (
-        "2270028022878124426cfe0e8525b292fe7ab96bcf0194ef02831ca69569cedc"
+        "2c48a14fd2aade1284fd5c7b4d4caf325a1b293aa47afd519bf78ea570b37902"
         == sha256(installed.read_bytes()).hexdigest()
     )
 
@@ -278,7 +278,7 @@ def test_visual_followups_keep_layout_and_restart_controls_in_their_owners() -> 
     player_js = static_source("public_quiz.js")
     library = source("public_quiz_library.html")
 
-    assert "a.sh-btn--primary:hover { color: white; }" in app_css
+    assert "a.sh-btn--primary:hover { color: var(--brand-ink); }" in app_css
     assert ".anki-workbench-panel" in app_css
     assert ".provider-card-heading > :first-child" in app_css
     assert ".exam-card { margin-top: var(--sp-2); padding: 0;" in library_css

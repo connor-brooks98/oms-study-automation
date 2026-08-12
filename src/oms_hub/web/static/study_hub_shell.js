@@ -27,7 +27,12 @@
 
     function restoreFocus(dialog) {
       const invoker = invokers.get(dialog);
-      if (invoker && typeof invoker.focus === "function") invoker.focus();
+      const isVisible = !invoker?.getClientRects || invoker.getClientRects().length > 0;
+      if (invoker && isVisible && !invoker.disabled && typeof invoker.focus === "function") {
+        invoker.focus();
+        return;
+      }
+      documentRef.getElementById("main-content")?.focus();
     }
 
     documentRef.querySelectorAll("[data-open-dialog]").forEach((trigger) => {
