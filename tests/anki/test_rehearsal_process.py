@@ -185,7 +185,7 @@ def test_failure_injection_matrix_runs_every_real_provider_stage(
     assert len(results) == len(expected) * 4
 
 
-def test_minimal_subprocess_interlock_harness_kills_restarts_and_packages_truthful_evidence(
+def test_minimal_subprocess_interlock_harness_restarts_and_packages_truthful_evidence(
     tmp_path: Path,
 ) -> None:
     """Exercise real child interlock/egress mechanics without claiming a Hub run."""
@@ -238,63 +238,76 @@ finally:
         "OMS_HUB_ANKI_REHEARSAL_RUN_NONCE": "harness-nonce",
         "OMS_HUB_ANKI_REHEARSAL_FAILURE_ACTION": "pause",
     }
-    first = subprocess.Popen([sys.executable, "-c", script], env=base)
-    interlock_path = evidence / "provider-fault-interlock.json"
-    deadline = time.monotonic() + 5
-    while not interlock_path.exists() and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert interlock_path.is_file()
-    interlock = json.loads(interlock_path.read_text(encoding="utf-8"))
-    assert interlock["pid"] == first.pid
-    assert interlock["event"] == "dispatched"
-    assert interlock["action"] == "pause"
-    first.kill()
-    assert first.wait(timeout=5) != 0
-    crash_egress = _load_runtime_ledger(evidence / "egress-decisions.json")
-    _validate_egress_ledger(
-        crash_egress, "harness-nonce", "deterministic", require_clean_lifecycle=False
-    )
-    assert [row["kind"] for row in crash_egress["records"]] == ["startup"]
+    direct_python = sys._base_executable if os.name == "nt" else sys.executable
+    first = subprocess.Popen([direct_python, "-c", script], env=base)
+    try:
+        interlock_path = evidence / "provider-fault-interlock.json"
+        deadline = time.monotonic() + 5
+        while not interlock_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert interlock_path.is_file()
+        interlock = json.loads(interlock_path.read_text(encoding="utf-8"))
+        runtime_pid = interlock["pid"]
+        assert isinstance(runtime_pid, int) and runtime_pid > 0
+        assert runtime_pid == first.pid
+        assert interlock["event"] == "dispatched"
+        assert interlock["action"] == "pause"
+        # This deliberately has no launcher wrapper and does not claim to test
+        # Windows runtime-tree ownership. Keep cleanup in finally so an
+        # assertion failure cannot leave its paused direct child behind.
+        first.kill()
+        first.wait(timeout=10)
+        assert first.returncode is not None
+        crash_egress = _load_runtime_ledger(evidence / "egress-decisions.json")
+        _validate_egress_ledger(
+            crash_egress, "harness-nonce", "deterministic", require_clean_lifecycle=False
+        )
+        assert [row["kind"] for row in crash_egress["records"]] == ["startup"]
 
-    second_environment = base.copy()
-    for key in (
-        "OMS_HUB_ANKI_REHEARSAL_FAILURE_STAGE",
-        "OMS_HUB_ANKI_REHEARSAL_FAILURE_EVENT",
-        "OMS_HUB_ANKI_REHEARSAL_FAILURE_OCCURRENCE",
-        "OMS_HUB_ANKI_REHEARSAL_FAILURE_ACTION",
-    ):
-        second_environment.pop(key)
-    second = subprocess.run([sys.executable, "-c", script], env=second_environment, check=False)
-    assert second.returncode == 0
-    assert restarted.read_text(encoding="utf-8") != str(first.pid)
-    final_egress = _load_runtime_ledger(evidence / "egress-decisions.json")
-    _validate_egress_ledger(final_egress, "harness-nonce", "deterministic")
-    destination = tmp_path / "harness-checkpoint.zip"
-    _write_deterministic_zip(
-        destination,
-        {
-            "harness.json": {
-                "execution_kind": "harness_interlock_process_test",
-                "actual_hub_run": False,
-                "crashed_pid": first.pid,
-                "restarted_pid": int(restarted.read_text(encoding="utf-8")),
-                "interlock": interlock,
+        second_environment = base.copy()
+        for key in (
+            "OMS_HUB_ANKI_REHEARSAL_FAILURE_STAGE",
+            "OMS_HUB_ANKI_REHEARSAL_FAILURE_EVENT",
+            "OMS_HUB_ANKI_REHEARSAL_FAILURE_OCCURRENCE",
+            "OMS_HUB_ANKI_REHEARSAL_FAILURE_ACTION",
+        ):
+            second_environment.pop(key)
+        second = subprocess.run([direct_python, "-c", script], env=second_environment, check=False)
+        assert second.returncode == 0
+        assert restarted.read_text(encoding="utf-8") != str(runtime_pid)
+        final_egress = _load_runtime_ledger(evidence / "egress-decisions.json")
+        _validate_egress_ledger(final_egress, "harness-nonce", "deterministic")
+        destination = tmp_path / "harness-checkpoint.zip"
+        _write_deterministic_zip(
+            destination,
+            {
+                "harness.json": {
+                    "execution_kind": "harness_interlock_process_test",
+                    "actual_hub_run": False,
+                    "process_pid": first.pid,
+                    "crashed_runtime_pid": runtime_pid,
+                    "restarted_pid": int(restarted.read_text(encoding="utf-8")),
+                    "interlock": interlock,
+                },
+                "egress.json": final_egress,
             },
-            "egress.json": final_egress,
-        },
-    )
-    with zipfile.ZipFile(destination) as archive:
-        payload = json.loads(archive.read("harness.json"))
-    assert payload["execution_kind"] == "harness_interlock_process_test"
-    assert payload["actual_hub_run"] is False
+        )
+        with zipfile.ZipFile(destination) as archive:
+            payload = json.loads(archive.read("harness.json"))
+        assert payload["execution_kind"] == "harness_interlock_process_test"
+        assert payload["actual_hub_run"] is False
+    finally:
+        if first.poll() is None:
+            first.kill()
+            first.wait(timeout=10)
 
 
 def _replay_supplement(tmp_path: Path) -> tuple[Path, str]:
     root = tmp_path / "replay-supplement"
     vectors = root / "vectors"
     vectors.mkdir(parents=True)
-    (root / "structured.json").write_text("{}\n", encoding="utf-8")
-    (vectors / "manifest.json").write_text("{}\n", encoding="utf-8")
+    (root / "structured.json").write_bytes(b"{}\n")
+    (vectors / "manifest.json").write_bytes(b"{}\n")
     files = []
     for path in sorted(root.rglob("*")):
         if path.is_file():
@@ -350,7 +363,10 @@ def test_replay_supplement_is_manifest_bound_and_copies_only_replay_files(
     )
     overlay_root = tmp_path / "overlay"
     (overlay_root / "replay").mkdir(parents=True)
-    (overlay_root / "replay/structured.json").write_text("{}\n", encoding="utf-8")
+    # Materialized Windows overlays can contain the same JSON placeholder with
+    # CRLF; only the empty structured value, not its native newline bytes,
+    # determines whether replacement is safe.
+    (overlay_root / "replay/structured.json").write_bytes(b"{}\r\n")
     harness = ProcessRehearsal(
         _request(
             tmp_path,
@@ -359,8 +375,8 @@ def test_replay_supplement_is_manifest_bound_and_copies_only_replay_files(
         )
     )
     harness._install_replay_supplement(SimpleNamespace(root=overlay_root))  # type: ignore[arg-type]
-    assert (overlay_root / "replay/structured.json").read_text() == "{}\n"
-    assert (overlay_root / "replay/vectors/manifest.json").read_text() == "{}\n"
+    assert (overlay_root / "replay/structured.json").read_bytes() == b"{}\n"
+    assert (overlay_root / "replay/vectors/manifest.json").read_bytes() == b"{}\n"
 
 
 def test_replay_supplement_rejects_unknown_files_and_missing_operator_hash(tmp_path: Path) -> None:
@@ -379,7 +395,7 @@ def test_replay_supplement_copy_race_fails_before_child_launch(
     supplement, manifest_sha256 = _replay_supplement(tmp_path)
     overlay_root = tmp_path / "overlay"
     (overlay_root / "replay").mkdir(parents=True)
-    (overlay_root / "replay/structured.json").write_text("{}\n", encoding="utf-8")
+    (overlay_root / "replay/structured.json").write_bytes(b"{}\n")
     harness = ProcessRehearsal(
         _request(
             tmp_path,
@@ -395,6 +411,478 @@ def test_replay_supplement_copy_race_fails_before_child_launch(
     monkeypatch.setattr("oms_hub.anki.rehearsal.process.shutil.copyfile", raced_copy)
     with pytest.raises(RuntimeError, match="do not match operator manifest"):
         harness._install_replay_supplement(SimpleNamespace(root=overlay_root))  # type: ignore[arg-type]
+
+
+def test_windows_job_binds_exact_popen_handle_and_uses_ctrl_break_then_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeApi:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int]] = []
+
+        def create_kill_on_close_job(self) -> int:
+            self.calls.append(("create", 7))
+            return 7
+
+        def assign_process_handle(self, handle: int, process_handle: int) -> None:
+            self.calls.append(("assign", handle))
+            self.calls.append(("process_handle", process_handle))
+
+        def active_processes(self, handle: int) -> int:
+            self.calls.append(("active", handle))
+            return 0
+
+        def send_ctrl_break(self, process_group_id: int) -> None:
+            self.calls.append(("break", process_group_id))
+
+        def terminate_job(self, handle: int) -> None:
+            self.calls.append(("terminate", handle))
+
+        def close_handle(self, handle: int) -> None:
+            self.calls.append(("close", handle))
+
+    api = FakeApi()
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(process_module, "_windows_job_api", lambda: api)
+    job = process_module._WindowsJob.create()
+    job.assign_process_handle(34)
+    job.send_ctrl_break(12)
+    assert job.active_processes() == 0
+    job.close()
+    assert api.calls == [
+        ("create", 7),
+        ("assign", 7),
+        ("process_handle", 34),
+        ("break", 12),
+        ("active", 7),
+        ("close", 7),
+    ]
+
+
+def test_windows_job_assignment_failure_preserves_close_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeApi:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def create_kill_on_close_job(self) -> int:
+            return 7
+
+        def assign_process_handle(self, _handle: int, _process_handle: int) -> None:
+            raise OSError("access denied")
+
+        def close_handle(self, _handle: int) -> None:
+            self.closed = True
+
+    api = FakeApi()
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(process_module, "_windows_job_api", lambda: api)
+    job = process_module._WindowsJob.create()
+    with pytest.raises(OSError, match="access denied"):
+        job.assign_process_handle(34)
+    job.close()
+    assert api.closed is True
+
+
+def test_windows_job_close_is_retryable_after_closehandle_failure() -> None:
+    class FakeApi:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close_handle(self, _handle: int) -> None:
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise OSError("transient close failure")
+
+    api = FakeApi()
+    job = process_module._WindowsJob(api, 7)
+    with pytest.raises(OSError, match="transient close failure"):
+        job.close()
+    assert job.closed is False
+    job.close()
+    assert job.closed is True
+    assert api.close_calls == 2
+
+
+def test_windows_job_setup_preserves_setinformation_failure_when_close_also_fails() -> None:
+    api = object.__new__(process_module._CtypesWindowsJobApi)
+    api._kernel32 = SimpleNamespace(  # type: ignore[attr-defined]
+        CreateJobObjectW=lambda *_args: 7,
+        SetInformationJobObject=lambda *_args: 0,
+    )
+    api._extended_limit = lambda: SimpleNamespace(  # type: ignore[attr-defined]
+        BasicLimitInformation=SimpleNamespace(LimitFlags=0)
+    )
+    api._JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000  # type: ignore[attr-defined]
+    api._JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9  # type: ignore[attr-defined]
+    api._ctypes = SimpleNamespace(byref=lambda value: value, sizeof=lambda _value: 1)  # type: ignore[attr-defined]
+
+    def fail_checked(result: object, action: str) -> None:
+        if not result:
+            raise OSError(action)
+
+    api._checked = fail_checked  # type: ignore[method-assign]
+    api.close_handle = lambda _handle: (_ for _ in ()).throw(OSError("close"))  # type: ignore[method-assign]
+    with pytest.raises(OSError, match="SetInformationJobObject") as raised:
+        api.create_kill_on_close_job()
+    assert any("close" in note for note in getattr(raised.value, "__notes__", ()))
+
+
+def test_windows_startup_environment_failure_closes_job_and_opened_streams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeJob:
+        handle = 7
+
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    job = FakeJob()
+    harness = ProcessRehearsal(_request(tmp_path))
+    runtime = tmp_path / "python.exe"
+    runtime.write_bytes(b"runtime")
+    dependencies = tmp_path / "site-packages"
+    dependencies.mkdir()
+    harness._windows_runtime_identity = {
+        "base_executable": str(runtime),
+        "base_executable_sha256": hashlib.sha256(b"runtime").hexdigest(),
+        "python_version": "test",
+        "dependency_paths": [str(dependencies)],
+    }
+    overlay = SimpleNamespace(root=tmp_path / "overlay")
+    monkeypatch.setattr(harness, "_assert_loopback_port_is_free", lambda: None)
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(process_module._WindowsJob, "create", classmethod(lambda _cls: job))
+
+    def fail_environment(*_args: object) -> dict[str, str]:
+        raise ValueError("bad environment")
+
+    monkeypatch.setattr(harness, "_environment", fail_environment)
+    with pytest.raises(ValueError, match="bad environment"):
+        harness._start_and_connect(overlay, SimpleNamespace())  # type: ignore[arg-type]
+    assert job.close_calls == 1
+    logs = overlay.root / "rehearsal" / "process-logs"
+    for path in (logs / "serve-1.stdout.log", logs / "serve-1.stderr.log"):
+        with path.open("ab") as stream:
+            stream.write(b"closed-by-parent\n")
+
+
+def test_windows_handshake_releases_only_self_bound_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeJob:
+        def __init__(self) -> None:
+            self.assigned: list[int] = []
+
+        def assign_process_handle(self, handle: int) -> None:
+            self.assigned.append(handle)
+
+        def active_processes(self) -> int:
+            return 1
+
+        def close(self) -> None:
+            raise AssertionError("bound job must remain open after release")
+
+    class FakeProcess:
+        pid = 34
+        _handle = 71
+
+    harness = ProcessRehearsal(_request(tmp_path, runtime_evidence_nonce="handshake-nonce"))
+    ready = tmp_path / "startup.ready.json"
+    release = tmp_path / "startup.release.json"
+    ready.write_text(
+        json.dumps({"schema_version": 1, "pid": 34, "run_nonce": "handshake-nonce"}),
+        encoding="utf-8",
+    )
+    stdout_path = tmp_path / "stdout.log"
+    stderr_path = tmp_path / "stderr.log"
+    stdout = stdout_path.open("wb")
+    stderr = stderr_path.open("wb")
+    child = process_module._Child(
+        FakeProcess(),  # type: ignore[arg-type]
+        process_module.ProcessObservation(12, None, "start", None, None, ("serve",)),
+        stdout_path,
+        stderr_path,
+        stdout,
+        stderr,
+        job=FakeJob(),  # type: ignore[arg-type]
+        startup_ready_path=ready,
+        startup_release_path=release,
+    )
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+    try:
+        harness._release_windows_runtime_after_handshake(child, time.monotonic() + 1)
+    finally:
+        stdout.close()
+        stderr.close()
+    assert child.runtime_pid == 34
+    assert child.observation.runtime_pid == 34
+    assert child.job.assigned == [71]  # type: ignore[union-attr]
+    assert json.loads(release.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "pid": 34,
+        "run_nonce": "handshake-nonce",
+    }
+    assert harness._timeline[-1]["event"] == "runtime_job_bound_and_released"
+
+
+def test_windows_handshake_pid_mismatch_fails_before_release_and_closes_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeJob:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def assign_process_handle(self, _handle: int) -> None:
+            raise AssertionError("PID mismatch must not assign the Job")
+
+        def active_processes(self) -> int:
+            return 0
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeProcess:
+        pid = 12
+        _handle = 71
+
+        def poll(self) -> int:
+            return 0
+
+    harness = ProcessRehearsal(_request(tmp_path, runtime_evidence_nonce="nonce"))
+    ready = tmp_path / "startup.ready.json"
+    release = tmp_path / "startup.release.json"
+    ready.write_text(
+        json.dumps({"schema_version": 1, "pid": 34, "run_nonce": "nonce"}), encoding="utf-8"
+    )
+    stdout = (tmp_path / "stdout.log").open("wb")
+    stderr = (tmp_path / "stderr.log").open("wb")
+    job = FakeJob()
+    child = process_module._Child(
+        FakeProcess(),  # type: ignore[arg-type]
+        process_module.ProcessObservation(12, None, "start", None, None, ("serve",)),
+        tmp_path / "stdout.log",
+        tmp_path / "stderr.log",
+        stdout,
+        stderr,
+        job=job,  # type: ignore[arg-type]
+        startup_ready_path=ready,
+        startup_release_path=release,
+    )
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+    try:
+        with pytest.raises(RuntimeError, match="PID does not match"):
+            harness._release_windows_runtime_after_handshake(child, time.monotonic() + 1)
+    finally:
+        stdout.close()
+        stderr.close()
+    assert job.closed is True
+    assert not release.exists()
+
+
+def test_windows_popen_handle_requires_existing_handle() -> None:
+    assert process_module._windows_popen_handle(SimpleNamespace(_handle=71)) == 71  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="handle is unavailable"):
+        process_module._windows_popen_handle(SimpleNamespace(_handle=None))  # type: ignore[arg-type]
+
+
+def test_windows_runtime_probe_rejects_relative_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = ProcessRehearsal(_request(tmp_path))
+    monkeypatch.setattr(
+        process_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {"base_executable": "python.exe", "version": "test", "dependency_paths": []}
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="base executable"):
+        harness._probe_windows_runtime()
+
+
+def test_windows_runtime_probe_canonicalizes_duplicate_dependency_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = ProcessRehearsal(_request(tmp_path))
+    dependency = tmp_path / "site-packages"
+    dependency.mkdir()
+    monkeypatch.setattr(
+        process_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "base_executable": sys.executable,
+                    "version": "test",
+                    "dependency_paths": [str(dependency), str(dependency)],
+                }
+            ),
+        ),
+    )
+    identity = harness._probe_windows_runtime()
+    assert identity["dependency_paths"] == [str(dependency)]
+    harness._windows_runtime_identity = identity
+    command = harness._command(runtime_executable=harness._windows_runtime_executable())
+    assert json.loads(command[-1]) == [str(dependency)]
+
+
+def test_windows_attestation_requires_canonical_preflight_dependency_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    implementation = tmp_path / "implementation"
+    source = implementation / "src"
+    source.mkdir(parents=True)
+    dependency = tmp_path / "site-packages"
+    dependency.mkdir()
+    harness = ProcessRehearsal(_request(tmp_path, implementation_repository=implementation))
+    harness._source_tree_sha256 = "c" * 64
+    harness._windows_runtime_identity = {
+        "base_executable": str(Path(sys.executable).resolve()),
+        "base_executable_sha256": "a" * 64,
+        "python_version": "test",
+        "dependency_paths": [str(dependency)],
+    }
+    attestation = tmp_path / "attestation.json"
+    payload = {
+        "source": str(source.resolve()),
+        "modules": {
+            "oms_hub": str(source / "oms_hub/__init__.py"),
+            "oms_hub.cli": str(source / "oms_hub/cli.py"),
+        },
+        "python_executable": str(Path(sys.executable).resolve()),
+        "python_version": "test",
+        "isolated": True,
+        "no_site": True,
+        "ignore_environment": True,
+        "bootstrap_dependency_paths": [str(dependency)],
+        "pid": 34,
+        "run_nonce": harness._runtime_evidence_nonce,
+        "commit": harness.request.expected_implementation_commit,
+        "tree": harness.request.expected_implementation_tree,
+        "source_tree_sha256": "c" * 64,
+        "source_files": {},
+    }
+    attestation.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+    harness._validate_source_attestation(attestation)
+    payload["bootstrap_dependency_paths"] = [str(dependency), str(dependency)]
+    attestation.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="wrong dependency paths"):
+        harness._validate_source_attestation(attestation)
+    payload["bootstrap_dependency_paths"] = [str(dependency)]
+    payload["python_executable"] = str(tmp_path / "wrong-python.exe")
+    attestation.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="wrong runtime executable"):
+        harness._validate_source_attestation(attestation)
+    payload["python_executable"] = str(Path(sys.executable).resolve())
+    payload["python_version"] = "wrong"
+    attestation.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="wrong runtime version"):
+        harness._validate_source_attestation(attestation)
+
+
+def test_windows_runtime_hash_is_rechecked_before_direct_launch(tmp_path: Path) -> None:
+    runtime = tmp_path / "python.exe"
+    runtime.write_bytes(b"before")
+    harness = ProcessRehearsal(_request(tmp_path))
+    harness._windows_runtime_identity = {
+        "base_executable": str(runtime),
+        "base_executable_sha256": hashlib.sha256(b"before").hexdigest(),
+        "python_version": "test",
+        "dependency_paths": [],
+    }
+    runtime.write_bytes(b"after")
+    with pytest.raises(RuntimeError, match="changed after preflight"):
+        harness._windows_runtime_executable()
+
+
+@pytest.mark.parametrize("hard", (False, True))
+def test_windows_stop_closes_parent_job_once_after_clean_shutdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hard: bool
+) -> None:
+    class FakeJob:
+        closed = False
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def send_ctrl_break(self, _group_id: int) -> None:
+            self.calls.append("break")
+
+        def terminate(self) -> None:
+            self.calls.append("terminate")
+
+        def close(self) -> None:
+            self.calls.append("close")
+            self.closed = True
+
+    class FakeProcess:
+        pid = 12
+
+        def wait(self, timeout: float) -> int:
+            del timeout
+            return 0
+
+    job = FakeJob()
+    harness = ProcessRehearsal(_request(tmp_path))
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(harness, "_wait_for_windows_job_empty", lambda *_args, **_kwargs: True)
+    child = SimpleNamespace(process=FakeProcess(), runtime_pid=34, job=job)
+    harness._stop_windows_job_child(child, hard=hard)  # type: ignore[arg-type]
+    assert job.calls == (["terminate", "close"] if hard else ["break", "close"])
+
+
+def test_windows_stop_hard_failure_closes_job_then_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeJob:
+        closed = False
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def terminate(self) -> None:
+            self.calls.append("terminate")
+
+        def close(self) -> None:
+            self.calls.append("close")
+            self.closed = True
+
+    job = FakeJob()
+    harness = ProcessRehearsal(_request(tmp_path))
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(harness, "_wait_for_windows_job_empty", lambda *_args, **_kwargs: False)
+    child = SimpleNamespace(process=SimpleNamespace(pid=12), runtime_pid=34, job=job)
+    with pytest.raises(RuntimeError, match="did not empty after hard termination"):
+        harness._stop_windows_job_child(child, hard=True)  # type: ignore[arg-type]
+    assert job.calls == ["terminate", "close"]
+
+
+def test_windows_job_empty_wait_requires_popen_to_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeJob:
+        def active_processes(self) -> int:
+            return 0
+
+    class FakeProcess:
+        def wait(self, timeout: float) -> int:
+            del timeout
+            raise subprocess.TimeoutExpired("serve", 0.1)
+
+    harness = ProcessRehearsal(_request(tmp_path))
+    clock_values = iter((0.0, 0.0))
+    monkeypatch.setattr(harness, "_clock", lambda: next(clock_values))
+    assert harness._wait_for_windows_job_empty(FakeJob(), FakeProcess(), timeout=1) is False  # type: ignore[arg-type]
 
 
 def test_loopback_http_requires_csrf_before_unsafe_request() -> None:
@@ -505,12 +993,12 @@ def test_command_and_environment_are_explicit_and_overlay_bound(
     environment = harness._environment(overlay, manifest)  # type: ignore[arg-type]
     assert command[:4] == [str(harness.request.trusted_python.resolve()), "-I", "-S", "-c"]
     assert command[5] == str((harness.request.implementation_repository / "src").resolve())
-    assert environment["OMS_HUB_DATABASE_URL"].endswith("overlay/hub/hub.db")
-    assert environment["OMS_HUB_ANKI_REHEARSAL_OVERLAY_DIR"].endswith("overlay")
+    assert environment["OMS_HUB_DATABASE_URL"] == f"sqlite:///{overlay.database_path}"
+    assert environment["OMS_HUB_ANKI_REHEARSAL_OVERLAY_DIR"] == str(overlay.root)
     assert environment["OMS_HUB_ANKI_REHEARSAL_RUN_NONCE"] == harness._runtime_evidence_nonce
     assert environment["OMS_HUB_ANKI_REHEARSAL_SOURCE_TREE_SHA256"] == "c" * 64
-    assert environment["OMS_HUB_STUDY_ROOT"].endswith("overlay/study")
-    assert environment["OMS_HUB_ICLOUD_STAGING_ROOT"].endswith("overlay/icloud-staging")
+    assert environment["OMS_HUB_STUDY_ROOT"] == str(overlay.root / "study")
+    assert environment["OMS_HUB_ICLOUD_STAGING_ROOT"] == str(overlay.root / "icloud-staging")
     assert Path(environment["OMS_HUB_STUDY_ROOT"]).is_dir()
     assert Path(environment["OMS_HUB_ICLOUD_STAGING_ROOT"]).is_dir()
     assert environment["OMS_HUB_ANKI_PROMPT_DIRECTORY"] == str(prompt_directory)
@@ -518,6 +1006,10 @@ def test_command_and_environment_are_explicit_and_overlay_bound(
     assert "PYTHONPATH" not in environment
     assert "sys.flags.no_site" in command[4]
     assert "bootstrap_dependency_paths" in command[4]
+    assert command[0] == str(harness.request.trusted_python.resolve())
+    assert "AssignProcessToJobObject" not in command[4]
+    assert "handle_list" not in command[4]
+    assert command[4].index("temporary.write_text") < command[4].index("raise SystemExit")
 
 
 def test_restarted_child_environment_is_disarmed_after_archiving_initial_interlock(
@@ -885,7 +1377,7 @@ def test_restart_stops_child_after_observed_boundary(tmp_path: Path) -> None:
     harness._children.append(
         _Child(
             process,
-            ProcessObservation(12, "start", None, None, ("oms-hub", "serve")),
+            ProcessObservation(12, None, "start", None, None, ("oms-hub", "serve")),
             stdout_path,
             stderr_path,
             stdout,

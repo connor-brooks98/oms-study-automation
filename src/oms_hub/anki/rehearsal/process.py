@@ -71,7 +71,14 @@ _SECRET_MARKERS = (
 )
 _MAX_BODY = 4096
 _REPLAY_MANIFEST_NAME = "replay-supplement.json"
-_VERIFIED_SOURCE_BOOTSTRAP = """import hashlib, json, os, subprocess, sys, sysconfig
+_WINDOWS_RUNTIME_PROBE = """import json, sys, sysconfig
+paths = sysconfig.get_paths()
+dependencies = [path for path in (paths.get('purelib'), paths.get('platlib')) if path]
+payload = {'base_executable': sys._base_executable, 'version': sys.version}
+payload['dependency_paths'] = dependencies
+print(json.dumps(payload))
+"""
+_VERIFIED_SOURCE_BOOTSTRAP = """import hashlib, json, os, signal, subprocess, sys, sysconfig, time
 from pathlib import Path
 if not (sys.flags.isolated and sys.flags.no_site and sys.flags.ignore_environment):
     raise RuntimeError('verified source bootstrap requires Python -I -S')
@@ -79,10 +86,36 @@ source = Path(sys.argv[1]).resolve()
 repository = Path(sys.argv[2]).resolve()
 expected_commit, expected_tree, run_nonce = sys.argv[3:6]
 attestation = Path(sys.argv[6]).resolve()
+startup_ready = Path(sys.argv[7]).resolve()
+startup_release = Path(sys.argv[8]).resolve()
+probed_dependency_paths = json.loads(sys.argv[9])
 if not source.is_dir(): raise RuntimeError('verified implementation source is unavailable')
 if not repository.is_dir(): raise RuntimeError('verified implementation repository is unavailable')
 if source != (repository / 'src').resolve():
     raise RuntimeError('verified source is not the implementation source tree')
+if os.name == 'nt':
+    # The parent binds this interpreter handle to a KILL_ON_JOB_CLOSE job before
+    # releasing it to inspect/import application code.  SIGBREAK makes the
+    # normal parent shutdown path graceful instead of relying on job closure.
+    signal.signal(signal.SIGBREAK, signal.default_int_handler)
+    startup_ready.parent.mkdir(parents=True, exist_ok=True)
+    ready = {'schema_version': 1, 'pid': os.getpid(), 'run_nonce': run_nonce}
+    temporary = startup_ready.with_suffix(startup_ready.suffix + '.tmp')
+    temporary.write_text(json.dumps(ready, sort_keys=True), encoding='utf-8')
+    os.replace(temporary, startup_ready)
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        try:
+            release = json.loads(startup_release.read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            release = None
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError('parent startup release is invalid') from exc
+        if release == ready:
+            break
+        time.sleep(0.05)
+    else:
+        raise RuntimeError('parent did not bind runtime to its job before startup deadline')
 def git(*args):
     result = subprocess.run(['git', '-C', str(repository), *args], capture_output=True, text=True)
     if result.returncode: raise RuntimeError('child Git identity cannot be verified')
@@ -100,11 +133,17 @@ for relative in git('ls-files', '--', 'src').splitlines():
 source_tree_sha256 = hashlib.sha256(
     json.dumps(files, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
 ).hexdigest()
+if not isinstance(probed_dependency_paths, list) or not all(
+    isinstance(path, str) for path in probed_dependency_paths
+):
+    raise RuntimeError('trusted dependency-path probe is invalid')
 dependency_paths = []
-for key in ('purelib', 'platlib'):
-    path = sysconfig.get_paths().get(key)
-    if path and Path(path).is_dir() and path not in dependency_paths:
-        dependency_paths.append(path)
+for value in probed_dependency_paths:
+    path = Path(value)
+    if not path.is_absolute() or not path.is_dir():
+        raise RuntimeError('trusted dependency path is unavailable')
+    if value not in dependency_paths:
+        dependency_paths.append(value)
 sys.path[:0] = [str(source), *dependency_paths]
 import oms_hub
 import oms_hub.cli
@@ -161,10 +200,58 @@ class RehearsalRequest:
 @dataclass(frozen=True, slots=True)
 class ProcessObservation:
     pid: int
+    runtime_pid: int | None
     started_at: str
     ended_at: str | None
     exit_code: int | None
     argv: tuple[str, ...]
+
+
+class _WindowsJob:
+    """Parent-owned Windows Job Object for one attested interpreter tree."""
+
+    def __init__(self, api: Any, handle: int) -> None:
+        self._api = api
+        self._handle = handle
+        self._closed = False
+
+    @classmethod
+    def create(cls) -> _WindowsJob:
+        api = _windows_job_api()
+        return cls(api, api.create_kill_on_close_job())
+
+    @property
+    def handle(self) -> int:
+        return self._handle
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def assign_process_handle(self, process_handle: int) -> None:
+        if self._closed:
+            raise RuntimeError("Windows runtime job is already closed")
+        self._api.assign_process_handle(self._handle, process_handle)
+
+    def active_processes(self) -> int:
+        if self._closed:
+            return 0
+        return cast(int, self._api.active_processes(self._handle))
+
+    def send_ctrl_break(self, process_group_id: int) -> None:
+        if self._closed:
+            raise RuntimeError("Windows runtime job is already closed")
+        self._api.send_ctrl_break(process_group_id)
+
+    def terminate(self) -> None:
+        if self._closed:
+            raise RuntimeError("Windows runtime job is already closed")
+        self._api.terminate_job(self._handle)
+
+    def close(self) -> None:
+        if not self._closed:
+            self._api.close_handle(self._handle)
+            self._closed = True
 
 
 @dataclass(slots=True)
@@ -175,6 +262,11 @@ class _Child:
     stderr_path: Path
     stdout: BinaryIO
     stderr: BinaryIO
+    runtime_pid: int | None = None
+    job: _WindowsJob | None = None
+    attestation_path: Path | None = None
+    startup_ready_path: Path | None = None
+    startup_release_path: Path | None = None
 
 
 @dataclass(slots=True)
@@ -343,6 +435,7 @@ class ProcessRehearsal:
         self._runtime_evidence_nonce = request.runtime_evidence_nonce or secrets.token_urlsafe(32)
         self._source_attestation: dict[str, Any] | None = None
         self._source_tree_sha256: str | None = None
+        self._windows_runtime_identity: dict[str, Any] | None = None
         self._failure_injection_consumed = False
 
     def run(self) -> RehearsalResult:
@@ -403,7 +496,9 @@ class ProcessRehearsal:
                     )
                 self._consume_failure_injection(overlay, interlock)
                 client = self._start_and_connect(overlay, manifest)
-                restarted_pid = self._children[-1].process.pid
+                restarted_pid = self._children[-1].runtime_pid
+                if restarted_pid is None:
+                    raise RuntimeError("restarted child lacks an attested runtime PID")
                 if restarted_pid == interlock["pid"]:
                     raise RuntimeError("failure-injection recovery did not start a new child PID")
                 self._record(
@@ -479,9 +574,20 @@ class ProcessRehearsal:
                 self.request.evidence_zip,
                 self._timeline,
             )
-        finally:
-            self._stop_all(overlay)
-            database.close()
+        except BaseException as primary_error:
+            try:
+                self._stop_all(overlay)
+            except BaseException as cleanup_error:
+                self._record("cleanup_failed", phase="run_failure", error=str(cleanup_error))
+                primary_error.add_note(f"rehearsal cleanup failed: {cleanup_error}")
+            finally:
+                database.close()
+            raise
+        else:
+            try:
+                self._stop_all(overlay)
+            finally:
+                database.close()
 
     def _validate_destinations(self) -> CapsuleManifest:
         if self.request.overlay.exists():
@@ -592,7 +698,9 @@ class ProcessRehearsal:
         for relative in verified:
             destination = replay / relative
             if destination.exists() or destination.is_symlink():
-                if relative != "structured.json" or destination.read_bytes() != b"{}\n":
+                if relative != "structured.json" or not _is_empty_structured_placeholder(
+                    destination
+                ):
                     raise RuntimeError("fresh overlay replay destination is not empty")
                 destination.unlink()
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -703,9 +811,19 @@ class ProcessRehearsal:
             stopped_child_pid=interlock["pid"],
         )
 
-    def _command(self) -> list[str]:
+    def _command(
+        self,
+        *,
+        attestation_path: Path | None = None,
+        startup_ready_path: Path | None = None,
+        startup_release_path: Path | None = None,
+        runtime_executable: Path | None = None,
+    ) -> list[str]:
+        attestation_path = attestation_path or self._attestation_path()
+        startup_ready_path = startup_ready_path or self._startup_ready_path(0)
+        startup_release_path = startup_release_path or self._startup_release_path(0)
         return [
-            str(self.request.trusted_python.resolve()),
+            str((runtime_executable or self.request.trusted_python).resolve()),
             "-I",
             "-S",
             "-c",
@@ -715,12 +833,43 @@ class ProcessRehearsal:
             self.request.expected_implementation_commit,
             self.request.expected_implementation_tree,
             self._runtime_evidence_nonce,
-            str(self._attestation_path()),
+            str(attestation_path),
+            str(startup_ready_path),
+            str(startup_release_path),
+            _canonical_json(
+                self._windows_runtime_identity["dependency_paths"]
+                if self._windows_runtime_identity is not None
+                else _bootstrap_dependency_paths()
+            ),
         ]
 
     def _attestation_path(self) -> Path:
         return (
             self.request.overlay / "rehearsal" / "runtime-evidence" / "implementation-source.json"
+        )
+
+    def _startup_ready_path(self, serial: int) -> Path:
+        return (
+            self.request.overlay
+            / "rehearsal"
+            / "runtime-evidence"
+            / f"startup-{serial}.ready.json"
+        )
+
+    def _startup_release_path(self, serial: int) -> Path:
+        return (
+            self.request.overlay
+            / "rehearsal"
+            / "runtime-evidence"
+            / f"startup-{serial}.release.json"
+        )
+
+    def _child_attestation_path(self, serial: int) -> Path:
+        return (
+            self.request.overlay
+            / "rehearsal"
+            / "runtime-evidence"
+            / f"implementation-source-{serial}.json"
         )
 
     def _verify_implementation_identity(self) -> None:
@@ -740,6 +889,48 @@ class ProcessRehearsal:
         if dirty:
             raise ValueError("implementation repository must be clean")
         self._source_tree_sha256 = self._source_tree_identity(repository)
+        if _is_windows():
+            self._windows_runtime_identity = self._probe_windows_runtime()
+
+    def _probe_windows_runtime(self) -> dict[str, Any]:
+        completed = subprocess.run(
+            [str(self.request.trusted_python.resolve()), "-I", "-S", "-c", _WINDOWS_RUNTIME_PROBE],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if completed.returncode != 0:
+            raise ValueError("trusted Python Windows runtime probe failed")
+        try:
+            value = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise ValueError("trusted Python Windows runtime probe is invalid") from exc
+        if not isinstance(value, dict) or not isinstance(value.get("base_executable"), str):
+            raise ValueError("trusted Python Windows runtime probe is invalid")
+        executable = Path(value["base_executable"])
+        if not executable.is_absolute() or not executable.is_file():
+            raise ValueError("trusted Python base executable is unavailable")
+        paths = value.get("dependency_paths")
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            raise ValueError("trusted Python dependency paths are invalid")
+        dependency_paths = list(dict.fromkeys(Path(path) for path in paths))
+        if not all(path.is_absolute() and path.is_dir() for path in dependency_paths):
+            raise ValueError("trusted Python dependency paths are unavailable")
+        return {
+            "base_executable": str(executable),
+            "base_executable_sha256": _sha256_file(executable),
+            "python_version": value.get("version"),
+            "dependency_paths": [str(path) for path in dependency_paths],
+        }
+
+    def _windows_runtime_executable(self) -> Path:
+        if self._windows_runtime_identity is None:
+            raise RuntimeError("Windows runtime identity was not preflighted")
+        executable = Path(cast(str, self._windows_runtime_identity["base_executable"]))
+        if _sha256_file(executable) != self._windows_runtime_identity["base_executable_sha256"]:
+            raise RuntimeError("Windows direct runtime changed after preflight")
+        return executable
 
     def _required_source_tree_sha256(self) -> str:
         if self._source_tree_sha256 is None:
@@ -782,29 +973,98 @@ class ProcessRehearsal:
         self, overlay: MaterializedCapsule, manifest: CapsuleManifest
     ) -> LoopbackHttp:
         self._assert_loopback_port_is_free()
-        argv = self._command()
-        logs = overlay.root / "rehearsal" / "process-logs"
-        logs.mkdir(parents=True, exist_ok=True)
-        serial = len(self._children) + 1
-        stdout_path = logs / f"serve-{serial}.stdout.log"
-        stderr_path = logs / f"serve-{serial}.stderr.log"
-        stdout = stdout_path.open("wb")
-        stderr = stderr_path.open("wb")
-        child = self._popen(
-            argv, env=self._environment(overlay, manifest), stdout=stdout, stderr=stderr
+        job: _WindowsJob | None = None
+        stdout: BinaryIO | None = None
+        stderr: BinaryIO | None = None
+        try:
+            logs = overlay.root / "rehearsal" / "process-logs"
+            logs.mkdir(parents=True, exist_ok=True)
+            serial = len(self._children) + 1
+            attestation_path = self._child_attestation_path(serial)
+            startup_ready_path = self._startup_ready_path(serial)
+            startup_release_path = self._startup_release_path(serial)
+            job = _WindowsJob.create() if _is_windows() else None
+            for path in (attestation_path, startup_ready_path, startup_release_path):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            argv = self._command(
+                attestation_path=attestation_path,
+                startup_ready_path=startup_ready_path,
+                startup_release_path=startup_release_path,
+                runtime_executable=self._windows_runtime_executable()
+                if _is_windows()
+                else None,
+            )
+            stdout_path = logs / f"serve-{serial}.stdout.log"
+            stderr_path = logs / f"serve-{serial}.stderr.log"
+            stdout = stdout_path.open("wb")
+            stderr = stderr_path.open("wb")
+            popen_kwargs: dict[str, Any] = {
+                "env": self._environment(overlay, manifest),
+                "stdout": stdout,
+                "stderr": stderr,
+            }
+            if _is_windows():
+                if job is None:
+                    raise RuntimeError("Windows runtime Job Object is unavailable")
+                windows_subprocess = cast(Any, subprocess)
+                popen_kwargs["creationflags"] = windows_subprocess.CREATE_NEW_PROCESS_GROUP
+            child = self._popen(argv, **popen_kwargs)
+        except BaseException as primary_error:
+            if job is not None:
+                try:
+                    job.close()
+                except BaseException as cleanup_error:
+                    primary_error.add_note(f"Windows Job Object close failed: {cleanup_error}")
+            for stream_name, stream in (("stdout", stdout), ("stderr", stderr)):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except BaseException as cleanup_error:
+                        primary_error.add_note(
+                            f"startup {stream_name} close failed: {cleanup_error}"
+                        )
+            raise
+        if stdout is None or stderr is None:
+            raise RuntimeError("rehearsal process streams are unavailable")
+        observation = ProcessObservation(child.pid, None, _timestamp(), None, None, tuple(argv))
+        tracked = _Child(
+            child,
+            observation,
+            stdout_path,
+            stderr_path,
+            stdout,
+            stderr,
+            attestation_path=attestation_path,
+            startup_ready_path=startup_ready_path,
+            startup_release_path=startup_release_path,
+            job=job,
         )
-        observation = ProcessObservation(child.pid, _timestamp(), None, None, tuple(argv))
-        self._children.append(_Child(child, observation, stdout_path, stderr_path, stdout, stderr))
+        self._children.append(tracked)
         self._record("process_started", pid=child.pid, argv=_redact_argv(argv))
         client = self._http_factory(self.request.port)
         deadline = self._clock() + min(30.0, self.request.timeout_seconds)
+        if _is_windows():
+            self._release_windows_runtime_after_handshake(tracked, deadline)
         while True:
-            if child.poll() is not None:
+            if child.poll() is not None and not (_is_windows() and tracked.job is not None):
                 raise RuntimeError(f"oms-hub serve exited during startup: {child.returncode}")
             try:
                 health = client.bootstrap_csrf()
-                self._validate_source_attestation()
-                self._validate_child_health(health, child.pid)
+                self._validate_source_attestation(tracked.attestation_path)
+                runtime_pid = self._attested_runtime_pid()
+                if _is_windows() and runtime_pid != child.pid:
+                    raise RuntimeError(
+                        "Windows source attestation PID does not match direct runtime"
+                    )
+                tracked.runtime_pid = runtime_pid
+                tracked.observation = replace(tracked.observation, runtime_pid=runtime_pid)
+                self._validate_child_health(health, runtime_pid)
+                self._record(
+                    "runtime_child_attested", process_pid=child.pid, runtime_pid=runtime_pid
+                )
                 return client
             except (URLError, TimeoutError, ConnectionError) as exc:
                 if self._clock() >= deadline:
@@ -813,8 +1073,71 @@ class ProcessRehearsal:
                     ) from exc
                 time.sleep(0.1)
 
-    def _validate_source_attestation(self) -> None:
-        path = self._attestation_path()
+    def _release_windows_runtime_after_handshake(self, child: _Child, deadline: float) -> None:
+        if (
+            child.job is None
+            or child.startup_ready_path is None
+            or child.startup_release_path is None
+        ):
+            raise RuntimeError("Windows runtime startup handshake paths are unavailable")
+        try:
+            while self._clock() < deadline:
+                try:
+                    ready = json.loads(child.startup_ready_path.read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    ready = None
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise RuntimeError("Windows runtime startup handshake is invalid") from exc
+                if ready is not None:
+                    if (
+                        not isinstance(ready, dict)
+                        or ready.get("schema_version") != 1
+                        or ready.get("run_nonce") != self._runtime_evidence_nonce
+                        or not isinstance(ready.get("pid"), int)
+                        or ready["pid"] <= 0
+                    ):
+                        raise RuntimeError(
+                            "Windows runtime startup handshake has the wrong identity"
+                        )
+                    runtime_pid = cast(int, ready["pid"])
+                    if runtime_pid != child.process.pid:
+                        raise RuntimeError(
+                            "Windows ready handshake PID does not match direct runtime"
+                        )
+                    process_handle = _windows_popen_handle(child.process)
+                    child.job.assign_process_handle(process_handle)
+                    if child.job.active_processes() != 1:
+                        raise RuntimeError("Windows runtime Job Object has the wrong active count")
+                    child.runtime_pid = runtime_pid
+                    child.observation = replace(child.observation, runtime_pid=runtime_pid)
+                    _write_json_atomically(child.startup_release_path, ready)
+                    self._record(
+                        "runtime_job_bound_and_released",
+                        process_pid=child.process.pid,
+                        runtime_pid=runtime_pid,
+                    )
+                    return
+                # A virtual-environment launcher may have exited after spawning
+                # the real interpreter.  The child bootstrap remains the source
+                # of truth until the bounded handshake deadline expires.
+                time.sleep(0.05)
+            raise RuntimeError("Windows runtime did not complete its startup handshake")
+        except BaseException:
+            if child.process.poll() is None:
+                try:
+                    _terminate_rehearsal_process(child.process, hard=True)
+                except BaseException as cleanup_error:
+                    self._record(
+                        "cleanup_failed", phase="startup_process_stop", error=str(cleanup_error)
+                    )
+            try:
+                child.job.close()
+            except BaseException as cleanup_error:
+                self._record("cleanup_failed", phase="startup_job_close", error=str(cleanup_error))
+            raise
+
+    def _validate_source_attestation(self, path: Path | None = None) -> None:
+        path = path or self._attestation_path()
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -838,10 +1161,26 @@ class ProcessRehearsal:
             value.get("python_version"), str
         ):
             raise RuntimeError("Hub source import attestation lacks interpreter identity")
+        if _is_windows():
+            if self._windows_runtime_identity is None:
+                raise RuntimeError("Windows runtime identity was not preflighted")
+            if Path(value["python_executable"]).resolve() != Path(
+                self._windows_runtime_identity["base_executable"]
+            ).resolve():
+                raise RuntimeError("Hub source import attestation has the wrong runtime executable")
+            if value["python_version"] != self._windows_runtime_identity["python_version"]:
+                raise RuntimeError("Hub source import attestation has the wrong runtime version")
         if not all(
             value.get(key) is True for key in ("isolated", "no_site", "ignore_environment")
         ) or not isinstance(value.get("bootstrap_dependency_paths"), list):
             raise RuntimeError("Hub source import attestation lacks isolated bootstrap evidence")
+        expected_dependency_paths = (
+            self._windows_runtime_identity["dependency_paths"]
+            if _is_windows() and self._windows_runtime_identity is not None
+            else _bootstrap_dependency_paths()
+        )
+        if value.get("bootstrap_dependency_paths") != expected_dependency_paths:
+            raise RuntimeError("Hub source import attestation has the wrong dependency paths")
         if (
             value.get("pid") is None
             or value.get("run_nonce") != self._runtime_evidence_nonce
@@ -852,6 +1191,14 @@ class ProcessRehearsal:
         ):
             raise RuntimeError("Hub source import attestation has an invalid source identity")
         self._source_attestation = value
+
+    def _attested_runtime_pid(self) -> int:
+        if self._source_attestation is None:
+            raise RuntimeError("Hub source import attestation is unavailable")
+        pid = self._source_attestation.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            raise RuntimeError("Hub source import attestation has an invalid runtime PID")
+        return pid
 
     def _assert_loopback_port_is_free(self) -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
@@ -1006,7 +1353,7 @@ class ProcessRehearsal:
         self, overlay: MaterializedCapsule, interlock: dict[str, Any]
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Validate a killed child without pretending its shutdown was graceful."""
-        if not self._children or self._children[-1].process.pid != interlock.get("pid"):
+        if not self._children or self._children[-1].runtime_pid != interlock.get("pid"):
             raise RuntimeError("failure interlock did not identify the active child")
         if self._source_attestation is None or self._source_attestation.get("pid") != interlock.get(
             "pid"
@@ -1153,18 +1500,13 @@ class ProcessRehearsal:
     def _stop_child(
         self, child: _Child, overlay: MaterializedCapsule | None = None, *, hard: bool = False
     ) -> None:
-        if child.process.poll() is None:
-            if hard:
-                child.process.kill()
-            else:
-                child.process.terminate()
-            try:
-                child.process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                child.process.kill()
-                child.process.wait(timeout=10)
+        if _is_windows() and child.job is not None and not child.job.closed:
+            self._stop_windows_job_child(child, hard=hard)
+        elif child.process.poll() is None:
+            _terminate_rehearsal_process(child.process, hard=hard)
         child.observation = ProcessObservation(
             child.observation.pid,
+            child.runtime_pid,
             child.observation.started_at,
             _timestamp(),
             child.process.returncode,
@@ -1174,17 +1516,83 @@ class ProcessRehearsal:
         child.stderr.close()
         self._record(
             "process_stopped",
-            pid=child.process.pid,
+            process_pid=child.process.pid,
+            runtime_pid=child.runtime_pid,
             exit_code=child.process.returncode,
             hard_termination=hard,
         )
         if overlay is not None and not hard:
             self._validate_runtime_evidence(overlay)
 
+    def _stop_windows_job_child(self, child: _Child, *, hard: bool) -> None:
+        job = child.job
+        if job is None:
+            return
+        try:
+            if hard:
+                job.terminate()
+                if not self._wait_for_windows_job_empty(job, child.process, timeout=10.0):
+                    raise RuntimeError("Windows runtime job did not empty after hard termination")
+            else:
+                job.send_ctrl_break(child.process.pid)
+                if not self._wait_for_windows_job_empty(job, child.process, timeout=10.0):
+                    self._record(
+                        "process_graceful_shutdown_failed",
+                        process_pid=child.process.pid,
+                        runtime_pid=child.runtime_pid,
+                    )
+                    job.terminate()
+                    if not self._wait_for_windows_job_empty(job, child.process, timeout=10.0):
+                        raise RuntimeError(
+                            "Windows runtime job did not empty after forced termination"
+                        )
+                    raise RuntimeError(
+                        "Windows runtime required forced job termination after CTRL_BREAK"
+                    )
+        except BaseException as primary_error:
+            # A signal/query error must not leave a child-owned runtime behind.
+            # Closing the parent-owned KILL_ON_JOB_CLOSE handle is the final,
+            # handle-bound containment step; preserve the primary failure.
+            try:
+                job.close()
+            except BaseException as cleanup_error:
+                primary_error.add_note(f"Windows Job Object close failed: {cleanup_error}")
+            raise
+        else:
+            # Closing is idempotent. It also handles an exited launcher whose
+            # attested runtime is still alive.
+            job.close()
+
+    def _wait_for_windows_job_empty(
+        self, job: _WindowsJob, process: subprocess.Popen[bytes], *, timeout: float
+    ) -> bool:
+        deadline = self._clock() + timeout
+        while self._clock() < deadline:
+            if job.active_processes() == 0:
+                try:
+                    process.wait(timeout=0.1)
+                except subprocess.TimeoutExpired:
+                    return False
+                return True
+            time.sleep(0.05)
+        if job.active_processes() != 0:
+            return False
+        try:
+            process.wait(timeout=0.1)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+
     def _stop_all(self, overlay: MaterializedCapsule | None = None) -> None:
+        failures: list[BaseException] = []
         for child in reversed(self._children):
-            if child.process.poll() is None:
-                self._stop_child(child, overlay)
+            if child.observation.ended_at is None:
+                try:
+                    self._stop_child(child, overlay)
+                except BaseException as exc:
+                    failures.append(exc)
+        if failures:
+            raise failures[0]
 
     def _record(self, event: str, **values: Any) -> None:
         self._timeline.append({"at": _timestamp(), "event": event, **values})
@@ -1212,6 +1620,7 @@ class ProcessRehearsal:
                 "tree": self.request.expected_implementation_tree,
                 "trusted_python": str(self.request.trusted_python.resolve()),
                 "trusted_python_sha256": _sha256_file(self.request.trusted_python),
+                "windows_runtime_identity": self._windows_runtime_identity,
                 "source_attestation": self._source_attestation,
             },
             "overlay.json": {
@@ -1563,6 +1972,191 @@ def _provider_event_id(row: dict[str, object]) -> int:
     return identifier
 
 
+class _CtypesWindowsJobApi:
+    """Small stdlib-only wrapper; tests replace it with a deterministic fake."""
+
+    _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+    _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+    _JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
+
+    def __init__(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        ctypes_module: Any = ctypes
+
+        class _BasicLimit(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_ulonglong) for name in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+            )]
+
+        class _ExtendedLimit(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BasicLimit),
+                ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        class _BasicAccounting(ctypes.Structure):
+            _fields_ = [
+                ("TotalUserTime", ctypes.c_longlong),
+                ("TotalKernelTime", ctypes.c_longlong),
+                ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+                ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                ("TotalPageFaultCount", wintypes.DWORD),
+                ("TotalProcesses", wintypes.DWORD),
+                ("ActiveProcesses", wintypes.DWORD),
+                ("TotalTerminatedProcesses", wintypes.DWORD),
+            ]
+
+        self._ctypes = ctypes_module
+        self._wintypes = wintypes
+        self._extended_limit = _ExtendedLimit
+        self._basic_accounting = _BasicAccounting
+        self._kernel32 = ctypes_module.WinDLL("kernel32", use_last_error=True)
+        self._kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        self._kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        self._kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+        ]
+        self._kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        self._kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        self._kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        self._kernel32.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD, wintypes.LPVOID,
+        ]
+        self._kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+        self._kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        self._kernel32.TerminateJobObject.restype = wintypes.BOOL
+        self._kernel32.GenerateConsoleCtrlEvent.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        self._kernel32.GenerateConsoleCtrlEvent.restype = wintypes.BOOL
+        self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        self._kernel32.CloseHandle.restype = wintypes.BOOL
+
+    def _checked(self, result: Any, action: str) -> None:
+        if not result:
+            raise self._ctypes.WinError(self._ctypes.get_last_error(), action)
+
+    def create_kill_on_close_job(self) -> int:
+        handle = self._kernel32.CreateJobObjectW(None, None)
+        self._checked(handle, "CreateJobObjectW")
+        limits = self._extended_limit()
+        limits.BasicLimitInformation.LimitFlags = self._JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        try:
+            self._checked(
+                self._kernel32.SetInformationJobObject(
+                    handle,
+                    self._JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                    self._ctypes.byref(limits),
+                    self._ctypes.sizeof(limits),
+                ),
+                "SetInformationJobObject",
+            )
+        except BaseException as primary_error:
+            try:
+                self.close_handle(handle)
+            except BaseException as cleanup_error:
+                primary_error.add_note(f"Job Object handle close failed: {cleanup_error}")
+            raise
+        return int(handle)
+
+    def assign_process_handle(self, job_handle: int, process_handle: int) -> None:
+        self._checked(
+            self._kernel32.AssignProcessToJobObject(job_handle, process_handle),
+            "AssignProcessToJobObject direct runtime handle",
+        )
+
+    def active_processes(self, job_handle: int) -> int:
+        accounting = self._basic_accounting()
+        self._checked(
+            self._kernel32.QueryInformationJobObject(
+                job_handle,
+                self._JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+                self._ctypes.byref(accounting),
+                self._ctypes.sizeof(accounting),
+                None,
+            ),
+            "QueryInformationJobObject",
+        )
+        return int(accounting.ActiveProcesses)
+
+    def terminate_job(self, job_handle: int) -> None:
+        self._checked(self._kernel32.TerminateJobObject(job_handle, 1), "TerminateJobObject")
+
+    def send_ctrl_break(self, process_group_id: int) -> None:
+        self._checked(
+            self._kernel32.GenerateConsoleCtrlEvent(1, process_group_id),
+            "GenerateConsoleCtrlEvent CTRL_BREAK_EVENT",
+        )
+
+    def close_handle(self, handle: int) -> None:
+        self._checked(self._kernel32.CloseHandle(handle), "CloseHandle")
+
+
+def _windows_job_api() -> _CtypesWindowsJobApi:
+    if not _is_windows():
+        raise RuntimeError("Windows Job Objects are unavailable on this platform")
+    return _CtypesWindowsJobApi()
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _windows_popen_handle(process: subprocess.Popen[bytes]) -> int:
+    handle = getattr(process, "_handle", None)
+    if not isinstance(handle, int) or handle <= 0:
+        raise RuntimeError("direct Windows runtime Popen handle is unavailable")
+    return handle
+
+
+def _terminate_rehearsal_process(process: subprocess.Popen[bytes], *, hard: bool) -> None:
+    if hard:
+        process.kill()
+    else:
+        process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10)
+
+
+def _write_json_atomically(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(_canonical_json(value), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _bootstrap_dependency_paths() -> list[str]:
+    import sysconfig
+
+    paths: list[str] = []
+    for key in ("purelib", "platlib"):
+        value = sysconfig.get_paths().get(key)
+        if value and Path(value).is_dir() and value not in paths:
+            paths.append(value)
+    return paths
+
+
 def _decode_json(value: bytes) -> Any:
     if not value:
         return None
@@ -1570,6 +2164,15 @@ def _decode_json(value: bytes) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return value.decode("utf-8", errors="replace")
+
+
+def _is_empty_structured_placeholder(path: Path) -> bool:
+    """Allow only the semantic empty-JSON placeholder across native newlines."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return raw.strip() == "{}" and _decode_json(raw.encode("utf-8")) == {}
 
 
 def _redact(value: Any) -> Any:
