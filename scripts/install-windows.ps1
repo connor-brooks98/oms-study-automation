@@ -176,9 +176,23 @@ function Initialize-F28GateDirectory {
   $AdministratorsSid = [System.Security.Principal.SecurityIdentifier]::new(
     "S-1-5-32-544"
   )
-  $Acl = New-Object System.Security.AccessControl.DirectorySecurity
+  # Load and persist only the DACL. Constructing a new security descriptor,
+  # setting its owner, and passing it through Set-Acl can make Windows
+  # PowerShell request SeSecurityPrivilege even though F28 changes no audit
+  # rules. The task owner already owns this deployment path; keep owner and
+  # audit state untouched and replace only access rules.
+  $Directory = Get-Item -LiteralPath $GateDirectory -Force
+  $Acl = $Directory.GetAccessControl(
+    [System.Security.AccessControl.AccessControlSections]::Access
+  )
   $Acl.SetAccessRuleProtection($true, $false)
-  $Acl.SetOwner($TaskSid)
+  foreach ($ExistingRule in @($Acl.GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+  ))) {
+    $Acl.RemoveAccessRuleSpecific($ExistingRule)
+  }
   $Inheritance = (
     [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
     [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
@@ -193,7 +207,45 @@ function Initialize-F28GateDirectory {
     )
     $Acl.AddAccessRule($Rule) | Out-Null
   }
-  Set-Acl -LiteralPath $GateDirectory -AclObject $Acl
+  $Directory.SetAccessControl($Acl)
+
+  $AppliedAcl = $Directory.GetAccessControl(
+    [System.Security.AccessControl.AccessControlSections]::Access
+  )
+  if (-not $AppliedAcl.AreAccessRulesProtected) {
+    throw "F28 gate directory ACL still inherits permissions after initialization."
+  }
+  $AppliedRules = @($AppliedAcl.GetAccessRules(
+    $true,
+    $false,
+    [System.Security.Principal.SecurityIdentifier]
+  ))
+  $ExpectedSids = @(
+    $TaskSid.Value,
+    $SystemSid.Value,
+    $AdministratorsSid.Value
+  )
+  if ($AppliedRules.Count -ne $ExpectedSids.Count) {
+    throw "F28 gate directory ACL does not contain exactly three explicit rules."
+  }
+  foreach ($AppliedRule in $AppliedRules) {
+    $AppliedSid = $AppliedRule.IdentityReference.Value
+    if ($AppliedSid -notin $ExpectedSids -or
+        $AppliedRule.IsInherited -or
+        $AppliedRule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+        (($AppliedRule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Modify) -ne [System.Security.AccessControl.FileSystemRights]::Modify) -or
+        $AppliedRule.InheritanceFlags -ne $Inheritance -or
+        $AppliedRule.PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None) {
+      throw "F28 gate directory ACL contains a rule outside the exact contract."
+    }
+  }
+  foreach ($ExpectedSid in $ExpectedSids) {
+    if (@($AppliedRules | Where-Object {
+      $_.IdentityReference.Value -ceq $ExpectedSid
+    }).Count -ne 1) {
+      throw "F28 gate directory ACL does not contain exactly one rule for $ExpectedSid."
+    }
+  }
   Write-Host "Initialized ACL-restricted F28 gate directory: $GateDirectory"
 }
 

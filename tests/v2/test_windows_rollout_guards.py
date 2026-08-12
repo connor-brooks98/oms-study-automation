@@ -74,11 +74,60 @@ def test_f28_launcher_and_installer_bind_one_acl_restricted_gate_directory() -> 
 
     assert "Initialize-F28GateDirectory" in installer
     assert "SetAccessRuleProtection" in installer
+    assert "$Directory.GetAccessControl(" in installer
+    assert (
+        "[System.Security.AccessControl.AccessControlSections]::Access"
+        in installer
+    )
+    assert ".SetAccessControl($Acl)" in installer
+    assert "SetOwner(" not in installer
+    assert "Set-Acl -LiteralPath $GateDirectory" not in installer
     assert 'S-1-5-18' in installer
     assert 'S-1-5-32-544' in installer
     assert 'Get-ExpectedRecoveryTaskArguments' in installer
     assert "ExpectedDataRoot" in installer
     assert "F28 gate directory" in installer
+
+
+def test_f28_gate_acl_initialization_runs_natively_without_owner_or_audit_changes() -> None:
+    installer_path = ROOT / "scripts" / "install-windows.ps1"
+    harness_path = ROOT / "tests" / "v2" / "f28_gate_acl_initialization.ps1"
+    harness = harness_path.read_text(encoding="utf-8")
+
+    assert "F28_GATE_ACL_INITIALIZATION_VERIFIED" in harness
+    assert "Owner changed during DACL-only F28 initialization." in harness
+    assert "Audit rule count changed during DACL-only F28 initialization." in harness
+
+    powershell = next(
+        (
+            executable
+            for name in ("powershell.exe", "powershell")
+            if (executable := shutil.which(name)) is not None
+        ),
+        None,
+    )
+    if powershell is None:
+        # macOS cannot execute the native ACL regression. The source contract
+        # above remains mandatory, and the Windows verification runs this harness.
+        return
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(harness_path),
+            "-InstallerScript",
+            str(installer_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "F28_GATE_ACL_INITIALIZATION_VERIFIED" in result.stdout
 
 
 def test_f28_installs_exact_four_action_authorized_recovery_chain() -> None:
