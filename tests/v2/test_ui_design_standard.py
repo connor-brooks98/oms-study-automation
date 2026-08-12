@@ -23,7 +23,7 @@ def test_shared_stylesheet_is_the_approved_blue_workbench_source() -> None:
 
     assert installed.exists()
     assert (
-        "2c48a14fd2aade1284fd5c7b4d4caf325a1b293aa47afd519bf78ea570b37902"
+        "9ebb8c77d712d8a58acf6cc6812932948ab276d613f73e30005457a248becb65"
         == sha256(installed.read_bytes()).hexdigest()
     )
 
@@ -443,7 +443,12 @@ def test_targeted_visual_acceptance_layouts_are_scoped_and_responsive() -> None:
     player_css = static_source("public_quiz.css")
 
     assert ".exam-group {\n  flex: 1 1 100%;\n  min-width: 0;\n  width: 100%;\n}" in app_css
-    assert "button.exam-toggle {\n  width: 100%;\n  justify-content: flex-start;" in app_css
+    exam_toggle_rule = app_css.split(
+        "button.course-toggle,\nbutton.exam-toggle {", 1
+    )[1].split("}", 1)[0]
+    assert "width: 100%;" in exam_toggle_rule
+    assert "min-height: var(--control-h);" in exam_toggle_rule
+    assert "justify-content: flex-start;" in exam_toggle_rule
     assert "grid-template-columns: minmax(0, 1fr) auto;" in app_css
     assert ".provider-card-heading > :first-child { min-width: 0; }" in app_css
     provider_title_rule = app_css.split(".provider-card-heading h2,", 1)[1].split("}", 1)[0]

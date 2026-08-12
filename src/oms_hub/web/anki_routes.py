@@ -86,6 +86,7 @@ from oms_hub.study_generation.quiz_images import (
     sanitize_quiz_image,
 )
 from oms_hub.study_generation.repository import GenerationRepository
+from oms_hub.web.lecture_labels import lecture_label
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -279,7 +280,11 @@ def _deny_rehearsal_apply(request: Request) -> None:
 @router.get("/anki", response_class=HTMLResponse)
 def anki_page(request: Request) -> HTMLResponse:
     context = _page_context(request)
-    context["jobs"] = [_job_payload(job) for job in _repository(request).list_jobs(limit=50)]
+    labels = _lecture_label_map(request)
+    context["jobs"] = [
+        _job_payload(job, labels.get(job.lecture_id))
+        for job in _repository(request).list_jobs(limit=50)
+    ]
     return templates.TemplateResponse(
         request=request,
         name="anki.html",
@@ -290,12 +295,13 @@ def anki_page(request: Request) -> HTMLResponse:
 @router.get("/anki/jobs/{job_id}", response_class=HTMLResponse)
 def anki_review_page(request: Request, job_id: UUID) -> HTMLResponse:
     job = _require_job(_repository(request), job_id)
+    labels = _lecture_label_map(request)
     return templates.TemplateResponse(
         request=request,
         name="anki_review.html",
         context={
             **_page_context(request),
-            "job": _job_payload(job),
+            "job": _job_payload(job, labels.get(job.lecture_id)),
         },
     )
 
@@ -320,7 +326,13 @@ def list_anki_jobs(
     request: Request,
     limit: Annotated[int, Field(ge=1, le=500)] = 100,
 ) -> dict[str, Any]:
-    return {"jobs": [_job_payload(job) for job in _repository(request).list_jobs(limit=limit)]}
+    labels = _lecture_label_map(request)
+    return {
+        "jobs": [
+            _job_payload(job, labels.get(job.lecture_id))
+            for job in _repository(request).list_jobs(limit=limit)
+        ]
+    }
 
 
 @router.post("/api/anki/fixture-validation")
@@ -1591,8 +1603,15 @@ def _page_context(request: Request) -> dict[str, Any]:
     }
 
 
-def _job_payload(job: CurationJob) -> dict[str, Any]:
+def _lecture_label_map(request: Request) -> dict[int, str]:
     return {
+        lecture.id: lecture_label(lecture.subject, lecture.lecture_number)
+        for lecture in CatalogRepository(request.app.state.database).list_lectures()
+    }
+
+
+def _job_payload(job: CurationJob, display_label: str | None = None) -> dict[str, Any]:
+    payload = {
         "id": str(job.id),
         "lecture_id": job.lecture_id,
         "state": job.state.value,
@@ -1621,6 +1640,9 @@ def _job_payload(job: CurationJob) -> dict[str, Any]:
         "created_at": job.created_at,
         "updated_at": job.updated_at,
     }
+    if display_label is not None:
+        payload["lecture_label"] = display_label
+    return payload
 
 
 def _concept_review_groups(

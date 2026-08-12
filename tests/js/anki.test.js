@@ -62,7 +62,7 @@ test("lecture selection resolves sources and editable tag by numeric id", () => 
 
 test("lecture labels use the course-relative human identity", () => {
   assert.equal(anki.lectureDisplayLabel(lectures, 42), "Heme Lymph Lecture 04");
-  assert.equal(anki.lectureDisplayLabel(lectures, 999), "Lecture 999");
+  assert.equal(anki.lectureDisplayLabel(lectures, 999), "Lecture unavailable");
 });
 
 test("curation requires slides, transcript, and NotebookLM outline", () => {
@@ -871,6 +871,27 @@ test("failed jobs expose retry and removal while retry holds expose retry only",
   assert.equal(heldActions.children[0].className, "anki-icon-button sh-iconbtn");
   assert.equal(heldActions.children[0].dataset.retryQueuedJob, "");
   assert.equal(heldActions.children[0].dataset.removeFailedJob, undefined);
+});
+
+test("authoritative job lecture labels override the local lecture catalog", () => {
+  class Node {
+    constructor() { this.dataset = {}; this.children = []; }
+    append(...children) { this.children.push(...children); }
+    setAttribute() {}
+  }
+  const row = anki.jobRow(
+    { createElement: () => new Node() },
+    {
+      id: 8,
+      state: "queued",
+      lecture_id: 2,
+      lecture_label: "MSK Lecture 07",
+      target_deck: "Study Hub::MSK",
+      updated_at: "2026-08-07T14:00:00",
+    },
+    [],
+  );
+  assert.equal(row.children[0].children[1].children[0].textContent, "MSK Lecture 07");
 });
 
 // -- Minimal fake DOM sufficient to drive initializeReview --

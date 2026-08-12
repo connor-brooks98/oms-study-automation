@@ -156,6 +156,9 @@ h2 { margin: 0; font-size: 1.15rem; line-height: 1.3; }
 }
 .heading-actions { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
 .review-count {
+  display: inline-flex;
+  min-height: var(--control-h);
+  align-items: center;
   padding: .55rem .8rem;
   border-radius: 999px;
   color: oklch(0.4 0.11 70);
@@ -211,6 +214,7 @@ button.secondary:not(.sh-btn):hover { border-color: oklch(0.78 0.025 255); color
 button.course-toggle,
 button.exam-toggle {
   width: 100%;
+  min-height: var(--control-h);
   justify-content: flex-start;
   border-color: var(--border);
   text-align: left;
@@ -260,7 +264,7 @@ button.exam-toggle {
 [hidden] { display: none !important; }
 .exam-toggle {
   gap: .6rem;
-  min-height: 2.7rem;
+  min-height: var(--control-h);
   padding: .55rem .8rem;
   border: 0;
   border-radius: .5rem;
@@ -338,6 +342,7 @@ button.exam-toggle {
   color: var(--text-3-strong);
   font-size: .8rem;
 }
+.breadcrumbs a { display: inline-flex; min-height: var(--control-h); align-items: center; }
 .lecture-heading {
   display: flex;
   align-items: flex-start;
@@ -414,7 +419,7 @@ button.exam-toggle {
   font: 400 .7rem/1.5 "IBM Plex Mono", monospace;
 }
 .file-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
-.file-actions .button:not(.sh-btn) { min-height: 2.25rem; padding: .55rem .75rem; font-size: .78rem; }
+.file-actions .button:not(.sh-btn) { min-height: var(--control-h); padding: .55rem .75rem; font-size: .78rem; }
 .checklist-card { padding: 1.25rem; margin-bottom: 1rem; }
 .section-heading { display: flex; justify-content: space-between; margin-bottom: 1rem; }
 .compact-checklist { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .35rem .8rem; margin: 0; padding: 0; list-style: none; }
@@ -429,7 +434,7 @@ button.exam-toggle {
   font-size: .76rem;
 }
 .metadata-panel { padding: 1rem 1.2rem; }
-.metadata-panel summary { cursor: pointer; font-size: .85rem; font-weight: 600; }
+.metadata-panel summary { display: flex; min-height: var(--control-h); align-items: center; cursor: pointer; font-size: .85rem; font-weight: 600; }
 
 form { display: grid; gap: .8rem; margin-top: 1rem; }
 label { display: grid; gap: .3rem; color: var(--text-2); font-size: .8rem; font-weight: 500; }
@@ -831,6 +836,9 @@ textarea:not(.sh-textarea):not(.sh-control) {
   background: var(--surface);
 }
 .anki-advanced summary {
+  display: flex;
+  min-height: var(--control-h);
+  align-items: center;
   cursor: pointer;
   color: var(--text-2);
   font-size: .78rem;
@@ -846,7 +854,7 @@ textarea:not(.sh-textarea):not(.sh-control) {
   line-height: 1.45;
 }
 .anki-jobs-section { margin-top: 2rem; }
-.anki-compact-button { min-height: 2.25rem; padding: .5rem .75rem; }
+.anki-compact-button { min-height: var(--control-h); padding: .5rem .75rem; }
 .anki-job-list { display: grid; gap: .45rem; }
 .anki-job-row {
   display: flex;
@@ -1622,7 +1630,7 @@ code { overflow-wrap: anywhere; }
   border-radius: .5rem;
   background: var(--surface);
 }
-.preview-exam > summary { min-height: 2.7rem; padding: .6rem .75rem; }
+.preview-exam > summary { min-height: var(--control-h); padding: .6rem .75rem; }
 .preview-exam > summary .exam-count { margin-left: auto; }
 .preview-exam .preview-lecture-list { padding: 0 .6rem .6rem; }
 .preview-exam .preview-lecture-list li { background: white; }
@@ -2176,7 +2184,7 @@ details[open] > summary > .sh-disclose { transform: rotate(90deg); }
 
 /* Shared shell controls opt out of the legacy generic-button cascade. */
 button.sh-mobile-trigger { display: none; width: 44px; padding: 0; }
-button.sh-command-trigger { min-height: 40px; padding: var(--sp-2) var(--sp-3); border-radius: var(--r-pill); }
+button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) var(--sp-3); border-radius: var(--r-pill); }
 @media (max-width: 58rem) {
   button.sh-mobile-trigger { display: inline-flex; }
 }
@@ -2224,7 +2232,7 @@ button.sh-command-trigger { min-height: 40px; padding: var(--sp-2) var(--sp-3); 
 .pipeline-card.sh-panel { border: 1px solid var(--border); }
 .file-card.sh-card { box-shadow: none; }
 .file-card.missing { border-color: var(--border); background: var(--surface); }
-.file-actions .sh-btn { min-height: 40px; padding-inline: var(--sp-4); }
+.file-actions .sh-btn { min-height: var(--control-h); padding-inline: var(--sp-4); }
 .metadata-panel > form { padding-block-start: var(--sp-3); }
 
 .upload-workbench {

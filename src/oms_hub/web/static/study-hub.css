@@ -140,7 +140,7 @@ body { overflow-x: clip; }
   white-space: nowrap;
   transition: background-color var(--dur-micro) var(--ease-out), border-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out), transform var(--dur-micro) var(--ease-out);
 }
-.sh-btn--sm        { min-height: 36px; padding: 8px 14px; }
+.sh-btn--sm        { min-height: var(--control-h); padding: 8px 14px; }
 .sh-btn--block     { width: 100%; }
 .sh-btn--primary   { background: var(--brand); color: var(--brand-ink); }
 .sh-btn--secondary { background: var(--card); color: var(--brand); border-color: var(--border); }
@@ -309,6 +309,7 @@ body { overflow-x: clip; }
 }
 .sh-wordmark {
   display: inline-flex;
+  min-height: var(--control-h);
   align-items: center;
   gap: var(--sp-2);
   flex: none;
@@ -340,7 +341,7 @@ body { overflow-x: clip; }
   text-transform: none;
 }
 .sh-topbar .sh-nav__link {
-  min-height: 40px;
+  min-height: var(--control-h);
   padding-inline: var(--sp-3);
   display: inline-flex;
   align-items: center;
@@ -380,7 +381,7 @@ body { overflow-x: clip; }
   white-space: nowrap;
 }
 .sh-command-trigger {
-  min-height: 40px;
+  min-height: var(--control-h);
   padding: var(--sp-2) var(--sp-3);
   display: inline-flex;
   align-items: center;

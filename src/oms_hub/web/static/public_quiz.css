@@ -54,7 +54,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 2.5rem;
+  min-height: var(--control-h);
   padding: .55rem .8rem;
   border: 1px solid var(--quiz-border);
   border-radius: .5rem;
@@ -196,7 +196,7 @@
 }
 
 .quiz-tool:not(.sh-btn) {
-  min-height: 2rem;
+  min-height: var(--control-h);
   padding: .4rem .65rem;
   border: 1px solid var(--quiz-border);
   border-radius: .4rem;
@@ -235,7 +235,7 @@
 
 .quiz-flag-select { max-width: 16rem; }
 .quiz-flag-select:not(.sh-select) {
-  min-height: 2.15rem;
+  min-height: var(--control-h);
   padding: .35rem .55rem;
   border: 1px solid var(--quiz-border);
   border-radius: .4rem;
@@ -360,7 +360,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 2.7rem;
+  min-height: var(--control-h);
   padding: .7rem 1.15rem;
   border: 1px solid var(--quiz-brand);
   border-radius: .5rem;
@@ -394,7 +394,10 @@
 }
 
 .quiz-information-summary {
-  padding: .9rem 0 .15rem;
+  display: flex;
+  min-height: var(--control-h);
+  align-items: center;
+  padding: .5rem 0;
   color: var(--quiz-brand);
   cursor: pointer;
   font-size: .8rem;
@@ -409,7 +412,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 2.55rem;
+  min-height: var(--control-h);
   padding: .62rem .9rem;
   border: 1px solid var(--quiz-border);
   border-radius: .5rem;
