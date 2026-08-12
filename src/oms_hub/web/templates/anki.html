@@ -41,7 +41,7 @@
 
     <form id="anki-create-form" class="anki-create-form">
       <div class="anki-form-grid">
-        <section class="anki-lecture-field anki-field-wide sh-card">
+        <section class="anki-lecture-field anki-field-wide anki-workbench-panel">
           <p class="sh-section-label">Lecture pathway</p>
           <input name="lecture_id" type="hidden">
           <div class="anki-lecture-selector" data-lecture-selector>
@@ -70,7 +70,7 @@
           <p class="field-help" data-selected-lecture>Choose a course, exam, and lecture.</p>
         </section>
 
-        <section class="anki-source-field anki-field-wide sh-card">
+        <section class="anki-source-field anki-field-wide anki-workbench-panel">
           <p class="sh-section-label">Lecture sources</p>
           <div id="anki-source-revisions" class="anki-source-options">
             <div class="sh-empty"><p class="sh-empty__text">Choose a lecture to see its required source bundle.</p></div>
@@ -78,7 +78,7 @@
           <p class="field-help">Current slides, transcript, and NotebookLM outline are required. The outline guides concept coverage but cannot support a keep or generated card by itself.</p>
         </section>
 
-        <section class="anki-field-wide anki-deck-field sh-card">
+        <section class="anki-field-wide anki-deck-field anki-workbench-panel">
           <p class="sh-section-label">Existing-card deck priority</p>
           <div class="anki-deck-adder">
             <select class="sh-select" data-deck-choice {% if not indexed_decks %}disabled{% endif %}>
@@ -120,7 +120,7 @@
             <option value="{{ defaults.model }}">{{ defaults.model }}</option>
           </select>
         </label>
-        <section class="anki-field-wide sh-card" data-curation-models>
+        <section class="anki-field-wide anki-workbench-panel" data-curation-models>
           <p class="sh-section-label">Models</p>
           <label>Curation profile
             <select class="sh-select" name="curation_profile" data-curation-profile>
@@ -152,7 +152,7 @@
         </label>
       </div>
 
-      <details class="anki-advanced sh-card">
+      <details class="anki-advanced">
           <summary><span class="sh-disclose" aria-hidden="true">▸</span> Run details</summary>
         <div class="anki-form-grid">
           <label>LCL prompt version
@@ -204,7 +204,9 @@
         <a class="anki-job-link" href="/anki/jobs/{{ job.id }}">
           <span class="status-dot sh-dot {{ job_tone.replace('pill', 'dot') }} status-{{ job.state }}"></span>
           <span>
-            <strong>Lecture {{ job.lecture_id }}</strong>
+            {% set lecture_ref = namespace(label='Lecture ' ~ job.lecture_id) %}
+            {% for lecture in lectures %}{% if lecture.id == job.lecture_id %}{% set lecture_ref.label = lecture.subject ~ ' Lecture ' ~ '%02d'|format(lecture.lecture_number) %}{% endif %}{% endfor %}
+            <strong>{{ lecture_ref.label }}</strong>
             <small>{{ job.target_deck }}</small>
           </span>
           <span class="status-pill sh-pill {{ job_tone }} status-{{ job.state }}">{{ job.state.replace('_', ' ') }}</span>

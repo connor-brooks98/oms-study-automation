@@ -60,6 +60,11 @@ test("lecture selection resolves sources and editable tag by numeric id", () => 
   assert.equal(anki.resolveLecture(lectures, "999"), null);
 });
 
+test("lecture labels use the course-relative human identity", () => {
+  assert.equal(anki.lectureDisplayLabel(lectures, 42), "Heme Lymph Lecture 04");
+  assert.equal(anki.lectureDisplayLabel(lectures, 999), "Lecture 999");
+});
+
 test("curation requires slides, transcript, and NotebookLM outline", () => {
   assert.equal(anki.hasRequiredSources(lectures[0]), true);
   assert.equal(anki.hasRequiredSources(lectures[1]), false);
@@ -835,7 +840,9 @@ test("failed jobs expose retry and removal while retry holds expose retry only",
       target_deck: "Study Hub::Neuro",
       updated_at: "2026-08-07T14:00:00",
     },
+    [{ id: 2, subject: "MSK", lecture_number: 7 }],
   );
+  assert.equal(row.children[0].children[1].children[0].textContent, "MSK Lecture 07");
   const actions = row.children[1];
   const [retry, remove] = actions.children;
 
