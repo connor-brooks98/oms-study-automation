@@ -449,6 +449,10 @@ def test_targeted_visual_acceptance_layouts_are_scoped_and_responsive() -> None:
     assert "width: 100%;" in exam_toggle_rule
     assert "min-height: var(--control-h);" in exam_toggle_rule
     assert "justify-content: flex-start;" in exam_toggle_rule
+    lecture_row_rule = app_css.split(".lecture-row {", 1)[1].split("}", 1)[0]
+    assert "min-height: var(--control-h);" in lecture_row_rule
+    review_link_rule = app_css.split(".review-lecture-link {", 1)[1].split("}", 1)[0]
+    assert "min-height: var(--control-h);" in review_link_rule
     assert "grid-template-columns: minmax(0, 1fr) auto;" in app_css
     assert ".provider-card-heading > :first-child { min-width: 0; }" in app_css
     provider_title_rule = app_css.split(".provider-card-heading h2,", 1)[1].split("}", 1)[0]

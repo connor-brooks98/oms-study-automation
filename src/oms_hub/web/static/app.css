@@ -283,7 +283,7 @@ button.exam-toggle {
   grid-template-columns: .5rem minmax(12rem, 1fr) auto auto 3rem;
   align-items: center;
   gap: .75rem;
-  min-height: 2.65rem;
+  min-height: var(--control-h);
   padding: .45rem .7rem;
   border-radius: .45rem;
   color: var(--text);
@@ -291,6 +291,12 @@ button.exam-toggle {
 }
 .lecture-row:hover { color: var(--text); background: var(--surface); }
 .lecture-title { min-width: 0; font-size: .86rem; }
+.review-lecture-link {
+  display: flex;
+  min-height: var(--control-h);
+  align-items: center;
+  flex: 1 1 auto;
+}
 .status-dot:not(.sh-dot) { width: .42rem; height: .42rem; border-radius: 50%; background: var(--not-started); }
 .status-dot:not(.sh-dot).status-processing,
 .status-dot:not(.sh-dot).status-queued,
