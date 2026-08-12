@@ -295,12 +295,8 @@ jobs:
           foreach ($test in $tests) {
             Invoke-BoundedPytest -Label $test -Arguments @("-m", "pytest", $test, "-q") -TimeoutSeconds 90
           }
-          $env:PYTHONFAULTHANDLER = "1"
-          Invoke-BoundedPytest -Label "tests/anki/test_rehearsal_safety.py (aggregate diagnostics)" `
-            -Arguments @(
-              "-m", "pytest", "tests\anki\test_rehearsal_safety.py",
-              "-vv", "-o", "addopts=''", "-o", "faulthandler_timeout=30"
-            ) -TimeoutSeconds 180
+          Invoke-BoundedPytest -Label "tests/anki/test_rehearsal_safety.py (aggregate)" `
+            -Arguments @("-m", "pytest", "tests\anki\test_rehearsal_safety.py", "-q") -TimeoutSeconds 180
 
       - name: Test provider attempt events
         shell: powershell

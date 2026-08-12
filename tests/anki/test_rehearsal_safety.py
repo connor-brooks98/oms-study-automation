@@ -259,28 +259,33 @@ def test_shadow_egress_resolution_never_globally_authorizes_a_direct_ip() -> Non
         policy.authorize_connect("203.0.113.8", 443, ("203.0.113.8", 443))
 
 
-def test_shadow_socket_guard_consumes_resolution_tokens_and_blocks_later_direct_ip() -> None:
+def test_shadow_socket_guard_consumes_resolution_tokens_and_blocks_later_direct_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import socket
 
-    guard = SocketEgressGuard(EgressPolicy.shadow({"api.anthropic.com": {"203.0.113.8"}}))
+    baseline_connect = socket.socket.connect
     observed: list[tuple[object, ...]] = []
 
     def connect(sock: socket.socket, address: tuple[object, ...]) -> None:
         del sock
         observed.append(address)
 
-    guard._original_connect = connect  # type: ignore[assignment]
-    guard.install()
-    try:
-        rows = socket.getaddrinfo("api.anthropic.com", 443, type=socket.SOCK_STREAM)
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.connect(rows[0][-1])
-        assert observed == [("203.0.113.8", 443)]
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            with pytest.raises(EgressDenied):
-                sock.connect(("203.0.113.8", 443))
-    finally:
-        guard.uninstall()
+    with monkeypatch.context() as scoped:
+        scoped.setattr(socket.socket, "connect", connect)
+        guard = SocketEgressGuard(EgressPolicy.shadow({"api.anthropic.com": {"203.0.113.8"}}))
+        guard.install()
+        try:
+            rows = socket.getaddrinfo("api.anthropic.com", 443, type=socket.SOCK_STREAM)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.connect(rows[0][-1])
+            assert observed == [("203.0.113.8", 443)]
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                with pytest.raises(EgressDenied):
+                    sock.connect(("203.0.113.8", 443))
+        finally:
+            guard.uninstall()
+    assert socket.socket.connect is baseline_connect
 
 
 def test_process_socket_guard_denies_external_name_resolution() -> None:
