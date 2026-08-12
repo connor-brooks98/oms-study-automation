@@ -68,3 +68,75 @@ jobs:
           .\.venv\Scripts\python.exe -m pip install -e ".[dev,document-processing,pdf-inspection]"
           .\.venv\Scripts\python.exe -c "import anydoc, pdf_inspector; print('document processors ready')"
           .\.venv\Scripts\python.exe -m pytest tests\test_office_converter.py tests\document_processing tests\study_generation tests\v2 -q
+
+  windows-rehearsal-preflight:
+    # This is a portable source/preflight gate only.  Capsule export and native
+    # NUC/Anki acceptance require frozen local data and are intentionally out of scope.
+    name: Windows rehearsal source/preflight
+    runs-on: windows-latest
+    env:
+      PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install rehearsal test dependencies
+        shell: powershell
+        run: |
+          py -3.12 -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -e ".[dev,document-processing,pdf-inspection]"
+
+      - name: Parse capsule export PowerShell and check source contract
+        shell: powershell
+        run: |
+          $scriptPath = (Resolve-Path "scripts\export-a0-rehearsal-capsule.ps1").Path
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            throw "PowerShell parser rejected the capsule export script"
+          }
+
+          $source = Get-Content -LiteralPath $scriptPath -Raw
+          $required = @(
+            "Set-StrictMode -Version Latest",
+            "Assert-CleanGitIdentity",
+            "Assert-ResolvedDescendant",
+            "Get-CimInstance Win32_Process",
+            "credentials_exported = `$false",
+            "collection_exported = `$false",
+            "production_touched = `$false"
+          )
+          $missing = @($required | Where-Object { -not $source.Contains($_) })
+          if ($missing.Count -ne 0) {
+            throw "Capsule export source contract is missing: $($missing -join ', ')"
+          }
+
+      - name: Lint rehearsal sources
+        shell: powershell
+        run: |
+          .\.venv\Scripts\python.exe -m ruff check src\oms_hub\anki\rehearsal tests\anki\test_rehearsal_capsule.py tests\anki\test_rehearsal_evidence.py tests\anki\test_rehearsal_export.py tests\anki\test_rehearsal_process.py tests\anki\test_rehearsal_regressions.py tests\anki\test_rehearsal_safety.py tests\anki\test_provider_attempt_events.py tests\anki\test_v2_provider_fault_matrix.py tests\anki\test_v2_replay_fault_matrix.py
+
+      - name: Run portable rehearsal and provider tests
+        shell: powershell
+        run: |
+          .\.venv\Scripts\python.exe -m pytest `
+            tests\anki\test_rehearsal_capsule.py `
+            tests\anki\test_rehearsal_evidence.py `
+            tests\anki\test_rehearsal_export.py `
+            tests\anki\test_rehearsal_process.py `
+            tests\anki\test_rehearsal_regressions.py `
+            tests\anki\test_rehearsal_safety.py `
+            tests\anki\test_provider_attempt_events.py `
+            tests\anki\test_v2_provider_fault_matrix.py `
+            tests\anki\test_v2_replay_fault_matrix.py -q
