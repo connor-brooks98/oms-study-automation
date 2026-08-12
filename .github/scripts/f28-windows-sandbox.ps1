@@ -108,6 +108,7 @@ try {
     throw "ExpectedTree must be a lowercase full tree SHA."
   }
   $ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
+  Set-Location -LiteralPath $ProjectRoot
   $ActualRevision = (& git -C $ProjectRoot rev-parse HEAD).Trim()
   $ActualTree = (& git -C $ProjectRoot rev-parse "HEAD^{tree}").Trim()
   if ($LASTEXITCODE -ne 0 -or $ActualRevision -cne $ExpectedRevision -or $ActualTree -cne $ExpectedTree) {
