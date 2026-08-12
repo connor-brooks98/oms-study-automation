@@ -195,6 +195,29 @@ jobs:
             $stderr = Join-Path $logRoot "$safeLabel.stderr.log"
             $process = Start-Process -FilePath $runtime -ArgumentList $Arguments `
               -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            try {
+              [IntPtr]$processHandle = $process.Handle
+              if ($processHandle -eq [IntPtr]::Zero) {
+                throw "process handle was zero"
+              }
+            } catch {
+              $setupFailure = "could not cache pytest process handle: $Label ($($_.Exception.Message); logs: $stdout, $stderr)"
+              try {
+                $cleanupFailure = Stop-BoundedProcessTree -Process $process
+              } catch {
+                $cleanupFailure = "process-tree cleanup threw: $($_.Exception.Message)"
+              }
+              Write-Host "::group::$Label stdout"
+              Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue
+              Write-Host "::endgroup::"
+              Write-Host "::group::$Label stderr"
+              Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue
+              Write-Host "::endgroup::"
+              if ($null -ne $cleanupFailure) {
+                throw "$setupFailure; cleanup failure: $cleanupFailure"
+              }
+              throw $setupFailure
+            }
             $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
             while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
               Start-Sleep -Milliseconds 200
@@ -216,7 +239,6 @@ jobs:
             }
             try {
               $process.WaitForExit()
-              $process.Refresh()
               $rawExitCode = $process.ExitCode
               if ($null -eq $rawExitCode) {
                 throw "process exit code was null"
@@ -336,6 +358,29 @@ jobs:
           )
           $process = Start-Process -FilePath $runtime -ArgumentList $arguments `
             -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          try {
+            [IntPtr]$processHandle = $process.Handle
+            if ($processHandle -eq [IntPtr]::Zero) {
+              throw "process handle was zero"
+            }
+          } catch {
+            $setupFailure = "could not cache aggregate rehearsal lifecycle pytest process handle: $($_.Exception.Message) (logs: $stdout, $stderr)"
+            try {
+              $cleanupFailure = Stop-BoundedProcessTree -Process $process
+            } catch {
+              $cleanupFailure = "process-tree cleanup threw: $($_.Exception.Message)"
+            }
+            Write-Host "::group::aggregate rehearsal lifecycle stdout"
+            Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue
+            Write-Host "::endgroup::"
+            Write-Host "::group::aggregate rehearsal lifecycle stderr"
+            Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue
+            Write-Host "::endgroup::"
+            if ($null -ne $cleanupFailure) {
+              throw "$setupFailure; cleanup failure: $cleanupFailure"
+            }
+            throw $setupFailure
+          }
           $deadline = [DateTime]::UtcNow.AddSeconds(600)
           while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
             Start-Sleep -Milliseconds 200
@@ -357,7 +402,6 @@ jobs:
           }
           try {
             $process.WaitForExit()
-            $process.Refresh()
             $rawExitCode = $process.ExitCode
             if ($null -eq $rawExitCode) {
               throw "process exit code was null"
