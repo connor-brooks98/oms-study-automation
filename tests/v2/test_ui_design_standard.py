@@ -188,7 +188,7 @@ def test_quiz_builder_import_forms_use_locked_controls_without_losing_hooks() ->
     assert "<fieldset" not in studio and "<legend" not in studio
     assert studio.count("data-import-source-form") == 3
     assert studio.count('class="studio-intake-form" data-import-source-form') == 3
-    assert studio.count('class="sh-check"') >= 3
+    assert studio.count('class="sh-check studio-intake-notebook"') == 3
     assert 'class="sh-validation" data-import-source-list' in studio
     for tag, required in (("select", "sh-select"), ("textarea", "sh-textarea")):
         assert all(required in line for line in studio.splitlines() if f"<{tag}" in line)

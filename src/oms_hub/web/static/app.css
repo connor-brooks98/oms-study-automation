@@ -2044,7 +2044,18 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
   border-radius: var(--r-md);
   background: var(--surface);
 }
-.studio-intake-form > .sh-btn { margin-block-start: auto; }
+.studio-intake-form > .studio-intake-role { margin-block-start: auto; }
+.studio-intake-form > .studio-intake-notebook {
+  min-height: var(--control-h);
+  align-items: center;
+  margin-block-end: var(--sp-3);
+}
+.studio-import-intake .studio-intake-notebook input[type="checkbox"] {
+  width: 14px;
+  min-width: 14px;
+  height: 14px;
+  min-height: 14px;
+}
 .studio-intake-form > [data-form-message] { min-height: 1.4em; margin-block-end: 0; }
 .studio-intake-form h3 { margin-block-end: var(--sp-2); }
 .studio-import-intake > p:not(.eyebrow) { max-width: 58rem; color: var(--text-2); }
