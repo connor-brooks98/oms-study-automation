@@ -46,7 +46,7 @@
     <div class="review-section__heading"><h2>Lecture steps</h2><p>Open failed or paused lecture workflows.</p></div>
     <ul class="plain-list">
     {% for lecture in lectures %}
-      <li class="card sh-row" style="--sh-hue: {{ lecture_hues.get(lecture.id, 255) }}"><span class="sh-subject-dot"></span><a class="sh-row__title" href="/lectures/{{ lecture.id }}">{{ lecture.subject }} Lecture {{ "%02d"|format(lecture.lecture_number) }} · Exam {{ lecture.exam_number }} — {{ lecture.topic }}</a></li>
+      <li class="card sh-row" style="--sh-hue: {{ lecture_hues.get(lecture.id, 255) }}"><span class="sh-subject-dot"></span><a class="sh-row__title review-lecture-link" href="/lectures/{{ lecture.id }}">{{ lecture.subject }} Lecture {{ "%02d"|format(lecture.lecture_number) }} · Exam {{ lecture.exam_number }} — {{ lecture.topic }}</a></li>
     {% else %}
       <li class="review-empty">No lecture steps need review.</li>
     {% endfor %}
