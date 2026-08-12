@@ -30,18 +30,17 @@ $OriginalTaskLogEnabled = $null
 $PrimaryFailure = $null
 $RollbackBackup = $null
 
-function Invoke-LoggedNative {
+function Invoke-LoggedPowerShell {
   param(
     [string]$Label,
-    [string]$Executable,
-    [string[]]$Arguments,
+    [scriptblock]$Action,
     [string]$LogPath
   )
   Write-Host "Running $Label..."
   $Writer = New-Object System.IO.StreamWriter($LogPath, $false, $Utf8NoBom)
   try {
     $Rendered = @(
-      & $Executable @Arguments 2>&1 | ForEach-Object {
+      & $Action *>&1 | ForEach-Object {
         $Line = [string]$_
         $Writer.WriteLine($Line)
         $Writer.Flush()
@@ -49,12 +48,8 @@ function Invoke-LoggedNative {
         $Line
       }
     )
-    $ExitCode = $LASTEXITCODE
   } finally {
     $Writer.Dispose()
-  }
-  if ($ExitCode -ne 0) {
-    throw "$Label failed with exit code $ExitCode."
   }
   return $Rendered
 }
@@ -173,27 +168,28 @@ try {
   & wevtutil.exe sl "Microsoft-Windows-TaskScheduler/Operational" /e:true
   if ($LASTEXITCODE -ne 0) { throw "Task Scheduler Operational logging could not be enabled." }
 
-  $InstallPreview = Invoke-LoggedNative `
+  $InstallPreview = Invoke-LoggedPowerShell `
     -Label "exact installer preview" `
-    -Executable $SystemPowerShell `
-    -Arguments @(
-      "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $InstallScript,
-      "-ProjectRoot", $ProjectRoot, "-DataRoot", $DataRoot,
-      "-WhatIf", '-Confirm:$false'
-    ) `
+    -Action {
+      & $InstallScript `
+        -ProjectRoot $ProjectRoot `
+        -DataRoot $DataRoot `
+        -WhatIf `
+        -Confirm:$false
+    } `
     -LogPath (Join-Path $EvidenceRoot "installer-preview.log")
   if (($InstallPreview -join "`n") -notmatch "install preview complete") {
     throw "Installer preview did not publish its non-mutating completion marker."
   }
 
-  $InstallOutput = Invoke-LoggedNative `
+  $InstallOutput = Invoke-LoggedPowerShell `
     -Label "exact live sandbox installation" `
-    -Executable $SystemPowerShell `
-    -Arguments @(
-      "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $InstallScript,
-      "-ProjectRoot", $ProjectRoot, "-DataRoot", $DataRoot,
-      '-Confirm:$false'
-    ) `
+    -Action {
+      & $InstallScript `
+        -ProjectRoot $ProjectRoot `
+        -DataRoot $DataRoot `
+        -Confirm:$false
+    } `
     -LogPath (Join-Path $EvidenceRoot "installer-live.log")
   if (($InstallOutput -join "`n") -notmatch "Study Hub V2 install complete") {
     throw "Live installer did not publish its completion marker."
@@ -205,30 +201,40 @@ try {
   $RollbackBackup = $Backups[0].FullName
   $null = Get-ExactHealth
 
-  $AcceptanceBaseArguments = @(
-    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $AcceptanceScript,
-    "-ProjectRoot", $ProjectRoot,
-    "-DataRoot", $DataRoot,
-    "-TaskName", $TaskName,
-    "-ExpectedRevision", $ExpectedRevision,
-    "-ExpectedTree", $ExpectedTree,
-    "-ExpectedSchema", [string]$ExpectedSchema,
-    "-ExpectedBackupPath", $RollbackBackup,
-    "-RestartTimeoutSeconds", "240"
-  )
-  $AcceptancePreview = Invoke-LoggedNative `
+  $AcceptancePreview = Invoke-LoggedPowerShell `
     -Label "exact F28 acceptance preview" `
-    -Executable $SystemPowerShell `
-    -Arguments @($AcceptanceBaseArguments + @("-WhatIf", '-Confirm:$false')) `
+    -Action {
+      & $AcceptanceScript `
+        -ProjectRoot $ProjectRoot `
+        -DataRoot $DataRoot `
+        -TaskName $TaskName `
+        -ExpectedRevision $ExpectedRevision `
+        -ExpectedTree $ExpectedTree `
+        -ExpectedSchema $ExpectedSchema `
+        -ExpectedBackupPath $RollbackBackup `
+        -RestartTimeoutSeconds 240 `
+        -WhatIf `
+        -Confirm:$false
+    } `
     -LogPath (Join-Path $EvidenceRoot "f28-preview.log")
   if (($AcceptancePreview -join "`n") -notmatch "F28_NATIVE_RESTART_PREFLIGHT_COMPLETE") {
     throw "F28 preview did not publish its exact preflight marker."
   }
 
-  $AcceptanceOutput = Invoke-LoggedNative `
+  $AcceptanceOutput = Invoke-LoggedPowerShell `
     -Label "exact native F28 controlled restart" `
-    -Executable $SystemPowerShell `
-    -Arguments @($AcceptanceBaseArguments + @('-Confirm:$false')) `
+    -Action {
+      & $AcceptanceScript `
+        -ProjectRoot $ProjectRoot `
+        -DataRoot $DataRoot `
+        -TaskName $TaskName `
+        -ExpectedRevision $ExpectedRevision `
+        -ExpectedTree $ExpectedTree `
+        -ExpectedSchema $ExpectedSchema `
+        -ExpectedBackupPath $RollbackBackup `
+        -RestartTimeoutSeconds 240 `
+        -Confirm:$false
+    } `
     -LogPath (Join-Path $EvidenceRoot "f28-native.log")
   $ExpectedMarker = "F28_NATIVE_RESTART_$($ExpectedRevision.ToUpperInvariant())_VERIFIED_COMPLETE"
   $EscapedExpectedMarker = [regex]::Escape($ExpectedMarker)
