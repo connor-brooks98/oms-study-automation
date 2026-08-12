@@ -238,7 +238,7 @@ jobs:
             Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue
             Write-Host "::endgroup::"
             if ($exitCode -ne 0) {
-              throw "pytest failed with exit code $exitCode: $Label (logs: $stdout, $stderr)"
+              throw "pytest failed with exit code ${exitCode}: $Label (logs: $stdout, $stderr)"
             }
           }
 
