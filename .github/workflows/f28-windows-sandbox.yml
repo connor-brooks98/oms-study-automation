@@ -19,8 +19,8 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 45
     env:
-      TARGET_REVISION: c2252a6394249d5409dc1b4033bea02b9127aaa9
-      TARGET_TREE: 262f53211dcd886582b48f678c2ed27d438f014f
+      TARGET_REVISION: d3b8b1f300f6ec67ed6d9385e529f5eda3884102
+      TARGET_TREE: 7b0951e475d6af142a18b85af8e3ea9e84267cf7
       PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
     steps:
@@ -34,7 +34,7 @@ jobs:
         with:
           fetch-depth: 0
           path: candidate
-          ref: c2252a6394249d5409dc1b4033bea02b9127aaa9
+          ref: d3b8b1f300f6ec67ed6d9385e529f5eda3884102
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
