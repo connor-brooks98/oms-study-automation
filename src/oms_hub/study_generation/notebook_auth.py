@@ -43,7 +43,6 @@ class NotebookCLIAuth:
                 str(self.storage_path),
                 "--browser",
                 "chrome",
-                "--fresh",
                 executable=self.python_executable,
                 include_root_storage=False,
                 timeout=330,

@@ -16,7 +16,7 @@ from oms_hub.document_processing.domain import (
 )
 from oms_hub.files.atomic import verified_atomic_write
 from oms_hub.llm.domain import DiagnosticSource, LLMRequestError, ProviderName
-from oms_hub.models import StudioImportRunSourceModel
+from oms_hub.models import StudioImportRunSourceModel, StudioSourceOperationModel
 from oms_hub.study_generation.domain import QuizImageRef
 from oms_hub.study_generation.notebook_errors import NotebookGatewayError
 from oms_hub.study_generation.practice_contracts import ExtractedQuestion, SegmentCitation
@@ -46,7 +46,11 @@ from oms_hub.study_generation.quiz_import_worker import (
     _extraction_json,
     stage_signature,
 )
-from oms_hub.study_generation.studio_domain import StudioRunState, StudioSourceType
+from oms_hub.study_generation.studio_domain import (
+    StudioRunState,
+    StudioSourceState,
+    StudioSourceType,
+)
 from oms_hub.study_generation.studio_repository import StudioRepository
 
 _OPEN_DATABASES: list[Database] = []
@@ -164,10 +168,51 @@ class _ResolvedAnswers:
 class _AttachingNotebook:
     def __init__(self) -> None:
         self.calls = []
+        self.remote_ids: set[str] = set()
 
-    def attach_studio_source(self, subject, exam_number, source_type, title, **kwargs):
+    def prepare_studio_source_add(self, subject, exam_number):
+        return "notebook-1", frozenset(self.remote_ids)
+
+    def add_studio_source_to_notebook(
+        self, notebook_id, source_type, title, **kwargs
+    ):
+        subject, exam_number = "Neuro", 1
         self.calls.append((subject, exam_number, source_type, title, kwargs))
-        return "notebook-1", f"remote-{len(self.calls)}"
+        remote_id = f"remote-{len(self.calls)}"
+        self.remote_ids.add(remote_id)
+        return remote_id
+
+    def list_studio_source_ids(self, notebook_id):
+        return frozenset(self.remote_ids)
+
+
+class _InterruptingNotebook(_AttachingNotebook):
+    def __init__(self) -> None:
+        super().__init__()
+        self.interrupt_once = True
+
+    def add_studio_source_to_notebook(
+        self, notebook_id, source_type, title, **kwargs
+    ):
+        remote_id = super().add_studio_source_to_notebook(
+            notebook_id, source_type, title, **kwargs
+        )
+        if self.interrupt_once:
+            self.interrupt_once = False
+            raise KeyboardInterrupt("simulated process termination after remote add")
+        return remote_id
+
+
+class _AmbiguousInterruptingNotebook(_InterruptingNotebook):
+    def add_studio_source_to_notebook(
+        self, notebook_id, source_type, title, **kwargs
+    ):
+        _AttachingNotebook.add_studio_source_to_notebook(
+            self,
+            notebook_id, source_type, title, **kwargs
+        )
+        self.remote_ids.add("unexpected-competing-source")
+        raise KeyboardInterrupt("simulated process termination after competing adds")
 
 
 def test_retry_reuses_completed_parse_artifacts(tmp_path: Path) -> None:
@@ -255,6 +300,232 @@ def test_supporting_binding_is_attached_once_and_reused_for_answering(tmp_path: 
 
     worker.run(repository.get_run(run.id))
     assert len(notebook.calls) == 1
+
+
+def test_interrupted_direct_import_add_reconciles_without_duplicate_remote_source(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    questions = _ready_source(repository, tmp_path, "Questions")
+    supporting = _ready_source(repository, tmp_path, "Reference")
+    run = repository.queue_import_run(
+        "Neuro",
+        1,
+        "Imported practice",
+        "Neuro",
+        1,
+        QuizContentKind.PRACTICE_QUESTIONS,
+        (
+            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
+            ImportSourceSelection(
+                supporting.id,
+                ImportSourceRole.SUPPORTING_REFERENCE,
+                attach_to_notebook=True,
+            ),
+        ),
+    )
+    notebook = _InterruptingNotebook()
+    worker = QuizImportWorker(
+        repository,
+        _Parser(),
+        _QuestionExtractor(),
+        _ResolvedAnswers(),
+        notebook,
+        tmp_path / "assets",
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="simulated process termination"):
+        worker.run(repository.claim_next_run())
+
+    assert notebook.remote_ids == {"remote-1"}
+    assert repository.import_sources(run.id)[1].remote_source_id is None
+    with repository.database.session() as session:
+        operation = session.query(StudioSourceOperationModel).one()
+        assert operation.state == "executing"
+        assert operation.notebook_id == "notebook-1"
+        assert json.loads(operation.baseline_remote_ids_json) == []
+    assert repository.recover_interrupted_jobs() >= 2
+
+    worker.run(repository.claim_next_run(datetime(2100, 1, 1, tzinfo=UTC)))
+
+    assert repository.get_run(run.id).state is StudioRunState.AWAITING_REVIEW
+    assert notebook.remote_ids == {"remote-1"}
+    assert len(notebook.calls) == 1
+    assert repository.import_sources(run.id)[1].remote_source_id == "remote-1"
+    with repository.database.session() as session:
+        operation = session.query(StudioSourceOperationModel).one()
+        assert operation.state == "completed"
+        assert operation.remote_source_id == "remote-1"
+
+
+def test_ambiguous_direct_import_delta_stops_for_review_without_repeating_add(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    questions = _ready_source(repository, tmp_path, "Questions")
+    supporting = _ready_source(repository, tmp_path, "Reference")
+    run = repository.queue_import_run(
+        "Neuro",
+        1,
+        "Imported practice",
+        "Neuro",
+        1,
+        QuizContentKind.PRACTICE_QUESTIONS,
+        (
+            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
+            ImportSourceSelection(
+                supporting.id,
+                ImportSourceRole.SUPPORTING_REFERENCE,
+                attach_to_notebook=True,
+            ),
+        ),
+    )
+    notebook = _AmbiguousInterruptingNotebook()
+    worker = QuizImportWorker(
+        repository,
+        _Parser(),
+        _QuestionExtractor(),
+        _ResolvedAnswers(),
+        notebook,
+        tmp_path / "assets",
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        worker.run(repository.claim_next_run())
+    repository.recover_interrupted_jobs()
+    worker.run(repository.claim_next_run(datetime(2100, 1, 1, tzinfo=UTC)))
+
+    assert repository.get_run(run.id).state is StudioRunState.FAILED
+    assert repository.get(supporting.id).state is StudioSourceState.NEEDS_REVIEW
+    assert len(notebook.calls) == 1
+    with repository.database.session() as session:
+        operation = session.query(StudioSourceOperationModel).one()
+        assert operation.state == "needs_review"
+        assert "ambiguous remote source delta" in operation.error
+    with pytest.raises(ValueError, match="pending source mutation"):
+        repository.queue_source_delete(supporting.id)
+    assert repository.get(supporting.id).state is StudioSourceState.NEEDS_REVIEW
+
+
+def test_direct_import_attachment_uses_durable_delete_saga(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    questions = _ready_source(repository, tmp_path, "Questions")
+    supporting = _ready_source(repository, tmp_path, "Reference")
+    repository.queue_import_run(
+        "Neuro",
+        1,
+        "Imported practice",
+        "Neuro",
+        1,
+        QuizContentKind.PRACTICE_QUESTIONS,
+        (
+            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
+            ImportSourceSelection(
+                supporting.id,
+                ImportSourceRole.SUPPORTING_REFERENCE,
+                attach_to_notebook=True,
+            ),
+        ),
+    )
+    worker = QuizImportWorker(
+        repository,
+        _Parser(),
+        _QuestionExtractor(),
+        _ResolvedAnswers(),
+        _AttachingNotebook(),
+        tmp_path / "assets",
+    )
+    worker.run(repository.claim_next_run())
+
+    attached = repository.get(supporting.id)
+    assert attached is not None
+    assert attached.state is StudioSourceState.READY
+    assert attached.remote_notebook_id == "notebook-1"
+    assert attached.remote_source_id == "remote-1"
+
+    deleting = repository.queue_source_delete(supporting.id)
+    assert deleting.state is StudioSourceState.DELETING
+    operation = repository.claim_next_source_operation()
+    assert operation is not None
+    assert operation[0].operation_kind == "delete"
+    assert operation[0].remote_source_id == "remote-1"
+
+
+def test_direct_import_delete_cannot_overtake_an_active_attachment(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    questions = _ready_source(repository, tmp_path, "Questions")
+    supporting = _ready_source(repository, tmp_path, "Reference")
+    run = repository.queue_import_run(
+        "Neuro",
+        1,
+        "Imported practice",
+        "Neuro",
+        1,
+        QuizContentKind.PRACTICE_QUESTIONS,
+        (
+            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
+            ImportSourceSelection(
+                supporting.id,
+                ImportSourceRole.SUPPORTING_REFERENCE,
+                attach_to_notebook=True,
+            ),
+        ),
+    )
+    operation = repository.ensure_import_source_attachment(run.id, supporting.id)
+    assert operation is not None and operation.state == "queued"
+
+    with pytest.raises(ValueError, match="pending source mutation"):
+        repository.queue_source_delete(supporting.id)
+
+    retained = repository.get(supporting.id)
+    assert retained is not None
+    assert retained.state is StudioSourceState.ATTACHING
+    claimed = repository.claim_source_operation(operation.id)
+    assert claimed is not None
+    assert claimed[0].state == "queued"
+
+
+def test_stale_ready_snapshot_cannot_resurrect_a_deleted_import_source(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    questions = _ready_source(repository, tmp_path, "Questions")
+    supporting = _ready_source(repository, tmp_path, "Reference")
+    run = repository.queue_import_run(
+        "Neuro",
+        1,
+        "Imported practice",
+        "Neuro",
+        1,
+        QuizContentKind.PRACTICE_QUESTIONS,
+        (
+            ImportSourceSelection(questions.id, ImportSourceRole.QUESTIONS),
+            ImportSourceSelection(
+                supporting.id,
+                ImportSourceRole.SUPPORTING_REFERENCE,
+                attach_to_notebook=True,
+            ),
+        ),
+    )
+    stale_snapshot = repository.get(supporting.id)
+    assert stale_snapshot is not None and stale_snapshot.state is StudioSourceState.READY
+    assert repository.queue_source_delete(supporting.id).state is StudioSourceState.DELETED
+    worker = QuizImportWorker(
+        repository,
+        _Parser(),
+        _QuestionExtractor(),
+        _ResolvedAnswers(),
+        _AttachingNotebook(),
+        tmp_path / "assets",
+    )
+
+    with pytest.raises(ValueError, match="no longer available"):
+        worker._attach_supporting_source(run, stale_snapshot)
+
+    retained = repository.get(supporting.id)
+    assert retained is not None and retained.state is StudioSourceState.DELETED
+    with repository.database.session() as session:
+        assert session.query(StudioSourceOperationModel).count() == 0
 
 
 def test_blocked_pairing_finishes_awaiting_review_without_notebook_attachment(

@@ -35,6 +35,15 @@
 
   const resetProgress = (storage, token, version) => storage.removeItem(progressKey(token, version));
 
+  const tryResetProgress = (storage, token, version) => {
+    try {
+      resetProgress(storage, token, version);
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  };
+
   const cookieValue = (cookie, name) => {
     const prefix = `${name}=`;
     const value = String(cookie || "").split(";").map((part) => part.trim())
@@ -46,7 +55,12 @@
     button.setAttribute("aria-expanded", String(expanded));
     button.querySelector(".sh-disclose")?.classList.toggle("is-open", expanded);
     const panel = button.ownerDocument.getElementById(button.getAttribute("aria-controls"));
-    if (panel) panel.hidden = !expanded;
+    if (!panel) return;
+    panel.hidden = !expanded;
+    if (!expanded) {
+      Array.from(panel.querySelectorAll?.(".disclosure[aria-expanded='true']") || [])
+        .forEach((descendant) => setExpanded(descendant, false));
+    }
   };
 
   const errorMessage = async (response, fallback) => {
@@ -98,6 +112,59 @@
       button.disabled = false;
       report(documentRef, error instanceof Error ? error.message : "Quiz management update failed.");
     }
+  };
+
+  const quizCountLabel = (count) => `${count} quiz${count === 1 ? "" : "zes"}`;
+
+  const applyRenamedTitle = (documentRef, token, title, focusTarget) => {
+    documentRef.querySelectorAll?.(`[data-quiz-title-for="${token}"]`).forEach((surface) => {
+      if (surface.dataset?.quizDragHandle !== undefined) {
+        surface.setAttribute?.("aria-label", `Reorder ${title}. Use Arrow Up or Arrow Down.`);
+      } else if (surface.dataset?.resetQuiz !== undefined) {
+        surface.setAttribute?.("aria-label", `Restart ${title}`);
+        surface.setAttribute?.("title", `Restart ${title}`);
+      } else if (surface.tagName === "SUMMARY") {
+        surface.setAttribute?.("aria-label", `More actions for ${title}`);
+      } else if (surface.value !== undefined && surface.dataset?.titleInput !== undefined) {
+        surface.value = title;
+      } else {
+        surface.textContent = title;
+      }
+    });
+    focusTarget?.focus?.();
+  };
+
+  const firstFocusable = (container) => (
+    container?.querySelector?.("[data-focus-key], a[href], button:not([disabled]), input:not([disabled])")
+    || null
+  );
+
+  const connectedFocusable = (candidate) => (
+    candidate && candidate.isConnected !== false && !candidate.disabled
+      ? candidate
+      : null
+  );
+
+  const applyUnpublish = (documentRef, row, response) => {
+    const exam = row.closest?.("[data-exam-key]")
+      || documentRef.querySelector?.(`[data-exam-key="${response.exam_key}"]`);
+    const course = row.closest?.("[data-course-key]")
+      || documentRef.querySelector?.(`[data-course-key="${response.course_key}"]`);
+    const nextRow = row.nextElementSibling;
+    const previousRow = row.previousElementSibling;
+    row.remove();
+    const courseCount = course?.querySelector?.("[data-course-count]");
+    if (courseCount) courseCount.textContent = quizCountLabel(response.course_quiz_count);
+    const examCount = exam?.querySelector?.("[data-exam-count]");
+    if (examCount) examCount.textContent = quizCountLabel(response.exam_quiz_count);
+    if (response.exam_quiz_count === 0) exam?.remove?.();
+    if (response.course_quiz_count === 0) course?.remove?.();
+    const fallback = connectedFocusable(firstFocusable(nextRow))
+      || connectedFocusable(firstFocusable(previousRow))
+      || connectedFocusable(firstFocusable(exam))
+      || connectedFocusable(firstFocusable(course))
+      || connectedFocusable(documentRef.querySelector?.("[data-quiz-library]"));
+    fallback?.focus?.();
   };
 
   // A direction endpoint moves one position. A longer pointer drop is therefore
@@ -241,9 +308,23 @@
             headers: { "X-CSRF-Token": cookieValue(documentRef.cookie, "study_hub_csrf") || "" },
           });
           if (!response.ok) throw new Error(await errorMessage(response, "Quiz could not be unpublished."));
-          resetProgress(storage, button.dataset.quizToken, button.dataset.quizVersion);
-          button.closest(".lecture-row")?.remove();
-          report(documentRef, "The released quiz was removed.");
+          const payload = await response.json();
+          const progressCleared = tryResetProgress(
+            storage,
+            button.dataset.quizToken,
+            button.dataset.quizVersion,
+          );
+          applyUnpublish(
+            documentRef,
+            button.closest(".lecture-row"),
+            payload,
+          );
+          report(
+            documentRef,
+            progressCleared
+              ? "The released quiz was removed."
+              : "The released quiz was removed, but this browser's saved progress could not be cleared.",
+          );
         } catch (error) {
           button.disabled = false;
           report(documentRef, error instanceof Error ? error.message : "Quiz could not be unpublished.");
@@ -257,7 +338,30 @@
         const saveButton = form.querySelector("[data-save-title]");
         const cleanedTitle = String(input?.value || "").trim();
         if (!cleanedTitle) return report(documentRef, "Quiz title cannot be blank.");
-        await managementRequest(documentRef, saveButton, form.dataset.titleUrl, { title: cleanedTitle });
+        saveButton.disabled = true;
+        try {
+          const response = await root.fetch(form.dataset.titleUrl, {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+              "X-CSRF-Token": cookieValue(documentRef.cookie, "study_hub_csrf") || "",
+            },
+            body: JSON.stringify({ title: cleanedTitle }),
+          });
+          if (!response.ok) throw new Error(await errorMessage(response, "Quiz title could not be updated."));
+          const renamed = await response.json();
+          saveButton.disabled = false;
+          applyRenamedTitle(
+            documentRef,
+            renamed.token,
+            renamed.title,
+            form.querySelector("[data-title-input]"),
+          );
+          report(documentRef, "Quiz title updated.");
+        } catch (error) {
+          saveButton.disabled = false;
+          report(documentRef, error instanceof Error ? error.message : "Quiz title could not be updated.");
+        }
       });
     });
     documentRef.querySelectorAll("[data-move-quiz-library]").forEach((button) => {
@@ -289,8 +393,10 @@
 
   const api = {
     initialize, progressKey, progressLabel, progressClass, readProgress, resetProgress,
+    tryResetProgress,
     cookieValue, managementRequest, setExpanded, directionSequence, reorderRequest,
     reorderFailureStorageKey, storeReorderFailure, consumeReorderFailure, keyboardReorderDirection,
+    applyRenamedTitle, applyUnpublish, connectedFocusable, quizCountLabel,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) root.document.addEventListener("DOMContentLoaded", () => initialize(root.document, root.localStorage), { once: true });

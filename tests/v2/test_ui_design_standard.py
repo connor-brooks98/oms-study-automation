@@ -226,7 +226,7 @@ def test_visual_followups_keep_layout_and_restart_controls_in_their_owners() -> 
     assert ".provider-card-heading > :first-child" in app_css
     assert ".exam-card { margin-top: var(--sp-2); padding: 0;" in library_css
     assert ".library-heading .sh-seg__btn { white-space: nowrap; }" in library_css
-    assert 'title="Restart quiz"' in library
+    assert 'title="Restart {{ row.title }}"' in library
     assert "Reset quiz" not in player_js
     assert "Start Over" not in player_js
 
@@ -371,6 +371,10 @@ def test_import_checks_and_image_rows_escape_late_legacy_cascade() -> None:
 
     assert ".studio-import-intake label:not(.sh-check)" in app_css
     assert ".studio-import-intake [data-import-source-row] label:not(.sh-check)" in app_css
+    assert (
+        '.studio-import-intake [data-import-source-row] .sh-check '
+        'input[type="checkbox"] { width: 16px; min-width: 16px; }'
+    ) in app_css
     assert ".studio-import-intake label {" not in app_css
     assert ".studio-import-intake [data-import-source-row] label {" not in app_css
 

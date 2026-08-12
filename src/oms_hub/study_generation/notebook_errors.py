@@ -41,6 +41,39 @@ class NotebookAuthenticationError(NotebookGatewayError):
         )
 
 
+class NotebookSourceNotFoundError(NotebookGatewayError):
+    """The requested remote source is already absent."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "NotebookLM source was already removed.",
+            source=DiagnosticSource.SOURCE_PROCESSING,
+            retryable=False,
+        )
+
+
+class NotebookScopeBusyError(NotebookGatewayError):
+    """Another durable worker currently owns this logical notebook."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Another NotebookLM operation is already running for this subject and exam.",
+            source=DiagnosticSource.STUDY_HUB,
+            retryable=True,
+        )
+
+
+class NotebookScopeLostError(NotebookGatewayError):
+    """The durable owner could not renew its active logical notebook lease."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "NotebookLM operation ownership was lost; the result will be reconciled.",
+            source=DiagnosticSource.STUDY_HUB,
+            retryable=True,
+        )
+
+
 def translate_notebook_error(
     error: BaseException,
 ) -> NotebookGatewayError | None:

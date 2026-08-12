@@ -1,19 +1,33 @@
+import hashlib
+import json
+import logging
 from io import BytesIO
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
+from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from oms_hub.ingestion.domain import UploadKind, UploadState
+from oms_hub.ingestion.domain import (
+    StagedUpload,
+    UploadKind,
+    UploadManifestSlot,
+    UploadState,
+)
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.ingestion.service import IngestionService
-from oms_hub.ingestion.staging import StagingService, UploadRejected
+from oms_hub.ingestion.staging import (
+    StagingService,
+    UploadManifestRejected,
+    UploadRejected,
+)
 from oms_hub.repositories import CatalogRepository
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 templates = Jinja2Templates(
     directory=str(Path(__file__).parent / "templates")
 )
@@ -50,6 +64,23 @@ class ChunkCreate(BaseModel):
     filename: str
     total_size: int = Field(ge=1)
     sha256: str
+    manifest_id: str | None = None
+    slot_id: str | None = None
+
+
+class ManifestFile(BaseModel):
+    slot_id: str
+    filename: str
+    size_bytes: int
+    sha256: str
+
+
+class ManifestCreate(BaseModel):
+    kind: UploadKind
+    # Member descriptors are normalized inside the route so every malformed
+    # member can participate in the same structured error envelope.
+    files: list[Any]
+    lecture_id: int | None = None
 
 
 def _repository(request: Request) -> IngestionRepository:
@@ -71,36 +102,135 @@ def _catalog(request: Request) -> CatalogRepository:
     return cast(CatalogRepository, request.app.state.catalog_repository)
 
 
-@router.post("/uploads/{kind}", status_code=202)
+@router.post("/uploads/{kind}", status_code=202, response_model=None)
 def upload_files(
     kind: UploadKind,
     request: Request,
     files: Annotated[list[UploadFile], File()],
     lecture_id: Annotated[int | None, Form()] = None,
-) -> dict[str, str]:
+    manifest_id: Annotated[str | None, Form()] = None,
+    slot_ids: Annotated[list[str] | None, Form()] = None,
+) -> dict[str, str] | JSONResponse:
     if not files:
         raise HTTPException(422, "at least one file is required")
     _require_lecture(request, lecture_id)
-    batch = _staging(request).begin_batch(kind)
-    repository = _repository(request)
-    repository.create_batch(kind, batch.id)
-    try:
+    staging = _staging(request)
+    created_here = manifest_id is None
+    if manifest_id is None:
+        slots = []
         for upload in files:
-            staged = _staging(request).stage_file(
-                batch,
-                upload.filename or "",
-                upload.file,
+            size_bytes, sha256 = _upload_size_and_hash(upload)
+            slots.append(
+                ManifestFile(
+                    slot_id=str(uuid4()),
+                    filename=upload.filename or "",
+                    size_bytes=size_bytes,
+                    sha256=sha256,
+                )
             )
-            repository.add_item(kind, staged)
-            _assign_or_match(request, staged.item_id, lecture_id)
+        try:
+            created = _create_manifest(staging, kind, slots, lecture_id)
+            created_id = created["manifest_id"]
+            if not isinstance(created_id, str):
+                raise AssertionError("manifest response is missing its identifier")
+            manifest_id = created_id
+        except HTTPException as error:
+            if isinstance(error.detail, dict):
+                return JSONResponse(status_code=422, content=error.detail)
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "errors": [
+                        {
+                            "slot_id": slot.slot_id,
+                            "filename": slot.filename,
+                            "code": "validation_failed",
+                            "detail": str(error.detail),
+                        }
+                        for slot in slots
+                    ],
+                },
+            )
+        slot_ids = [slot.slot_id for slot in slots]
+    if slot_ids is None or len(slot_ids) != len(files):
+        raise HTTPException(422, "every multipart file needs one manifest slot")
+    assert manifest_id is not None
+    errors = _stage_multipart_members(staging, manifest_id, slot_ids, files)
+    if errors:
+        staging.discard_manifest(manifest_id)
+        return JSONResponse(status_code=422, content={"errors": errors})
+    # Legacy multipart remains a one-shot call. Explicit manifests are
+    # finalized only after their chunk siblings have arrived.
+    if not created_here:
+        return {"manifest_id": manifest_id}
+    return _finalize_manifest(request, manifest_id)
+
+
+@router.post("/api/upload-manifests", status_code=201, response_model=None)
+def create_manifest(
+    payload: ManifestCreate,
+    request: Request,
+) -> dict[str, object] | JSONResponse:
+    _require_lecture(request, payload.lecture_id)
+    files = [_normalize_manifest_file(file) for file in payload.files]
+    try:
+        return _create_manifest(
+            _staging(request), payload.kind, files, payload.lecture_id
+        )
+    except HTTPException as error:
+        if isinstance(error.detail, dict):
+            return JSONResponse(status_code=422, content=error.detail)
+        return JSONResponse(
+            status_code=422,
+            content={
+                "errors": [
+                    {
+                        "slot_id": file.slot_id,
+                        "filename": file.filename,
+                        "code": "validation_failed",
+                        "detail": str(error.detail),
+                    }
+                    for file in files
+                ]
+            },
+        )
+
+
+@router.post(
+    "/api/upload-manifests/{manifest_id}/finalize",
+    status_code=202,
+    response_model=None,
+)
+def finalize_manifest(manifest_id: str, request: Request) -> dict[str, str] | JSONResponse:
+    return _finalize_manifest(request, manifest_id)
+
+
+@router.delete(
+    "/api/upload-manifests/{manifest_id}", status_code=204, response_model=None
+)
+def cancel_manifest(manifest_id: str, request: Request) -> Response:
+    staging = _staging(request)
+    try:
+        staging.discard_manifest(manifest_id)
     except UploadRejected as error:
-        repository.set_batch_state(batch.id, UploadState.FAILED)
-        raise HTTPException(422, str(error)) from error
-    return {"batch_id": batch.id}
+        outcome = staging.finalized_manifest_outcome(manifest_id)
+        if outcome is not None:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "upload manifest was already finalized",
+                    **outcome,
+                },
+            )
+        raise HTTPException(409, str(error)) from error
+    return Response(status_code=204)
 
 
 @router.get("/api/upload-batches/{batch_id}")
 def batch_status(batch_id: str, request: Request) -> JSONResponse:
+    # This is an idempotent opportunistic hook.  Runtime startup/periodic
+    # ownership is supplied by lane B/integration through collect_staging().
+    _ingestion(request).collect_staging()
     batch = _repository(request).get_batch(batch_id)
     if batch is None:
         raise HTTPException(404, "upload batch not found")
@@ -160,16 +290,15 @@ def create_chunk_session(
     payload: ChunkCreate,
     request: Request,
 ) -> dict[str, object]:
+    if payload.manifest_id is None or payload.slot_id is None:
+        raise HTTPException(422, "manifest_id and slot_id are required")
     try:
-        session = _staging(request).begin_chunks(
-            payload.kind,
-            payload.filename,
-            payload.total_size,
-            payload.sha256,
+        session = _staging(request).begin_manifest_chunks(
+            payload.manifest_id,
+            payload.slot_id,
         )
     except UploadRejected as error:
         raise HTTPException(422, str(error)) from error
-    _repository(request).create_batch(payload.kind, session.batch_id)
     return {
         "session_id": session.id,
         "batch_id": session.batch_id,
@@ -206,17 +335,203 @@ def finalize_chunks(
         staged = _staging(request).finalize_chunks(session_id)
     except UploadRejected as error:
         raise HTTPException(422, str(error)) from error
-    batch = _repository(request).get_batch(staged.batch_id)
-    if batch is None:
-        raise HTTPException(409, "chunk upload batch is missing")
-    _repository(request).add_item(batch.kind, staged)
-    _assign_or_match(request, staged.item_id, lecture_id)
-    return {"batch_id": staged.batch_id, "item_id": staged.item_id}
+    if not staged.manifest_owned:
+        raise HTTPException(422, "chunk session is not owned by an upload manifest")
+    try:
+        manifest = _staging(request).get_manifest(staged.batch_id)
+        _staging(request)._manifest_slot(manifest, staged.item_id)
+    except UploadRejected as error:
+        raise HTTPException(422, "upload manifest was cancelled") from error
+    return {"manifest_id": staged.batch_id, "item_id": staged.item_id}
+
+
+def _upload_size_and_hash(upload: UploadFile) -> tuple[int, str]:
+    stream = upload.file
+    stream.seek(0)
+    digest = hashlib.sha256()
+    size = 0
+    while chunk := stream.read(1024 * 1024):
+        size += len(chunk)
+        digest.update(chunk)
+    stream.seek(0)
+    return size, digest.hexdigest()
+
+
+def _create_manifest(
+    staging: StagingService,
+    kind: UploadKind,
+    files: list[ManifestFile],
+    lecture_id: int | None,
+) -> dict[str, object]:
+    try:
+        manifest = staging.begin_manifest(
+            kind,
+            [
+                UploadManifestSlot(
+                    id=file.slot_id,
+                    filename=file.filename,
+                    size_bytes=file.size_bytes,
+                    sha256=file.sha256,
+                )
+                for file in files
+            ],
+            lecture_id,
+        )
+    except UploadManifestRejected as error:
+        raise HTTPException(422, detail={"errors": error.errors}) from error
+    except UploadRejected as error:
+        raise HTTPException(422, str(error)) from error
+    return {
+        "manifest_id": manifest.id,
+        "slots": [
+            {"slot_id": slot.id, "filename": slot.filename}
+            for slot in manifest.slots
+        ],
+    }
+
+
+def _stage_multipart_members(
+    staging: StagingService,
+    manifest_id: str,
+    slot_ids: list[str],
+    files: list[UploadFile],
+) -> list[dict[str, str]]:
+    errors: list[dict[str, str]] = []
+    for slot_id, upload in zip(slot_ids, files, strict=True):
+        try:
+            staging.stage_manifest_file(manifest_id, slot_id, upload.file)
+        except UploadRejected as error:
+            errors.append(
+                {
+                    "slot_id": slot_id,
+                    "filename": upload.filename or "",
+                    "code": "validation_failed",
+                    "detail": str(error),
+                }
+            )
+    return errors
+
+
+def _finalize_manifest(
+    request: Request,
+    manifest_id: str,
+) -> dict[str, str] | JSONResponse:
+    staging = _staging(request)
+    claimed = False
+    try:
+        manifest = staging.claim_manifest_finalization(manifest_id)
+        claimed = True
+        _require_lecture(request, manifest.lecture_id)
+    except UploadRejected as error:
+        try:
+            payload = json.loads(str(error))
+        except json.JSONDecodeError:
+            raise HTTPException(422, str(error)) from error
+        return JSONResponse(status_code=422, content=payload)
+    except Exception:
+        if claimed:
+            staging.release_manifest_finalization(manifest_id)
+        raise
+    try:
+        staged = staging.manifest_uploads(manifest_id)
+    except UploadRejected as error:
+        staging.abandon_manifest_finalization(manifest_id)
+        try:
+            payload = json.loads(str(error))
+        except json.JSONDecodeError:
+            raise HTTPException(422, str(error)) from error
+        return JSONResponse(status_code=422, content=payload)
+    except Exception:
+        staging.release_manifest_finalization(manifest_id)
+        raise
+    service = _ingestion(request)
+    try:
+        decisions = (
+            {}
+            if manifest.lecture_id is not None
+            else {
+                item.item_id: service.decide_staged(
+                    manifest.kind, item.path, item.original_filename
+                )
+                for item in staged
+            }
+        )
+    except Exception:
+        staging.release_manifest_finalization(manifest_id)
+        raise
+    batch_id = str(uuid4())
+    moved: list[StagedUpload] = []
+    try:
+        staging.record_manifest_finalization(manifest_id, batch_id)
+        moved = staging.promote_manifest(manifest_id, batch_id)
+        _repository(request).finalize_batch(
+            manifest.kind,
+            batch_id,
+            moved,
+            lecture_id=manifest.lecture_id,
+            decisions=decisions,
+        )
+    except Exception:
+        reverted = False
+        try:
+            # This is deliberately safe with an empty moved list: promotion
+            # can fail after moving files but before returning that list.
+            staging.revert_promoted_manifest(manifest_id, batch_id, moved)
+            reverted = True
+        except Exception:  # noqa: BLE001 - retain pending recovery locator
+            logger.exception(
+                "manifest rollback requires recovery: %s -> %s",
+                manifest_id,
+                batch_id,
+            )
+        finally:
+            staging.release_manifest_finalization(manifest_id)
+            if reverted:
+                staging.clear_manifest_finalization_outcome(manifest_id)
+        raise
+    # The repository transaction is the durable acceptance boundary.  Cleanup
+    # and catalog progress are recoverable side effects and must never hide a
+    # committed batch from the caller.
+    try:
+        staging.complete_manifest_finalization(manifest_id, batch_id)
+    except Exception:  # noqa: BLE001 - recovery hook reconciles pending state
+        logger.exception("post-commit manifest cleanup failed: %s", manifest_id)
+    try:
+        if manifest.lecture_id is not None:
+            for _ in moved:
+                service._complete_match_steps(manifest.lecture_id, manifest.kind)
+        else:
+            for decision in decisions.values():
+                if decision.lecture_id is not None:
+                    service._complete_match_steps(decision.lecture_id, manifest.kind)
+    except Exception:  # noqa: BLE001 - accepted upload remains authoritative
+        logger.exception("post-commit catalog progress failed: %s", batch_id)
+    return {"batch_id": batch_id}
 
 
 def _require_lecture(request: Request, lecture_id: int | None) -> None:
     if lecture_id is not None and _catalog(request).get_lecture(lecture_id) is None:
         raise HTTPException(404, "lecture was not found")
+
+
+def _normalize_manifest_file(value: object) -> ManifestFile:
+    """Turn any JSON member shape into a safely rejectable descriptor."""
+    if not isinstance(value, dict):
+        value = {}
+    slot_id = value.get("slot_id")
+    filename = value.get("filename")
+    size_bytes = value.get("size_bytes")
+    sha256 = value.get("sha256")
+    return ManifestFile(
+        slot_id=slot_id if isinstance(slot_id, str) else "",
+        filename=filename if isinstance(filename, str) else "",
+        size_bytes=(
+            size_bytes
+            if isinstance(size_bytes, int) and not isinstance(size_bytes, bool)
+            else 0
+        ),
+        sha256=sha256 if isinstance(sha256, str) else "",
+    )
 
 
 def _assign_or_match(

@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from xml.etree import ElementTree
@@ -5,6 +6,8 @@ from zipfile import BadZipFile, ZipFile
 
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.ingestion.domain import (
+    ChunkSession,
+    MatchDecision,
     StoredUploadItem,
     UploadEvidence,
     UploadKind,
@@ -12,7 +15,7 @@ from oms_hub.ingestion.domain import (
 )
 from oms_hub.ingestion.matcher import UploadMatcher
 from oms_hub.ingestion.repository import IngestionRepository
-from oms_hub.ingestion.staging import StagingService
+from oms_hub.ingestion.staging import StagingService, UploadRejected
 from oms_hub.repositories import CatalogRepository
 
 _MAX_EVIDENCE_MEMBER = 1024 * 1024
@@ -48,6 +51,19 @@ class IngestionService:
             )
         return self.repository.require_item(item_id)
 
+    def decide_staged(
+        self, kind: UploadKind, path: Path, filename: str
+    ) -> MatchDecision:
+        """Compute a match without creating item rows or catalog progress."""
+        if kind is UploadKind.SLIDES:
+            title, opening = self._pptx_text(path)
+        else:
+            title, opening = self._transcript_text(path)
+        return self.matcher.match(
+            UploadEvidence(filename=filename, embedded_title=title, opening_text=opening),
+            self.catalog.list_lectures(),
+        )
+
     def assign(self, item_id: str, lecture_id: int) -> None:
         if self.catalog.get_lecture(lecture_id) is None:
             raise KeyError(lecture_id)
@@ -68,6 +84,42 @@ class IngestionService:
                 raise ValueError("upload is not awaiting confirmation")
             self.staging.discard_file(item.staged_path)
             return self.repository.mark_discarded(item_id)
+
+    def collect_staging(
+        self,
+        now: datetime | None = None,
+        *,
+        terminal_retention: timedelta = timedelta(hours=24),
+    ) -> int:
+        """Safe idempotent hook for startup/periodic runtime ownership."""
+        current = now or datetime.now(UTC)
+        expired_chunks: list[ChunkSession] = []
+        removed = self.staging.collect_expired(current, expired_chunks=expired_chunks)
+        for chunk in expired_chunks:
+            if not chunk.manifest_owned and self.repository.get_batch(chunk.batch_id) is None:
+                removed += int(self.staging.discard_unreferenced_batch(chunk.batch_id))
+        for manifest_id, batch_id in self.staging.expired_pending_manifest_finalizations(
+            current
+        ):
+            committed = self.repository.get_batch(batch_id) is not None
+            if not committed:
+                removed += int(self.staging.discard_unreferenced_batch(batch_id))
+            removed += int(
+                self.staging.reconcile_pending_manifest_finalization(
+                    manifest_id, batch_id, committed=committed
+                )
+            )
+        for path in self.repository.terminal_staging_paths_before(
+            current - terminal_retention
+        ):
+            try:
+                self.staging.discard_file(path)
+            except UploadRejected:
+                # Missing files and paths outside staging are not cleanup
+                # candidates; a future collection remains safe/idempotent.
+                continue
+            removed += 1
+        return removed
 
     def _complete_match_steps(
         self,
@@ -144,11 +196,11 @@ class IngestionService:
         )
 
     def _transcript_text(self, path: Path) -> tuple[str, str]:
-        raw = path.read_bytes()[:8192]
-        try:
-            text = raw.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text = raw.decode("cp1252")
+        from oms_hub.ingestion.staging import decode_utf8_transcript
+
+        # Validate the complete stream before taking display evidence.  A raw
+        # byte slice can split a valid UTF-8 code point at its boundary.
+        text = decode_utf8_transcript(path.read_bytes())
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         title = lines[0] if lines else ""
         return title[:500], " ".join(lines[:20])[:2000]

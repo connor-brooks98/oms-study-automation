@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from sqlalchemy import inspect, text
 
 from oms_hub.db import Database
@@ -16,6 +17,7 @@ def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
         "google_connection",
         "study_prompt_settings",
         "notebook_mappings",
+        "notebook_scope_leases",
         "notebook_source_mappings",
         "course_quiz_documents",
         "exam_quiz_tabs",
@@ -23,6 +25,7 @@ def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
         "outline_outputs",
         "quiz_outputs",
         "published_quizzes",
+        "studio_source_operations",
     } <= names
     source_columns = {
         column["name"]
@@ -31,11 +34,143 @@ def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
         )
     }
     assert "display_title" in source_columns
+    studio_source_columns = {
+        column["name"]
+        for column in inspect(database.engine).get_columns("studio_sources")
+    }
+    assert {"import_role", "import_attach_to_notebook"} <= studio_source_columns
+    operation_columns = {
+        column["name"]
+        for column in inspect(database.engine).get_columns("studio_source_operations")
+    }
+    assert {
+        "lease_owner",
+        "lease_expires_at",
+        "subject_key",
+        "exam_number",
+    } <= operation_columns
+    operation_indexes = {
+        index["name"]
+        for index in inspect(database.engine).get_indexes("studio_source_operations")
+    }
+    assert "ix_studio_source_operations_scope_active" in operation_indexes
+    revision_indexes = {
+        index["name"]
+        for index in inspect(database.engine).get_indexes("study_revisions")
+    }
+    assert "uq_study_revisions_transcript_cleaning_lecture" in revision_indexes
     with database.session() as session:
         version = session.execute(
             text("SELECT version FROM schema_version WHERE id = 1")
         ).scalar_one()
     assert version == LATEST_SCHEMA_VERSION
+
+
+def test_v22_reservation_indexes_and_operation_scope_upgrade_idempotently(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("DROP INDEX uq_study_revisions_transcript_cleaning_lecture")
+        )
+        connection.execute(text("DROP INDEX ix_studio_source_operations_scope_active"))
+        connection.execute(text("ALTER TABLE studio_source_operations DROP COLUMN lease_owner"))
+        connection.execute(
+            text("ALTER TABLE studio_source_operations DROP COLUMN lease_expires_at")
+        )
+        connection.execute(
+            text("ALTER TABLE studio_source_operations DROP COLUMN subject_key")
+        )
+        connection.execute(
+            text("ALTER TABLE studio_source_operations DROP COLUMN exam_number")
+        )
+        connection.execute(text("DROP TABLE notebook_scope_leases"))
+        connection.execute(text("UPDATE schema_version SET version=20 WHERE id=1"))
+
+    database.migrate()
+    database.migrate()
+
+    with database.engine.connect() as connection:
+        index_sql = connection.execute(
+            text(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name="
+                "'uq_study_revisions_transcript_cleaning_lecture'"
+            )
+        ).scalar_one()
+    assert "UNIQUE INDEX" in index_sql
+    assert "ON study_revisions(lecture_id)" in index_sql
+    assert "kind='transcripts' AND state='cleaning'" in index_sql
+    operation_columns = {
+        column["name"]
+        for column in inspect(database.engine).get_columns("studio_source_operations")
+    }
+    assert {
+        "lease_owner",
+        "lease_expires_at",
+        "subject_key",
+        "exam_number",
+    } <= operation_columns
+    operation_indexes = {
+        index["name"]
+        for index in inspect(database.engine).get_indexes("studio_source_operations")
+    }
+    assert "ix_studio_source_operations_scope_active" in operation_indexes
+    assert inspect(database.engine).has_table("notebook_scope_leases")
+
+
+def test_v21_scope_upgrade_fails_closed_on_duplicate_active_operations(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    with database.engine.begin() as connection:
+        connection.execute(text("DROP INDEX ix_studio_source_operations_scope_active"))
+        connection.execute(
+            text(
+                "INSERT INTO studio_sources "
+                "(id, subject, subject_key, exam_number, source_type, title, purpose, "
+                "import_attach_to_notebook, state, attempts, converted_from_pptx, "
+                "created_at, updated_at) VALUES "
+                "('source-1', 'Neuro', 'neuro', 1, 'text', 'First', 'notebook', "
+                "0, 'attaching', 1, 0, '2026-08-09T00:00:00+00:00', "
+                "'2026-08-09T00:00:00+00:00'), "
+                "('source-2', 'Neuro', 'neuro', 1, 'text', 'Second', 'notebook', "
+                "0, 'attaching', 1, 0, '2026-08-09T00:00:01+00:00', "
+                "'2026-08-09T00:00:01+00:00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO studio_source_operations "
+                "(id, source_id, operation_kind, state, subject_key, exam_number, "
+                "baseline_remote_ids_json, attempts, created_at, updated_at) VALUES "
+                "('operation-1', 'source-1', 'add', 'queued', 'neuro', 1, '[]', 0, "
+                "'2026-08-09T00:00:00+00:00', '2026-08-09T00:00:00+00:00'), "
+                "('operation-2', 'source-2', 'add', 'queued', 'neuro', 1, '[]', 0, "
+                "'2026-08-09T00:00:01+00:00', '2026-08-09T00:00:01+00:00')"
+            )
+        )
+        connection.execute(text("UPDATE schema_version SET version=20 WHERE id=1"))
+
+    database.migrate()
+    database.migrate()
+
+    with database.engine.connect() as connection:
+        operations = connection.execute(
+            text("SELECT id, state FROM studio_source_operations ORDER BY id")
+        ).all()
+        second_source = connection.execute(
+            text(
+                "SELECT state, diagnostic_source, error FROM studio_sources "
+                "WHERE id='source-2'"
+            )
+        ).one()
+    assert operations == [("operation-1", "queued"), ("operation-2", "needs_review")]
+    assert second_source.state == "needs_review"
+    assert second_source.diagnostic_source == "migration"
+    assert "retained operation operation-1" in second_source.error
 
 
 def test_existing_generation_jobs_gain_later_optional_columns(tmp_path):
@@ -251,3 +386,123 @@ def test_v15_migration_backfills_existing_quiz_and_studio_rows_idempotently(
         column["name"] for column in inspect(database.engine).get_columns("studio_runs")
     }
     assert "history_hidden_at" in run_columns
+
+
+def test_active_label_migration_repairs_legacy_duplicates_before_index(tmp_path: Path) -> None:
+    database = _v14_database(tmp_path)
+    with database.engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO studio_runs (id, subject, subject_key, exam_number, "
+            "destination_subject, destination_subject_key, destination_exam_number, "
+            "label, label_key, prompt, state, stage, attempts, created_at, updated_at) VALUES "
+            "('first', 'Neuro', 'neuro', 1, 'Neuro', 'neuro', 1, 'Duplicate', 'duplicate', "
+            "'', 'queued', 'validate', 0, '2026-01-01T00:00:00+00:00', "
+            "'2026-01-01T00:00:00+00:00'), "
+            "('later', 'Neuro', 'neuro', 1, 'Neuro', 'neuro', 1, 'Duplicate', 'duplicate', "
+            "'', 'running', 'chat', 0, '2026-01-02T00:00:00+00:00', '2026-01-02T00:00:00+00:00')"
+        ))
+    database.migrate()
+    database.migrate()
+    with database.engine.connect() as connection:
+        rows = connection.execute(text(
+            "SELECT id, state, diagnostic_source, error FROM studio_runs "
+            "WHERE id IN ('first', 'later') ORDER BY id"
+        )).all()
+        index_names = {
+            index[1]
+            for index in connection.execute(text("PRAGMA index_list('studio_runs')"))
+        }
+    assert rows == [
+        ("first", "queued", None, None),
+        ("later", "failed", "migration", "migration active-label conflict; retained run first"),
+    ]
+    assert "ix_studio_runs_active_label" in index_names
+
+
+def test_active_label_migration_retains_the_single_active_publication_owner(
+    tmp_path: Path,
+) -> None:
+    database = _v14_database(tmp_path)
+    with database.engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO studio_runs (id, subject, subject_key, exam_number, "
+            "destination_subject, destination_subject_key, destination_exam_number, "
+            "label, label_key, prompt, state, stage, attempts, created_at, updated_at) VALUES "
+            "('earlier', 'Neuro', 'neuro', 1, 'Neuro', 'neuro', 1, 'Duplicate', "
+            "'duplicate', '', 'queued', 'validate', 0, "
+            "'2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'), "
+            "('publication-owner', 'Neuro', 'neuro', 1, 'Neuro', 'neuro', 1, "
+            "'Duplicate', 'duplicate', '', 'running', 'publish', 1, "
+            "'2026-01-02T00:00:00+00:00', '2026-01-02T00:00:00+00:00')"
+        ))
+        connection.execute(text(
+            "INSERT INTO published_quizzes (token, lecture_id, job_id, studio_run_id, "
+            "destination_subject, destination_subject_key, destination_exam_number, label, "
+            "label_key, title, payload_json, version, active, created_at, updated_at) VALUES "
+            "('owner-token', NULL, NULL, 'publication-owner', 'Neuro', 'neuro', 1, "
+            "'Duplicate', 'duplicate', 'Duplicate', '{\"title\":\"Duplicate\","
+            "\"questions\":[]}', 1, 1, '2026-01-02T00:00:00+00:00', "
+            "'2026-01-02T00:00:00+00:00')"
+        ))
+
+    database.migrate()
+    with database.engine.connect() as connection:
+        first_pass = connection.execute(text(
+            "SELECT id, state, diagnostic_source, error FROM studio_runs "
+            "WHERE id IN ('earlier', 'publication-owner') ORDER BY id"
+        )).all()
+    database.migrate()
+    with database.engine.connect() as connection:
+        second_pass = connection.execute(text(
+            "SELECT id, state, diagnostic_source, error FROM studio_runs "
+            "WHERE id IN ('earlier', 'publication-owner') ORDER BY id"
+        )).all()
+
+    assert first_pass == second_pass == [
+        (
+            "earlier",
+            "failed",
+            "migration",
+            "migration active-label conflict; retained active publication owner "
+            "publication-owner",
+        ),
+        ("publication-owner", "running", None, None),
+    ]
+
+
+def test_active_label_migration_fails_closed_on_multiple_active_publications(
+    tmp_path: Path,
+) -> None:
+    database = _v14_database(tmp_path)
+    with database.engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO studio_runs (id, subject, subject_key, exam_number, "
+            "destination_subject, destination_subject_key, destination_exam_number, "
+            "label, label_key, prompt, state, stage, attempts, created_at, updated_at) VALUES "
+            "('first-owner', 'Neuro', 'neuro', 1, 'Neuro', 'neuro', 1, 'Duplicate', "
+            "'duplicate', '', 'queued', 'validate', 0, "
+            "'2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'), "
+            "('second-owner', 'Neuro', 'neuro', 1, 'Neuro', 'neuro', 1, 'Duplicate', "
+            "'duplicate', '', 'running', 'publish', 1, "
+            "'2026-01-02T00:00:00+00:00', '2026-01-02T00:00:00+00:00')"
+        ))
+        connection.execute(text(
+            "INSERT INTO published_quizzes (token, lecture_id, job_id, studio_run_id, "
+            "destination_subject, destination_subject_key, destination_exam_number, label, "
+            "label_key, title, payload_json, version, active, created_at, updated_at) VALUES "
+            "('first-owner-token', NULL, NULL, 'first-owner', 'Neuro', 'neuro', 1, "
+            "'Duplicate', 'duplicate', 'First', '{}', 1, 1, "
+            "'2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'), "
+            "('second-owner-token', NULL, NULL, 'second-owner', 'Neuro', 'neuro', 1, "
+            "'Duplicate', 'duplicate', 'Second', '{}', 1, 1, "
+            "'2026-01-02T00:00:00+00:00', '2026-01-02T00:00:00+00:00')"
+        ))
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "migration recovery conflict: multiple active Studio publications exist "
+            "for neuro exam 1 label duplicate"
+        ),
+    ):
+        database.migrate()

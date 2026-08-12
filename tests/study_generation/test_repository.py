@@ -1,5 +1,7 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from oms_hub.db import Database
 from oms_hub.models import (
@@ -19,7 +21,7 @@ from oms_hub.study_generation.domain import (
     PublishedQuizOrderDirection,
     SourceKind,
 )
-from oms_hub.study_generation.native_quiz import parse_native_quiz
+from oms_hub.study_generation.native_quiz import parse_native_quiz, serialize_native_quiz
 from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.study_generation.repository import GenerationRepository
 
@@ -82,6 +84,47 @@ def test_queue_reuses_active_job_but_separates_generation_kinds(tmp_path):
     assert quiz.id != first.id
     assert first.state is GenerationState.QUEUED
     assert first.stage is GenerationStage.VALIDATE
+
+
+def test_notebook_scope_lease_serializes_workers_and_recovers_after_expiry(tmp_path):
+    repository, _ = prepared_repository(tmp_path)
+    competitor = GenerationRepository(repository.database)
+    now = datetime.now(UTC)
+
+    assert repository.acquire_notebook_scope(
+        "Neuro", 1, "generation", "job-1", now=now
+    )
+    assert not competitor.acquire_notebook_scope(
+        "neuro", 1, "studio", "operation-1", now=now
+    )
+    assert repository.acquire_notebook_scope(
+        "NEURO", 1, "generation", "job-1", now=now
+    )
+
+    renewed_at = now + timedelta(minutes=20)
+    assert repository.renew_notebook_scope(
+        "neuro", 1, "generation", "job-1", now=renewed_at
+    )
+    assert not competitor.acquire_notebook_scope(
+        "neuro", 1, "studio", "operation-1", now=now + timedelta(minutes=31)
+    )
+    assert not competitor.renew_notebook_scope(
+        "neuro", 1, "studio", "operation-1", now=renewed_at
+    )
+
+    after_expiry = renewed_at + timedelta(minutes=31)
+    assert not repository.renew_notebook_scope(
+        "neuro", 1, "generation", "job-1", now=after_expiry
+    )
+    assert competitor.acquire_notebook_scope(
+        "neuro", 1, "studio", "operation-1", now=after_expiry
+    )
+    assert not repository.release_notebook_scope(
+        "neuro", 1, "generation", "job-1"
+    )
+    assert competitor.release_notebook_scope(
+        "neuro", 1, "studio", "operation-1"
+    )
 
 
 def test_claim_and_recovery_preserve_recorded_stage(tmp_path):
@@ -235,9 +278,11 @@ def test_replacement_studio_publication_uses_the_successor_content_kind(tmp_path
 
     try:
         original = repository.publish_studio_quiz("exam-review-run", _quiz("Review Set"))
-        replacement = repository.publish_studio_quiz(
+        replacement = repository.publish_and_complete_studio_run(
             "practice-successor-run",
             _quiz("Practice Questions"),
+            "notebook-1",
+            "raw response",
         )
 
         assert replacement.token == original.token
@@ -246,6 +291,115 @@ def test_replacement_studio_publication_uses_the_successor_content_kind(tmp_path
         assert repository.published_quizzes(
             frozenset({QuizContentKind.PRACTICE_QUESTIONS})
         ) == (replacement,)
+        with repository.database.session() as session:
+            predecessor = session.get(StudioRunModel, "exam-review-run")
+            successor = session.get(StudioRunModel, "practice-successor-run")
+            assert predecessor is not None and predecessor.published_token is None
+            assert successor is not None and successor.state == "complete"
+            assert successor.published_token == original.token
+    finally:
+        repository.database.engine.dispose()
+
+
+def test_atomic_studio_publication_rolls_back_if_completion_cannot_finish(
+    tmp_path, monkeypatch
+):
+    repository, _ = prepared_repository(tmp_path)
+    with repository.database.session() as session:
+        session.add(StudioRunModel(
+            id="atomic-run", subject="Neuro", subject_key="neuro", exam_number=1,
+            destination_subject="Neuro", destination_subject_key="neuro",
+            destination_exam_number=1, label="Atomic", label_key="atomic", prompt="",
+            state="running", stage="publish",
+        ))
+    original = repository._publish_studio_quiz_in_session
+
+    def publish_then_crash(session, run_id, quiz):
+        original(session, run_id, quiz)
+        raise RuntimeError("crash after publication mutation")
+
+    monkeypatch.setattr(repository, "_publish_studio_quiz_in_session", publish_then_crash)
+    try:
+        with pytest.raises(RuntimeError, match="crash"):
+            repository.publish_and_complete_studio_run("atomic-run", _quiz("Atomic"), "nb", "raw")
+        with repository.database.session() as session:
+            run = session.get(StudioRunModel, "atomic-run")
+            assert run is not None and run.state == "running"
+            assert session.query(PublishedQuizModel).count() == 0
+    finally:
+        repository.database.engine.dispose()
+
+
+def test_atomic_studio_publication_adopts_historical_split_state(tmp_path):
+    repository, _ = prepared_repository(tmp_path)
+    with repository.database.session() as session:
+        session.add(StudioRunModel(
+            id="split-run", subject="Neuro", subject_key="neuro", exam_number=1,
+            destination_subject="Neuro", destination_subject_key="neuro",
+            destination_exam_number=1, label="Split", label_key="split", prompt="",
+            state="running", stage="publish", notebook_id="original-notebook",
+            raw_response="original durable response",
+        ))
+    try:
+        original = repository.publish_studio_quiz("split-run", _quiz("Split"))
+        replayed = repository.publish_and_complete_studio_run(
+            "split-run", _quiz("Changed"), "nb", "raw"
+        )
+        assert replayed.token == original.token
+        assert replayed.version == original.version
+        with repository.database.session() as session:
+            run = session.get(StudioRunModel, "split-run")
+            assert run is not None
+            assert run.state == "complete" and run.published_token == original.token
+            assert run.notebook_id == "original-notebook"
+            assert run.raw_response == "original durable response"
+    finally:
+        repository.database.engine.dispose()
+
+
+def test_claimed_run_reserves_scope_against_reviewed_notebook_publish(tmp_path):
+    repository, _ = prepared_repository(tmp_path)
+    with repository.database.session() as session:
+        session.add_all([
+            StudioRunModel(
+                id="claimed-chat-run",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Reserved",
+                label_key="reserved",
+                prompt="Remote work",
+                state="running",
+                stage="chat",
+            ),
+            StudioRunModel(
+                id="review-ready-run",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Reserved",
+                label_key="reserved",
+                prompt="Local review",
+                state="awaiting_images",
+                stage="images",
+                draft_payload_json=serialize_native_quiz(_quiz("Reserved")),
+            ),
+        ])
+
+    try:
+        with pytest.raises(
+            ValueError,
+            match="another active Studio run owns this publication scope",
+        ):
+            repository.publish_reviewed_studio_quiz("review-ready-run")
+        with repository.database.session() as session:
+            assert session.query(PublishedQuizModel).count() == 0
     finally:
         repository.database.engine.dispose()
 

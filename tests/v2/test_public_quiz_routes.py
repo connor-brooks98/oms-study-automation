@@ -102,9 +102,35 @@ def test_public_library_groups_only_published_quizzes(tmp_path):
     assert "Course quiz library" in response.text
     assert "Neuro" in response.text
     assert "Exam 1" in response.text
-    assert "Lecture 1" in response.text
+    assert "Neuro Lecture 01" in response.text
     assert published.token in response.text
     assert "Unpublished lecture" not in response.text
+
+
+def test_public_library_only_expands_first_course_and_its_first_exam(tmp_path):
+    app, _ = _published_app(tmp_path)
+    cardio_lecture_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Cardio", 1, 1, "Arrhythmias", "", None)
+    )
+    cardio_job = app.state.generation_repository.queue(
+        cardio_lecture_id,
+        GenerationKind.QUIZ,
+    )
+    app.state.generation_repository.publish_quiz(
+        cardio_lecture_id,
+        cardio_job.id,
+        _quiz("Cardio quiz"),
+    )
+
+    response = TestClient(app).get("/public/quizzes")
+
+    assert response.status_code == 200
+    assert response.text.count('class="course-card sh-card"') == 2
+    assert response.text.count('aria-expanded="true"') == 2
+    first_course = response.text.index('class="course-card sh-card"')
+    second_course = response.text.index('class="course-card sh-card"', first_course + 1)
+    assert 'aria-expanded="true"' not in response.text[second_course:]
+    assert 'class="lecture-list" hidden' in response.text[second_course:]
 
 
 def test_public_library_is_read_only_and_private_library_keeps_management(tmp_path):
@@ -118,7 +144,7 @@ def test_public_library_is_read_only_and_private_library_keeps_management(tmp_pa
     assert managed.status_code == 200
     assert published.token in public.text
     assert 'data-reset-quiz' in public.text
-    assert 'title="Restart quiz"' in public.text
+    assert 'title="Restart Lecture 1 Practice Quiz"' in public.text
     for private_hook in (
         "data-quiz-drag-handle",
         "data-title-form",
@@ -444,12 +470,48 @@ def test_published_quiz_management_unpublishes_lecture_and_studio_tokens(tmp_pat
         )
 
     assert lecture_response.status_code == 200
-    assert lecture_response.json() == {"token": lecture.token, "state": "unpublished"}
+    assert lecture_response.json() == {
+        "token": lecture.token,
+        "state": "unpublished",
+        "course_key": "neuro",
+        "exam_number": 1,
+        "exam_key": "neuro:1",
+        "course_quiz_count": 0,
+        "exam_quiz_count": 0,
+    }
     assert studio_response.status_code == 200
-    assert studio_response.json() == {"token": studio.token, "state": "unpublished"}
+    assert studio_response.json() == {
+        "token": studio.token,
+        "state": "unpublished",
+        "course_key": "neuro",
+        "exam_number": 1,
+        "exam_key": "neuro:1",
+        "course_quiz_count": 0,
+        "exam_quiz_count": 0,
+    }
     assert already_inactive.status_code == 404
     assert app.state.generation_repository.published_quiz(lecture.token) is None
     assert app.state.generation_repository.published_quiz(studio.token) is None
+
+
+def test_unpublish_returns_authoritative_remaining_library_counts(tmp_path):
+    app, published = _published_app(tmp_path)
+    peer_lecture = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 1, 2, "Peer", "", None)
+    )
+    peer_job = app.state.generation_repository.queue(peer_lecture, GenerationKind.QUIZ)
+    app.state.generation_repository.publish_quiz(peer_lecture, peer_job.id, _quiz("Peer"))
+
+    with TestClient(app) as client:
+        client.get("/public/quizzes")
+        response = client.delete(
+            f"/api/published-quizzes/{published.token}",
+            headers={"X-CSRF-Token": client.cookies.get("study_hub_csrf")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["course_quiz_count"] == 1
+    assert response.json()["exam_quiz_count"] == 1
 
 
 def test_published_quiz_management_requires_csrf_and_active_token(tmp_path):

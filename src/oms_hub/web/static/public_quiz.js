@@ -428,6 +428,37 @@
     `oms-study-hub-quiz:${content.token}:v${content.version}`
   );
 
+  const safeStorage = (windowRefOrGetter) => {
+    const memory = new Map();
+    let persistent = null;
+    try {
+      const windowRef = typeof windowRefOrGetter === "function"
+        ? windowRefOrGetter()
+        : windowRefOrGetter;
+      persistent = windowRef?.localStorage || null;
+    } catch (_) {
+      // Browsers may deny even reading the localStorage property.
+    }
+    return {
+      getItem(key) {
+        if (memory.has(key)) return memory.get(key);
+        try {
+          return persistent?.getItem(key) ?? null;
+        } catch (_) {
+          return null;
+        }
+      },
+      setItem(key, value) {
+        memory.set(key, value);
+        try {
+          persistent?.setItem(key, value);
+        } catch (_) {
+          // The in-memory copy keeps this quiz playable for the session.
+        }
+      },
+    };
+  };
+
   const initialize = async (
     documentRef,
     fetchImpl = root.fetch.bind(root),
@@ -446,16 +477,24 @@
         return;
       }
       const content = await response.json();
-      const storage = documentRef.defaultView?.localStorage;
+      const storage = safeStorage(() => documentRef.defaultView);
       const key = storageKey(content);
-      let state = restoreProgress(content, storage?.getItem(key));
+      let state = restoreProgress(content, storage.getItem(key));
+      const informationOpen = new Map();
 
       const persist = () => {
-        storage?.setItem(key, serializeProgress(state));
+        storage.setItem(key, serializeProgress(state));
       };
 
       const render = () => {
         const focusKey = captureFocusKey(documentRef, app);
+        const priorInformation = app.querySelector?.("[data-question-information]");
+        if (priorInformation?.dataset?.questionInformation) {
+          informationOpen.set(
+            priorInformation.dataset.questionInformation,
+            priorInformation.open === true,
+          );
+        }
         app.replaceChildren();
         if (state.currentIndex >= content.questions.length) {
           const summary = performanceSummary(content, state);
@@ -871,6 +910,11 @@
             "details",
             "quiz-information",
           );
+          information.dataset.questionInformation = question.id;
+          information.open = informationOpen.get(question.id) === true;
+          information.addEventListener("toggle", () => {
+            informationOpen.set(question.id, information.open === true);
+          });
           const summary = element(
             documentRef,
             "summary",
@@ -908,6 +952,7 @@
     recordFeedback,
     restoreFocus,
     restoreProgress,
+    safeStorage,
     selectChoice,
     setFlagReason,
     serializeProgress,

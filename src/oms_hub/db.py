@@ -1,6 +1,10 @@
+import hashlib
+import os
 import sqlite3
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
 from weakref import finalize
@@ -11,6 +15,61 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool, StaticPool
 
 from oms_hub.models import Base
+
+
+def backup_sqlite_database(source: Path, destination: Path) -> str:
+    """Create an atomically promoted, integrity-checked online SQLite backup.
+
+    ``Connection.backup`` copies committed WAL pages, unlike a filesystem copy
+    of the main database file.  The returned digest is calculated only after
+    the destination has passed ``integrity_check``.
+    """
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(
+        f".{destination.name}.partial-{uuid.uuid4().hex}"
+    )
+    try:
+        source_uri = f"{source.resolve().as_uri()}?mode=ro"
+        source_connection = sqlite3.connect(source_uri, uri=True)
+        try:
+            destination_connection = sqlite3.connect(temporary)
+            try:
+                source_connection.backup(destination_connection)
+                _assert_sqlite_integrity(destination_connection, temporary)
+            finally:
+                destination_connection.close()
+        finally:
+            source_connection.close()
+        os.replace(temporary, destination)
+        check_connection = sqlite3.connect(
+            f"{destination.resolve().as_uri()}?mode=ro",
+            uri=True,
+        )
+        try:
+            _assert_sqlite_integrity(check_connection, destination)
+        finally:
+            check_connection.close()
+        return _sha256_path(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _assert_sqlite_integrity(connection: sqlite3.Connection, path: Path) -> None:
+    result = [row[0] for row in connection.execute("PRAGMA integrity_check")]
+    if result != ["ok"]:
+        raise sqlite3.DatabaseError(
+            f"SQLite backup integrity check failed for {path}: {result}"
+        )
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class Database:

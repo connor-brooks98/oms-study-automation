@@ -441,7 +441,7 @@
           try {
             const result = await postJson(
               fetchImpl,
-              "/settings/ai/openrouter/gate",
+              "/settings/accuracy-gate",
               { enabled: gate.checked },
               token(),
             );

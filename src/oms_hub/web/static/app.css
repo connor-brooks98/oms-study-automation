@@ -1656,6 +1656,7 @@ code { overflow-wrap: anywhere; }
 .studio-import-intake [data-import-source-row] select { width: auto; min-width: 12rem; }
 .studio-import-intake [data-import-source-row] label:not(.sh-check) { display: inline-flex; align-items: center; gap: .35rem; margin: 0; }
 .studio-import-intake [data-import-source-row] label:not(.sh-check) input { width: auto; }
+.studio-import-intake [data-import-source-row] .sh-check input[type="checkbox"] { width: 16px; min-width: 16px; }
 .studio-source-picker {
   display: grid;
   gap: .45rem;

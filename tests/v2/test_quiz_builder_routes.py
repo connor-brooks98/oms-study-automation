@@ -9,6 +9,7 @@ from oms_hub.document_processing.domain import (
     ParsedDocument,
     ParsedSegment,
     SegmentKind,
+    SourceSnapshot,
 )
 from oms_hub.files.atomic import sha256_file
 from oms_hub.models import StudioRunModel
@@ -21,6 +22,7 @@ from oms_hub.study_generation.practice_domain import (
     QuestionSourceRef,
 )
 from oms_hub.study_generation.quiz_import_worker import _document_json
+from oms_hub.study_generation.studio_domain import StudioSourceState, StudioSourceType
 
 
 def _client(tmp_path) -> TestClient:
@@ -127,6 +129,58 @@ def _direct_review_run(client: TestClient, *, run_id: str = "direct-run") -> str
     return run_id
 
 
+def test_missing_review_artifacts_use_one_recovery_envelope(tmp_path) -> None:
+    client = _client(tmp_path)
+    run_id = "missing-review"
+    with client.app.state.database.session() as session:
+        session.add(StudioRunModel(
+            id=run_id, subject="Neuro", subject_key="neuro", exam_number=1,
+            destination_subject="Neuro", destination_subject_key="neuro",
+            destination_exam_number=1, label="Missing", label_key="missing", prompt="",
+            workflow_kind="direct_import", content_kind="practice_questions",
+            state="awaiting_review", stage="review",
+        ))
+    responses = [
+        client.get(f"/studio/runs/{run_id}/review"),
+        client.get(f"/studio/runs/{run_id}/review/data"),
+        client.patch(
+            f"/studio/runs/{run_id}/questions/question-1",
+            json={"stem": "Edited"},
+            headers=_csrf_headers(client),
+        ),
+        client.post(
+            f"/studio/runs/{run_id}/questions/question-1/verify-answer",
+            headers=_csrf_headers(client),
+        ),
+        client.post(
+            f"/studio/runs/{run_id}/questions/question-1/image-selection",
+            json={"image_candidate_id": None},
+            headers=_csrf_headers(client),
+        ),
+        client.get(
+            f"/studio/runs/{run_id}/questions/question-1/candidates/missing/preview"
+        ),
+        client.get(f"/studio/runs/{run_id}/preview"),
+        client.get(f"/studio/runs/{run_id}/preview/content"),
+        client.get(f"/studio/runs/{run_id}/preview/media/missing"),
+        client.post(
+            f"/studio/runs/{run_id}/preview/answer",
+            json={"question_id": "q1", "choice_id": "c1"},
+        ),
+    ]
+    expected = {
+        "error": {
+            "code": "review_artifact_unavailable",
+            "message": "Review data is unavailable for this import run.",
+            "recovery": "Return to Quiz Builder and rerun the import.",
+        }
+    }
+    assert all(
+        response.status_code == 409 and response.json() == expected
+        for response in responses
+    )
+
+
 def test_queue_import_accepts_separate_question_and_answer_sources(tmp_path) -> None:
     client = _client(tmp_path)
     questions = _ready_import_source(client, "Questions", "questions.html")
@@ -151,6 +205,143 @@ def test_queue_import_accepts_separate_question_and_answer_sources(tmp_path) -> 
 
     assert response.status_code == 202
     assert response.json()["state"] == "queued"
+
+
+def test_sources_expose_safe_persisted_import_defaults(tmp_path) -> None:
+    client = _client(tmp_path)
+    created = client.post(
+        "/studio/import/sources/text",
+        data={
+            "subject": "Neuro", "exam_number": "1", "title": "Reference", "text": "facts",
+            "role": "supporting_reference", "attach_to_notebook": "true",
+        },
+        headers=_csrf_headers(client),
+    )
+    assert created.status_code == 202
+    sources = client.get("/studio/sources", params={"subject_key": "neuro", "exam_number": 1})
+    assert sources.status_code == 200
+    record = sources.json()["sources"][0]
+    assert record["purpose"] == "local_import"
+    assert record["import_defaults"] == {
+        "role": "supporting_reference", "attach_to_notebook": True
+    }
+
+    invalid = client.post(
+        "/studio/import/sources/text",
+        data={
+            "subject": "Neuro", "exam_number": "1", "title": "Questions", "text": "facts",
+            "role": "questions", "attach_to_notebook": "true",
+        },
+        headers=_csrf_headers(client),
+    )
+    assert invalid.status_code == 422
+
+
+def test_all_import_source_forms_persist_checked_and_unchecked_defaults_across_refresh(
+    tmp_path,
+) -> None:
+    client = _client(tmp_path)
+
+    class Snapshotter:
+        def fetch(self, source_id: str, title: str, url: str) -> SourceSnapshot:
+            path = tmp_path / f"{source_id}.html"
+            path.write_text("<h1>Reference</h1>", encoding="utf-8")
+            return SourceSnapshot(
+                source_id, title, path, "text/html", sha256_file(path), url
+            )
+
+    client.app.state.studio_service.url_snapshot_service = Snapshotter()
+    page = client.get("/studio")
+    assert page.text.count('name="role" data-import-role') == 3
+    assert page.text.count(
+        'name="attach_to_notebook" value="true" data-import-notebook'
+    ) == 3
+
+    submissions = tuple(
+        (
+            source_type,
+            attach_to_notebook,
+            {
+                "title": f"{source_type.title()} reference {attach_to_notebook}",
+                **({"text": "text facts"} if source_type == "text" else {}),
+                **(
+                    {"url": f"https://example.test/{source_type}/{attach_to_notebook}"}
+                    if source_type == "url"
+                    else {}
+                ),
+            },
+            (
+                {
+                    "file": (
+                        f"reference-{attach_to_notebook}.txt",
+                        b"file facts",
+                        "text/plain",
+                    )
+                }
+                if source_type == "file"
+                else None
+            ),
+        )
+        for source_type in ("file", "text", "url")
+        for attach_to_notebook in (True, False)
+    )
+    expected_defaults: dict[str, dict[str, object]] = {}
+    for source_type, attach_to_notebook, fields, files in submissions:
+        data = {
+            "subject": "Neuro",
+            "exam_number": "1",
+            "role": "supporting_reference",
+            "attach_to_notebook": str(attach_to_notebook).lower(),
+            **fields,
+        }
+        response = client.post(
+            f"/studio/import/sources/{source_type}",
+            data=data,
+            files=files,
+            headers=_csrf_headers(client),
+        )
+        assert response.status_code == 202, response.text
+        expected_defaults[fields["title"]] = {
+            "role": "supporting_reference",
+            "attach_to_notebook": attach_to_notebook,
+        }
+
+    refreshed = client.get(
+        "/studio/sources", params={"subject_key": "neuro", "exam_number": 1}
+    )
+    assert refreshed.status_code == 200
+    records = {record["title"]: record for record in refreshed.json()["sources"]}
+    assert set(records) == set(expected_defaults)
+    for title, record in records.items():
+        assert record["purpose"] == "local_import"
+        assert record["import_defaults"] == expected_defaults[title]
+
+
+def test_remote_source_delete_is_queued_before_any_worker_effect(tmp_path) -> None:
+    client = _client(tmp_path)
+    source = client.app.state.studio_repository.create_source(
+        "Neuro",
+        1,
+        StudioSourceType.TEXT,
+        "Remote notes",
+    )
+    client.app.state.studio_repository.complete(
+        source.id,
+        "notebook-1",
+        "remote-1",
+    )
+
+    response = client.delete(
+        f"/studio/sources/{source.id}",
+        headers=_csrf_headers(client),
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"id": source.id, "state": "deleting"}
+    stored = client.app.state.studio_repository.get(source.id)
+    assert stored is not None
+    assert stored.state is StudioSourceState.DELETING
+    assert stored.remote_source_id == "remote-1"
 
 
 def test_import_endpoints_require_csrf_and_reject_invalid_source_ids(tmp_path) -> None:

@@ -20,6 +20,95 @@
       && item.duplicate_warning,
   ) || null;
 
+  const freezeManifest = (files, createId = () => crypto.randomUUID()) => (
+    Object.freeze(Array.from(files, (file) => Object.freeze({
+      file,
+      slotId: createId(),
+      filename: file.name,
+      size: file.size,
+    })))
+  );
+
+  const batchIsTerminal = (batch) => batch.lifecycle === "terminal";
+
+  const selectionIsLocked = (activeSubmission) => Boolean(activeSubmission);
+
+  const itemErrorText = (item) => item.error || "";
+
+  const rejectionDetail = (payload, fallback) => {
+    if (payload?.detail) return payload.detail;
+    if (Array.isArray(payload?.errors)) {
+      return payload.errors.map((error) => (
+        `${error.filename || "Upload"}: ${error.detail || "rejected"}`
+      )).join(" ");
+    }
+    return fallback;
+  };
+
+  const requestWithTimeout = async (
+    fetchImpl,
+    url,
+    options = {},
+    timeoutMs = 120000,
+  ) => {
+    const controller = new AbortController();
+    const external = options.signal;
+    if (external?.aborted) {
+      throw new DOMException("Cancelled", "AbortError");
+    }
+    const cancel = () => controller.abort();
+    external?.addEventListener("abort", cancel, { once: true });
+    let timedOut = false;
+    const timer = root.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      return await fetchImpl(url, { ...options, signal: controller.signal });
+    } catch (error) {
+      if (timedOut) throw new Error("Upload request timed out.");
+      throw error;
+    } finally {
+      root.clearTimeout(timer);
+      external?.removeEventListener("abort", cancel);
+    }
+  };
+
+  const createDecisionWait = (signal, deadline = Infinity) => {
+    let resume;
+    const promise = new Promise((resolve, reject) => {
+      let timer = null;
+      let settled = false;
+      const settle = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        if (timer !== null) root.clearTimeout(timer);
+        callback(value);
+      };
+      const abort = () => settle(
+        reject, new DOMException("Cancelled", "AbortError"),
+      );
+      if (signal.aborted) {
+        abort();
+        return;
+      }
+      resume = () => settle(resolve);
+      signal.addEventListener("abort", abort, { once: true });
+      if (Number.isFinite(deadline)) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          settle(reject, new Error("Upload status timed out before a terminal result."));
+        } else {
+          timer = root.setTimeout(() => {
+            settle(reject, new Error("Upload status timed out before a terminal result."));
+          }, remaining);
+        }
+      }
+    });
+    return { promise, resume: () => resume?.() };
+  };
+
   const chunkFinalizeUrl = (sessionId, lectureId) => (
     `/api/upload-chunks/${encodeURIComponent(sessionId)}/finalize${
       lectureId ? `?lecture_id=${encodeURIComponent(lectureId)}` : ""
@@ -31,20 +120,151 @@
     itemId,
     decision,
     token,
+    signal,
+    timeoutMs = 120000,
   ) => {
-    const response = await fetchImpl(
+    const response = await requestWithTimeout(
+      fetchImpl,
       `/api/upload-items/${encodeURIComponent(itemId)}/${decision}`,
       {
         method: "POST",
         headers: { "X-CSRF-Token": token },
         cache: "no-store",
+        signal,
       },
+      timeoutMs,
     );
-    const payload = await response.json();
+    const payload = response.status === 204 ? {} : await response.json();
     if (!response.ok) {
       throw new Error(payload.detail || "Study Hub rejected the decision.");
     }
     return payload;
+  };
+
+  const handleDecisionDialogCancel = (event, activeSubmission) => {
+    event.preventDefault();
+    if (activeSubmission) activeSubmission.controller.abort();
+  };
+
+  const cancelManifest = async (fetchImpl, manifestId, headers, signal) => {
+    const response = await requestWithTimeout(
+      fetchImpl,
+      `/api/upload-manifests/${encodeURIComponent(manifestId)}`,
+      { method: "DELETE", headers, keepalive: true, signal },
+      5000,
+    );
+    const payload = response.status === 204 ? {} : await response.json();
+    if (response.status === 409 && payload.batch_id) {
+      return { finalized: true, batchId: payload.batch_id };
+    }
+    if (response.status === 409) return { finalized: false, finalizing: true };
+    if (!response.ok) throw new Error("Upload cancellation could not be confirmed.");
+    return { finalized: false, batchId: null };
+  };
+
+  const pollUntilTerminal = async (
+    readBatch,
+    render,
+    signal,
+    deadline,
+    onAwaiting = async () => false,
+    sleep = (delay) => new Promise((resolve) => root.setTimeout(resolve, delay)),
+  ) => {
+    let delay = 750;
+    while (Date.now() < deadline) {
+      if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+      const batch = await readBatch(signal);
+      render(batch);
+      if (batchIsTerminal(batch)) return batch;
+      if (await onAwaiting(batch)) {
+        delay = 750;
+        continue;
+      }
+      await sleep(delay);
+      delay = Math.min(delay * 1.7, 8000);
+    }
+    throw new Error("Upload status timed out before a terminal result.");
+  };
+
+  const reconcileFinalizedBatch = async (
+    poll,
+    batchId,
+    timeoutMs = 120000,
+    onController = () => {},
+  ) => {
+    const controller = new AbortController();
+    onController(controller);
+    let timedOut = false;
+    const timer = root.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      return await poll(batchId, controller.signal, Date.now() + timeoutMs);
+    } catch (error) {
+      if (timedOut) {
+        throw new Error("Upload status timed out before a terminal result.");
+      }
+      throw error;
+    } finally {
+      root.clearTimeout(timer);
+      onController(null);
+    }
+  };
+
+  const isDefinitiveFinalizationRejection = (status) => (
+    Number.isInteger(status) && status >= 400 && status < 500
+  );
+
+  const reconcileAmbiguousFinalization = async (
+    fetchImpl,
+    manifestId,
+    headers,
+    poll,
+    timeoutMs = 120000,
+    onController = () => {},
+    sleep = (delay) => new Promise((resolve) => root.setTimeout(resolve, delay)),
+  ) => {
+    const controller = new AbortController();
+    onController(controller);
+    const deadline = Date.now() + timeoutMs;
+    try {
+      while (Date.now() < deadline) {
+        const outcome = await cancelManifest(
+          fetchImpl, manifestId, headers, controller.signal,
+        );
+        if (outcome.finalized) {
+          await poll(outcome.batchId, controller.signal, deadline);
+          return outcome;
+        }
+        if (!outcome.finalizing) return outcome;
+        await sleep(250);
+      }
+      throw new Error("Upload finalization outcome timed out.");
+    } finally {
+      onController(null);
+    }
+  };
+
+  const cancellationOwner = (activeSubmission, recoveryController) => (
+    recoveryController ? { controller: recoveryController } : activeSubmission
+  );
+
+  const cancelActiveSubmission = (activeSubmission, recoveryController) => {
+    cancellationOwner(activeSubmission, recoveryController)?.controller.abort();
+  };
+
+  const waitForDecision = async (signal, deadline, setResume, onRejected) => {
+    const decision = createDecisionWait(signal, deadline);
+    setResume(decision.resume);
+    try {
+      await decision.promise;
+    } catch (error) {
+      onRejected();
+      throw error;
+    } finally {
+      setResume(null);
+    }
   };
 
   const initialize = (documentRef, fetchImpl) => {
@@ -73,6 +293,9 @@
     let pausedItem = null;
     let pausedBatchId = null;
     let resumeDecision = null;
+    let decisionSignal = null;
+    let recoveryController = null;
+    let activeSubmission = null;
 
     const csrfHeaders = (headers = {}) => ({
       ...headers,
@@ -85,6 +308,7 @@
     };
 
     const showFiles = (files) => {
+      if (selectionIsLocked(activeSubmission)) return;
       chosenFiles = Array.from(files);
       selected.replaceChildren();
       chosenFiles.forEach((file) => {
@@ -131,9 +355,15 @@
         name.textContent = item.original_filename;
         state.textContent = itemStateLabel(item);
         row.append(name, state);
+        if (itemErrorText(item)) {
+          const error = documentRef.createElement("span");
+          error.className = "upload-item-error";
+          error.textContent = itemErrorText(item);
+          row.append(error);
+        }
         items.append(row);
       });
-      status.textContent = `Batch ${batch.state.replaceAll("_", " ")}.`;
+      status.textContent = `Batch ${batch.outcome.replaceAll("_", " ")}.`;
     };
 
     const showConfirmation = (batch, batchId) => {
@@ -149,41 +379,57 @@
       return true;
     };
 
-    const pollBatch = async (batchId) => {
-      let delay = 750;
-      const terminal = new Set([
-        "complete",
-        "discarded",
-        "quarantined",
-        "needs_review",
-        "failed",
-      ]);
-      for (let attempt = 0; attempt < 12; attempt += 1) {
-        const response = await fetchImpl(`/api/upload-batches/${batchId}`, {
-          headers: { Accept: "application/json" },
-          cache: "no-store",
-        });
-        if (!response.ok) throw new Error("Could not read upload status.");
-        const batch = await response.json();
-        renderBatch(batch);
-        if (showConfirmation(batch, batchId)) {
-          await new Promise((resolve) => {
-            resumeDecision = resolve;
-          });
-          delay = 750;
-          continue;
-        }
-        if (terminal.has(batch.state)) return batch;
-        await new Promise((resolve) => root.setTimeout(resolve, delay));
-        delay = Math.min(delay * 1.7, 8000);
-      }
-      status.textContent = "Files are queued on the NUC. You can leave this page.";
-      return null;
+    const clearPausedDecision = () => {
+      if (dialog?.open) dialog.close();
+      pausedItem = null;
+      pausedBatchId = null;
+      resumeDecision = null;
+      decisionSignal = null;
     };
 
-    const multipartUpload = (files) => new Promise((resolve, reject) => {
+    const fetchWithTimeout = (url, options = {}, timeoutMs = 120000) => (
+      requestWithTimeout(fetchImpl, url, options, timeoutMs)
+    );
+
+    const pollBatch = (batchId, signal, deadline) => pollUntilTerminal(
+      async (pollSignal) => {
+        const response = await fetchWithTimeout(`/api/upload-batches/${batchId}`, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+          signal: pollSignal,
+        });
+        if (!response.ok) throw new Error("Could not read upload status.");
+        return response.json();
+      },
+      renderBatch,
+      signal,
+      deadline,
+      async (batch) => {
+        if (showConfirmation(batch, batchId)) {
+          decisionSignal = signal;
+          try {
+            await waitForDecision(
+              signal,
+              deadline,
+              (resume) => { resumeDecision = resume; },
+              clearPausedDecision,
+            );
+          } finally {
+            decisionSignal = null;
+          }
+          return true;
+        }
+        return false;
+      },
+    );
+
+    const multipartUpload = (manifestId, slots, signal) => new Promise((resolve, reject) => {
       const body = new FormData();
-      files.forEach((file) => body.append("files", file));
+      slots.forEach((slot) => {
+        body.append("files", slot.file);
+        body.append("slot_ids", slot.slotId);
+      });
+      body.append("manifest_id", manifestId);
       if (lectureId) body.append("lecture_id", lectureId);
       const request = new XMLHttpRequest();
       request.open("POST", `/uploads/${kind}`);
@@ -192,6 +438,9 @@
         csrfToken(documentRef),
       );
       request.responseType = "json";
+      request.timeout = 120000;
+      const abort = () => request.abort();
+      signal.addEventListener("abort", abort, { once: true });
       request.upload.addEventListener("progress", (event) => {
         if (event.lengthComputable) {
           setProgress((event.loaded / event.total) * 100);
@@ -203,7 +452,7 @@
         } else {
           reject(
             new Error(
-              request.response?.detail || "Upload was rejected.",
+              rejectionDetail(request.response, "Upload was rejected."),
             ),
           );
         }
@@ -211,6 +460,14 @@
       request.addEventListener(
         "error",
         () => reject(new Error("Upload connection failed.")),
+      );
+      request.addEventListener(
+        "abort",
+        () => reject(new DOMException("Cancelled", "AbortError")),
+      );
+      request.addEventListener(
+        "timeout",
+        () => reject(new Error("Upload request timed out.")),
       );
       request.send(body);
     });
@@ -225,8 +482,9 @@
         .join("");
     };
 
-    const chunkUpload = async (file) => {
-      const created = await fetchImpl("/api/upload-chunks", {
+    const chunkUpload = async (manifestId, slot, signal) => {
+      const file = slot.file;
+      const created = await fetchWithTimeout("/api/upload-chunks", {
         method: "POST",
         headers: csrfHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
@@ -234,7 +492,10 @@
           filename: file.name,
           total_size: file.size,
           sha256: await sha256(file),
+          manifest_id: manifestId,
+          slot_id: slot.slotId,
         }),
+        signal,
       });
       if (!created.ok) {
         throw new Error(
@@ -245,9 +506,9 @@
       let offset = 0;
       while (offset < file.size) {
         const chunk = file.slice(offset, offset + chunkSize);
-        const response = await fetchImpl(
+        const response = await fetchWithTimeout(
           `/api/upload-chunks/${session.session_id}?offset=${offset}`,
-          { method: "PUT", headers: csrfHeaders(), body: chunk },
+          { method: "PUT", headers: csrfHeaders(), body: chunk, signal },
         );
         if (!response.ok) {
           throw new Error(
@@ -257,9 +518,9 @@
         offset = (await response.json()).received;
         setProgress((offset / file.size) * 100);
       }
-      const finalized = await fetchImpl(
+      const finalized = await fetchWithTimeout(
         chunkFinalizeUrl(session.session_id, lectureId),
-        { method: "POST", headers: csrfHeaders() },
+        { method: "POST", headers: csrfHeaders(), signal },
       );
       if (!finalized.ok) {
         throw new Error(
@@ -269,7 +530,30 @@
       return finalized.json();
     };
 
-    browse.addEventListener("click", () => input.click());
+    const createManifest = async (slots, signal) => {
+      const files = [];
+      for (const slot of slots) {
+        files.push({
+          slot_id: slot.slotId,
+          filename: slot.filename,
+          size_bytes: slot.size,
+          sha256: await sha256(slot.file),
+        });
+      }
+      const response = await fetchWithTimeout("/api/upload-manifests", {
+        method: "POST",
+        headers: csrfHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ kind, lecture_id: lectureId || null, files }),
+        signal,
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(rejectionDetail(payload, "Upload could not start."));
+      return payload.manifest_id;
+    };
+
+    browse.addEventListener("click", () => {
+      if (!selectionIsLocked(activeSubmission)) input.click();
+    });
     input.addEventListener("change", () => showFiles(input.files));
     ["dragenter", "dragover"].forEach((name) => {
       zone.addEventListener(name, (event) => {
@@ -284,13 +568,17 @@
       });
     });
     zone.addEventListener("drop", (event) => {
+      if (selectionIsLocked(activeSubmission)) return;
       input.files = event.dataTransfer.files;
       showFiles(input.files);
     });
 
     if (dialog) {
       dialog.addEventListener("cancel", (event) => {
-        event.preventDefault();
+        handleDecisionDialogCancel(
+          event,
+          cancellationOwner(activeSubmission, recoveryController),
+        );
       });
       dialog.addEventListener("click", (event) => {
         if (event.target === dialog) event.preventDefault();
@@ -307,6 +595,7 @@
             pausedItem.id,
             decision,
             csrfToken(documentRef),
+            decisionSignal || activeSubmission?.controller.signal,
           );
           const resume = resumeDecision;
           pausedItem = null;
@@ -336,32 +625,114 @@
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (activeSubmission) {
+        cancelActiveSubmission(activeSubmission, recoveryController);
+        return;
+      }
       if (!chosenFiles.length) {
         status.textContent = "Choose at least one file.";
         input.focus();
         return;
       }
-      submit.disabled = true;
+      const snapshot = freezeManifest(chosenFiles);
+      const controller = new AbortController();
+      const deadline = Date.now() + (20 * 60 * 1000);
+      activeSubmission = {
+        controller, manifestId: null, finalizeStarted: false, definitiveFinalizationRejection: false,
+      };
+      input.disabled = true;
+      browse.disabled = true;
+      zone.setAttribute("aria-disabled", "true");
+      submit.textContent = "Cancel upload";
       status.textContent = "Uploading to the NUC…";
       items.replaceChildren();
       try {
-        if (chosenFiles.some((file) => file.size > chunkThreshold)) {
-          for (let index = 0; index < chosenFiles.length; index += 1) {
-            status.textContent = `Uploading ${chosenFiles[index].name}…`;
-            const result = await chunkUpload(chosenFiles[index]);
-            await pollBatch(result.batch_id);
-          }
-        } else {
-          const result = await multipartUpload(chosenFiles);
-          setProgress(100);
-          await pollBatch(result.batch_id);
+        const manifestId = await createManifest(snapshot, controller.signal);
+        activeSubmission.manifestId = manifestId;
+        const small = snapshot.filter((slot) => slot.size <= chunkThreshold);
+        const large = snapshot.filter((slot) => slot.size > chunkThreshold);
+        if (small.length) await multipartUpload(manifestId, small, controller.signal);
+        for (const slot of large) {
+          status.textContent = `Uploading ${slot.filename}…`;
+          await chunkUpload(manifestId, slot, controller.signal);
         }
+        activeSubmission.finalizeStarted = true;
+        const finalized = await fetchWithTimeout(
+          `/api/upload-manifests/${encodeURIComponent(manifestId)}/finalize`,
+          { method: "POST", headers: csrfHeaders(), signal: controller.signal },
+        );
+        const result = await finalized.json();
+        if (!finalized.ok) {
+          activeSubmission.definitiveFinalizationRejection = isDefinitiveFinalizationRejection(
+            finalized.status,
+          );
+          throw new Error(rejectionDetail(result, "Upload was rejected."));
+        }
+        setProgress(100);
+        await pollBatch(result.batch_id, controller.signal, deadline);
       } catch (error) {
-        status.textContent = error instanceof Error
-          ? error.message
-          : "Upload failed.";
+        if (error instanceof DOMException && error.name === "AbortError") {
+          const manifestId = activeSubmission?.manifestId;
+          if (manifestId) {
+            try {
+              const cancelled = await reconcileAmbiguousFinalization(
+                fetchImpl,
+                manifestId,
+                csrfHeaders(),
+                pollBatch,
+                120000,
+                (controller) => { recoveryController = controller; },
+              );
+              if (cancelled.finalized) {
+                clearPausedDecision();
+                status.textContent = "Upload was already finalized.";
+                return;
+              }
+            } catch (_cancelError) {
+              clearPausedDecision();
+              status.textContent = "Upload cancellation could not be confirmed.";
+              return;
+            }
+          }
+          clearPausedDecision();
+          status.textContent = "Upload cancelled.";
+        } else {
+          if (
+            activeSubmission?.finalizeStarted
+            && !activeSubmission.definitiveFinalizationRejection
+            && activeSubmission?.manifestId
+          ) {
+            try {
+              const outcome = await reconcileAmbiguousFinalization(
+                fetchImpl,
+                activeSubmission.manifestId,
+                csrfHeaders(),
+                pollBatch,
+                120000,
+                (controller) => { recoveryController = controller; },
+              );
+              if (outcome.finalized) {
+                clearPausedDecision();
+                status.textContent = "Upload was already finalized.";
+                return;
+              }
+            } catch (_reconcileError) {
+              clearPausedDecision();
+              status.textContent = "Upload finalization outcome could not be confirmed.";
+              return;
+            }
+          }
+          clearPausedDecision();
+          status.textContent = error instanceof Error
+            ? error.message
+            : "Upload failed.";
+        }
       } finally {
-        submit.disabled = false;
+        activeSubmission = null;
+        input.disabled = false;
+        browse.disabled = false;
+        zone.removeAttribute("aria-disabled");
+        submit.textContent = "Upload files";
       }
     });
   };
@@ -369,6 +740,22 @@
   const api = {
     chunkFinalizeUrl,
     csrfToken,
+    batchIsTerminal,
+    createDecisionWait,
+    handleDecisionDialogCancel,
+    cancelManifest,
+    reconcileFinalizedBatch,
+    reconcileAmbiguousFinalization,
+    isDefinitiveFinalizationRejection,
+    cancellationOwner,
+    cancelActiveSubmission,
+    pollUntilTerminal,
+    waitForDecision,
+    freezeManifest,
+    itemErrorText,
+    rejectionDetail,
+    requestWithTimeout,
+    selectionIsLocked,
     formatLecture,
     initialize,
     nextConfirmation,

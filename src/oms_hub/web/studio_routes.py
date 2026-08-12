@@ -14,11 +14,6 @@ from oms_hub.study_generation.native_quiz import (
     image_requirements,
     public_quiz_content,
 )
-from oms_hub.study_generation.notebook import StoredNotebookLMGateway
-from oms_hub.study_generation.notebook_errors import (
-    NotebookAuthenticationError,
-    NotebookGatewayError,
-)
 from oms_hub.study_generation.practice_domain import (
     ImportSourceRole,
     ImportSourceSelection,
@@ -28,6 +23,7 @@ from oms_hub.study_generation.practice_domain import (
 from oms_hub.study_generation.practice_review import (
     ImageCandidate,
     PracticeReviewService,
+    ReviewArtifactUnavailable,
     ReviewQuestion,
 )
 from oms_hub.study_generation.quiz_images import (
@@ -36,7 +32,12 @@ from oms_hub.study_generation.quiz_images import (
     StudioQuizImageService,
 )
 from oms_hub.study_generation.repository import GenerationRepository
-from oms_hub.study_generation.studio_domain import StudioQuizReview, StudioRun, StudioRunState
+from oms_hub.study_generation.studio_domain import (
+    StudioQuizReview,
+    StudioRun,
+    StudioRunState,
+    StudioSourceState,
+)
 from oms_hub.study_generation.studio_repository import StudioRepository
 from oms_hub.study_generation.studio_service import StudioService
 from oms_hub.web.csrf import require_form_csrf
@@ -155,6 +156,15 @@ def sources(
                     "id": item.id,
                     "title": item.title,
                     "type": item.source_type.value,
+                    "purpose": item.purpose.value,
+                    "import_defaults": (
+                        {
+                            "role": item.import_role.value if item.import_role else None,
+                            "attach_to_notebook": item.import_attach_to_notebook,
+                        }
+                        if item.purpose.value == "local_import"
+                        else None
+                    ),
                     "state": item.state.value,
                     "attempts": item.attempts,
                     "next_attempt_at": item.next_attempt_at,
@@ -393,8 +403,22 @@ def _direct_review_payload(request: Request, run_id: str) -> dict[str, object]:
     }
 
 
+def _review_artifact_unavailable_response(error: ReviewArtifactUnavailable) -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": {
+                "code": "review_artifact_unavailable",
+                "message": str(error),
+                "recovery": "Return to Quiz Builder and rerun the import.",
+            }
+        },
+        status_code=409,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.get("/runs/{run_id}/review", response_class=HTMLResponse)
-def practice_review_page(request: Request, run_id: str) -> HTMLResponse:
+def practice_review_page(request: Request, run_id: str) -> Response:
     try:
         run = cast(StudioRepository, request.app.state.studio_repository).get_run(run_id)
     except KeyError as error:
@@ -408,6 +432,10 @@ def practice_review_page(request: Request, run_id: str) -> HTMLResponse:
             headers={"Cache-Control": "no-store"},
         )
     _direct_import_review_run(request, run_id)
+    try:
+        _practice_review(request).review(run_id)
+    except ReviewArtifactUnavailable as error:
+        return _review_artifact_unavailable_response(error)
     return templates.TemplateResponse(
         request=request,
         name="studio_quiz_review.html",
@@ -419,16 +447,18 @@ def practice_review_page(request: Request, run_id: str) -> HTMLResponse:
 @router.get("/runs/{run_id}/review/data")
 def practice_review_data(request: Request, run_id: str) -> JSONResponse:
     _direct_import_review_run(request, run_id)
-    return JSONResponse(
-        _direct_review_payload(request, run_id),
-        headers={"Cache-Control": "no-store"},
-    )
+    try:
+        return JSONResponse(
+            _direct_review_payload(request, run_id), headers={"Cache-Control": "no-store"}
+        )
+    except ReviewArtifactUnavailable as error:
+        return _review_artifact_unavailable_response(error)
 
 
 @router.patch("/runs/{run_id}/questions/{question_id}")
 def update_practice_question(
     request: Request, run_id: str, question_id: str, submission: QuestionEditInput
-) -> JSONResponse:
+) -> Response:
     require_form_csrf(request, None)
     _direct_import_review_run(request, run_id)
     try:
@@ -439,6 +469,8 @@ def update_practice_question(
             _direct_review_payload(request, run_id),
             headers={"Cache-Control": "no-store"},
         )
+    except ReviewArtifactUnavailable as error:
+        return _review_artifact_unavailable_response(error)
     except KeyError as error:
         raise HTTPException(404, "Studio question was not found") from error
     except ValueError as error:
@@ -446,7 +478,7 @@ def update_practice_question(
 
 
 @router.post("/runs/{run_id}/questions/{question_id}/verify-answer")
-def verify_practice_answer(request: Request, run_id: str, question_id: str) -> JSONResponse:
+def verify_practice_answer(request: Request, run_id: str, question_id: str) -> Response:
     require_form_csrf(request, None)
     _direct_import_review_run(request, run_id)
     try:
@@ -455,6 +487,8 @@ def verify_practice_answer(request: Request, run_id: str, question_id: str) -> J
             _direct_review_payload(request, run_id),
             headers={"Cache-Control": "no-store"},
         )
+    except ReviewArtifactUnavailable as error:
+        return _review_artifact_unavailable_response(error)
     except KeyError as error:
         raise HTTPException(404, "Studio question was not found") from error
     except ValueError as error:
@@ -467,12 +501,14 @@ def select_practice_image_candidate(
     run_id: str,
     question_id: str,
     submission: CandidateSelectionInput,
-) -> JSONResponse:
+) -> Response:
     require_form_csrf(request, None)
     _direct_import_review_run(request, run_id)
     if submission.image_candidate_id is None:
         try:
             question = _practice_review(request).question(run_id, question_id)
+        except ReviewArtifactUnavailable as error:
+            return _review_artifact_unavailable_response(error)
         except KeyError as error:
             raise HTTPException(404, "Studio question was not found") from error
         if question.draft.image_ref is not None:
@@ -491,6 +527,8 @@ def select_practice_image_candidate(
             _direct_review_payload(request, run_id),
             headers={"Cache-Control": "no-store"},
         )
+    except ReviewArtifactUnavailable as error:
+        return _review_artifact_unavailable_response(error)
     except KeyError as error:
         raise HTTPException(404, "Studio question was not found") from error
     except ValueError as error:
@@ -503,7 +541,7 @@ def preview_practice_image_candidate(
     run_id: str,
     question_id: str,
     candidate_id: str,
-) -> FileResponse:
+) -> Response:
     _direct_import_review_run(request, run_id)
     try:
         path, media_type = _practice_review(request).candidate_preview(
@@ -511,6 +549,8 @@ def preview_practice_image_candidate(
             question_id,
             candidate_id,
         )
+    except ReviewArtifactUnavailable as error:
+        return _review_artifact_unavailable_response(error)
     except KeyError as error:
         raise HTTPException(404, "image candidate was not found") from error
     return FileResponse(
@@ -684,13 +724,16 @@ def _replace_overridden_image_refs(review: StudioQuizReview) -> NativeQuiz:
 
 
 @router.get("/runs/{run_id}/preview", response_class=HTMLResponse)
-def preview_quiz_page(request: Request, run_id: str) -> HTMLResponse:
+def preview_quiz_page(request: Request, run_id: str) -> Response:
     try:
         run = cast(StudioRepository, request.app.state.studio_repository).get_run(run_id)
     except KeyError as error:
         raise HTTPException(404, "Studio run was not found") from error
     if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
-        direct_run, _ = _direct_preview_quiz(request, run_id)
+        try:
+            direct_run, _ = _direct_preview_quiz(request, run_id)
+        except ReviewArtifactUnavailable as error:
+            return _review_artifact_unavailable_response(error)
         return templates.TemplateResponse(
             request=request,
             name="studio_quiz_preview.html",
@@ -723,7 +766,10 @@ def preview_quiz_content(request: Request, run_id: str) -> JSONResponse:
     except KeyError as error:
         raise HTTPException(404, "Studio run was not found") from error
     if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
-        direct_run, quiz = _direct_preview_quiz(request, run_id)
+        try:
+            direct_run, quiz = _direct_preview_quiz(request, run_id)
+        except ReviewArtifactUnavailable as error:
+            return _review_artifact_unavailable_response(error)
         return JSONResponse(
             {
                 "token": f"preview-{run_id}",
@@ -753,13 +799,16 @@ def preview_quiz_media(
     request: Request,
     run_id: str,
     image_key: str,
-) -> FileResponse:
+) -> Response:
     try:
         run = cast(StudioRepository, request.app.state.studio_repository).get_run(run_id)
     except KeyError as error:
         raise HTTPException(404, "Studio run was not found") from error
     if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
-        direct_run, quiz = _direct_preview_quiz(request, run_id)
+        try:
+            direct_run, quiz = _direct_preview_quiz(request, run_id)
+        except ReviewArtifactUnavailable as error:
+            return _review_artifact_unavailable_response(error)
         active_keys = {
             question.image_ref.key for question in quiz.questions if question.image_ref is not None
         }
@@ -804,13 +853,16 @@ def preview_quiz_answer(
     request: Request,
     run_id: str,
     submission: PreviewAnswerSubmission,
-) -> JSONResponse:
+) -> Response:
     try:
         run = cast(StudioRepository, request.app.state.studio_repository).get_run(run_id)
     except KeyError as error:
         raise HTTPException(404, "Studio run was not found") from error
     if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
-        _, quiz = _direct_preview_quiz(request, run_id)
+        try:
+            _, quiz = _direct_preview_quiz(request, run_id)
+        except ReviewArtifactUnavailable as error:
+            return _review_artifact_unavailable_response(error)
         try:
             feedback = grade_answer(quiz, submission.question_id, submission.choice_id)
         except KeyError as error:
@@ -872,20 +924,14 @@ def delete_source(request: Request, source_id: str) -> JSONResponse:
     source = repository.get(source_id)
     if source is None:
         raise HTTPException(404, "Studio source was not found")
-    if source.remote_notebook_id and source.remote_source_id:
-        gateway = cast(StoredNotebookLMGateway, request.app.state.notebook_gateway)
-        try:
-            gateway.delete_studio_source(
-                source.remote_notebook_id,
-                source.remote_source_id,
-            )
-        except NotebookAuthenticationError as error:
-            request.app.state.notebook_connection.invalidate(str(error))
-            raise HTTPException(409, str(error)) from error
-        except NotebookGatewayError as error:
-            raise HTTPException(409, str(error)) from error
-    deleted = repository.mark_source_deleted(source_id)
-    return JSONResponse({"id": deleted.id, "state": deleted.state.value})
+    try:
+        queued = repository.queue_source_delete(source_id)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return JSONResponse(
+        {"id": queued.id, "state": queued.state.value},
+        status_code=202 if queued.state is StudioSourceState.DELETING else 200,
+    )
 
 
 @router.post("/runs/{run_id}/rerun", status_code=202)
@@ -1007,6 +1053,8 @@ def add_import_file(
     exam_number: Annotated[int, Form()],
     title: Annotated[str, Form()],
     file: Annotated[UploadFile, File()],
+    role: Annotated[ImportSourceRole, Form()] = ImportSourceRole.QUESTIONS,
+    attach_to_notebook: Annotated[bool, Form()] = False,
     csrf_token: Annotated[str | None, Form()] = None,
 ) -> JSONResponse:
     require_form_csrf(request, csrf_token)
@@ -1020,6 +1068,8 @@ def add_import_file(
             title,
             file.filename or "source",
             payload,
+            role=role,
+            attach_to_notebook=attach_to_notebook,
         )
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
@@ -1033,6 +1083,8 @@ def add_import_text(
     exam_number: Annotated[int, Form()],
     title: Annotated[str, Form()],
     text: Annotated[str, Form()],
+    role: Annotated[ImportSourceRole, Form()] = ImportSourceRole.QUESTIONS,
+    attach_to_notebook: Annotated[bool, Form()] = False,
     csrf_token: Annotated[str | None, Form()] = None,
 ) -> JSONResponse:
     require_form_csrf(request, csrf_token)
@@ -1043,6 +1095,8 @@ def add_import_text(
             exam_number,
             title,
             text,
+            role=role,
+            attach_to_notebook=attach_to_notebook,
         )
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
@@ -1056,6 +1110,8 @@ def add_import_url(
     exam_number: Annotated[int, Form()],
     title: Annotated[str, Form()],
     url: Annotated[str, Form()],
+    role: Annotated[ImportSourceRole, Form()] = ImportSourceRole.QUESTIONS,
+    attach_to_notebook: Annotated[bool, Form()] = False,
     csrf_token: Annotated[str | None, Form()] = None,
 ) -> JSONResponse:
     require_form_csrf(request, csrf_token)
@@ -1066,6 +1122,8 @@ def add_import_url(
             exam_number,
             title,
             url,
+            role=role,
+            attach_to_notebook=attach_to_notebook,
         )
     except ValueError as error:
         raise HTTPException(422, str(error)) from error

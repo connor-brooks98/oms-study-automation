@@ -1,0 +1,465 @@
+"""Fail-closed verification for F28 Task Scheduler operational XML evidence."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import binascii
+import json
+import ntpath
+import os
+import tempfile
+import uuid
+import xml.etree.ElementTree as element_tree
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import cast
+
+_MAX_EVENT_PROCESS_LAG = timedelta(seconds=30)
+_EVENT_NAMESPACE = "http://schemas.microsoft.com/win/2004/08/events/event"
+_EXIT_75_HRESULT = 2147942475  # 0x8007004B: HRESULT_FROM_WIN32(75)
+_PRIMARY_ACTION_ID = "f28-primary-0"
+
+
+def _event_tag(local_name: str) -> str:
+    return f"{{{_EVENT_NAMESPACE}}}{local_name}"
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _strict_int(value: object, label: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{label} must be an integer")
+    if value < minimum:
+        raise ValueError(f"{label} must be at least {minimum}")
+    return value
+
+
+def _strict_decimal(value: str | None, label: str, *, minimum: int = 0) -> int:
+    if value is None or not value.isascii() or not value.isdecimal():
+        raise ValueError(f"{label} must be an unsigned decimal integer")
+    parsed = int(value)
+    if parsed < minimum:
+        raise ValueError(f"{label} must be at least {minimum}")
+    return parsed
+
+
+def _canonical_guid(value: str | None, label: str) -> str:
+    if value is None:
+        raise ValueError(f"{label} is missing")
+    try:
+        parsed = uuid.UUID(value)
+    except (AttributeError, ValueError) as error:
+        raise ValueError(f"{label} is not a GUID") from error
+    canonical = str(parsed)
+    if value.casefold() not in {canonical, "{" + canonical + "}"}:
+        raise ValueError(f"{label} is not a canonical GUID")
+    return canonical
+
+
+def _canonical_windows_path(value: str, label: str) -> str:
+    if not value or not ntpath.isabs(value):
+        raise ValueError(f"{label} must be an absolute Windows path")
+    return ntpath.normcase(ntpath.normpath(value))
+
+
+def _utc_timestamp(value: object, label: str) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ValueError(f"{label} must be an ISO 8601 UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as error:
+        raise ValueError(f"{label} must be an ISO 8601 UTC timestamp") from error
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError(f"{label} must be an ISO 8601 UTC timestamp")
+    return parsed.astimezone(UTC)
+
+
+def _parse_event(raw_event: Mapping[str, object]) -> dict[str, object]:
+    record_id = _strict_int(raw_event.get("event_record_id"), "event_record_id", minimum=1)
+    xml = raw_event.get("xml")
+    if not isinstance(xml, str):
+        raise ValueError("event XML must be a string")
+    try:
+        root = element_tree.fromstring(xml)
+    except element_tree.ParseError as error:
+        raise ValueError("event XML is invalid") from error
+    if root.tag != _event_tag("Event"):
+        raise ValueError("event XML root is not the Windows Event element")
+    system_nodes = [child for child in root if child.tag == _event_tag("System")]
+    if len(system_nodes) != 1:
+        raise ValueError("event XML must contain exactly one direct Event/System node")
+    system = system_nodes[0]
+    required_metadata: dict[str, element_tree.Element] = {}
+    for name in ("EventID", "EventRecordID", "TimeCreated"):
+        matches = [child for child in system if child.tag == _event_tag(name)]
+        if len(matches) != 1:
+            raise ValueError(
+                f"event XML must contain exactly one {name} direct child of Event/System"
+            )
+        required_metadata[name] = matches[0]
+    allowed_metadata_ids = {id(element) for element in required_metadata.values()}
+    for element in root.iter():
+        if (
+            _local_name(element.tag) in required_metadata
+            and id(element) not in allowed_metadata_ids
+        ):
+            raise ValueError("event metadata must be a direct child of Event/System")
+
+    event_data_nodes = [child for child in root if child.tag == _event_tag("EventData")]
+    if len(event_data_nodes) != 1:
+        raise ValueError("event XML must contain exactly one direct EventData node")
+    fields: dict[str, str] = {}
+    for element in event_data_nodes[0]:
+        if element.tag != _event_tag("Data"):
+            raise ValueError("event XML has invalid EventData fields")
+        field_name = element.attrib.get("Name")
+        if field_name is None or field_name in fields:
+            raise ValueError("event XML has invalid EventData fields")
+        fields[field_name] = element.text or ""
+
+    system_time = required_metadata["TimeCreated"].attrib.get("SystemTime")
+    if system_time is None:
+        raise ValueError("TimeCreated SystemTime is missing")
+    event_id = _strict_decimal(required_metadata["EventID"].text, "EventID", minimum=1)
+    xml_record_id = _strict_decimal(
+        required_metadata["EventRecordID"].text, "EventRecordID", minimum=1
+    )
+    if xml_record_id != record_id:
+        raise ValueError("event record identifier differs from EventRecordID XML")
+    _utc_timestamp(system_time, "TimeCreated SystemTime")
+    return {
+        "record_id": record_id,
+        "event_id": event_id,
+        "system_time": system_time,
+        "fields": fields,
+    }
+
+
+def _event_field(event: Mapping[str, object], name: str) -> str | None:
+    fields = cast(dict[str, str], event["fields"])
+    return fields.get(name)
+
+
+def _event_record_id(event: Mapping[str, object]) -> int:
+    return cast(int, event["record_id"])
+
+
+def _event_id(event: Mapping[str, object]) -> int:
+    return cast(int, event["event_id"])
+
+
+def _event_system_time(event: Mapping[str, object]) -> str:
+    return cast(str, event["system_time"])
+
+
+def _task_events_after_cursor(
+    events: Sequence[Mapping[str, object]], cursor_event_record_id: int, full_task_name: str
+) -> list[dict[str, object]]:
+    parsed = [_parse_event(event) for event in events]
+    record_ids = [_event_record_id(event) for event in parsed]
+    if len(record_ids) != len(set(record_ids)):
+        raise ValueError("Task Scheduler evidence contains duplicate record identifiers")
+    if record_ids != sorted(record_ids):
+        raise ValueError("Task Scheduler evidence is not ordered by EventRecordID")
+    return [
+        event
+        for event in parsed
+        if _event_record_id(event) > cursor_event_record_id
+        and _event_field(event, "TaskName") == full_task_name
+    ]
+
+
+def _replacement_ancestor_chain(
+    process_snapshot: Sequence[Mapping[str, object]],
+    replacement_process_id: int,
+    replacement_hub_pid: int,
+    expected_action: str,
+    expected_action_index: int,
+    expected_action_arguments: str,
+    created_process_event_time: str,
+) -> tuple[list[int], str]:
+    parents: dict[int, int] = {}
+    replacement_executable_path: str | None = None
+    replacement_creation_date: str | None = None
+    for process in process_snapshot:
+        pid = _strict_int(process.get("pid"), "process pid", minimum=0)
+        parent_pid = _strict_int(process.get("parent_pid"), "process parent_pid", minimum=0)
+        if pid in parents:
+            raise ValueError("process snapshot contains duplicate PIDs")
+        parents[pid] = parent_pid
+        command_line = process.get("command_line")
+        if not isinstance(command_line, str):
+            raise ValueError("process snapshot command_line must be a string")
+        creation_date = process.get("creation_date")
+        if not isinstance(creation_date, str):
+            raise ValueError("process snapshot creation_date must be a string")
+        if pid == replacement_process_id:
+            executable_path = process.get("executable_path")
+            if not isinstance(executable_path, str):
+                raise ValueError("Task Scheduler process executable_path must be a string")
+            replacement_executable_path = _canonical_windows_path(
+                executable_path, "Task Scheduler process executable_path"
+            )
+            replacement_creation_date = creation_date
+            if not expected_action_arguments:
+                raise ValueError("recovery_action_arguments must be a non-empty string")
+            expected_forms = {
+                f'"{expected_action}" {expected_action_arguments}',
+                f"{expected_action} {expected_action_arguments}",
+            }
+            if command_line.strip().casefold() not in {
+                form.casefold() for form in expected_forms
+            }:
+                raise ValueError(
+                    "Task Scheduler process command line differs from exact recovery action"
+                )
+    if replacement_process_id not in parents or replacement_hub_pid not in parents:
+        raise ValueError("scheduler process is absent from the same-snapshot process list")
+    if replacement_executable_path != expected_action:
+        raise ValueError("Task Scheduler created process executable differs from exact action path")
+    event_time = _utc_timestamp(created_process_event_time, "Event 129 SystemTime")
+    process_time = _utc_timestamp(
+        replacement_creation_date, "Task Scheduler process creation_date"
+    )
+    if process_time > event_time:
+        raise ValueError("Task Scheduler process creation postdates Event 129")
+    if event_time - process_time > _MAX_EVENT_PROCESS_LAG:
+        raise ValueError(
+            "Task Scheduler process creation is outside the Event 129 correlation window"
+        )
+    chain = [replacement_hub_pid]
+    seen = {replacement_hub_pid}
+    while chain[-1] in parents and parents[chain[-1]] != 0:
+        parent = parents[chain[-1]]
+        if parent in seen:
+            raise ValueError("process snapshot contains a parent cycle")
+        chain.append(parent)
+        seen.add(parent)
+    if replacement_process_id not in chain:
+        raise ValueError("Task Scheduler created process is not an ancestor of replacement oms-hub")
+    return (
+        list(reversed(chain[: chain.index(replacement_process_id) + 1])),
+        cast(str, replacement_creation_date),
+    )
+
+
+def verify_scheduler_restart(
+    *,
+    events: Sequence[Mapping[str, object]],
+    cursor_event_record_id: int,
+    full_task_name: str,
+    action_path: str,
+    replacement_hub_pid: int,
+    process_snapshot: Sequence[Mapping[str, object]],
+    recovery_action_index: int = 1,
+    recovery_action_arguments: str,
+) -> dict[str, object]:
+    """Return proof only for the same-instance F28 recovery action chain."""
+    cursor = _strict_int(cursor_event_record_id, "cursor_event_record_id", minimum=0)
+    if not full_task_name.startswith("\\"):
+        raise ValueError("full_task_name must be an exact full Task Scheduler path")
+    expected_action = _canonical_windows_path(action_path, "action_path")
+    hub_pid = _strict_int(replacement_hub_pid, "replacement_hub_pid", minimum=1)
+    recovery_index = _strict_int(recovery_action_index, "recovery_action_index", minimum=1)
+    if not isinstance(recovery_action_arguments, str) or not recovery_action_arguments.strip():
+        raise ValueError("recovery_action_arguments must be a non-empty string")
+    if recovery_index > 3:
+        raise ValueError("recovery_action_index must be at most 3")
+    expected_recovery_action_id = f"f28-recovery-{recovery_index}"
+    task_events = _task_events_after_cursor(events, cursor, full_task_name)
+    if not task_events:
+        raise ValueError("no exact task events occurred after the event cursor")
+    forbidden = [event for event in task_events if _event_id(event) in {102, 107, 110}]
+    if forbidden:
+        labels = {102: "task completion", 107: "trigger", 110: "manual"}
+        raise ValueError(f"{labels[_event_id(forbidden[0])]} launch occurred after event cursor")
+
+    old_actions = [event for event in task_events if _event_id(event) == 201]
+    if len(old_actions) != 1:
+        raise ValueError("exactly one old Event 201 action-completed failure is required")
+    old_action = old_actions[0]
+    if (
+        _strict_decimal(_event_field(old_action, "ResultCode"), "ResultCode") != _EXIT_75_HRESULT
+        or _event_field(old_action, "ActionName") != _PRIMARY_ACTION_ID
+    ):
+        raise ValueError("old Event 201 does not match exact failure action")
+    old_instance = _canonical_guid(_event_field(old_action, "TaskInstanceId"), "old TaskInstanceId")
+    failure_record_id = _event_record_id(old_action)
+    if any(
+        _event_id(event) in {200, 129}
+        and _event_record_id(event) < failure_record_id
+        for event in task_events
+    ):
+        raise ValueError("recovery Event 129/200 cannot precede old Event 201")
+    ordered_after_failure = [
+        event for event in task_events if _event_record_id(event) > failure_record_id
+    ]
+    relevant_ids = {100, 102, 107, 110, 200, 129}
+    recovery_relevant = [
+        event for event in ordered_after_failure if _event_id(event) in relevant_ids
+    ]
+    if len(recovery_relevant) < 2 or {
+        _event_id(event) for event in recovery_relevant[:2]
+    } != {200, 129}:
+        raise ValueError(
+            "old Event 201 must be followed by exactly one Event 129 and one Event 200"
+        )
+    if len(recovery_relevant) != 2:
+        raise ValueError("unexpected or reordered Task Scheduler recovery evidence")
+    replacement_action = next(event for event in recovery_relevant if _event_id(event) == 200)
+    if (
+        _canonical_guid(
+            _event_field(replacement_action, "TaskInstanceId"), "Event 200 TaskInstanceId"
+        )
+        != old_instance
+        or _event_field(replacement_action, "ActionName") != expected_recovery_action_id
+    ):
+        raise ValueError("replacement Event 200 does not match exact task action")
+
+    created_process = next(event for event in recovery_relevant if _event_id(event) == 129)
+    if (
+        _canonical_windows_path(_event_field(created_process, "Path") or "", "Event 129 Path")
+        != expected_action
+    ):
+        raise ValueError("Event 129 does not match exact task action")
+    created_pid = _strict_decimal(
+        _event_field(created_process, "ProcessID"), "Event 129 ProcessID", minimum=1
+    )
+    engine_pid = _strict_decimal(
+        _event_field(replacement_action, "EnginePID"), "Event 200 EnginePID", minimum=1
+    )
+    if engine_pid != created_pid:
+        raise ValueError("Event 200 EnginePID does not match Event 129 ProcessID")
+    created_instance = _event_field(created_process, "TaskInstanceId")
+    if (
+        created_instance is not None
+        and _canonical_guid(created_instance, "Event 129 TaskInstanceId") != old_instance
+    ):
+        raise ValueError("Event 129 TaskInstanceId does not match failed task instance")
+    created_process_event_time = _event_system_time(created_process)
+    ancestor_pids, created_process_creation_time = _replacement_ancestor_chain(
+        process_snapshot,
+        created_pid,
+        hub_pid,
+        expected_action,
+        recovery_index,
+        recovery_action_arguments,
+        created_process_event_time,
+    )
+    return {
+        "schema_version": 3,
+        "event_cursor_record_id": cursor,
+        "full_task_name": full_task_name,
+        "action_path": action_path,
+        "old_action_event_record_id": failure_record_id,
+        "old_task_instance_id": old_instance,
+        "old_action_id": _PRIMARY_ACTION_ID,
+        "old_result_code": _EXIT_75_HRESULT,
+        "old_win32_exit_code": 75,
+        "replacement_action_event_record_id": _event_record_id(replacement_action),
+        "replacement_task_instance_id": old_instance,
+        "replacement_action_id": expected_recovery_action_id,
+        "replacement_engine_pid": engine_pid,
+        "recovery_action_arguments": recovery_action_arguments,
+        "recovery_action_index": recovery_index,
+        "replacement_process_event_record_id": _event_record_id(created_process),
+        "replacement_process_event_time": created_process_event_time,
+        "replacement_process_id": created_pid,
+        "replacement_process_creation_time": created_process_creation_time,
+        "replacement_hub_pid": hub_pid,
+        "replacement_hub_ancestor_pids": ancestor_pids,
+    }
+
+
+def _read_input(path: Path) -> Mapping[str, object]:
+    try:
+        value: object = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("scheduler evidence input cannot be read") from error
+    if not isinstance(value, dict):
+        raise ValueError("scheduler evidence input must be an object")
+    return cast(Mapping[str, object], value)
+
+
+def _write_new_json(path: Path, value: Mapping[str, object]) -> None:
+    if path.exists():
+        raise ValueError("scheduler evidence output already exists")
+    encoded = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as temporary:
+        temporary.write(encoded)
+        temporary_path = Path(temporary.name)
+    try:
+        os.link(temporary_path, path)
+    except FileExistsError as error:
+        raise ValueError("scheduler evidence output already exists") from error
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _decode_recovery_action_arguments(encoded: str) -> str:
+    try:
+        encoded_bytes = encoded.encode("ascii")
+        decoded_bytes = base64.b64decode(encoded_bytes, validate=True)
+    except (UnicodeEncodeError, binascii.Error) as error:
+        raise ValueError(
+            "recovery_action_arguments_base64 must be canonical Base64"
+        ) from error
+    if base64.b64encode(decoded_bytes) != encoded_bytes:
+        raise ValueError("recovery_action_arguments_base64 must be canonical Base64")
+    try:
+        decoded = decoded_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(
+            "recovery_action_arguments_base64 must contain strict UTF-8"
+        ) from error
+    if not decoded or decoded != decoded.strip() or any(
+        forbidden in decoded for forbidden in ("\x00", "\r", "\n")
+    ):
+        raise ValueError(
+            "decoded recovery action arguments must be one non-empty trimmed line"
+        )
+    return decoded
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--full-task-name", required=True)
+    parser.add_argument("--action-path", required=True)
+    parser.add_argument("--recovery-action-index", type=int, required=True)
+    parser.add_argument("--recovery-action-arguments-base64", required=True)
+    parser.add_argument("--replacement-hub-pid", type=int, required=True)
+    arguments = parser.parse_args()
+    payload = _read_input(arguments.input)
+    events = payload.get("events")
+    process_snapshot = payload.get("process_snapshot")
+    if not isinstance(events, list) or not all(isinstance(item, dict) for item in events):
+        raise ValueError("scheduler evidence events must be an array of objects")
+    if not isinstance(process_snapshot, list) or not all(
+        isinstance(item, dict) for item in process_snapshot
+    ):
+        raise ValueError("scheduler evidence process_snapshot must be an array of objects")
+    proof = verify_scheduler_restart(
+        events=cast(list[Mapping[str, object]], events),
+        cursor_event_record_id=_strict_int(
+            payload.get("cursor_event_record_id"), "cursor_event_record_id", minimum=0
+        ),
+        full_task_name=arguments.full_task_name,
+        action_path=arguments.action_path,
+        recovery_action_index=arguments.recovery_action_index,
+        recovery_action_arguments=_decode_recovery_action_arguments(
+            arguments.recovery_action_arguments_base64
+        ),
+        replacement_hub_pid=arguments.replacement_hub_pid,
+        process_snapshot=cast(list[Mapping[str, object]], process_snapshot),
+    )
+    _write_new_json(arguments.output, proof)
+
+
+if __name__ == "__main__":
+    main()

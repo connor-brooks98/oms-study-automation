@@ -25,6 +25,7 @@ from oms_hub.models import (
     StudioRunModel,
     StudioRunSourceModel,
     StudioSourceModel,
+    StudioSourceOperationModel,
 )
 from oms_hub.study_generation.domain import NativeQuiz
 from oms_hub.study_generation.native_quiz import (
@@ -51,12 +52,18 @@ from oms_hub.study_generation.studio_domain import (
     StudioRunStage,
     StudioRunState,
     StudioSource,
+    StudioSourceOperation,
     StudioSourceState,
     StudioSourceType,
     StudioStoredImage,
 )
 
 _ACTIVE_LABEL_INDEX = "ix_studio_runs_active_label"
+_ACTIVE_SOURCE_SCOPE_INDEX = "ix_studio_source_operations_scope_active"
+
+
+class NotebookMutationBusy(RuntimeError):
+    """A different durable operation currently owns this remote notebook."""
 
 
 def _is_active_label_conflict(error: IntegrityError) -> bool:
@@ -80,9 +87,34 @@ def _is_active_label_conflict(error: IntegrityError) -> bool:
     )
 
 
+def _is_active_notebook_conflict(error: IntegrityError) -> bool:
+    message = str(error.orig)
+    return (
+        "ix_studio_source_operations_notebook_active" in message
+        or (
+            "UNIQUE constraint failed" in message
+            and "studio_source_operations.notebook_id" in message
+        )
+    )
+
+
+def _is_active_source_scope_conflict(error: IntegrityError) -> bool:
+    message = str(error.orig)
+    return (
+        _ACTIVE_SOURCE_SCOPE_INDEX in message
+        or (
+            "UNIQUE constraint failed" in message
+            and "studio_source_operations.subject_key" in message
+            and "studio_source_operations.exam_number" in message
+        )
+    )
+
+
 class StudioRepository:
     def __init__(self, database: Database):
         self.database = database
+        self._operation_owner = str(uuid4())
+        self._operation_lease = timedelta(minutes=30)
 
     def create_source(
         self,
@@ -95,7 +127,20 @@ class StudioRepository:
         source_url: str | None = None,
         original_filename: str | None = None,
         purpose: StudioSourcePurpose = StudioSourcePurpose.NOTEBOOK,
+        import_role: ImportSourceRole | None = None,
+        import_attach_to_notebook: bool = False,
     ) -> StudioSource:
+        if purpose is not StudioSourcePurpose.LOCAL_IMPORT and (
+            import_role is not None or import_attach_to_notebook
+        ):
+            raise ValueError("only local import sources may have import defaults")
+        if import_attach_to_notebook and import_role not in {
+            ImportSourceRole.SUPPORTING_REFERENCE,
+            ImportSourceRole.COMBINED,
+        }:
+            raise ValueError(
+                "only Supporting Reference or Combined sources may attach to NotebookLM"
+            )
         with self.database.session() as session:
             model = StudioSourceModel(
                 id=str(uuid4()),
@@ -108,6 +153,8 @@ class StudioRepository:
                 source_url=source_url,
                 original_filename=original_filename,
                 purpose=purpose.value,
+                import_role=import_role.value if import_role is not None else None,
+                import_attach_to_notebook=import_attach_to_notebook,
             )
             session.add(model)
             session.flush()
@@ -208,40 +255,599 @@ class StudioRepository:
 
     def claim_next(self, now: datetime | None = None) -> StudioSource | None:
         now = now or datetime.now(UTC)
+        try:
+            with self.database.session() as session:
+                active_scope = (
+                    select(StudioSourceOperationModel.id)
+                    .where(
+                        StudioSourceOperationModel.subject_key
+                        == StudioSourceModel.subject_key,
+                        StudioSourceOperationModel.exam_number
+                        == StudioSourceModel.exam_number,
+                        StudioSourceOperationModel.state.in_(
+                            {"queued", "executing", "reconciling", "deleting"}
+                        ),
+                    )
+                    .exists()
+                )
+                model = session.scalar(
+                    select(StudioSourceModel)
+                    .where(
+                        StudioSourceModel.purpose == StudioSourcePurpose.NOTEBOOK.value,
+                        StudioSourceModel.state == StudioSourceState.PENDING.value,
+                        ~active_scope,
+                        or_(
+                            StudioSourceModel.next_attempt_at.is_(None),
+                            StudioSourceModel.next_attempt_at <= now.isoformat(),
+                        ),
+                    )
+                    .order_by(StudioSourceModel.created_at, StudioSourceModel.id)
+                    .limit(1)
+                )
+                if model is None:
+                    return None
+                result = session.execute(
+                    update(StudioSourceModel)
+                    .where(
+                        StudioSourceModel.id == model.id,
+                        StudioSourceModel.state == StudioSourceState.PENDING.value,
+                    )
+                    .values(
+                        state=StudioSourceState.ATTACHING.value,
+                        attempts=StudioSourceModel.attempts + 1,
+                        error=None,
+                        next_attempt_at=None,
+                    )
+                )
+                if cast(CursorResult[Any], result).rowcount != 1:
+                    return None
+                session.add(
+                    StudioSourceOperationModel(
+                        id=str(uuid4()),
+                        source_id=model.id,
+                        operation_kind="add",
+                        state="queued",
+                        subject_key=model.subject_key,
+                        exam_number=model.exam_number,
+                    )
+                )
+                session.flush()
+                session.refresh(model)
+                return self._domain(model)
+        except IntegrityError as error:
+            if _is_active_source_scope_conflict(error):
+                return None
+            raise
+
+    def claim_next_source_operation(
+        self, now: datetime | None = None
+    ) -> tuple[StudioSourceOperation, StudioSource] | None:
+        """Claim one durable external mutation; normal Studio worker owns execution."""
+        now = now or datetime.now(UTC)
         with self.database.session() as session:
-            model = session.scalar(
-                select(StudioSourceModel)
+            operation = session.scalar(
+                select(StudioSourceOperationModel)
+                .join(
+                    StudioSourceModel,
+                    StudioSourceModel.id == StudioSourceOperationModel.source_id,
+                )
                 .where(
-                    StudioSourceModel.purpose == StudioSourcePurpose.NOTEBOOK.value,
-                    StudioSourceModel.state == StudioSourceState.PENDING.value,
+                    StudioSourceOperationModel.state.in_(
+                        {"queued", "reconciling", "deleting"}
+                    ),
+                    or_(
+                        StudioSourceOperationModel.lease_owner.is_(None),
+                        StudioSourceOperationModel.lease_expires_at.is_(None),
+                        StudioSourceOperationModel.lease_expires_at <= now.isoformat(),
+                    ),
                     or_(
                         StudioSourceModel.next_attempt_at.is_(None),
                         StudioSourceModel.next_attempt_at <= now.isoformat(),
                     ),
                 )
-                .order_by(StudioSourceModel.created_at, StudioSourceModel.id)
+                .order_by(StudioSourceOperationModel.created_at, StudioSourceOperationModel.id)
                 .limit(1)
             )
-            if model is None:
+            if operation is None:
                 return None
+            claimed_state = operation.state
             result = session.execute(
-                update(StudioSourceModel)
+                update(StudioSourceOperationModel)
                 .where(
-                    StudioSourceModel.id == model.id,
-                    StudioSourceModel.state == StudioSourceState.PENDING.value,
+                    StudioSourceOperationModel.id == operation.id,
+                    StudioSourceOperationModel.state == claimed_state,
+                    or_(
+                        StudioSourceOperationModel.lease_owner.is_(None),
+                        StudioSourceOperationModel.lease_expires_at.is_(None),
+                        StudioSourceOperationModel.lease_expires_at <= now.isoformat(),
+                    ),
                 )
                 .values(
-                    state=StudioSourceState.ATTACHING.value,
-                    attempts=StudioSourceModel.attempts + 1,
-                    error=None,
-                    next_attempt_at=None,
+                    lease_owner=self._operation_owner,
+                    lease_expires_at=(now + self._operation_lease).isoformat(),
+                    attempts=StudioSourceOperationModel.attempts + 1,
                 )
             )
             if cast(CursorResult[Any], result).rowcount != 1:
                 return None
+            session.refresh(operation)
+            source = session.get(StudioSourceModel, operation.source_id)
+            if source is None:
+                operation.state = "failed"
+                operation.error = "Studio source was removed before operation execution"
+                operation.lease_owner = None
+                operation.lease_expires_at = None
+                return None
+            if operation.operation_kind == "delete":
+                operation.state = "deleting"
+                source.state = StudioSourceState.DELETING.value
+            elif operation.state == "queued":
+                # Baseline acquisition follows; no remote add can happen while queued.
+                source.state = StudioSourceState.ATTACHING.value
+            source.next_attempt_at = None
             session.flush()
-            session.refresh(model)
-            return self._domain(model)
+            return self._operation_domain(operation), self._domain(source)
+
+    def ensure_import_source_attachment(
+        self,
+        run_id: str,
+        source_id: str,
+    ) -> StudioSourceOperation | None:
+        """Persist a local-import add intent before any NotebookLM effect.
+
+        The source row is the canonical remote binding shared by later import
+        runs.  The run-source row remains the immutable provenance link for the
+        individual run.  Keeping both means an interruption after the remote
+        add can reconcile through the operation journal without repeating it,
+        while a later source deletion uses the ordinary durable delete saga.
+        """
+        try:
+            with self.database.session() as session:
+                binding = session.scalar(
+                    select(StudioImportRunSourceModel).where(
+                        StudioImportRunSourceModel.run_id == run_id,
+                        StudioImportRunSourceModel.source_id == source_id,
+                    )
+                )
+                run = session.get(StudioRunModel, run_id)
+                source = session.get(StudioSourceModel, source_id)
+                if binding is None or run is None or source is None:
+                    raise KeyError((run_id, source_id))
+                if (
+                    source.purpose != StudioSourcePurpose.LOCAL_IMPORT.value
+                    or not binding.attach_to_notebook
+                    or binding.source_role
+                    not in {
+                        ImportSourceRole.SUPPORTING_REFERENCE.value,
+                        ImportSourceRole.COMBINED.value,
+                    }
+                    or source.subject_key != run.subject_key
+                    or source.exam_number != run.exam_number
+                ):
+                    raise ValueError("import source is not eligible for this NotebookLM scope")
+                if source.state not in {
+                    StudioSourceState.READY.value,
+                    StudioSourceState.ATTACHING.value,
+                }:
+                    raise ValueError(
+                        "import source is no longer available for NotebookLM attachment"
+                    )
+                if bool(source.remote_notebook_id) != bool(source.remote_source_id):
+                    raise ValueError("canonical NotebookLM source binding is incomplete")
+                if source.remote_notebook_id and source.remote_source_id:
+                    binding.remote_notebook_id = source.remote_notebook_id
+                    binding.remote_source_id = source.remote_source_id
+                    return None
+
+                operation = session.scalar(
+                    select(StudioSourceOperationModel)
+                    .where(
+                        StudioSourceOperationModel.source_id == source_id,
+                        StudioSourceOperationModel.operation_kind == "add",
+                        StudioSourceOperationModel.state.in_(
+                            {"queued", "executing", "reconciling"}
+                        ),
+                    )
+                    .order_by(
+                        StudioSourceOperationModel.created_at.desc(),
+                        StudioSourceOperationModel.id.desc(),
+                    )
+                    .limit(1)
+                )
+                if operation is None:
+                    operation = StudioSourceOperationModel(
+                        id=str(uuid4()),
+                        source_id=source_id,
+                        operation_kind="add",
+                        state="queued",
+                        subject_key=source.subject_key,
+                        exam_number=source.exam_number,
+                    )
+                    session.add(operation)
+                source.state = StudioSourceState.ATTACHING.value
+                source.next_attempt_at = None
+                source.error = None
+                session.flush()
+                return self._operation_domain(operation)
+        except IntegrityError as error:
+            if _is_active_source_scope_conflict(error):
+                raise NotebookMutationBusy(
+                    "Notebook already has a pending source mutation"
+                ) from error
+            raise
+
+    def claim_source_operation(
+        self,
+        operation_id: str,
+        now: datetime | None = None,
+    ) -> tuple[StudioSourceOperation, StudioSource] | None:
+        """Claim a known queued/reconciling operation with the normal CAS lease."""
+        now = now or datetime.now(UTC)
+        with self.database.session() as session:
+            operation = session.get(StudioSourceOperationModel, operation_id)
+            if operation is None or operation.state not in {"queued", "reconciling"}:
+                return None
+            claimed_state = operation.state
+            result = session.execute(
+                update(StudioSourceOperationModel)
+                .where(
+                    StudioSourceOperationModel.id == operation_id,
+                    StudioSourceOperationModel.state == claimed_state,
+                    or_(
+                        StudioSourceOperationModel.lease_owner.is_(None),
+                        StudioSourceOperationModel.lease_expires_at.is_(None),
+                        StudioSourceOperationModel.lease_expires_at <= now.isoformat(),
+                    ),
+                )
+                .values(
+                    lease_owner=self._operation_owner,
+                    lease_expires_at=(now + self._operation_lease).isoformat(),
+                    attempts=StudioSourceOperationModel.attempts + 1,
+                )
+            )
+            if cast(CursorResult[Any], result).rowcount != 1:
+                return None
+            session.refresh(operation)
+            source = session.get(StudioSourceModel, operation.source_id)
+            if source is None:
+                operation.state = "failed"
+                operation.error = "Studio source was removed before operation execution"
+                operation.lease_owner = None
+                operation.lease_expires_at = None
+                return None
+            source.state = StudioSourceState.ATTACHING.value
+            source.next_attempt_at = None
+            session.flush()
+            return self._operation_domain(operation), self._domain(source)
+
+    def record_attach_baseline(
+        self, operation_id: str, notebook_id: str, baseline_remote_ids: set[str]
+    ) -> None:
+        try:
+            with self.database.session() as session:
+                operation = session.get(StudioSourceOperationModel, operation_id)
+                if operation is None or operation.operation_kind != "add":
+                    raise KeyError(operation_id)
+                if operation.lease_owner != self._operation_owner:
+                    raise ValueError("durable source operation lease was lost")
+                operation.notebook_id = notebook_id
+                operation.baseline_remote_ids_json = json.dumps(
+                    sorted(baseline_remote_ids)
+                )
+                operation.state = "executing"
+                operation.error = None
+                operation.lease_owner = None
+                operation.lease_expires_at = None
+                session.flush()
+        except IntegrityError as error:
+            if _is_active_notebook_conflict(error):
+                raise NotebookMutationBusy(
+                    "Notebook already has a pending source mutation"
+                ) from error
+            raise
+
+    def defer_attach_for_notebook(self, operation_id: str) -> None:
+        """Release a pre-effect claim without consuming a remote attempt."""
+        with self.database.session() as session:
+            operation = session.get(StudioSourceOperationModel, operation_id)
+            if operation is None or operation.operation_kind != "add":
+                raise KeyError(operation_id)
+            source = session.get(StudioSourceModel, operation.source_id)
+            if source is None:
+                raise KeyError(operation.source_id)
+            operation.state = "queued"
+            operation.notebook_id = None
+            operation.baseline_remote_ids_json = "[]"
+            operation.attempts = max(0, operation.attempts - 1)
+            operation.lease_owner = None
+            operation.lease_expires_at = None
+            operation.error = None
+            source.state = StudioSourceState.ATTACHING.value
+            source.next_attempt_at = (
+                datetime.now(UTC) + timedelta(seconds=5)
+            ).isoformat()
+            source.error = None
+
+    def defer_source_operation_for_scope(self, operation_id: str) -> None:
+        """Release a busy shared scope without consuming a remote attempt."""
+        with self.database.session() as session:
+            operation = session.get(StudioSourceOperationModel, operation_id)
+            if operation is None:
+                raise KeyError(operation_id)
+            source = session.get(StudioSourceModel, operation.source_id)
+            if source is None:
+                raise KeyError(operation.source_id)
+            operation.attempts = max(0, operation.attempts - 1)
+            operation.lease_owner = None
+            operation.lease_expires_at = None
+            source.next_attempt_at = (
+                datetime.now(UTC) + timedelta(seconds=5)
+            ).isoformat()
+
+    def mark_attach_reconciling(
+        self,
+        operation_id: str,
+        diagnostic_source: str,
+        error: str,
+        *,
+        during_reconciliation: bool = False,
+    ) -> None:
+        """Preserve an ambiguous add for list-and-delta reconciliation."""
+        with self.database.session() as session:
+            operation = session.get(StudioSourceOperationModel, operation_id)
+            if operation is None or operation.operation_kind != "add":
+                raise KeyError(operation_id)
+            operation.state = "reconciling"
+            operation.diagnostic_source = diagnostic_source
+            operation.error = error[:1000]
+            operation.lease_owner = None
+            operation.lease_expires_at = None
+            source = session.get(StudioSourceModel, operation.source_id)
+            if source is None:
+                raise KeyError(operation.source_id)
+            source.diagnostic_source = diagnostic_source
+            source.error = error[:1000]
+            if during_reconciliation and operation.attempts >= 3:
+                operation.state = "needs_review"
+                operation.error = (
+                    "remote add outcome could not be reconciled; manual review is required"
+                )
+                source.state = StudioSourceState.NEEDS_REVIEW.value
+                source.next_attempt_at = None
+                source.error = operation.error
+            else:
+                source.next_attempt_at = self._source_operation_retry_at(operation.attempts)
+
+    def fail_attach_preparation(
+        self,
+        operation_id: str,
+        diagnostic_source: str,
+        error: str,
+        *,
+        retry: bool,
+    ) -> None:
+        """Handle a failure known to occur before the remote add was attempted."""
+        with self.database.session() as session:
+            operation = session.get(StudioSourceOperationModel, operation_id)
+            if operation is None or operation.operation_kind != "add":
+                raise KeyError(operation_id)
+            source = session.get(StudioSourceModel, operation.source_id)
+            if source is None:
+                raise KeyError(operation.source_id)
+            operation.diagnostic_source = diagnostic_source
+            operation.error = error[:1000]
+            operation.lease_owner = None
+            operation.lease_expires_at = None
+            source.diagnostic_source = diagnostic_source
+            source.error = error[:1000]
+            if retry and operation.attempts < 3:
+                operation.state = "queued"
+                source.state = StudioSourceState.ATTACHING.value
+                source.next_attempt_at = self._source_operation_retry_at(operation.attempts)
+            else:
+                operation.state = "failed"
+                source.state = StudioSourceState.FAILED.value
+                source.next_attempt_at = None
+
+    def complete_attach_operation(
+        self, operation_id: str, remote_source_id: str, *, converted: bool = False,
+        payload_path: Path | None = None, import_run_id: str | None = None,
+    ) -> StudioSource:
+        with self.database.session() as session:
+            operation = session.get(StudioSourceOperationModel, operation_id)
+            if operation is None or operation.operation_kind != "add" or not operation.notebook_id:
+                raise KeyError(operation_id)
+            source = session.get(StudioSourceModel, operation.source_id)
+            if source is None:
+                raise KeyError(operation.source_id)
+            source.state = (
+                StudioSourceState.READY.value
+                if source.purpose == StudioSourcePurpose.LOCAL_IMPORT.value
+                else StudioSourceState.ATTACHED.value
+            )
+            source.remote_notebook_id = operation.notebook_id
+            source.remote_source_id = remote_source_id
+            source.converted_from_pptx = converted
+            if payload_path is not None:
+                source.payload_path = str(payload_path)
+            source.next_attempt_at = None
+            operation.remote_source_id = remote_source_id
+            operation.state = "completed"
+            operation.error = None
+            operation.lease_owner = None
+            operation.lease_expires_at = None
+            if import_run_id is not None:
+                binding = session.scalar(
+                    select(StudioImportRunSourceModel).where(
+                        StudioImportRunSourceModel.run_id == import_run_id,
+                        StudioImportRunSourceModel.source_id == source.id,
+                    )
+                )
+                if binding is None or not binding.attach_to_notebook:
+                    raise KeyError((import_run_id, source.id))
+                binding.remote_notebook_id = operation.notebook_id
+                binding.remote_source_id = remote_source_id
+            session.flush()
+            return self._domain(source)
+
+    def reconcile_attach_operation(
+        self,
+        operation_id: str,
+        remote_ids: set[str],
+        *,
+        import_run_id: str | None = None,
+    ) -> str:
+        with self.database.session() as session:
+            operation = session.get(StudioSourceOperationModel, operation_id)
+            if operation is None or operation.operation_kind != "add":
+                raise KeyError(operation_id)
+            source = session.get(StudioSourceModel, operation.source_id)
+            if source is None:
+                raise KeyError(operation.source_id)
+            baseline = set(json.loads(operation.baseline_remote_ids_json))
+            delta = remote_ids - baseline
+            operation.lease_owner = None
+            operation.lease_expires_at = None
+            if len(delta) == 1:
+                remote_id = next(iter(delta))
+                source.state = (
+                    StudioSourceState.READY.value
+                    if source.purpose == StudioSourcePurpose.LOCAL_IMPORT.value
+                    else StudioSourceState.ATTACHED.value
+                )
+                source.remote_notebook_id = operation.notebook_id
+                source.remote_source_id = remote_id
+                source.next_attempt_at = None
+                operation.remote_source_id = remote_id
+                operation.state = "completed"
+                operation.error = None
+                if import_run_id is not None:
+                    binding = session.scalar(
+                        select(StudioImportRunSourceModel).where(
+                            StudioImportRunSourceModel.run_id == import_run_id,
+                            StudioImportRunSourceModel.source_id == source.id,
+                        )
+                    )
+                    if binding is None or not binding.attach_to_notebook:
+                        raise KeyError((import_run_id, source.id))
+                    binding.remote_notebook_id = operation.notebook_id
+                    binding.remote_source_id = remote_id
+                return "adopted"
+            if not delta:
+                if operation.attempts < 3:
+                    source.state = StudioSourceState.ATTACHING.value
+                    operation.state = "queued"
+                    operation.notebook_id = None
+                    operation.baseline_remote_ids_json = "[]"
+                    operation.error = None
+                    source.next_attempt_at = self._source_operation_retry_at(operation.attempts)
+                    return "retry"
+                source.state = StudioSourceState.FAILED.value
+                source.diagnostic_source = operation.diagnostic_source
+                source.error = "NotebookLM source add did not produce a remote source"
+                operation.state = "failed"
+                operation.error = source.error
+                source.next_attempt_at = None
+                return "failed"
+            source.state = StudioSourceState.NEEDS_REVIEW.value
+            source.next_attempt_at = None
+            operation.state = "needs_review"
+            operation.error = "ambiguous remote source delta; manual reconciliation is required"
+            return "needs_review"
+
+    def retry_delete_operation(
+        self,
+        operation_id: str,
+        diagnostic_source: str,
+        error: str,
+    ) -> None:
+        with self.database.session() as session:
+            operation = session.get(StudioSourceOperationModel, operation_id)
+            if operation is None or operation.operation_kind != "delete":
+                raise KeyError(operation_id)
+            operation.state = "deleting"
+            operation.diagnostic_source = diagnostic_source
+            operation.error = error[:1000]
+            operation.lease_owner = None
+            operation.lease_expires_at = None
+            source = session.get(StudioSourceModel, operation.source_id)
+            if source is None:
+                raise KeyError(operation.source_id)
+            source.diagnostic_source = diagnostic_source
+            source.error = error[:1000]
+            if operation.attempts < 3:
+                source.next_attempt_at = self._source_operation_retry_at(operation.attempts)
+            else:
+                operation.state = "needs_review"
+                operation.error = "remote delete could not be confirmed; manual review is required"
+                source.state = StudioSourceState.NEEDS_REVIEW.value
+                source.next_attempt_at = None
+                source.error = operation.error
+
+    def queue_source_delete(self, source_id: str) -> StudioSource:
+        with self.database.session() as session:
+            source = session.get(StudioSourceModel, source_id)
+            if source is None:
+                raise KeyError(source_id)
+            if source.state == StudioSourceState.DELETED.value:
+                return self._domain(source)
+            ownership_predicates = [
+                StudioSourceOperationModel.source_id == source_id,
+            ]
+            if source.remote_notebook_id:
+                ownership_predicates.append(
+                    StudioSourceOperationModel.notebook_id
+                    == source.remote_notebook_id
+                )
+            existing = session.scalar(
+                select(StudioSourceOperationModel).where(
+                    StudioSourceOperationModel.state.in_(
+                        {
+                            "queued",
+                            "executing",
+                            "reconciling",
+                            "deleting",
+                            "needs_review",
+                        }
+                    ),
+                    or_(*ownership_predicates),
+                )
+            )
+            if existing is not None:
+                raise ValueError("Notebook already has a pending source mutation")
+            if not source.remote_notebook_id or not source.remote_source_id:
+                source.state = StudioSourceState.DELETED.value
+                return self._domain(source)
+            source.state = StudioSourceState.DELETING.value
+            session.add(StudioSourceOperationModel(
+                id=str(uuid4()), source_id=source_id, operation_kind="delete",
+                state="deleting", notebook_id=source.remote_notebook_id,
+                remote_source_id=source.remote_source_id,
+                subject_key=source.subject_key, exam_number=source.exam_number,
+            ))
+            try:
+                session.flush()
+            except IntegrityError as error:
+                raise ValueError("Notebook already has a pending source mutation") from error
+            return self._domain(source)
+
+    def complete_delete_operation(self, operation_id: str) -> StudioSource:
+        with self.database.session() as session:
+            operation = session.get(StudioSourceOperationModel, operation_id)
+            if operation is None or operation.operation_kind != "delete":
+                raise KeyError(operation_id)
+            source = session.get(StudioSourceModel, operation.source_id)
+            if source is None:
+                raise KeyError(operation.source_id)
+            source.state = StudioSourceState.DELETED.value
+            source.next_attempt_at = None
+            source.remote_source_id = None
+            operation.state = "completed"
+            operation.error = None
+            operation.lease_owner = None
+            operation.lease_expires_at = None
+            session.flush()
+            return self._domain(source)
 
     def complete(
         self,
@@ -293,13 +899,37 @@ class StudioRepository:
 
     def recover_interrupted_jobs(self) -> int:
         with self.database.session() as session:
+            active_operations = session.scalars(
+                select(StudioSourceOperationModel).where(
+                    StudioSourceOperationModel.state.in_(
+                        {"queued", "executing", "reconciling", "deleting"}
+                    )
+                )
+            ).all()
+            interrupted_operations = [
+                operation
+                for operation in active_operations
+                if operation.state == "executing"
+            ]
+            for operation in interrupted_operations:
+                operation.state = (
+                    "reconciling" if operation.operation_kind == "add" else "deleting"
+                )
+            for operation in active_operations:
+                operation.lease_owner = None
+                operation.lease_expires_at = None
             source_models = session.scalars(
                 select(StudioSourceModel).where(
                     StudioSourceModel.state == StudioSourceState.ATTACHING.value
                 )
             ).all()
+            operation_source_ids = {
+                operation.source_id for operation in active_operations
+            }
             for source_model in source_models:
-                source_model.state = StudioSourceState.PENDING.value
+                if source_model.id not in operation_source_ids:
+                    source_model.state = StudioSourceState.NEEDS_REVIEW.value
+                    source_model.error = "interrupted legacy source attach requires review"
             run_models = session.scalars(
                 select(StudioRunModel).where(StudioRunModel.state == StudioRunState.RUNNING.value)
             ).all()
@@ -307,7 +937,7 @@ class StudioRepository:
                 run_model.state = StudioRunState.QUEUED.value
                 run_model.error = "requeued after an interrupted Hub process"
                 run_model.next_attempt_at = None
-            return len(source_models) + len(run_models)
+            return len(source_models) + len(interrupted_operations) + len(run_models)
 
     def queue_run(
         self,
@@ -1284,7 +1914,30 @@ class StudioRepository:
             model.snapshot_sha256,
             model.media_type,
             model.final_url,
+            ImportSourceRole(model.import_role) if model.import_role else None,
+            model.import_attach_to_notebook,
         )
+
+    @staticmethod
+    def _operation_domain(model: StudioSourceOperationModel) -> StudioSourceOperation:
+        return StudioSourceOperation(
+            model.id,
+            model.source_id,
+            model.operation_kind,
+            model.state,
+            model.notebook_id,
+            model.remote_source_id,
+            frozenset(json.loads(model.baseline_remote_ids_json)),
+            model.attempts,
+            model.diagnostic_source,
+            model.error,
+        )
+
+    @staticmethod
+    def _source_operation_retry_at(attempts: int) -> str:
+        return (
+            datetime.now(UTC) + timedelta(seconds=min(30, 5 * (2 ** max(0, attempts - 1))))
+        ).isoformat()
 
     @staticmethod
     def _run_domain(

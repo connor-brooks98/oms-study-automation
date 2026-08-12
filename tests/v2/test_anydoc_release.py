@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import tomllib
 import zipfile
 from pathlib import Path
@@ -76,6 +77,13 @@ def _release_builder() -> ModuleType:
     return module
 
 
+def _head() -> str:
+    return subprocess.check_output(
+        ["git", "-C", ROOT, "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+
+
 def test_release_metadata_pins_document_processors_and_keeps_python_312_range() -> None:
     with (ROOT / "pyproject.toml").open("rb") as stream:
         project = tomllib.load(stream)["project"]
@@ -97,7 +105,12 @@ def test_release_metadata_pins_document_processors_and_keeps_python_312_range() 
 
 
 def test_source_release_contains_quiz_builder_runtime_and_web_assets(tmp_path: Path) -> None:
-    _, source = _release_builder().build_releases(ROOT, tmp_path, "acceptance")
+    _, source = _release_builder().build_releases(
+        ROOT,
+        tmp_path,
+        "acceptance",
+        _head(),
+    )
     with zipfile.ZipFile(source) as archive:
         names = set(archive.namelist())
 
@@ -116,7 +129,12 @@ def test_source_release_contains_quiz_builder_runtime_and_web_assets(tmp_path: P
 
 
 def test_both_release_archives_include_the_complete_task_1_13_inventory(tmp_path: Path) -> None:
-    hotfix, source = _release_builder().build_releases(ROOT, tmp_path, "inventory")
+    hotfix, source = _release_builder().build_releases(
+        ROOT,
+        tmp_path,
+        "inventory",
+        _head(),
+    )
 
     for archive_path in (hotfix, source):
         with zipfile.ZipFile(archive_path) as archive:

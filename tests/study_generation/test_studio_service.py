@@ -67,6 +67,21 @@ def test_import_file_is_ready_locally_without_notebook_attachment(tmp_path: Path
     assert service.repository.claim_next() is None
 
 
+def test_import_source_persists_safe_selection_defaults(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    source = service.add_import_text(
+        "Neuro", 1, "Reference", "facts", role=ImportSourceRole.SUPPORTING_REFERENCE,
+        attach_to_notebook=True,
+    )
+    assert source.import_role is ImportSourceRole.SUPPORTING_REFERENCE
+    assert source.import_attach_to_notebook is True
+    with pytest.raises(ValueError, match="only Supporting Reference or Combined"):
+        service.add_import_text(
+            "Neuro", 1, "Questions", "facts", role=ImportSourceRole.QUESTIONS,
+            attach_to_notebook=True,
+        )
+
+
 def test_import_url_snapshots_before_becoming_ready(tmp_path: Path) -> None:
     snapshotter = Snapshotter(tmp_path / "snapshots")
     service = _service(tmp_path, snapshotter=snapshotter)

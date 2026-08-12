@@ -39,10 +39,11 @@ class Settings(BaseSettings):
     timezone: str = "America/New_York"
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = Field(default=8787, ge=1024, le=65535)
-    # Set by the Windows launcher for diagnostics only; neither field changes
+    # Set by the Windows launcher for diagnostics only; these fields do not change
     # bind, auth, storage, or any other deployment behavior.
     deployment_root: Path | None = None
     build_revision: str | None = Field(default=None, max_length=128)
+    build_tree: str | None = Field(default=None, max_length=128)
     public_hostname: str | None = None
     cloudflare_access_issuer: str | None = None
     cloudflare_access_audience: str | None = None

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, replace
 from datetime import timedelta
 from pathlib import Path
-from typing import Protocol, TypedDict
+from typing import Protocol, TypedDict, cast
 
 from oms_hub.db import is_sqlite_busy
 from oms_hub.document_processing.domain import (
@@ -43,7 +45,7 @@ from oms_hub.study_generation.studio_domain import (
     StudioSource,
     StudioSourceState,
 )
-from oms_hub.study_generation.studio_repository import StudioRepository
+from oms_hub.study_generation.studio_repository import NotebookMutationBusy, StudioRepository
 
 _DOWNSTREAM_PREFIXES = {
     StudioRunStage.PARSE: ("extract", "pair", "answered", "normalized"),
@@ -69,23 +71,34 @@ class AnswerResolver(Protocol):
 
 
 class NotebookAttacher(Protocol):
-    def attach_studio_source(
+    def prepare_studio_source_add(
         self,
         subject: str,
         exam_number: int,
+    ) -> tuple[str, frozenset[str]]: ...
+
+    def add_studio_source_to_notebook(
+        self,
+        notebook_id: str,
         source_type: str,
         title: str,
         *,
         path: Path | None = None,
         text: str | None = None,
         url: str | None = None,
-    ) -> tuple[str, str]: ...
+    ) -> str: ...
+
+    def list_studio_source_ids(self, notebook_id: str) -> frozenset[str]: ...
 
 
 class AttachmentArguments(TypedDict, total=False):
     path: Path
     text: str
     url: str
+
+
+class _ImportAttachmentPending(RuntimeError):
+    """A durable remote effect must be reconciled before import can continue."""
 
 
 def stage_signature(
@@ -178,6 +191,13 @@ class QuizImportWorker:
                 retry=False,
                 raw_response="\n".join(error.raw_responses),
             )
+        except _ImportAttachmentPending as error:
+            self.repository.retry_run(
+                run.id,
+                DiagnosticSource.STUDY_HUB.value,
+                str(error),
+                timedelta(seconds=1),
+            )
         except NotebookGatewayError as error:
             self._record_failure(run, error.source.value, str(error), retry=error.retryable)
         except LLMRequestError as error:
@@ -207,7 +227,12 @@ class QuizImportWorker:
             source = self.repository.get(binding.source_id)
             if (
                 source is None
-                or source.state is not StudioSourceState.READY
+                or source.state
+                not in {
+                    StudioSourceState.READY,
+                    StudioSourceState.ATTACHING,
+                    StudioSourceState.ATTACHED,
+                }
                 or source.payload_path is None
                 or source.snapshot_sha256 is None
                 or source.media_type is None
@@ -433,22 +458,155 @@ class QuizImportWorker:
             if binding.remote_notebook_id and binding.remote_source_id:
                 remote_ids.append(binding.remote_source_id)
                 continue
-            assert source.payload_path is not None
-            arguments = _attachment_arguments(source)
-            notebook_id, remote_id = self.notebook.attach_studio_source(
-                run.subject,
-                run.exam_number,
-                source.source_type.value,
-                source.title,
-                **arguments,
-            )
-            self.repository.save_import_source_binding(run.id, source.id, notebook_id, remote_id)
+            remote_id = self._attach_supporting_source(run, source)
             remote_ids.append(remote_id)
         if not remote_ids:
             raise ValueError("missing answers require an attached supporting reference")
         if len(remote_ids) != len(set(remote_ids)):
             raise ValueError("NotebookLM supporting source bindings are not distinct")
         return tuple(remote_ids)
+
+    def _attach_supporting_source(self, run: StudioRun, source: StudioSource) -> str:
+        """Drive one durable add, reconciling an interrupted effect before retry."""
+        for _attempt in range(2):
+            try:
+                operation = self.repository.ensure_import_source_attachment(run.id, source.id)
+            except NotebookMutationBusy as error:
+                raise _ImportAttachmentPending(str(error)) from error
+            if operation is None:
+                binding = next(
+                    item
+                    for item in self.repository.import_sources(run.id)
+                    if item.source_id == source.id
+                )
+                if not binding.remote_source_id:
+                    raise ValueError("durable NotebookLM import binding is incomplete")
+                return binding.remote_source_id
+
+            claimed = self.repository.claim_source_operation(operation.id)
+            if claimed is None:
+                raise _ImportAttachmentPending(
+                    "NotebookLM source attachment is owned by another worker"
+                )
+            operation, claimed_source = claimed
+            if operation.state == "reconciling":
+                try:
+                    with self._notebook_scope(run, operation.id):
+                        if not operation.notebook_id:
+                            raise ValueError("durable source operation is missing its notebook")
+                        remote_ids = self.notebook.list_studio_source_ids(
+                            operation.notebook_id
+                        )
+                    outcome = self.repository.reconcile_attach_operation(
+                        operation.id,
+                        set(remote_ids),
+                        import_run_id=run.id,
+                    )
+                except NotebookGatewayError as error:
+                    self.repository.mark_attach_reconciling(
+                        operation.id,
+                        error.source.value,
+                        str(error),
+                        during_reconciliation=True,
+                    )
+                    raise _ImportAttachmentPending(str(error)) from error
+                except Exception as error:
+                    self.repository.mark_attach_reconciling(
+                        operation.id,
+                        DiagnosticSource.STUDY_HUB.value,
+                        str(error),
+                        during_reconciliation=True,
+                    )
+                    raise _ImportAttachmentPending(str(error)) from error
+                if outcome == "adopted":
+                    binding = next(
+                        item
+                        for item in self.repository.import_sources(run.id)
+                        if item.source_id == source.id
+                    )
+                    assert binding.remote_source_id is not None
+                    return binding.remote_source_id
+                if outcome == "retry":
+                    continue
+                raise ValueError(
+                    "NotebookLM source attachment requires manual reconciliation"
+                )
+
+            remote_effect_started = False
+            try:
+                arguments = _attachment_arguments(claimed_source)
+                with self._notebook_scope(run, operation.id):
+                    notebook_id, baseline = self.notebook.prepare_studio_source_add(
+                        run.subject,
+                        run.exam_number,
+                    )
+                    self.repository.record_attach_baseline(
+                        operation.id,
+                        notebook_id,
+                        set(baseline),
+                    )
+                    remote_effect_started = True
+                    remote_id = self.notebook.add_studio_source_to_notebook(
+                        notebook_id,
+                        claimed_source.source_type.value,
+                        claimed_source.title,
+                        **arguments,
+                    )
+                self.repository.complete_attach_operation(
+                    operation.id,
+                    remote_id,
+                    import_run_id=run.id,
+                )
+                return remote_id
+            except NotebookMutationBusy as error:
+                self.repository.defer_attach_for_notebook(operation.id)
+                raise _ImportAttachmentPending(str(error)) from error
+            except NotebookGatewayError as error:
+                if remote_effect_started:
+                    self.repository.mark_attach_reconciling(
+                        operation.id,
+                        error.source.value,
+                        str(error),
+                    )
+                    raise _ImportAttachmentPending(str(error)) from error
+                self.repository.fail_attach_preparation(
+                    operation.id,
+                    error.source.value,
+                    str(error),
+                    retry=error.retryable,
+                )
+                raise
+            except Exception as error:
+                if remote_effect_started:
+                    self.repository.mark_attach_reconciling(
+                        operation.id,
+                        DiagnosticSource.STUDY_HUB.value,
+                        str(error),
+                    )
+                    raise _ImportAttachmentPending(str(error)) from error
+                self.repository.fail_attach_preparation(
+                    operation.id,
+                    DiagnosticSource.STUDY_HUB.value,
+                    str(error),
+                    retry=is_sqlite_busy(error),
+                )
+                raise
+        raise _ImportAttachmentPending(
+            "NotebookLM source attachment is queued after reconciliation"
+        )
+
+    def _notebook_scope(
+        self,
+        run: StudioRun,
+        operation_id: str,
+    ) -> AbstractContextManager[None]:
+        scope = getattr(self.notebook, "mutation_scope", None)
+        if not callable(scope):
+            return nullcontext()
+        return cast(
+            Callable[[str, int, str, str], AbstractContextManager[None]],
+            scope,
+        )(run.subject, run.exam_number, "studio", operation_id)
 
     def _supporting_binding_identities(self, run_id: str) -> tuple[str, ...]:
         bindings = self.repository.import_sources(run_id)

@@ -16,7 +16,10 @@
     <article class="card sh-card review-card">
       <div>
         <p class="mono-label">{{ revision.kind.value }} · Revision {{ revision.id }}</p>
-        <h3>Lecture {{ revision.lecture_id }}</h3>
+        <h3>{{ proposed_revision_labels.get(revision.id, "Lecture unavailable") }}</h3>
+        {% if revision.state == "promoting" %}
+        <p class="sh-field-help">Promotion was interrupted. Resume verified recovery before choosing another action.</p>
+        {% endif %}
       </div>
       <div class="review-actions">
         {% if revision.kind.value == "slides" %}
@@ -25,11 +28,13 @@
         <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ revision.id }}/cleaned">Preview transcript</a>
         {% endif %}
         <form method="post" action="/review/replacements/{{ revision.id }}/approve">
-          <button class="button primary sh-btn sh-btn--primary" type="submit">Approve replacement</button>
+          <button class="button primary sh-btn sh-btn--primary" type="submit">{% if revision.state == "promoting" %}Resume recovery{% else %}Approve replacement{% endif %}</button>
         </form>
+        {% if revision.state != "promoting" %}
         <form method="post" action="/review/replacements/{{ revision.id }}/keep">
           <button class="button secondary sh-btn sh-btn--secondary" type="submit">Keep current file</button>
         </form>
+        {% endif %}
       </div>
     </article>
     {% else %}

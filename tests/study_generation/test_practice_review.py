@@ -14,7 +14,7 @@ from oms_hub.document_processing.domain import (
     SegmentKind,
 )
 from oms_hub.files.atomic import sha256_file
-from oms_hub.models import StudioRunModel
+from oms_hub.models import PublishedQuizModel, StudioRunModel
 from oms_hub.study_generation.domain import QuizImageRef
 from oms_hub.study_generation.practice_contracts import (
     AssetCitation,
@@ -148,6 +148,43 @@ def test_generated_answer_blocks_until_same_question_is_verified(tmp_path: Path)
         service.to_native_quiz(run_id)
     service.verify_generated_answer(run_id, "q1")
     assert service.blockers(run_id) == ()
+
+
+def test_claimed_run_reserves_scope_against_reviewed_direct_import_publish(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    service.store("run-1", (_draft("q1", generated=False),))
+    database = service.repository.database
+    with database.session() as session:
+        session.add(
+            StudioRunModel(
+                id="claimed-chat-run",
+                subject="Neuro",
+                subject_key="neuro",
+                exam_number=1,
+                destination_subject="Neuro",
+                destination_subject_key="neuro",
+                destination_exam_number=1,
+                label="Imported practice",
+                label_key="imported practice",
+                prompt="Remote work",
+                state="running",
+                stage="chat",
+            )
+        )
+    publisher = GenerationRepository(database, practice_review=service)
+
+    with pytest.raises(
+        ValueError,
+        match="another active Studio run owns this publication scope",
+    ):
+        publisher.publish_reviewed_studio_quiz("run-1")
+
+    with database.session() as session:
+        reviewed = session.get(StudioRunModel, "run-1")
+        assert reviewed is not None and reviewed.state == "awaiting_review"
+        assert session.query(PublishedQuizModel).count() == 0
 
 
 def test_missing_answer_is_not_mislabeled_as_ai_generated(tmp_path: Path) -> None:

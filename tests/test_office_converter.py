@@ -1,5 +1,6 @@
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from types import ModuleType
@@ -7,8 +8,11 @@ from types import ModuleType
 import pytest
 
 import oms_hub.files.office as office_module
+from oms_hub.app import create_app
+from oms_hub.config import Settings
 from oms_hub.files import office_worker
 from oms_hub.files.office import (
+    OfficeAdmissionTimeoutError,
     OfficeConversionError,
     OfficeTimeoutError,
     SerialOfficeConverter,
@@ -308,7 +312,7 @@ def test_timeout_kills_owned_office_tree_cleans_partial_and_releases_lock(
     source = tmp_path / "lecture.pptx"
     destination = tmp_path / "lecture.pdf"
     source.write_bytes(b"pptx")
-    converter = SerialOfficeConverter(timeout_seconds=0.1, worker=_hang)
+    converter = SerialOfficeConverter(timeout_seconds=2, worker=_hang)
     terminated: list[int] = []
     monkeypatch.setattr(
         office_module,
@@ -435,6 +439,97 @@ def test_pipe_allocation_failure_releases_global_lock(tmp_path, monkeypatch):
     monkeypatch.undo()
     converter.convert(source, destination)
     assert destination.read_bytes() == b"pdf"
+
+
+def test_office_admission_waits_for_an_in_process_conversion_slot(tmp_path):
+    source = tmp_path / "lecture.pptx"
+    destination = tmp_path / "lecture.pdf"
+    source.write_bytes(b"pptx")
+    admission_events: list[str] = []
+    converter = SerialOfficeConverter(
+        timeout_seconds=5,
+        worker=_succeed,
+        admission_timeout_seconds=1,
+        admission_reporter=admission_events.append,
+    )
+    assert SerialOfficeConverter._lock.acquire(blocking=False)
+    release = threading.Timer(0.05, SerialOfficeConverter._lock.release)
+    release.start()
+    try:
+        converter.convert(source, destination)
+    finally:
+        release.join()
+    assert destination.read_bytes() == b"pdf"
+    assert admission_events == ["waiting", "admitted", "idle"]
+    assert converter.admission_state == "idle"
+
+
+def test_office_admission_timeout_is_distinct_from_conversion_failure(tmp_path):
+    source = tmp_path / "lecture.pptx"
+    destination = tmp_path / "lecture.pdf"
+    source.write_bytes(b"pptx")
+    converter = SerialOfficeConverter(
+        timeout_seconds=5,
+        worker=_succeed,
+        admission_timeout_seconds=0.01,
+    )
+    assert SerialOfficeConverter._lock.acquire(blocking=False)
+    try:
+        with pytest.raises(OfficeAdmissionTimeoutError, match="admission timed out"):
+            converter.convert(source, destination)
+    finally:
+        SerialOfficeConverter._lock.release()
+
+
+def test_production_converters_log_admission_transitions_to_durable_log(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+    )
+    app = create_app(settings)
+    slide_converter = app.state.slide_pipeline.converter
+    studio_converter = app.state.studio_worker.converter
+
+    slide_converter._report_admission("waiting")
+    slide_converter._report_admission("admitted")
+    slide_converter._report_admission("timeout")
+    slide_converter._report_admission("idle")
+    for handler in __import__("logging").getLogger("oms_hub").handlers:
+        handler.flush()
+
+    log_text = app.state.application_log_path.read_text(encoding="utf-8")
+    assert slide_converter.admission_reporter is not None
+    assert studio_converter.admission_reporter is not None
+    assert "office conversion admission surface=slides state=waiting" in log_text
+    assert "office conversion admission surface=slides state=admitted" in log_text
+    assert "office conversion admission surface=slides state=timeout" in log_text
+    assert slide_converter.admission_state == "idle"
+
+
+def test_windows_cross_process_admission_lock_uses_a_shared_lock_file(
+    tmp_path,
+    monkeypatch,
+):
+    calls: list[tuple[int, int, int]] = []
+    fake_msvcrt = ModuleType("msvcrt")
+    fake_msvcrt.LK_NBLCK = 1
+    fake_msvcrt.LK_UNLCK = 2
+
+    def locking(file_descriptor: int, mode: int, size: int) -> None:
+        calls.append((file_descriptor, mode, size))
+
+    fake_msvcrt.locking = locking
+    monkeypatch.setattr(office_module.sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+
+    lock = office_module._WindowsOfficeLock.acquire_until(time.monotonic() + 1)
+    lock.release()
+
+    assert [mode for _descriptor, mode, _size in calls] == [1, 2]
 
 
 def test_process_start_failure_is_retryable_and_releases_global_lock(
