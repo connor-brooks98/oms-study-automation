@@ -167,6 +167,7 @@ def _dedupe_stage_fixture(
     runner.embedder = embedder
     context = SimpleNamespace(
         job=SimpleNamespace(
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
             resolved_model_config=SimpleNamespace(
                 gap_fill_s7=SimpleNamespace(provider="openai", model="fixture")
             ),

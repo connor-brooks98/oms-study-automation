@@ -159,6 +159,16 @@ from oms_hub.llm.structured import StructuredOutputError, StructuredTextService
 SourceIndexFactory = Callable[[UUID], LectureSourceIndex]
 
 
+# S6's v2 residual search is intentionally narrower than the census/deck
+# universe.  The domain/version are part of the hashed document so an audit
+# from another stage or future representation can never be mistaken for this
+# eligibility decision.
+_CARD_CENTRIC_V2_S6_SEMANTIC_ELIGIBILITY_AUDIT_VERSION = "v1"
+_CARD_CENTRIC_V2_S6_SEMANTIC_ELIGIBILITY_AUDIT_DOMAIN = (
+    "oms-study-automation:anki:card_centric_v2:s6:semantic_eligibility"
+)
+
+
 def _evidence_audit_tokens(value: str) -> tuple[str, ...]:
     """Normalize visible text into Unicode-aware evidence-audit word tokens."""
     tokens: list[str] = []
@@ -1123,6 +1133,12 @@ class CurationServicesRunner:
         cards = {card.note_id: card for card in _card_records(source_payload)}
         scoped = TagScopeResult.model_validate(scope_payload["scope"])
         is_v2 = context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
+        searchable_note_ids = set(cards)
+        semantic_eligibility_audit: dict[str, Any] = {}
+        if is_v2:
+            searchable_note_ids, semantic_eligibility_audit = _card_residual_v2_semantic_audit(
+                cards
+            )
         if not targets:
             return StageProduct(
                 kind="card_centric_residual",
@@ -1131,6 +1147,7 @@ class CurationServicesRunner:
                     "classifier": None,
                     "uncovered_concept_ids": [],
                     "residual_mode": residual_mode,
+                    **semantic_eligibility_audit,
                 },
             )
         query_specs = tuple(
@@ -1140,7 +1157,7 @@ class CurationServicesRunner:
         )
         queries = tuple(query for _, query in query_specs)
         search_kwargs: dict[str, Any] = {
-            "eligible_note_ids": set(cards),
+            "eligible_note_ids": searchable_note_ids,
             "limit": 12,
         }
         if is_v2:
@@ -1239,6 +1256,7 @@ class CurationServicesRunner:
                 "classifier": classified.model_dump(mode="json"),
                 "uncovered_concept_ids": [concept.concept_id for concept in targets],
                 "residual_mode": residual_mode,
+                **semantic_eligibility_audit,
                 **(
                     {
                         "classifier_execution": _classifier_generation_parameters(
@@ -3331,6 +3349,42 @@ def _card_records(payload: dict[str, Any]) -> tuple[CardRecord, ...]:
     return cards
 
 
+def _card_residual_v2_semantic_audit(
+    cards: Mapping[int, CardRecord],
+) -> tuple[set[int], dict[str, Any]]:
+    """Partition S6's pinned source cards using the indexer's Text/Extra rule."""
+    searchable_note_ids: list[int] = []
+    blank_note_ids: list[int] = []
+    for note_id, card in sorted(cards.items()):
+        semantic_text = card.text if card.text.strip() else card.extra
+        if semantic_text.strip():
+            searchable_note_ids.append(note_id)
+        else:
+            blank_note_ids.append(note_id)
+    canonical_searchable_ids = json.dumps(
+        {
+            "domain": _CARD_CENTRIC_V2_S6_SEMANTIC_ELIGIBILITY_AUDIT_DOMAIN,
+            "searchable_note_ids": searchable_note_ids,
+            "version": _CARD_CENTRIC_V2_S6_SEMANTIC_ELIGIBILITY_AUDIT_VERSION,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return set(searchable_note_ids), {
+        "semantic_eligibility_audit_version": (
+            _CARD_CENTRIC_V2_S6_SEMANTIC_ELIGIBILITY_AUDIT_VERSION
+        ),
+        "semantic_eligibility_audit_domain": (
+            _CARD_CENTRIC_V2_S6_SEMANTIC_ELIGIBILITY_AUDIT_DOMAIN
+        ),
+        "embedding_unavailable_blank_note_ids": blank_note_ids,
+        "searchable_note_count": len(searchable_note_ids),
+        "searchable_note_ids_sha256": hashlib.sha256(
+            canonical_searchable_ids.encode("utf-8")
+        ).hexdigest(),
+    }
+
+
 def _card_census(payload: dict[str, Any]) -> SnapshotCensus:
     try:
         return SnapshotCensus.model_validate(payload["census"])
@@ -3513,6 +3567,8 @@ def _unrecovered_s4a_exclusion_note_ids(
 
 
 def _all_card_classifications(context: StageContext) -> tuple[CardClassification, ...]:
+    if context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2:
+        _validate_card_residual_v2_semantic_audit(context)
     primary = _card_classifier(context, CurationStage.CARD_CLASSIFY).results
     residual_raw = _payload(context, CurationStage.CARD_RESIDUAL).get("classifier")
     if residual_raw is None:
@@ -3525,6 +3581,63 @@ def _all_card_classifications(context: StageContext) -> tuple[CardClassification
     if len({item.note_id for item in combined}) != len(combined):
         raise PinnedInputChanged("card-centric classifiers judged one note more than once")
     return tuple(sorted(combined, key=lambda item: item.note_id))
+
+
+def _validate_card_residual_v2_semantic_audit(context: StageContext) -> None:
+    """Validate a present v2 S6 eligibility audit before downstream use.
+
+    Missing fields are tolerated for previously persisted v2 artifacts; a new
+    S6 output always carries the whole additive audit as one deterministic set.
+    """
+    payload = _payload(context, CurationStage.CARD_RESIDUAL)
+    if not isinstance(payload, dict):
+        raise PinnedInputChanged("card-centric residual semantic eligibility audit is malformed")
+    audit_fields = (
+        "semantic_eligibility_audit_version",
+        "semantic_eligibility_audit_domain",
+        "embedding_unavailable_blank_note_ids",
+        "searchable_note_count",
+        "searchable_note_ids_sha256",
+    )
+    present_fields = set(audit_fields) & set(payload)
+    if not present_fields:
+        return
+    if present_fields != set(audit_fields):
+        raise PinnedInputChanged("card-centric residual semantic eligibility audit is malformed")
+    version = payload["semantic_eligibility_audit_version"]
+    domain = payload["semantic_eligibility_audit_domain"]
+    blank_note_ids = payload["embedding_unavailable_blank_note_ids"]
+    searchable_count = payload["searchable_note_count"]
+    searchable_ids_sha256 = payload["searchable_note_ids_sha256"]
+    if (
+        type(version) is not str
+        or type(domain) is not str
+        or version != _CARD_CENTRIC_V2_S6_SEMANTIC_ELIGIBILITY_AUDIT_VERSION
+        or domain != _CARD_CENTRIC_V2_S6_SEMANTIC_ELIGIBILITY_AUDIT_DOMAIN
+        or type(searchable_count) is not int
+        or searchable_count < 0
+        or type(blank_note_ids) is not list
+        or any(type(note_id) is not int or note_id <= 0 for note_id in blank_note_ids)
+        or blank_note_ids != sorted(blank_note_ids)
+        or len(set(blank_note_ids)) != len(blank_note_ids)
+        or type(searchable_ids_sha256) is not str
+        or len(searchable_ids_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in searchable_ids_sha256)
+    ):
+        raise PinnedInputChanged("card-centric residual semantic eligibility audit is malformed")
+    cards = {
+        card.note_id: card
+        for card in _card_records(_payload(context, CurationStage.SOURCE_INDEX))
+    }
+    _, expected = _card_residual_v2_semantic_audit(cards)
+    if (
+        version != expected["semantic_eligibility_audit_version"]
+        or domain != expected["semantic_eligibility_audit_domain"]
+        or blank_note_ids != expected["embedding_unavailable_blank_note_ids"]
+        or searchable_count != expected["searchable_note_count"]
+        or searchable_ids_sha256 != expected["searchable_note_ids_sha256"]
+    ):
+        raise PinnedInputChanged("card-centric residual semantic eligibility audit changed")
 
 
 def _card_coverage_payload(context: StageContext) -> dict[str, dict[str, Any]]:
