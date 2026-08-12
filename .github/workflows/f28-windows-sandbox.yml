@@ -1,0 +1,65 @@
+name: F28 Windows sandbox
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/nonanki-f28-windows-sandbox
+
+permissions:
+  contents: read
+
+concurrency:
+  group: f28-windows-sandbox
+  cancel-in-progress: false
+
+jobs:
+  native-restart:
+    name: Windows PowerShell 5.1 and Task Scheduler
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      TARGET_REVISION: c2252a6394249d5409dc1b4033bea02b9127aaa9
+      TARGET_TREE: 262f53211dcd886582b48f678c2ed27d438f014f
+      PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - name: Check out sandbox harness
+        uses: actions/checkout@v4
+        with:
+          path: harness
+
+      - name: Check out exact F28 candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: candidate
+          ref: c2252a6394249d5409dc1b4033bea02b9127aaa9
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Execute disposable F28 native sandbox
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\f28-evidence" | Out-Null
+          Set-Content `
+            -LiteralPath "$env:RUNNER_TEMP\f28-evidence\workflow-bootstrap.txt" `
+            -Value "target=$env:TARGET_REVISION tree=$env:TARGET_TREE" `
+            -Encoding ASCII
+          & "$env:GITHUB_WORKSPACE\harness\.github\scripts\f28-windows-sandbox.ps1" `
+            -ProjectRoot "$env:GITHUB_WORKSPACE\candidate" `
+            -ExpectedRevision $env:TARGET_REVISION `
+            -ExpectedTree $env:TARGET_TREE `
+            -EvidenceRoot "$env:RUNNER_TEMP\f28-evidence"
+
+      - name: Upload complete sandbox evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: f28-windows-sandbox-${{ env.TARGET_REVISION }}
+          path: ${{ runner.temp }}\f28-evidence
+          if-no-files-found: error
+          retention-days: 14
