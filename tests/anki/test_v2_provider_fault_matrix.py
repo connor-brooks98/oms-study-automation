@@ -413,7 +413,7 @@ def test_s4b_optional_faults_degrade_the_complete_batch(
     if expected_reason is None and retryable is not None:
         with pytest.raises(type(service.fault)) as raised:
             asyncio.run(runner._card_fast_classify(context))
-        assert raised.value is service.fault
+        _assert_provider_fault_propagated(raised.value, service.fault)
         assert _is_retryable(raised.value) is retryable
         return
 
