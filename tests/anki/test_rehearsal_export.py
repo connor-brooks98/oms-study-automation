@@ -613,24 +613,43 @@ def test_powershell_wrapper_keeps_frozen_checkout_separate_and_has_refusal_contr
 
 
 def test_isolated_python_bootstrap_imports_only_the_explicit_tool_source(tmp_path: Path) -> None:
-    """Executable macOS regression for the Python half; PowerShell is native-pending."""
+    """Model the direct base-runtime bootstrap with only verified dependency paths."""
     repository = Path(__file__).parents[2].resolve()
     tool_source = (repository / "src").resolve()
     sibling = tmp_path / f"{tool_source.name}-sibling"
-    sibling.mkdir()
+    sibling_package = sibling / "oms_hub"
+    sibling_package.mkdir(parents=True)
+    (sibling_package / "__init__.py").write_text("ambient = True\n", encoding="utf-8")
+    numpy_origin = Path(np.__file__).resolve()
+    dependency_root = numpy_origin.parent.parent
+    dependency_paths = [str(dependency_root)]
+    assert dependency_paths
+    assert dependency_root.name in {"site-packages", "dist-packages"}
+    assert (dependency_root / "numpy").is_dir()
     probe = (
         "import json,pathlib,sys; source=pathlib.Path(sys.argv[1]).resolve(); "
-        "sys.path.insert(0,str(source)); import oms_hub; "
+        "dependencies=json.loads(sys.argv[2]); "
+        "assert all(pathlib.Path(path).is_absolute() and pathlib.Path(path).is_dir() "
+        "for path in dependencies); "
+        "sys.path[:0]=[str(source),*dependencies]; import oms_hub; "
         "from oms_hub.anki.rehearsal import export; "
         "print(json.dumps({'source':str(source),'package':str(pathlib.Path(oms_hub.__file__).resolve()),"
-        "'export':str(pathlib.Path(export.__file__).resolve())},sort_keys=True))"
+        "'export':str(pathlib.Path(export.__file__).resolve()),'path':sys.path},sort_keys=True))"
     )
     completed = subprocess.run(
-        [sys.executable, "-I", "-c", probe, str(tool_source)],
+        [
+            str(Path(sys._base_executable).resolve()),
+            "-I",
+            "-c",
+            probe,
+            str(tool_source),
+            json.dumps(dependency_paths),
+        ],
         cwd=sibling,
         check=True,
         capture_output=True,
         text=True,
+        env=os.environ | {"PYTHONPATH": str(sibling)},
     )
     origins = json.loads(completed.stdout)
     source_root = Path(origins["source"])
@@ -640,3 +659,4 @@ def test_isolated_python_bootstrap_imports_only_the_explicit_tool_source(tmp_pat
     assert export_origin.is_relative_to(source_root)
     assert not package_origin.is_relative_to(sibling)
     assert not export_origin.is_relative_to(sibling)
+    assert str(sibling) not in origins["path"]
