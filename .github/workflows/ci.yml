@@ -214,14 +214,31 @@ jobs:
               }
               throw $timeout
             }
+            try {
+              $process.WaitForExit()
+              $process.Refresh()
+              $rawExitCode = $process.ExitCode
+              if ($null -eq $rawExitCode) {
+                throw "process exit code was null"
+              }
+              [int]$exitCode = $rawExitCode
+            } catch {
+              Write-Host "::group::$Label stdout"
+              Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue
+              Write-Host "::endgroup::"
+              Write-Host "::group::$Label stderr"
+              Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue
+              Write-Host "::endgroup::"
+              throw "pytest exited but its final exit code could not be read: $Label ($($_.Exception.Message); logs: $stdout, $stderr)"
+            }
             Write-Host "::group::$Label stdout"
             Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue
             Write-Host "::endgroup::"
             Write-Host "::group::$Label stderr"
             Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue
             Write-Host "::endgroup::"
-            if ($process.ExitCode -ne 0) {
-              throw "pytest failed with exit code $($process.ExitCode): $Label (logs: $stdout, $stderr)"
+            if ($exitCode -ne 0) {
+              throw "pytest failed with exit code $exitCode: $Label (logs: $stdout, $stderr)"
             }
           }
 
@@ -338,8 +355,25 @@ jobs:
             }
             throw $timeout
           }
+          try {
+            $process.WaitForExit()
+            $process.Refresh()
+            $rawExitCode = $process.ExitCode
+            if ($null -eq $rawExitCode) {
+              throw "process exit code was null"
+            }
+            [int]$exitCode = $rawExitCode
+          } catch {
+            Write-Host "::group::aggregate rehearsal lifecycle stdout"
+            Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue
+            Write-Host "::endgroup::"
+            Write-Host "::group::aggregate rehearsal lifecycle stderr"
+            Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue
+            Write-Host "::endgroup::"
+            throw "aggregate rehearsal lifecycle pytest exited but its final exit code could not be read: $($_.Exception.Message) (logs: $stdout, $stderr)"
+          }
           Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue
           Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue
-          if ($process.ExitCode -ne 0) {
-            throw "aggregate rehearsal lifecycle pytest failed with exit code $($process.ExitCode) (logs: $stdout, $stderr)"
+          if ($exitCode -ne 0) {
+            throw "aggregate rehearsal lifecycle pytest failed with exit code $exitCode (logs: $stdout, $stderr)"
           }
