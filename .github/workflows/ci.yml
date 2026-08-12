@@ -74,6 +74,7 @@ jobs:
     # NUC/Anki acceptance require frozen local data and are intentionally out of scope.
     name: Windows rehearsal source/preflight
     runs-on: windows-latest
+    timeout-minutes: 30
     env:
       PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
     steps:
@@ -127,7 +128,43 @@ jobs:
         run: |
           .\.venv\Scripts\python.exe -m ruff check src\oms_hub\anki\rehearsal tests\anki\test_rehearsal_capsule.py tests\anki\test_rehearsal_evidence.py tests\anki\test_rehearsal_export.py tests\anki\test_rehearsal_process.py tests\anki\test_rehearsal_regressions.py tests\anki\test_rehearsal_safety.py tests\anki\test_provider_attempt_events.py tests\anki\test_v2_provider_fault_matrix.py tests\anki\test_v2_replay_fault_matrix.py
 
-      - name: Run portable rehearsal and provider tests
+      - name: Test capsule portability
+        shell: powershell
+        run: .\.venv\Scripts\python.exe -m pytest tests\anki\test_rehearsal_capsule.py -q
+
+      - name: Test evidence packaging
+        shell: powershell
+        run: .\.venv\Scripts\python.exe -m pytest tests\anki\test_rehearsal_evidence.py -q
+
+      - name: Test capsule export
+        shell: powershell
+        run: .\.venv\Scripts\python.exe -m pytest tests\anki\test_rehearsal_export.py -q
+
+      - name: Test process harness
+        shell: powershell
+        run: .\.venv\Scripts\python.exe -m pytest tests\anki\test_rehearsal_process.py -q
+
+      - name: Test historical regressions
+        shell: powershell
+        run: .\.venv\Scripts\python.exe -m pytest tests\anki\test_rehearsal_regressions.py -q
+
+      - name: Test rehearsal safety
+        shell: powershell
+        run: .\.venv\Scripts\python.exe -m pytest tests\anki\test_rehearsal_safety.py -q
+
+      - name: Test provider attempt events
+        shell: powershell
+        run: .\.venv\Scripts\python.exe -m pytest tests\anki\test_provider_attempt_events.py -q
+
+      - name: Test provider fault matrix
+        shell: powershell
+        run: .\.venv\Scripts\python.exe -m pytest tests\anki\test_v2_provider_fault_matrix.py -q
+
+      - name: Test replay fault matrix
+        shell: powershell
+        run: .\.venv\Scripts\python.exe -m pytest tests\anki\test_v2_replay_fault_matrix.py -q
+
+      - name: Test aggregate cross-file lifecycle
         shell: powershell
         run: |
           .\.venv\Scripts\python.exe -m pytest `
