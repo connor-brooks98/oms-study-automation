@@ -573,9 +573,9 @@ if (-not (Test-Path -LiteralPath $EnvPath -PathType Leaf)) { throw "Installed .e
 Assert-NotReparsePoint -Path $EnvPath -Label "Installed .env"
 $EnvHashBefore = (Get-FileHash -LiteralPath $EnvPath -Algorithm SHA256).Hash.ToLowerInvariant()
 Assert-VerifiedRollbackBackup -Path $ExpectedBackupPath
-$BackupBefore = Get-FileManifest -Root $ExpectedBackupPath
+$BackupBefore = @(Get-FileManifest -Root $ExpectedBackupPath)
 if ($BackupBefore.Count -eq 0) { throw "Verified rollback backup is empty." }
-$PdfBefore = Get-PdfManifest -Roots @($ProjectRoot, $DataRoot) -ExcludeRoot $GateDirectory
+$PdfBefore = @(Get-PdfManifest -Roots @($ProjectRoot, $DataRoot) -ExcludeRoot $GateDirectory)
 $PortValue = Get-DotEnvValue -Name "OMS_HUB_DASHBOARD_PORT" -Path $EnvPath
 $Port = if ($PortValue) { [int]$PortValue } else { 8787 }
 $DatabaseUrl = Get-DotEnvValue -Name "OMS_HUB_DATABASE_URL" -Path $EnvPath
@@ -848,11 +848,11 @@ try {
   ) { throw "Installed source identity changed during F28 acceptance." }
   $EnvHashAfter = (Get-FileHash -LiteralPath $EnvPath -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($EnvHashAfter -cne $EnvHashBefore) { throw ".env changed during F28 acceptance." }
-  $BackupAfter = Get-FileManifest -Root $ExpectedBackupPath
+  $BackupAfter = @(Get-FileManifest -Root $ExpectedBackupPath)
   if ((($BackupAfter | ConvertTo-Json -Depth 10 -Compress)) -cne (($BackupBefore | ConvertTo-Json -Depth 10 -Compress))) {
     throw "Rollback backup changed during F28 acceptance."
   }
-  $PdfAfter = Get-PdfManifest -Roots @($ProjectRoot, $DataRoot) -ExcludeRoot $GateDirectory
+  $PdfAfter = @(Get-PdfManifest -Roots @($ProjectRoot, $DataRoot) -ExcludeRoot $GateDirectory)
   if ((($PdfAfter | ConvertTo-Json -Depth 10 -Compress)) -cne (($PdfBefore | ConvertTo-Json -Depth 10 -Compress))) {
     throw "Protected PDFs changed during F28 acceptance."
   }

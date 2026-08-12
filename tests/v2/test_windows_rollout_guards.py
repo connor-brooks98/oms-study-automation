@@ -188,6 +188,21 @@ def test_f28_acceptance_compares_logical_database_state_and_records_physical_dri
     assert "$DatabaseHashAfter -cne $DatabaseHashBefore" not in script
 
 
+def test_f28_acceptance_manifest_counts_are_arrays_for_zero_or_one_member() -> None:
+    script = (ROOT / "scripts" / "accept-f28-restart.ps1").read_text(encoding="utf-8")
+
+    assert "$BackupBefore = @(Get-FileManifest -Root $ExpectedBackupPath)" in script
+    assert (
+        "$PdfBefore = @(Get-PdfManifest -Roots @($ProjectRoot, $DataRoot) "
+        "-ExcludeRoot $GateDirectory)"
+    ) in script
+    assert "$BackupAfter = @(Get-FileManifest -Root $ExpectedBackupPath)" in script
+    assert (
+        "$PdfAfter = @(Get-PdfManifest -Roots @($ProjectRoot, $DataRoot) "
+        "-ExcludeRoot $GateDirectory)"
+    ) in script
+
+
 def test_f28_acceptance_script_is_two_phase_and_never_kills_or_reconfigures() -> None:
     script = (ROOT / "scripts" / "accept-f28-restart.ps1").read_text(encoding="utf-8")
     verifier = (ROOT / "src" / "oms_hub" / "task_scheduler_evidence.py").read_text(
