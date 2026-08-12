@@ -375,7 +375,7 @@
 
   const lectureDisplayLabel = (lectures, lectureId) => {
     const lecture = resolveLecture(lectures || [], lectureId);
-    if (!lecture) return `Lecture ${lectureId}`;
+    if (!lecture) return "Lecture unavailable";
     return `${lecture.subject} Lecture ${String(lecture.lecture_number).padStart(2, "0")}`;
   };
 
@@ -391,7 +391,12 @@
     );
     const description = element(documentRef, "span");
     description.append(
-      element(documentRef, "strong", "", lectureDisplayLabel(lectures, job.lecture_id)),
+      element(
+        documentRef,
+        "strong",
+        "",
+        job.lecture_label || lectureDisplayLabel(lectures, job.lecture_id),
+      ),
       element(documentRef, "small", "", job.target_deck),
     );
     const state = element(
@@ -782,7 +787,7 @@
           row.dataset.jobId,
           removing ? "remove" : "retry",
         );
-        await refreshJobs(documentRef, fetchImpl);
+        await refreshJobs(documentRef, fetchImpl, lectures);
         if (message) {
           message.textContent = removing
             ? "Failed run removed."

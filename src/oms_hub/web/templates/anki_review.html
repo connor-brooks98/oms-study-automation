@@ -4,9 +4,7 @@
 <article class="page-shell sh-container anki-review-page" data-anki-review data-job-id="{{ job.id }}">
   <nav class="breadcrumbs" aria-label="Breadcrumb">
     <a href="/anki">Anki curation</a><span aria-hidden="true">/</span>
-    {% set lecture_ref = namespace(label='Lecture ' ~ job.lecture_id) %}
-    {% for lecture in lectures %}{% if lecture.id == job.lecture_id %}{% set lecture_ref.label = lecture.subject ~ ' Lecture ' ~ '%02d'|format(lecture.lecture_number) %}{% endif %}{% endfor %}
-    <span>{{ lecture_ref.label }}</span>
+    <span>{{ job.lecture_label or 'Lecture unavailable' }}</span>
   </nav>
 
   <div class="page-heading sh-header">

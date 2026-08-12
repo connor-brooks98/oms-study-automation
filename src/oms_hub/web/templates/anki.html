@@ -204,9 +204,7 @@
         <a class="anki-job-link" href="/anki/jobs/{{ job.id }}">
           <span class="status-dot sh-dot {{ job_tone.replace('pill', 'dot') }} status-{{ job.state }}"></span>
           <span>
-            {% set lecture_ref = namespace(label='Lecture ' ~ job.lecture_id) %}
-            {% for lecture in lectures %}{% if lecture.id == job.lecture_id %}{% set lecture_ref.label = lecture.subject ~ ' Lecture ' ~ '%02d'|format(lecture.lecture_number) %}{% endif %}{% endfor %}
-            <strong>{{ lecture_ref.label }}</strong>
+            <strong>{{ job.lecture_label or 'Lecture unavailable' }}</strong>
             <small>{{ job.target_deck }}</small>
           </span>
           <span class="status-pill sh-pill {{ job_tone }} status-{{ job.state }}">{{ job.state.replace('_', ' ') }}</span>

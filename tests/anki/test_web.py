@@ -808,6 +808,7 @@ def test_create_and_list_job_pins_server_generations_and_rejects_amboss(
     assert created.json()["companion_generation"] == "snapshot-test"
     assert created.json()["semantic_generation"] == "33a3b975-0e93-41e6-8a44-ec255c7e1269"
     assert listed.json()["jobs"][0]["id"] == created.json()["id"]
+    assert listed.json()["jobs"][0]["lecture_label"] == "Heme Lymph Lecture 04"
 
 
 def test_create_job_pins_explicit_model(
