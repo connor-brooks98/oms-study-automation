@@ -16,7 +16,8 @@
     </div>
   </header>
 
-  <section class="pipeline-card sh-card" aria-labelledby="pipeline-heading">
+  <div class="lecture-workbench">
+  <section class="pipeline-card sh-panel" aria-labelledby="pipeline-heading">
     <p class="mono-label" id="pipeline-heading">Pipeline status</p>
     <div class="pipeline-status">
       {% set status_tone = "sh-pill--ok" if status in ("complete", "completed", "ready", "configured", "connected", "skipped") else "sh-pill--info" if status in ("processing", "queued", "running", "pending", "in_progress") else "sh-pill--warn" if status in ("needs_review", "review") else "sh-pill--err" if status in ("failed", "quarantined") else "sh-pill--bare" %}
@@ -50,7 +51,7 @@
         {% if slide_revision and not slide_problem %}
         <a class="button primary sh-btn sh-btn--primary" href="/artifacts/{{ slide_revision.id }}/pdf">Open Lecture PDF</a>
         {% elif not slide_revision %}
-        <a class="button disabled" href="/uploads/slides" aria-disabled="true">Open Lecture PDF</a>
+        <span class="button disabled sh-btn is-disabled" aria-disabled="true">Lecture PDF unavailable</span>
         {% endif %}
       </div>
     </section>
@@ -68,7 +69,7 @@
         {% if transcript_revision and not transcript_problem %}
         <a class="button primary sh-btn sh-btn--primary" href="/artifacts/{{ transcript_revision.id }}/cleaned">Open Cleaned Transcript</a>
         {% elif not transcript_revision %}
-        <a class="button disabled" href="/uploads/transcripts" aria-disabled="true">Open Cleaned Transcript</a>
+        <span class="button disabled sh-btn is-disabled" aria-disabled="true">Cleaned transcript unavailable</span>
         {% endif %}
       </div>
     </section>
@@ -106,6 +107,7 @@
         <button class="button sh-btn {{ 'secondary sh-btn--secondary' if quiz_output else 'primary sh-btn--primary' }}" type="button" data-generate>Generate Quiz</button>
       </div>
     </section>
+  </div>
   </div>
 
   <section class="checklist-card sh-card">

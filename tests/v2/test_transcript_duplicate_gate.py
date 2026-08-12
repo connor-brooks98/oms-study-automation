@@ -409,11 +409,12 @@ def test_transcript_upload_page_renders_accessible_duplicate_dialog(
     response = client.get("/uploads/transcripts")
 
     assert response.status_code == 200
-    assert response.text.count("<dialog") == 1
-    assert "data-duplicate-dialog" in response.text
+    assert response.text.count("data-duplicate-dialog") == 1
     assert "already been processed for this lecture" in response.text
     assert "data-duplicate-lecture" in response.text
     assert "data-confirm-duplicate" in response.text
     assert "data-discard-duplicate" in response.text
+    assert "data-cancel-duplicate" in response.text
     assert "Process anyway" in response.text
     assert "Discard upload" in response.text
+    assert "Cancel upload" in response.text

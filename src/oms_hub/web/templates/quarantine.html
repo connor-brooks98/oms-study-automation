@@ -19,14 +19,13 @@
     <ul>{% for evidence in item.evidence %}<li>{{ evidence }}</li>{% endfor %}</ul>
     {% endif %}
     <form method="post" action="/quarantine/{{ item.id }}/assign">
-      <label>Lecture
-        <select class="sh-select" name="lecture_id" required>
+      <label class="sh-field-label" for="quarantine-lecture-{{ item.id }}">Lecture</label>
+        <select class="sh-select" id="quarantine-lecture-{{ item.id }}" name="lecture_id" required>
           <option value="">Select a lecture</option>
           {% for lecture in lectures %}
-          <option value="{{ lecture.id }}">{{ lecture.subject }} · Exam {{ lecture.exam_number }} · Lecture {{ lecture.lecture_number }} — {{ lecture.topic }}</option>
+          <option value="{{ lecture.id }}">{{ lecture.subject }} Lecture {{ "%02d"|format(lecture.lecture_number) }} · Exam {{ lecture.exam_number }} — {{ lecture.topic }}</option>
           {% endfor %}
         </select>
-      </label>
       <button class="button primary sh-btn sh-btn--primary" type="submit">Assign and process</button>
     </form>
   </section>

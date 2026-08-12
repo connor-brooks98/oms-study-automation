@@ -12,11 +12,12 @@
         {% else %}Add downloaded text transcripts. The NUC will match, clean, validate, and file them.{% endif %}
       </p>
       {% if selected_lecture %}
-      <p class="field-help">For {{ selected_lecture.subject }} · Lecture {{ "%02d"|format(selected_lecture.lecture_number) }} · {{ selected_lecture.topic }}</p>
+      <p class="field-help">For {{ selected_lecture.subject }} Lecture {{ "%02d"|format(selected_lecture.lecture_number) }} · {{ selected_lecture.topic }}</p>
       {% endif %}
     </div>
   </div>
 
+  <div class="upload-workbench">
   <form class="upload-form" action="/uploads/{{ kind.value }}" method="post" enctype="multipart/form-data" data-upload-form data-kind="{{ kind.value }}" data-lecture-id="{{ selected_lecture.id if selected_lecture else '' }}">
     {% if selected_lecture %}<input type="hidden" name="lecture_id" value="{{ selected_lecture.id }}">{% endif %}
     <div class="upload-zone sh-dropzone" data-drop-zone>
@@ -34,11 +35,10 @@
   <section class="upload-results sh-card" aria-labelledby="upload-status-heading">
     <h2 id="upload-status-heading">Upload status</h2>
     <div class="upload-status" data-upload-status role="status" aria-live="polite">Ready for files.</div>
-    <div class="upload-progress" hidden data-progress-wrap>
-      <span data-progress-bar></span>
-    </div>
+    <progress class="upload-progress" max="100" value="0" hidden data-progress-wrap data-progress-bar aria-label="Upload progress">0%</progress>
     <ul class="upload-items" data-upload-items></ul>
   </section>
+  </div>
 
   <aside class="info-card sh-panel">
     <strong>What happens next</strong>
@@ -54,6 +54,7 @@
     <p class="duplicate-lecture" data-duplicate-lecture></p>
     <p class="duplicate-error" data-duplicate-error role="alert" aria-live="assertive"></p>
     <div class="duplicate-actions">
+      <button class="button secondary sh-btn sh-btn--secondary" type="button" data-cancel-duplicate>Cancel upload</button>
       <button class="button danger sh-btn sh-btn--danger" type="button" data-discard-duplicate>Discard upload</button>
       <button class="button primary sh-btn sh-btn--primary" type="button" data-confirm-duplicate>Process anyway</button>
     </div>
