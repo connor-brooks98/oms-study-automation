@@ -71,24 +71,24 @@
           <label class="sh-field-label">Label<input class="sh-input" name="title" required></label>
           <label class="sh-field-label sh-file">File<input class="sh-input" name="file" type="file" accept=".pdf,.pptx,.txt,.md,.csv,.json,.xml,.yaml,.yml,.docx,.rtf,.html,.htm,.png,.jpg,.jpeg,.webp" aria-describedby="import-file-help" required></label>
           <p class="field-help" id="import-file-help">Choose one document or image. Add related files in separate passes.</p>
-          <label class="sh-field-label">Role<select class="sh-select" name="role" data-import-role><option value="questions">Questions</option><option value="answer_key">Answer key</option><option value="supporting_reference">Supporting reference</option><option value="combined_questions_answers">Combined questions and answers</option></select></label>
-          <label class="sh-check"><input name="attach_to_notebook" value="true" data-import-notebook type="checkbox" disabled> Use in NotebookLM for missing answers</label>
+          <label class="sh-field-label studio-intake-role">Role<select class="sh-select" name="role" data-import-role><option value="questions">Questions</option><option value="answer_key">Answer key</option><option value="supporting_reference">Supporting reference</option><option value="combined_questions_answers">Combined questions and answers</option></select></label>
+          <label class="sh-check studio-intake-notebook"><input name="attach_to_notebook" value="true" data-import-notebook type="checkbox" disabled> Use in NotebookLM for missing answers</label>
           <button class="button primary sh-btn sh-btn--primary" type="submit">Add file</button><p data-form-message aria-live="polite"></p>
         </form>
         <form class="studio-intake-form" data-import-source-form data-import-source-type="text">
           <h3>Pasted text</h3>
           <label class="sh-field-label">Label<input class="sh-input" name="title" required></label>
           <label class="sh-field-label">Text<textarea class="sh-textarea" name="text" required></textarea></label>
-          <label class="sh-field-label">Role<select class="sh-select" data-import-role><option value="questions">Questions</option><option value="answer_key">Answer key</option><option value="supporting_reference">Supporting reference</option><option value="combined_questions_answers">Combined questions and answers</option></select></label>
-          <label class="sh-check"><input data-import-notebook type="checkbox" disabled> Use in NotebookLM for missing answers</label>
+          <label class="sh-field-label studio-intake-role">Role<select class="sh-select" name="role" data-import-role><option value="questions">Questions</option><option value="answer_key">Answer key</option><option value="supporting_reference">Supporting reference</option><option value="combined_questions_answers">Combined questions and answers</option></select></label>
+          <label class="sh-check studio-intake-notebook"><input name="attach_to_notebook" value="true" data-import-notebook type="checkbox" disabled> Use in NotebookLM for missing answers</label>
           <button class="button primary sh-btn sh-btn--primary" type="submit">Add text</button><p data-form-message aria-live="polite"></p>
         </form>
         <form class="studio-intake-form" data-import-source-form data-import-source-type="url">
           <h3>Website or URL source</h3>
           <label class="sh-field-label">Label<input class="sh-input" name="title" required></label>
           <label class="sh-field-label">URL<input class="sh-input" name="url" type="url" required></label>
-          <label class="sh-field-label">Role<select class="sh-select" data-import-role><option value="questions">Questions</option><option value="answer_key">Answer key</option><option value="supporting_reference">Supporting reference</option><option value="combined_questions_answers">Combined questions and answers</option></select></label>
-          <label class="sh-check"><input data-import-notebook type="checkbox" disabled> Use in NotebookLM for missing answers</label>
+          <label class="sh-field-label studio-intake-role">Role<select class="sh-select" name="role" data-import-role><option value="questions">Questions</option><option value="answer_key">Answer key</option><option value="supporting_reference">Supporting reference</option><option value="combined_questions_answers">Combined questions and answers</option></select></label>
+          <label class="sh-check studio-intake-notebook"><input name="attach_to_notebook" value="true" data-import-notebook type="checkbox" disabled> Use in NotebookLM for missing answers</label>
           <button class="button primary sh-btn sh-btn--primary" type="submit">Add URL</button><p data-form-message aria-live="polite"></p>
         </form>
       </div>
