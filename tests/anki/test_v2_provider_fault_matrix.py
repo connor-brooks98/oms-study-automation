@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from oms_hub.anki.card_centric import CardCentricClassifier, CardCentricValidationError
@@ -586,6 +587,21 @@ def test_expected_red_p3_h10_exhausted_semantic_outage_requires_manual_review(
             source, card, ledger = _source()
             self.runner = CurationServicesRunner.__new__(CurationServicesRunner)
             self.runner.embedder = outage_client
+
+            class PinnedSemantic:
+                async def pinned_document_vectors(
+                    self,
+                    *,
+                    note_ids: tuple[int, ...],
+                    expected_generation: str,
+                ) -> dict[int, np.ndarray]:
+                    assert expected_generation == "fixture-generation"
+                    return {
+                        note_id: np.asarray([0.0, 1.0], dtype=np.float32)
+                        for note_id in note_ids
+                    }
+
+            self.runner.semantic = PinnedSemantic()
             empty = ClassifierResult(
                 results=(
                     CardClassification(
@@ -675,9 +691,10 @@ def test_expected_red_p3_h10_exhausted_semantic_outage_requires_manual_review(
                     judgment_rubric_version="rubric",
                     gap_prompt_version="gap",
                     provider="openai",
-                    model="fixture",
-                    pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
-                )
+                        model="fixture",
+                        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+                        semantic_generation="fixture-generation",
+                    )
             )
             with database.session() as session:
                 stored = session.get(AnkiCurationJobModel, str(job.id))

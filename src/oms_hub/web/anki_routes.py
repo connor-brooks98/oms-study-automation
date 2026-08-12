@@ -252,6 +252,14 @@ def _coordinator(request: Request) -> ApplyCoordinator:
     return coordinator
 
 
+def _deny_rehearsal_apply(request: Request) -> None:
+    if getattr(request.app.state, "anki_rehearsal_mode", "off") != "off":
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail="Anki apply and sync are hard-disabled in rehearsal mode",
+        )
+
+
 @router.get("/anki", response_class=HTMLResponse)
 def anki_page(request: Request) -> HTMLResponse:
     context = _page_context(request)
@@ -1077,6 +1085,7 @@ async def apply_anki_envelope(
     job_id: UUID,
     payload: ApplyConfirmationRequest,
 ) -> dict[str, Any]:
+    _deny_rehearsal_apply(request)
     repository = _repository(request)
     job = _require_job(repository, job_id)
     if job.review_revision != payload.review_revision:
@@ -1109,6 +1118,7 @@ async def retry_anki_sync(
     job_id: UUID,
     payload: RetrySyncRequest,
 ) -> dict[str, Any]:
+    _deny_rehearsal_apply(request)
     del payload
     repository = _repository(request)
     job = _require_job(repository, job_id)

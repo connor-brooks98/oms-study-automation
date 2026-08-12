@@ -206,6 +206,66 @@ class AnkiCardLedgerAttemptModel(Base):
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
 
 
+class AnkiProviderAttemptEventModel(Base):
+    """Append-only event evidence for structured and embedding provider calls."""
+
+    __tablename__ = "anki_provider_attempt_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id",
+            "stage",
+            "stage_attempt",
+            "mode",
+            "call_index",
+            "subcall_ordinal",
+            "event",
+        ),
+        Index(
+            "ix_anki_provider_attempt_events_execution",
+            "job_id",
+            "stage",
+            "stage_attempt",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("anki_curation_jobs.id"))
+    stage: Mapped[str] = mapped_column(String(30))
+    stage_attempt: Mapped[int]
+    mode: Mapped[str] = mapped_column(String(20))
+    call_index: Mapped[int]
+    subcall_ordinal: Mapped[int] = mapped_column(default=0, server_default="0")
+    batch_index: Mapped[int | None] = mapped_column(nullable=True)
+    batch_note_ids_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    batch_note_ids_sha256: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(20))
+    event: Mapped[str] = mapped_column(String(30))
+    provider: Mapped[str] = mapped_column(String(30))
+    model: Mapped[str] = mapped_column(String(200))
+    instruction_sha256: Mapped[str] = mapped_column(String(64))
+    input_sha256: Mapped[str] = mapped_column(String(64))
+    output_schema_sha256: Mapped[str] = mapped_column(String(64))
+    generation_parameters_json: Mapped[str] = mapped_column(Text)
+    generation_parameters_sha256: Mapped[str] = mapped_column(String(64))
+    cache_prefix_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_sha256: Mapped[str] = mapped_column(String(64))
+    request_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    input_tokens: Mapped[int] = mapped_column(default=0)
+    output_tokens: Mapped[int] = mapped_column(default=0)
+    cost_microusd: Mapped[int] = mapped_column(default=0)
+    cache_creation_input_tokens: Mapped[int] = mapped_column(default=0)
+    cache_read_input_tokens: Mapped[int] = mapped_column(default=0)
+    response_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    response_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validation_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    missing_note_ids_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    extra_note_ids_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    duplicate_note_ids_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    diagnostic_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    http_status: Mapped[int | None] = mapped_column(nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
 class AnkiCandidateModel(Base):
     __tablename__ = "anki_candidates"
     __table_args__ = (

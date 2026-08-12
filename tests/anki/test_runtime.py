@@ -1,7 +1,13 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+from fastapi.testclient import TestClient
+
+import oms_hub.app as app_module
 from oms_hub.anki.ankiconnect import AnkiConnectUnavailable
+from oms_hub.anki.rehearsal.runtime import ReadOnlyAnkiGateway
+from oms_hub.anki.rehearsal.vectors import ReplayEmbeddingClient
 from oms_hub.anki.runtime import AnkiRuntime
 from oms_hub.app import create_app
 from oms_hub.config import Settings
@@ -161,3 +167,75 @@ def test_app_wires_local_runtime_only_when_anki_is_enabled(
         enabled.state.database.close()
         asyncio.run(enabled.state.anki_embedder.aclose())
         asyncio.run(enabled.state.anki_runtime.aclose())
+
+
+def test_app_wires_deterministic_rehearsal_without_apply_or_live_embeddings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    overlay = tmp_path / "overlay"
+    replay = overlay / "replay"
+    replay.mkdir(parents=True)
+    monkeypatch.setenv("OMS_HUB_ANKI_REHEARSAL_RUN_NONCE", "test-run-nonce")
+    app = create_app(
+        Settings(
+            _env_file=None,
+            data_dir=overlay / "data",
+            anki_data_dir=overlay / "anki",
+            database_url=f"sqlite:///{overlay / 'hub.db'}",
+            anki_enabled=True,
+            anki_rehearsal_mode="deterministic",
+            anki_rehearsal_overlay_dir=overlay,
+            anki_rehearsal_replay_dir=replay,
+            study_root=overlay / "study",
+            icloud_staging_root=overlay / "icloud",
+        )
+    )
+    try:
+        assert isinstance(app.state.anki_runtime.gateway, ReadOnlyAnkiGateway)
+        assert isinstance(app.state.anki_embedder, ReplayEmbeddingClient)
+        assert app.state.anki_apply_coordinator is None
+        assert app.state.anki_rehearsal_mode == "deterministic"
+        assert app.state.anki_rehearsal_evidence_directory == overlay / "rehearsal/runtime-evidence"
+    finally:
+        app.state.database.close()
+        asyncio.run(app.state.anki_embedder.aclose())
+        asyncio.run(app.state.anki_runtime.aclose())
+
+
+def test_rehearsal_blocks_credential_routes_without_constructing_keyring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class ForbiddenKeyring:
+        def __init__(self) -> None:
+            raise AssertionError("rehearsal must not construct KeyringSecretStore")
+
+    overlay = tmp_path / "overlay"
+    replay = overlay / "replay"
+    replay.mkdir(parents=True)
+    monkeypatch.setenv("OMS_HUB_ANKI_REHEARSAL_RUN_NONCE", "test-run-nonce")
+    monkeypatch.setattr(app_module, "KeyringSecretStore", ForbiddenKeyring)
+    app = create_app(
+        Settings(  # type: ignore[call-arg]
+            _env_file=None,
+            data_dir=overlay / "data",
+            anki_data_dir=overlay / "anki",
+            database_url=f"sqlite:///{overlay / 'hub.db'}",
+            anki_enabled=True,
+            anki_rehearsal_mode="deterministic",
+            anki_rehearsal_overlay_dir=overlay,
+            anki_rehearsal_replay_dir=replay,
+            study_root=overlay / "study",
+            icloud_staging_root=overlay / "icloud",
+        )
+    )
+    with TestClient(app) as client:
+        for path in (
+            "/settings/ai/openrouter/credential",
+            "/settings/ai/openai/credential",
+            "/settings/anki/voyage/credential",
+        ):
+            response = client.post(path, json={"credential": "must-not-write"})
+            assert response.status_code == 423
+            assert response.json() == {
+                "detail": "credential mutation is disabled during rehearsal"
+            }

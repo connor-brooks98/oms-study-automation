@@ -1,0 +1,1899 @@
+"""Actual-process, loopback-only A0 rehearsal harness.
+
+This module deliberately keeps its control plane outside FastAPI: the Hub is
+always exercised through a recorded trusted Python interpreter and HTTP.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import secrets
+import shutil
+import socket
+import subprocess
+import time
+import zipfile
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field, replace
+from datetime import UTC, datetime
+from http.cookiejar import CookieJar
+from pathlib import Path
+from typing import Any, BinaryIO, Literal, cast
+from urllib.error import HTTPError, URLError
+from urllib.request import HTTPCookieProcessor, Request, build_opener
+from uuid import UUID
+
+from oms_hub.anki.contracts import (
+    AddNotesOperation,
+    AddTagsOperation,
+    CreateCurationJobRequest,
+    RemoveTagsOperation,
+)
+from oms_hub.anki.domain import CurationJob, CurationStage
+from oms_hub.anki.provider_attempts import (
+    ProviderAttemptIndeterminate,
+    _bounded_redacted,
+    replay_namespace_from_job_source,
+)
+from oms_hub.anki.rehearsal.capsule import (
+    CapsuleIntegrityError,
+    CapsuleManifest,
+    _reject_sensitive_path,
+    verify_capsule,
+)
+from oms_hub.anki.rehearsal.materialize import MaterializedCapsule, materialize_capsule
+from oms_hub.anki.repository import AnkiCurationRepository, _validate_provider_event_append
+from oms_hub.db import Database
+
+Mode = Literal["deterministic", "shadow"]
+ProviderCheckpoint = Literal["begun", "dispatched", "response_received", "terminal"]
+_FAILURE_INJECTION_STAGES = frozenset(
+    {
+        CurationStage.CARD_LEDGER,
+        CurationStage.CARD_PREFILTER,
+        CurationStage.CARD_FAST_CLASSIFY,
+        CurationStage.CARD_CLASSIFY,
+        CurationStage.CARD_RESIDUAL,
+        CurationStage.CARD_GAP_FILL,
+        CurationStage.DEDUPE,
+    }
+)
+_SECRET_MARKERS = (
+    "KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "COOKIE",
+    "CREDENTIAL",
+    "AUTHORIZATION",
+)
+_MAX_BODY = 4096
+_REPLAY_MANIFEST_NAME = "replay-supplement.json"
+_VERIFIED_SOURCE_BOOTSTRAP = """import hashlib, json, os, subprocess, sys, sysconfig
+from pathlib import Path
+if not (sys.flags.isolated and sys.flags.no_site and sys.flags.ignore_environment):
+    raise RuntimeError('verified source bootstrap requires Python -I -S')
+source = Path(sys.argv[1]).resolve()
+repository = Path(sys.argv[2]).resolve()
+expected_commit, expected_tree, run_nonce = sys.argv[3:6]
+attestation = Path(sys.argv[6]).resolve()
+if not source.is_dir(): raise RuntimeError('verified implementation source is unavailable')
+if not repository.is_dir(): raise RuntimeError('verified implementation repository is unavailable')
+if source != (repository / 'src').resolve():
+    raise RuntimeError('verified source is not the implementation source tree')
+def git(*args):
+    result = subprocess.run(['git', '-C', str(repository), *args], capture_output=True, text=True)
+    if result.returncode: raise RuntimeError('child Git identity cannot be verified')
+    return result.stdout.strip()
+if git('rev-parse', 'HEAD') != expected_commit or git('rev-parse', 'HEAD^{tree}') != expected_tree:
+    raise RuntimeError('child Git identity changed before import')
+if git('status', '--porcelain'):
+    raise RuntimeError('child implementation repository is dirty before import')
+files = {}
+for relative in git('ls-files', '--', 'src').splitlines():
+    path = repository / relative
+    if not path.is_file() or path.is_symlink():
+        raise RuntimeError('child source tree is unavailable')
+    files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+source_tree_sha256 = hashlib.sha256(
+    json.dumps(files, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+).hexdigest()
+dependency_paths = []
+for key in ('purelib', 'platlib'):
+    path = sysconfig.get_paths().get(key)
+    if path and Path(path).is_dir() and path not in dependency_paths:
+        dependency_paths.append(path)
+sys.path[:0] = [str(source), *dependency_paths]
+import oms_hub
+import oms_hub.cli
+def under(path):
+    try: Path(path).resolve().relative_to(source); return True
+    except ValueError: return False
+if not under(oms_hub.__file__) or not under(oms_hub.cli.__file__):
+    raise RuntimeError('Hub import is outside verified implementation source')
+attestation.parent.mkdir(parents=True, exist_ok=True)
+modules = {'oms_hub': str(Path(oms_hub.__file__).resolve())}
+modules['oms_hub.cli'] = str(Path(oms_hub.cli.__file__).resolve())
+payload = {
+    'source': str(source), 'repository': str(repository), 'python_executable': sys.executable
+}
+payload['python_version'] = sys.version
+payload['pid'] = os.getpid()
+payload['run_nonce'] = run_nonce
+payload['commit'] = expected_commit
+payload['tree'] = expected_tree
+payload['source_files'] = files
+payload['source_tree_sha256'] = source_tree_sha256
+payload['modules'] = modules
+payload['isolated'] = bool(sys.flags.isolated)
+payload['no_site'] = bool(sys.flags.no_site)
+payload['ignore_environment'] = bool(sys.flags.ignore_environment)
+payload['bootstrap_dependency_paths'] = dependency_paths
+attestation.write_text(json.dumps(payload, sort_keys=True), encoding='utf-8')
+raise SystemExit(oms_hub.cli.main(['serve']))
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class RehearsalRequest:
+    capsule: Path
+    overlay: Path
+    mode: Mode
+    port: int
+    evidence_zip: Path
+    failed_job_id: UUID
+    expected_manifest_sha256: str
+    implementation_repository: Path
+    expected_implementation_commit: str
+    expected_implementation_tree: str
+    trusted_python: Path
+    shadow_egress_pins_json: str | None = None
+    timeout_seconds: float = 300.0
+    restart_after_durable_boundary: bool = True
+    runtime_evidence_nonce: str | None = None
+    replay_supplement: Path | None = None
+    expected_replay_supplement_manifest_sha256: str | None = None
+    failure_injection: tuple[CurationStage, ProviderCheckpoint] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessObservation:
+    pid: int
+    started_at: str
+    ended_at: str | None
+    exit_code: int | None
+    argv: tuple[str, ...]
+
+
+@dataclass(slots=True)
+class _Child:
+    process: subprocess.Popen[bytes]
+    observation: ProcessObservation
+    stdout_path: Path
+    stderr_path: Path
+    stdout: BinaryIO
+    stderr: BinaryIO
+
+
+@dataclass(slots=True)
+class RehearsalResult:
+    job_id: UUID
+    overlay: Path
+    evidence_zip: Path
+    timeline: list[dict[str, Any]] = field(default_factory=list)
+    local_execution_evidence: str = "Local actual-process rehearsal execution performed"
+    native_gate_complete: bool = False
+    missing_evidence: tuple[str, ...] = (
+        "Native NUC/Windows PowerShell capsule export pending",
+        "Native NUC/Windows capsule execution pending",
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class FailureInjectionResult:
+    stage: CurationStage
+    checkpoint: ProviderCheckpoint
+    result: Literal["resumed_without_duplicate", "fail_closed_manual", "not_applicable"]
+    evidence_zip: Path
+
+
+def run_failure_injection_matrix(request: RehearsalRequest) -> tuple[FailureInjectionResult, ...]:
+    """Run every durable provider boundary in a separate fresh overlay.
+
+    This function performs no work until an operator supplies a verified
+    capsule request.  ``dispatched`` is deliberately a fail-closed/manual
+    result: it proves that an indeterminate provider call cannot be replayed.
+    """
+    if request.failure_injection is not None:
+        raise ValueError("matrix request must not preselect a checkpoint")
+    matrix_evidence = request.evidence_zip.with_name(
+        f"{request.evidence_zip.stem}-failure-injection-matrix.json"
+    )
+    if matrix_evidence.exists():
+        raise ValueError("failure-injection matrix evidence destination already exists")
+    results: list[FailureInjectionResult] = []
+    for stage in _failure_injection_stage_order():
+        for checkpoint in ("begun", "dispatched", "response_received", "terminal"):
+            suffix = f"{stage.value}-{checkpoint}"
+            child_request = replace(
+                request,
+                overlay=request.overlay.with_name(f"{request.overlay.name}-{suffix}"),
+                evidence_zip=request.evidence_zip.with_name(
+                    f"{request.evidence_zip.stem}-{suffix}{request.evidence_zip.suffix}"
+                ),
+                failure_injection=(stage, checkpoint),
+            )
+            try:
+                ProcessRehearsal(child_request).run()
+                outcome: Literal[
+                    "resumed_without_duplicate", "fail_closed_manual", "not_applicable"
+                ] = "resumed_without_duplicate" if checkpoint == "begun" else "not_applicable"
+            except ProviderAttemptIndeterminate:
+                if checkpoint == "begun":
+                    raise
+                outcome = "fail_closed_manual"
+            if not child_request.evidence_zip.is_file():
+                raise RuntimeError("failure-injection run did not package its evidence ZIP")
+            _verify_evidence_zip(child_request.evidence_zip)
+            results.append(
+                FailureInjectionResult(stage, checkpoint, outcome, child_request.evidence_zip)
+            )
+    matrix_evidence.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "runner": "ProcessRehearsal.run",
+                "execution_kind": "actual_hub_process_rehearsal",
+                "actual_process_evidence_required": True,
+                "checkpoint_policy": {
+                    "begun": "auto_resume_only_after_stable_logical_identity_comparison",
+                    "dispatched": "fail_closed_manual",
+                    "response_received": "fail_closed_manual_redacted_response_not_reusable",
+                    "terminal": "fail_closed_manual_unproven_completed_stage_recognition",
+                },
+                "results": [
+                    {
+                        "stage": result.stage.value,
+                        "matrix_stage": _failure_injection_stage_label(result.stage),
+                        "checkpoint": result.checkpoint,
+                        "result": result.result,
+                        "evidence_zip": str(result.evidence_zip),
+                    }
+                    for result in results
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return tuple(results)
+
+
+class LoopbackHttp:
+    """Small HTTP client which retains only the CSRF cookie in memory."""
+
+    def __init__(self, port: int) -> None:
+        self.base_url = f"http://127.0.0.1:{port}"
+        self.cookies = CookieJar()
+        self._opener = build_opener(HTTPCookieProcessor(self.cookies))
+        self.transcript: list[dict[str, Any]] = []
+        self.csrf_token: str | None = None
+
+    def bootstrap_csrf(self) -> Any:
+        _, health = self.request("GET", "/health")
+        for cookie in self.cookies:
+            if cookie.name == "study_hub_csrf":
+                self.csrf_token = cookie.value
+                return health
+        raise RuntimeError("loopback GET did not issue a CSRF cookie")
+
+    def request(
+        self, method: str, path: str, body: dict[str, Any] | None = None
+    ) -> tuple[int, Any]:
+        encoded = None if body is None else json.dumps(body, sort_keys=True).encode("utf-8")
+        headers = {"Accept": "application/json"}
+        if encoded is not None:
+            headers["Content-Type"] = "application/json"
+        if method not in {"GET", "HEAD"}:
+            if self.csrf_token is None:
+                raise RuntimeError("CSRF bootstrap is required before unsafe requests")
+            headers["X-CSRF-Token"] = self.csrf_token
+        request = Request(self.base_url + path, data=encoded, headers=headers, method=method)
+        status: int
+        raw: bytes
+        try:
+            with self._opener.open(request, timeout=10) as response:
+                status = response.status
+                raw = response.read()
+        except HTTPError as error:
+            status = error.code
+            raw = error.read()
+        payload = _decode_json(raw)
+        self.transcript.append(
+            {
+                "method": method,
+                "path": path,
+                "request_body": _bounded(_redact(body)),
+                "status": status,
+                "response_body": _bounded(_redact(payload)),
+            }
+        )
+        return status, payload
+
+
+class ProcessRehearsal:
+    def __init__(
+        self,
+        request: RehearsalRequest,
+        *,
+        popen: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
+        http_factory: Callable[[int], LoopbackHttp] = LoopbackHttp,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.request = request
+        self._popen = popen
+        self._http_factory = http_factory
+        self._clock = clock
+        self._children: list[_Child] = []
+        self._timeline: list[dict[str, Any]] = []
+        self._runtime_evidence_nonce = request.runtime_evidence_nonce or secrets.token_urlsafe(32)
+        self._source_attestation: dict[str, Any] | None = None
+        self._source_tree_sha256: str | None = None
+        self._failure_injection_consumed = False
+
+    def run(self) -> RehearsalResult:
+        manifest = self._validate_destinations()
+        overlay = materialize_capsule(self.request.capsule, self.request.overlay)
+        self._install_replay_supplement(overlay)
+        database = Database(f"sqlite:///{overlay.database_path}")
+        try:
+            self._record("capsule_materialized", overlay=str(overlay.root))
+            client = self._start_and_connect(overlay, manifest)
+            repository = AnkiCurationRepository(database)
+            failed = repository.require_job(self.request.failed_job_id)
+            status, created = client.request("POST", "/api/anki/jobs", fresh_job_payload(failed))
+            if (
+                status != 201
+                or not isinstance(created, dict)
+                or not isinstance(created.get("id"), str)
+            ):
+                raise RuntimeError(f"fresh card_centric_v2 job was rejected: HTTP {status}")
+            job_id = UUID(created["id"])
+            self._record("job_created", job_id=str(job_id), source_failed_job_id=str(failed.id))
+            before_logical_identity: set[tuple[object, ...]] | None = None
+            precrash_event_id_cutoff: int | None = None
+            fault_interlock: dict[str, Any] | None = None
+            if self.request.failure_injection is not None:
+                stage, checkpoint = self.request.failure_injection
+                interlock = self._wait_for_child_interlock(
+                    repository, job_id, stage, checkpoint, overlay
+                )
+                self._validate_fault_cutoff(repository, job_id, interlock)
+                precrash_rows = repository.list_provider_attempt_events(job_id)
+                before_logical_identity = _stable_logical_call_ids(
+                    precrash_rows, _replay_namespace_sha256(repository.require_job(job_id))
+                )
+                precrash_event_id_cutoff = _provider_event_id_cutoff(precrash_rows)
+                fault_interlock = interlock
+                # Pause is intentionally child-local.  Once its post-commit
+                # interlock is present, terminate hard so a provider-blocked
+                # worker cannot retain the parent indefinitely.
+                self._stop_latest(hard=True)
+                adapter_ledger, egress_ledger = self._validate_crash_interlock_evidence(
+                    overlay, interlock
+                )
+                if checkpoint != "begun":
+                    self._write_failure_evidence(
+                        manifest,
+                        overlay,
+                        client,
+                        repository,
+                        job_id,
+                        interlock,
+                        adapter_ledger,
+                        egress_ledger,
+                    )
+                    _verify_evidence_zip(self.request.evidence_zip)
+                    raise ProviderAttemptIndeterminate(
+                        f"durable {checkpoint} provider boundary requires manual recovery"
+                    )
+                self._consume_failure_injection(overlay, interlock)
+                client = self._start_and_connect(overlay, manifest)
+                restarted_pid = self._children[-1].process.pid
+                if restarted_pid == interlock["pid"]:
+                    raise RuntimeError("failure-injection recovery did not start a new child PID")
+                self._record(
+                    "failure_injection_restart",
+                    stage=stage.value,
+                    checkpoint=checkpoint,
+                    stopped_child_pid=interlock["pid"],
+                    restarted_child_pid=restarted_pid,
+                    recovery="begun_only_pending_terminal_identity_comparison",
+                )
+                repository.require_no_indeterminate_provider_attempt(job_id, stage)
+            elif self.request.restart_after_durable_boundary:
+                observed = self._wait_for_durable_boundary(client, repository, job_id)
+                self._restart_after_durable_boundary(repository, job_id, observed, overlay=overlay)
+                client = self._start_and_connect(overlay, manifest)
+                self._record("process_restarted", job_id=str(job_id))
+            final = self._poll(client, job_id, terminal=True)
+            self._assert_provider_ledger_is_restart_safe(
+                repository,
+                job_id,
+                expected_precrash_logical_identities=before_logical_identity,
+                precrash_event_id_cutoff=precrash_event_id_cutoff,
+                fault_interlock=fault_interlock,
+            )
+            if final.get("state") != "ready_for_review":
+                raise RuntimeError(f"job did not reach READY_FOR_REVIEW: {final.get('state')!r}")
+            review_status, review = client.request("GET", f"/api/anki/jobs/{job_id}/review")
+            if review_status != 200 or not isinstance(review, dict):
+                raise RuntimeError("review surface is unavailable")
+            save_status, saved = client.request(
+                "PUT", f"/api/anki/jobs/{job_id}/review", unchanged_review_payload(review)
+            )
+            if save_status != 200 or not isinstance(saved, dict):
+                raise RuntimeError("unchanged review was rejected")
+            revision = saved.get("revision")
+            if not isinstance(revision, int):
+                raise RuntimeError("review response did not return a revision")
+            envelope_status, envelope = client.request(
+                "POST", f"/api/anki/jobs/{job_id}/envelope", {"review_revision": revision}
+            )
+            self._validate_envelope_response(
+                repository, job_id, revision, envelope_status, envelope
+            )
+            apply_status, apply = client.request(
+                "POST",
+                f"/api/anki/jobs/{job_id}/apply",
+                {"review_revision": revision, "confirmation": "APPLY TO ANKI"},
+            )
+            if apply_status != 423:
+                raise RuntimeError(f"rehearsal apply must return 423, received {apply_status}")
+            self._record(
+                "review_and_apply_gate", review_revision=revision, apply_status=apply_status
+            )
+            self._stop_all(overlay)
+            adapter_ledger, egress_ledger = self._validate_runtime_evidence(overlay)
+            self._write_evidence(
+                manifest,
+                overlay,
+                client,
+                repository,
+                job_id,
+                review,
+                saved,
+                envelope_status,
+                envelope,
+                apply,
+                adapter_ledger,
+                egress_ledger,
+            )
+            return RehearsalResult(
+                job_id,
+                overlay.root,
+                self.request.evidence_zip,
+                self._timeline,
+            )
+        finally:
+            self._stop_all(overlay)
+            database.close()
+
+    def _validate_destinations(self) -> CapsuleManifest:
+        if self.request.overlay.exists():
+            raise ValueError("overlay destination must not already exist")
+        if self.request.evidence_zip.exists():
+            raise ValueError("evidence destination must not already exist")
+        if not 1024 <= self.request.port <= 65535:
+            raise ValueError("rehearsal port must be in 1024..65535")
+        if self.request.mode == "shadow" and not self.request.shadow_egress_pins_json:
+            raise ValueError("shadow rehearsal requires pinned egress JSON")
+        if self.request.mode == "deterministic" and self.request.shadow_egress_pins_json:
+            raise ValueError("deterministic rehearsal cannot configure external egress")
+        self._verify_implementation_identity()
+        observed_manifest_sha256 = _sha256_file(self.request.capsule / "capsule.json")
+        if observed_manifest_sha256 != self.request.expected_manifest_sha256:
+            raise ValueError(
+                "capsule manifest SHA-256 does not match the operator-supplied identity"
+            )
+        manifest = verify_capsule(self.request.capsule)
+        if (
+            self.request.replay_supplement is None
+            and self.request.expected_replay_supplement_manifest_sha256 is not None
+        ):
+            raise ValueError("replay supplement SHA-256 requires a replay supplement directory")
+        if self.request.replay_supplement is not None:
+            _verify_replay_supplement(
+                self.request.replay_supplement,
+                self.request.expected_replay_supplement_manifest_sha256,
+            )
+        if self.request.mode == "deterministic" and self.request.replay_supplement is None:
+            raise ValueError("deterministic rehearsal requires a verified replay supplement")
+        return manifest
+
+    @staticmethod
+    def _validate_envelope_response(
+        repository: AnkiCurationRepository,
+        job_id: UUID,
+        revision: int,
+        status: int,
+        body: Any,
+    ) -> None:
+        """Require a persisted, job-bound plan before proving apply is denied."""
+        if status != 201 or not isinstance(body, dict):
+            raise RuntimeError(f"envelope creation was rejected: HTTP {status}")
+        required = {"job_id", "envelope_id", "payload_sha256", "summary", "reconciliation"}
+        if set(body) != required or body.get("job_id") != str(job_id):
+            raise RuntimeError("envelope response identity is malformed or mismatched")
+        try:
+            envelope_id = UUID(str(body["envelope_id"]))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("envelope response has an invalid envelope identity") from exc
+        payload_sha256 = body.get("payload_sha256")
+        if not isinstance(payload_sha256, str) or not _is_sha256(payload_sha256):
+            raise RuntimeError("envelope response has an invalid payload digest")
+        stored = repository.get_job_envelope(job_id)
+        if (
+            stored is None
+            or stored.id != envelope_id
+            or stored.job_id != job_id
+            or stored.payload_sha256 != payload_sha256
+        ):
+            raise RuntimeError("envelope response is not bound to the persisted job plan")
+        persisted = repository.get_envelope(envelope_id)
+        if (
+            getattr(persisted, "review_revision", None) != revision
+            or getattr(persisted, "job_id", None) != job_id
+        ):
+            raise RuntimeError("envelope review identity does not match the saved review")
+        expected_summary = _envelope_summary(persisted)
+        if body.get("summary") != expected_summary:
+            raise RuntimeError("envelope response summary does not match the persisted plan")
+        reconciliation = body.get("reconciliation")
+        if not isinstance(reconciliation, dict) or not reconciliation.get(
+            "can_render_envelope", False
+        ):
+            raise RuntimeError("envelope response lacks renderable reconciliation evidence")
+        persisted_reconciliation = repository.reviewed_reconciliation(job_id, revision)
+        if not isinstance(persisted_reconciliation, dict):
+            raise RuntimeError("persisted revision-bound reconciliation is unavailable")
+        if _canonical_json(reconciliation) != _canonical_json(persisted_reconciliation):
+            raise RuntimeError(
+                "envelope reconciliation does not exactly match the persisted review"
+            )
+        if str(persisted_reconciliation.get("contract_version", "")) != getattr(
+            persisted, "reconciliation_contract_version", None
+        ):
+            raise RuntimeError("envelope reconciliation does not match the persisted plan")
+        expected_acknowledgement = (
+            persisted_reconciliation.get("selection", {}).get("overflow_acknowledgement")
+            if isinstance(persisted_reconciliation.get("selection"), dict)
+            else None
+        ) or {"required": False}
+        if (
+            getattr(persisted, "overflow_acknowledgement_provenance", None)
+            != expected_acknowledgement
+        ):
+            raise RuntimeError("envelope acknowledgement is not bound to persisted reconciliation")
+
+    def _install_replay_supplement(self, overlay: MaterializedCapsule) -> None:
+        supplement = self.request.replay_supplement
+        if supplement is None:
+            return
+        verified = _verify_replay_supplement(
+            supplement,
+            self.request.expected_replay_supplement_manifest_sha256,
+        )
+        replay = overlay.root / "replay"
+        for relative in verified:
+            destination = replay / relative
+            if destination.exists() or destination.is_symlink():
+                if relative != "structured.json" or destination.read_bytes() != b"{}\n":
+                    raise RuntimeError("fresh overlay replay destination is not empty")
+                destination.unlink()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(supplement / relative, destination)
+            # The source may have changed after the initial supplement audit.
+            # Validate the copied bytes against the operator-bound manifest
+            # before a child process can consume them.
+            expected = _replay_supplement_entries(
+                supplement,
+                self.request.expected_replay_supplement_manifest_sha256,
+            )[relative]
+            if (
+                destination.is_symlink()
+                or destination.stat().st_size != expected["bytes"]
+                or _sha256_file(destination) != expected["sha256"]
+            ):
+                raise RuntimeError("copied replay supplement bytes do not match operator manifest")
+        self._record("replay_supplement_installed", files=len(verified))
+
+    def _environment(
+        self, overlay: MaterializedCapsule, manifest: CapsuleManifest
+    ) -> dict[str, str]:
+        data = overlay.root / "runtime-data"
+        anki = overlay.root / "anki"
+        replay = overlay.root / "replay"
+        study = overlay.root / "study"
+        icloud_staging = overlay.root / "icloud-staging"
+        try:
+            repository_root = overlay.root / manifest.logical_roots["repository"]
+        except KeyError as exc:
+            raise ValueError("capsule has no materialized repository root") from exc
+        prompt_directory = repository_root / "src" / "oms_hub" / "anki" / "prompt_assets"
+        if not prompt_directory.is_dir():
+            raise ValueError("materialized repository prompt assets are unavailable")
+        data.mkdir(parents=True, exist_ok=True)
+        anki.mkdir(parents=True, exist_ok=True)
+        replay.mkdir(parents=True, exist_ok=True)
+        study.mkdir(parents=True, exist_ok=True)
+        icloud_staging.mkdir(parents=True, exist_ok=True)
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "OMS_HUB_DATABASE_URL": f"sqlite:///{overlay.database_path}",
+            "OMS_HUB_DATA_DIR": str(data),
+            "OMS_HUB_STUDY_ROOT": str(study),
+            "OMS_HUB_ICLOUD_STAGING_ROOT": str(icloud_staging),
+            "OMS_HUB_ANKI_DATA_DIR": str(anki),
+            "OMS_HUB_ANKI_ENABLED": "true",
+            "OMS_HUB_ANKI_REHEARSAL_MODE": self.request.mode,
+            "OMS_HUB_ANKI_REHEARSAL_OVERLAY_DIR": str(overlay.root),
+            "OMS_HUB_ANKI_REHEARSAL_RUN_NONCE": self._runtime_evidence_nonce,
+            "OMS_HUB_ANKI_REHEARSAL_SOURCE_ROOT": str(
+                self.request.implementation_repository.resolve() / "src"
+            ),
+            "OMS_HUB_ANKI_REHEARSAL_SOURCE_TREE_SHA256": self._required_source_tree_sha256(),
+            "OMS_HUB_ANKI_REHEARSAL_SOURCE_COMMIT": self.request.expected_implementation_commit,
+            "OMS_HUB_ANKI_REHEARSAL_SOURCE_TREE": self.request.expected_implementation_tree,
+            "OMS_HUB_ANKI_REHEARSAL_REPLAY_DIR": str(replay),
+            "OMS_HUB_ANKI_PROMPT_DIRECTORY": str(prompt_directory),
+            "OMS_HUB_ANKI_PROMPT_GIT_SYNC": "false",
+            "OMS_HUB_DASHBOARD_HOST": "127.0.0.1",
+            "OMS_HUB_DASHBOARD_PORT": str(self.request.port),
+            "OMS_HUB_ANKI_WORKER_POLL_SECONDS": "0.5",
+            "OMS_HUB_ANKI_CONNECT_URL": "http://127.0.0.1:8765",
+        }
+        if self.request.mode == "shadow":
+            env["OMS_HUB_ANKI_REHEARSAL_EGRESS_PINS_JSON"] = (
+                self.request.shadow_egress_pins_json or ""
+            )
+        if self.request.failure_injection is not None and not self._failure_injection_consumed:
+            stage, event = self.request.failure_injection
+            env.update(
+                {
+                    "OMS_HUB_ANKI_REHEARSAL_FAILURE_STAGE": stage.value,
+                    "OMS_HUB_ANKI_REHEARSAL_FAILURE_EVENT": event,
+                    "OMS_HUB_ANKI_REHEARSAL_FAILURE_OCCURRENCE": "1",
+                    "OMS_HUB_ANKI_REHEARSAL_FAILURE_EVIDENCE_DIR": str(
+                        overlay.root / "rehearsal" / "runtime-evidence"
+                    ),
+                    # Dispatched is deliberately an uncatchable child-side
+                    # cutoff.  Other durable boundaries wait for this parent
+                    # to terminate the paused child.
+                    "OMS_HUB_ANKI_REHEARSAL_FAILURE_ACTION": (
+                        "hard_exit" if event == "dispatched" else "pause"
+                    ),
+                }
+            )
+        return env
+
+    def _consume_failure_injection(
+        self, overlay: MaterializedCapsule, interlock: dict[str, Any]
+    ) -> None:
+        """Archive first-child proof before launching an unarmed replacement."""
+        source = overlay.root / "rehearsal" / "runtime-evidence" / "provider-fault-interlock.json"
+        archived = source.with_name("provider-fault-interlock.initial.json")
+        if not source.is_file() or archived.exists():
+            raise RuntimeError("failure-injection interlock cannot be consumed safely")
+        try:
+            persisted = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError("failure-injection interlock cannot be consumed safely") from exc
+        if persisted != interlock:
+            raise RuntimeError("failure-injection interlock changed before restart")
+        source.replace(archived)
+        self._failure_injection_consumed = True
+        self._record(
+            "failure_injection_disarmed_for_restarted_child",
+            archived_interlock=archived.name,
+            stopped_child_pid=interlock["pid"],
+        )
+
+    def _command(self) -> list[str]:
+        return [
+            str(self.request.trusted_python.resolve()),
+            "-I",
+            "-S",
+            "-c",
+            _VERIFIED_SOURCE_BOOTSTRAP,
+            str(self.request.implementation_repository.resolve() / "src"),
+            str(self.request.implementation_repository.resolve()),
+            self.request.expected_implementation_commit,
+            self.request.expected_implementation_tree,
+            self._runtime_evidence_nonce,
+            str(self._attestation_path()),
+        ]
+
+    def _attestation_path(self) -> Path:
+        return (
+            self.request.overlay / "rehearsal" / "runtime-evidence" / "implementation-source.json"
+        )
+
+    def _verify_implementation_identity(self) -> None:
+        repository = self.request.implementation_repository.resolve()
+        if not repository.is_dir():
+            raise ValueError("implementation repository is unavailable")
+        trusted_python = self.request.trusted_python.resolve()
+        if not trusted_python.is_file() or not os.access(trusted_python, os.X_OK):
+            raise ValueError("trusted Python interpreter is unavailable or not executable")
+        commit = self._git_output(repository, "rev-parse", "HEAD")
+        tree = self._git_output(repository, "rev-parse", "HEAD^{tree}")
+        dirty = self._git_output(repository, "status", "--porcelain")
+        if commit != self.request.expected_implementation_commit:
+            raise ValueError("implementation commit does not match the supplied identity")
+        if tree != self.request.expected_implementation_tree:
+            raise ValueError("implementation tree does not match the supplied identity")
+        if dirty:
+            raise ValueError("implementation repository must be clean")
+        self._source_tree_sha256 = self._source_tree_identity(repository)
+
+    def _required_source_tree_sha256(self) -> str:
+        if self._source_tree_sha256 is None:
+            raise RuntimeError("implementation source tree was not verified")
+        return self._source_tree_sha256
+
+    @staticmethod
+    def _source_tree_identity(repository: Path) -> str:
+        completed = subprocess.run(
+            ["git", "-C", str(repository), "ls-files", "--", "src"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise ValueError("implementation source tree cannot be verified")
+        files: dict[str, str] = {}
+        for relative in completed.stdout.splitlines():
+            path = repository / relative
+            if not path.is_file() or path.is_symlink():
+                raise ValueError("implementation source tree is unavailable")
+            files[relative] = _sha256_file(path)
+        if not files:
+            raise ValueError("implementation source tree is unavailable")
+        return hashlib.sha256(_canonical_json(files).encode()).hexdigest()
+
+    @staticmethod
+    def _git_output(repository: Path, *args: str) -> str:
+        completed = subprocess.run(
+            ["git", "-C", str(repository), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise ValueError("implementation Git identity cannot be verified")
+        return completed.stdout.strip()
+
+    def _start_and_connect(
+        self, overlay: MaterializedCapsule, manifest: CapsuleManifest
+    ) -> LoopbackHttp:
+        self._assert_loopback_port_is_free()
+        argv = self._command()
+        logs = overlay.root / "rehearsal" / "process-logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        serial = len(self._children) + 1
+        stdout_path = logs / f"serve-{serial}.stdout.log"
+        stderr_path = logs / f"serve-{serial}.stderr.log"
+        stdout = stdout_path.open("wb")
+        stderr = stderr_path.open("wb")
+        child = self._popen(
+            argv, env=self._environment(overlay, manifest), stdout=stdout, stderr=stderr
+        )
+        observation = ProcessObservation(child.pid, _timestamp(), None, None, tuple(argv))
+        self._children.append(_Child(child, observation, stdout_path, stderr_path, stdout, stderr))
+        self._record("process_started", pid=child.pid, argv=_redact_argv(argv))
+        client = self._http_factory(self.request.port)
+        deadline = self._clock() + min(30.0, self.request.timeout_seconds)
+        while True:
+            if child.poll() is not None:
+                raise RuntimeError(f"oms-hub serve exited during startup: {child.returncode}")
+            try:
+                health = client.bootstrap_csrf()
+                self._validate_source_attestation()
+                self._validate_child_health(health, child.pid)
+                return client
+            except (URLError, TimeoutError, ConnectionError) as exc:
+                if self._clock() >= deadline:
+                    raise RuntimeError(
+                        "oms-hub serve did not become reachable on loopback"
+                    ) from exc
+                time.sleep(0.1)
+
+    def _validate_source_attestation(self) -> None:
+        path = self._attestation_path()
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Hub source import attestation is unavailable") from exc
+        if not isinstance(value, dict) or value.get("source") != str(
+            self.request.implementation_repository.resolve() / "src"
+        ):
+            raise RuntimeError("Hub source import attestation has the wrong verified source")
+        modules = value.get("modules")
+        if not isinstance(modules, dict) or set(modules) != {"oms_hub", "oms_hub.cli"}:
+            raise RuntimeError("Hub source import attestation is malformed")
+        source = self.request.implementation_repository.resolve() / "src"
+        try:
+            for module_path in modules.values():
+                if not isinstance(module_path, str):
+                    raise ValueError
+                Path(module_path).resolve().relative_to(source)
+        except ValueError as exc:
+            raise RuntimeError("Hub imported outside verified implementation source") from exc
+        if not isinstance(value.get("python_executable"), str) or not isinstance(
+            value.get("python_version"), str
+        ):
+            raise RuntimeError("Hub source import attestation lacks interpreter identity")
+        if not all(
+            value.get(key) is True for key in ("isolated", "no_site", "ignore_environment")
+        ) or not isinstance(value.get("bootstrap_dependency_paths"), list):
+            raise RuntimeError("Hub source import attestation lacks isolated bootstrap evidence")
+        if (
+            value.get("pid") is None
+            or value.get("run_nonce") != self._runtime_evidence_nonce
+            or value.get("commit") != self.request.expected_implementation_commit
+            or value.get("tree") != self.request.expected_implementation_tree
+            or value.get("source_tree_sha256") != self._required_source_tree_sha256()
+            or not isinstance(value.get("source_files"), dict)
+        ):
+            raise RuntimeError("Hub source import attestation has an invalid source identity")
+        self._source_attestation = value
+
+    def _assert_loopback_port_is_free(self) -> None:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            try:
+                probe.bind(("127.0.0.1", self.request.port))
+            except OSError as exc:
+                raise RuntimeError("rehearsal loopback port is already in use") from exc
+
+    def _validate_child_health(self, health: Any, pid: int) -> None:
+        expected = {
+            "rehearsal_nonce": self._runtime_evidence_nonce,
+            "rehearsal_pid": str(pid),
+            "rehearsal_source": str(self.request.implementation_repository.resolve() / "src"),
+            "rehearsal_source_tree_sha256": self._required_source_tree_sha256(),
+            "rehearsal_commit": self.request.expected_implementation_commit,
+            "rehearsal_tree": self.request.expected_implementation_tree,
+        }
+        if not isinstance(health, dict) or any(
+            health.get(key) != value for key, value in expected.items()
+        ):
+            raise RuntimeError("rehearsal health attestation does not identify the launched child")
+
+    def _poll(self, client: LoopbackHttp, job_id: UUID, *, terminal: bool) -> dict[str, Any]:
+        deadline = self._clock() + self.request.timeout_seconds
+        latest: dict[str, Any] = {}
+        while self._clock() < deadline:
+            status, payload = client.request("GET", f"/api/anki/jobs/{job_id}")
+            if status != 200 or not isinstance(payload, dict):
+                raise RuntimeError(f"job status failed: HTTP {status}")
+            latest = payload
+            state = payload.get("state")
+            self._record("job_state", state=state, attempts=payload.get("attempts"))
+            if terminal:
+                if state in {"ready_for_review", "failed", "canceled", "removed"}:
+                    return latest
+            elif state not in {"queued", "preflight"}:
+                return latest
+            time.sleep(0.25)
+        raise TimeoutError("timed out waiting for the curation worker")
+
+    def _wait_for_durable_boundary(
+        self, client: LoopbackHttp, repository: AnkiCurationRepository, job_id: UUID
+    ) -> dict[str, Any]:
+        deadline = self._clock() + self.request.timeout_seconds
+        while self._clock() < deadline:
+            status, payload = client.request("GET", f"/api/anki/jobs/{job_id}")
+            if status != 200 or not isinstance(payload, dict):
+                raise RuntimeError(f"job status failed: HTTP {status}")
+            artifacts = repository.list_stage_artifacts(job_id)
+            if artifacts:
+                for stage in CurationStage:
+                    repository.require_no_indeterminate_provider_attempt(job_id, stage)
+                self._record(
+                    "durable_stage_boundary", state=payload.get("state"), artifacts=len(artifacts)
+                )
+                return payload
+            if payload.get("state") in {"failed", "canceled", "removed"}:
+                raise RuntimeError("job ended before a restartable durable stage boundary")
+            time.sleep(0.25)
+        raise TimeoutError("timed out waiting for a durable stage boundary")
+
+    def _wait_for_child_interlock(
+        self,
+        repository: AnkiCurationRepository,
+        job_id: UUID,
+        stage: CurationStage,
+        checkpoint: ProviderCheckpoint,
+        overlay: MaterializedCapsule,
+    ) -> dict[str, Any]:
+        """Wait for a child-written post-commit interlock, not a DB polling race."""
+        deadline = self._clock() + self.request.timeout_seconds
+        path = overlay.root / "rehearsal" / "runtime-evidence" / "provider-fault-interlock.json"
+        while self._clock() < deadline:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                payload = None
+            except (OSError, json.JSONDecodeError) as exc:
+                raise RuntimeError("child failure interlock evidence is invalid") from exc
+            if isinstance(payload, dict):
+                required = {
+                    "schema_version": 1,
+                    "run_nonce": self._runtime_evidence_nonce,
+                    "stage": stage.value,
+                    "occurrence": 1,
+                    "boundary_selector": checkpoint,
+                }
+                if any(payload.get(key) != value for key, value in required.items()):
+                    raise RuntimeError("child failure interlock evidence has the wrong identity")
+                event = payload.get("event")
+                is_terminal = event in {
+                    "accepted",
+                    "validation_failed",
+                    "transport_failed",
+                    "contract_failed",
+                }
+                if (checkpoint == "terminal" and not is_terminal) or (
+                    checkpoint != "terminal" and event != checkpoint
+                ):
+                    raise RuntimeError("child failure interlock evidence has the wrong boundary")
+                if not isinstance(payload.get("pid"), int) or not isinstance(
+                    payload.get("call_index"), int
+                ):
+                    raise RuntimeError("child failure interlock evidence is malformed")
+                self._record(
+                    "failure_injection_child_interlocked",
+                    stage=stage.value,
+                    checkpoint=checkpoint,
+                    actual_event=event,
+                    pid=payload["pid"],
+                    action=payload.get("action"),
+                )
+                return payload
+            latest = self._children[-1].process
+            if latest.poll() is not None:
+                raise RuntimeError("child exited before writing a durable failure interlock")
+            time.sleep(0.10)
+        raise TimeoutError("timed out waiting for requested provider checkpoint")
+
+    def _validate_fault_cutoff(
+        self,
+        repository: AnkiCurationRepository,
+        job_id: UUID,
+        interlock: dict[str, Any],
+    ) -> None:
+        """Prove the target call stopped at the requested durable boundary."""
+        rows = [
+            row
+            for row in repository.list_provider_attempt_events(job_id)
+            if row.get("stage") == interlock["stage"]
+            and row.get("call_index") == interlock["call_index"]
+            and row.get("subcall_ordinal") == interlock.get("subcall_ordinal", 0)
+        ]
+        events = [str(row["event"]) for row in rows]
+        boundary = str(interlock["event"])
+        if not events or events[-1] != boundary or events.count(boundary) != 1:
+            raise RuntimeError("provider fault interlock did not preserve an exact event cutoff")
+        if boundary == "begun" and "dispatched" in events:
+            raise RuntimeError("begun fault interlock allowed provider dispatch")
+        if boundary == "dispatched" and len(events) != 2:
+            raise RuntimeError("dispatched fault interlock has later durable provider evidence")
+        self._record(
+            "failure_injection_cutoff_verified",
+            stage=interlock["stage"],
+            checkpoint=interlock["boundary_selector"],
+            actual_event=boundary,
+            events=events,
+        )
+
+    def _validate_crash_interlock_evidence(
+        self, overlay: MaterializedCapsule, interlock: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Validate a killed child without pretending its shutdown was graceful."""
+        if not self._children or self._children[-1].process.pid != interlock.get("pid"):
+            raise RuntimeError("failure interlock did not identify the active child")
+        if self._source_attestation is None or self._source_attestation.get("pid") != interlock.get(
+            "pid"
+        ):
+            raise RuntimeError("failure interlock PID is not bound to the verified source child")
+        expected_action = "hard_exit" if interlock.get("event") == "dispatched" else "pause"
+        if interlock.get("action") != expected_action:
+            raise RuntimeError("failure interlock has an unexpected child action")
+        directory = overlay.root / "rehearsal" / "runtime-evidence"
+        adapter_path = directory / "read-only-anki-mutation-ledger.json"
+        adapter = (
+            _load_runtime_ledger(adapter_path)
+            if adapter_path.is_file()
+            else {"schema_version": 1, "run_nonce": self._runtime_evidence_nonce, "records": []}
+        )
+        egress = _load_runtime_ledger(directory / "egress-decisions.json")
+        _validate_adapter_ledger(adapter, self._runtime_evidence_nonce)
+        _validate_egress_ledger(
+            egress,
+            self._runtime_evidence_nonce,
+            self.request.mode,
+            require_clean_lifecycle=False,
+        )
+        # Validators above are intentionally runtime-only; narrow their JSON
+        # fields again here before count/index use so malformed crash evidence
+        # cannot become a type error or be treated as a valid checkpoint.
+        adapter_records = adapter.get("records")
+        egress_records = egress.get("records")
+        if not isinstance(adapter_records, list) or not isinstance(egress_records, list):
+            raise RuntimeError("crash evidence records are malformed")
+        authorizations = _require_no_denied_egress_authorizations(egress_records, "crash")
+        if self.request.mode == "deterministic" and any(
+            str(row["host"]).casefold().rstrip(".") not in {"localhost", "127.0.0.1", "::1"}
+            for row in authorizations
+        ):
+            raise RuntimeError("deterministic crash evidence records non-loopback egress")
+        markers = [row["kind"] for row in egress_records if row["kind"] != "authorization"]
+        if markers != ["startup"]:
+            raise RuntimeError("crash evidence must have one unbalanced startup marker")
+        self._record(
+            "crash_interlock_evidence_verified",
+            child_pid=interlock["pid"],
+            checkpoint=interlock["event"],
+            adapter_records=len(adapter_records),
+            egress_records=len(egress_records),
+        )
+        return adapter, egress
+
+    def _restart_after_durable_boundary(
+        self,
+        repository: AnkiCurationRepository,
+        job_id: UUID,
+        observed: dict[str, Any],
+        *,
+        overlay: MaterializedCapsule | None = None,
+    ) -> None:
+        before = _durable_terminal_attempt_keys(repository.list_provider_attempt_events(job_id))
+        self._record(
+            "restart_after_observed_durable_boundary",
+            observed_state=observed.get("state"),
+            unsupported_finer_checkpoints=False,
+        )
+        self._stop_latest(overlay)
+        after = _durable_terminal_attempt_keys(repository.list_provider_attempt_events(job_id))
+        if before != after:
+            raise RuntimeError("provider-attempt ledger changed while process was stopped")
+
+    def _assert_provider_ledger_is_restart_safe(
+        self,
+        repository: AnkiCurationRepository,
+        job_id: UUID,
+        *,
+        expected_precrash_logical_identities: set[tuple[object, ...]] | None = None,
+        precrash_event_id_cutoff: int | None = None,
+        fault_interlock: dict[str, Any] | None = None,
+    ) -> None:
+        for stage in CurationStage:
+            repository.require_no_indeterminate_provider_attempt(job_id, stage)
+        rows = repository.list_provider_attempt_events(job_id)
+        replay_namespace_sha256 = _replay_namespace_sha256(repository.require_job(job_id))
+        logical = _stable_logical_call_ids(rows, replay_namespace_sha256)
+        event_groups = _stable_logical_call_event_groups(rows, replay_namespace_sha256)
+        for events in event_groups.values():
+            _validate_recovered_provider_lifecycle(events)
+        # Do not derive a final outcome from evidence until every execution
+        # stream has passed the repository's append-only lifecycle contract.
+        canonical_outcomes = {
+            identity: _canonical_provider_outcome(events)
+            for identity, events in event_groups.items()
+        }
+        if expected_precrash_logical_identities is not None:
+            if precrash_event_id_cutoff is None or fault_interlock is None:
+                raise RuntimeError("begun recovery lacks an append-only pre-crash cutoff")
+            cutoff = precrash_event_id_cutoff
+            if not expected_precrash_logical_identities.issubset(logical):
+                raise RuntimeError("restart changed a pre-crash stable logical provider identity")
+            post_restart_rows = [row for row in rows if _provider_event_id(row) > cutoff]
+            if not post_restart_rows:
+                raise RuntimeError("begun recovery has no newly appended provider evidence")
+            precrash_target_rows = [
+                row
+                for row in rows
+                if _provider_event_id(row) <= cutoff
+                and row.get("stage") == fault_interlock["stage"]
+                and row.get("call_index") == fault_interlock["call_index"]
+                and row.get("subcall_ordinal", 0) == fault_interlock.get("subcall_ordinal", 0)
+            ]
+            if [row.get("event") for row in precrash_target_rows] != ["begun"]:
+                raise RuntimeError("begun recovery pre-crash target was dispatched")
+            target_identity = _stable_logical_call_id(
+                precrash_target_rows[0], replay_namespace_sha256
+            )
+            target_events = event_groups[target_identity]
+            post_target_rows = [
+                row
+                for row in post_restart_rows
+                if _stable_logical_call_id(row, replay_namespace_sha256) == target_identity
+            ]
+            if sum(row.get("event") == "dispatched" for row in target_events) != 1:
+                raise RuntimeError("begun recovery duplicated or omitted provider dispatch")
+            if not any(row.get("event") in _TERMINAL_PROVIDER_EVENTS for row in post_target_rows):
+                raise RuntimeError("begun recovery terminal outcome was not appended after restart")
+            self._record(
+                "begun_recovery_stable_identity_verified",
+                before=len(expected_precrash_logical_identities),
+                after=len(logical),
+                post_restart_events=len(post_restart_rows),
+                target_dispatches=1,
+                target_final_outcome=canonical_outcomes[target_identity],
+            )
+        self._record(
+            "restart_provider_ledger_verified",
+            stable_logical_calls=len(event_groups),
+            canonical_final_outcomes=len(canonical_outcomes),
+        )
+
+    def _stop_latest(
+        self, overlay: MaterializedCapsule | None = None, *, hard: bool = False
+    ) -> None:
+        if not self._children:
+            return
+        self._stop_child(self._children[-1], overlay, hard=hard)
+
+    def _stop_child(
+        self, child: _Child, overlay: MaterializedCapsule | None = None, *, hard: bool = False
+    ) -> None:
+        if child.process.poll() is None:
+            if hard:
+                child.process.kill()
+            else:
+                child.process.terminate()
+            try:
+                child.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                child.process.kill()
+                child.process.wait(timeout=10)
+        child.observation = ProcessObservation(
+            child.observation.pid,
+            child.observation.started_at,
+            _timestamp(),
+            child.process.returncode,
+            child.observation.argv,
+        )
+        child.stdout.close()
+        child.stderr.close()
+        self._record(
+            "process_stopped",
+            pid=child.process.pid,
+            exit_code=child.process.returncode,
+            hard_termination=hard,
+        )
+        if overlay is not None and not hard:
+            self._validate_runtime_evidence(overlay)
+
+    def _stop_all(self, overlay: MaterializedCapsule | None = None) -> None:
+        for child in reversed(self._children):
+            if child.process.poll() is None:
+                self._stop_child(child, overlay)
+
+    def _record(self, event: str, **values: Any) -> None:
+        self._timeline.append({"at": _timestamp(), "event": event, **values})
+
+    def _write_evidence(
+        self,
+        manifest: CapsuleManifest,
+        overlay: MaterializedCapsule,
+        client: LoopbackHttp,
+        repository: AnkiCurationRepository,
+        job_id: UUID,
+        review: dict[str, Any],
+        saved: dict[str, Any],
+        envelope_status: int,
+        envelope: Any,
+        apply: Any,
+        adapter_ledger: dict[str, Any],
+        egress_ledger: dict[str, Any],
+    ) -> None:
+        records: dict[str, Any] = {
+            "capsule.json": manifest.model_dump(mode="json"),
+            "implementation.json": {
+                "repository": str(self.request.implementation_repository.resolve()),
+                "commit": self.request.expected_implementation_commit,
+                "tree": self.request.expected_implementation_tree,
+                "trusted_python": str(self.request.trusted_python.resolve()),
+                "trusted_python_sha256": _sha256_file(self.request.trusted_python),
+                "source_attestation": self._source_attestation,
+            },
+            "overlay.json": {
+                "root": str(overlay.root),
+                "database": str(overlay.database_path),
+                "path_audit": [asdict(row) for row in overlay.path_audit],
+            },
+            "processes.json": [
+                asdict(obs) | {"argv": _redact_argv(list(obs.argv))}
+                for item in self._children
+                for obs in [item.observation]
+            ],
+            "environment.json": _environment_evidence(self._environment(overlay, manifest)),
+            "http-transcript.json": client.transcript,
+            "timeline.json": self._timeline,
+            "provider-attempt-ledger.json": repository.list_provider_attempt_events(job_id),
+            "read-only-anki-mutation-ledger.json": adapter_ledger,
+            "egress-decisions.json": egress_ledger,
+            "process-logs.json": {
+                f"{child.stdout_path.name}": _file_descriptor(child.stdout_path)
+                for child in self._children
+            }
+            | {
+                f"{child.stderr_path.name}": _file_descriptor(child.stderr_path)
+                for child in self._children
+            },
+            "restart-observations.json": [
+                item for item in self._timeline if "restart" in str(item.get("event"))
+            ],
+            "review.json": review,
+            "review-save.json": saved,
+            "envelope.json": {"status": envelope_status, "body": envelope},
+            "apply.json": {"status": 423, "body": apply},
+        }
+        _write_deterministic_zip(self.request.evidence_zip, records)
+
+    def _write_failure_evidence(
+        self,
+        manifest: CapsuleManifest,
+        overlay: MaterializedCapsule,
+        client: LoopbackHttp,
+        repository: AnkiCurationRepository,
+        job_id: UUID,
+        interlock: dict[str, Any],
+        adapter_ledger: dict[str, Any],
+        egress_ledger: dict[str, Any],
+    ) -> None:
+        """Package a crash checkpoint without implying a successful rehearsal."""
+        records: dict[str, Any] = {
+            "capsule.json": manifest.model_dump(mode="json"),
+            "failure.json": {
+                "result": "FAIL_CLOSED_MANUAL_RECOVERY_REQUIRED",
+                "ready_for_review": False,
+                "reason": "crash-bound provider checkpoint is not authorized for automatic replay",
+                "interlock": interlock,
+                "execution_kind": "actual_hub_process_rehearsal",
+            },
+            "processes.json": [
+                asdict(item.observation) | {"argv": _redact_argv(list(item.observation.argv))}
+                for item in self._children
+            ],
+            "timeline.json": self._timeline,
+            "http-transcript.json": client.transcript,
+            "provider-attempt-ledger.json": repository.list_provider_attempt_events(job_id),
+            "read-only-anki-mutation-ledger.json": adapter_ledger,
+            "egress-decisions.json": egress_ledger,
+            "process-logs.json": {
+                f"{child.stdout_path.name}": _file_descriptor(child.stdout_path)
+                for child in self._children
+            }
+            | {
+                f"{child.stderr_path.name}": _file_descriptor(child.stderr_path)
+                for child in self._children
+            },
+        }
+        _write_deterministic_zip(self.request.evidence_zip, records)
+
+    def _validate_runtime_evidence(
+        self, overlay: MaterializedCapsule
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        directory = overlay.root / "rehearsal" / "runtime-evidence"
+        adapter = _load_runtime_ledger(directory / "read-only-anki-mutation-ledger.json")
+        egress = _load_runtime_ledger(directory / "egress-decisions.json")
+        _validate_adapter_ledger(adapter, self._runtime_evidence_nonce)
+        _validate_egress_ledger(egress, self._runtime_evidence_nonce, self.request.mode)
+        records = egress.get("records")
+        if not isinstance(records, list):
+            raise RuntimeError("runtime egress evidence records are malformed")
+        _require_no_denied_egress_authorizations(records, "runtime")
+        self._record(
+            "runtime_evidence_verified",
+            adapter_records=len(adapter["records"]),
+            egress_records=len(egress["records"]),
+        )
+        return adapter, egress
+
+
+def fresh_job_payload(failed: CurationJob) -> dict[str, Any]:
+    """Create a new API request from the domain object, never a copied DB row."""
+    if failed.pipeline_contract_version.value != "card_centric_v2":
+        raise ValueError("preserved job must be card_centric_v2")
+    request = CreateCurationJobRequest(
+        lecture_id=failed.lecture_id,
+        block_id=failed.block_id,
+        source_revision_ids=failed.source_revision_ids,
+        deck_allowlist=failed.deck_allowlist,
+        tag_allowlist=failed.tag_allowlist,
+        instruction_text=failed.instruction_text,
+        target_deck=failed.target_deck,
+        target_tag=failed.target_tag,
+        index_snapshot_id=failed.index_snapshot_id,
+        lcl_prompt_version=failed.lcl_prompt_version,
+        judgment_rubric_version=failed.judgment_rubric_version,
+        gap_prompt_version=failed.gap_prompt_version,
+        provider=cast(Literal["openai", "gemini", "anthropic", "openrouter"], failed.provider),
+        model=failed.model,
+        pipeline_contract_version="card_centric_v2",
+        resolved_model_config=failed.resolved_model_config.canonical_document(),
+        source_revision_hashes=failed.source_revision_hashes,
+        summary_outline_id=failed.summary_outline_id,
+        summary_outline_sha256=failed.summary_outline_sha256,
+        semantic_generation=failed.semantic_generation,
+        companion_generation=failed.companion_generation,
+    )
+    return request.model_dump(mode="json")
+
+
+def _envelope_summary(envelope: Any) -> dict[str, int]:
+    """Independent summary check matching the API's published plan summary."""
+    created = added = removed = 0
+    retagged: set[int] = set()
+    for operation in envelope.operations:
+        if isinstance(operation, AddNotesOperation):
+            created += len(operation.notes)
+        elif isinstance(operation, AddTagsOperation):
+            added += len(operation.note_ids)
+            retagged.update(operation.note_ids)
+        elif isinstance(operation, RemoveTagsOperation):
+            removed += len(operation.note_ids)
+            retagged.update(operation.note_ids)
+    return {
+        "notes_created": created,
+        "existing_notes_retagged": len(retagged),
+        "tags_added": added,
+        "tags_removed": removed,
+    }
+
+
+def unchanged_review_payload(review: dict[str, Any]) -> dict[str, Any]:
+    job = review.get("job")
+    groups = review.get("groups")
+    if (
+        not isinstance(job, dict)
+        or not isinstance(groups, dict)
+        or not isinstance(job.get("review_revision"), int)
+    ):
+        raise ValueError("review response is malformed")
+    candidates = [*groups.get("pass_1_matches", []), *groups.get("recovered_in_pass_2", [])]
+    selections = {
+        str(item["note_id"]): bool(item.get("selected"))
+        for item in candidates
+        if isinstance(item, dict) and isinstance(item.get("note_id"), int)
+    }
+    gaps = groups.get("generated_cards", [])
+    edits = [
+        {
+            "card_id": item["card_id"],
+            "concept_id": item["concept_id"],
+            "text": item["text"],
+            "extra": item.get("extra", ""),
+            "selected": bool(item.get("selected")),
+        }
+        for item in gaps
+        if isinstance(item, dict) and all(key in item for key in ("card_id", "concept_id", "text"))
+    ]
+    return {
+        "expected_revision": job["review_revision"],
+        "reviewer": "a0-rehearsal",
+        "candidate_selections": selections,
+        "gap_edits": edits,
+        "tag_patches": [],
+    }
+
+
+_TERMINAL_PROVIDER_EVENTS = frozenset(
+    {"accepted", "validation_failed", "transport_failed", "contract_failed"}
+)
+
+
+def _durable_terminal_attempt_keys(rows: list[dict[str, object]]) -> set[tuple[object, ...]]:
+    """Compare the persisted audit rows while stopping an ordinary run."""
+    return {
+        (
+            row["stage"],
+            row["stage_attempt"],
+            row["mode"],
+            row["call_index"],
+            row.get("subcall_ordinal", 0),
+            row["event"],
+        )
+        for row in rows
+        if row.get("event") in _TERMINAL_PROVIDER_EVENTS
+    }
+
+
+def _stable_logical_call_ids(
+    rows: list[dict[str, object]], replay_namespace_sha256: str
+) -> set[tuple[object, ...]]:
+    """Return a stage-attempt-independent logical provider identity.
+
+    Stage attempts and process PIDs are deliberately excluded: recovery is only
+    safe to label duplicate-free when frozen call material compares identically
+    across the killed process and the restart.
+    """
+    return {_stable_logical_call_id(row, replay_namespace_sha256) for row in rows}
+
+
+def _stable_logical_call_id(
+    row: dict[str, object], replay_namespace_sha256: str
+) -> tuple[object, ...]:
+    """Stable key: exclude job, stage attempt, mode, and audit request hash."""
+    return (
+        replay_namespace_sha256,
+        row["stage"],
+        row["kind"],
+        row["batch_index"],
+        row["batch_note_ids_sha256"],
+        row.get("subcall_ordinal", 0),
+        _stable_provider_payload_sha256(row, replay_namespace_sha256),
+    )
+
+
+def _stable_logical_call_event_groups(
+    rows: list[dict[str, object]], replay_namespace_sha256: str
+) -> dict[tuple[object, ...], list[dict[str, object]]]:
+    """Group append-only evidence by the stable logical provider call.
+
+    The durable event name, stage attempt, process mode, audit call index, and
+    request hash identify an execution observation, not a new provider call.
+    Recovery must account for all of those observations as one logical call.
+    """
+    groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
+    for row in rows:
+        groups.setdefault(_stable_logical_call_id(row, replay_namespace_sha256), []).append(row)
+    for events in groups.values():
+        events.sort(key=_provider_event_id)
+    return groups
+
+
+def _canonical_provider_outcome(events: list[dict[str, object]]) -> str:
+    """Return the one final outcome for a recovered stable logical call.
+
+    A provider response can be accepted before a later caller-level contract
+    check rejects it.  That append-only ``accepted -> contract_failed`` history
+    remains one call with a final failed outcome.  Any other multiple terminal
+    chains are inconsistent evidence and fail closed.
+    """
+    terminal_events = [
+        str(row.get("event")) for row in events if row.get("event") in _TERMINAL_PROVIDER_EVENTS
+    ]
+    if not terminal_events:
+        raise RuntimeError("recovered provider logical call lacks a terminal outcome")
+    if len(terminal_events) == 1:
+        return terminal_events[0]
+    if len(terminal_events) == 2 and terminal_events == ["accepted", "contract_failed"]:
+        return terminal_events[1]
+    raise RuntimeError("recovered provider logical call has inconsistent final chains")
+
+
+def _validate_recovered_provider_lifecycle(events: list[dict[str, object]]) -> None:
+    """Validate one stable logical call across its pre- and post-restart executions.
+
+    A restart can append a fresh ``begun`` observation for the same frozen
+    provider material, so append-only lifecycle validation applies separately
+    to each durable execution identity.  Dispatch cardinality applies across
+    the stable logical call: recovery may not turn one provider call into two.
+    """
+
+    executions: dict[tuple[object, ...], list[dict[str, object]]] = {}
+    for row in events:
+        execution = (
+            row["stage_attempt"],
+            row["mode"],
+            row["call_index"],
+            row.get("subcall_ordinal", 0),
+        )
+        executions.setdefault(execution, []).append(row)
+    dispatches = sum(row.get("event") == "dispatched" for row in events)
+    if dispatches > 1:
+        raise RuntimeError("recovered provider logical call duplicated provider dispatch")
+    requires_dispatch = any(
+        row.get("event")
+        in {"dispatched", "response_received", *_TERMINAL_PROVIDER_EVENTS}
+        for row in events
+    )
+    if requires_dispatch and dispatches != 1:
+        raise RuntimeError("recovered provider logical call omitted provider dispatch")
+    for execution_events in executions.values():
+        prior: list[str] = []
+        for row in execution_events:
+            event = str(row.get("event"))
+            try:
+                _validate_provider_event_append(prior, event)
+            except ValueError as exc:
+                raise RuntimeError("recovered provider lifecycle is invalid") from exc
+            prior.append(event)
+
+
+def _stable_provider_payload_sha256(row: dict[str, object], replay_namespace_sha256: str) -> str:
+    """Canonical digest of frozen provider material, separate from audit request identity."""
+    return hashlib.sha256(
+        _canonical_json(
+            {
+                "replay_namespace_sha256": replay_namespace_sha256,
+                "provider": row["provider"],
+                "model": row["model"],
+                "instruction_sha256": row["instruction_sha256"],
+                "input_sha256": row["input_sha256"],
+                "output_schema_sha256": row["output_schema_sha256"],
+                "generation_parameters_sha256": row["generation_parameters_sha256"],
+                "cache_prefix_sha256": row["cache_prefix_sha256"],
+            }
+        ).encode()
+    ).hexdigest()
+
+
+def _replay_namespace_sha256(job: CurationJob) -> str:
+    namespace = replay_namespace_from_job_source(
+        configuration_sha256=job.configuration_sha256,
+        pipeline_contract_version=job.pipeline_contract_version.value,
+        model_config_sha256=job.model_config_sha256,
+        source_revision_hashes=job.source_revision_hashes,
+        index_snapshot_id=job.index_snapshot_id,
+        companion_generation=job.companion_generation,
+        semantic_generation=job.semantic_generation,
+        source_index_generation=job.source_index_generation,
+    )
+    return hashlib.sha256(namespace.encode()).hexdigest()
+
+
+def _provider_event_id_cutoff(rows: list[dict[str, object]]) -> int:
+    return max((_provider_event_id(row) for row in rows), default=0)
+
+
+def _provider_event_id(row: dict[str, object]) -> int:
+    identifier = row.get("id")
+    if not isinstance(identifier, int) or identifier <= 0:
+        raise RuntimeError("provider-attempt evidence lacks append-only event identifiers")
+    return identifier
+
+
+def _decode_json(value: bytes) -> Any:
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value.decode("utf-8", errors="replace")
+
+
+def _redact(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: (
+                "[REDACTED]"
+                if any(marker in key.upper() for marker in _SECRET_MARKERS)
+                else _redact(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    if isinstance(value, str):
+        return _bounded_redacted(value)
+    return value
+
+
+def _bounded(value: Any) -> Any:
+    encoded = json.dumps(value, sort_keys=True, default=str)
+    return (
+        value
+        if len(encoded) <= _MAX_BODY
+        else {
+            "truncated": True,
+            "sha256": hashlib.sha256(encoded.encode()).hexdigest(),
+            "bytes": len(encoded),
+        }
+    )
+
+
+def _redact_argv(argv: list[str]) -> list[str]:
+    return [
+        "[REDACTED]" if any(marker.lower() in item.lower() for marker in _SECRET_MARKERS) else item
+        for item in argv
+    ]
+
+
+def _environment_evidence(environment: dict[str, str]) -> dict[str, Any]:
+    return {
+        key: {
+            "sha256": hashlib.sha256(value.encode()).hexdigest(),
+            "value": "[REDACTED]"
+            if any(marker in key.upper() for marker in _SECRET_MARKERS)
+            else value,
+        }
+        for key, value in sorted(environment.items())
+    }
+
+
+def _write_deterministic_zip(destination: Path, records: dict[str, Any]) -> None:
+    if destination.exists():
+        raise ValueError("evidence destination already exists")
+    entries = {
+        name: json.dumps(
+            _redact(value), sort_keys=True, separators=(",", ":"), default=str
+        ).encode()
+        + b"\n"
+        for name, value in records.items()
+    }
+    digest_manifest = {
+        name: hashlib.sha256(value).hexdigest() for name, value in sorted(entries.items())
+    }
+    entries["sha256-manifest.json"] = (
+        json.dumps(digest_manifest, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(destination, "x", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name in sorted(entries):
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(info, entries[name])
+
+
+def _verify_evidence_zip(path: Path) -> None:
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            if archive.testzip() is not None:
+                raise RuntimeError("failure-injection evidence ZIP CRC verification failed")
+            manifest = json.loads(archive.read("sha256-manifest.json"))
+            if not isinstance(manifest, dict):
+                raise ValueError
+            for name, expected in manifest.items():
+                if not isinstance(name, str) or not isinstance(expected, str):
+                    raise ValueError
+                if hashlib.sha256(archive.read(name)).hexdigest() != expected:
+                    raise RuntimeError("failure-injection evidence ZIP digest verification failed")
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
+        if isinstance(exc, RuntimeError):
+            raise
+        raise RuntimeError("failure-injection evidence ZIP is invalid") from exc
+
+
+def _failure_injection_stage_order() -> tuple[CurationStage, ...]:
+    return (
+        CurationStage.CARD_LEDGER,
+        CurationStage.CARD_PREFILTER,
+        CurationStage.CARD_FAST_CLASSIFY,
+        CurationStage.CARD_CLASSIFY,
+        CurationStage.CARD_RESIDUAL,
+        CurationStage.CARD_GAP_FILL,
+        CurationStage.DEDUPE,
+    )
+
+
+def _failure_injection_stage_label(stage: CurationStage) -> str:
+    labels = {
+        CurationStage.CARD_LEDGER: "S2 CARD_LEDGER",
+        CurationStage.CARD_PREFILTER: "S4a CARD_PREFILTER",
+        CurationStage.CARD_FAST_CLASSIFY: "S4b CARD_FAST_CLASSIFY",
+        CurationStage.CARD_CLASSIFY: "S4c CARD_CLASSIFY",
+        CurationStage.CARD_RESIDUAL: "S6 CARD_RESIDUAL",
+        CurationStage.CARD_GAP_FILL: "S7 CARD_GAP_FILL",
+        CurationStage.DEDUPE: "S8 DEDUPE",
+    }
+    return labels[stage]
+
+
+def _timestamp() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _file_descriptor(path: Path) -> dict[str, Any]:
+    return {"sha256": _sha256_file(path), "bytes": path.stat().st_size}
+
+
+def _verify_replay_supplement(root: Path, expected_manifest_sha256: str | None) -> tuple[str, ...]:
+    return tuple(sorted(_replay_supplement_entries(root, expected_manifest_sha256)))
+
+
+def _replay_supplement_entries(
+    root: Path, expected_manifest_sha256: str | None
+) -> dict[str, dict[str, object]]:
+    if expected_manifest_sha256 is None or not _is_sha256(expected_manifest_sha256):
+        raise ValueError("replay supplement requires an operator-supplied manifest SHA-256")
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError("replay supplement directory is unavailable")
+    manifest_path = root / _REPLAY_MANIFEST_NAME
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError("replay supplement manifest is unavailable")
+    if _sha256_file(manifest_path) != expected_manifest_sha256:
+        raise ValueError("replay supplement manifest SHA-256 does not match operator identity")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("replay supplement manifest is invalid") from exc
+    if (
+        not isinstance(manifest, dict)
+        or set(manifest) != {"schema_version", "manifest_rule", "files"}
+        or manifest.get("schema_version") != 1
+        or manifest.get("manifest_rule") != "self-excluding"
+        or not isinstance(manifest.get("files"), list)
+    ):
+        raise ValueError("replay supplement manifest is invalid")
+    expected: dict[str, dict[str, object]] = {}
+    for entry in manifest["files"]:
+        if not isinstance(entry, dict) or set(entry) != {"path", "bytes", "sha256"}:
+            raise ValueError("replay supplement manifest has invalid file entries")
+        relative = entry.get("path")
+        if (
+            not isinstance(relative, str)
+            or not _replay_relative_is_allowed(relative)
+            or relative in expected
+            or not isinstance(entry.get("bytes"), int)
+            or entry["bytes"] < 0
+            or not isinstance(entry.get("sha256"), str)
+            or not _is_sha256(entry["sha256"])
+        ):
+            raise ValueError("replay supplement manifest has unsafe file entries")
+        expected[relative] = entry
+    if "structured.json" not in expected:
+        raise ValueError("replay supplement requires structured.json")
+    observed: set[str] = set()
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ValueError("replay supplement contains a symbolic link")
+        if path.is_dir():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative == _REPLAY_MANIFEST_NAME:
+            continue
+        if not _replay_relative_is_allowed(relative):
+            raise ValueError("replay supplement contains an unknown or sensitive file")
+        entry = expected.get(relative)
+        if entry is None:
+            raise ValueError("replay supplement contains an unmanifested file")
+        if path.stat().st_size != entry["bytes"] or _sha256_file(path) != entry["sha256"]:
+            raise ValueError("replay supplement file integrity changed")
+        observed.add(relative)
+    if observed != set(expected):
+        raise ValueError("replay supplement files are missing")
+    return expected
+
+
+def _replay_relative_is_allowed(relative: str) -> bool:
+    path = Path(relative)
+    if path.is_absolute() or ".." in path.parts or "\\" in relative:
+        return False
+    try:
+        _reject_sensitive_path(relative)
+    except CapsuleIntegrityError:
+        return False
+    return relative == "structured.json" or relative.startswith("vectors/")
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _load_runtime_ledger(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"runtime evidence is missing: {path.name}") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"runtime evidence is malformed: {path.name}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"runtime evidence is malformed: {path.name}")
+    return payload
+
+
+def _validate_adapter_ledger(payload: dict[str, Any], nonce: str) -> None:
+    if (
+        set(payload) != {"schema_version", "run_nonce", "records"}
+        or payload.get("schema_version") != 1
+        or payload.get("run_nonce") != nonce
+        or not isinstance(payload.get("records"), list)
+    ):
+        raise RuntimeError("read-only mutation evidence is stale or malformed")
+    for ordinal, record in enumerate(payload["records"], 1):
+        if (
+            not isinstance(record, dict)
+            or set(record) != {"action", "ordinal", "timestamp", "outcome"}
+            or not isinstance(record.get("action"), str)
+            or record.get("ordinal") != ordinal
+            or not isinstance(record.get("timestamp"), str)
+            or record.get("outcome") != "denied"
+        ):
+            raise RuntimeError("read-only mutation evidence has an invalid sequence")
+
+
+def _validate_egress_ledger(
+    payload: dict[str, Any], nonce: str, mode: Mode, *, require_clean_lifecycle: bool = True
+) -> None:
+    if (
+        set(payload) != {"schema_version", "run_nonce", "mode", "records"}
+        or payload.get("schema_version") != 1
+        or payload.get("run_nonce") != nonce
+        or payload.get("mode") != mode
+        or not isinstance(payload.get("records"), list)
+    ):
+        raise RuntimeError("egress evidence is stale or malformed")
+    records = payload["records"]
+    markers: list[str] = []
+    expected = {
+        "kind",
+        "mode",
+        "host",
+        "port",
+        "resolved_address",
+        "allowed",
+        "ordinal",
+        "timestamp",
+    }
+    for ordinal, record in enumerate(records, 1):
+        if (
+            not isinstance(record, dict)
+            or set(record) != expected
+            or record.get("mode") != mode
+            or record.get("ordinal") != ordinal
+            or not isinstance(record.get("timestamp"), str)
+        ):
+            raise RuntimeError("egress evidence has an invalid sequence")
+        kind = record.get("kind")
+        if kind in {"startup", "shutdown"}:
+            if any(
+                record.get(key) is not None
+                for key in ("host", "port", "resolved_address", "allowed")
+            ):
+                raise RuntimeError("egress evidence marker is malformed")
+            markers.append(kind)
+        elif not (
+            kind == "authorization"
+            and isinstance(record.get("host"), str)
+            and isinstance(record.get("port"), int)
+            and (
+                record.get("resolved_address") is None
+                or isinstance(record.get("resolved_address"), str)
+            )
+            and isinstance(record.get("allowed"), bool)
+        ):
+            raise RuntimeError("egress evidence authorization is malformed")
+    if not markers or markers[0] != "startup":
+        raise RuntimeError("egress evidence lacks startup marker")
+    if require_clean_lifecycle:
+        if markers[-1] != "shutdown":
+            raise RuntimeError("egress evidence lacks clean lifecycle markers")
+        # A restarted process may legitimately follow one crash-validated
+        # startup without a shutdown.  The final child still has to close its
+        # own lifecycle, and repeated unaccounted starts remain fail-closed.
+        if markers.count("startup") - markers.count("shutdown") not in {0, 1}:
+            raise RuntimeError("egress evidence has incomplete lifecycle markers")
+
+
+def _require_no_denied_egress_authorizations(
+    records: list[object], phase: str
+) -> list[dict[str, Any]]:
+    """Lifecycle markers are expected; denied authorization attempts are not."""
+    authorizations = [
+        row for row in records if isinstance(row, dict) and row.get("kind") == "authorization"
+    ]
+    if any(row.get("allowed") is False for row in authorizations):
+        raise RuntimeError(f"{phase} evidence records denied or forbidden egress authorization")
+    return authorizations

@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+import numpy as np
 import pytest
 
 import oms_hub.anki.stages as stages_module
@@ -136,6 +137,38 @@ class _FailingDedupeEmbedder:
         raise VoyageEmbeddingError("retryable provider outage")
 
 
+class _RecordingDedupeEmbedder:
+    def __init__(self) -> None:
+        self.document_calls: list[tuple[str, ...]] = []
+
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        input_type: InputType,
+    ) -> FloatMatrix:
+        assert input_type == "document"
+        self.document_calls.append(tuple(texts))
+        return np.asarray([[1.0, 0.0] for _ in texts], dtype=np.float32)
+
+
+class _PinnedDedupeSemantic:
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple[int, ...], str]] = []
+
+    async def pinned_document_vectors(
+        self,
+        *,
+        note_ids: tuple[int, ...],
+        expected_generation: str,
+    ) -> dict[int, FloatMatrix]:
+        self.calls.append((note_ids, expected_generation))
+        return {
+            note_id: np.asarray([0.0, 1.0], dtype=np.float32)
+            for note_id in note_ids
+        }
+
+
 def _dedupe_stage_fixture(
     embedder: object,
     *,
@@ -165,9 +198,11 @@ def _dedupe_stage_fixture(
     )
     runner = CurationServicesRunner.__new__(CurationServicesRunner)
     runner.embedder = embedder
+    runner.semantic = _PinnedDedupeSemantic()
     context = SimpleNamespace(
         job=SimpleNamespace(
             pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+            semantic_generation="semantic-generation",
             resolved_model_config=SimpleNamespace(
                 gap_fill_s7=SimpleNamespace(provider="openai", model="fixture")
             ),
@@ -310,6 +345,41 @@ def test_card_dedupe_v2_preserves_existing_duplicate_identity() -> None:
     assert terminal.fact_id == "C01-M1"
     assert terminal.kind == "duplicate_of_existing"
     assert terminal.duplicate_of == DuplicateIdentity(existing_note_id=41)
+
+
+def test_card_dedupe_v2_uses_pinned_existing_vectors_without_uploading_notes() -> None:
+    note = CardRecord(
+        note_id=41,
+        content_sha256="1" * 64,
+        text="Frozen existing note document text",
+        extra="existing extra must not be embedded",
+        tags=(),
+        deck_names=("AnKing",),
+    )
+    embedder = _RecordingDedupeEmbedder()
+    runner, context, passage_id = _dedupe_stage_fixture(embedder, cards=(note,))
+    _set_dedupe_existing(context, note.note_id, passage_id)
+
+    product = asyncio.run(
+        runner._card_dedupe_v2(
+            context,
+            {note.note_id: note},
+            (
+                _generated_dedupe_row(
+                    "G01",
+                    "C01-M1",
+                    "Generated proposal document text",
+                    passage_id,
+                ),
+            ),
+        )
+    )
+
+    assert product.payload["resolutions"][0]["status"] == "generated"
+    assert embedder.document_calls == [("Generated proposal document text",)]
+    assert "Frozen existing note document text" not in embedder.document_calls[0]
+    assert "existing extra must not be embedded" not in embedder.document_calls[0]
+    assert runner.semantic.calls == [((41,), "semantic-generation")]
 
 
 def test_card_dedupe_v2_preserves_generated_duplicate_card_identity() -> None:

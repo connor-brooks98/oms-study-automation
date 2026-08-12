@@ -1,5 +1,5 @@
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -12,7 +12,7 @@ from oms_hub.anki.card_centric_contracts import SemanticDedupeReview
 from oms_hub.anki.correction_contracts import DuplicateIdentity
 from oms_hub.anki.gaps import GapCardProposal
 from oms_hub.anki.normalize import NormalizedNote, normalize_html
-from oms_hub.anki.semantic.domain import EmbeddingClient
+from oms_hub.anki.semantic.domain import EmbeddingClient, FloatMatrix
 
 _CLOZE = re.compile(
     r"\{\{c\d+::(.*?)(?:::[^{}]*?)?\}\}",
@@ -91,15 +91,18 @@ class DeduplicationService:
         proposal: GapCardProposal,
         existing_notes: Sequence[NormalizedNote],
         batch: Sequence[GapCardProposal],
+        *,
+        existing_document_vectors: Mapping[int, FloatMatrix] | None = None,
     ) -> DeduplicationResult:
         proposed_text = _proposal_text(proposal)
-        comparisons = [
+        existing_comparisons = [
             _Comparison(
                 identifier=f"note:{note.note_id}",
                 text=_normalize_card_text(note.text, note.extra),
             )
             for note in existing_notes
-        ] + [
+        ]
+        proposal_comparisons = [
             _Comparison(
                 identifier=_proposal_identifier(other),
                 text=_proposal_text(other),
@@ -107,6 +110,7 @@ class DeduplicationService:
             for other in batch
             if other is not proposal
         ]
+        comparisons = existing_comparisons + proposal_comparisons
         exact = [
             DedupeMatch(
                 identifier=comparison.identifier,
@@ -134,19 +138,45 @@ class DeduplicationService:
         # VoyageEmbeddingError must reach the worker unchanged so its retry
         # policy remains effective.  Lexical evidence is requested only by the
         # explicit exhausted-retry adapter below.
-        embedded = await self.embedder.embed(
-            [
-                proposed_text,
-                *(comparison.text for comparison in comparisons),
-            ],
-            input_type="document",
-        )
+        if existing_document_vectors is None:
+            embedded = await self.embedder.embed(
+                [
+                    proposed_text,
+                    *(comparison.text for comparison in comparisons),
+                ],
+                input_type="document",
+            )
+        else:
+            embedded = await self.embedder.embed(
+                [
+                    _proposal_document_text(proposal),
+                    *(
+                        _proposal_document_text(other)
+                        for other in batch
+                        if other is not proposal
+                    ),
+                ],
+                input_type="document",
+            )
         try:
             vectors = np.asarray(embedded, dtype=np.float32)
         except (TypeError, ValueError) as exc:
             raise SemanticDedupeIntegrityError(
                 "deduplication embeddings must be a numeric rectangular matrix"
             ) from exc
+        if existing_document_vectors is not None:
+            existing_vectors = _pinned_existing_document_vectors(
+                existing_notes,
+                existing_document_vectors,
+            )
+            if vectors.ndim != 2 or vectors.shape[1] != existing_vectors.shape[1]:
+                raise SemanticDedupeIntegrityError(
+                    "pinned existing document vectors have incompatible dimensions"
+                )
+            vectors = np.concatenate(
+                (vectors[:1], existing_vectors, vectors[1:]),
+                axis=0,
+            )
         _validate_embedding_vectors(vectors, expected_rows=len(comparisons) + 1)
         norms = np.linalg.norm(vectors, axis=1, keepdims=True)
         if np.any(norms == 0):
@@ -252,6 +282,38 @@ def _validate_embedding_vectors(vectors: np.ndarray, *, expected_rows: int) -> N
         raise SemanticDedupeIntegrityError("deduplication embeddings must be finite")
 
 
+def _pinned_existing_document_vectors(
+    existing_notes: Sequence[NormalizedNote],
+    vectors_by_note_id: Mapping[int, FloatMatrix],
+) -> np.ndarray:
+    note_ids = [note.note_id for note in existing_notes]
+    if len(note_ids) != len(set(note_ids)):
+        raise SemanticDedupeIntegrityError("existing document vector identities are ambiguous")
+    if set(vectors_by_note_id) != set(note_ids):
+        raise SemanticDedupeIntegrityError(
+            "pinned existing document vectors do not match existing note identities"
+        )
+    try:
+        vectors = np.asarray(
+            [vectors_by_note_id[note_id] for note_id in note_ids],
+            dtype=np.float32,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SemanticDedupeIntegrityError(
+            "pinned existing document vectors must be a numeric rectangular matrix"
+        ) from exc
+    _validate_embedding_vectors(vectors, expected_rows=len(note_ids))
+    if vectors.shape[1] < 1:
+        raise SemanticDedupeIntegrityError(
+            "pinned existing document vectors have invalid dimensions"
+        )
+    if np.any(np.linalg.norm(vectors, axis=1) == 0):
+        raise SemanticDedupeIntegrityError(
+            "pinned existing document vectors cannot contain zero vectors"
+        )
+    return vectors
+
+
 def _proposal_identifier(proposal: GapCardProposal) -> str:
     card_id = proposal.provenance.get("card_centric_generated_card_id")
     if isinstance(card_id, str) and card_id.strip():
@@ -322,6 +384,12 @@ def _proposal_text(proposal: GapCardProposal) -> str:
         proposal.fields.get("Text", ""),
         proposal.fields.get("Extra", ""),
     )
+
+
+def _proposal_document_text(proposal: GapCardProposal) -> str:
+    """Match the frozen snapshot's ``semantic_text(note)`` document space."""
+    text = normalize_html(proposal.fields.get("Text", ""))
+    return text if text.strip() else normalize_html(proposal.fields.get("Extra", ""))
 
 
 def _normalize_card_text(text: str, extra: str) -> str:

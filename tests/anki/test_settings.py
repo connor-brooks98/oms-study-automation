@@ -113,3 +113,100 @@ def test_enabled_anki_requires_a_distinct_dashboard_port(
     )
 
     assert settings.dashboard_port == 8787
+
+
+def test_rehearsal_settings_require_every_mutable_path_inside_overlay(
+    tmp_path: Path,
+) -> None:
+    overlay = tmp_path / "overlay"
+    with pytest.raises(ValidationError, match="database.*inside the overlay"):
+        Settings(
+            _env_file=None,
+            data_dir=overlay / "data",
+            anki_data_dir=overlay / "anki",
+            database_url=f"sqlite:///{tmp_path / 'outside.db'}",
+            anki_enabled=True,
+            anki_rehearsal_mode="deterministic",
+            anki_rehearsal_overlay_dir=overlay,
+            anki_rehearsal_replay_dir=overlay / "replay",
+            study_root=overlay / "study",
+            icloud_staging_root=overlay / "icloud-staging",
+        )
+
+
+def test_rehearsal_settings_are_loopback_nonpublic_and_git_static(
+    tmp_path: Path,
+) -> None:
+    overlay = tmp_path / "overlay"
+    base = {
+        "data_dir": overlay / "data",
+        "anki_data_dir": overlay / "anki",
+        "database_url": f"sqlite:///{overlay / 'hub.db'}",
+        "anki_enabled": True,
+        "anki_rehearsal_mode": "deterministic",
+        "anki_rehearsal_overlay_dir": overlay,
+        "anki_rehearsal_replay_dir": overlay / "replay",
+        "study_root": overlay / "study",
+        "icloud_staging_root": overlay / "icloud-staging",
+    }
+    settings = Settings(_env_file=None, **base)
+    assert settings.anki_rehearsal_mode == "deterministic"
+    for update in (
+        {"dashboard_host": "0.0.0.0"},
+        {"public_hostname": "study.example.com"},
+        {"anki_prompt_git_sync": True},
+    ):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, **base, **update)
+
+
+def test_rehearsal_rejects_the_default_windows_study_root(tmp_path: Path) -> None:
+    overlay = tmp_path / "overlay"
+    with pytest.raises(ValidationError, match="study root.*inside the overlay"):
+        Settings(
+            _env_file=None,
+            data_dir=overlay / "data",
+            anki_data_dir=overlay / "anki",
+            database_url=f"sqlite:///{overlay / 'hub.db'}",
+            anki_enabled=True,
+            anki_rehearsal_mode="deterministic",
+            anki_rehearsal_overlay_dir=overlay,
+            anki_rehearsal_replay_dir=overlay / "replay",
+            icloud_staging_root=overlay / "icloud-staging",
+        )
+
+
+def test_rehearsal_rejects_unfenced_or_missing_input_roots(tmp_path: Path) -> None:
+    overlay = tmp_path / "overlay"
+    base = {
+        "data_dir": overlay / "data",
+        "anki_data_dir": overlay / "anki",
+        "database_url": f"sqlite:///{overlay / 'hub.db'}",
+        "anki_enabled": True,
+        "anki_rehearsal_mode": "deterministic",
+        "anki_rehearsal_overlay_dir": overlay,
+        "anki_rehearsal_replay_dir": overlay / "replay",
+        "study_root": overlay / "study",
+        "icloud_staging_root": overlay / "icloud-staging",
+    }
+    with pytest.raises(ValidationError, match="requires an iCloud staging root"):
+        Settings(_env_file=None, **{**base, "icloud_staging_root": None})
+    for field in (
+        "anki_prompt_directory",
+        "anki_fixture_artifact_path",
+        "transcript_prompt_path",
+    ):
+        with pytest.raises(ValidationError, match="inside the materialized overlay"):
+            Settings(_env_file=None, **base, **{field: tmp_path / "outside"})
+
+    materialized_inputs = overlay / "sources" / "a0data"
+    settings = Settings(
+        _env_file=None,
+        **base,
+        anki_prompt_directory=materialized_inputs / "prompts",
+        anki_fixture_artifact_path=materialized_inputs / "fixture.json",
+        transcript_prompt_path=materialized_inputs / "transcript.md",
+    )
+    assert settings.anki_prompt_directory == materialized_inputs / "prompts"
+    assert settings.anki_fixture_artifact_path == materialized_inputs / "fixture.json"
+    assert settings.transcript_prompt_path == materialized_inputs / "transcript.md"

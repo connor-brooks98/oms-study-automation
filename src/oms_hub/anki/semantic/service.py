@@ -219,6 +219,44 @@ class SemanticIndexService:
         scores = matrix @ query_matrix.T
         return {note_id: float(scores[index].max()) for index, note_id in enumerate(rows)}
 
+    async def pinned_document_vectors(
+        self,
+        *,
+        note_ids: Collection[int],
+        expected_generation: str,
+    ) -> dict[int, FloatMatrix]:
+        """Return requested frozen document vectors without provider embedding.
+
+        This is deliberately all-or-nothing: callers that pin a semantic
+        generation must not quietly substitute a current snapshot or re-embed
+        missing documents.
+        """
+        snapshot = self._pinned_snapshot(expected_generation)
+        requested_ids = set(note_ids)
+        if any(note_id <= 0 for note_id in requested_ids):
+            raise SemanticCoverageError("scoped semantic note IDs must be positive")
+        if not requested_ids:
+            return {}
+        rows = {
+            note_id: row
+            for row, note_id in enumerate(snapshot.manifest.note_ids)
+            if note_id in requested_ids
+        }
+        missing = requested_ids - set(rows)
+        if missing:
+            raise SemanticCoverageError("pinned semantic snapshot lacks scoped notes")
+        ordered_note_ids = tuple(sorted(requested_ids))
+        matrix = snapshot.matrix[[rows[note_id] for note_id in ordered_note_ids]].astype(
+            np.float32
+        )
+        _validate_note_vectors(matrix, dimensions=self.dimensions)
+        vectors: dict[int, FloatMatrix] = {}
+        for row, note_id in enumerate(ordered_note_ids):
+            vector = matrix[row].copy()
+            vector.flags.writeable = False
+            vectors[note_id] = vector
+        return vectors
+
     async def pinned_centroid_similarity(
         self,
         concept_terms: Sequence[Sequence[str]],
@@ -274,6 +312,7 @@ class SemanticIndexService:
         snapshot = self.store.load(
             expected_model=self.model,
             expected_dimensions=self.dimensions,
+            expected_generation=expected_generation,
         )
         if str(snapshot.manifest.generation) != expected_generation:
             raise ValueError("pinned semantic generation is no longer active")

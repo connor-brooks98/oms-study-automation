@@ -34,6 +34,7 @@ from oms_hub.anki.correction_contracts import (
     SelectionTier,
 )
 from oms_hub.anki.domain import SourceKind
+from oms_hub.anki.provider_attempts import emit_provider_event, provider_call_scope
 from oms_hub.anki.sources import SourcePassage
 from oms_hub.llm.anthropic import resolve_anthropic_model_capabilities
 from oms_hub.llm.domain import (
@@ -142,16 +143,17 @@ class CardCentricLedgerService:
         parameters_sha256 = _canonical_sha256(parameters)
         request_ids: tuple[str, ...]
         try:
-            result = self.structured.generate_json(
-                self.instruction,
-                input_text,
-                output_model=CardConceptLedger,
-                provider=provider,
-                model=model,
-                # S2 is deliberately summary-only: transcript and slide text are
-                # reserved for the source-grounded S4/S6/S7 calls.
-                options=options,
-            )
+            with provider_call_scope(batch_index=0, subcall_ordinal=0):
+                result = self.structured.generate_json(
+                    self.instruction,
+                    input_text,
+                    output_model=CardConceptLedger,
+                    provider=provider,
+                    model=model,
+                    # S2 is deliberately summary-only: transcript and slide text are
+                    # reserved for the source-grounded S4/S6/S7 calls.
+                    options=options,
+                )
         except StructuredOutputError as error:
             _record_ledger_attempt(
                 record_attempt,
@@ -175,14 +177,15 @@ class CardCentricLedgerService:
                 separators=(",", ":"),
             )
             try:
-                result = self.structured.generate_json(
-                    repair_instruction,
-                    repair_input,
-                    output_model=CardConceptLedger,
-                    provider=provider,
-                    model=model,
-                    options=options,
-                )
+                with provider_call_scope(batch_index=0, kind="repair", subcall_ordinal=0):
+                    result = self.structured.generate_json(
+                        repair_instruction,
+                        repair_input,
+                        output_model=CardConceptLedger,
+                        provider=provider,
+                        model=model,
+                        options=options,
+                    )
             except StructuredOutputError as repair_error:
                 _record_ledger_attempt(
                     record_attempt,
@@ -876,19 +879,18 @@ class CardCentricClassifier:
         )
         attempts: list[StructuredJSONResult[CardClassificationBatchOutput]] = []
         try:
-            first = self._request(
-                self.instruction,
-                request,
-                provider=provider,
-                model=model,
-                source_index=source_index,
-            )
+            note_ids = tuple(card.note_id for card in cards)
+            with provider_call_scope(batch_index=batch_index, batch_note_ids=note_ids):
+                first = self._request(
+                    self.instruction,
+                    request,
+                    provider=provider,
+                    model=model,
+                    source_index=source_index,
+                )
             attempts.append(first)
-            validated = self.validate_output(
-                first.value,
-                cards=cards,
-                source_index=source_index,
-                concept_ids=concept_ids,
+            validated = self._validate_attempt(
+                first, cards=cards, source_index=source_index, concept_ids=concept_ids
             )
         except (StructuredOutputError, CardCentricValidationError) as first_error:
             if self.retry_attempts < 2:
@@ -908,20 +910,22 @@ class CardCentricClassifier:
                 separators=(",", ":"),
                 ensure_ascii=False,
             )
-            repaired = self._request(
-                f"{self.instruction}\n\nRepair the invalid classifier batch. "
-                "Correct only the reported defect and return the complete batch.",
-                repair_input,
-                provider=provider,
-                model=model,
-                source_index=source_index,
-            )
+            with provider_call_scope(
+                batch_index=batch_index,
+                batch_note_ids=tuple(card.note_id for card in cards),
+                kind="repair",
+            ):
+                repaired = self._request(
+                    f"{self.instruction}\n\nRepair the invalid classifier batch. "
+                    "Correct only the reported defect and return the complete batch.",
+                    repair_input,
+                    provider=provider,
+                    model=model,
+                    source_index=source_index,
+                )
             attempts.append(repaired)
-            validated = self.validate_output(
-                repaired.value,
-                cards=cards,
-                source_index=source_index,
-                concept_ids=concept_ids,
+            validated = self._validate_attempt(
+                repaired, cards=cards, source_index=source_index, concept_ids=concept_ids
             )
         result = attempts[-1]
         return _CompletedBatch(
@@ -965,6 +969,36 @@ class CardCentricClassifier:
             model=model,
             options=options,
         )
+
+    def _validate_attempt(
+        self,
+        result: StructuredJSONResult[CardClassificationBatchOutput],
+        *,
+        cards: Sequence[CardRecord],
+        source_index: CardCentricSourceIndex,
+        concept_ids: tuple[str, ...],
+    ) -> tuple[CardClassification, ...]:
+        try:
+            return self.validate_output(
+                result.value,
+                cards=cards,
+                source_index=source_index,
+                concept_ids=concept_ids,
+            )
+        except CardCentricValidationError as exc:
+            expected = {card.note_id for card in cards}
+            observed = [item.note_id for item in result.value.results]
+            emit_provider_event(
+                result.attempt_handle,
+                "contract_failed",
+                error=str(exc),
+                missing_note_ids=tuple(expected - set(observed)),
+                extra_note_ids=tuple(set(observed) - expected),
+                duplicate_note_ids=tuple(
+                    sorted({note_id for note_id in observed if observed.count(note_id) > 1})
+                ),
+            )
+            raise
 
     def validate_output(
         self,

@@ -135,7 +135,7 @@ class _UniqueEmbeddings:
     async def embed(self, texts: list[str], *, input_type: str) -> np.ndarray:
         del input_type
         # The proposed card is orthogonal to each comparison in every S8 call.
-        return np.eye(len(texts), dtype=np.float32)
+        return np.eye(len(texts), 64, dtype=np.float32)
 
 
 class _NoResidualHits:
@@ -170,6 +170,18 @@ class _NoResidualHits:
         del eligible_note_ids, limit
         assert expected_generation == "fixture-generation"
         return [[] for _ in queries]
+
+    async def pinned_document_vectors(
+        self,
+        *,
+        note_ids: tuple[int, ...],
+        expected_generation: str,
+    ) -> dict[int, np.ndarray]:
+        assert expected_generation == "fixture-generation"
+        return {
+            note_id: np.asarray([0.0, 1.0, *([0.0] * 62)], dtype=np.float32)
+            for note_id in note_ids
+        }
 
 
 def _runner(

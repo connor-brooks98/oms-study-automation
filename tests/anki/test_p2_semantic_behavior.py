@@ -1,7 +1,9 @@
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
+from uuid import UUID
 
 import numpy as np
 import pytest
@@ -19,6 +21,12 @@ from oms_hub.anki.card_centric_contracts import (
 )
 from oms_hub.anki.domain import CurationStage, PipelineContractVersion, SourceKind
 from oms_hub.anki.pipeline import PinnedInputChanged
+from oms_hub.anki.provider_attempts import (
+    ProviderAttemptBinding,
+    ProviderEventEvidence,
+    bind_provider_attempts,
+)
+from oms_hub.anki.rehearsal.vectors import ReplayEmbeddingClient
 from oms_hub.anki.semantic.domain import (
     DocumentRecord,
     InputType,
@@ -265,6 +273,168 @@ def test_prefilter_routes_only_reported_unavailable_notes_to_s4b_and_audits_them
     prefilter, unavailable = stages_module._read_card_prefilter(context, scope)
     assert prefilter.pre_filtered_note_ids == (1, 3)
     assert unavailable == (3,)
+
+
+def test_bound_s4a_and_s6_query_embeddings_replay_with_stable_provider_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S4a/S6 query embeds must be replayable provider attempts, never unscoped calls."""
+    cards = (_card(1), _card(2))
+    passage = SourcePassage.create(
+        revision_id=1,
+        lecture_id=1,
+        artifact_id="replay",
+        source_kind=SourceKind.SLIDE,
+        locator="slide:1",
+        text="Primary evidence",
+        slide_number=1,
+    )
+    source = build_source_index(
+        (passage,), snapshot_id="replay", source_revision_hashes={1: "a" * 64}
+    )
+    scope = TagScopeResult(
+        snapshot_id="replay",
+        filters_sha256="b" * 64,
+        scoped_note_ids=(1, 2),
+        unscoped_note_ids=(),
+    )
+    ledger = CardConceptLedger(
+        lecture_entity_count=1,
+        concepts=(
+            CardConcept(
+                concept_id="C01",
+                canonical_statement="Primary fact",
+                primary_entity="Primary",
+                depth="deep",
+                emphasis_flag=False,
+                importance="high",
+            ),
+        ),
+    )
+    replay = ReplayEmbeddingClient(tmp_path / "replay-vectors", model="fixture", dimensions=2)
+    replay.seed(
+        ("Primary", "Primary Primary"),
+        input_type="query",
+        vectors=np.asarray(((1.0, 0.0), (1.0, 0.0)), dtype=np.float32),
+    )
+    semantic_store = SemanticSnapshotStore(tmp_path / "semantic")
+    generation = semantic_store.replace(
+        (_record(1, "card 1"), _record(2, "card 2")),
+        np.asarray(((1.0, 0.0), (0.0, 1.0)), dtype=np.float32),
+        model="fixture",
+    )
+    configuration = SimpleNamespace(residual_s6=SimpleNamespace(provider="openai", model="fixture"))
+
+    class EmptyClassifier:
+        async def classify(self, _cards: object, **_kwargs: object) -> ClassifierResult:
+            return ClassifierResult(results=(), telemetry=_telemetry())
+
+    monkeypatch.setattr(
+        stages_module,
+        "_card_classifier_for_version",
+        lambda *_args, **_kwargs: (EmptyClassifier(), None),
+    )
+
+    def run_once() -> tuple[list[ProviderEventEvidence], list[ProviderEventEvidence]]:
+        runner = stages_module.CurationServicesRunner.__new__(stages_module.CurationServicesRunner)
+        runner.semantic = SemanticIndexService(
+            semantic_store,
+            replay,
+            model="fixture",
+            dimensions=2,
+            min_coverage=0.0,
+            query_cache_size=8,
+        )
+        runner.structured = SimpleNamespace(generator=SimpleNamespace())  # type: ignore[assignment]
+        runner.prompts = SimpleNamespace()  # type: ignore[assignment]
+        context = SimpleNamespace(
+            job=SimpleNamespace(
+                semantic_generation=str(generation.generation),
+                pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+                resolved_model_config=configuration,
+            ),
+            prior_payloads={
+                CurationStage.SOURCE_INDEX: {
+                    "source_index": source.model_dump(mode="json"),
+                    "cards": [card.model_dump(mode="json") for card in cards],
+                },
+                CurationStage.CARD_TAG_SCOPE: {
+                    "scope": scope.model_dump(mode="json"),
+                    "residual_mode": "gaps_only",
+                },
+                CurationStage.CARD_LEDGER: {"ledger": ledger.model_dump(mode="json")},
+                CurationStage.CARD_COVERAGE: {
+                    "coverage": {"C01": {"status": "uncovered", "evidence": []}}
+                },
+                CurationStage.CARD_FAST_CLASSIFY: {
+                    "fast_classifier": {"results": []},
+                    "fallback_note_ids": [],
+                },
+                CurationStage.CARD_CLASSIFY: {
+                    "classifier": ClassifierResult(
+                        results=(), telemetry=_telemetry()
+                    ).model_dump(mode="json")
+                },
+            },
+        )
+        s4a_events: list[ProviderEventEvidence] = []
+        with bind_provider_attempts(
+            ProviderAttemptBinding(
+                job_id=UUID("12345678-1234-5678-1234-567812345678"),
+                stage=CurationStage.CARD_PREFILTER,
+                stage_attempt=1,
+                mode="canonical",
+                recorder=s4a_events.append,
+                replay_namespace="bound-query-replay",
+            )
+        ):
+            prefilter = asyncio.run(runner._card_prefilter(context))  # type: ignore[arg-type]
+        context.prior_payloads[CurationStage.CARD_PREFILTER] = prefilter.payload
+        s6_events: list[ProviderEventEvidence] = []
+        with bind_provider_attempts(
+            ProviderAttemptBinding(
+                job_id=UUID("12345678-1234-5678-1234-567812345678"),
+                stage=CurationStage.CARD_RESIDUAL,
+                stage_attempt=1,
+                mode="canonical",
+                recorder=s6_events.append,
+                replay_namespace="bound-query-replay",
+            )
+        ):
+            asyncio.run(runner._card_residual(context))  # type: ignore[arg-type]
+        return s4a_events, s6_events
+
+    first_s4a, first_s6 = run_once()
+    second_s4a, second_s6 = run_once()
+    primary_hash = hashlib.sha256(b"Primary").hexdigest()
+    residual_hash = hashlib.sha256(b"Primary Primary").hexdigest()
+    expected_input_hashes = (
+        hashlib.sha256(json.dumps([primary_hash], separators=(",", ":")).encode()).hexdigest(),
+        hashlib.sha256(json.dumps([residual_hash], separators=(",", ":")).encode()).hexdigest(),
+    )
+
+    for events, stage, expected_input_hash in (
+        (first_s4a, CurationStage.CARD_PREFILTER, expected_input_hashes[0]),
+        (first_s6, CurationStage.CARD_RESIDUAL, expected_input_hashes[1]),
+    ):
+        assert [e.event.event for e in events] == [
+            "begun",
+            "dispatched",
+            "response_received",
+            "accepted",
+        ]
+        assert {e.event.identity.stage for e in events} == {stage}
+        assert {e.event.identity.batch_index for e in events} == {0}
+        assert {e.event.identity.batch_note_ids for e in events} == {(1, 2)}
+        assert {e.event.identity.kind for e in events} == {"query_embedding"}
+        assert {e.event.identity.subcall_ordinal for e in events} == {0}
+        assert {e.input_sha256 for e in events} == {expected_input_hash}
+        assert all(e.event.response_sha256 for e in events if e.event.event == "response_received")
+        assert events[-1].event.event == "accepted"
+    assert first_s4a[0].event.request_sha256 == second_s4a[0].event.request_sha256
+    assert first_s6[0].event.request_sha256 == second_s6[0].event.request_sha256
+    assert replay.evidence.query_replay_hits == 4
+    assert replay.evidence.live_query_calls == replay.evidence.live_document_calls == 0
 
 
 def test_v1_prefilter_preserves_concatenated_pinned_similarity_contract() -> None:

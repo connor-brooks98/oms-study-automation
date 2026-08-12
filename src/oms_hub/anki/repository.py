@@ -82,6 +82,7 @@ from oms_hub.anki.models import (
     AnkiEnvelopeOperationModel,
     AnkiGapCardModel,
     AnkiJobStageModel,
+    AnkiProviderAttemptEventModel,
     AnkiReviewChangeSetModel,
     AnkiReviewedReconciliationModel,
     AnkiSourceEvidenceModel,
@@ -89,6 +90,10 @@ from oms_hub.anki.models import (
     AnkiStageReplayInputModel,
     AnkiStageSettingModel,
     AnkiTagPatchModel,
+)
+from oms_hub.anki.provider_attempts import (
+    ProviderAttemptIndeterminate,
+    ProviderEventEvidence,
 )
 from oms_hub.anki.reconciliation import (
     CardCentricReconciliationInput,
@@ -395,6 +400,27 @@ class InvalidCurationTransition(ValueError):
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _validate_provider_event_append(prior: list[str], event: str) -> None:
+    """Validate the durable lifecycle for one provider call identity."""
+    allowed: dict[tuple[str, ...], set[str]] = {
+        (): {"begun"},
+        ("begun",): {"dispatched"},
+        ("begun", "dispatched"): {"response_received", "transport_failed"},
+        ("begun", "dispatched", "response_received"): {
+            "accepted",
+            "validation_failed",
+            "contract_failed",
+        },
+        # Schema-valid structured output can still fail a stage-level partition
+        # contract. Preserve both facts in append-only order.
+        ("begun", "dispatched", "response_received", "accepted"): {
+            "contract_failed"
+        },
+    }
+    if event not in allowed.get(tuple(prior), set()):
+        raise ValueError("provider attempt event lifecycle is invalid")
 
 
 def _sha256_text(value: str) -> str:
@@ -1790,6 +1816,199 @@ class AnkiCurationRepository:
             # Surface a uniqueness violation inside the fenced transaction,
             # rather than deferring it until the session context commits.
             session.flush()
+
+    def record_provider_attempt_event(
+        self,
+        evidence: ProviderEventEvidence,
+        *,
+        lease_owner: str | None,
+        now: datetime | None = None,
+    ) -> None:
+        """Append one fenced provider event; exact duplicates are idempotent."""
+        event = evidence.event
+        identity = event.identity
+        if identity.job_id.int == 0:
+            raise ValueError("provider attempt job identity is invalid")
+        values: dict[str, object] = {
+            "subcall_ordinal": identity.subcall_ordinal,
+            "batch_index": identity.batch_index,
+            "batch_note_ids_json": _canonical_json(list(identity.batch_note_ids)),
+            "batch_note_ids_sha256": identity.batch_note_ids_sha256,
+            "kind": identity.kind,
+            "provider": evidence.provider,
+            "model": evidence.model,
+            "instruction_sha256": evidence.instruction_sha256,
+            "input_sha256": evidence.input_sha256,
+            "output_schema_sha256": evidence.output_schema_sha256,
+            "generation_parameters_json": _canonical_json(evidence.generation_parameters),
+            "generation_parameters_sha256": evidence.generation_parameters_sha256,
+            "cache_prefix_sha256": evidence.cache_prefix_sha256,
+            "request_sha256": event.request_sha256,
+            "request_id": evidence.request_id,
+            "input_tokens": evidence.input_tokens,
+            "output_tokens": evidence.output_tokens,
+            "cost_microusd": evidence.cost_microusd,
+            "cache_creation_input_tokens": evidence.cache_creation_input_tokens,
+            "cache_read_input_tokens": evidence.cache_read_input_tokens,
+            "response_sha256": event.response_sha256,
+            "response_text": evidence.response_text,
+            "validation_error": event.error,
+            "missing_note_ids_json": _canonical_json(list(event.missing_note_ids)),
+            "extra_note_ids_json": _canonical_json(list(event.extra_note_ids)),
+            "duplicate_note_ids_json": _canonical_json(list(event.duplicate_note_ids)),
+            "diagnostic_source": evidence.diagnostic_source,
+            "http_status": evidence.http_status,
+        }
+        with self.database.session() as session:
+            is_sqlite = session.bind is not None and session.bind.dialect.name == "sqlite"
+            if is_sqlite:
+                session.execute(text("BEGIN IMMEDIATE"))
+            job_query = select(AnkiCurationJobModel).where(
+                AnkiCurationJobModel.id == str(identity.job_id)
+            )
+            if not is_sqlite:
+                job_query = job_query.with_for_update()
+            job = session.scalar(job_query)
+            if job is None:
+                raise KeyError(str(identity.job_id))
+            self._require_active_stage_lease(job, identity.job_id, lease_owner, now=now)
+            stage_query = select(AnkiJobStageModel).where(
+                AnkiJobStageModel.job_id == str(identity.job_id),
+                AnkiJobStageModel.stage == identity.stage.value,
+            )
+            if not is_sqlite:
+                stage_query = stage_query.with_for_update()
+            stage = session.scalar(stage_query)
+            if stage is None:
+                raise KeyError(f"{identity.job_id}:{identity.stage.value}")
+            if stage.state != "running" or stage.attempt_count != identity.stage_attempt:
+                raise InvalidCurationTransition("provider attempt stage is not running")
+            existing = session.scalar(
+                select(AnkiProviderAttemptEventModel).where(
+                    AnkiProviderAttemptEventModel.job_id == str(identity.job_id),
+                    AnkiProviderAttemptEventModel.stage == identity.stage.value,
+                    AnkiProviderAttemptEventModel.stage_attempt == identity.stage_attempt,
+                    AnkiProviderAttemptEventModel.mode == identity.mode,
+                    AnkiProviderAttemptEventModel.call_index == identity.call_index,
+                    AnkiProviderAttemptEventModel.subcall_ordinal == identity.subcall_ordinal,
+                    AnkiProviderAttemptEventModel.event == event.event,
+                )
+            )
+            if existing is not None:
+                if any(getattr(existing, key) != value for key, value in values.items()):
+                    raise ValueError("provider attempt event identity was reused")
+                return
+            prior = list(
+                session.scalars(
+                    select(AnkiProviderAttemptEventModel)
+                    .where(
+                        AnkiProviderAttemptEventModel.job_id == str(identity.job_id),
+                        AnkiProviderAttemptEventModel.stage == identity.stage.value,
+                        AnkiProviderAttemptEventModel.stage_attempt == identity.stage_attempt,
+                        AnkiProviderAttemptEventModel.mode == identity.mode,
+                        AnkiProviderAttemptEventModel.call_index == identity.call_index,
+                        AnkiProviderAttemptEventModel.subcall_ordinal == identity.subcall_ordinal,
+                    )
+                    .order_by(AnkiProviderAttemptEventModel.id)
+                )
+            )
+            _validate_provider_event_append([row.event for row in prior], event.event)
+            session.add(
+                AnkiProviderAttemptEventModel(
+                    job_id=str(identity.job_id),
+                    stage=identity.stage.value,
+                    stage_attempt=identity.stage_attempt,
+                    mode=identity.mode,
+                    call_index=identity.call_index,
+                    event=event.event,
+                    **values,
+                )
+            )
+            session.flush()
+
+    def list_provider_attempt_events(self, job_id: UUID) -> list[dict[str, object]]:
+        with self.database.session() as session:
+            rows = list(
+                session.scalars(
+                    select(AnkiProviderAttemptEventModel)
+                    .where(AnkiProviderAttemptEventModel.job_id == str(job_id))
+                    .order_by(
+                        AnkiProviderAttemptEventModel.stage_attempt,
+                        AnkiProviderAttemptEventModel.call_index,
+                        AnkiProviderAttemptEventModel.id,
+                    )
+                )
+            )
+        return [
+            {
+                "id": row.id,
+                "stage": row.stage,
+                "stage_attempt": row.stage_attempt,
+                "mode": row.mode,
+                "call_index": row.call_index,
+                "subcall_ordinal": row.subcall_ordinal,
+                "batch_index": row.batch_index,
+                "batch_note_ids": json.loads(row.batch_note_ids_json),
+                "batch_note_ids_sha256": row.batch_note_ids_sha256,
+                "kind": row.kind,
+                "event": row.event,
+                "provider": row.provider,
+                "model": row.model,
+                "instruction_sha256": row.instruction_sha256,
+                "input_sha256": row.input_sha256,
+                "output_schema_sha256": row.output_schema_sha256,
+                "generation_parameters": json.loads(row.generation_parameters_json),
+                "generation_parameters_sha256": row.generation_parameters_sha256,
+                "cache_prefix_sha256": row.cache_prefix_sha256,
+                "request_sha256": row.request_sha256,
+                "request_id": row.request_id,
+                "input_tokens": row.input_tokens,
+                "output_tokens": row.output_tokens,
+                "cost_microusd": row.cost_microusd,
+                "cache_creation_input_tokens": row.cache_creation_input_tokens,
+                "cache_read_input_tokens": row.cache_read_input_tokens,
+                "response_sha256": row.response_sha256,
+                "response_text": row.response_text,
+                "validation_error": row.validation_error,
+                "missing_note_ids": json.loads(row.missing_note_ids_json),
+                "extra_note_ids": json.loads(row.extra_note_ids_json),
+                "duplicate_note_ids": json.loads(row.duplicate_note_ids_json),
+                "diagnostic_source": row.diagnostic_source,
+                "http_status": row.http_status,
+                "created_at": row.created_at,
+            }
+            for row in rows
+        ]
+
+    def require_no_indeterminate_provider_attempt(
+        self,
+        job_id: UUID,
+        stage: CurationStage,
+    ) -> None:
+        with self.database.session() as session:
+            rows = list(
+                session.scalars(
+                    select(AnkiProviderAttemptEventModel)
+                    .where(
+                        AnkiProviderAttemptEventModel.job_id == str(job_id),
+                        AnkiProviderAttemptEventModel.stage == stage.value,
+                    )
+                    .order_by(AnkiProviderAttemptEventModel.id)
+                )
+            )
+        events_by_call: dict[tuple[int, str, int, int], list[AnkiProviderAttemptEventModel]] = {}
+        for row in rows:
+            events_by_call.setdefault(
+                (row.stage_attempt, row.mode, row.call_index, row.subcall_ordinal), []
+            ).append(row)
+        terminal = {"accepted", "validation_failed", "transport_failed", "contract_failed"}
+        for attempt_rows in events_by_call.values():
+            events = {row.event for row in attempt_rows}
+            if "dispatched" in events and not terminal.intersection(events):
+                raise ProviderAttemptIndeterminate(
+                    "provider call lacks a durable terminal outcome; ordinary response evidence "
+                    "is redacted and cannot authorize replay"
+                )
 
     def list_card_ledger_attempts(self, job_id: UUID) -> list[dict[str, object]]:
         """Return immutable S2 provider-call diagnostics in call order."""

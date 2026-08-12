@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 
 def _normalize_hostname(value: str | None, field_name: str) -> str | None:
@@ -72,6 +73,10 @@ class Settings(BaseSettings):
     openai_input_usd_per_million: float = Field(default=2.50, ge=0)
     openai_output_usd_per_million: float = Field(default=15.00, ge=0)
     anki_enabled: bool = False
+    anki_rehearsal_mode: Literal["off", "deterministic", "shadow"] = "off"
+    anki_rehearsal_overlay_dir: Path | None = None
+    anki_rehearsal_replay_dir: Path | None = None
+    anki_rehearsal_egress_pins_json: str | None = None
     anki_data_dir: Path | None = None
     anki_agent_hostname: str | None = None
     anki_agent_token_key: str = "anki-agent-token"
@@ -186,6 +191,50 @@ class Settings(BaseSettings):
                 f"{self.dashboard_port}; set OMS_HUB_DASHBOARD_PORT "
                 "to a distinct loopback port such as 8787"
             )
+        if self.anki_rehearsal_mode != "off":
+            if not self.anki_enabled:
+                raise ValueError("Anki rehearsal mode requires Anki to be enabled")
+            if self.dashboard_host not in {"127.0.0.1", "localhost"}:
+                raise ValueError("Anki rehearsal must bind Study Hub to loopback")
+            if self.public_hostname is not None or self.anki_agent_hostname is not None:
+                raise ValueError("Anki rehearsal cannot expose public or agent hostnames")
+            if self.anki_prompt_git_sync:
+                raise ValueError("Anki rehearsal cannot synchronize prompts from Git")
+            if self.anki_rehearsal_overlay_dir is None or self.anki_rehearsal_replay_dir is None:
+                raise ValueError("Anki rehearsal requires overlay and replay directories")
+            overlay = self.anki_rehearsal_overlay_dir.resolve()
+            controlled_paths = {
+                "data directory": self.data_dir.resolve(),
+                "Anki data directory": self.resolved_anki_data_dir.resolve(),
+                "replay directory": self.anki_rehearsal_replay_dir.resolve(),
+                "study root": self.study_root.resolve(),
+            }
+            if self.icloud_staging_root is None:
+                raise ValueError("Anki rehearsal requires an iCloud staging root")
+            controlled_paths["iCloud staging root"] = self.icloud_staging_root.resolve()
+            database_path = make_url(self.database_url).database
+            if make_url(self.database_url).drivername != "sqlite" or not database_path:
+                raise ValueError("Anki rehearsal requires a SQLite overlay database")
+            controlled_paths["database"] = Path(database_path).resolve()
+            for label, path in controlled_paths.items():
+                if not path.is_relative_to(overlay):
+                    raise ValueError(f"Anki rehearsal {label} must be inside the overlay")
+            read_only_inputs = {
+                "Anki prompt directory": self.anki_prompt_directory,
+                "Anki fixture artifact": self.anki_fixture_artifact_path,
+                "transcript prompt": self.transcript_prompt_path,
+            }
+            for label, input_path in read_only_inputs.items():
+                if input_path is not None and not input_path.resolve().is_relative_to(overlay):
+                    raise ValueError(
+                        f"Anki rehearsal {label} must be inside the materialized overlay"
+                    )
+            if self.anki_rehearsal_mode == "deterministic" and (
+                self.anki_rehearsal_egress_pins_json is not None
+            ):
+                raise ValueError("deterministic rehearsal cannot configure external egress pins")
+            if self.anki_rehearsal_mode == "shadow" and not self.anki_rehearsal_egress_pins_json:
+                raise ValueError("shadow rehearsal requires pinned provider addresses")
         return self
 
     @field_validator("cloudflare_access_issuer")

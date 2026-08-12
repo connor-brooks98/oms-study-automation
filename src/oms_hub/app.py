@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import os
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -24,8 +26,17 @@ from oms_hub.anki.prompts import (
     PromptSynchronizer,
     StaticPromptSynchronizer,
 )
+from oms_hub.anki.rehearsal.network import (
+    EgressEvidenceLedger,
+    EgressPolicy,
+    SocketEgressGuard,
+)
+from oms_hub.anki.rehearsal.runtime import NoopLauncher, ReadOnlyAnkiGateway
+from oms_hub.anki.rehearsal.structured import ReplayStructuredTextGenerator
+from oms_hub.anki.rehearsal.vectors import ReplayEmbeddingClient
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.anki.runtime import AnkiRuntime, WindowsAnkiLauncher
+from oms_hub.anki.semantic.domain import EmbeddingClient
 from oms_hub.anki.semantic.service import SemanticIndexService
 from oms_hub.anki.semantic.store import SemanticSnapshotStore
 from oms_hub.anki.semantic.voyage import VoyageEmbeddingClient
@@ -137,6 +148,31 @@ from oms_hub.workers import SyncWorker
 logger = logging.getLogger(__name__)
 
 
+class _RehearsalSecretStore:
+    """A capability-free secret facade for isolated rehearsal processes."""
+
+    def get(self, key: str) -> str | None:
+        del key
+        return None
+
+    def set(self, key: str, value: str) -> None:
+        del key, value
+        raise RuntimeError("credential mutation is disabled during rehearsal")
+
+    def delete(self, key: str) -> None:
+        del key
+        raise RuntimeError("credential mutation is disabled during rehearsal")
+
+
+def _is_rehearsal_credential_mutation(request: Request) -> bool:
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return False
+    path = request.url.path
+    return path == "/settings/anki/voyage/credential" or (
+        path.startswith("/settings/ai/") and path.endswith("/credential")
+    )
+
+
 def _run_sync_worker(
     stop: threading.Event,
     worker: SyncWorker,
@@ -153,6 +189,9 @@ def _run_sync_worker(
 
 @asynccontextmanager
 async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    egress_guard = getattr(app.state, "anki_rehearsal_egress_guard", None)
+    if egress_guard is not None:
+        egress_guard.install()
     anki_worker = getattr(app.state, "anki_curation_worker", None)
     if anki_worker is not None:
         await anki_worker.start()
@@ -164,8 +203,10 @@ async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
             "studio_worker",
         )
     )
-    active_sync_workers = tuple(
-        (name, worker) for name, worker in sync_workers if worker is not None
+    active_sync_workers = (
+        ()
+        if getattr(app.state, "anki_rehearsal_mode", "off") != "off"
+        else tuple((name, worker) for name, worker in sync_workers if worker is not None)
     )
     for _name, sync_worker in active_sync_workers:
         recover = getattr(sync_worker, "recover_interrupted_jobs", None)
@@ -188,18 +229,30 @@ async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         stop.set()
-        await asyncio.gather(*(asyncio.to_thread(thread.join, 10) for thread in threads))
-        if anki_worker is not None:
-            await anki_worker.stop()
-        embedder = getattr(app.state, "anki_embedder", None)
-        if embedder is not None:
-            await embedder.aclose()
-        runtime = getattr(app.state, "anki_runtime", None)
-        if runtime is not None:
-            await runtime.aclose()
-        database = getattr(app.state, "database", None)
-        if database is not None:
-            database.close()
+        try:
+            await asyncio.gather(*(asyncio.to_thread(thread.join, 10) for thread in threads))
+        finally:
+            try:
+                if anki_worker is not None:
+                    await anki_worker.stop()
+            finally:
+                try:
+                    embedder = getattr(app.state, "anki_embedder", None)
+                    if embedder is not None:
+                        await embedder.aclose()
+                finally:
+                    try:
+                        runtime = getattr(app.state, "anki_runtime", None)
+                        if runtime is not None:
+                            await runtime.aclose()
+                    finally:
+                        try:
+                            database = getattr(app.state, "database", None)
+                            if database is not None:
+                                database.close()
+                        finally:
+                            if egress_guard is not None:
+                                egress_guard.uninstall()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -291,6 +344,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "max-age=31536000; includeSubDomains"
                 )
             return response
+
+        if (
+            resolved.anki_rehearsal_mode != "off"
+            and _is_rehearsal_credential_mutation(request)
+        ):
+            return harden(
+                JSONResponse(
+                    {"detail": "credential mutation is disabled during rehearsal"},
+                    status_code=423,
+                )
+            )
 
         if is_agent_path and not is_agent_host:
             return harden(JSONResponse({"detail": "Not Found"}, status_code=404))
@@ -451,6 +515,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.state.base_settings = base_settings
     app.state.settings = resolved
+    app.state.anki_rehearsal_mode = resolved.anki_rehearsal_mode
+    app.state.anki_rehearsal_evidence_directory = None
+    app.state.anki_rehearsal_run_nonce = None
+    egress_evidence: EgressEvidenceLedger | None = None
+    if resolved.anki_rehearsal_mode != "off":
+        assert resolved.anki_rehearsal_overlay_dir is not None
+        run_nonce = os.environ.get("OMS_HUB_ANKI_REHEARSAL_RUN_NONCE")
+        if not run_nonce:
+            raise ValueError("rehearsal runtime evidence requires a run nonce")
+        evidence_directory = (
+            resolved.anki_rehearsal_overlay_dir / "rehearsal" / "runtime-evidence"
+        )
+        app.state.anki_rehearsal_evidence_directory = evidence_directory
+        app.state.anki_rehearsal_run_nonce = run_nonce
+        egress_evidence = EgressEvidenceLedger(
+            evidence_directory,
+            mode=resolved.anki_rehearsal_mode,
+            run_nonce=run_nonce,
+        )
+    if resolved.anki_rehearsal_mode == "deterministic":
+        app.state.anki_rehearsal_egress_guard = SocketEgressGuard(
+            EgressPolicy.deterministic(egress_evidence)
+        )
+    elif resolved.anki_rehearsal_mode == "shadow":
+        raw_pins = json.loads(resolved.anki_rehearsal_egress_pins_json or "{}")
+        if not isinstance(raw_pins, dict) or any(
+            not isinstance(host, str)
+            or not isinstance(addresses, list)
+            or any(not isinstance(address, str) for address in addresses)
+            for host, addresses in raw_pins.items()
+        ):
+            raise ValueError("shadow egress pins must be a host-to-address-list object")
+        app.state.anki_rehearsal_egress_guard = SocketEgressGuard(
+            EgressPolicy.shadow(
+                {host: set(addresses) for host, addresses in raw_pins.items()},
+                egress_evidence,
+            )
+        )
+    else:
+        app.state.anki_rehearsal_egress_guard = None
     app.state.database = database
     app.state.runtime_settings = runtime_settings
     app.state.anki_runtime = (
@@ -460,18 +564,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             startup_attempts=resolved.anki_startup_attempts,
             startup_poll_seconds=resolved.anki_startup_poll_seconds,
         )
-        if resolved.anki_enabled
+        if resolved.anki_enabled and resolved.anki_rehearsal_mode == "off"
         else None
     )
-    app.state.secrets = KeyringSecretStore()
+    app.state.secrets = (
+        _RehearsalSecretStore()
+        if resolved.anki_rehearsal_mode != "off"
+        else KeyringSecretStore()
+    )
     app.state.notebook_storage_migration_error = None
-    try:
-        retire_google_docs_credentials(resolved.data_dir, app.state.secrets)
-    except KeyringError:
-        logger.warning(
-            "Legacy Google Docs credentials could not be retired; "
-            "continuing startup."
-        )
+    if resolved.anki_rehearsal_mode == "off":
+        try:
+            retire_google_docs_credentials(resolved.data_dir, app.state.secrets)
+        except KeyringError:
+            logger.warning(
+                "Legacy Google Docs credentials could not be retired; "
+                "continuing startup."
+            )
     app.state.study_ai_settings = StudyAISettingsRepository(database)
     app.state.anki_repository = AnkiCurationRepository(database)
     app.state.anki_tag_policy = TagPolicy(
@@ -537,10 +646,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     notebook_storage_path = resolved.data_dir / "google" / "notebooklm-storage.json"
     try:
-        app.state.notebook_storage_migrated = migrate_encrypted_notebook_storage(
-            notebook_storage_path.with_suffix(".enc"),
-            notebook_storage_path,
-            app.state.secrets,
+        app.state.notebook_storage_migrated = (
+            False
+            if resolved.anki_rehearsal_mode != "off"
+            else migrate_encrypted_notebook_storage(
+                notebook_storage_path.with_suffix(".enc"),
+                notebook_storage_path,
+                app.state.secrets,
+            )
         )
     except NotebookStorageError as error:
         # NotebookLM is optional. Keep the encrypted rollback artifact and let
@@ -674,17 +787,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.anki_semantic_store = None
     app.state.anki_source_index = None
     if resolved.anki_enabled:
-        runtime = app.state.anki_runtime
-        assert isinstance(runtime, AnkiRuntime)
-        embedder = VoyageEmbeddingClient(
-            app.state.secrets,
-            model=resolved.anki_semantic_model,
-            dimensions=resolved.anki_semantic_dimensions,
-            batch_size=resolved.anki_semantic_batch_size,
-            api_key=resolved.voyage_api_key_value,
-        )
         anki_root = resolved.resolved_anki_data_dir
         companion = AnkiIndex(anki_root / "companion")
+        embedder: EmbeddingClient
+        replay_root = resolved.anki_rehearsal_replay_dir
+        if resolved.anki_rehearsal_mode == "off":
+            runtime = app.state.anki_runtime
+            assert isinstance(runtime, AnkiRuntime)
+            embedder = VoyageEmbeddingClient(
+                app.state.secrets,
+                model=resolved.anki_semantic_model,
+                dimensions=resolved.anki_semantic_dimensions,
+                batch_size=resolved.anki_semantic_batch_size,
+                api_key=resolved.voyage_api_key_value,
+            )
+        else:
+            assert replay_root is not None
+            runtime = AnkiRuntime(
+                ReadOnlyAnkiGateway(
+                    companion,
+                    evidence_directory=app.state.anki_rehearsal_evidence_directory,
+                    run_nonce=app.state.anki_rehearsal_run_nonce,
+                ),
+                NoopLauncher(),
+                startup_attempts=1,
+                startup_poll_seconds=0.01,
+            )
+            app.state.anki_runtime = runtime
+            embedder = ReplayEmbeddingClient(
+                replay_root / "vectors",
+                model=resolved.anki_semantic_model,
+                dimensions=resolved.anki_semantic_dimensions,
+            )
         semantic_store = SemanticSnapshotStore(anki_root / "semantic")
         semantic = SemanticIndexService(
             semantic_store,
@@ -708,7 +842,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 query_cache_size=resolved.anki_semantic_query_cache_size,
             )
 
-        structured = StructuredTextService(app.state.llm_service)
+        if resolved.anki_rehearsal_mode == "deterministic":
+            assert replay_root is not None
+            structured_generator = ReplayStructuredTextGenerator(
+                replay_root / "structured.json", require_attempt_identity=True
+            )
+        else:
+            structured_generator = app.state.llm_service
+        structured = StructuredTextService(structured_generator)
         from oms_hub.anki.card_centric_fixture_service import ProductionFixtureClassifier
 
         app.state.card_centric_fixture_classifier = ProductionFixtureClassifier(structured)
@@ -756,6 +897,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             StageArtifactStore(anki_root / "artifacts"),
             runner,
             input_validator=validator,
+            provider_mode=(
+                "shadow" if resolved.anki_rehearsal_mode == "shadow" else "canonical"
+            ),
         )
         app.state.anki_embedder = embedder
         app.state.anki_companion_index = companion
@@ -763,18 +907,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.anki_source_index = source_index
         app.state.anki_prompt_catalog = prompt_catalog
         app.state.anki_curation_pipeline = pipeline
-        app.state.anki_apply_coordinator = ApplyCoordinator(
-            app.state.anki_repository,
-            cast(ApplyGateway, runtime.gateway),
-            runtime=runtime,
-            supported_envelope_versions=lambda: frozenset(
-                int(value)
-                for value in app.state.anki_repository.agent_state().versions.get(
-                    "supported_envelope_contract_versions", [1]
-                )
-                if value in {1, 2}
-            ),
-        )
+        if resolved.anki_rehearsal_mode == "off":
+            app.state.anki_apply_coordinator = ApplyCoordinator(
+                app.state.anki_repository,
+                cast(ApplyGateway, runtime.gateway),
+                runtime=runtime,
+                supported_envelope_versions=lambda: frozenset(
+                    int(value)
+                    for value in app.state.anki_repository.agent_state().versions.get(
+                        "supported_envelope_contract_versions", [1]
+                    )
+                    if value in {1, 2}
+                ),
+            )
         app.state.anki_curation_worker = AnkiCurationWorker(
             app.state.anki_repository,
             pipeline,
@@ -807,7 +952,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/health")
     def health() -> dict[str, str]:
-        return {
+        payload = {
             "service": "oms-study-automation",
             "status": "ok",
             "version": __version__,
@@ -818,5 +963,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
             "build_revision": resolved.build_revision or "unreported",
         }
+        if resolved.anki_rehearsal_mode != "off":
+            payload.update(
+                {
+                    "rehearsal_nonce": app.state.anki_rehearsal_run_nonce,
+                    "rehearsal_pid": str(os.getpid()),
+                    "rehearsal_source": os.environ.get(
+                        "OMS_HUB_ANKI_REHEARSAL_SOURCE_ROOT", "unreported"
+                    ),
+                    "rehearsal_source_tree_sha256": os.environ.get(
+                        "OMS_HUB_ANKI_REHEARSAL_SOURCE_TREE_SHA256", "unreported"
+                    ),
+                    "rehearsal_commit": os.environ.get(
+                        "OMS_HUB_ANKI_REHEARSAL_SOURCE_COMMIT", "unreported"
+                    ),
+                    "rehearsal_tree": os.environ.get(
+                        "OMS_HUB_ANKI_REHEARSAL_SOURCE_TREE", "unreported"
+                    ),
+                }
+            )
+        return payload
 
     return app

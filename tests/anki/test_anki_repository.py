@@ -56,6 +56,12 @@ from oms_hub.anki.models import (
     AnkiReviewedReconciliationModel,
 )
 from oms_hub.anki.pipeline import pipeline_stages
+from oms_hub.anki.provider_attempts import (
+    ProviderAttemptEvent,
+    ProviderAttemptIdentity,
+    ProviderAttemptIndeterminate,
+    ProviderEventEvidence,
+)
 from oms_hub.anki.reconciliation import (
     AuditResolution,
     CardCentricReconciliationInput,
@@ -84,6 +90,32 @@ def _record_card_ledger_attempt(
         attempt,
         expected_stage_attempt=stage.attempt_count,
         lease_owner=job.lease_owner,
+    )
+
+
+def _provider_evidence(
+    identity: ProviderAttemptIdentity,
+    event: str,
+) -> ProviderEventEvidence:
+    response = "b" * 64 if event == "response_received" else None
+    return ProviderEventEvidence(
+        event=ProviderAttemptEvent(
+            identity=identity,
+            event=event,  # type: ignore[arg-type]
+            request_sha256="a" * 64,
+            request_id="request-1" if response else None,
+            response_sha256=response,
+        ),
+        provider="anthropic",
+        model="claude-sonnet-5",
+        instruction_sha256="c" * 64,
+        input_sha256="d" * 64,
+        output_schema_sha256="e" * 64,
+        generation_parameters={"temperature": None},
+        generation_parameters_sha256="f" * 64,
+        cache_prefix_sha256=None,
+        request_id="request-1" if response else None,
+        response_text="{}" if response else None,
     )
 
 _OPEN_DATABASES: list[Database] = []
@@ -138,6 +170,101 @@ def _job_request(
         summary_outline_id=91,
         summary_outline_sha256="b" * 64,
     )
+
+
+def test_provider_attempt_events_are_fenced_ordered_and_exactly_idempotent(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    stage = repository.start_stage(job.id, CurationStage.PREFLIGHT)
+    identity = ProviderAttemptIdentity(
+        job_id=job.id,
+        stage=CurationStage.PREFLIGHT,
+        stage_attempt=stage.attempt_count,
+        mode="canonical",
+        call_index=1,
+        batch_index=0,
+        batch_note_ids=(11, 12),
+        kind="primary",
+    )
+    for event in ("begun", "dispatched", "response_received", "accepted"):
+        evidence = _provider_evidence(identity, event)
+        repository.record_provider_attempt_event(evidence, lease_owner=None)
+        repository.record_provider_attempt_event(evidence, lease_owner=None)
+    rows = repository.list_provider_attempt_events(job.id)
+    assert [row["event"] for row in rows] == [
+        "begun",
+        "dispatched",
+        "response_received",
+        "accepted",
+    ]
+    assert rows[0]["batch_note_ids"] == [11, 12]
+
+
+def test_dispatched_provider_attempt_without_terminal_evidence_blocks_retry(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    stage = repository.start_stage(job.id, CurationStage.PREFLIGHT)
+    identity = ProviderAttemptIdentity(
+        job_id=job.id,
+        stage=CurationStage.PREFLIGHT,
+        stage_attempt=stage.attempt_count,
+        mode="canonical",
+        call_index=1,
+        batch_index=None,
+        batch_note_ids=(),
+        kind="primary",
+    )
+    repository.record_provider_attempt_event(
+        _provider_evidence(identity, "begun"), lease_owner=None
+    )
+    repository.record_provider_attempt_event(
+        _provider_evidence(identity, "dispatched"), lease_owner=None
+    )
+    with pytest.raises(ProviderAttemptIndeterminate):
+        repository.require_no_indeterminate_provider_attempt(
+            job.id, CurationStage.PREFLIGHT
+        )
+
+
+def test_response_received_in_ordinary_ledger_requires_manual_recovery(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    stage = repository.start_stage(job.id, CurationStage.PREFLIGHT)
+    identity = ProviderAttemptIdentity(
+        job_id=job.id,
+        stage=CurationStage.PREFLIGHT,
+        stage_attempt=stage.attempt_count,
+        mode="canonical",
+        call_index=2,
+        batch_index=1,
+        batch_note_ids=(12,),
+        kind="primary",
+        subcall_ordinal=4,
+    )
+    for event in ("begun", "dispatched"):
+        repository.record_provider_attempt_event(
+            _provider_evidence(identity, event), lease_owner=None
+        )
+    response_text = '{"replay":true}'
+    response = _provider_evidence(identity, "response_received")
+    response = replace(
+        response,
+        event=replace(
+            response.event,
+            response_sha256=hashlib.sha256(response_text.encode()).hexdigest(),
+        ),
+        response_text=response_text,
+    )
+    repository.record_provider_attempt_event(response, lease_owner=None)
+    with pytest.raises(ProviderAttemptIndeterminate, match="redacted and cannot authorize replay"):
+        repository.require_no_indeterminate_provider_attempt(job.id, CurationStage.PREFLIGHT)
+    assert repository.list_provider_attempt_events(job.id)[-1]["subcall_ordinal"] == 4
 
 
 def test_card_centric_profile_persists_for_the_local_study_hub_user(tmp_path: Path) -> None:
@@ -1455,7 +1582,7 @@ def test_v24_card_ledger_evidence_survives_reopen_upgrade_without_rewriting(
         for candidate_model, outcome in fixtures
         if candidate_model == model
     ]
-    assert version == 25
+    assert version == 27
 
 
 def test_card_ledger_transport_failure_persists_only_safe_diagnostics(

@@ -1,0 +1,1141 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+import zipfile
+from ast import Import, ImportFrom, parse
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
+from uuid import UUID
+
+import pytest
+
+from oms_hub.anki.contracts import CreateCurationJobRequest
+from oms_hub.anki.domain import CurationStage, PipelineContractVersion, ResolvedModelConfiguration
+from oms_hub.anki.provider_attempts import (
+    ProviderAttemptBinding,
+    begin_provider_call,
+    bind_provider_attempts,
+    provider_call_scope,
+)
+from oms_hub.anki.rehearsal import process as process_module
+from oms_hub.anki.rehearsal.process import (
+    LoopbackHttp,
+    ProcessRehearsal,
+    RehearsalRequest,
+    RehearsalResult,
+    _environment_evidence,
+    _failure_injection_stage_order,
+    _load_runtime_ledger,
+    _replay_namespace_sha256,
+    _require_no_denied_egress_authorizations,
+    _stable_logical_call_ids,
+    _validate_adapter_ledger,
+    _validate_egress_ledger,
+    _verify_replay_supplement,
+    _write_deterministic_zip,
+    fresh_job_payload,
+    run_failure_injection_matrix,
+    unchanged_review_payload,
+)
+
+
+def _request(tmp_path: Path, **changes: object) -> RehearsalRequest:
+    implementation = tmp_path / "implementation"
+    implementation.mkdir(exist_ok=True)
+    values: dict[str, object] = {
+        "capsule": tmp_path / "capsule",
+        "overlay": tmp_path / "overlay",
+        "mode": "deterministic",
+        "port": 8788,
+        "evidence_zip": tmp_path / "evidence.zip",
+        "failed_job_id": UUID("12345678-1234-5678-1234-567812345678"),
+        "expected_manifest_sha256": "0" * 64,
+        "implementation_repository": implementation,
+        "expected_implementation_commit": "a" * 40,
+        "expected_implementation_tree": "b" * 40,
+        "trusted_python": Path(sys.executable),
+    }
+    values.update(changes)
+    return RehearsalRequest(**values)  # type: ignore[arg-type]
+
+
+def _begun_recovery_rows(
+    restarted_events: tuple[str, ...],
+) -> tuple[SimpleNamespace, dict[str, object], list[dict[str, object]]]:
+    job = SimpleNamespace(
+        configuration_sha256="a" * 64,
+        pipeline_contract_version=SimpleNamespace(value="card_centric_v2"),
+        model_config_sha256="b" * 64,
+        source_revision_hashes={1: "c" * 64},
+        index_snapshot_id="snapshot",
+        companion_generation="companion",
+        semantic_generation="semantic",
+        source_index_generation="source-index",
+    )
+    material: dict[str, object] = {
+        "stage": "card_residual",
+        "kind": "primary",
+        "batch_index": 0,
+        "batch_note_ids_sha256": "d" * 64,
+        "subcall_ordinal": 0,
+        "provider": "openai",
+        "model": "fixture",
+        "instruction_sha256": "e" * 64,
+        "input_sha256": "f" * 64,
+        "output_schema_sha256": "0" * 64,
+        "generation_parameters_sha256": "1" * 64,
+        "cache_prefix_sha256": None,
+    }
+    precrash = material | {
+        "id": 41,
+        "stage_attempt": 1,
+        "mode": "shadow",
+        "call_index": 17,
+        "request_sha256": "2" * 64,
+        "event": "begun",
+    }
+    restarted = [
+        material
+        | {
+            "id": 42 + ordinal,
+            "stage_attempt": 2,
+            "mode": "canonical",
+            "call_index": 23,
+            "request_sha256": "3" * 64,
+            "event": event,
+        }
+        for ordinal, event in enumerate(restarted_events)
+    ]
+    return job, precrash, [precrash, *restarted]
+
+
+def _recovery_repository(job: SimpleNamespace, rows: list[dict[str, object]]) -> SimpleNamespace:
+    return SimpleNamespace(
+        require_no_indeterminate_provider_attempt=lambda *_args: None,
+        require_job=lambda _job_id: job,
+        list_provider_attempt_events=lambda _job_id: rows,
+    )
+
+
+def test_failure_injection_matrix_runs_every_real_provider_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bind selected stages to an observed durable ``begun`` event, not source text."""
+    observed: list[CurationStage] = []
+
+    class RecordedRunner:
+        def __init__(self, request: RehearsalRequest) -> None:
+            self.request = request
+
+        def run(self) -> RehearsalResult:
+            assert self.request.failure_injection is not None
+            stage, _checkpoint = self.request.failure_injection
+            events: list[object] = []
+            binding = ProviderAttemptBinding(
+                job_id=UUID(int=1),
+                stage=stage,
+                stage_attempt=1,
+                mode="canonical",
+                recorder=events.append,
+            )
+            # This is the same structured-provider boundary the stage runners
+            # use: a stable batch slot followed by a durable begun recorder.
+            with (
+                bind_provider_attempts(binding),
+                provider_call_scope(batch_index=0, batch_note_ids=(101,)),
+            ):
+                begin_provider_call(
+                    provider="openai",
+                    model="fixture",
+                    instruction="classify fixture batch",
+                    input_text="fixture note",
+                    output_schema={"type": "object"},
+                    generation_parameters={"temperature": 0},
+                    cacheable_source_prefix=None,
+                )
+            assert [item.event.event for item in events] == ["begun"]
+            assert events[0].event.identity.stage is stage
+            observed.append(stage)
+            _write_deterministic_zip(
+                self.request.evidence_zip, {"fixture.json": {"stage": stage.value}}
+            )
+            return RehearsalResult(UUID(int=1), self.request.overlay, self.request.evidence_zip)
+
+    monkeypatch.setattr(process_module, "ProcessRehearsal", RecordedRunner)
+    request = _request(tmp_path, restart_after_durable_boundary=False)
+    results = run_failure_injection_matrix(request)
+    expected = _failure_injection_stage_order()
+    assert expected == (
+        CurationStage.CARD_LEDGER,
+        CurationStage.CARD_PREFILTER,
+        CurationStage.CARD_FAST_CLASSIFY,
+        CurationStage.CARD_CLASSIFY,
+        CurationStage.CARD_RESIDUAL,
+        CurationStage.CARD_GAP_FILL,
+        CurationStage.DEDUPE,
+    )
+    assert tuple(dict.fromkeys(observed)) == expected
+    assert {result.stage for result in results} == set(expected)
+    assert len(results) == len(expected) * 4
+
+
+def test_minimal_subprocess_interlock_harness_kills_restarts_and_packages_truthful_evidence(
+    tmp_path: Path,
+) -> None:
+    """Exercise real child interlock/egress mechanics without claiming a Hub run."""
+    evidence = tmp_path / "runtime-evidence"
+    event_ledger = tmp_path / "provider-events.jsonl"
+    restarted = tmp_path / "restarted.txt"
+    source = Path(__file__).parents[2] / "src"
+    script = """
+import os
+from pathlib import Path
+from uuid import UUID
+from oms_hub.anki.domain import CurationStage
+from oms_hub.anki.provider_attempts import (
+    ProviderAttemptBinding, begin_provider_call, bind_provider_attempts,
+    emit_provider_event, provider_call_scope,
+)
+from oms_hub.anki.rehearsal.network import EgressEvidenceLedger, EgressPolicy, SocketEgressGuard
+ledger = Path(os.environ['EVENT_LEDGER'])
+guard = SocketEgressGuard(EgressPolicy.deterministic(EgressEvidenceLedger(
+    Path(os.environ['OMS_HUB_ANKI_REHEARSAL_FAILURE_EVIDENCE_DIR']),
+    mode='deterministic', run_nonce=os.environ['OMS_HUB_ANKI_REHEARSAL_RUN_NONCE'],
+)))
+guard.install()
+try:
+    binding = ProviderAttemptBinding(
+        job_id=UUID('12345678-1234-5678-1234-567812345678'),
+        stage=CurationStage.CARD_RESIDUAL, stage_attempt=1, mode='canonical',
+        recorder=lambda evidence: ledger.open('a', encoding='utf-8').write(
+            evidence.event.event + '\\n'
+        ),
+    )
+    with bind_provider_attempts(binding), provider_call_scope(batch_index=0, batch_note_ids=(1,)):
+        handle = begin_provider_call(
+            provider='openai', model='m', instruction='i', input_text='x',
+            output_schema={}, generation_parameters={}, cacheable_source_prefix=None,
+        )
+        emit_provider_event(handle, 'dispatched')
+    Path(os.environ['RESTARTED']).write_text(str(os.getpid()), encoding='utf-8')
+finally:
+    guard.uninstall()
+"""
+    base = os.environ | {
+        "PYTHONPATH": str(source),
+        "EVENT_LEDGER": str(event_ledger),
+        "RESTARTED": str(restarted),
+        "OMS_HUB_ANKI_REHEARSAL_FAILURE_STAGE": "card_residual",
+        "OMS_HUB_ANKI_REHEARSAL_FAILURE_EVENT": "dispatched",
+        "OMS_HUB_ANKI_REHEARSAL_FAILURE_OCCURRENCE": "1",
+        "OMS_HUB_ANKI_REHEARSAL_FAILURE_EVIDENCE_DIR": str(evidence),
+        "OMS_HUB_ANKI_REHEARSAL_RUN_NONCE": "harness-nonce",
+        "OMS_HUB_ANKI_REHEARSAL_FAILURE_ACTION": "pause",
+    }
+    first = subprocess.Popen([sys.executable, "-c", script], env=base)
+    interlock_path = evidence / "provider-fault-interlock.json"
+    deadline = time.monotonic() + 5
+    while not interlock_path.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert interlock_path.is_file()
+    interlock = json.loads(interlock_path.read_text(encoding="utf-8"))
+    assert interlock["pid"] == first.pid
+    assert interlock["event"] == "dispatched"
+    assert interlock["action"] == "pause"
+    first.kill()
+    assert first.wait(timeout=5) != 0
+    crash_egress = _load_runtime_ledger(evidence / "egress-decisions.json")
+    _validate_egress_ledger(
+        crash_egress, "harness-nonce", "deterministic", require_clean_lifecycle=False
+    )
+    assert [row["kind"] for row in crash_egress["records"]] == ["startup"]
+
+    second_environment = base.copy()
+    for key in (
+        "OMS_HUB_ANKI_REHEARSAL_FAILURE_STAGE",
+        "OMS_HUB_ANKI_REHEARSAL_FAILURE_EVENT",
+        "OMS_HUB_ANKI_REHEARSAL_FAILURE_OCCURRENCE",
+        "OMS_HUB_ANKI_REHEARSAL_FAILURE_ACTION",
+    ):
+        second_environment.pop(key)
+    second = subprocess.run([sys.executable, "-c", script], env=second_environment, check=False)
+    assert second.returncode == 0
+    assert restarted.read_text(encoding="utf-8") != str(first.pid)
+    final_egress = _load_runtime_ledger(evidence / "egress-decisions.json")
+    _validate_egress_ledger(final_egress, "harness-nonce", "deterministic")
+    destination = tmp_path / "harness-checkpoint.zip"
+    _write_deterministic_zip(
+        destination,
+        {
+            "harness.json": {
+                "execution_kind": "harness_interlock_process_test",
+                "actual_hub_run": False,
+                "crashed_pid": first.pid,
+                "restarted_pid": int(restarted.read_text(encoding="utf-8")),
+                "interlock": interlock,
+            },
+            "egress.json": final_egress,
+        },
+    )
+    with zipfile.ZipFile(destination) as archive:
+        payload = json.loads(archive.read("harness.json"))
+    assert payload["execution_kind"] == "harness_interlock_process_test"
+    assert payload["actual_hub_run"] is False
+
+
+def _replay_supplement(tmp_path: Path) -> tuple[Path, str]:
+    root = tmp_path / "replay-supplement"
+    vectors = root / "vectors"
+    vectors.mkdir(parents=True)
+    (root / "structured.json").write_text("{}\n", encoding="utf-8")
+    (vectors / "manifest.json").write_text("{}\n", encoding="utf-8")
+    files = []
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            encoded = path.read_bytes()
+            files.append(
+                {
+                    "path": path.relative_to(root).as_posix(),
+                    "bytes": len(encoded),
+                    "sha256": hashlib.sha256(encoded).hexdigest(),
+                }
+            )
+    manifest = {
+        "schema_version": 1,
+        "manifest_rule": "self-excluding",
+        "files": files,
+    }
+    manifest_path = root / "replay-supplement.json"
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    return root, hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+
+def test_refuses_existing_overlay_and_evidence_before_capsule_access(tmp_path: Path) -> None:
+    overlay = tmp_path / "overlay"
+    overlay.mkdir()
+    with pytest.raises(ValueError, match="overlay destination"):
+        ProcessRehearsal(_request(tmp_path, overlay=overlay))._validate_destinations()
+    evidence = tmp_path / "evidence.zip"
+    evidence.write_bytes(b"prior evidence")
+    with pytest.raises(ValueError, match="evidence destination"):
+        ProcessRehearsal(
+            _request(tmp_path, overlay=tmp_path / "fresh-overlay", evidence_zip=evidence)
+        )._validate_destinations()
+
+
+def test_manifest_digest_is_required_before_self_consistency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capsule = tmp_path / "capsule"
+    capsule.mkdir()
+    (capsule / "capsule.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(ProcessRehearsal, "_verify_implementation_identity", lambda self: None)
+    with pytest.raises(ValueError, match="operator-supplied"):
+        ProcessRehearsal(_request(tmp_path))._validate_destinations()
+
+
+def test_replay_supplement_is_manifest_bound_and_copies_only_replay_files(
+    tmp_path: Path,
+) -> None:
+    supplement, manifest_sha256 = _replay_supplement(tmp_path)
+    assert _verify_replay_supplement(supplement, manifest_sha256) == (
+        "structured.json",
+        "vectors/manifest.json",
+    )
+    overlay_root = tmp_path / "overlay"
+    (overlay_root / "replay").mkdir(parents=True)
+    (overlay_root / "replay/structured.json").write_text("{}\n", encoding="utf-8")
+    harness = ProcessRehearsal(
+        _request(
+            tmp_path,
+            replay_supplement=supplement,
+            expected_replay_supplement_manifest_sha256=manifest_sha256,
+        )
+    )
+    harness._install_replay_supplement(SimpleNamespace(root=overlay_root))  # type: ignore[arg-type]
+    assert (overlay_root / "replay/structured.json").read_text() == "{}\n"
+    assert (overlay_root / "replay/vectors/manifest.json").read_text() == "{}\n"
+
+
+def test_replay_supplement_rejects_unknown_files_and_missing_operator_hash(tmp_path: Path) -> None:
+    supplement, manifest_sha256 = _replay_supplement(tmp_path)
+    (supplement / "unexpected.txt").write_text("no", encoding="utf-8")
+    with pytest.raises(ValueError, match="unknown or sensitive"):
+        _verify_replay_supplement(supplement, manifest_sha256)
+    clean, _ = _replay_supplement(tmp_path / "other")
+    with pytest.raises(ValueError, match="operator-supplied"):
+        _verify_replay_supplement(clean, None)
+
+
+def test_replay_supplement_copy_race_fails_before_child_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    supplement, manifest_sha256 = _replay_supplement(tmp_path)
+    overlay_root = tmp_path / "overlay"
+    (overlay_root / "replay").mkdir(parents=True)
+    (overlay_root / "replay/structured.json").write_text("{}\n", encoding="utf-8")
+    harness = ProcessRehearsal(
+        _request(
+            tmp_path,
+            replay_supplement=supplement,
+            expected_replay_supplement_manifest_sha256=manifest_sha256,
+        )
+    )
+
+    def raced_copy(_source: Path, destination: Path) -> str:
+        destination.write_text('{"raced":true}\n', encoding="utf-8")
+        return str(destination)
+
+    monkeypatch.setattr("oms_hub.anki.rehearsal.process.shutil.copyfile", raced_copy)
+    with pytest.raises(RuntimeError, match="do not match operator manifest"):
+        harness._install_replay_supplement(SimpleNamespace(root=overlay_root))  # type: ignore[arg-type]
+
+
+def test_loopback_http_requires_csrf_before_unsafe_request() -> None:
+    client = LoopbackHttp(8788)
+    with pytest.raises(RuntimeError, match="CSRF bootstrap"):
+        client.request("POST", "/api/anki/jobs", {})
+
+
+def test_loopback_http_bootstraps_csrf_before_post() -> None:
+    from http.cookiejar import Cookie
+
+    class Response:
+        status = 200
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+        def read(self) -> bytes:
+            return b"{}"
+
+    class Opener:
+        calls: list[object] = []
+
+        def open(self, request: object, timeout: int) -> Response:
+            del timeout
+            self.calls.append(request)
+            if len(self.calls) == 1:
+                client.cookies.set_cookie(
+                    Cookie(
+                        version=0,
+                        name="study_hub_csrf",
+                        value="csrf-value",
+                        port=None,
+                        port_specified=False,
+                        domain="127.0.0.1",
+                        domain_specified=False,
+                        domain_initial_dot=False,
+                        path="/",
+                        path_specified=True,
+                        secure=False,
+                        expires=None,
+                        discard=True,
+                        comment=None,
+                        comment_url=None,
+                        rest={},
+                        rfc2109=False,
+                    )
+                )
+            return Response()
+
+    client = LoopbackHttp(8788)
+    opener = Opener()
+    client._opener = opener  # type: ignore[assignment]
+    client.bootstrap_csrf()
+    client.request("POST", "/api/anki/jobs", {})
+    assert opener.calls[1].headers["X-csrf-token"] == "csrf-value"
+
+
+def test_fresh_job_payload_matches_http_contract() -> None:
+    config = ResolvedModelConfiguration.card_centric_v2_default("openai", "gpt-5")
+    job = SimpleNamespace(
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
+        lecture_id=1,
+        block_id="block",
+        source_revision_ids=(2, 3),
+        deck_allowlist=("Deck",),
+        tag_allowlist=("Tag",),
+        instruction_text="",
+        target_deck="Deck",
+        target_tag="Tag",
+        index_snapshot_id="snapshot",
+        lcl_prompt_version="lcl-v1",
+        judgment_rubric_version="judgment-v1",
+        gap_prompt_version="gap-v1",
+        provider="openai",
+        model="gpt-5",
+        resolved_model_config=config,
+        source_revision_hashes={2: "a" * 64, 3: "b" * 64},
+        summary_outline_id=4,
+        summary_outline_sha256="c" * 64,
+        semantic_generation="semantic",
+        companion_generation="companion",
+    )
+    payload = fresh_job_payload(job)  # type: ignore[arg-type]
+    assert (
+        CreateCurationJobRequest.model_validate(payload).pipeline_contract_version
+        == "card_centric_v2"
+    )
+
+
+def test_command_and_environment_are_explicit_and_overlay_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = ProcessRehearsal(_request(tmp_path))
+    overlay = type(
+        "Overlay",
+        (),
+        {"root": tmp_path / "overlay", "database_path": tmp_path / "overlay/hub/hub.db"},
+    )()
+    harness._source_tree_sha256 = "c" * 64
+    command = harness._command()
+    prompt_directory = overlay.root / "sources/repository/src/oms_hub/anki/prompt_assets"
+    prompt_directory.mkdir(parents=True)
+    manifest = SimpleNamespace(logical_roots={"repository": "sources/repository"})
+    environment = harness._environment(overlay, manifest)  # type: ignore[arg-type]
+    assert command[:4] == [str(harness.request.trusted_python.resolve()), "-I", "-S", "-c"]
+    assert command[5] == str((harness.request.implementation_repository / "src").resolve())
+    assert environment["OMS_HUB_DATABASE_URL"].endswith("overlay/hub/hub.db")
+    assert environment["OMS_HUB_ANKI_REHEARSAL_OVERLAY_DIR"].endswith("overlay")
+    assert environment["OMS_HUB_ANKI_REHEARSAL_RUN_NONCE"] == harness._runtime_evidence_nonce
+    assert environment["OMS_HUB_ANKI_REHEARSAL_SOURCE_TREE_SHA256"] == "c" * 64
+    assert environment["OMS_HUB_STUDY_ROOT"].endswith("overlay/study")
+    assert environment["OMS_HUB_ICLOUD_STAGING_ROOT"].endswith("overlay/icloud-staging")
+    assert Path(environment["OMS_HUB_STUDY_ROOT"]).is_dir()
+    assert Path(environment["OMS_HUB_ICLOUD_STAGING_ROOT"]).is_dir()
+    assert environment["OMS_HUB_ANKI_PROMPT_DIRECTORY"] == str(prompt_directory)
+    assert environment["OMS_HUB_DASHBOARD_HOST"] == "127.0.0.1"
+    assert "PYTHONPATH" not in environment
+    assert "sys.flags.no_site" in command[4]
+    assert "bootstrap_dependency_paths" in command[4]
+
+
+def test_restarted_child_environment_is_disarmed_after_archiving_initial_interlock(
+    tmp_path: Path,
+) -> None:
+    harness = ProcessRehearsal(
+        _request(tmp_path, failure_injection=(CurationStage.CARD_RESIDUAL, "begun"))
+    )
+    harness._source_tree_sha256 = "c" * 64
+    overlay = type(
+        "Overlay",
+        (),
+        {"root": tmp_path / "overlay", "database_path": tmp_path / "overlay/hub/hub.db"},
+    )()
+    prompt_directory = overlay.root / "sources/repository/src/oms_hub/anki/prompt_assets"
+    prompt_directory.mkdir(parents=True)
+    manifest = SimpleNamespace(logical_roots={"repository": "sources/repository"})
+    first = harness._environment(overlay, manifest)  # type: ignore[arg-type]
+    assert first["OMS_HUB_ANKI_REHEARSAL_FAILURE_STAGE"] == "card_residual"
+    evidence = overlay.root / "rehearsal" / "runtime-evidence"
+    evidence.mkdir(parents=True)
+    interlock = {
+        "schema_version": 1,
+        "run_nonce": harness._runtime_evidence_nonce,
+        "pid": 41,
+        "stage": "card_residual",
+        "event": "begun",
+        "occurrence": 1,
+        "call_index": 17,
+        "subcall_ordinal": 0,
+    }
+    (evidence / "provider-fault-interlock.json").write_text(json.dumps(interlock), encoding="utf-8")
+    harness._consume_failure_injection(overlay, interlock)  # type: ignore[arg-type]
+    second = harness._environment(overlay, manifest)  # type: ignore[arg-type]
+    assert "OMS_HUB_ANKI_REHEARSAL_FAILURE_STAGE" not in second
+    assert not (evidence / "provider-fault-interlock.json").exists()
+    assert json.loads((evidence / "provider-fault-interlock.initial.json").read_text()) == interlock
+
+
+def test_begun_recovery_uses_append_only_cutoff_and_stable_provider_material(
+    tmp_path: Path,
+) -> None:
+    job = SimpleNamespace(
+        configuration_sha256="a" * 64,
+        pipeline_contract_version=SimpleNamespace(value="card_centric_v2"),
+        model_config_sha256="b" * 64,
+        source_revision_hashes={1: "c" * 64},
+        index_snapshot_id="snapshot",
+        companion_generation="companion",
+        semantic_generation="semantic",
+        source_index_generation="source-index",
+    )
+    stable_namespace = _replay_namespace_sha256(job)
+    material = {
+        "stage": "card_residual",
+        "kind": "primary",
+        "batch_index": 0,
+        "batch_note_ids_sha256": "d" * 64,
+        "subcall_ordinal": 0,
+        "provider": "openai",
+        "model": "fixture",
+        "instruction_sha256": "e" * 64,
+        "input_sha256": "f" * 64,
+        "output_schema_sha256": "0" * 64,
+        "generation_parameters_sha256": "1" * 64,
+        "cache_prefix_sha256": None,
+    }
+    # The audit request hash and execution fields intentionally change after
+    # restart; frozen provider material identifies one logical dispatch.
+    precrash = material | {
+        "id": 41,
+        "stage_attempt": 1,
+        "mode": "shadow",
+        "call_index": 17,
+        "request_sha256": "2" * 64,
+        "event": "begun",
+    }
+    restarted = [
+        material
+        | {
+            "id": ordinal,
+            "stage_attempt": 2,
+            "mode": "canonical",
+            "call_index": 23,
+            "request_sha256": "3" * 64,
+            "event": event,
+        }
+        for ordinal, event in (
+            (42, "begun"),
+            (43, "dispatched"),
+            (44, "response_received"),
+            (45, "accepted"),
+        )
+    ]
+    rows = [precrash, *restarted]
+    assert _stable_logical_call_ids([precrash], stable_namespace) == _stable_logical_call_ids(
+        restarted, stable_namespace
+    )
+    repository = SimpleNamespace(
+        require_no_indeterminate_provider_attempt=lambda *_args: None,
+        require_job=lambda _job_id: job,
+        list_provider_attempt_events=lambda _job_id: rows,
+    )
+    harness = ProcessRehearsal(_request(tmp_path))
+    harness._assert_provider_ledger_is_restart_safe(
+        repository,
+        UUID(int=1),
+        expected_precrash_logical_identities=_stable_logical_call_ids([precrash], stable_namespace),
+        precrash_event_id_cutoff=41,
+        fault_interlock={"stage": "card_residual", "call_index": 17, "subcall_ordinal": 0},
+    )
+    proof = next(
+        item
+        for item in harness._timeline
+        if item["event"] == "begun_recovery_stable_identity_verified"
+    )
+    assert proof["post_restart_events"] == 4
+    assert proof["target_dispatches"] == 1
+    assert proof["target_final_outcome"] == "accepted"
+
+
+def test_begun_recovery_accept_then_contract_failure_has_one_final_outcome(
+    tmp_path: Path,
+) -> None:
+    job, precrash, rows = _begun_recovery_rows(
+        ("begun", "dispatched", "response_received", "accepted", "contract_failed")
+    )
+    repository = _recovery_repository(job, rows)
+    stable_namespace = _replay_namespace_sha256(job)
+    harness = ProcessRehearsal(_request(tmp_path))
+    harness._assert_provider_ledger_is_restart_safe(
+        repository,
+        UUID(int=1),
+        expected_precrash_logical_identities=_stable_logical_call_ids([precrash], stable_namespace),
+        precrash_event_id_cutoff=41,
+        fault_interlock={"stage": "card_residual", "call_index": 17, "subcall_ordinal": 0},
+    )
+    proof = next(
+        item
+        for item in harness._timeline
+        if item["event"] == "begun_recovery_stable_identity_verified"
+    )
+    assert proof["target_dispatches"] == 1
+    assert proof["target_final_outcome"] == "contract_failed"
+
+
+def test_begun_recovery_rejects_duplicate_dispatches_with_different_outcomes(
+    tmp_path: Path,
+) -> None:
+    job, precrash, rows = _begun_recovery_rows(
+        (
+            "begun",
+            "dispatched",
+            "response_received",
+            "accepted",
+            "begun",
+            "dispatched",
+            "response_received",
+            "contract_failed",
+        )
+    )
+    stable_namespace = _replay_namespace_sha256(job)
+    with pytest.raises(RuntimeError, match="duplicated provider dispatch"):
+        ProcessRehearsal(_request(tmp_path))._assert_provider_ledger_is_restart_safe(
+            _recovery_repository(job, rows),
+            UUID(int=1),
+            expected_precrash_logical_identities=_stable_logical_call_ids(
+                [precrash], stable_namespace
+            ),
+            precrash_event_id_cutoff=41,
+            fault_interlock={"stage": "card_residual", "call_index": 17, "subcall_ordinal": 0},
+        )
+
+
+def test_begun_recovery_rejects_duplicate_non_target_provider_dispatches(
+    tmp_path: Path,
+) -> None:
+    job, precrash, rows = _begun_recovery_rows(
+        ("begun", "dispatched", "response_received", "accepted")
+    )
+    non_target = {
+        key: value
+        for key, value in rows[1].items()
+        if key not in {"id", "stage_attempt", "mode", "call_index", "request_sha256", "event"}
+    }
+    rows.extend(
+        non_target
+        | {
+            "id": 100 + attempt * 10 + ordinal,
+            "stage_attempt": attempt,
+            "mode": "canonical",
+            "call_index": 99,
+            "request_sha256": str(attempt) * 64,
+            "event": event,
+            "batch_index": 1,
+        }
+        for attempt, events in (
+            (3, ("begun", "dispatched", "response_received", "accepted")),
+            (4, ("begun", "dispatched", "response_received", "contract_failed")),
+        )
+        for ordinal, event in enumerate(events)
+    )
+    stable_namespace = _replay_namespace_sha256(cast(Any, job))
+    with pytest.raises(RuntimeError, match="duplicated provider dispatch"):
+        ProcessRehearsal(_request(tmp_path))._assert_provider_ledger_is_restart_safe(
+            cast(Any, _recovery_repository(job, rows)),
+            UUID(int=1),
+            expected_precrash_logical_identities=_stable_logical_call_ids(
+                [precrash], stable_namespace
+            ),
+            precrash_event_id_cutoff=41,
+            fault_interlock={"stage": "card_residual", "call_index": 17, "subcall_ordinal": 0},
+        )
+
+
+@pytest.mark.parametrize("invalid_terminal", ("validation_failed", "transport_failed"))
+def test_begun_recovery_rejects_invalid_post_accepted_transition(
+    tmp_path: Path, invalid_terminal: str
+) -> None:
+    job, precrash, rows = _begun_recovery_rows(
+        ("begun", "dispatched", "response_received", "accepted", invalid_terminal)
+    )
+    stable_namespace = _replay_namespace_sha256(cast(Any, job))
+    with pytest.raises(RuntimeError, match="provider lifecycle is invalid"):
+        ProcessRehearsal(_request(tmp_path))._assert_provider_ledger_is_restart_safe(
+            cast(Any, _recovery_repository(job, rows)),
+            UUID(int=1),
+            expected_precrash_logical_identities=_stable_logical_call_ids(
+                [precrash], stable_namespace
+            ),
+            precrash_event_id_cutoff=41,
+            fault_interlock={"stage": "card_residual", "call_index": 17, "subcall_ordinal": 0},
+        )
+
+
+def test_begun_recovery_rejects_missing_terminal_outcome(tmp_path: Path) -> None:
+    job, precrash, rows = _begun_recovery_rows(("begun", "dispatched", "response_received"))
+    stable_namespace = _replay_namespace_sha256(job)
+    with pytest.raises(RuntimeError, match="lacks a terminal outcome"):
+        ProcessRehearsal(_request(tmp_path))._assert_provider_ledger_is_restart_safe(
+            _recovery_repository(job, rows),
+            UUID(int=1),
+            expected_precrash_logical_identities=_stable_logical_call_ids(
+                [precrash], stable_namespace
+            ),
+            precrash_event_id_cutoff=41,
+            fault_interlock={"stage": "card_residual", "call_index": 17, "subcall_ordinal": 0},
+        )
+
+
+def test_child_health_must_attest_exact_launched_identity(tmp_path: Path) -> None:
+    harness = ProcessRehearsal(_request(tmp_path))
+    harness._source_tree_sha256 = "c" * 64
+    health = {
+        "rehearsal_nonce": harness._runtime_evidence_nonce,
+        "rehearsal_pid": "41",
+        "rehearsal_source": str((tmp_path / "implementation/src").resolve()),
+        "rehearsal_source_tree_sha256": "c" * 64,
+        "rehearsal_commit": "a" * 40,
+        "rehearsal_tree": "b" * 40,
+    }
+    harness._validate_child_health(health, 41)
+    health["rehearsal_nonce"] = "wrong"
+    with pytest.raises(RuntimeError, match="does not identify"):
+        harness._validate_child_health(health, 41)
+
+
+def test_port_preflight_rejects_bound_loopback_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oms_hub.anki.rehearsal import process as process_module
+
+    harness = ProcessRehearsal(_request(tmp_path))
+
+    class BoundPortProbe:
+        def __enter__(self) -> BoundPortProbe:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def setsockopt(self, *_: object) -> None:
+            return None
+
+        def bind(self, _address: tuple[str, int]) -> None:
+            raise OSError("occupied")
+
+    monkeypatch.setattr(process_module.socket, "socket", lambda *_: BoundPortProbe())
+    with pytest.raises(RuntimeError, match="already in use"):
+        harness._assert_loopback_port_is_free()
+
+
+def test_standalone_launcher_is_stdlib_only_until_verified_and_reexecs_isolated() -> None:
+    script = Path(__file__).parents[2] / "scripts" / "run-a0-rehearsal.py"
+    tree = parse(script.read_text(encoding="utf-8"))
+    top_level_imports = [node for node in tree.body if isinstance(node, (Import, ImportFrom))]
+    assert all(
+        not (
+            isinstance(node, ImportFrom)
+            and node.module is not None
+            and node.module.startswith("oms_hub")
+        )
+        for node in top_level_imports
+    )
+    source = script.read_text(encoding="utf-8")
+    assert '"-I"' in source and '"-S"' in source
+    assert source.index("_verify_implementation_identity(args)") < source.index(
+        "from oms_hub.anki.rehearsal.process"
+    )
+
+
+def test_implementation_identity_rejects_commit_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = ProcessRehearsal(_request(tmp_path))
+    monkeypatch.setattr(
+        ProcessRehearsal,
+        "_git_output",
+        staticmethod(lambda _repository, *args: "c" * 40 if args[0] == "rev-parse" else ""),
+    )
+    with pytest.raises(ValueError, match="commit"):
+        harness._verify_implementation_identity()
+
+
+def test_implementation_identity_rejects_dirty_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = ProcessRehearsal(_request(tmp_path))
+
+    def git_output(_repository: Path, *args: str) -> str:
+        if args == ("rev-parse", "HEAD"):
+            return "a" * 40
+        if args == ("rev-parse", "HEAD^{tree}"):
+            return "b" * 40
+        return " M src/owned.py"
+
+    monkeypatch.setattr(ProcessRehearsal, "_git_output", staticmethod(git_output))
+    with pytest.raises(ValueError, match="clean"):
+        harness._verify_implementation_identity()
+
+
+def test_restart_stops_child_after_observed_boundary(tmp_path: Path) -> None:
+    class FakeProcess:
+        pid = 12
+        returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.returncode = 0
+
+        def wait(self, timeout: float) -> int:
+            del timeout
+            return 0
+
+    process = FakeProcess()
+    harness = ProcessRehearsal(_request(tmp_path))
+    from oms_hub.anki.rehearsal.process import ProcessObservation, _Child
+
+    stdout_path = tmp_path / "stdout.log"
+    stderr_path = tmp_path / "stderr.log"
+    stdout = stdout_path.open("wb")
+    stderr = stderr_path.open("wb")
+    harness._children.append(
+        _Child(
+            process,
+            ProcessObservation(12, "start", None, None, ("oms-hub", "serve")),
+            stdout_path,
+            stderr_path,
+            stdout,
+            stderr,
+        )
+    )  # type: ignore[arg-type]
+
+    class FakeRepository:
+        def list_provider_attempt_events(self, job_id: UUID) -> list[dict[str, object]]:
+            del job_id
+            return [
+                {
+                    "stage": "card_ledger",
+                    "stage_attempt": 1,
+                    "mode": "canonical",
+                    "call_index": 0,
+                    "event": "accepted",
+                }
+            ]
+
+    harness._restart_after_durable_boundary(
+        FakeRepository(), UUID(int=1), {"state": "card_building_ledger"}
+    )  # type: ignore[arg-type]
+    assert process.returncode == 0
+    assert any(
+        item["event"] == "restart_after_observed_durable_boundary" for item in harness._timeline
+    )
+
+
+def test_unchanged_review_and_apply_423_shape() -> None:
+    payload = unchanged_review_payload(
+        {
+            "job": {"review_revision": 2},
+            "groups": {
+                "pass_1_matches": [{"note_id": 3, "selected": True}],
+                "recovered_in_pass_2": [],
+                "generated_cards": [],
+            },
+        }
+    )
+    assert payload["expected_revision"] == 2
+    assert payload["candidate_selections"] == {"3": True}
+
+
+def test_envelope_response_requires_created_status_and_complete_identity() -> None:
+    with pytest.raises(RuntimeError, match="HTTP 409"):
+        ProcessRehearsal._validate_envelope_response(  # type: ignore[arg-type]
+            None, UUID(int=1), 2, 409, {"detail": "stale"}
+        )
+    with pytest.raises(RuntimeError, match="malformed or mismatched"):
+        ProcessRehearsal._validate_envelope_response(  # type: ignore[arg-type]
+            None,
+            UUID(int=1),
+            2,
+            201,
+            {
+                "job_id": str(UUID(int=2)),
+                "envelope_id": str(UUID(int=3)),
+                "payload_sha256": "a" * 64,
+                "summary": {},
+                "reconciliation": {},
+            },
+        )
+
+
+def test_envelope_response_rejects_altered_nested_reconciliation_document() -> None:
+    job_id = UUID(int=1)
+    envelope_id = UUID(int=2)
+    reconciliation = {
+        "contract_version": "card_centric_s9_v1",
+        "can_render_envelope": True,
+        "snapshot": {"nested": {"selection": ["one", "two"]}},
+        "selection": {"overflow_acknowledgement": {"required": False}},
+    }
+    persisted = SimpleNamespace(
+        review_revision=2,
+        job_id=job_id,
+        reconciliation_contract_version="card_centric_s9_v1",
+        overflow_acknowledgement_provenance={"required": False},
+        operations=(),
+    )
+    repository = SimpleNamespace(
+        get_job_envelope=lambda _job_id: SimpleNamespace(
+            id=envelope_id,
+            job_id=job_id,
+            payload_sha256="a" * 64,
+        ),
+        get_envelope=lambda _envelope_id: persisted,
+        reviewed_reconciliation=lambda _job_id, _revision: reconciliation,
+    )
+    body = {
+        "job_id": str(job_id),
+        "envelope_id": str(envelope_id),
+        "payload_sha256": "a" * 64,
+        "summary": {
+            "notes_created": 0,
+            "existing_notes_retagged": 0,
+            "tags_added": 0,
+            "tags_removed": 0,
+        },
+        "reconciliation": reconciliation,
+    }
+    ProcessRehearsal._validate_envelope_response(repository, job_id, 2, 201, body)
+    body["reconciliation"] = {
+        **reconciliation,
+        "snapshot": {"nested": {"selection": ["one", "altered"]}},
+    }
+    with pytest.raises(RuntimeError, match="exactly match"):
+        ProcessRehearsal._validate_envelope_response(repository, job_id, 2, 201, body)
+
+
+def test_evidence_redacts_secrets_and_has_hash_manifest(tmp_path: Path) -> None:
+    destination = tmp_path / "evidence.zip"
+    _write_deterministic_zip(
+        destination,
+        {
+            "record.json": {
+                "api_token": "do-not-leak",
+                "provider_error": '{"refresh_token":"do-not-leak,still-not"}',
+                "ok": True,
+            }
+        },
+    )
+    with zipfile.ZipFile(destination) as archive:
+        record = archive.read("record.json")
+        manifest = json.loads(archive.read("sha256-manifest.json"))
+    assert b"do-not-leak" not in record
+    assert b"still-not" not in record
+    assert manifest["record.json"] == hashlib.sha256(record).hexdigest()
+    evidence = _environment_evidence({"API_TOKEN": "do-not-leak", "OMS_HUB_DATA_DIR": "/tmp/x"})
+    assert evidence["API_TOKEN"]["value"] == "[REDACTED]"
+
+
+def test_result_truthfully_reports_missing_native_evidence(tmp_path: Path) -> None:
+    result = RehearsalResult(UUID(int=1), tmp_path / "overlay", tmp_path / "evidence.zip")
+    assert result.native_gate_complete is False
+    assert result.local_execution_evidence == "Local actual-process rehearsal execution performed"
+    assert result.missing_evidence == (
+        "Native NUC/Windows PowerShell capsule export pending",
+        "Native NUC/Windows capsule execution pending",
+    )
+
+
+def test_runtime_evidence_rejects_nonce_mismatch_and_malformed_sequences() -> None:
+    adapter = {
+        "schema_version": 1,
+        "run_nonce": "correct",
+        "records": [],
+    }
+    with pytest.raises(RuntimeError, match="stale or malformed"):
+        _validate_adapter_ledger(adapter, "wrong")
+    egress = {
+        "schema_version": 1,
+        "run_nonce": "correct",
+        "mode": "deterministic",
+        "records": [
+            {
+                "kind": "startup",
+                "mode": "deterministic",
+                "host": None,
+                "port": None,
+                "resolved_address": None,
+                "allowed": None,
+                "ordinal": 2,
+                "timestamp": "now",
+            }
+        ],
+    }
+    with pytest.raises(RuntimeError, match="invalid sequence"):
+        _validate_egress_ledger(egress, "correct", "deterministic")
+
+
+def test_runtime_evidence_rejects_non_list_crash_ledger_records() -> None:
+    malformed_adapter = {
+        "schema_version": 1,
+        "run_nonce": "correct",
+        "records": {"not": "a-list"},
+    }
+    with pytest.raises(RuntimeError, match="stale or malformed"):
+        _validate_adapter_ledger(malformed_adapter, "correct")
+
+
+def test_successful_runtime_evidence_rejects_denied_egress_authorization(tmp_path: Path) -> None:
+    harness = ProcessRehearsal(_request(tmp_path, runtime_evidence_nonce="nonce"))
+    evidence = tmp_path / "overlay/rehearsal/runtime-evidence"
+    evidence.mkdir(parents=True)
+    (evidence / "read-only-anki-mutation-ledger.json").write_text(
+        json.dumps({"schema_version": 1, "run_nonce": "nonce", "records": []}),
+        encoding="utf-8",
+    )
+    (evidence / "egress-decisions.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_nonce": "nonce",
+                "mode": "deterministic",
+                "records": [
+                    {
+                        "kind": "startup",
+                        "mode": "deterministic",
+                        "host": None,
+                        "port": None,
+                        "resolved_address": None,
+                        "allowed": None,
+                        "ordinal": 1,
+                        "timestamp": "now",
+                    },
+                    {
+                        "kind": "authorization",
+                        "mode": "deterministic",
+                        "host": "example.invalid",
+                        "port": 443,
+                        "resolved_address": None,
+                        "allowed": False,
+                        "ordinal": 2,
+                        "timestamp": "now",
+                    },
+                    {
+                        "kind": "shutdown",
+                        "mode": "deterministic",
+                        "host": None,
+                        "port": None,
+                        "resolved_address": None,
+                        "allowed": None,
+                        "ordinal": 3,
+                        "timestamp": "now",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    overlay = SimpleNamespace(root=tmp_path / "overlay")
+    with pytest.raises(RuntimeError, match="denied or forbidden egress"):
+        harness._validate_runtime_evidence(overlay)  # type: ignore[arg-type]
+
+
+def test_crash_egress_authorization_gate_rejects_denial_but_allows_lifecycle_markers() -> None:
+    records: list[object] = [
+        {"kind": "startup", "allowed": None},
+        {"kind": "authorization", "allowed": False},
+    ]
+    with pytest.raises(RuntimeError, match="crash evidence records denied or forbidden"):
+        _require_no_denied_egress_authorizations(records, "crash")
+    assert _require_no_denied_egress_authorizations(
+        [{"kind": "startup", "allowed": None}, {"kind": "shutdown", "allowed": None}],
+        "crash",
+    ) == []
+
+
+def test_runtime_evidence_missing_file_fails_closed(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="runtime evidence is missing"):
+        _load_runtime_ledger(tmp_path / "runtime-evidence/egress-decisions.json")

@@ -1,6 +1,7 @@
 import sqlite3
 from contextlib import closing
 from dataclasses import replace
+from pathlib import Path
 from uuid import UUID
 
 import pytest
@@ -10,7 +11,7 @@ from oms_hub.anki.domain import PipelineContractVersion
 from oms_hub.anki.pipeline import PinnedInputChanged, StageArtifactStore
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.db import Database
-from oms_hub.migrations import LATEST_SCHEMA_VERSION
+from oms_hub.migrations import LATEST_SCHEMA_VERSION, _upgrade_provider_attempt_subcall_ordinal_v27
 
 APPROVED_ANKI_TABLES = {
     "anki_curation_instructions",
@@ -29,6 +30,51 @@ APPROVED_ANKI_TABLES = {
     "anki_stage_artifacts",
     "anki_tag_patches",
 }
+
+
+def test_v26_provider_attempt_events_upgrade_preserves_rows_and_adds_subcall_identity(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'v26-provider-events.db'}")
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE anki_provider_attempt_events ("
+                "id INTEGER PRIMARY KEY, job_id TEXT NOT NULL, stage TEXT NOT NULL, "
+                "stage_attempt INTEGER NOT NULL, mode TEXT NOT NULL, call_index INTEGER NOT NULL, "
+                "event TEXT NOT NULL)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO anki_provider_attempt_events "
+                "(id, job_id, stage, stage_attempt, mode, call_index, event) "
+                "VALUES (1, 'job', 'card_residual', 1, 'canonical', 7, 'begun')"
+            )
+        )
+    _upgrade_provider_attempt_subcall_ordinal_v27(database)
+    inspector = inspect(database.engine)
+    columns = {column["name"] for column in inspector.get_columns("anki_provider_attempt_events")}
+    assert "subcall_ordinal" in columns
+    with database.engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT subcall_ordinal FROM anki_provider_attempt_events WHERE id = 1")
+        ).scalar_one() == 0
+    unique_indexes = {
+        tuple(index["column_names"])
+        for index in inspector.get_indexes("anki_provider_attempt_events")
+        if index["unique"]
+    }
+    assert (
+        "job_id",
+        "stage",
+        "stage_attempt",
+        "mode",
+        "call_index",
+        "subcall_ordinal",
+        "event",
+    ) in unique_indexes
+    database.close()
 
 
 def _create_schema_v3_database(path: str) -> None:

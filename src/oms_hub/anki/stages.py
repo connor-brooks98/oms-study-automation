@@ -109,6 +109,11 @@ from oms_hub.anki.prompts import (
     PromptSynchronizer,
     StaticPromptSynchronizer,
 )
+from oms_hub.anki.provider_attempts import (
+    emit_provider_event,
+    finalize_provider_call,
+    provider_call_scope,
+)
 from oms_hub.anki.reconciliation import (
     AuditResolution,
     CardCentricReconciliationInput,
@@ -769,25 +774,36 @@ class CurationServicesRunner:
         is_v2 = context.job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2
         if context.job.semantic_generation is None:
             raise PinnedInputChanged("card-centric v2 job has no pinned semantic generation")
-        if is_v2:
-            similarity = await self.semantic.pinned_centroid_similarity(
-                tuple(_card_concept_centroid_terms(concept) for concept in ledger.concepts),
-                note_ids=scoped_note_ids,
-                expected_generation=context.job.semantic_generation,
-            )
-            scores = dict(similarity.scores)
-            unavailable = tuple(sorted(set(similarity.unavailable_note_ids)))
-        else:
-            concept_queries = tuple(
-                " ".join((concept.primary_entity, *concept.aliases)).strip()
-                for concept in ledger.concepts
-            )
-            scores = await self.semantic.pinned_similarity(
-                concept_queries,
-                note_ids=scoped_note_ids,
-                expected_generation=context.job.semantic_generation,
-            )
-            unavailable = ()
+        # S4a's pinned vectors are local, but its concept-query embeddings are
+        # still provider work.  Bind that one semantic subcall to the complete
+        # stable scope so deterministic rehearsal captures its request,
+        # response, and terminal evidence rather than falling through without
+        # a provider-call detail.
+        with provider_call_scope(
+            batch_index=0,
+            batch_note_ids=scoped_note_ids,
+            kind="query_embedding",
+            subcall_ordinal=0,
+        ):
+            if is_v2:
+                similarity = await self.semantic.pinned_centroid_similarity(
+                    tuple(_card_concept_centroid_terms(concept) for concept in ledger.concepts),
+                    note_ids=scoped_note_ids,
+                    expected_generation=context.job.semantic_generation,
+                )
+                scores = dict(similarity.scores)
+                unavailable = tuple(sorted(set(similarity.unavailable_note_ids)))
+            else:
+                concept_queries = tuple(
+                    " ".join((concept.primary_entity, *concept.aliases)).strip()
+                    for concept in ledger.concepts
+                )
+                scores = await self.semantic.pinned_similarity(
+                    concept_queries,
+                    note_ids=scoped_note_ids,
+                    expected_generation=context.job.semantic_generation,
+                )
+                unavailable = ()
         if (
             set(scores) & set(unavailable)
             or set(scores) | set(unavailable) != set(scoped_note_ids)
@@ -892,27 +908,31 @@ class CurationServicesRunner:
             reason_code: str | None = None
             try:
                 async with semaphore:
-                    generated = await asyncio.to_thread(
-                        self.structured.generate_json,
-                        instruction,
-                        json.dumps(
-                            {
-                                "cards": [card.model_dump(mode="json") for card in batch],
-                                "concept_definitions": concept_definitions,
-                                "allowed_concept_ids": sorted(allowed_concepts),
-                                "allowed_supporting_passage_ids": sorted(allowed_passages),
-                            },
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ),
-                        output_model=FastClassificationResult,
-                        provider=ProviderName(stage_model.provider),
-                        model=stage_model.model,
-                        options=GenerationOptions(
-                            cacheable_source_prefix=source.prefix,
-                            thinking_budget_tokens=execution.thinking_budget_tokens,
-                        ),
-                    )
+                    with provider_call_scope(
+                        batch_index=batch_index,
+                        batch_note_ids=expected_note_ids,
+                    ):
+                        generated = await asyncio.to_thread(
+                            self.structured.generate_json,
+                            instruction,
+                            json.dumps(
+                                {
+                                    "cards": [card.model_dump(mode="json") for card in batch],
+                                    "concept_definitions": concept_definitions,
+                                    "allowed_concept_ids": sorted(allowed_concepts),
+                                    "allowed_supporting_passage_ids": sorted(allowed_passages),
+                                },
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ),
+                            output_model=FastClassificationResult,
+                            provider=ProviderName(stage_model.provider),
+                            model=stage_model.model,
+                            options=GenerationOptions(
+                                cacheable_source_prefix=source.prefix,
+                                thinking_budget_tokens=execution.thinking_budget_tokens,
+                            ),
+                        )
             except StructuredOutputError as exc:
                 reason_code = "structured_output_invalid"
                 usage = StageUsage(
@@ -934,6 +954,25 @@ class CurationServicesRunner:
                     allowed_concepts=allowed_concepts,
                     allowed_passages=allowed_passages,
                 )
+                if reason_code is not None:
+                    observed = [item.note_id for item in generated.value.results]
+                    expected = set(expected_note_ids)
+                    emit_provider_event(
+                        getattr(generated, "attempt_handle", None),
+                        "contract_failed",
+                        error=f"S4b batch degraded: {reason_code}",
+                        missing_note_ids=tuple(expected - set(observed)),
+                        extra_note_ids=tuple(set(observed) - expected),
+                        duplicate_note_ids=tuple(
+                            sorted(
+                                {
+                                    note_id
+                                    for note_id in observed
+                                    if observed.count(note_id) > 1
+                                }
+                            )
+                        ),
+                    )
                 if reason_code is None:
                     return tuple(generated.value.results), usage, None
             if reason_code is not None:
@@ -1166,7 +1205,17 @@ class CurationServicesRunner:
                 raise PinnedInputChanged("card-centric v2 job has no pinned semantic generation")
             if semantic_generation is not None:
                 search_kwargs["expected_generation"] = semantic_generation
-        hits = await self.semantic.search(queries, **search_kwargs)
+        # S6 has one batched semantic-query embedding call before its
+        # structured residual classifier.  The ordered searchable note IDs
+        # and canonical query payload captured by ReplayEmbeddingClient make
+        # this a stable replay identity independent of scheduler timing.
+        with provider_call_scope(
+            batch_index=0,
+            batch_note_ids=tuple(sorted(searchable_note_ids)),
+            kind="query_embedding",
+            subcall_ordinal=0,
+        ):
+            hits = await self.semantic.search(queries, **search_kwargs)
         audit: list[dict[str, Any]] = []
         hit_ids: set[int] = set()
         # Terminal v2 fast rows are classification decisions, as are actual
@@ -1298,7 +1347,7 @@ class CurationServicesRunner:
         evidence_records: list[SourceEvidence] = []
         passages_by_id = {passage.passage_id: passage for passage in source.passages}
         usages: list[StageUsage] = []
-        for concept in ledger.concepts:
+        for concept_index, concept in enumerate(ledger.concepts):
             if _coverage_suppresses_recovery(coverage[concept.concept_id]):
                 continue
             fact_count = concept.suggested_fact_count if is_v2 else 1
@@ -1355,34 +1404,53 @@ class CurationServicesRunner:
                 generation_input["forbidden_cloze_targets"] = list(
                     ledger.forbidden_cloze_targets
                 )
-            result = await asyncio.to_thread(
-                self.structured.generate_json,
-                instruction,
-                json.dumps(generation_input, sort_keys=True, separators=(",", ":")),
-                output_model=CardGapBatch,
-                provider=ProviderName(stage_model.provider),
-                model=stage_model.model,
-                options=GenerationOptions(cacheable_source_prefix=source.prefix),
-            )
+            with provider_call_scope(batch_index=concept_index, defer_acceptance=True):
+                result = await asyncio.to_thread(
+                    self.structured.generate_json,
+                    instruction,
+                    json.dumps(generation_input, sort_keys=True, separators=(",", ":")),
+                    output_model=CardGapBatch,
+                    provider=ProviderName(stage_model.provider),
+                    model=stage_model.model,
+                    options=GenerationOptions(cacheable_source_prefix=source.prefix),
+                )
             expected = {fact["fact_id"] for fact in missing_facts}
-            if is_v2:
-                _validate_card_gap_batch_v2(result.value, expected)
-            else:
-                returned = {item.fact_id for item in result.value.resolutions}
-                if returned != expected:
-                    raise PinnedInputChanged(
-                        "card-centric gap output must resolve every requested fact"
-                    )
+            try:
+                if is_v2:
+                    _validate_card_gap_batch_v2(result.value, expected)
+                else:
+                    returned = {item.fact_id for item in result.value.resolutions}
+                    if returned != expected:
+                        raise PinnedInputChanged(
+                            "card-centric gap output must resolve every requested fact"
+                        )
+            except PinnedInputChanged as exc:
+                emit_provider_event(result.attempt_handle, "contract_failed", error=str(exc))
+                raise
+            try:
+                for item in result.value.resolutions:
+                    if item.status == "generated" and (
+                        not set(item.source_passage_ids)
+                        <= {passage.passage_id for passage in source.passages}
+                        or (
+                            not is_v2
+                            and all(value.startswith("SUM:") for value in item.source_passage_ids)
+                        )
+                    ):
+                        raise PinnedInputChanged(
+                            "generated card must cite admissible lecture evidence"
+                        )
+                    if item.status == "generated" and not all(
+                        passages_by_id[passage_id].text.strip()
+                        for passage_id in item.source_passage_ids
+                    ):
+                        raise PinnedInputChanged(
+                            "generated card must cite nonempty grounded lecture evidence"
+                        )
+            except PinnedInputChanged as exc:
+                emit_provider_event(result.attempt_handle, "contract_failed", error=str(exc))
+                raise
             for item in result.value.resolutions:
-                if item.status == "generated" and (
-                    not set(item.source_passage_ids)
-                    <= {passage.passage_id for passage in source.passages}
-                    or (
-                        not is_v2
-                        and all(value.startswith("SUM:") for value in item.source_passage_ids)
-                    )
-                ):
-                    raise PinnedInputChanged("generated card must cite admissible lecture evidence")
                 card_id = hashlib.sha256(
                     f"{concept.concept_id}\0{item.fact_id}\0{item.text}\0{item.extra}".encode()
                 ).hexdigest()[:32]
@@ -1438,6 +1506,7 @@ class CurationServicesRunner:
                     result.cost_microusd,
                 )
             )
+            finalize_provider_call(result.attempt_handle)
         return StageProduct(
             kind="card_centric_gap_fill",
             payload={"resolutions": [item.model_dump(mode="json") for item in output]},
@@ -2275,6 +2344,14 @@ class CurationServicesRunner:
             for note_id in sorted(existing_ids)
             if note_id in cards
         )
+        existing_document_vectors = None
+        if existing_notes:
+            if context.job.semantic_generation is None:
+                raise PinnedInputChanged("card-centric v2 job has no pinned semantic generation")
+            existing_document_vectors = await self.semantic.pinned_document_vectors(
+                note_ids=tuple(note.note_id for note in existing_notes),
+                expected_generation=context.job.semantic_generation,
+            )
         deduper = DeduplicationService(
             self.embedder,
             duplicate_threshold=0.88,
@@ -2284,12 +2361,22 @@ class CurationServicesRunner:
         resolved: list[GeneratedCardResolution] = []
         accepted: list[GapCardProposal] = []
         accepted_ids: set[str] = set()
-        for item in generated:
+        for batch_index, item in enumerate(generated):
             if item.status != "generated":
                 resolved.append(item)
                 continue
             proposal = _dedupe_gap_proposal(item, context)
-            outcome = await deduper.classify(proposal, existing_notes, accepted)
+            with provider_call_scope(
+                batch_index=batch_index,
+                batch_note_ids=tuple(sorted(existing_ids)),
+                kind="embedding",
+            ):
+                outcome = await deduper.classify(
+                    proposal,
+                    existing_notes,
+                    accepted,
+                    existing_document_vectors=existing_document_vectors,
+                )
             if outcome.disposition == "unique":
                 resolved.append(item)
                 accepted.append(proposal)

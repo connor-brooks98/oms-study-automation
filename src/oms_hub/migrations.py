@@ -35,7 +35,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 25
+LATEST_SCHEMA_VERSION = 27
 
 
 def _ensure_column(
@@ -156,6 +156,82 @@ def _validate_card_ledger_attempts_v25(database: "Database") -> None:
             ).mappings()
         }
     _validate_card_ledger_attempt_lifecycles_v25(rows, stage_transports)
+
+
+def _validate_provider_attempt_events_v26(database: "Database") -> None:
+    """Require append-only, batch-bound provider evidence on v27 schemas."""
+    inspector = inspect(database.engine)
+    table = "anki_provider_attempt_events"
+    if not inspector.has_table(table):
+        raise RuntimeError("schema v26 is missing provider-attempt event evidence")
+    column_rows = {item["name"]: item for item in inspector.get_columns(table)}
+    required = {
+        "id", "job_id", "stage", "stage_attempt", "mode", "call_index", "subcall_ordinal",
+        "batch_index", "batch_note_ids_json", "batch_note_ids_sha256", "kind",
+        "event", "provider", "model", "instruction_sha256", "input_sha256",
+        "output_schema_sha256", "generation_parameters_json",
+        "generation_parameters_sha256", "cache_prefix_sha256", "request_sha256",
+        "request_id", "input_tokens", "output_tokens", "cost_microusd",
+        "cache_creation_input_tokens", "cache_read_input_tokens", "response_sha256",
+        "response_text", "validation_error", "missing_note_ids_json",
+        "extra_note_ids_json", "duplicate_note_ids_json", "diagnostic_source",
+        "http_status", "created_at",
+    }
+    missing = sorted(required - set(column_rows))
+    if missing:
+        raise RuntimeError(
+            "schema v26 provider-attempt event evidence is incomplete: "
+            + ", ".join(missing)
+        )
+    unique_sets = {
+        tuple(index["column_names"])
+        for index in inspector.get_indexes(table)
+        if index.get("unique")
+    }
+    unique_sets.update(
+        tuple(constraint["column_names"])
+        for constraint in inspector.get_unique_constraints(table)
+    )
+    identity = (
+        "job_id", "stage", "stage_attempt", "mode", "call_index", "subcall_ordinal", "event"
+    )
+    if identity not in unique_sets:
+        raise RuntimeError("schema v26 provider-attempt event identity is not unique")
+    index_sets = {tuple(index["column_names"]) for index in inspector.get_indexes(table)}
+    if ("job_id", "stage", "stage_attempt") not in index_sets:
+        raise RuntimeError("schema v26 provider-attempt execution index is missing")
+    expected_fk = {
+        "constrained_columns": ["job_id"],
+        "referred_table": "anki_curation_jobs",
+        "referred_columns": ["id"],
+    }
+    if not any(
+        all(foreign_key.get(key) == value for key, value in expected_fk.items())
+        for foreign_key in inspector.get_foreign_keys(table)
+    ):
+        raise RuntimeError("schema v26 provider-attempt foreign key is invalid")
+
+
+def _upgrade_provider_attempt_subcall_ordinal_v27(database: "Database") -> None:
+    """Preserve v26 evidence while making subcalls a durable identity field."""
+    _ensure_column(
+        database,
+        "anki_provider_attempt_events",
+        "subcall_ordinal",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    inspector = inspect(database.engine)
+    if not inspector.has_table("anki_provider_attempt_events"):
+        return
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ux_anki_provider_attempt_events_identity_v27 "
+                "ON anki_provider_attempt_events "
+                "(job_id, stage, stage_attempt, mode, call_index, subcall_ordinal, event)"
+            )
+        )
 
 
 def _validate_card_ledger_attempt_lifecycles_v25(
@@ -1939,6 +2015,7 @@ def migrate_database(database: "Database") -> None:
             _validate_outline_replacement_reviews(database)
             _validate_imported_derived_adoptions_v23(database)
             _validate_card_ledger_attempts_v25(database)
+            _validate_provider_attempt_events_v26(database)
             return
         if version == 20:
             _validate_complete_v20_import_graph(database)
@@ -1976,12 +2053,14 @@ def migrate_database(database: "Database") -> None:
     _upgrade_outline_replacement_reviews_v22(database)
     _upgrade_imported_derived_slide_v23(database)
     _upgrade_card_ledger_attempt_diagnostics_v25(database)
+    _upgrade_provider_attempt_subcall_ordinal_v27(database)
     _validate_import_schema_structure(database, version=LATEST_SCHEMA_VERSION)
     _validate_complete_existing_artifact_graph(database)
     _validate_current_artifact_indexes(database)
     _validate_outline_replacement_reviews(database)
     _validate_imported_derived_adoptions_v23(database)
     _validate_card_ledger_attempts_v25(database)
+    _validate_provider_attempt_events_v26(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

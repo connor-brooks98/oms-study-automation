@@ -19,6 +19,7 @@ from oms_hub.anki.domain import (
     EvidenceSupport,
     GapCard,
     PipelineContractVersion,
+    ResolvedStageModel,
     RetrievalPass,
     SourceEvidence,
     SourceKind,
@@ -27,6 +28,12 @@ from oms_hub.anki.domain import (
     StageUsage,
 )
 from oms_hub.anki.orphan_artifacts import OrphanArtifactStore, product_snapshot
+from oms_hub.anki.provider_attempts import (
+    ProviderAttemptBinding,
+    ProviderMode,
+    bind_provider_attempts,
+    replay_namespace_from_job_source,
+)
 from oms_hub.anki.repository import AnkiCurationRepository
 
 
@@ -551,11 +558,15 @@ class CurationPipeline:
         runner: CurationStageRunner,
         *,
         input_validator: CurationInputValidator | None = None,
+        provider_mode: ProviderMode = "canonical",
     ) -> None:
         self.repository = repository
         self.artifacts = artifacts
         self.runner = runner
         self.input_validator = input_validator or _AllowPinnedInputs()
+        if provider_mode not in {"canonical", "shadow"}:
+            raise ValueError("provider mode must be canonical or shadow")
+        self.provider_mode: ProviderMode = provider_mode
 
     async def run_stage(
         self,
@@ -568,11 +579,10 @@ class CurationPipeline:
         definition = stage_definition(job.state, job.pipeline_contract_version)
         if definition is None:
             return None
-        stage_provider = job.provider
-        stage_model = job.model
-        if definition.stage is CurationStage.CARD_LEDGER:
-            stage_provider = job.resolved_model_config.ledger_s2.provider
-            stage_model = job.resolved_model_config.ledger_s2.model
+        self.repository.require_no_indeterminate_provider_attempt(job_id, definition.stage)
+        stage_transport = _provider_transport_for_stage(job, definition.stage)
+        stage_provider = stage_transport.provider
+        stage_model = stage_transport.model
         started = self.repository.start_stage(
             job_id,
             definition.stage,
@@ -627,18 +637,40 @@ class CurationPipeline:
                             now=_lease_now(lease_clock),
                         )
 
-                product = await self.runner.run(
-                    StageContext(
-                        job=job,
-                        stage=definition.stage,
-                        input_sha256=input_sha256,
-                        prior_artifacts=prior_artifacts,
-                        prior_payloads=prior_payloads,
-                        replay_inputs=replay_inputs.document,
-                        replay_inputs_sha256=replay_inputs.sha256,
-                        record_card_ledger_attempt=record_card_ledger_attempt,
-                    )
+                binding = ProviderAttemptBinding(
+                    job_id=job_id,
+                    stage=definition.stage,
+                    stage_attempt=started.attempt_count,
+                    mode=self.provider_mode,
+                    replay_namespace=replay_namespace_from_job_source(
+                        configuration_sha256=job.configuration_sha256,
+                        pipeline_contract_version=job.pipeline_contract_version.value,
+                        model_config_sha256=job.model_config_sha256,
+                        source_revision_hashes=job.source_revision_hashes,
+                        index_snapshot_id=job.index_snapshot_id,
+                        companion_generation=job.companion_generation,
+                        semantic_generation=job.semantic_generation,
+                        source_index_generation=job.source_index_generation,
+                    ),
+                    recorder=lambda evidence: self.repository.record_provider_attempt_event(
+                        evidence,
+                        lease_owner=lease_owner,
+                        now=_lease_now(lease_clock),
+                    ),
                 )
+                with bind_provider_attempts(binding):
+                    product = await self.runner.run(
+                        StageContext(
+                            job=job,
+                            stage=definition.stage,
+                            input_sha256=input_sha256,
+                            prior_artifacts=prior_artifacts,
+                            prior_payloads=prior_payloads,
+                            replay_inputs=replay_inputs.document,
+                            replay_inputs_sha256=replay_inputs.sha256,
+                            record_card_ledger_attempt=record_card_ledger_attempt,
+                        )
+                    )
                 artifact = self.artifacts.write(
                     job_id,
                     definition.stage,
@@ -692,6 +724,24 @@ class CurationPipeline:
             state=advanced.state,
             artifact=artifact,
         )
+
+
+def _provider_transport_for_stage(
+    job: CurationJob, stage: CurationStage
+) -> ResolvedStageModel:
+    resolved = job.resolved_model_config
+    if stage is CurationStage.CARD_LEDGER:
+        return resolved.ledger_s2
+    if stage is CurationStage.CARD_FAST_CLASSIFY and resolved.fast_classify_s4b is not None:
+        return resolved.fast_classify_s4b
+    if stage is CurationStage.CARD_CLASSIFY:
+        return resolved.classify_s4
+    if stage is CurationStage.CARD_RESIDUAL:
+        return resolved.residual_s6
+    if stage is CurationStage.CARD_GAP_FILL:
+        return resolved.gap_fill_s7
+    # Stages without a dedicated model preserve the job-level transport.
+    return ResolvedStageModel(provider=job.provider, model=job.model)
 
 
 def stage_definition(

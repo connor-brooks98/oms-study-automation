@@ -7,6 +7,8 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
+
 from oms_hub.anki.card_centric import build_snapshot_census, build_source_index
 from oms_hub.anki.card_centric_contracts import CardConcept, CardConceptLedger, CardRecord
 from oms_hub.anki.domain import (
@@ -55,6 +57,19 @@ class LifecycleSemanticService:
         assert expected_generation == "fixture-generation"
         # The first score is intentionally in the disputed [0.40, 0.50) band.
         return [[SemanticHit(note_id=2, score=0.45, content_hash="2" * 64)] for _ in queries]
+
+    async def pinned_document_vectors(
+        self,
+        *,
+        note_ids: tuple[int, ...],
+        expected_generation: str,
+    ) -> dict[int, np.ndarray]:
+        """Supply frozen existing-note vectors without invoking the embedder."""
+        assert expected_generation == "fixture-generation"
+        return {
+            note_id: np.asarray([0.0, 1.0, *([0.0] * 62)], dtype=np.float32)
+            for note_id in note_ids
+        }
 
 
 class LifecycleRepository:

@@ -278,6 +278,76 @@ def test_expected_generation_rejects_replacement_before_search(
     asyncio.run(scenario())
 
 
+def test_pinned_document_vectors_returns_exact_generation_without_embedding(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        embedder = FakeEmbeddingClient(
+            {
+                "first": [1.0, 0.0, 0.0],
+                "second": [0.0, 1.0, 0.0],
+            }
+        )
+        service = _service(tmp_path, embedder)
+        generation = await service.refresh(
+            [_record(1, "first"), _record(2, "second")]
+        )
+        embedder.calls.clear()
+
+        vectors = await service.pinned_document_vectors(
+            note_ids=(2, 1),
+            expected_generation=str(generation.manifest.generation),
+        )
+
+        assert list(vectors) == [1, 2]
+        assert vectors[1].tolist() == pytest.approx([1.0, 0.0, 0.0])
+        assert vectors[2].tolist() == pytest.approx([0.0, 1.0, 0.0])
+        assert vectors[1].flags.writeable is False
+        assert embedder.calls == []
+
+    asyncio.run(scenario())
+
+
+def test_pinned_document_vectors_rejects_missing_note_without_embedding(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        embedder = FakeEmbeddingClient({"first": [1.0, 0.0, 0.0]})
+        service = _service(tmp_path, embedder)
+        generation = await service.refresh([_record(1, "first")])
+        embedder.calls.clear()
+
+        with pytest.raises(SemanticCoverageError, match="lacks scoped notes"):
+            await service.pinned_document_vectors(
+                note_ids=(1, 2),
+                expected_generation=str(generation.manifest.generation),
+            )
+
+        assert embedder.calls == []
+
+    asyncio.run(scenario())
+
+
+def test_pinned_document_vectors_rejects_wrong_generation_without_embedding(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        embedder = FakeEmbeddingClient({"first": [1.0, 0.0, 0.0]})
+        service = _service(tmp_path, embedder)
+        generation = await service.refresh([_record(1, "first")])
+        embedder.calls.clear()
+
+        with pytest.raises(SemanticGenerationMismatchError, match="no longer active"):
+            await service.pinned_document_vectors(
+                note_ids=(1,),
+                expected_generation=f"{generation.manifest.generation}-replacement",
+            )
+
+        assert embedder.calls == []
+
+    asyncio.run(scenario())
+
+
 def test_search_holds_pinned_snapshot_when_generation_switches_during_query(
     tmp_path: Path,
 ) -> None:

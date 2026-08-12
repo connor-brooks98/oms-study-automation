@@ -158,21 +158,24 @@ def serve(args: argparse.Namespace) -> int:
     del args
     settings = Settings()
     app = create_app(settings)
-    app.state.ingestion_worker.recover_interrupted_jobs()
-    app.state.generation_worker.recover_interrupted_jobs()
     stop = threading.Event()
-    worker_threads = [
-        threading.Thread(
-            target=_run_worker,
-            args=(stop, worker),
-            name=name,
-            daemon=True,
-        )
-        for name, worker in (
-            ("oms-v2-ingestion", app.state.ingestion_worker),
-            ("oms-study-generation", app.state.generation_worker),
-        )
-    ]
+    if settings.anki_rehearsal_mode == "off":
+        app.state.ingestion_worker.recover_interrupted_jobs()
+        app.state.generation_worker.recover_interrupted_jobs()
+        worker_threads = [
+            threading.Thread(
+                target=_run_worker,
+                args=(stop, worker),
+                name=name,
+                daemon=True,
+            )
+            for name, worker in (
+                ("oms-v2-ingestion", app.state.ingestion_worker),
+                ("oms-study-generation", app.state.generation_worker),
+            )
+        ]
+    else:
+        worker_threads = []
     for worker_thread in worker_threads:
         worker_thread.start()
     try:
