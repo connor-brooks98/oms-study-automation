@@ -148,9 +148,96 @@ jobs:
         shell: powershell
         run: .\.venv\Scripts\python.exe -m pytest tests\anki\test_rehearsal_regressions.py -q
 
-      - name: Test rehearsal safety
+      - name: Localize and test rehearsal safety
         shell: powershell
-        run: .\.venv\Scripts\python.exe -m pytest tests\anki\test_rehearsal_safety.py -q
+        run: |
+          $python = (Resolve-Path ".\.venv\Scripts\python.exe").Path
+          $runtime = @(& $python -I -S -c "import sys; print(sys._base_executable)")
+          if ($LASTEXITCODE -ne 0 -or $runtime.Count -ne 1) {
+            throw "could not resolve the direct Python runtime for bounded rehearsal safety pytest"
+          }
+          $runtime = (Resolve-Path -LiteralPath $runtime[0].Trim()).Path
+          $purelib = @(& $python -I -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+          if ($LASTEXITCODE -ne 0 -or $purelib.Count -ne 1 -or -not (Test-Path -LiteralPath $purelib[0].Trim() -PathType Container)) {
+            throw "could not resolve the virtual-environment dependency path for bounded rehearsal safety pytest"
+          }
+          $env:PYTHONPATH = "$($purelib[0].Trim());$((Resolve-Path src).Path)"
+          $logRoot = Join-Path $env:RUNNER_TEMP "rehearsal-safety-logs"
+          New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
+
+          function Stop-BoundedProcessTree {
+            param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
+            & taskkill /PID $Process.Id /T /F | Out-Host
+            $taskkillExitCode = $LASTEXITCODE
+            try {
+              $Process.WaitForExit(5000) | Out-Null
+            } catch {
+              # The final HasExited check below supplies the cleanup postcondition.
+            }
+            $Process.Refresh()
+            if (-not $Process.HasExited) {
+              return "taskkill exit code $taskkillExitCode; process tree rooted at PID $($Process.Id) is still running after 5 seconds"
+            }
+            if ($taskkillExitCode -ne 0) {
+              return "taskkill /T exited $taskkillExitCode; root PID $($Process.Id) exited but descendant cleanup is unproven"
+            }
+            return $null
+          }
+
+          function Invoke-BoundedPytest {
+            param(
+              [Parameter(Mandatory = $true)][string]$Label,
+              [Parameter(Mandatory = $true)][string[]]$Arguments,
+              [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+            )
+            $safeLabel = ($Label -replace '[^A-Za-z0-9_.-]', '_')
+            $stdout = Join-Path $logRoot "$safeLabel.stdout.log"
+            $stderr = Join-Path $logRoot "$safeLabel.stderr.log"
+            $process = Start-Process -FilePath $runtime -ArgumentList $Arguments `
+              -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+            while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+              Start-Sleep -Milliseconds 200
+              $process.Refresh()
+            }
+            if (-not $process.HasExited) {
+              $cleanupFailure = Stop-BoundedProcessTree -Process $process
+              Write-Host "::group::$Label stdout"
+              Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue
+              Write-Host "::endgroup::"
+              Write-Host "::group::$Label stderr"
+              Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue
+              Write-Host "::endgroup::"
+              $timeout = "pytest timed out after $TimeoutSeconds seconds: $Label (logs: $stdout, $stderr)"
+              if ($null -ne $cleanupFailure) {
+                throw "$timeout; cleanup failure: $cleanupFailure"
+              }
+              throw $timeout
+            }
+            Write-Host "::group::$Label stdout"
+            Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue
+            Write-Host "::endgroup::"
+            Write-Host "::group::$Label stderr"
+            Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue
+            Write-Host "::endgroup::"
+            if ($process.ExitCode -ne 0) {
+              throw "pytest failed with exit code $($process.ExitCode): $Label (logs: $stdout, $stderr)"
+            }
+          }
+
+          $collected = & $runtime -m pytest tests\anki\test_rehearsal_safety.py --collect-only -q
+          if ($LASTEXITCODE -ne 0) {
+            throw "pytest collection failed for rehearsal safety"
+          }
+          $tests = @($collected | Where-Object { $_ -match '^tests[\\/]anki[\\/]test_rehearsal_safety\.py::' })
+          if ($tests.Count -eq 0) {
+            throw "pytest collection yielded no rehearsal safety node IDs"
+          }
+          foreach ($test in $tests) {
+            Invoke-BoundedPytest -Label $test -Arguments @("-m", "pytest", $test, "-q") -TimeoutSeconds 90
+          }
+          Invoke-BoundedPytest -Label "tests/anki/test_rehearsal_safety.py (aggregate)" `
+            -Arguments @("-m", "pytest", "tests\anki\test_rehearsal_safety.py", "-q") -TimeoutSeconds 180
 
       - name: Test provider attempt events
         shell: powershell
@@ -167,13 +254,72 @@ jobs:
       - name: Test aggregate cross-file lifecycle
         shell: powershell
         run: |
-          .\.venv\Scripts\python.exe -m pytest `
-            tests\anki\test_rehearsal_capsule.py `
-            tests\anki\test_rehearsal_evidence.py `
-            tests\anki\test_rehearsal_export.py `
-            tests\anki\test_rehearsal_process.py `
-            tests\anki\test_rehearsal_regressions.py `
-            tests\anki\test_rehearsal_safety.py `
-            tests\anki\test_provider_attempt_events.py `
-            tests\anki\test_v2_provider_fault_matrix.py `
-            tests\anki\test_v2_replay_fault_matrix.py -q
+          $python = (Resolve-Path ".\.venv\Scripts\python.exe").Path
+          $runtime = @(& $python -I -S -c "import sys; print(sys._base_executable)")
+          if ($LASTEXITCODE -ne 0 -or $runtime.Count -ne 1) {
+            throw "could not resolve the direct Python runtime for aggregate rehearsal lifecycle pytest"
+          }
+          $runtime = (Resolve-Path -LiteralPath $runtime[0].Trim()).Path
+          $purelib = @(& $python -I -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+          if ($LASTEXITCODE -ne 0 -or $purelib.Count -ne 1 -or -not (Test-Path -LiteralPath $purelib[0].Trim() -PathType Container)) {
+            throw "could not resolve the virtual-environment dependency path for aggregate rehearsal lifecycle pytest"
+          }
+          $env:PYTHONPATH = "$($purelib[0].Trim());$((Resolve-Path src).Path)"
+          $stdout = Join-Path $env:RUNNER_TEMP "rehearsal-lifecycle.stdout.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "rehearsal-lifecycle.stderr.log"
+          function Stop-BoundedProcessTree {
+            param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
+            & taskkill /PID $Process.Id /T /F | Out-Host
+            $taskkillExitCode = $LASTEXITCODE
+            try {
+              $Process.WaitForExit(5000) | Out-Null
+            } catch {
+              # The final HasExited check below supplies the cleanup postcondition.
+            }
+            $Process.Refresh()
+            if (-not $Process.HasExited) {
+              return "taskkill exit code $taskkillExitCode; process tree rooted at PID $($Process.Id) is still running after 5 seconds"
+            }
+            if ($taskkillExitCode -ne 0) {
+              return "taskkill /T exited $taskkillExitCode; root PID $($Process.Id) exited but descendant cleanup is unproven"
+            }
+            return $null
+          }
+          $arguments = @(
+            "-m", "pytest",
+            "tests\anki\test_rehearsal_capsule.py",
+            "tests\anki\test_rehearsal_evidence.py",
+            "tests\anki\test_rehearsal_export.py",
+            "tests\anki\test_rehearsal_process.py",
+            "tests\anki\test_rehearsal_regressions.py",
+            "tests\anki\test_rehearsal_safety.py",
+            "tests\anki\test_provider_attempt_events.py",
+            "tests\anki\test_v2_provider_fault_matrix.py",
+            "tests\anki\test_v2_replay_fault_matrix.py", "-q"
+          )
+          $process = Start-Process -FilePath $runtime -ArgumentList $arguments `
+            -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          $deadline = [DateTime]::UtcNow.AddSeconds(600)
+          while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 200
+            $process.Refresh()
+          }
+          if (-not $process.HasExited) {
+            $cleanupFailure = Stop-BoundedProcessTree -Process $process
+            Write-Host "::group::aggregate rehearsal lifecycle stdout"
+            Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue
+            Write-Host "::endgroup::"
+            Write-Host "::group::aggregate rehearsal lifecycle stderr"
+            Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue
+            Write-Host "::endgroup::"
+            $timeout = "aggregate rehearsal lifecycle pytest timed out after 600 seconds (logs: $stdout, $stderr)"
+            if ($null -ne $cleanupFailure) {
+              throw "$timeout; cleanup failure: $cleanupFailure"
+            }
+            throw $timeout
+          }
+          Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue
+          Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue
+          if ($process.ExitCode -ne 0) {
+            throw "aggregate rehearsal lifecycle pytest failed with exit code $($process.ExitCode) (logs: $stdout, $stderr)"
+          }
