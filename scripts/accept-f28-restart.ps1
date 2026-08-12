@@ -488,13 +488,39 @@ function Wait-ForFile {
   throw "Timed out waiting for $Label at $Path"
 }
 
-function New-DatabaseSnapshotHash {
+function New-DatabaseSnapshotProof {
   param([string]$Destination)
   $Python = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
   $BackupHelper = Join-Path $ProjectRoot "scripts\backup-sqlite.py"
-  & $Python $BackupHelper --source $DatabasePath --destination $Destination
+  $Output = @(
+    & $Python $BackupHelper --source $DatabasePath --destination $Destination
+  )
   if ($LASTEXITCODE -ne 0) { throw "backup-sqlite.py snapshot failed." }
-  return (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
+  try {
+    $ProofRecords = @(($Output -join "`n") | ConvertFrom-Json)
+  } catch {
+    throw "backup-sqlite.py snapshot proof is not valid JSON."
+  }
+  if ($ProofRecords.Count -ne 1) {
+    throw "backup-sqlite.py snapshot proof must contain exactly one JSON object."
+  }
+  $Proof = $ProofRecords[0]
+  $PhysicalHash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
+  $ExpectedDestination = (Resolve-Path -LiteralPath $Destination).Path
+  if (
+    [string]$Proof.status -cne "ok" -or
+    -not ([string]::Equals(
+      [string]$Proof.destination,
+      $ExpectedDestination,
+      [System.StringComparison]::OrdinalIgnoreCase
+    )) -or
+    [string]$Proof.sha256 -cne $PhysicalHash -or
+    [string]$Proof.logical_sha256 -notmatch "^[0-9a-f]{64}$"
+  ) { throw "backup-sqlite.py snapshot proof is incomplete or mismatched." }
+  return [ordered]@{
+    physical_sha256 = $PhysicalHash
+    logical_sha256 = [string]$Proof.logical_sha256
+  }
 }
 
 if ($ExpectedRevision -notmatch "^[0-9a-f]{40}$") {
@@ -632,7 +658,7 @@ try {
     -not (Test-ExactJsonInteger -Value $Armed.expected_schema -Expected $ExpectedSchema)
   ) { throw "Armed record differs from the exact request." }
   Assert-ExactHealth -Health $Armed.health
-  $DatabaseHashBefore = New-DatabaseSnapshotHash -Destination $DatabaseBeforePath
+  $DatabaseBefore = New-DatabaseSnapshotProof -Destination $DatabaseBeforePath
   $ArmedHash = (Get-FileHash -LiteralPath $ArmedPath -Algorithm SHA256).Hash.ToLowerInvariant()
   $TaskSchedulerCursor = Get-TaskSchedulerEventCursor
   Write-F28Diagnostic -Message "F28 firing controlled native exit 75 request."
@@ -811,8 +837,10 @@ try {
     throw "Task Scheduler Event 201 did not record exact HRESULT 0x8007004B / Win32 75."
   }
 
-  $DatabaseHashAfter = New-DatabaseSnapshotHash -Destination $DatabaseAfterPath
-  if ($DatabaseHashAfter -cne $DatabaseHashBefore) { throw "Live database changed during F28 acceptance." }
+  $DatabaseAfter = New-DatabaseSnapshotProof -Destination $DatabaseAfterPath
+  if ($DatabaseAfter.logical_sha256 -cne $DatabaseBefore.logical_sha256) {
+    throw "Live database logical state changed during F28 acceptance."
+  }
   $SourceAfter = Get-SourceIdentity -Root $ProjectRoot
   if (
     $SourceAfter.revision -cne $SourceBefore.revision -or
@@ -850,7 +878,13 @@ try {
     task_last_results = @($ObservedLastResults)
     scheduler = $SchedulerProof
     recovery_consumed_sha256 = (Get-FileHash -LiteralPath $RecoveryConsumedPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    database_sha256 = $DatabaseHashAfter
+    database_before_sha256 = $DatabaseBefore.physical_sha256
+    database_sha256 = $DatabaseAfter.physical_sha256
+    database_after_sha256 = $DatabaseAfter.physical_sha256
+    database_logical_sha256 = $DatabaseAfter.logical_sha256
+    database_physical_changed = (
+      $DatabaseAfter.physical_sha256 -cne $DatabaseBefore.physical_sha256
+    )
     env_sha256 = $EnvHashAfter
     rollback_backup = $ExpectedBackupPath
     protected_pdf_count = $PdfAfter.Count

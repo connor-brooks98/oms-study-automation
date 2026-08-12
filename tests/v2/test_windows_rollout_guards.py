@@ -169,6 +169,25 @@ def test_f28_acceptance_requires_exact_hresult_and_same_instance_action_order() 
     assert "0x8007004B / Win32 75" in script
 
 
+def test_f28_acceptance_compares_logical_database_state_and_records_physical_drift() -> None:
+    script = (ROOT / "scripts" / "accept-f28-restart.ps1").read_text(encoding="utf-8")
+    helper = (ROOT / "scripts" / "backup-sqlite.py").read_text(encoding="utf-8")
+
+    assert "logical_sha256" in helper
+    assert '"logical_sha256"' in helper
+    assert "$DatabaseBefore.logical_sha256" in script
+    assert "$DatabaseAfter.logical_sha256" in script
+    assert "$DatabaseAfter.logical_sha256 -cne $DatabaseBefore.logical_sha256" in script
+    assert "$DatabaseAfter.physical_sha256 -cne $DatabaseBefore.physical_sha256" in script
+    assert "database_before_sha256" in script
+    assert "database_after_sha256" in script
+    assert "database_logical_sha256" in script
+    assert "database_physical_changed" in script
+    assert "$ProofRecords.Count -ne 1" in script
+    assert "$ExpectedDestination" in script
+    assert "$DatabaseHashAfter -cne $DatabaseHashBefore" not in script
+
+
 def test_f28_acceptance_script_is_two_phase_and_never_kills_or_reconfigures() -> None:
     script = (ROOT / "scripts" / "accept-f28-restart.ps1").read_text(encoding="utf-8")
     verifier = (ROOT / "src" / "oms_hub" / "task_scheduler_evidence.py").read_text(

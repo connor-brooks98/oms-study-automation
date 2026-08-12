@@ -1,5 +1,7 @@
 import importlib.util
+import json
 import sqlite3
+import sys
 from contextlib import closing
 from pathlib import Path
 
@@ -81,3 +83,143 @@ def test_installer_backup_helper_rejects_transient_destination_sidecar(tmp_path)
 
     with pytest.raises(sqlite3.DatabaseError, match="retained transient sidecars"):
         helper._assert_no_sidecars(destination)
+
+
+def test_installer_backup_logical_digest_ignores_physical_sqlite_churn(tmp_path):
+    helper = _load_installer_backup_helper()
+    source = tmp_path / "source.db"
+    before = tmp_path / "before.db"
+    after = tmp_path / "after.db"
+
+    with closing(sqlite3.connect(source)) as connection:
+        connection.execute(
+            "CREATE TABLE sentinel (id INTEGER PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        connection.execute("INSERT INTO sentinel VALUES (1, 'stable')")
+        connection.commit()
+
+    before_physical = helper.backup_database(source, before)
+    with closing(sqlite3.connect(source)) as connection:
+        connection.execute("UPDATE sentinel SET value = 'temporary' WHERE id = 1")
+        connection.commit()
+        connection.execute("UPDATE sentinel SET value = 'stable' WHERE id = 1")
+        connection.commit()
+    after_physical = helper.backup_database(source, after)
+
+    assert before_physical != after_physical
+    assert helper.logical_sha256(before) == helper.logical_sha256(after)
+
+
+def test_installer_backup_logical_digest_detects_data_and_schema_changes(tmp_path):
+    helper = _load_installer_backup_helper()
+    database = tmp_path / "hub.db"
+
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "CREATE TABLE sentinel (id INTEGER PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        connection.execute("INSERT INTO sentinel VALUES (1, 'before')")
+        connection.commit()
+
+    initial = helper.logical_sha256(database)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("UPDATE sentinel SET value = 'after' WHERE id = 1")
+        connection.commit()
+    data_changed = helper.logical_sha256(database)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE INDEX sentinel_value ON sentinel(value)")
+        connection.commit()
+    schema_changed = helper.logical_sha256(database)
+
+    assert data_changed != initial
+    assert schema_changed != data_changed
+
+
+def test_installer_backup_logical_digest_includes_accessible_implicit_rowid(tmp_path):
+    helper = _load_installer_backup_helper()
+    database = tmp_path / "hub.db"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO sentinel(rowid, value) VALUES (1, 'stable')")
+        connection.commit()
+
+    initial = helper.logical_sha256(database)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("UPDATE sentinel SET rowid = 2 WHERE rowid = 1")
+        connection.commit()
+
+    assert helper.logical_sha256(database) != initial
+
+
+def test_installer_backup_logical_digest_includes_autoincrement_sequence(tmp_path):
+    helper = _load_installer_backup_helper()
+    database = tmp_path / "hub.db"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "CREATE TABLE sentinel (id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT)"
+        )
+        connection.execute("INSERT INTO sentinel(value) VALUES ('stable')")
+        connection.commit()
+
+    initial = helper.logical_sha256(database)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("UPDATE sqlite_sequence SET seq = 100 WHERE name = 'sentinel'")
+        connection.commit()
+
+    assert helper.logical_sha256(database) != initial
+
+
+def test_installer_backup_logical_digest_includes_persistent_header_metadata(tmp_path):
+    helper = _load_installer_backup_helper()
+    database = tmp_path / "hub.db"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO sentinel VALUES ('stable')")
+        connection.execute("PRAGMA user_version = 17")
+        connection.execute("PRAGMA application_id = 1179862066")
+        connection.commit()
+
+    initial = helper.logical_sha256(database)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("PRAGMA user_version = 18")
+        connection.commit()
+    user_version_changed = helper.logical_sha256(database)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("PRAGMA application_id = 1179862067")
+        connection.commit()
+
+    assert user_version_changed != initial
+    assert helper.logical_sha256(database) != user_version_changed
+
+
+def test_installer_backup_cli_publishes_bound_physical_and_logical_hashes(
+    tmp_path, monkeypatch, capsys
+):
+    helper = _load_installer_backup_helper()
+    source = tmp_path / "source.db"
+    destination = tmp_path / "backup" / "hub.db"
+    with closing(sqlite3.connect(source)) as connection:
+        connection.execute("CREATE TABLE sentinel (value BLOB NOT NULL)")
+        connection.execute("INSERT INTO sentinel VALUES (?)", (b"stable",))
+        connection.commit()
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "backup-sqlite.py",
+            "--source",
+            str(source),
+            "--destination",
+            str(destination),
+        ],
+    )
+
+    assert helper.main() == 0
+    proof = json.loads(capsys.readouterr().out)
+    assert proof == {
+        "destination": str(destination.resolve()),
+        "logical_sha256": helper.logical_sha256(destination),
+        "sha256": helper._sha256(destination),
+        "status": "ok",
+    }
