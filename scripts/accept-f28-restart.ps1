@@ -18,6 +18,7 @@ $ErrorActionPreference = "Stop"
 $ExpectedWorkers = @("generation_worker", "ingestion_worker", "studio_worker")
 $FixedExitCode = 75
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$StrictUtf8NoBom = New-Object System.Text.UTF8Encoding($false, $true)
 $FireWritten = $false
 $Nonce = ([guid]::NewGuid()).ToString("D").ToLowerInvariant()
 
@@ -789,13 +790,16 @@ try {
     events = $TaskSchedulerEvents
     process_snapshot = $ReplacementProcessSnapshot
   })
+  $RecoveryActionArgumentsBase64 = [Convert]::ToBase64String(
+    $StrictUtf8NoBom.GetBytes([string]$TaskBefore.arguments)
+  )
   & $PythonExecutable -m oms_hub.task_scheduler_evidence `
     --input $SchedulerEvidencePath `
     --output $SchedulerProofPath `
     --full-task-name $TaskBefore.full_task_name `
     --action-path $TaskBefore.action `
     --recovery-action-index $TaskBefore.recovery_action_index `
-    --recovery-action-arguments $TaskBefore.arguments `
+    --recovery-action-arguments-base64 $RecoveryActionArgumentsBase64 `
     --replacement-hub-pid ([int]$ReplacementHubProcesses[0].pid)
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $SchedulerProofPath -PathType Leaf)) {
     throw "Task Scheduler XML evidence did not prove automatic failure restart."

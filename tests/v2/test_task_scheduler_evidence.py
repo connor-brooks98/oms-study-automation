@@ -1,4 +1,9 @@
+import base64
 import inspect
+import json
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -124,6 +129,113 @@ def test_scheduler_verifier_requires_exact_recovery_arguments_api() -> None:
         "recovery_action_arguments"
     ]
     assert parameter.default is inspect.Parameter.empty
+
+
+def test_scheduler_verifier_cli_preserves_quoted_recovery_arguments(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "scheduler-evidence.json"
+    output_path = tmp_path / "scheduler-proof.json"
+    input_path.write_text(
+        json.dumps(
+            {
+                "cursor_event_record_id": 10,
+                "events": _valid_events(),
+                "process_snapshot": _processes(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    encoded_arguments = base64.b64encode(RECOVERY_ARGUMENTS.encode("utf-8")).decode(
+        "ascii"
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "oms_hub.task_scheduler_evidence",
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+            "--full-task-name",
+            TASK,
+            "--action-path",
+            ACTION,
+            "--recovery-action-index",
+            "1",
+            "--recovery-action-arguments-base64",
+            encoded_arguments,
+            "--replacement-hub-pid",
+            "702",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    proof = json.loads(output_path.read_text(encoding="utf-8"))
+    assert proof["recovery_action_arguments"] == RECOVERY_ARGUMENTS
+
+
+@pytest.mark.parametrize(
+    "encoded_arguments",
+    [
+        "not-base64!",
+        "ZE==",
+        base64.b64encode(b"\xff\xfe").decode("ascii"),
+        base64.b64encode(b"").decode("ascii"),
+        base64.b64encode(b" leading-space").decode("ascii"),
+        base64.b64encode(b"trailing-space ").decode("ascii"),
+        base64.b64encode(b"line\nbreak").decode("ascii"),
+        base64.b64encode(b"nul\x00byte").decode("ascii"),
+    ],
+)
+def test_scheduler_verifier_cli_rejects_malformed_encoded_recovery_arguments(
+    tmp_path: Path, encoded_arguments: str
+) -> None:
+    input_path = tmp_path / "scheduler-evidence.json"
+    output_path = tmp_path / "scheduler-proof.json"
+    input_path.write_text(
+        json.dumps(
+            {
+                "cursor_event_record_id": 10,
+                "events": _valid_events(),
+                "process_snapshot": _processes(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "oms_hub.task_scheduler_evidence",
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+            "--full-task-name",
+            TASK,
+            "--action-path",
+            ACTION,
+            "--recovery-action-index",
+            "1",
+            "--recovery-action-arguments-base64",
+            encoded_arguments,
+            "--replacement-hub-pid",
+            "702",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert not output_path.exists()
 
 
 def test_scheduler_verifier_requires_the_native_exit_75_hresult_not_a_low_word() -> None:

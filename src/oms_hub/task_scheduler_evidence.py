@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import ntpath
 import os
@@ -398,6 +400,31 @@ def _write_new_json(path: Path, value: Mapping[str, object]) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
+def _decode_recovery_action_arguments(encoded: str) -> str:
+    try:
+        encoded_bytes = encoded.encode("ascii")
+        decoded_bytes = base64.b64decode(encoded_bytes, validate=True)
+    except (UnicodeEncodeError, binascii.Error) as error:
+        raise ValueError(
+            "recovery_action_arguments_base64 must be canonical Base64"
+        ) from error
+    if base64.b64encode(decoded_bytes) != encoded_bytes:
+        raise ValueError("recovery_action_arguments_base64 must be canonical Base64")
+    try:
+        decoded = decoded_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(
+            "recovery_action_arguments_base64 must contain strict UTF-8"
+        ) from error
+    if not decoded or decoded != decoded.strip() or any(
+        forbidden in decoded for forbidden in ("\x00", "\r", "\n")
+    ):
+        raise ValueError(
+            "decoded recovery action arguments must be one non-empty trimmed line"
+        )
+    return decoded
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, required=True)
@@ -405,7 +432,7 @@ def main() -> None:
     parser.add_argument("--full-task-name", required=True)
     parser.add_argument("--action-path", required=True)
     parser.add_argument("--recovery-action-index", type=int, required=True)
-    parser.add_argument("--recovery-action-arguments", required=True)
+    parser.add_argument("--recovery-action-arguments-base64", required=True)
     parser.add_argument("--replacement-hub-pid", type=int, required=True)
     arguments = parser.parse_args()
     payload = _read_input(arguments.input)
@@ -425,7 +452,9 @@ def main() -> None:
         full_task_name=arguments.full_task_name,
         action_path=arguments.action_path,
         recovery_action_index=arguments.recovery_action_index,
-        recovery_action_arguments=arguments.recovery_action_arguments,
+        recovery_action_arguments=_decode_recovery_action_arguments(
+            arguments.recovery_action_arguments_base64
+        ),
         replacement_hub_pid=arguments.replacement_hub_pid,
         process_snapshot=cast(list[Mapping[str, object]], process_snapshot),
     )

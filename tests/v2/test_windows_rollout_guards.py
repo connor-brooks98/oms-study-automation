@@ -156,7 +156,12 @@ def test_f28_acceptance_requires_exact_hresult_and_same_instance_action_order() 
     assert "task completion" in verifier
     assert "command_line" in script
     assert "--recovery-action-index" in script
-    assert "--recovery-action-arguments" in script
+    assert "[Convert]::ToBase64String" in script
+    assert "$RecoveryActionArgumentsBase64" in script
+    assert "--recovery-action-arguments-base64" in script
+    assert "--recovery-action-arguments $TaskBefore.arguments" not in script
+    assert "base64.b64decode" in verifier
+    assert 'decode("utf-8")' in verifier
     assert "0x8007004B / Win32 75" in script
 
 
