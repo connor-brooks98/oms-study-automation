@@ -146,6 +146,22 @@ def test_presentational_contracts_cover_forms_and_deferred_review_hooks() -> Non
     assert "data-review-blockers" in source("studio_quiz_review.html")
 
 
+def test_daily_workbench_keeps_progress_labels_and_unavailable_actions_honest() -> None:
+    dashboard = source("dashboard.html")
+    lecture = source("lecture.html")
+    uploads = source("uploads.html")
+    review = source("review.html")
+
+    assert 'class="dashboard-workbench"' in dashboard
+    assert 'class="lecture-workbench"' in lecture
+    assert 'href="/uploads/slides" aria-disabled="true"' not in lecture
+    assert "Lecture PDF unavailable" in lecture
+    assert "Cleaned transcript unavailable" in lecture
+    assert '<progress class="upload-progress" max="100" value="0"' in uploads
+    assert "data-cancel-duplicate" in uploads
+    assert "subject }} Lecture {{ \"%02d\"|format(lecture.lecture_number) }}" in review
+
+
 def test_tracker_control_and_disclosure_scans_cover_the_locked_residuals() -> None:
     anki = source("anki.html")
     studio = source("notebook_studio.html")

@@ -11,7 +11,7 @@
   </div>
 
   <section class="review-section">
-    <h2>Proposed replacements</h2>
+    <div class="review-section__heading"><h2>Proposed replacements</h2><p>Compare a newer source with the current lecture file.</p></div>
     {% for revision in proposed_revisions %}
     <article class="card sh-card review-card">
       <div>
@@ -38,23 +38,23 @@
       </div>
     </article>
     {% else %}
-    <section class="sh-empty"><p class="sh-empty__text">No replacement files need review.</p></section>
+    <p class="review-empty">No replacement files need review.</p>
     {% endfor %}
   </section>
 
   <section class="review-section">
-    <h2>Lecture steps</h2>
+    <div class="review-section__heading"><h2>Lecture steps</h2><p>Open failed or paused lecture workflows.</p></div>
     <ul class="plain-list">
     {% for lecture in lectures %}
-      <li class="card sh-row" style="--sh-hue: {{ lecture_hues.get(lecture.id, 255) }}"><span class="sh-subject-dot"></span><a class="sh-row__title" href="/lectures/{{ lecture.id }}">{{ lecture.subject }} · Exam {{ lecture.exam_number }} · Lecture {{ "%02d"|format(lecture.lecture_number) }} — {{ lecture.topic }}</a></li>
+      <li class="card sh-row" style="--sh-hue: {{ lecture_hues.get(lecture.id, 255) }}"><span class="sh-subject-dot"></span><a class="sh-row__title" href="/lectures/{{ lecture.id }}">{{ lecture.subject }} Lecture {{ "%02d"|format(lecture.lecture_number) }} · Exam {{ lecture.exam_number }} — {{ lecture.topic }}</a></li>
     {% else %}
-      <li class="sh-empty"><p class="sh-empty__text">No lecture steps need review.</p></li>
+      <li class="review-empty">No lecture steps need review.</li>
     {% endfor %}
     </ul>
   </section>
 
   <section class="review-section">
-    <h2>Tracker import issues</h2>
+    <div class="review-section__heading"><h2>Tracker import issues</h2><p>Complete lecture details that could not be imported.</p></div>
     <ul class="issues">
     {% for issue in import_issues %}
       <li>
@@ -70,7 +70,7 @@
         </form>
       </li>
     {% else %}
-      <li class="sh-empty"><p class="sh-empty__text">No tracker import issues.</p></li>
+      <li class="review-empty">No tracker import issues.</li>
     {% endfor %}
     </ul>
   </section>

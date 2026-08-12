@@ -1866,3 +1866,110 @@ button.sh-command-trigger { min-height: 40px; padding: var(--sp-2) var(--sp-3); 
 @media (max-width: 58rem) {
   button.sh-mobile-trigger { display: inline-flex; }
 }
+
+/* Blue Workbench · daily study and operations surfaces */
+.dashboard-workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(16rem, .8fr);
+  gap: var(--sp-4);
+  margin-block-end: var(--sp-10);
+}
+.dashboard-next { padding: var(--sp-6); }
+.dashboard-next h2 { margin: 0; font-size: clamp(1.35rem, 2vw, 1.7rem); }
+.dashboard-next p:not(.sh-section-label) { max-width: 44rem; margin: var(--sp-2) 0 var(--sp-5); color: var(--text-2); }
+.dashboard-quick { display: flex; flex-direction: column; gap: var(--sp-1); }
+.dashboard-quick > a {
+  min-height: 44px;
+  padding-block: var(--sp-2);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-1);
+  font-weight: 600;
+  text-decoration: none;
+}
+.dashboard-quick__note { margin: var(--sp-3) 0 0; color: var(--text-2); font-size: var(--fs-sm); }
+.dashboard-section-heading { margin-block-end: var(--sp-4); }
+.dashboard-section-heading h2 { margin: 0; font-size: var(--fs-h2); }
+.dashboard-section-heading p { margin: var(--sp-1) 0 0; color: var(--text-2); font-size: var(--fs-sm); }
+.course-group.sh-card { padding: 0; border: 0; background: transparent; box-shadow: none; }
+.course-toggle { background: var(--card); }
+.row-progress { color: var(--text-3-strong); }
+
+.lecture-workbench {
+  display: grid;
+  grid-template-areas: "outputs status";
+  grid-template-columns: minmax(0, 1fr) minmax(17rem, 20rem);
+  align-items: start;
+  gap: var(--sp-5);
+  margin-block-end: var(--sp-5);
+}
+.lecture-workbench > .pipeline-card { grid-area: status; margin: 0; }
+.lecture-workbench > .file-card-grid { grid-area: outputs; margin: 0; }
+.pipeline-card.sh-panel { border: 1px solid var(--border); }
+.file-card.sh-card { box-shadow: none; }
+.file-card.missing { border-color: var(--border); background: var(--surface); }
+.file-actions .sh-btn { min-height: 40px; padding-inline: var(--sp-4); }
+.metadata-panel > form { padding-block-start: var(--sp-3); }
+
+.upload-workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(15rem, .65fr);
+  align-items: start;
+  gap: var(--sp-4);
+}
+.upload-workbench .upload-results { margin: 0; }
+.upload-progress {
+  width: 100%;
+  height: 8px;
+  margin-block-start: var(--sp-3);
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  accent-color: var(--processing);
+}
+.upload-progress::-webkit-progress-bar { background: var(--surface); border-radius: var(--r-pill); }
+.upload-progress::-webkit-progress-value { background: var(--processing); border-radius: var(--r-pill); }
+.selected-file { min-width: 0; }
+.selected-file span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.selected-file span:last-child { color: var(--text-3-strong); flex: none; }
+.duplicate-actions { flex-wrap: wrap; }
+
+.review-section { padding-block: var(--sp-5); border-top: 1px solid var(--border); }
+.review-section__heading { margin-block-end: var(--sp-3); }
+.review-section__heading h2 { margin: 0; }
+.review-section__heading p { margin: var(--sp-1) 0 0; color: var(--text-2); font-size: var(--fs-sm); }
+.review-empty { margin: 0; padding: var(--sp-3) 0; color: var(--text-2); font-size: var(--fs-sm); }
+.artifact-back { display: inline-flex; margin-block-end: var(--sp-4); font-size: var(--fs-sm); font-weight: 600; text-decoration: none; }
+.artifact-text pre { border-radius: var(--r-md); background: var(--card); }
+
+@media (max-width: 58rem) {
+  .dashboard-workbench,
+  .lecture-workbench,
+  .upload-workbench { grid-template-columns: minmax(0, 1fr); }
+  .lecture-workbench { grid-template-areas: "status" "outputs"; }
+}
+
+@media (max-width: 42rem) {
+  .dashboard-workbench { gap: var(--sp-3); margin-block-end: var(--sp-8); }
+  .dashboard-next { padding: var(--sp-5); }
+  .file-card-grid { grid-template-columns: minmax(0, 1fr); }
+  .lecture-row .status-pill {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .review-actions { justify-content: flex-start; }
+  .review-actions form { width: 100%; }
+  .review-actions .sh-btn { width: 100%; }
+  .duplicate-actions { flex-direction: column; }
+  .duplicate-actions .sh-btn { width: 100%; }
+}

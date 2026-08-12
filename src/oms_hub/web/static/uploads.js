@@ -12,7 +12,7 @@
 
   const formatLecture = (warning) => {
     const number = String(warning.lecture_number).padStart(2, "0");
-    return `${warning.subject} · Lecture ${number} · ${warning.topic}`;
+    return `${warning.subject} Lecture ${number} · ${warning.topic}`;
   };
 
   const nextConfirmation = (batch) => batch.items.find(
@@ -287,6 +287,7 @@
     const dialogError = dialog?.querySelector("[data-duplicate-error]");
     const confirmButton = dialog?.querySelector("[data-confirm-duplicate]");
     const discardButton = dialog?.querySelector("[data-discard-duplicate]");
+    const cancelButton = dialog?.querySelector("[data-cancel-duplicate]");
     const chunkThreshold = 8 * 1024 * 1024;
     const chunkSize = 5 * 1024 * 1024;
     let chosenFiles = [];
@@ -327,8 +328,10 @@
     };
 
     const setProgress = (value) => {
+      const normalized = Math.max(0, Math.min(100, value));
       progressWrap.hidden = false;
-      progressBar.style.width = `${Math.max(0, Math.min(100, value))}%`;
+      progressBar.value = normalized;
+      progressBar.textContent = `${Math.round(normalized)}%`;
     };
 
     const itemStateLabel = (item) => {
@@ -375,7 +378,7 @@
       dialogLecture.textContent = formatLecture(pending.duplicate_warning);
       dialogError.textContent = "";
       if (!dialog.open) dialog.showModal();
-      discardButton.focus();
+      (cancelButton || discardButton).focus();
       return true;
     };
 
@@ -574,6 +577,9 @@
     });
 
     if (dialog) {
+      cancelButton?.addEventListener("click", () => {
+        cancelActiveSubmission(activeSubmission, recoveryController);
+      });
       dialog.addEventListener("cancel", (event) => {
         handleDecisionDialogCancel(
           event,
@@ -588,6 +594,7 @@
         if (!pausedItem || !pausedBatchId) return;
         confirmButton.disabled = true;
         discardButton.disabled = true;
+        if (cancelButton) cancelButton.disabled = true;
         dialogError.textContent = "";
         try {
           await postDecision(
@@ -610,6 +617,7 @@
         } finally {
           confirmButton.disabled = false;
           discardButton.disabled = false;
+          if (cancelButton) cancelButton.disabled = false;
         }
       };
 

@@ -10,7 +10,7 @@ test("lecture warning uses course, padded lecture number, and topic", () => {
       lecture_number: 7,
       topic: "Heart Failure",
     }),
-    "Cardiology · Lecture 07 · Heart Failure",
+    "Cardiology Lecture 07 · Heart Failure",
   );
 });
 
