@@ -1928,6 +1928,13 @@ code { overflow-wrap: anywhere; }
 .studio-runner,
 .studio-runs,
 .studio-image-drop { padding: 1.2rem 1.35rem; }
+.studio-source-grid > [data-source-form] {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+}
+.studio-source-grid > [data-source-form] > .sh-btn { min-height: 48px; margin-block-start: auto; }
+.studio-source-grid > [data-source-form] > [data-form-message] { min-height: 1.4em; margin-block-end: 0; }
 .studio-scope,
 .studio-runner,
 .studio-runs,
