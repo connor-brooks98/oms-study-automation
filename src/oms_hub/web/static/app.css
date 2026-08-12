@@ -13,9 +13,12 @@
   font-synthesis: none;
 }
 
+html,
+body { overflow-x: clip; }
+
 a { color: var(--brand-mid); text-decoration-thickness: .08em; text-underline-offset: .16em; }
 a:hover { color: var(--brand); }
-:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 ::selection { background: var(--brand-tint); }
 
 .skip-link {
@@ -29,7 +32,8 @@ a:hover { color: var(--brand); }
   color: white;
   background: var(--brand);
 }
-.skip-link:focus { transform: translateY(0); }
+.skip-link:focus,
+.skip-link:focus-visible { transform: translateY(0); }
 .sr-only {
   position: absolute !important;
   width: 1px !important;
@@ -1854,4 +1858,11 @@ details[open] > summary > .sh-disclose { transform: rotate(90deg); }
     animation-duration: .01ms !important;
     animation-iteration-count: 1 !important;
   }
+}
+
+/* Shared shell controls opt out of the legacy generic-button cascade. */
+button.sh-mobile-trigger { display: none; width: 44px; padding: 0; }
+button.sh-command-trigger { min-height: 40px; padding: var(--sp-2) var(--sp-3); border-radius: var(--r-pill); }
+@media (max-width: 58rem) {
+  button.sh-mobile-trigger { display: inline-flex; }
 }

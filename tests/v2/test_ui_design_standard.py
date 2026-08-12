@@ -18,12 +18,12 @@ def static_source(name: str) -> str:
     return (STATIC / name).read_text(encoding="utf-8")
 
 
-def test_shared_stylesheet_is_an_unchanged_locked_source() -> None:
+def test_shared_stylesheet_is_the_approved_blue_workbench_source() -> None:
     installed = STATIC / "study-hub.css"
 
     assert installed.exists()
     assert (
-        "226201cf1ff858b04040931a346b155a48b534f16830a84d32e9f5a9b31ed5b3"
+        "2270028022878124426cfe0e8525b292fe7ab96bcf0194ef02831ca69569cedc"
         == sha256(installed.read_bytes()).hexdigest()
     )
 
@@ -46,6 +46,34 @@ def test_stylesheet_order_and_system_font_contract() -> None:
             template.index("reset.css") < template.index("study-hub.css") < template.index(page_css)
         )
         assert 'class="sh-app' in template or '<body class="sh-app"' in template
+
+
+def test_private_shell_uses_approved_navigation_and_dialog_contracts() -> None:
+    base = source("base.html")
+    shell_js = static_source("study_hub_shell.js")
+
+    assert 'class="site-header sh-topbar"' in base
+    assert "Dashboard</a>" in base
+    assert "Anki</a>" in base
+    assert "Quiz Builder</a>" in base
+    assert "Practice Questions</a>" in base
+    assert '<details class="sh-more">' in base
+    for destination in (
+        "/uploads/slides",
+        "/uploads/transcripts",
+        "/quarantine",
+        "/review",
+        "/settings",
+    ):
+        assert destination in base
+
+    assert '<dialog class="sh-dialog sh-command" id="command-palette"' in base
+    assert '<dialog class="sh-dialog sh-mobile-nav" id="mobile-navigation"' in base
+    assert 'href="/" data-dialog-initial-focus>Dashboard</a>' in base
+    assert 'aria-keyshortcuts="Meta+K Control+K"' in base
+    assert "event.metaKey || event.ctrlKey" in shell_js
+    assert 'event.key === "ArrowDown" || event.key === "ArrowUp"' in shell_js
+    assert 'dialog.addEventListener("close", () => restoreFocus(dialog))' in shell_js
 
 
 def test_template_layout_matrix_uses_locked_containers_and_headers() -> None:
