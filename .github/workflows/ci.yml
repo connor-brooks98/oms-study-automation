@@ -225,13 +225,33 @@ jobs:
             }
           }
 
-          $collected = & $runtime -m pytest tests\anki\test_rehearsal_safety.py --collect-only -q
+          $collected = & $runtime -m pytest tests\anki\test_rehearsal_safety.py --collect-only -q -o addopts=''
           if ($LASTEXITCODE -ne 0) {
             throw "pytest collection failed for rehearsal safety"
           }
-          $tests = @($collected | Where-Object { $_ -match '^tests[\\/]anki[\\/]test_rehearsal_safety\.py::' })
+          $nodePattern = '^tests[\\/]anki[\\/]test_rehearsal_safety\.py::'
+          $summaryPattern = '^\d+ tests? collected(?: in .+)?$'
+          $unexpected = @($collected | Where-Object {
+            $_.Trim() -and $_ -notmatch $nodePattern -and $_ -notmatch $summaryPattern
+          })
+          if ($unexpected.Count -ne 0) {
+            throw "unexpected rehearsal safety collection output: $($unexpected -join ' | ')"
+          }
+          $summaries = @($collected | Where-Object { $_ -match $summaryPattern })
+          if ($summaries.Count -ne 1) {
+            throw "expected exactly one rehearsal safety collection summary, received $($summaries.Count)"
+          }
+          $summaryCount = [int]([regex]::Match($summaries[0], '^\d+').Value)
+          $tests = @($collected | Where-Object { $_ -match $nodePattern })
           if ($tests.Count -eq 0) {
             throw "pytest collection yielded no rehearsal safety node IDs"
+          }
+          $uniqueTests = @($tests | Sort-Object -Unique)
+          if ($uniqueTests.Count -ne $tests.Count) {
+            throw "pytest collection yielded duplicate rehearsal safety node IDs"
+          }
+          if ($summaryCount -ne $tests.Count) {
+            throw "pytest collection summary count $summaryCount does not match $($tests.Count) node IDs"
           }
           foreach ($test in $tests) {
             Invoke-BoundedPytest -Label $test -Arguments @("-m", "pytest", $test, "-q") -TimeoutSeconds 90
