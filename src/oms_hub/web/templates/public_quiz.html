@@ -31,7 +31,7 @@
       <p class="quiz-brand">Study Hub</p>
       <h1 class="sh-title">{{ quiz.title }}</h1>
       <p>
-        {{ quiz_context.subject }} · Exam {{ quiz_context.exam_number }}{% if quiz_context.lecture_number is not none %} · Lecture {{ quiz_context.lecture_number }}{% endif %}
+        {% if quiz_context.lecture_number is not none %}{{ quiz_context.subject }} Lecture {{ '%02d'|format(quiz_context.lecture_number) }} · {% else %}{{ quiz_context.subject }} · {% endif %}Exam {{ quiz_context.exam_number }}
       </p>
       <p>Loading quiz…</p>
     </section>

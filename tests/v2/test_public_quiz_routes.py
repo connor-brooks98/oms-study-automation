@@ -107,7 +107,7 @@ def test_public_library_groups_only_published_quizzes(tmp_path):
     assert "Unpublished lecture" not in response.text
 
 
-def test_public_library_only_expands_first_course_and_its_first_exam(tmp_path):
+def test_public_library_starts_all_courses_and_exams_collapsed(tmp_path):
     app, _ = _published_app(tmp_path)
     cardio_lecture_id = app.state.catalog_repository.upsert_lecture(
         LectureInput("Cardio", 1, 1, "Arrhythmias", "", None)
@@ -126,11 +126,9 @@ def test_public_library_only_expands_first_course_and_its_first_exam(tmp_path):
 
     assert response.status_code == 200
     assert response.text.count('class="course-card sh-card"') == 2
-    assert response.text.count('aria-expanded="true"') == 2
-    first_course = response.text.index('class="course-card sh-card"')
-    second_course = response.text.index('class="course-card sh-card"', first_course + 1)
-    assert 'aria-expanded="true"' not in response.text[second_course:]
-    assert 'class="lecture-list" hidden' in response.text[second_course:]
+    assert 'aria-expanded="true"' not in response.text
+    assert response.text.count('class="course-content" hidden') == 2
+    assert response.text.count('class="lecture-list" hidden') == 2
 
 
 def test_public_library_is_read_only_and_private_library_keeps_management(tmp_path):
@@ -143,6 +141,11 @@ def test_public_library_is_read_only_and_private_library_keeps_management(tmp_pa
     assert public.status_code == 200
     assert managed.status_code == 200
     assert published.token in public.text
+    assert "Study Hub Quizzes" in public.text
+    assert 'href="/">Dashboard</a>' not in public.text
+    assert "NUC online" not in public.text
+    assert 'href="/">Dashboard</a>' in managed.text
+    assert "Study Hub Quizzes" not in managed.text
     assert 'data-reset-quiz' in public.text
     assert 'title="Restart Lecture 1 Practice Quiz"' in public.text
     for private_hook in (

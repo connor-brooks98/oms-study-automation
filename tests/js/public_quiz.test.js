@@ -338,7 +338,7 @@ test("player puts navigation above the shell and question metadata in a disclosu
 
   assert.equal(app.children[0].className, "quiz-navigation quiz-navigation-card");
   assert.equal(app.children[1].className, "quiz-shell");
-  assert.match(app.textContent, /Heme\/Lymph · Exam 2 · Lecture 12 · Platelet Disorders/);
+  assert.match(app.textContent, /Heme\/Lymph Lecture 12 · Exam 2 · Platelet Disorders/);
   const information = findByClass(app, "quiz-information");
   assert.ok(information, "expected a Question Information disclosure");
   assert.equal(information.tagName, "details");
@@ -408,6 +408,7 @@ test("Question Information remains open through same-question interactions", asy
   assert.equal(app.querySelector("[data-question-information]").open, false, "a user-closed disclosure remains closed");
   await app.querySelector('[data-focus-key="submit"]')._listeners.click[0]();
   assert.equal(app.querySelector("[data-question-information]").open, false, "submission preserves a closed disclosure state");
+  assert.equal(documentRef.activeElement?.dataset?.focusKey, "forward", "submission moves focus to the next available action");
 });
 
 test("Question Information stays open after submission and navigation by stable question ID", async () => {

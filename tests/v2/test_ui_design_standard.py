@@ -114,11 +114,12 @@ def test_template_layout_matrix_uses_locked_containers_and_headers() -> None:
         assert "sh-title" in template, name
 
 
-def test_public_library_has_full_chrome_while_players_remain_focus_mode() -> None:
+def test_public_library_separates_public_identity_while_players_remain_focus_mode() -> None:
     library = source("public_quiz_library.html")
     assert "sh-nav" in library
-    assert "sh-brand" in library
-    assert "NUC online" in library
+    assert "Study Hub Quizzes" in library
+    assert "{% if management_mode %}" in library
+    assert "NUC online" not in library
     assert 'class="sh-title"' in library
     for hook in (
         "data-title-form",
@@ -174,7 +175,7 @@ def test_tracker_control_and_disclosure_scans_cover_the_locked_residuals() -> No
     assert "sh-input" in studio and "sh-textarea" in studio and "sh-file" in studio
     assert dashboard.index("needs review") < dashboard.index('class="heading-actions"')
     assert "⌄" not in library
-    assert "sh-seg" in library and "sh-subject-dot" in library
+    assert "sh-nav" in library and "sh-subject-dot" in library
     assert "13/13 complete" not in source("lecture.html")
     assert "release_steps|length }}/{{ release_steps|length }} complete" in source("lecture.html")
     assert '"✕"' in (STATIC / "public_quiz.js").read_text(encoding="utf-8")
@@ -268,8 +269,7 @@ def test_status_and_focus_player_paths_use_locked_semantic_components() -> None:
     ):
         assert token in player_js
 
-    for name in ("base.html", "public_quiz_library.html"):
-        assert 'class="nuc-state__dot" aria-hidden="true"></span>NUC online' in source(name)
+    assert 'class="nuc-state__dot" aria-hidden="true"></span>NUC online' in source("base.html")
 
 
 def test_visual_followups_keep_layout_and_restart_controls_in_their_owners() -> None:
@@ -282,7 +282,7 @@ def test_visual_followups_keep_layout_and_restart_controls_in_their_owners() -> 
     assert ".anki-source-field:not(.sh-card)" in app_css
     assert ".provider-card-heading > :first-child" in app_css
     assert ".exam-card { margin-top: var(--sp-2); padding: 0;" in library_css
-    assert ".library-heading .sh-seg__btn { white-space: nowrap; }" in library_css
+    assert ".sh-topbar .sh-nav { width: 100%; flex-wrap: wrap; overflow: visible; }" in library_css
     assert 'title="Restart {{ row.title }}"' in library
     assert "Reset quiz" not in player_js
     assert "Start Over" not in player_js
@@ -379,7 +379,8 @@ def test_player_and_dynamic_foundations_preserve_shared_components() -> None:
         assert selector in player_css
     assert ".quiz-app {" not in player_css
     assert ".quiz-flag-select { max-width: 16rem; }" in player_css
-    assert 'class="chevron sh-disclose {% if loop.first %}is-open{% endif %}"' in library
+    assert 'class="chevron sh-disclose"' in library
+    assert 'aria-expanded="false"' in library
     assert '"sh-empty anki-empty-compact"' in anki_js
     assert '"sh-empty__title"' in anki_js
     assert '"1 Study Hub quiz is ready."' in lecture_js

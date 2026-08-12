@@ -481,13 +481,15 @@
       const key = storageKey(content);
       let state = restoreProgress(content, storage.getItem(key));
       const informationOpen = new Map();
+      let pendingFocusKey;
 
       const persist = () => {
         storage.setItem(key, serializeProgress(state));
       };
 
       const render = () => {
-        const focusKey = captureFocusKey(documentRef, app);
+        const focusKey = pendingFocusKey ?? captureFocusKey(documentRef, app);
+        pendingFocusKey = undefined;
         const priorInformation = app.querySelector?.("[data-question-information]");
         if (priorInformation?.dataset?.questionInformation) {
           informationOpen.set(
@@ -577,12 +579,12 @@
         const shell = element(documentRef, "article", "quiz-shell");
         const header = element(documentRef, "header", "quiz-header");
         const meta = element(documentRef, "div", "quiz-meta");
+        const lectureLabel = content.lecture_number != null
+          ? `${content.course} Lecture ${String(content.lecture_number).padStart(2, "0")}`
+          : content.course;
         const context = [
-          content.course,
+          lectureLabel,
           content.exam_number != null ? `Exam ${content.exam_number}` : null,
-          content.lecture_number != null
-            ? `Lecture ${content.lecture_number}`
-            : null,
           content.topic,
         ].filter(Boolean).join(" · ");
         meta.append(
@@ -610,13 +612,17 @@
           `${((state.currentIndex + 1) / content.questions.length) * 100}%`
         );
         track.append(fill);
-        header.append(meta, track);
+        header.append(
+          element(documentRef, "h1", "quiz-title", content.title || "Study Hub quiz"),
+          meta,
+          track,
+        );
 
         const body = element(documentRef, "div", "quiz-body");
         body.append(
           element(documentRef, "p", "quiz-label", content.topic),
         );
-        const stem = element(documentRef, "p", "quiz-question");
+        const stem = element(documentRef, "h2", "quiz-question");
         renderHighlightedText(
           documentRef,
           stem,
@@ -832,6 +838,7 @@
           submit.type = "button";
           submit.disabled = !questionProgress.selectedChoiceId;
           submit.addEventListener("click", async () => {
+            pendingFocusKey = "forward";
             submit.disabled = true;
             submit.textContent = "Checking…";
             try {
@@ -846,6 +853,7 @@
               persist();
               render();
             } catch (error) {
+              pendingFocusKey = undefined;
               submit.disabled = false;
               submit.textContent = "Submit Answer";
               const message = element(

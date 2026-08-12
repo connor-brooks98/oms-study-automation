@@ -15,22 +15,26 @@
 </head>
 <body class="sh-app">
   <a class="skip-link" href="#main-content">Skip to main content</a>
-  <header class="site-header">
+  <header class="site-header sh-topbar">
+    <div class="sh-topbar__inner">
+    <a class="brand sh-wordmark" href="{{ '/' if management_mode else quiz_library_path }}">
+      <span class="sh-wordmark__tile" aria-hidden="true">SH</span>
+      <span>{{ 'Study Hub' if management_mode else 'Study Hub Quizzes' }}</span>
+    </a>
+    {% if management_mode %}
     <nav class="utility-nav sh-nav" aria-label="Primary navigation">
       <a class="sh-nav__link" href="/">Dashboard</a>
-      <a class="sh-nav__link" href="/uploads/slides">Slides</a>
-      <a class="sh-nav__link" href="/uploads/transcripts">Transcripts</a>
-      <a class="sh-nav__link" href="/quarantine">Quarantine</a>
-      <a class="sh-nav__link" href="/review">Review</a>
       <a class="sh-nav__link" href="/anki">Anki</a>
-      <a class="sh-nav__link {% if management_mode %}sh-nav__link--active{% endif %}" href="/studio" {% if management_mode %}aria-current="page"{% endif %}>Quiz Builder</a>
-      <a class="sh-nav__link {% if not management_mode and library_path == '/public/quizzes' %}sh-nav__link--active{% endif %}" href="/public/quizzes" {% if not management_mode and library_path == '/public/quizzes' %}aria-current="page"{% endif %}>Quizzes</a>
-      <a class="sh-nav__link {% if not management_mode and library_path == '/public/practice-questions' %}sh-nav__link--active{% endif %}" href="/public/practice-questions" {% if not management_mode and library_path == '/public/practice-questions' %}aria-current="page"{% endif %}>Practice Questions</a>
-      <a class="sh-nav__link" href="/settings">Settings</a>
+      <a class="sh-nav__link" href="/studio">Quiz Builder</a>
+      <a class="sh-nav__link {% if library_path == quiz_library_path %}sh-nav__link--active{% endif %}" href="{{ quiz_library_path }}" {% if library_path == quiz_library_path %}aria-current="page"{% endif %}>Quizzes</a>
+      <a class="sh-nav__link {% if library_path == practice_library_path %}sh-nav__link--active{% endif %}" href="{{ practice_library_path }}" {% if library_path == practice_library_path %}aria-current="page"{% endif %}>Practice Questions</a>
     </nav>
-    <div class="brand-bar sh-brand">
-      <a class="brand sh-brand__name" href="/" aria-label="Study Hub dashboard"><span class="brand-mark sh-brand__tile" aria-hidden="true">SH</span><span>Study Hub</span></a>
-      <span class="nuc-state sh-pill sh-pill--ok sh-syspill"><span class="nuc-state__dot" aria-hidden="true"></span>NUC online</span>
+    {% else %}
+    <nav class="utility-nav sh-nav" aria-label="Quiz library navigation">
+      <a class="sh-nav__link {% if library_path == quiz_library_path %}sh-nav__link--active{% endif %}" href="{{ quiz_library_path }}" {% if library_path == quiz_library_path %}aria-current="page"{% endif %}>Quizzes</a>
+      <a class="sh-nav__link {% if library_path == practice_library_path %}sh-nav__link--active{% endif %}" href="{{ practice_library_path }}" {% if library_path == practice_library_path %}aria-current="page"{% endif %}>Practice Questions</a>
+    </nav>
+    {% endif %}
     </div>
   </header>
   <main id="main-content" class="public-library sh-container" tabindex="-1" data-quiz-library>
@@ -40,10 +44,6 @@
         <h1 class="sh-title">{{ library_title }}</h1>
         <p class="sh-subtitle">{{ library_summary }}</p>
       </div>
-      <div class="sh-seg" role="group" aria-label="Quiz library view">
-        <a class="button secondary sh-btn sh-btn--secondary sh-seg__btn {% if library_path == quiz_library_path %}sh-seg__btn--active{% endif %}" href="{{ quiz_library_path }}" {% if library_path == quiz_library_path %}aria-current="page"{% endif %}>Quizzes</a>
-        <a class="button secondary sh-btn sh-btn--secondary sh-seg__btn {% if library_path == practice_library_path %}sh-seg__btn--active{% endif %}" href="{{ practice_library_path }}" {% if library_path == practice_library_path %}aria-current="page"{% endif %}>Practice Questions</a>
-      </div>
     </header>
 
     {% if courses %}
@@ -52,18 +52,18 @@
       {% set course_index = loop.index %}
       {% set course_is_first = loop.first %}
       <section class="course-card sh-card" style="--sh-hue: {{ course.hue }}" data-course-key="{{ course.key }}">
-        <button class="disclosure course-button" type="button" data-focus-key="course:{{ course.key }}" aria-expanded="{{ 'true' if loop.first else 'false' }}" aria-controls="course-{{ loop.index }}">
+        <button class="disclosure course-button" type="button" data-focus-key="course:{{ course.key }}" aria-expanded="false" aria-controls="course-{{ loop.index }}">
           <span><span class="sh-subject-dot" aria-hidden="true"></span> {{ course.name }}</span>
-          <span><span class="count" data-course-count>{{ course.quiz_count }} quiz{{ '' if course.quiz_count == 1 else 'zes' }}</span> <span class="chevron sh-disclose {% if loop.first %}is-open{% endif %}" aria-hidden="true">▸</span></span>
+          <span><span class="count" data-course-count>{{ course.quiz_count }} quiz{{ '' if course.quiz_count == 1 else 'zes' }}</span> <span class="chevron sh-disclose" aria-hidden="true">▸</span></span>
         </button>
-        <div id="course-{{ loop.index }}" class="course-content" {% if not loop.first %}hidden{% endif %}>
+        <div id="course-{{ loop.index }}" class="course-content" hidden>
           {% for exam in course.exams %}
-          <section class="exam-card sh-card" data-exam-key="{{ course.key }}:{{ exam.number }}">
-            <button class="disclosure exam-button" type="button" data-focus-key="exam:{{ course.key }}:{{ exam.number }}" aria-expanded="{{ 'true' if course_is_first and loop.first else 'false' }}" aria-controls="course-{{ course_index }}-exam-{{ loop.index }}">
+          <section class="exam-card" data-exam-key="{{ course.key }}:{{ exam.number }}">
+            <button class="disclosure exam-button" type="button" data-focus-key="exam:{{ course.key }}:{{ exam.number }}" aria-expanded="false" aria-controls="course-{{ course_index }}-exam-{{ loop.index }}">
               <span>Exam {{ exam.number }} <span data-exam-count>{{ exam.quiz_count }} quiz{{ '' if exam.quiz_count == 1 else 'zes' }}</span></span>
               <span class="chevron sh-disclose" aria-hidden="true">▸</span>
             </button>
-            <div id="course-{{ course_index }}-exam-{{ loop.index }}" class="lecture-list" {% if not course_is_first or not loop.first %}hidden{% endif %}>
+            <div id="course-{{ course_index }}-exam-{{ loop.index }}" class="lecture-list" hidden>
               {% for row in exam.quizzes %}
               <article class="lecture-row sh-row" data-quiz-row data-quiz-token="{{ row.token }}" data-quiz-version="{{ row.version }}" {% if management_mode %}data-quiz-order-row data-order-url="/api/published-quizzes/{{ row.token }}/order"{% endif %}>
                 {% if management_mode %}
