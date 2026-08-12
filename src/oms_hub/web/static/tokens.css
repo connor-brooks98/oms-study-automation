@@ -46,7 +46,7 @@
   --quiz-surface: var(--surface);
   --quiz-text: var(--text);
   --quiz-muted: var(--text-2);
-  --quiz-faint: var(--text-3);
+  --quiz-faint: var(--text-3-strong);
   --quiz-brand: var(--brand);
   --quiz-brand-mid: var(--brand-mid);
   --quiz-brand-tint: var(--brand-tint);

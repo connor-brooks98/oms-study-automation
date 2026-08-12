@@ -1,5 +1,7 @@
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 · macrostructure: Workbench
-   genre: modern-minimal · tone: soft + technical · anchor hue: navy */
+   theme: studied-DNA (source: approved Blue Workbench mock) · tone: soft + technical · anchor: navy
+   contrast: pass (40–41) · nav: N5 command workbench · footer: none · slop: pass (42–45)
+   honest: pass (46) · chrome: pass (47) · tokens: pass (48) · responsive/mobile: pass (34, 49–57) · icons: pass (30) */
 /* ============================================================================
    Study Hub — shared stylesheet (implements the LOCKED Design Standard)
    Single flat class per component (no element selectors) so nothing cancels.
@@ -121,7 +123,7 @@ body { overflow-x: clip; }
   letter-spacing: .06em; text-transform: uppercase; color: var(--brand);
   margin-bottom: var(--sp-3);
 }
-.sh-title    { font-size: var(--fs-title); font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; color: var(--text-1); margin: 0 0 var(--sp-2); }
+.sh-title    { min-width: 0; overflow-wrap: anywhere; font-size: var(--fs-title); font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; color: var(--text-1); margin: 0 0 var(--sp-2); }
 .sh-subtitle { font-size: var(--fs-body); color: var(--text-2); margin: 0; }
 .sh-header__row     { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-6); flex-wrap: wrap; }
 .sh-header__actions { display: flex; align-items: center; gap: var(--sp-3); }
@@ -236,7 +238,7 @@ body { overflow-x: clip; }
 /* ---- Segmented toggle (G-13): views only; keep actions out ---- */
 .sh-seg { display: inline-flex; gap: var(--sp-2); }
 .sh-seg__btn { /* apply .sh-btn .sh-btn--secondary; active gets --active */ }
-.sh-seg__btn--active { background: var(--brand) !important; color: #fff !important; border-color: var(--brand) !important; }
+.sh-seg__btn--active { background: var(--brand) !important; color: var(--brand-ink) !important; border-color: var(--brand) !important; }
 
 /* ---- Empty state (G-06): bordered card; dashed reserved for dropzones ---- */
 .sh-empty { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-12) var(--sp-8); text-align: center; }
@@ -270,11 +272,11 @@ body { overflow-x: clip; }
   transition: border-color .12s, background .12s;
 }
 .sh-option:hover { border-color: var(--text-3); }
-.sh-option--selected  { border: 2px solid var(--brand); background: var(--brand-tint); }
+.sh-option--selected  { border-color: var(--brand); background: var(--brand-tint); box-shadow: inset 0 0 0 1px var(--brand); }
 .sh-option--correct   { border-color: var(--st-ok-dot);  background: var(--st-ok-bg); }
 .sh-option--incorrect { border-color: var(--st-err-dot); background: var(--st-err-bg); }
 .sh-option__medallion { width: 24px; height: 24px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center; font-size: var(--fs-xs); background: var(--surface); color: var(--text-2); }
-.sh-option--selected .sh-option__medallion { background: var(--brand); color: #fff; }
+.sh-option--selected .sh-option__medallion { background: var(--brand); color: var(--brand-ink); }
 
 /* ---- Disclosure (G-05): one chevron, rotates on open ---- */
 .sh-disclose { display: inline-block; color: var(--text-3-strong); transition: transform var(--dur-micro) var(--ease-in-out); }

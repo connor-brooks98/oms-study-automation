@@ -217,7 +217,7 @@ def test_lecture_upload_page_targets_the_selected_lecture(tmp_path):
     )
 
     assert page.status_code == 200
-    assert "Neuro · Lecture 01 · Seizures" in page.text
+    assert "Neuro Lecture 01 · Seizures" in page.text
     assert f'name="lecture_id" value="{lecture_id}"' in page.text
 
 

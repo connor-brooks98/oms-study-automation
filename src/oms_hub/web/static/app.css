@@ -29,7 +29,7 @@ a:hover { color: var(--brand); }
   transform: translateY(-180%);
   padding: .7rem 1rem;
   border-radius: .5rem;
-  color: white;
+  color: var(--brand-ink);
   background: var(--brand);
 }
 .skip-link:focus,
@@ -89,7 +89,7 @@ a:hover { color: var(--brand); }
   width: 2.15rem;
   height: 2.15rem;
   border-radius: .55rem;
-  color: white;
+  color: var(--brand-ink);
   background: var(--brand);
   font: 700 .78rem/1 "IBM Plex Mono", monospace;
 }
@@ -110,7 +110,7 @@ a:hover { color: var(--brand); }
   background: var(--st-ok-dot);
   box-shadow: 0 0 0 4px oklch(0.95 0.03 150);
 }
-a.sh-btn--primary:hover { color: white; }
+a.sh-btn--primary:hover { color: var(--brand-ink); }
 
 main { min-width: 0; }
 .page-shell:not(.sh-container):not(.sh-container--narrow) {
@@ -188,11 +188,11 @@ button:not(.sh-btn):disabled,
 .button.primary:not(.sh-btn),
 button.primary:not(.sh-btn) {
   border-color: var(--brand);
-  color: white;
+  color: var(--brand-ink);
   background: var(--brand);
 }
 .button.primary:not(.sh-btn):hover,
-button.primary:not(.sh-btn):hover { color: white; background: oklch(0.27 0.065 255); }
+button.primary:not(.sh-btn):hover { color: var(--brand-ink); background: oklch(0.27 0.065 255); }
 .button.secondary:not(.sh-btn),
 button.secondary:not(.sh-btn) {
   border-color: var(--border);
@@ -202,7 +202,7 @@ button.secondary:not(.sh-btn) {
 .button.secondary:not(.sh-btn):hover,
 button.secondary:not(.sh-btn):hover { border-color: oklch(0.78 0.025 255); color: var(--brand); }
 .button.disabled:not(.sh-btn) {
-  color: var(--text-3);
+  color: var(--text-3-strong);
   background: var(--surface);
   pointer-events: none;
 }
@@ -242,7 +242,7 @@ button.exam-toggle {
   margin-left: auto;
   padding: .25rem .6rem;
   border-radius: 999px;
-  color: var(--text-3);
+  color: var(--text-3-strong);
   background: var(--surface);
   font: 600 .68rem/1 "IBM Plex Mono", monospace;
 }
@@ -270,7 +270,7 @@ button.exam-toggle {
 }
 .exam-count {
   margin-left: auto;
-  color: var(--text-3);
+  color: var(--text-3-strong);
   font: 400 .68rem/1 "IBM Plex Mono", monospace;
 }
 .lecture-list { display: flex; flex-direction: column; gap: .2rem; margin: .35rem 0 .6rem 1.4rem; }
@@ -328,14 +328,14 @@ button.exam-toggle {
 .file-flags { display: flex; gap: .5rem; font: 500 .65rem/1 "IBM Plex Mono", monospace; }
 .file-flags .available { color: var(--text-2); }
 .file-flags .missing { color: oklch(0.82 0.005 255); }
-.row-progress { color: var(--text-3); font: 400 .68rem/1 "IBM Plex Mono", monospace; text-align: right; }
+.row-progress { color: var(--text-3-strong); font: 400 .68rem/1 "IBM Plex Mono", monospace; text-align: right; }
 
 .breadcrumbs {
   display: flex;
   align-items: center;
   gap: .5rem;
   margin-bottom: 1.25rem;
-  color: var(--text-3);
+  color: var(--text-3-strong);
   font-size: .8rem;
 }
 .lecture-heading {
@@ -375,7 +375,7 @@ button.exam-toggle {
 }
 .pipeline-card { padding: 1.3rem 1.45rem; margin-bottom: 1rem; }
 .pipeline-status { display: flex; justify-content: space-between; gap: 1rem; margin-bottom: .7rem; }
-.pipeline-status span { color: var(--text-3); font: 500 .72rem/1 "IBM Plex Mono", monospace; }
+.pipeline-status span { color: var(--text-3-strong); font: 500 .72rem/1 "IBM Plex Mono", monospace; }
 .status-text:not(.sh-pill) { color: var(--not-started); font-size: 1.2rem; }
 .status-text:not(.sh-pill).status-processing { color: var(--processing); }
 .status-text:not(.sh-pill).status-needs_review { color: var(--review-text); }
@@ -406,7 +406,7 @@ button.exam-toggle {
   background: var(--surface);
   font-size: .75rem;
 }
-.file-card.ready .file-state-icon { color: white; background: var(--complete); }
+.file-card.ready .file-state-icon { color: var(--brand-ink); background: var(--complete); }
 .file-caption {
   min-height: 2.4em;
   margin: .55rem 0 .9rem 2.15rem;
@@ -462,7 +462,7 @@ select:not(.sh-select):not(.sh-control) {
 }
 .upload-zone:not(.sh-dropzone).is-dragging { border-color: var(--brand-mid); background: var(--brand-tint); }
 .upload-zone h2 { margin: .55rem 0 .35rem; }
-.upload-zone p { margin: 0 0 1rem; color: var(--text-3); font: 400 .7rem/1.5 "IBM Plex Mono", monospace; }
+.upload-zone p { margin: 0 0 1rem; color: var(--text-3-strong); font: 400 .7rem/1.5 "IBM Plex Mono", monospace; }
 .upload-mark {
   display: grid;
   place-items: center;
@@ -483,7 +483,7 @@ select:not(.sh-select):not(.sh-control) {
   background: var(--surface);
   font-size: .78rem;
 }
-.selected-file span:last-child { color: var(--text-3); font-family: "IBM Plex Mono", monospace; }
+.selected-file span:last-child { color: var(--text-3-strong); font-family: "IBM Plex Mono", monospace; }
 .upload-submit { margin-top: .2rem; }
 .upload-results { padding: 1.2rem; margin-top: 1rem; }
 .upload-results h2 { margin-bottom: .55rem; }
@@ -573,11 +573,11 @@ select:not(.sh-select):not(.sh-control) {
   height: 3.2rem;
   margin: 0 auto 1rem;
   border-radius: .8rem;
-  color: white;
+  color: var(--brand-ink);
   background: var(--brand);
   font: 700 1.1rem/1 "IBM Plex Mono", monospace;
 }
-.mono-note { color: var(--text-3) !important; font-size: .72rem; }
+.mono-note { color: var(--text-3-strong) !important; font-size: .72rem; }
 
 .anki-page,
 .anki-review-page { max-width: 1040px; }
@@ -613,7 +613,7 @@ select:not(.sh-select):not(.sh-control) {
   flex: none;
   place-items: center;
   border-radius: 50%;
-  color: white;
+  color: var(--brand-ink);
   background: var(--brand-mid);
   font: 700 .78rem/1 "IBM Plex Mono", monospace;
 }
@@ -668,7 +668,7 @@ select:not(.sh-select):not(.sh-control) {
   background: transparent;
 }
 .anki-workflow li.is-current > span {
-  color: white;
+  color: var(--brand-ink);
   background: var(--brand);
 }
 .card:not(.sh-card).anki-start-card { padding: 1.35rem 1.4rem; }
@@ -766,7 +766,7 @@ textarea:not(.sh-textarea):not(.sh-control) {
   border-color: oklch(.82 .012 255);
   border-radius: .55rem;
   color: var(--text);
-  background-color: white;
+  background-color: var(--card);
   font-size: .82rem;
   font-weight: 500;
 }
@@ -777,7 +777,7 @@ textarea:not(.sh-textarea):not(.sh-control) {
 }
 .anki-path-field select:disabled {
   cursor: not-allowed;
-  color: var(--text-3);
+  color: var(--text-3-strong);
   background-color: oklch(.94 .004 255);
   opacity: 1;
 }
@@ -814,7 +814,7 @@ textarea:not(.sh-textarea):not(.sh-control) {
 .anki-deck-priority-item > span { flex: 1; min-width: 0; }
 .anki-review-toolbar { display: grid; grid-template-columns: auto minmax(16rem, 1fr); gap: 1rem; align-items: end; margin: 1.25rem 0; }
 .anki-review-switcher { display: flex; gap: .5rem; }
-.anki-review-switcher .is-active { background: var(--brand); color: #fff; border-color: var(--brand); }
+.anki-review-switcher .is-active { background: var(--brand); color: var(--brand-ink); border-color: var(--brand); }
 .anki-review-search { display: grid; gap: .35rem; }
 .anki-tag-editor > summary { cursor: pointer; font-weight: 650; }
 .anki-source-option span { display: grid; min-width: 0; gap: .15rem; }
@@ -1257,7 +1257,7 @@ code { overflow-wrap: anywhere; }
 }
 .preview-stat strong { color: var(--brand); font-size: 1.5rem; }
 .preview-stat span {
-  color: var(--text-3);
+  color: var(--text-3-strong);
   font: 600 .66rem/1 "IBM Plex Mono", monospace;
   letter-spacing: .04em;
   text-transform: uppercase;
@@ -1312,7 +1312,7 @@ code { overflow-wrap: anywhere; }
 .preview-issue-list span,
 .preview-lecture-list span { color: var(--text-2); }
 .preview-issue-list code {
-  color: var(--text-3);
+  color: var(--text-3-strong);
   font: 400 .68rem/1.5 "IBM Plex Mono", monospace;
 }
 .preview-catalog { margin-top: 1.6rem; }
@@ -1432,7 +1432,7 @@ code { overflow-wrap: anywhere; }
   background: var(--surface);
 }
 .runtime-status-grid dt {
-  color: var(--text-3);
+  color: var(--text-3-strong);
   font: 500 .66rem/1.4 "IBM Plex Mono", monospace;
   letter-spacing: .06em;
   text-transform: uppercase;
@@ -1540,7 +1540,7 @@ code { overflow-wrap: anywhere; }
 .provider-kicker,
 .last-tested {
   margin: 0;
-  color: var(--text-3);
+  color: var(--text-3-strong);
   font: 500 .66rem/1.4 "IBM Plex Mono", monospace;
   text-transform: uppercase;
   letter-spacing: .06em;
@@ -1592,7 +1592,7 @@ code { overflow-wrap: anywhere; }
 .field-help,
 .field-message {
   margin: .38rem 0 0;
-  color: var(--text-3);
+  color: var(--text-3-strong);
   font-size: .7rem;
   line-height: 1.45;
 }
@@ -1705,7 +1705,7 @@ code { overflow-wrap: anywhere; }
 }
 .studio-image-drop.is-dragging,
 .studio-image-drop:focus-visible { border-color: var(--brand-mid); background: var(--brand-tint); }
-.muted { color: var(--text-3); font-size: .75rem; }
+.muted { color: var(--text-3-strong); font-size: .75rem; }
 
 .checkbox-inline {
   display: flex;

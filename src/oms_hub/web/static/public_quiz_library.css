@@ -21,7 +21,7 @@
   height: auto;
   padding: var(--sp-3) var(--sp-4);
   clip: auto;
-  color: #fff;
+  color: var(--brand-ink);
   background: var(--brand);
 }
 .site-header.sh-topbar { position: sticky; top: 0; z-index: 8; }
