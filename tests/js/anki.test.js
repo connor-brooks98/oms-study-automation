@@ -384,6 +384,37 @@ test("model dropdown repopulates from the settings models endpoint when the prov
   assert.equal(select.value, "gemini-3.6-flash");
 });
 
+test("OpenRouter model loading reports populated availability", async () => {
+  const select = new FakeSelect();
+  const status = { textContent: "" };
+  const documentRef = {
+    cookie: "study_hub_csrf=test-token",
+    createElement: () => new FakeOption(),
+    querySelector: (selector) => selector === "[data-anki-model-status]" ? status : null,
+  };
+  const fetchImpl = async () => ({
+    ok: true,
+    async json() {
+      return { models: ["openai/gpt-4o-mini", "openrouter/free"], source: "fallback" };
+    },
+  });
+
+  await anki.loadModelOptions(
+    documentRef,
+    fetchImpl,
+    select,
+    "openrouter",
+    "openai/gpt-4o-mini",
+  );
+
+  assert.equal(select.disabled, false);
+  assert.equal(status.textContent, "2 OpenRouter models available.");
+  assert.deepEqual(
+    select.children.map((option) => option.value),
+    ["openai/gpt-4o-mini", "openrouter/free"],
+  );
+});
+
 // -- Minimal fake DOM sufficient to drive renderSourceChoices --
 
 class FakeClassList {

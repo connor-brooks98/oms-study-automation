@@ -11,7 +11,7 @@
     <span class="status-pill sh-pill {{ 'sh-pill--err' if items|length else 'sh-pill--bare' }} status-quarantined">{{ items|length }} waiting</span>
   </div>
   {% for item in items %}
-  <section class="card sh-card">
+  <section class="card sh-card quarantine-item">
     <p class="mono-label">{{ item.kind.value }}</p>
     <h2>{{ item.original_filename }}</h2>
     <p class="page-summary">{{ item.size_bytes }} bytes</p>

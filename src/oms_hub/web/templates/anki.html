@@ -116,9 +116,10 @@
         </label>
         <label>
           Model
-          <select class="sh-select" name="model" data-anki-model-select required>
+          <select class="sh-select" name="model" data-anki-model-select aria-describedby="anki-model-status" required>
             <option value="{{ defaults.model }}">{{ defaults.model }}</option>
           </select>
+          <span class="field-help" id="anki-model-status" data-anki-model-status aria-live="polite"></span>
         </label>
         <section class="anki-field-wide anki-workbench-panel" data-curation-models>
           <p class="sh-section-label">Models</p>

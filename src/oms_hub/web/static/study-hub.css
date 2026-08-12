@@ -354,6 +354,9 @@ body { overflow-x: clip; }
 .sh-more { position: relative; }
 .sh-more > summary { cursor: pointer; list-style: none; }
 .sh-more > summary::-webkit-details-marker { display: none; }
+.sh-more__trigger { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.sh-more__chevron { display: inline-flex; align-items: center; justify-content: center; line-height: 1; transform: translateY(-1px); }
+.sh-more[open] .sh-more__chevron { transform: translateY(-1px) rotate(180deg); }
 .sh-more__menu {
   position: absolute;
   inset-block-start: calc(100% + var(--sp-2));

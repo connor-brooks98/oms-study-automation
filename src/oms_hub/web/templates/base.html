@@ -31,7 +31,7 @@
         <a class="sh-nav__link {% if current_path.startswith('/public/quizzes') %}sh-nav__link--active{% endif %}" href="/public/quizzes" {% if current_path.startswith('/public/quizzes') %}aria-current="page"{% endif %}>Quizzes</a>
         <a class="sh-nav__link {% if current_path.startswith('/public/practice-questions') %}sh-nav__link--active{% endif %}" href="/public/practice-questions" {% if current_path.startswith('/public/practice-questions') %}aria-current="page"{% endif %}>Practice Questions</a>
         <details class="sh-more">
-          <summary class="sh-nav__link {% if more_active %}sh-nav__link--active{% endif %}" {% if more_active %}aria-current="page"{% endif %}>More <span aria-hidden="true">⌄</span></summary>
+          <summary class="sh-nav__link sh-more__trigger {% if more_active %}sh-nav__link--active{% endif %}" {% if more_active %}aria-current="page"{% endif %}>More <span class="sh-more__chevron" aria-hidden="true">▾</span></summary>
           <div class="sh-more__menu">
             <a href="/uploads/slides">Upload slides</a>
             <a href="/uploads/transcripts">Upload transcript</a>

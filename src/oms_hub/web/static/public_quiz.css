@@ -248,7 +248,8 @@
 
 .quiz-answer-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 2.65rem;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  align-items: center;
   gap: .45rem;
 }
 .quiz-answer-row.sh-option { padding: 0; }
@@ -260,6 +261,7 @@
   border-radius: .55rem;
   background: white;
 }
+.quiz-strike.sh-iconbtn { align-self: center; margin: 0; }
 
 .quiz-answer {
   display: grid;
