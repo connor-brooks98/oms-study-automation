@@ -93,7 +93,7 @@ const reviewPage = () => {
   ]);
   page.querySelector = (selector) => controls.get(selector) || Element.prototype.querySelector.call(page, selector);
   page.append(blockers, publish, preview, questions);
-  return { page, blockers, questions };
+  return { page, blockers, publish, questions };
 };
 
 test("publish gating follows authoritative blocker state", () => {
@@ -179,6 +179,7 @@ test("review UI uses DOM text nodes rather than untrusted HTML injection", () =>
   assert.match(source, /textContent/);
   assert.match(source, /X-CSRF-Token/);
   assert.match(source, /"PATCH"/);
+  assert.match(source, /Provide an answer rationale before saving\./);
 });
 
 test("issue disclosures and keyed focus survive a clean review refresh", () => {
@@ -305,6 +306,34 @@ test("a successful q2-style authoritative refresh retains an unrelated dirty q1 
   assert.equal(afterDirty.querySelectorAll("[data-focus-key]")
     .find((field) => field.dataset.focusKey === "question:q1:stem").value, "Unsaved local edit");
   assert.notEqual(afterClean, cleanCard);
+});
+
+test("a successful question save applies authoritative blocker and answer state", () => {
+  const { page, publish, questions } = reviewPage();
+  const initial = question("q1", "Stem");
+  initial.correct_index = null;
+  review.render(documentRef, page, {
+    blockers: ["q1: answer is missing"],
+    issues: [{ question_id: "q1", display_label: "Q1", type: "answer", message: "answer is missing", role: "err" }],
+    preview_url: null,
+    questions: [initial],
+  });
+  const dirtyCard = questions.querySelector("[data-question-id]");
+  dirtyCard.dataset.dirty = "true";
+  const form = { closest: () => dirtyCard };
+  const saved = question("q1", "Stem");
+  saved.choices = ["A", "B", "C"];
+  saved.correct_index = 2;
+
+  review.applyQuestionSave(documentRef, page, form, {
+    blockers: [], issues: [], preview_url: "/studio/runs/run-1/preview", questions: [saved],
+  });
+
+  const savedCard = questions.querySelector("[data-question-id]");
+  const correct = savedCard.querySelectorAll('input[name="correct_index"]');
+  assert.notEqual(savedCard, dirtyCard);
+  assert.equal(correct[2].checked, true);
+  assert.equal(publish.disabled, false);
 });
 
 test("typed review-artifact envelopes retain recovery guidance with safe detail fallback", () => {
