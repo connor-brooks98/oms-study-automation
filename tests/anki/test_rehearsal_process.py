@@ -1329,24 +1329,32 @@ def test_standalone_launcher_is_stdlib_only_until_verified_and_reexecs_isolated(
     )
 
 
-def test_standalone_launcher_carries_venv_dependencies_through_base_isolation(
+def test_standalone_launcher_carries_attested_dependencies_through_base_isolation(
     tmp_path: Path,
 ) -> None:
     script = Path(__file__).parents[2] / "scripts" / "run-a0-rehearsal.py"
     launcher = runpy.run_path(str(script), run_name="launcher_test")
     base_runtime, attestation = launcher["_capture_isolated_runtime"](Path(sys.executable))
+    dependency_root = tmp_path / "attested-site-packages"
+    controlled_dependency = dependency_root / "attested_synthetic_dependency"
+    controlled_dependency.mkdir(parents=True)
+    (controlled_dependency / "__init__.py").write_text(
+        "VALUE = 'attested-test-dependency'\n", encoding="utf-8"
+    )
+    attestation = dict(attestation, dependency_paths=[str(dependency_root)])
     dependency_paths = attestation["dependency_paths"]
     encoded, dependency_sha256 = launcher["_attestation_transport"](attestation)
-    base_runtime = Path(sys._base_executable).resolve()
     code = "".join(
         (
-            "import json,runpy,sys; from pathlib import Path; ",
+            "import importlib,json,runpy,sys; from pathlib import Path; ",
             "module=runpy.run_path(sys.argv[1],run_name='isolated_launcher_test'); ",
             "paths=module['_validate_isolated_runtime'](\n"
             "sys.argv[2],sys.argv[3],Path(sys.argv[4])\n"
             "); ",
-            "sys.path[:0]=paths; import pydantic; ",
-            "print(json.dumps({'paths':paths,'pydantic':str(Path(pydantic.__file__).resolve())}))",
+            "sys.path[:0]=paths; dependency=importlib.import_module("
+            "'attested_synthetic_dependency'); "
+            "print(json.dumps({'paths':paths,'dependency':str(Path(dependency.__file__).resolve()),"
+            "'value':dependency.VALUE}))",
         )
     )
     completed = subprocess.run(
@@ -1364,11 +1372,13 @@ def test_standalone_launcher_carries_venv_dependencies_through_base_isolation(
         check=True,
         capture_output=True,
         text=True,
-        env=os.environ.copy(),
+        env={**os.environ, "PYTHONPATH": str(tmp_path / "ambient")},
     )
     payload = json.loads(completed.stdout)
     assert payload["paths"] == dependency_paths
-    assert any(payload["pydantic"].startswith(path + os.sep) for path in dependency_paths)
+    assert str(dependency_root.resolve()) in payload["paths"]
+    assert payload["dependency"] == str((controlled_dependency / "__init__.py").resolve())
+    assert payload["value"] == "attested-test-dependency"
     mismatched_runtime = dict(attestation, runtime_version="untrusted runtime build")
     mismatched_encoded, mismatched_digest = launcher["_attestation_transport"](mismatched_runtime)
     mismatched = subprocess.run(
@@ -1386,7 +1396,7 @@ def test_standalone_launcher_carries_venv_dependencies_through_base_isolation(
         check=False,
         capture_output=True,
         text=True,
-        env=os.environ.copy(),
+        env={**os.environ, "PYTHONPATH": str(tmp_path / "ambient")},
     )
     assert mismatched.returncode != 0
     assert "runtime version" in mismatched.stderr
