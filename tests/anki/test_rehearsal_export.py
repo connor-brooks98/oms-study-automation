@@ -15,12 +15,20 @@ from uuid import uuid4
 import numpy as np
 import pytest
 
-from oms_hub.anki.domain import CreateCurationJob, CurationState
+from oms_hub.anki.domain import (
+    CreateCurationJob,
+    CurationStage,
+    CurationState,
+    PipelineContractVersion,
+    StageArtifact,
+)
 from oms_hub.anki.index import AnkiIndex
 from oms_hub.anki.normalize import NormalizedNote
 from oms_hub.anki.rehearsal.capsule import CapsuleIntegrityError, verify_capsule
 from oms_hub.anki.rehearsal.export import (
     _close_read_only_memmap,
+    _copy_bound_job_artifact,
+    _export_job_scoped_database,
     _online_backup,
     _registered_root_relative,
     export_capsule,
@@ -205,11 +213,60 @@ def _failed_job_fixture(tmp_path: Path, *, failed: bool = True) -> dict[str, obj
                 gap_prompt_version="gap-fixture",
                 provider="anthropic",
                 model="fixture-model",
+                pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
                 companion_generation="companion-generation",
                 semantic_generation=str(semantic.generation),
                 summary_outline_id=outline.id,
                 summary_outline_sha256=outline.sha256,
             )
+        )
+        source_index_payload = {"source_index": {"generation": "fixture"}}
+        source_index_metadata: dict[str, object] = {}
+        source_index_document = {
+            "artifact_version": 3,
+            "job_id": str(job.id),
+            "stage": CurationStage.SOURCE_INDEX.value,
+            "kind": "card_centric_source_index",
+            "pipeline_contract_version": job.pipeline_contract_version.value,
+            "model_config_sha256": job.model_config_sha256,
+            "input_sha256": "d" * 64,
+            "payload": source_index_payload,
+            "metadata": source_index_metadata,
+            "recovery_product": {
+                "kind": "card_centric_source_index",
+                "payload": source_index_payload,
+                "metadata": source_index_metadata,
+                "usage": None,
+                "cache_hits": 0,
+                "candidates": None,
+                "source_evidence": None,
+                "gap_cards": None,
+                "job_pins": {},
+                "blocking_error": None,
+            },
+        }
+        source_index_encoded = (
+            json.dumps(source_index_document, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        source_index_sha256 = hashlib.sha256(source_index_encoded).hexdigest()
+        source_index_relative = (
+            f"{job.id}/{CurationStage.SOURCE_INDEX.value}/{source_index_sha256}.json"
+        )
+        artifact_path = anki_root / "artifacts" / Path(source_index_relative)
+        artifact_path.parent.mkdir(parents=True)
+        artifact_path.write_bytes(source_index_encoded)
+        curation.save_stage_artifact(
+            job.id,
+            StageArtifact(
+                artifact_id=f"{CurationStage.SOURCE_INDEX.value}:{source_index_sha256}",
+                stage=CurationStage.SOURCE_INDEX,
+                kind="card_centric_source_index",
+                relative_path=source_index_relative,
+                input_sha256="d" * 64,
+                content_sha256=source_index_sha256,
+                pipeline_contract_version=job.pipeline_contract_version,
+                model_config_sha256=job.model_config_sha256,
+            ),
         )
         if failed:
             claimed = curation.claim_next_job(
@@ -235,12 +292,6 @@ def _failed_job_fixture(tmp_path: Path, *, failed: bool = True) -> dict[str, obj
     finally:
         connection.close()
 
-    source_index = anki_root / "jobs" / str(job.id) / "source-index"
-    artifacts = anki_root / "artifacts" / str(job.id)
-    source_index.mkdir(parents=True)
-    artifacts.mkdir(parents=True)
-    (source_index / "index.json").write_text('{"generation":"fixture"}\n', encoding="utf-8")
-    (artifacts / "failure.json").write_text('{"failed":true}\n', encoding="utf-8")
     (data_root / "collection.anki2").write_bytes(b"must not be exported")
     (data_root / ".env").write_text("API_KEY=must-not-escape\n", encoding="utf-8")
     return {
@@ -254,6 +305,8 @@ def _failed_job_fixture(tmp_path: Path, *, failed: bool = True) -> dict[str, obj
         "source": revision.immutable_source_path,
         "canonical": canonical,
         "outline": outline_path,
+        "artifact_path": artifact_path,
+        "artifact_relative": source_index_relative,
     }
 
 
@@ -296,9 +349,11 @@ def test_export_is_hash_verified_complete_read_only_and_source_immutable(tmp_pat
     assert manifest.identity.tree_sha == fixture["tree"]
     assert manifest.identity.companion_note_count == 1
     assert manifest.identity.semantic_note_count == 1
-    job_id = str(fixture["job"].id)  # type: ignore[union-attr]
-    assert (capsule / "anki" / "jobs" / job_id / "source-index" / "index.json").is_file()
-    assert (capsule / "anki" / "artifacts" / job_id / "failure.json").is_file()
+    artifact_relative = fixture["artifact_relative"]  # type: ignore[assignment]
+    copied_artifact = capsule / "anki" / "artifacts" / artifact_relative
+    assert copied_artifact.is_file()
+    assert _sha256(copied_artifact) == _sha256(fixture["artifact_path"])  # type: ignore[arg-type]
+    assert not (fixture["anki"] / "jobs" / str(fixture["job"].id)).exists()  # type: ignore[operator,union-attr]
     prompt_asset = (
         capsule / "sources" / "repository" / "src" / "oms_hub" / "anki" / "prompt_assets" / "s2.md"
     )
@@ -319,6 +374,23 @@ def test_export_is_hash_verified_complete_read_only_and_source_immutable(tmp_pat
     snapshot = json.loads((capsule / "source-snapshot.json").read_text(encoding="utf-8"))
     assert snapshot["credentials_exported"] is False
     assert snapshot["database_export"] == "job-scoped-allowlist"
+    assert snapshot["components"][str(fixture["database"])] == {
+        "sha256": database_before,
+        "bytes": fixture["database"].stat().st_size,  # type: ignore[union-attr]
+    }
+    assert snapshot["components"]["database_sidecars"] == {
+        "-wal": {"present": False},
+        "-shm": {"present": False},
+    }
+    assert snapshot["components"]["job_artifacts"] == {
+        str(artifact_relative): {
+            "artifact_id": f"source_index:{_sha256(fixture['artifact_path'])}",  # type: ignore[arg-type]
+            "stage": "source_index",
+            "kind": "card_centric_source_index",
+            "sha256": _sha256(fixture["artifact_path"]),  # type: ignore[arg-type]
+            "bytes": fixture["artifact_path"].stat().st_size,  # type: ignore[union-attr]
+        }
+    }
     capsule_uri = f"file:{(capsule / 'hub/hub.db').as_posix()}?mode=ro&immutable=1"
     connection = sqlite3.connect(capsule_uri, uri=True)
     try:
@@ -585,18 +657,207 @@ def test_export_refuses_nonfailed_job_dirty_git_and_existing_destination(tmp_pat
 
 def test_export_refuses_indirect_required_tree_and_wrong_generation(tmp_path: Path) -> None:
     fixture = _failed_job_fixture(tmp_path)
-    source_index = fixture["anki"] / "jobs" / str(fixture["job"].id) / "source-index"  # type: ignore[operator,union-attr]
-    link = source_index / "indirect.json"
+    artifact_path = fixture["artifact_path"]  # type: ignore[assignment]
+    replacement = artifact_path.with_name("indirect.json")
+    replacement.write_bytes(artifact_path.read_bytes())
     try:
-        os.symlink(source_index / "index.json", link)
+        artifact_path.unlink()
+        os.symlink(replacement, artifact_path)
     except OSError as exc:
         pytest.skip(f"symbolic links unavailable: {exc}")
     with pytest.raises(CapsuleIntegrityError, match="indirect"):
         _export(fixture, tmp_path / "symlink-capsule")
-    link.unlink()
-    (source_index / "token.txt").write_text("must not export", encoding="utf-8")
-    with pytest.raises(CapsuleIntegrityError, match="forbidden sensitive material"):
+    artifact_path.unlink()
+    replacement.replace(artifact_path)
+    artifact_path.write_bytes(b"changed artifact")
+    with pytest.raises(CapsuleIntegrityError, match="content hash"):
         _export(fixture, tmp_path / "secret-capsule")
+
+
+def test_export_uses_only_persisted_real_layout_artifact_paths(tmp_path: Path) -> None:
+    fixture = _failed_job_fixture(tmp_path)
+    artifact_path = fixture["artifact_path"]  # type: ignore[assignment]
+    artifact_relative = fixture["artifact_relative"]  # type: ignore[assignment]
+    artifact_relative_path = Path(artifact_relative)
+    other_job_id = uuid4()
+    other_job_file = (
+        fixture["anki"] / "artifacts" / str(other_job_id) / "source_index" / artifact_path.name  # type: ignore[operator]
+    )
+    other_job_file.parent.mkdir(parents=True)
+    other_job_file.write_bytes(artifact_path.read_bytes())
+    unbound = artifact_path.parent / "unbound.json"
+    unbound.write_text('{"unbound":true}\n', encoding="utf-8")
+    orphan = artifact_path.parent / ".orphan" / ("d" * 64 + ".json")
+    orphan.parent.mkdir()
+    orphan.write_text('{"orphan":true}\n', encoding="utf-8")
+
+    capsule = _export(fixture, tmp_path / "real-layout-capsule")
+    assert (capsule / "anki" / "artifacts" / artifact_relative_path).is_file()
+    assert not (
+        capsule / "anki" / "artifacts" / artifact_relative_path.parent / "unbound.json"
+    ).exists()
+    assert not (
+        capsule
+        / "anki"
+        / "artifacts"
+        / artifact_relative_path.parent
+        / ".orphan"
+        / orphan.name
+    ).exists()
+    assert not (capsule / "anki" / "artifacts" / str(other_job_id)).exists()
+
+    artifact_path.unlink()
+    with pytest.raises(CapsuleIntegrityError, match="artifact is unavailable"):
+        _export(fixture, tmp_path / "cannot-substitute-capsule")
+
+
+def test_export_rejects_job_artifact_changed_during_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _failed_job_fixture(tmp_path)
+    artifact_path = fixture["artifact_path"]  # type: ignore[assignment]
+    original_copy = _copy_bound_job_artifact
+
+    def race(bound: object, destination: Path) -> None:
+        original_copy(bound, destination)  # type: ignore[arg-type]
+        artifact_path.write_bytes(artifact_path.read_bytes() + b"race")
+
+    monkeypatch.setattr("oms_hub.anki.rehearsal.export._copy_bound_job_artifact", race)
+    destination = tmp_path / "racy-artifact-capsule"
+    with pytest.raises(CapsuleIntegrityError, match="source components changed"):
+        _export(fixture, destination)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("kind", "lecture_source_index"),
+        ("pipeline_contract_version", "retrieval_v4"),
+        ("model_config_sha256", "0" * 64),
+    ],
+)
+def test_export_rejects_persisted_artifact_job_provenance_mismatch(
+    tmp_path: Path, column: str, value: str
+) -> None:
+    fixture = _failed_job_fixture(tmp_path)
+    connection = sqlite3.connect(fixture["database"])  # type: ignore[arg-type]
+    try:
+        connection.execute(f"UPDATE anki_stage_artifacts SET {column} = ?", (value,))
+        connection.commit()
+    finally:
+        connection.close()
+    with pytest.raises(CapsuleIntegrityError, match="artifact.*provenance|source-index"):
+        _export(fixture, tmp_path / f"bad-{column}-capsule")
+
+
+def test_export_rejects_runtime_invalid_artifact_document(tmp_path: Path) -> None:
+    fixture = _failed_job_fixture(tmp_path)
+    artifact_path = fixture["artifact_path"]  # type: ignore[assignment]
+    document = json.loads(artifact_path.read_text(encoding="utf-8"))
+    document["recovery_product"]["payload"] = {"different": True}
+    encoded = (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    replacement = artifact_path.parent / f"{digest}.json"
+    replacement.write_bytes(encoded)
+    artifact_path.unlink()
+    connection = sqlite3.connect(fixture["database"])  # type: ignore[arg-type]
+    try:
+        connection.execute(
+            """UPDATE anki_stage_artifacts
+               SET artifact_id = ?, relative_path = ?, content_sha256 = ?""",
+            (
+                f"source_index:{digest}",
+                f"{fixture['job'].id}/source_index/{digest}.json",  # type: ignore[union-attr]
+                digest,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    with pytest.raises(CapsuleIntegrityError, match="runtime provenance"):
+        _export(fixture, tmp_path / "invalid-document-capsule")
+
+
+def test_export_rejects_float_artifact_version_with_matching_hash_and_path(tmp_path: Path) -> None:
+    fixture = _failed_job_fixture(tmp_path)
+    artifact_path = fixture["artifact_path"]  # type: ignore[assignment]
+    document = json.loads(artifact_path.read_text(encoding="utf-8"))
+    document["artifact_version"] = 3.0
+    encoded = (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    replacement = artifact_path.parent / f"{digest}.json"
+    replacement.write_bytes(encoded)
+    artifact_path.unlink()
+    connection = sqlite3.connect(fixture["database"])  # type: ignore[arg-type]
+    try:
+        connection.execute(
+            """UPDATE anki_stage_artifacts
+               SET artifact_id = ?, relative_path = ?, content_sha256 = ?""",
+            (
+                f"source_index:{digest}",
+                f"{fixture['job'].id}/source_index/{digest}.json",  # type: ignore[union-attr]
+                digest,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    with pytest.raises(CapsuleIntegrityError, match="runtime provenance"):
+        _export(fixture, tmp_path / "float-version-capsule")
+
+
+def test_export_rejects_database_changed_after_immutable_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _failed_job_fixture(tmp_path)
+    original_export = _export_job_scoped_database
+
+    def mutate_after_backup(source: Path, destination: Path, job_id: object) -> None:
+        original_export(source, destination, job_id)  # type: ignore[arg-type]
+        connection = sqlite3.connect(fixture["database"])  # type: ignore[arg-type]
+        try:
+            connection.execute("UPDATE anki_curation_jobs SET error = 'changed after backup'")
+            connection.commit()
+        finally:
+            connection.close()
+
+    monkeypatch.setattr(
+        "oms_hub.anki.rehearsal.export._export_job_scoped_database", mutate_after_backup
+    )
+    destination = tmp_path / "post-backup-change-capsule"
+    with pytest.raises(CapsuleIntegrityError, match="changed after immutable backup"):
+        _export(fixture, destination)
+    assert not destination.exists()
+    assert not (destination / "source-snapshot.json").exists()
+
+
+def test_export_rejects_database_changed_after_manifest_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _failed_job_fixture(tmp_path)
+    original_verify = verify_capsule
+    mutated = False
+
+    def mutate_after_manifest(root: Path):
+        nonlocal mutated
+        result = original_verify(root)
+        if not mutated:
+            mutated = True
+            connection = sqlite3.connect(fixture["database"])  # type: ignore[arg-type]
+            try:
+                connection.execute("UPDATE anki_curation_jobs SET error = 'late change'")
+                connection.commit()
+            finally:
+                connection.close()
+        return result
+
+    monkeypatch.setattr("oms_hub.anki.rehearsal.export.verify_capsule", mutate_after_manifest)
+    destination = tmp_path / "late-change-capsule"
+    with pytest.raises(CapsuleIntegrityError, match="changed after immutable backup"):
+        _export(fixture, destination)
+    assert mutated
+    assert not destination.exists()
 
 
 def test_export_refuses_mismatched_snapshot_counts(tmp_path: Path) -> None:

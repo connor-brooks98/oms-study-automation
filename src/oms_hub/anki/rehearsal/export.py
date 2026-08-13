@@ -10,10 +10,11 @@ import subprocess
 import tempfile
 from collections.abc import Iterable, Sequence
 from contextlib import closing
-from pathlib import Path, PureWindowsPath
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from uuid import UUID
 
-from oms_hub.anki.domain import CurationJob, CurationState
+from oms_hub.anki.domain import CurationJob, CurationStage, CurationState, StageArtifact
 from oms_hub.anki.index import AnkiIndex
 from oms_hub.anki.rehearsal.capsule import (
     CapsuleIdentity,
@@ -49,6 +50,7 @@ _SNAPSHOT_TABLES = frozenset(
         "outline_outputs",
         "existing_artifact_imports",
         "anki_curation_jobs",
+        "anki_stage_artifacts",
     }
 )
 _REHEARSAL_GENERATION_COLUMNS = frozenset(
@@ -66,6 +68,13 @@ _REHEARSAL_GENERATION_COLUMNS = frozenset(
         "updated_at",
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundJobArtifact:
+    artifact: StageArtifact
+    source: Path
+    relative_path: PurePosixPath
 
 
 def export_capsule(
@@ -89,7 +98,6 @@ def export_capsule(
     try:
         capsule_database = temporary / "hub" / "hub.db"
         capsule_database.parent.mkdir(parents=True)
-        before = _source_component_snapshot(database_path, anki_root)
         logical_snapshot = temporary / ".source-logical-snapshot.db"
         backup_before = _database_snapshot(database_path)
         _require_quiescent_database_snapshot(backup_before)
@@ -101,6 +109,7 @@ def export_capsule(
                 "source database changed during immutable backup; "
                 "a stopped/quiescent source is required"
             )
+        _require_database_snapshot_matches(database_path, backup_after)
         _export_job_scoped_database(logical_snapshot, capsule_database, job_id)
         logical_snapshot.unlink()
 
@@ -117,22 +126,31 @@ def export_capsule(
                     raise CapsuleIntegrityError("source database has no schema identity")
                 database_schema = schema_row.version
             referenced_files = _job_source_files(job, ingestion, generation)
+            job_artifacts = _bound_job_artifacts(
+                anki_root,
+                job,
+                repository.list_stage_artifacts(job_id),
+            )
+
+        _require_database_snapshot_matches(database_path, backup_after)
+        before = _source_component_snapshot(database_path, anki_root, job_artifacts)
+        _require_source_snapshot_database_matches(before, database_path, backup_after)
 
         for source in referenced_files:
             _copy_logical_file(source, temporary, source_roots)
 
-        for relative in (
-            Path("companion"),
-            Path("semantic"),
-            Path("jobs") / str(job_id) / "source-index",
-            Path("artifacts") / str(job_id),
-        ):
+        for relative in (Path("companion"), Path("semantic")):
             source = anki_root / relative
             if not source.is_dir():
                 raise CapsuleIntegrityError(f"required Anki capsule root is missing: {relative}")
             _copy_verified_tree(source, temporary / "anki" / relative)
 
-        after = _source_component_snapshot(database_path, anki_root)
+        for bound in job_artifacts:
+            _copy_bound_job_artifact(bound, temporary / "anki" / "artifacts")
+
+        after = _source_component_snapshot(database_path, anki_root, job_artifacts)
+        _require_database_snapshot_matches(database_path, backup_after)
+        _require_source_snapshot_database_matches(after, database_path, backup_after)
         if before != after:
             raise CapsuleIntegrityError(
                 "source components changed during export; a stopped/quiescent source is required"
@@ -212,6 +230,8 @@ def export_capsule(
         )
         write_capsule_manifest(temporary, manifest)
         verify_capsule(temporary)
+        _require_database_snapshot_matches(database_path, backup_after)
+        _require_source_snapshot_database_matches(before, database_path, backup_after)
         temporary.rename(destination)
         make_capsule_read_only(destination)
         verify_capsule(destination)
@@ -257,6 +277,117 @@ def _copy_logical_file(source: Path, capsule: Path, roots: dict[str, Path]) -> N
         raise CapsuleIntegrityError(f"source artifact is unavailable or indirect: {source}")
     name, relative = _registered_root_relative(source, roots)
     _copy_verified_file(source, capsule / "sources" / name / relative)
+
+
+def _bound_job_artifacts(
+    anki_root: Path,
+    job: CurationJob,
+    artifacts: Sequence[StageArtifact],
+) -> tuple[_BoundJobArtifact, ...]:
+    """Bind the copied artifact set to persisted job metadata, not a layout guess."""
+    artifact_root = anki_root / "artifacts"
+    if not artifact_root.is_dir() or artifact_root.is_symlink():
+        raise CapsuleIntegrityError("persisted job artifact root is unavailable or indirect")
+    if not artifacts:
+        raise CapsuleIntegrityError("frozen job has no persisted stage artifacts")
+
+    bound: list[_BoundJobArtifact] = []
+    seen_paths: set[PurePosixPath] = set()
+    for artifact in artifacts:
+        relative = PurePosixPath(artifact.relative_path)
+        expected_relative = PurePosixPath(
+            str(job.id), artifact.stage.value, f"{artifact.content_sha256}.json"
+        )
+        if (
+            artifact.artifact_id != f"{artifact.stage.value}:{artifact.content_sha256}"
+            or relative != expected_relative
+            or relative.is_absolute()
+            or ".." in relative.parts
+            or not re.fullmatch(r"[0-9a-f]{64}", artifact.content_sha256)
+            or relative in seen_paths
+            or artifact.pipeline_contract_version is not job.pipeline_contract_version
+            or artifact.model_config_sha256 != job.model_config_sha256
+        ):
+            raise CapsuleIntegrityError("persisted job artifact provenance is invalid")
+        source = artifact_root.joinpath(*relative.parts)
+        _require_direct_descendant_file(source, artifact_root)
+        if _sha256_file(source) != artifact.content_sha256:
+            raise CapsuleIntegrityError("persisted job artifact content hash does not match")
+        if not _runtime_artifact_document_matches(source, artifact, job):
+            raise CapsuleIntegrityError("persisted job artifact runtime provenance is invalid")
+        seen_paths.add(relative)
+        bound.append(_BoundJobArtifact(artifact, source, relative))
+
+    if not any(
+        item.artifact.stage is CurationStage.SOURCE_INDEX
+        and item.artifact.kind == "card_centric_source_index"
+        for item in bound
+    ):
+        raise CapsuleIntegrityError("frozen job has no persisted source-index artifact")
+    return tuple(sorted(bound, key=lambda item: item.relative_path.as_posix()))
+
+
+def _require_direct_descendant_file(path: Path, root: Path) -> None:
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise CapsuleIntegrityError("persisted job artifact escapes its root") from exc
+    if not relative.parts or not path.is_file():
+        raise CapsuleIntegrityError("persisted job artifact is unavailable")
+    current = path
+    while current != root:
+        if current.is_symlink():
+            raise CapsuleIntegrityError("persisted job artifact is indirect")
+        current = current.parent
+
+
+def _copy_bound_job_artifact(bound: _BoundJobArtifact, destination: Path) -> None:
+    if _sha256_file(bound.source) != bound.artifact.content_sha256:
+        raise CapsuleIntegrityError("persisted job artifact content hash does not match")
+    target = destination.joinpath(*bound.relative_path.parts)
+    _copy_verified_file(bound.source, target)
+    if _sha256_file(target) != bound.artifact.content_sha256:
+        raise CapsuleIntegrityError("copied job artifact content hash does not match")
+
+
+def _runtime_artifact_document_matches(
+    source: Path, artifact: StageArtifact, job: CurationJob
+) -> bool:
+    """Apply the v3 runtime provenance contract before exposing an artifact."""
+    try:
+        encoded = source.read_bytes()
+        document = json.loads(encoded)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(document, dict) or _canonical_artifact_bytes(document) != encoded:
+        return False
+    payload = document.get("payload")
+    metadata = document.get("metadata")
+    recovery_product = document.get("recovery_product")
+    return (
+        type(document.get("artifact_version")) is int
+        and document.get("artifact_version") == 3
+        and document.get("job_id") == str(job.id)
+        and document.get("stage") == artifact.stage.value
+        and document.get("kind") == artifact.kind
+        and document.get("input_sha256") == artifact.input_sha256
+        and document.get("pipeline_contract_version") == job.pipeline_contract_version.value
+        and document.get("model_config_sha256") == job.model_config_sha256
+        and payload is not None
+        and isinstance(payload, dict)
+        and isinstance(metadata, dict)
+        and metadata == artifact.metadata
+        and isinstance(recovery_product, dict)
+        and recovery_product.get("kind") == artifact.kind
+        and recovery_product.get("payload") == payload
+        and recovery_product.get("metadata") == metadata
+    )
+
+
+def _canonical_artifact_bytes(document: dict[str, object]) -> bytes:
+    return json.dumps(
+        document, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8") + b"\n"
 
 
 def _registered_root_relative(source: Path, roots: dict[str, Path]) -> tuple[str, Path]:
@@ -480,6 +611,7 @@ def _export_job_scoped_database(source: Path, destination: Path, job_id: UUID) -
                 tuple(sorted(outline_ids)),
             )
         _copy_rows(writer, reader, "anki_curation_jobs", "id = ?", (str(job_id),))
+        _copy_rows(writer, reader, "anki_stage_artifacts", "job_id = ?", (str(job_id),))
         failures = writer.execute("PRAGMA foreign_key_check").fetchall()
         if failures:
             raise CapsuleIntegrityError("job-scoped database closure has foreign-key failures")
@@ -547,7 +679,11 @@ def _json_integer_ids(raw: object, label: str) -> list[int]:
     return sorted(set(values))
 
 
-def _source_component_snapshot(database: Path, anki_root: Path) -> dict[str, object]:
+def _source_component_snapshot(
+    database: Path,
+    anki_root: Path,
+    job_artifacts: Sequence[_BoundJobArtifact],
+) -> dict[str, object]:
     """Identity evidence for independently copied source components.
 
     It proves each component stayed still during the export.  It intentionally
@@ -561,6 +697,16 @@ def _source_component_snapshot(database: Path, anki_root: Path) -> dict[str, obj
         for path in paths
         if path.exists()
     }
+    snapshot["job_artifacts"] = {
+        item.relative_path.as_posix(): {
+            "artifact_id": item.artifact.artifact_id,
+            "stage": item.artifact.stage.value,
+            "kind": item.artifact.kind,
+            "sha256": _sha256_file(item.source),
+            "bytes": item.source.stat().st_size,
+        }
+        for item in job_artifacts
+    }
     snapshot["database_sidecars"] = _database_sidecars(database)
     return snapshot
 
@@ -572,6 +718,24 @@ def _database_snapshot(database: Path) -> dict[str, object]:
         "database": {"sha256": _sha256_file(database), "bytes": database.stat().st_size},
         "sidecars": _database_sidecars(database),
     }
+
+
+def _require_database_snapshot_matches(database: Path, expected: dict[str, object]) -> None:
+    if _database_snapshot(database) != expected:
+        raise CapsuleIntegrityError(
+            "source database changed after immutable backup; "
+            "a stopped/quiescent source is required"
+        )
+
+
+def _require_source_snapshot_database_matches(
+    snapshot: dict[str, object], database: Path, expected: dict[str, object]
+) -> None:
+    if (
+        snapshot.get(str(database)) != expected.get("database")
+        or snapshot.get("database_sidecars") != expected.get("sidecars")
+    ):
+        raise CapsuleIntegrityError("source snapshot database attribution is inconsistent")
 
 
 def _database_sidecars(database: Path) -> dict[str, dict[str, object]]:
