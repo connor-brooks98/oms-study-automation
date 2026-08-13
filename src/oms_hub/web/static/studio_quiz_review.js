@@ -346,6 +346,12 @@
     restoreRenderState(page, state);
   };
 
+  const applyQuestionSave = (documentRef, page, form, payload) => {
+    const card = form.closest?.("[data-question-id]");
+    if (card) delete card.dataset.dirty;
+    render(documentRef, page, payload);
+  };
+
   const safeJson = async (response) => { try { return await response.json(); } catch (_error) { return {}; } };
 
   const reviewErrorMessage = (payload, fallback) => {
@@ -399,11 +405,13 @@
         message.textContent = "Provide two to eight choices and select the correct answer.";
         return;
       }
+      if (!payload.rationale) {
+        message.textContent = "Provide an answer rationale before saving.";
+        return;
+      }
       try {
-        await send(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/questions/${encodeURIComponent(form.dataset.questionEdit)}`, "PATCH", payload);
-        const card = form.closest?.("[data-question-id]");
-        if (card) delete card.dataset.dirty;
-        await refresh();
+        const updated = await send(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/questions/${encodeURIComponent(form.dataset.questionEdit)}`, "PATCH", payload);
+        applyQuestionSave(documentRef, page, form, updated);
         message.textContent = "Question saved.";
       } catch (error) {
         message.textContent = error instanceof Error ? error.message : "Question could not be saved.";
@@ -464,7 +472,7 @@
     shouldRenderNoCandidateEmpty, normalizedEditPayload,
     candidateSelectionPayload, candidateSelectionUrl, captureRenderState,
     restoreRenderState, reindexChoiceRows, removeChoiceRow, choiceRow,
-    initialize, render, reviewErrorMessage,
+    initialize, render, applyQuestionSave, reviewErrorMessage,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) root.document.addEventListener("DOMContentLoaded", () => initialize(root.document), { once: true });

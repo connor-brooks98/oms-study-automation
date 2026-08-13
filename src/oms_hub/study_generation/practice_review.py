@@ -34,6 +34,18 @@ if TYPE_CHECKING:
 
 _ARTIFACT_KEY = "review:questions"
 
+_MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES = frozenset(
+    {
+        "conflicting-supplied-answers",
+        "duplicate-supplied-answer",
+        "missing-supplied-answer",
+        "notebook-support-not-selected",
+        "supplied-answer-out-of-bounds",
+        "unmatched-question",
+        "unmatched-supplied-answer",
+    }
+)
+
 
 class ReviewArtifactUnavailable(RuntimeError):
     """A direct-import run lost the artifacts required to reconstruct review."""
@@ -391,9 +403,31 @@ class PracticeReviewService:
             or ("correct_index" in values and correct_index != draft.correct_index)
             or ("rationale" in values and rationale != draft.rationale)
         )
+        has_resolvable_answer_diagnostic = any(
+            diagnostic.code in _MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES
+            for diagnostic in draft.diagnostics
+        )
+        manually_resolved_answer = (
+            "correct_index" in values
+            and isinstance(correct_index, int)
+            and has_resolvable_answer_diagnostic
+        )
         requires_verification = (
             draft.verification_required
             or draft.answer_provenance is AnswerProvenance.GENERATED_BY_AI
+        ) and (
+            not manually_resolved_answer
+            or draft.answer_provenance is AnswerProvenance.GENERATED_BY_AI
+        )
+        diagnostics = (
+            tuple(
+                diagnostic
+                for diagnostic in draft.diagnostics
+                if diagnostic.code
+                not in _MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES
+            )
+            if manually_resolved_answer
+            else draft.diagnostics
         )
         updated_draft = replace(
             draft,
@@ -401,9 +435,10 @@ class PracticeReviewService:
             choices=choices,
             correct_index=cast(int | None, correct_index),
             rationale=rationale,
-            answer_provenance=(AnswerProvenance.MANUALLY_CORRECTED if answer_changed else draft.answer_provenance),  # noqa: E501
-            verification_required=(requires_verification if answer_changed else draft.verification_required),  # noqa: E501
-            verified_at=(None if answer_changed else draft.verified_at),
+            answer_provenance=(AnswerProvenance.MANUALLY_CORRECTED if answer_changed or manually_resolved_answer else draft.answer_provenance),  # noqa: E501
+            diagnostics=diagnostics,
+            verification_required=(requires_verification if answer_changed or manually_resolved_answer else draft.verification_required),  # noqa: E501
+            verified_at=(None if answer_changed or manually_resolved_answer else draft.verified_at),  # noqa: E501
         )
         updated = ReviewQuestion(
             updated_draft,
@@ -529,6 +564,18 @@ def _issues(questions: tuple[ReviewQuestion, ...]) -> tuple[ReviewIssue, ...]:
                     "answer",
                     "answer_out_of_range",
                     "correct answer is outside the available choices",
+                    DiagnosticSeverity.BLOCKER,
+                )
+            )
+        if not draft.rationale or not draft.rationale.strip():
+            issues.append(
+                ReviewIssue(
+                    draft.question_id,
+                    draft.original_identifier,
+                    display_label,
+                    "answer",
+                    "missing_rationale",
+                    "answer rationale is missing",
                     DiagnosticSeverity.BLOCKER,
                 )
             )

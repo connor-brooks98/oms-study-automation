@@ -30,6 +30,7 @@ from oms_hub.study_generation.practice_domain import (
     QuizContentKind,
 )
 from oms_hub.study_generation.practice_extraction import ExtractionResult
+from oms_hub.study_generation.practice_matching import pair_supplied_answers
 from oms_hub.study_generation.practice_review import PracticeReviewService
 from oms_hub.study_generation.quiz_images import StudioQuizImageService
 from oms_hub.study_generation.quiz_import_worker import (
@@ -201,7 +202,132 @@ def test_missing_answer_is_not_mislabeled_as_ai_generated(tmp_path: Path) -> Non
     blockers = service.blockers("run-1")
 
     assert "q1: answer is missing" in blockers
+    assert "q1: answer rationale is missing" in blockers
     assert "q1: AI-generated answer requires verification" not in blockers
+
+
+@pytest.mark.parametrize(
+    "content_kind",
+    [QuizContentKind.EXAM_REVIEW, QuizContentKind.PRACTICE_QUESTIONS],
+)
+def test_manual_answer_save_clears_import_blockers_and_can_publish(
+    tmp_path: Path,
+    content_kind: QuizContentKind,
+) -> None:
+    service = _service(tmp_path)
+    extracted = ExtractedQuestion(
+        original_identifier="1",
+        stem="What is correct?",
+        choices=("A", "B"),
+        supplied_correct_index=None,
+        rationale=None,
+        source_segments=(
+            SegmentCitation(
+                source_id="source",
+                segment_key="question-1",
+            ),
+        ),
+        candidate_assets=(),
+        confidence=0.8,
+    )
+    draft = pair_supplied_answers((extracted,), ())[0]
+    service.store("run-1", (draft,))
+    with service.repository.database.session() as session:
+        run = session.get(StudioRunModel, "run-1")
+        assert run is not None
+        run.content_kind = content_kind.value
+
+    assert "question-1-1: answer is missing" in service.blockers("run-1")
+    updated = service.update_question(
+        "run-1",
+        "question-1-1",
+        {
+            "choices": ["A", "B", "C"],
+            "correct_index": 2,
+            "rationale": "Choice C is correct.",
+        },
+    )
+
+    assert updated.draft.correct_index == 2
+    assert updated.draft.rationale == "Choice C is correct."
+    assert updated.answer_provenance is AnswerProvenance.MANUALLY_CORRECTED
+    assert updated.verification_required is False
+    assert updated.draft.diagnostics == ()
+    assert service.question("run-1", "question-1-1") == updated
+    assert service.blockers("run-1") == ()
+
+    publisher = GenerationRepository(
+        service.repository.database,
+        practice_review=service,
+    )
+    published = publisher.publish_reviewed_studio_quiz("run-1")
+    assert published.content_kind == content_kind.value
+
+
+def test_resaving_legacy_manual_answer_clears_stale_conflict_blocker(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    legacy = replace(
+        _draft("question-18-18", generated=False),
+        original_identifier="18",
+        correct_index=1,
+        answer_provenance=AnswerProvenance.MANUALLY_CORRECTED,
+        diagnostics=(
+            DraftDiagnostic(
+                "duplicate-supplied-answer",
+                "conflicting supplied answers",
+                DiagnosticSeverity.BLOCKER,
+            ),
+        ),
+        verification_required=True,
+        verified_at="2026-08-13T14:25:53+00:00",
+    )
+    service.store("run-1", (legacy,))
+
+    assert service.blockers("run-1") == (
+        "question-18-18: conflicting supplied answers",
+    )
+    updated = service.update_question(
+        "run-1",
+        "question-18-18",
+        {
+            "choices": list(legacy.choices),
+            "correct_index": 1,
+            "rationale": legacy.rationale,
+        },
+    )
+
+    assert updated.answer_provenance is AnswerProvenance.MANUALLY_CORRECTED
+    assert updated.draft.diagnostics == ()
+    assert updated.verification_required is False
+    assert updated.verified_at is None
+    assert service.blockers("run-1") == ()
+
+
+def test_resolving_import_diagnostic_does_not_bypass_ai_verification(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    draft = replace(
+        _draft("q1", generated=True),
+        diagnostics=(
+            DraftDiagnostic(
+                "missing-supplied-answer",
+                "supplied answer is missing",
+                DiagnosticSeverity.BLOCKER,
+            ),
+        ),
+    )
+    service.store("run-1", (draft,))
+
+    updated = service.update_question("run-1", "q1", {"correct_index": 1})
+
+    assert updated.draft.diagnostics == ()
+    assert updated.verification_required is True
+    assert service.blockers("run-1") == (
+        "q1: AI-generated answer requires verification",
+    )
 
 
 def test_structured_issues_keep_warnings_non_blocking_and_deduplicate(tmp_path: Path) -> None:

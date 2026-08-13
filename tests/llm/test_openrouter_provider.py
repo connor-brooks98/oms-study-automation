@@ -78,6 +78,100 @@ def test_openrouter_connection_test_uses_a_real_minimal_generation():
     assert route.calls.call_count == 1
     payload = json.loads(route.calls.last.request.content)
     assert payload["max_tokens"] == 16
+    assert payload["reasoning"] == {"effort": "none"}
+
+
+@pytest.mark.parametrize(
+    ("error_type", "expected_source"),
+    [
+        ("authentication", DiagnosticSource.AUTHENTICATION),
+        ("model_not_found", DiagnosticSource.MODEL),
+        ("invalid_request", DiagnosticSource.REQUEST),
+        ("rate_limit_exceeded", DiagnosticSource.QUOTA),
+        ("provider_unavailable", DiagnosticSource.SERVICE),
+    ],
+)
+@respx.mock
+def test_openrouter_classifies_embedded_errors_in_success_responses(
+    error_type,
+    expected_source,
+):
+    respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "gen-embedded-error",
+                "error": {
+                    "code": 502,
+                    "message": "sensitive upstream details",
+                    "metadata": {"error_type": error_type},
+                },
+            },
+        )
+    )
+
+    with pytest.raises(LLMRequestError) as raised:
+        OpenRouterProvider().test_connection("sentinel-secret", "model-a")
+
+    assert raised.value.source is expected_source
+    assert raised.value.http_status == 200
+    assert raised.value.provider_request_id == "gen-embedded-error"
+    assert "sensitive upstream details" not in str(raised.value)
+    assert "sentinel-secret" not in str(raised.value)
+
+
+@respx.mock
+def test_openrouter_classifies_choice_error_and_captures_generation_header():
+    respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            headers={"x-generation-id": "gen-from-header"},
+            json={
+                "choices": [
+                    {
+                        "message": {"content": ""},
+                        "finish_reason": "error",
+                        "error": {
+                            "code": 502,
+                            "message": "provider disconnected",
+                            "metadata": {"error_type": "provider_unavailable"},
+                        },
+                    }
+                ],
+            },
+        )
+    )
+
+    with pytest.raises(LLMRequestError) as raised:
+        OpenRouterProvider().test_connection("sentinel-secret", "model-a")
+
+    assert raised.value.source is DiagnosticSource.SERVICE
+    assert raised.value.provider_request_id == "gen-from-header"
+    assert "provider disconnected" not in str(raised.value)
+
+
+@respx.mock
+def test_openrouter_reports_empty_length_limited_response_as_request_failure():
+    respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "gen-length",
+                "choices": [
+                    {"message": {"content": ""}, "finish_reason": "length"}
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 16},
+            },
+        )
+    )
+
+    with pytest.raises(LLMRequestError) as raised:
+        OpenRouterProvider().test_connection("sentinel-secret", "model-a")
+
+    assert raised.value.source is DiagnosticSource.REQUEST
+    assert raised.value.http_status == 200
+    assert raised.value.provider_request_id == "gen-length"
+    assert str(raised.value) == "Openrouter exhausted the output token limit"
 
 
 @respx.mock

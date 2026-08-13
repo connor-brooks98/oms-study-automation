@@ -10,6 +10,7 @@ import httpx
 from oms_hub.llm.domain import (
     DEFAULT_GENERATION_OPTIONS,
     CleanResult,
+    DiagnosticSource,
     GeneratedText,
     GenerationOptions,
     LLMRequestError,
@@ -43,6 +44,28 @@ if TYPE_CHECKING:
 OPENROUTER_API_KEY_SECRET = "openrouter-api-key"
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+_OPENROUTER_ERROR_SOURCES = {
+    "authentication": DiagnosticSource.AUTHENTICATION,
+    "permission_denied": DiagnosticSource.AUTHENTICATION,
+    "model_not_found": DiagnosticSource.MODEL,
+    "invalid_request": DiagnosticSource.REQUEST,
+    "invalid_prompt": DiagnosticSource.REQUEST,
+    "context_length_exceeded": DiagnosticSource.REQUEST,
+    "max_tokens_exceeded": DiagnosticSource.REQUEST,
+    "token_limit_exceeded": DiagnosticSource.REQUEST,
+    "string_too_long": DiagnosticSource.REQUEST,
+    "rate_limit_exceeded": DiagnosticSource.QUOTA,
+    "insufficient_credits": DiagnosticSource.QUOTA,
+}
+
+_OPENROUTER_ERROR_MESSAGES = {
+    DiagnosticSource.AUTHENTICATION: "Openrouter rejected the credential",
+    DiagnosticSource.MODEL: "Openrouter rejected the selected model",
+    DiagnosticSource.REQUEST: "Openrouter rejected the request",
+    DiagnosticSource.QUOTA: "Openrouter reported a quota or rate limit",
+    DiagnosticSource.SERVICE: "Openrouter could not complete the generation",
+}
 
 
 class OpenRouterProvider:
@@ -94,6 +117,7 @@ class OpenRouterProvider:
             "Reply with exactly OK.",
             output_schema=None,
             max_tokens=16,
+            reasoning_effort="none",
         )
         result = self._clean_result(response, model)
         return ProviderConnection(self.name, result.model, result.request_id)
@@ -140,6 +164,7 @@ class OpenRouterProvider:
         *,
         output_schema: dict[str, object] | None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
         options: GenerationOptions = DEFAULT_GENERATION_OPTIONS,
     ) -> httpx.Response:
         require_supported_generation_options(self.name, self.capabilities, options)
@@ -155,6 +180,8 @@ class OpenRouterProvider:
         }
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+        if reasoning_effort is not None:
+            payload["reasoning"] = {"effort": reasoning_effort}
         if output_schema is not None:
             payload["response_format"] = {
                 "type": "json_schema",
@@ -194,6 +221,7 @@ class OpenRouterProvider:
         requested_model: str,
     ) -> GeneratedText:
         payload = response_object(response, self.name)
+        self._raise_for_embedded_error(payload, response)
         choices = payload.get("choices")
         usage = payload.get("usage")
         if not isinstance(choices, list) or not isinstance(usage, dict):
@@ -210,6 +238,18 @@ class OpenRouterProvider:
                 text_parts.append(value)
         cleaned = "".join(text_parts).strip()
         if not cleaned:
+            finish_reasons = {
+                choice.get("finish_reason")
+                for choice in choices
+                if isinstance(choice, dict)
+            }
+            if "length" in finish_reasons:
+                raise LLMRequestError(
+                    "Openrouter exhausted the output token limit",
+                    source=DiagnosticSource.REQUEST,
+                    http_status=response.status_code,
+                    provider_request_id=self._request_id(payload, response),
+                )
             raise invalid_response(self.name, response)
         input_tokens = token_count(
             usage.get("prompt_tokens"),
@@ -221,9 +261,7 @@ class OpenRouterProvider:
             self.name,
             response,
         )
-        request_id = payload.get("id")
-        if not isinstance(request_id, str) or not request_id:
-            request_id = safe_request_id(response) or ""
+        request_id = self._request_id(payload, response) or ""
         returned_model = payload.get("model", requested_model)
         if not isinstance(returned_model, str) or not returned_model:
             raise invalid_response(self.name, response)
@@ -241,6 +279,53 @@ class OpenRouterProvider:
                 self.output_usd_per_million,
             ),
         )
+
+    def _raise_for_embedded_error(
+        self,
+        payload: dict[str, Any],
+        response: httpx.Response,
+    ) -> None:
+        error = payload.get("error")
+        if not isinstance(error, dict):
+            choices = payload.get("choices")
+            if isinstance(choices, list):
+                error = next(
+                    (
+                        choice.get("error")
+                        for choice in choices
+                        if isinstance(choice, dict)
+                        and isinstance(choice.get("error"), dict)
+                    ),
+                    None,
+                )
+        if not isinstance(error, dict):
+            return
+
+        metadata = error.get("metadata")
+        error_type = error.get("error_type") or error.get("type")
+        if isinstance(metadata, dict):
+            error_type = metadata.get("error_type", error_type)
+        normalized_type = error_type if isinstance(error_type, str) else ""
+        source = _OPENROUTER_ERROR_SOURCES.get(
+            normalized_type.lower(),
+            DiagnosticSource.SERVICE,
+        )
+        raise LLMRequestError(
+            _OPENROUTER_ERROR_MESSAGES[source],
+            source=source,
+            http_status=response.status_code,
+            provider_request_id=self._request_id(payload, response),
+        )
+
+    @staticmethod
+    def _request_id(
+        payload: dict[str, Any],
+        response: httpx.Response,
+    ) -> str | None:
+        request_id = payload.get("id")
+        if isinstance(request_id, str) and request_id:
+            return request_id[:200]
+        return safe_request_id(response)
 
 
 class AccuracyGateError(ValueError):
