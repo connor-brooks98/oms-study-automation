@@ -165,7 +165,12 @@ def invalid_response(
 
 
 def safe_request_id(response: httpx.Response) -> str | None:
-    for header in ("request-id", "x-request-id", "x-goog-request-id"):
+    for header in (
+        "request-id",
+        "x-request-id",
+        "x-goog-request-id",
+        "x-generation-id",
+    ):
         value = response.headers.get(header)
         if value:
             return str(value)[:200]
