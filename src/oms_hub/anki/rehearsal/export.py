@@ -143,6 +143,9 @@ def export_capsule(
                     "schema_version": 1,
                     "consistency": "component-stable; no cross-resource atomicity claimed",
                     "database_export": "job-scoped-allowlist",
+                    "database_sidecar_state": _classify_database_sidecars(
+                        before["database_sidecars"]
+                    ),
                     "credentials_exported": False,
                     "components": before,
                 },
@@ -318,10 +321,10 @@ def _copy_verified_file(source: Path, destination: Path) -> None:
 
 def _online_backup(source: Path, destination: Path) -> None:
     """Make a WAL-aware logical SQLite snapshot without modifying the source."""
-    # Quiescence has already rejected WAL/SHM sidecars.  ``immutable=1`` then
-    # prevents SQLite from recreating empty sidecars merely by opening a
-    # stopped WAL-mode database, while the backup API still produces a logical
-    # snapshot rather than a filesystem copy.
+    # The native wrapper proves its bounded A0 process set is stopped; this
+    # exporter independently proves the database/sidecar tuple stays still.
+    # ``immutable=1`` ignores the only accepted inert tuple (zero-byte WAL
+    # plus stable SHM) and prevents SQLite from creating or modifying sidecars.
     source_uri = f"file:{source.resolve().as_posix()}?mode=ro&immutable=1"
     with closing(sqlite3.connect(source_uri, uri=True)) as reader:
         with closing(sqlite3.connect(destination)) as writer:
@@ -584,22 +587,38 @@ def _database_sidecars(database: Path) -> dict[str, dict[str, object]]:
 
 
 def _require_quiescent_database_snapshot(snapshot: dict[str, object]) -> None:
-    # A live WAL means the DB image and its log must be read as one changing
-    # unit.  This exporter deliberately does not checkpoint or otherwise write
-    # the production source, so the operator must first stop/quiesce it.
+    # This exporter deliberately does not checkpoint or otherwise write the
+    # production source. Process quiescence is a native-wrapper trust boundary;
+    # here we only admit an absent tuple or a stable inert zero-WAL tuple.
     sidecars = snapshot.get("sidecars")
     if not isinstance(sidecars, dict):
         raise CapsuleIntegrityError("source database snapshot is malformed")
-    active = [
-        suffix
-        for suffix in ("-wal", "-shm")
-        if isinstance(sidecars.get(suffix), dict) and sidecars[suffix].get("present") is True
-    ]
-    if active:
-        raise CapsuleIntegrityError(
-            "source database is not quiescent; stop Hub and checkpoint/remove "
-            "WAL sidecars before export"
-        )
+    _classify_database_sidecars(sidecars)
+
+
+def _classify_database_sidecars(sidecars: object) -> str:
+    """Accept only no sidecars or the observed inert zero-WAL/SHM tuple."""
+    if not isinstance(sidecars, dict):
+        raise CapsuleIntegrityError("source database snapshot is malformed")
+    wal = sidecars.get("-wal")
+    shm = sidecars.get("-shm")
+    if not isinstance(wal, dict) or not isinstance(shm, dict):
+        raise CapsuleIntegrityError("source database snapshot is malformed")
+    wal_present = wal.get("present") is True
+    shm_present = shm.get("present") is True
+    if not wal_present and not shm_present:
+        return "absent"
+    if wal_present and (
+        wal.get("bytes") != 0 or wal.get("sha256") != hashlib.sha256(b"").hexdigest()
+    ):
+        raise CapsuleIntegrityError("source database WAL is not inert")
+    if not wal_present or not shm_present:
+        raise CapsuleIntegrityError("source database sidecars are not the inert zero-WAL tuple")
+    if not isinstance(shm.get("bytes"), int) or shm["bytes"] < 0 or not isinstance(
+        shm.get("sha256"), str
+    ):
+        raise CapsuleIntegrityError("source database SHM sidecar is malformed")
+    return "inert_zero_wal_with_shm"
 
 
 def _verify_git_identity(repository: Path, commit: str, tree: str) -> None:

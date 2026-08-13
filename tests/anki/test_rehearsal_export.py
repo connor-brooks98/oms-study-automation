@@ -503,8 +503,65 @@ def test_export_rejects_wal_created_during_immutable_backup(
         Path(str(source) + "-wal").write_bytes(b"appeared-during-backup")
 
     monkeypatch.setattr("oms_hub.anki.rehearsal.export._online_backup", race)
-    with pytest.raises(CapsuleIntegrityError, match="not quiescent"):
+    with pytest.raises(CapsuleIntegrityError, match="WAL is not inert"):
         _export(fixture, tmp_path / "racy-capsule")
+
+
+def _write_inert_database_sidecars(database: Path) -> tuple[Path, Path]:
+    wal = Path(str(database) + "-wal")
+    shm = Path(str(database) + "-shm")
+    wal.write_bytes(b"")
+    shm.write_bytes(b"inert-shm" * 4096)
+    return wal, shm
+
+
+def test_export_accepts_stable_inert_zero_wal_with_shm_and_records_provenance(
+    tmp_path: Path,
+) -> None:
+    fixture = _failed_job_fixture(tmp_path)
+    wal, shm = _write_inert_database_sidecars(fixture["database"])  # type: ignore[arg-type]
+    before = {path: _sha256(path) for path in (wal, shm)}
+    capsule = _export(fixture, tmp_path / "inert-sidecars-capsule")
+    snapshot = json.loads((capsule / "source-snapshot.json").read_text(encoding="utf-8"))
+    sidecars = snapshot["components"]["database_sidecars"]
+    assert snapshot["database_sidecar_state"] == "inert_zero_wal_with_shm"
+    assert sidecars["-wal"] == {"present": True, "bytes": 0, "sha256": _sha256(wal)}
+    assert sidecars["-shm"] == {
+        "present": True,
+        "bytes": shm.stat().st_size,
+        "sha256": _sha256(shm),
+    }
+    assert {path: _sha256(path) for path in (wal, shm)} == before
+
+
+def test_export_rejects_nonzero_wal_and_shm_without_zero_wal(tmp_path: Path) -> None:
+    live = _failed_job_fixture(tmp_path / "live")
+    wal = Path(str(live["database"]) + "-wal")  # type: ignore[arg-type]
+    shm = Path(str(live["database"]) + "-shm")  # type: ignore[arg-type]
+    wal.write_bytes(b"active")
+    shm.write_bytes(b"shm")
+    with pytest.raises(CapsuleIntegrityError, match="WAL is not inert"):
+        _export(live, tmp_path / "live-capsule")
+
+    shm_only = _failed_job_fixture(tmp_path / "shm-only")
+    Path(str(shm_only["database"]) + "-shm").write_bytes(b"shm")  # type: ignore[arg-type]
+    with pytest.raises(CapsuleIntegrityError, match="not the inert zero-WAL tuple"):
+        _export(shm_only, tmp_path / "shm-only-capsule")
+
+
+def test_export_rejects_inert_sidecar_change_during_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _failed_job_fixture(tmp_path)
+    _wal, shm = _write_inert_database_sidecars(fixture["database"])  # type: ignore[arg-type]
+
+    def race(source: Path, destination: Path) -> None:
+        _online_backup(source, destination)
+        shm.write_bytes(b"changed-shm" * 4096)
+
+    monkeypatch.setattr("oms_hub.anki.rehearsal.export._online_backup", race)
+    with pytest.raises(CapsuleIntegrityError, match="source database changed"):
+        _export(fixture, tmp_path / "racy-inert-sidecars-capsule")
 
 
 def test_export_refuses_nonfailed_job_dirty_git_and_existing_destination(tmp_path: Path) -> None:
@@ -568,7 +625,7 @@ def test_export_refuses_live_wal_source_before_creating_a_capsule(tmp_path: Path
     fixture = _failed_job_fixture(tmp_path)
     wal = Path(str(fixture["database"]) + "-wal")
     wal.write_bytes(b"active")
-    with pytest.raises(CapsuleIntegrityError, match="not quiescent"):
+    with pytest.raises(CapsuleIntegrityError, match="WAL is not inert"):
         _export(fixture, tmp_path / "live-wal-capsule")
 
 
@@ -610,6 +667,32 @@ def test_powershell_wrapper_keeps_frozen_checkout_separate_and_has_refusal_contr
     assert source.index("$ToolGit = Assert-CleanGitIdentity") < source.index("$ImportProbe =")
     assert "$Prefix = $ResolvedRoot.TrimEnd" in source
     assert ".StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase)" in source
+    assert "Get-DatabaseSidecarSnapshot" in source
+    assert "Assert-InertDatabaseSidecars" in source
+    assert "inert_zero_wal_with_shm" in source
+    assert "database_sidecars = $InitialDatabaseSidecars" in source
+    assert source.index("The bounded A0 source process set is not quiescent") < source.index(
+        "$InitialDatabaseSidecars = Get-DatabaseSidecarSnapshot"
+    )
+    assert "checkpoint/remove" not in source
+
+
+def test_powershell_wrapper_stages_before_final_sidecar_proof_and_cleans_its_outputs() -> None:
+    """Keep the native-only publication transaction auditable without PowerShell."""
+    wrapper = Path(__file__).parents[2] / "scripts" / "export-a0-rehearsal-capsule.ps1"
+    source = wrapper.read_text(encoding="utf-8")
+    assert "$StagingToken = [Guid]::NewGuid().ToString('N')" in source
+    assert "--destination $StagingCapsule" in source
+    assert "[IO.Directory]::Move($StagingCapsule, $Capsule)" in source
+    assert "[IO.File]::Move($StagingArchive, $Archive)" in source
+    assert "[IO.File]::Move($StagingSummary, $Summary)" in source
+    assert source.index("--destination $StagingCapsule") < source.index(
+        "$FinalDatabaseSidecars = Get-DatabaseSidecarSnapshot"
+    ) < source.index("[IO.Directory]::Move($StagingCapsule, $Capsule)")
+    assert "function Remove-StagingExportPath" in source
+    assert "function Remove-ReadonlyExportPath" in source
+    assert "$PrimaryError.Exception.Data['capsule_cleanup_failure']" in source
+    assert "Refusing to overwrite prior capsule output" in source
 
 
 def test_isolated_python_bootstrap_imports_only_the_explicit_tool_source(tmp_path: Path) -> None:
