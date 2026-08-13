@@ -30,9 +30,9 @@ def test_shared_stylesheet_is_the_approved_blue_workbench_source() -> None:
 
 def test_stylesheet_order_and_system_font_contract() -> None:
     base = source("base.html")
-    assert base.index('href="/static/reset.css"') < base.index('href="/static/tokens.css"')
-    assert base.index('href="/static/tokens.css"') < base.index('href="/static/study-hub.css"')
-    assert base.index('href="/static/study-hub.css"') < base.index('href="/static/app.css')
+    assert base.index('href="/static/reset.css?') < base.index('href="/static/tokens.css?')
+    assert base.index('href="/static/tokens.css?') < base.index('href="/static/study-hub.css?')
+    assert base.index('href="/static/study-hub.css?') < base.index('href="/static/app.css?')
     assert '<body class="sh-app">' in base
 
     for name, page_css in (
@@ -46,6 +46,17 @@ def test_stylesheet_order_and_system_font_contract() -> None:
             template.index("reset.css") < template.index("study-hub.css") < template.index(page_css)
         )
         assert 'class="sh-app' in template or '<body class="sh-app"' in template
+
+
+def test_private_shell_stylesheets_share_one_release_version() -> None:
+    base = source("base.html")
+
+    assert '{% set shell_asset_version = "20260813.1" %}' in base
+    for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
+        assert (
+            f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'
+            in base
+        )
 
 
 def test_private_shell_uses_approved_navigation_and_dialog_contracts() -> None:

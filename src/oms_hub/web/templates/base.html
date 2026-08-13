@@ -8,10 +8,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/reset.css">
-  <link rel="stylesheet" href="/static/tokens.css">
-  <link rel="stylesheet" href="/static/study-hub.css">
-  <link rel="stylesheet" href="/static/app.css?v=20260812.2">
+  {% set shell_asset_version = "20260813.1" %}
+  <link rel="stylesheet" href="/static/reset.css?v={{ shell_asset_version }}">
+  <link rel="stylesheet" href="/static/tokens.css?v={{ shell_asset_version }}">
+  <link rel="stylesheet" href="/static/study-hub.css?v={{ shell_asset_version }}">
+  <link rel="stylesheet" href="/static/app.css?v={{ shell_asset_version }}">
   <script src="/static/study_hub_shell.js?v=20260812.2" defer></script>
 </head>
 <body class="sh-app">
