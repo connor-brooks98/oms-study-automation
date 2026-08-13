@@ -175,11 +175,16 @@ test("review UI uses DOM text nodes rather than untrusted HTML injection", () =>
     "src/oms_hub/web/static/studio_quiz_review.js",
     "utf8",
   );
+  const template = fs.readFileSync(
+    "src/oms_hub/web/templates/studio_quiz_review.html",
+    "utf8",
+  );
   assert.equal(source.includes("innerHTML"), false);
   assert.match(source, /textContent/);
   assert.match(source, /X-CSRF-Token/);
   assert.match(source, /"PATCH"/);
   assert.match(source, /Provide an answer rationale before saving\./);
+  assert.match(template, /studio_quiz_review\.js\?v=[0-9.]+/);
 });
 
 test("issue disclosures and keyed focus survive a clean review refresh", () => {

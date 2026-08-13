@@ -403,15 +403,22 @@ class PracticeReviewService:
             or ("correct_index" in values and correct_index != draft.correct_index)
             or ("rationale" in values and rationale != draft.rationale)
         )
+        has_resolvable_answer_diagnostic = any(
+            diagnostic.code in _MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES
+            for diagnostic in draft.diagnostics
+        )
         manually_resolved_answer = (
-            answer_changed
-            and draft.correct_index is None
+            "correct_index" in values
             and isinstance(correct_index, int)
+            and has_resolvable_answer_diagnostic
         )
         requires_verification = (
             draft.verification_required
             or draft.answer_provenance is AnswerProvenance.GENERATED_BY_AI
-        ) and not manually_resolved_answer
+        ) and (
+            not manually_resolved_answer
+            or draft.answer_provenance is AnswerProvenance.GENERATED_BY_AI
+        )
         diagnostics = (
             tuple(
                 diagnostic
@@ -428,10 +435,10 @@ class PracticeReviewService:
             choices=choices,
             correct_index=cast(int | None, correct_index),
             rationale=rationale,
-            answer_provenance=(AnswerProvenance.MANUALLY_CORRECTED if answer_changed else draft.answer_provenance),  # noqa: E501
+            answer_provenance=(AnswerProvenance.MANUALLY_CORRECTED if answer_changed or manually_resolved_answer else draft.answer_provenance),  # noqa: E501
             diagnostics=diagnostics,
-            verification_required=(requires_verification if answer_changed else draft.verification_required),  # noqa: E501
-            verified_at=(None if answer_changed else draft.verified_at),
+            verification_required=(requires_verification if answer_changed or manually_resolved_answer else draft.verification_required),  # noqa: E501
+            verified_at=(None if answer_changed or manually_resolved_answer else draft.verified_at),  # noqa: E501
         )
         updated = ReviewQuestion(
             updated_draft,
