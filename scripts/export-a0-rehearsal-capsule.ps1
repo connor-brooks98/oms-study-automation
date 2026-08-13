@@ -79,8 +79,17 @@ $ToolGit = Assert-CleanGitIdentity $ResolvedToolRepository $ExpectedToolCommit $
 # ``-S`` is intentionally not added: this exporter needs the selected
 # interpreter's installed third-party dependencies, while ``-I`` provides the
 # ambient-import isolation required at this boundary.
+# Windows PowerShell 5.1 re-parses native-command arguments and can strip
+# quotes embedded in a raw ``-c`` payload. The bootstrap itself is ASCII-only;
+# the actual code crosses the native boundary as UTF-8 Base64, never as a raw
+# Python argument. ``exec`` accepts UTF-8 source bytes on supported Python.
+$EncodedPythonBootstrap = 'import base64,sys;exec(base64.b64decode(sys.argv.pop(1)))'
+function Invoke-EncodedIsolatedPython([string]$Code, [string[]]$Arguments) {
+    $EncodedCode = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Code))
+    & $Python -I -c $EncodedPythonBootstrap $EncodedCode @Arguments
+}
 $ImportProbe = 'import hashlib,json,pathlib,sys; source=pathlib.Path(sys.argv[1]).resolve(); sys.path.insert(0,str(source)); import oms_hub; from oms_hub.anki.rehearsal import export; package=pathlib.Path(oms_hub.__file__).resolve(); module=pathlib.Path(export.__file__).resolve(); print(json.dumps({"python":sys.executable,"tool_source":str(source),"oms_hub":str(package),"export":str(module),"oms_hub_sha256":hashlib.sha256(package.read_bytes()).hexdigest(),"export_sha256":hashlib.sha256(module.read_bytes()).hexdigest()},sort_keys=True))'
-$ImportOrigin = & $Python -I -c $ImportProbe $ResolvedToolSource
+$ImportOrigin = Invoke-EncodedIsolatedPython $ImportProbe @($ResolvedToolSource)
 if ($LASTEXITCODE -ne 0) { throw "Trusted isolated Python cannot import the verified tool implementation" }
 $ImportOriginDocument = $ImportOrigin | ConvertFrom-Json
 $VerifiedPackageOrigin = Assert-ResolvedDescendant ([string]$ImportOriginDocument.oms_hub) $ResolvedToolSource "Trusted Python oms_hub package"
@@ -186,18 +195,20 @@ try {
     Push-Location $ResolvedToolRepository
     try {
         $RunVerifiedExporter = 'import pathlib,runpy,sys; source=pathlib.Path(sys.argv[1]).resolve(); sys.path.insert(0,str(source)); del sys.argv[1]; runpy.run_module("oms_hub.anki.rehearsal.export",run_name="__main__")'
-        & $Python -I -c $RunVerifiedExporter $ResolvedToolSource `
-            --repository $FrozenRepository `
-            --database $Database `
-            --anki-root $AnkiRoot `
-            --job-id $JobId `
-            --destination $StagingCapsule `
-            --source-root "a0data=$A0Data" `
-            --source-root "repository=$FrozenRepository" `
-            --commit $ExpectedFrozenCommit `
-            --tree $ExpectedFrozenTree `
-            --expected-companion-count 28258 `
-            --expected-semantic-count 28257
+        Invoke-EncodedIsolatedPython $RunVerifiedExporter @(
+            $ResolvedToolSource,
+            '--repository', $FrozenRepository,
+            '--database', $Database,
+            '--anki-root', $AnkiRoot,
+            '--job-id', $JobId,
+            '--destination', $StagingCapsule,
+            '--source-root', "a0data=$A0Data",
+            '--source-root', "repository=$FrozenRepository",
+            '--commit', $ExpectedFrozenCommit,
+            '--tree', $ExpectedFrozenTree,
+            '--expected-companion-count', '28258',
+            '--expected-semantic-count', '28257'
+        )
         if ($LASTEXITCODE -ne 0) {
             throw "Capsule exporter failed with exit code $LASTEXITCODE"
         }
@@ -215,7 +226,7 @@ try {
     }
 
     $ZipCode = 'from pathlib import Path; import sys; source=Path(sys.argv[1]).resolve(); sys.path.insert(0,str(source)); del sys.argv[1]; from oms_hub.anki.rehearsal.capsule import write_deterministic_capsule_zip; write_deterministic_capsule_zip(Path(sys.argv[1]), Path(sys.argv[2]))'
-    & $Python -I -c $ZipCode $ResolvedToolSource $StagingCapsule $StagingArchive
+    Invoke-EncodedIsolatedPython $ZipCode @($ResolvedToolSource, $StagingCapsule, $StagingArchive)
     if ($LASTEXITCODE -ne 0) { throw "Deterministic capsule ZIP write/verification failed" }
     $ArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $StagingArchive).Hash.ToLowerInvariant()
     $ManifestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $StagingCapsule "capsule.json")).Hash.ToLowerInvariant()

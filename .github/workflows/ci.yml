@@ -123,6 +123,28 @@ jobs:
             throw "Capsule export source contract is missing: $($missing -join ', ')"
           }
 
+      - name: Smoke PowerShell Base64 Python transport
+        shell: powershell
+        run: |
+          $python = (Resolve-Path ".\.venv\Scripts\python.exe").Path
+          $bootstrap = 'import base64,sys;exec(base64.b64decode(sys.argv.pop(1)))'
+          function Invoke-EncodedIsolatedPython([string]$Code, [string[]]$Arguments) {
+            $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Code))
+            & $python -I -c $bootstrap $encoded @Arguments
+          }
+          $code = 'import json,sys; print(json.dumps({"argument":sys.argv[1],"quoted":"yes"}))'
+          $output = @(Invoke-EncodedIsolatedPython $code @('argument with spaces'))
+          if ($LASTEXITCODE -ne 0) {
+            throw "Base64 Python transport smoke failed with exit code $LASTEXITCODE"
+          }
+          if ($output.Count -ne 1) {
+            throw "Base64 Python transport smoke emitted unexpected output"
+          }
+          $document = $output[0] | ConvertFrom-Json
+          if ($document.quoted -ne 'yes' -or $document.argument -ne 'argument with spaces') {
+            throw "Base64 Python transport smoke did not preserve quoted code and arguments"
+          }
+
       - name: Lint rehearsal sources
         shell: powershell
         run: |

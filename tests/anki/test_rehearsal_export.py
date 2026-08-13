@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -644,7 +645,7 @@ def test_powershell_wrapper_keeps_frozen_checkout_separate_and_has_refusal_contr
     source = wrapper.read_text(encoding="utf-8")
     assert "Set-StrictMode -Version Latest" in source
     assert "$FrozenRepository" in source and "$ToolRepository" in source
-    assert "--repository $FrozenRepository" in source
+    assert "'--repository', $FrozenRepository" in source
     assert "Push-Location $ResolvedToolRepository" in source
     assert "Refusing to overwrite prior capsule output" in source
     assert "status --porcelain" in source
@@ -657,8 +658,21 @@ def test_powershell_wrapper_keeps_frozen_checkout_separate_and_has_refusal_contr
         "TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)"
         in source
     )
-    assert "$Python -I -c $ImportProbe $ResolvedToolSource" in source
-    assert "$Python -I -c $RunVerifiedExporter $ResolvedToolSource" in source
+    assert (
+        "$EncodedPythonBootstrap = 'import base64,sys;exec(base64.b64decode(sys.argv.pop(1)))'"
+        in source
+    )
+    assert "[Text.Encoding]::UTF8.GetBytes($Code)" in source
+    assert "& $Python -I -c $EncodedPythonBootstrap $EncodedCode @Arguments" in source
+    assert "Invoke-EncodedIsolatedPython $ImportProbe @($ResolvedToolSource)" in source
+    assert "Invoke-EncodedIsolatedPython $RunVerifiedExporter @(" in source
+    assert (
+        "Invoke-EncodedIsolatedPython $ZipCode "
+        "@($ResolvedToolSource, $StagingCapsule, $StagingArchive)" in source
+    )
+    assert "$Python -I -c $ImportProbe" not in source
+    assert "$Python -I -c $RunVerifiedExporter" not in source
+    assert "$Python -I -c $ZipCode" not in source
     assert "runpy.run_module" in source
     assert "verified_python_package_origin" in source
     assert "verified_python_export_origin" in source
@@ -677,16 +691,35 @@ def test_powershell_wrapper_keeps_frozen_checkout_separate_and_has_refusal_contr
     assert "checkpoint/remove" not in source
 
 
+def test_base64_python_bootstrap_preserves_quotes_and_arguments() -> None:
+    code = 'import json,sys; print(json.dumps({"argument":sys.argv[1],"quoted":"yes"}))'
+    encoded = base64.b64encode(code.encode("utf-8")).decode("ascii")
+    completed = subprocess.run(
+        [
+            str(Path(sys._base_executable).resolve()),
+            "-I",
+            "-c",
+            "import base64,sys;exec(base64.b64decode(sys.argv.pop(1)))",
+            encoded,
+            "argument with spaces",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(completed.stdout) == {"argument": "argument with spaces", "quoted": "yes"}
+
+
 def test_powershell_wrapper_stages_before_final_sidecar_proof_and_cleans_its_outputs() -> None:
     """Keep the native-only publication transaction auditable without PowerShell."""
     wrapper = Path(__file__).parents[2] / "scripts" / "export-a0-rehearsal-capsule.ps1"
     source = wrapper.read_text(encoding="utf-8")
     assert "$StagingToken = [Guid]::NewGuid().ToString('N')" in source
-    assert "--destination $StagingCapsule" in source
+    assert "'--destination', $StagingCapsule" in source
     assert "[IO.Directory]::Move($StagingCapsule, $Capsule)" in source
     assert "[IO.File]::Move($StagingArchive, $Archive)" in source
     assert "[IO.File]::Move($StagingSummary, $Summary)" in source
-    assert source.index("--destination $StagingCapsule") < source.index(
+    assert source.index("'--destination', $StagingCapsule") < source.index(
         "$FinalDatabaseSidecars = Get-DatabaseSidecarSnapshot"
     ) < source.index("[IO.Directory]::Move($StagingCapsule, $Capsule)")
     assert "function Remove-StagingExportPath" in source
