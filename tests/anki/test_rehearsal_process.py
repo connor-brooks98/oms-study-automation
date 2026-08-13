@@ -3,8 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import runpy
+import shutil
 import subprocess
 import sys
+import sysconfig
 import time
 import zipfile
 from ast import Import, ImportFrom, parse
@@ -1316,9 +1319,278 @@ def test_standalone_launcher_is_stdlib_only_until_verified_and_reexecs_isolated(
     )
     source = script.read_text(encoding="utf-8")
     assert '"-I"' in source and '"-S"' in source
+    assert "os.execve" not in source
+    assert "subprocess.run(" in source
+    assert "_ISOLATED_BOOTSTRAP" in source
+    assert '"attestation_b64"' in source
+    assert 'parser.add_argument("--isolated-' not in source
     assert source.index("_verify_implementation_identity(args)") < source.index(
         "from oms_hub.anki.rehearsal.process"
     )
+
+
+def test_standalone_launcher_carries_venv_dependencies_through_base_isolation(
+    tmp_path: Path,
+) -> None:
+    script = Path(__file__).parents[2] / "scripts" / "run-a0-rehearsal.py"
+    launcher = runpy.run_path(str(script), run_name="launcher_test")
+    base_runtime, attestation = launcher["_capture_isolated_runtime"](Path(sys.executable))
+    dependency_paths = attestation["dependency_paths"]
+    encoded, dependency_sha256 = launcher["_attestation_transport"](attestation)
+    base_runtime = Path(sys._base_executable).resolve()
+    code = "".join(
+        (
+            "import json,runpy,sys; from pathlib import Path; ",
+            "module=runpy.run_path(sys.argv[1],run_name='isolated_launcher_test'); ",
+            "paths=module['_validate_isolated_runtime'](\n"
+            "sys.argv[2],sys.argv[3],Path(sys.argv[4])\n"
+            "); ",
+            "sys.path[:0]=paths; import pydantic; ",
+            "print(json.dumps({'paths':paths,'pydantic':str(Path(pydantic.__file__).resolve())}))",
+        )
+    )
+    completed = subprocess.run(
+        [
+            str(base_runtime),
+            "-I",
+            "-S",
+            "-c",
+            code,
+            str(script),
+            encoded,
+            dependency_sha256,
+            sys.executable,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+    payload = json.loads(completed.stdout)
+    assert payload["paths"] == dependency_paths
+    assert any(payload["pydantic"].startswith(path + os.sep) for path in dependency_paths)
+    mismatched_runtime = dict(attestation, runtime_version="untrusted runtime build")
+    mismatched_encoded, mismatched_digest = launcher["_attestation_transport"](mismatched_runtime)
+    mismatched = subprocess.run(
+        [
+            str(base_runtime),
+            "-I",
+            "-S",
+            "-c",
+            code,
+            str(script),
+            mismatched_encoded,
+            mismatched_digest,
+            sys.executable,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+    assert mismatched.returncode != 0
+    assert "runtime version" in mismatched.stderr
+
+
+def test_standalone_launcher_rejects_tampered_or_unknown_dependency_transport(
+    tmp_path: Path,
+) -> None:
+    script = Path(__file__).parents[2] / "scripts" / "run-a0-rehearsal.py"
+    launcher = runpy.run_path(str(script), run_name="launcher_test")
+    _runtime, attestation = launcher["_capture_isolated_runtime"](Path(sys.executable))
+    encoded, digest = launcher["_attestation_transport"](attestation)
+    with pytest.raises(ValueError, match="integrity"):
+        launcher["_decode_attestation"](encoded, "0" * 64)
+    unknown_attestation = dict(attestation, dependency_paths=["/no/such/trusted-dependency"])
+    unknown, unknown_digest = launcher["_attestation_transport"](unknown_attestation)
+    with pytest.raises(ValueError, match="unavailable"):
+        paths = launcher["_decode_attestation"](unknown, unknown_digest)
+        launcher["_canonical_dependency_paths"](paths["dependency_paths"])
+    dependency = tmp_path / "site-packages"
+    dependency.mkdir()
+    assert launcher["_canonical_dependency_paths"]([str(dependency), str(dependency)]) == [
+        str(dependency.resolve())
+    ]
+    link = tmp_path / "indirect-site-packages"
+    try:
+        os.symlink(dependency, link)
+    except OSError as exc:
+        pytest.skip(f"symbolic links unavailable: {exc}")
+    with pytest.raises(ValueError, match="indirect"):
+        launcher["_canonical_dependency_paths"]([str(link)])
+
+
+def test_standalone_launcher_has_no_public_child_only_arguments() -> None:
+    script = Path(__file__).parents[2] / "scripts" / "run-a0-rehearsal.py"
+    launcher = runpy.run_path(str(script), run_name="launcher_test")
+    parser = launcher["_parser"]()
+    assert not {
+        option
+        for action in parser._actions
+        for option in action.option_strings
+        if option.startswith("--isolated-")
+    }
+
+
+def test_standalone_launcher_full_reexec_uses_venv_dependencies_and_propagates_exit(
+    tmp_path: Path,
+) -> None:
+    script = Path(__file__).parents[2] / "scripts" / "run-a0-rehearsal.py"
+    launcher_venv = tmp_path / "launcher-venv"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--copies", "--without-pip", str(launcher_venv)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    launcher_python = launcher_venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if os.name != "nt":
+        library_name = sysconfig.get_config_var("LDLIBRARY")
+        assert isinstance(library_name, str)
+        source_library = Path(sys.base_prefix) / "lib" / library_name
+        assert source_library.is_file()
+        target_library = launcher_venv / "lib" / library_name
+        target_library.parent.mkdir(exist_ok=True)
+        shutil.copy2(source_library, target_library)
+    assert launcher_python.is_file()
+    assert launcher_python.resolve() != Path(sys._base_executable).resolve()
+    purelib = Path(
+        subprocess.run(
+            [
+                str(launcher_python),
+                "-c",
+                "import sysconfig;print(sysconfig.get_paths()['purelib'])",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    pydantic = purelib / "pydantic"
+    pydantic.mkdir()
+    (pydantic / "__init__.py").write_text(
+        "__version__ = 'transported-dependency'\n", encoding="utf-8"
+    )
+    repository = tmp_path / "implementation"
+    process_module = repository / "src" / "oms_hub" / "anki" / "rehearsal" / "process.py"
+    process_module.parent.mkdir(parents=True)
+    (repository / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    for package in (
+        process_module.parents[3] / "__init__.py",
+        process_module.parents[2] / "__init__.py",
+        process_module.parents[1] / "__init__.py",
+        process_module.parent / "__init__.py",
+    ):
+        package.write_text("", encoding="utf-8")
+    process_module.write_text(
+        "import pydantic\n"
+        "class RehearsalRequest:\n"
+        "    def __init__(self, **kwargs): self.kwargs = kwargs\n"
+        "class ProcessRehearsal:\n"
+        "    def __init__(self, request): self.request = request\n"
+        "    def run(self):\n"
+        "        if self.request.kwargs['mode'] == 'shadow': raise SystemExit(23)\n"
+        "        return type('Result', (), {\n"
+        "            'job_id': pydantic.__version__,\n"
+        "            'overlay': 'overlay',\n"
+        "            'evidence_zip': 'evidence',\n"
+        "        })()\n",
+        encoding="utf-8",
+    )
+    for command in (
+        ["git", "init", str(repository)],
+        ["git", "-C", str(repository), "add", "src", ".gitignore"],
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+    ):
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    commit = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    tree = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD^{tree}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    common = [
+        "--capsule", str(tmp_path / "capsule"), "--overlay", str(tmp_path / "overlay"),
+        "--port", "8765", "--evidence-zip", str(tmp_path / "evidence.zip"),
+        "--failed-job-id", str(UUID(int=1)), "--expected-manifest-sha256", "0" * 64,
+        "--implementation-repository", str(repository), "--expected-implementation-commit", commit,
+        "--expected-implementation-tree", tree, "--trusted-python", str(launcher_python),
+    ]
+    success = subprocess.run(
+        [str(launcher_python), str(script), "--mode", "deterministic", *common],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(tmp_path / "ambient")},
+    )
+    assert success.returncode == 0
+    assert "job_id=transported-dependency" in success.stdout
+    assert "PYTHONPATH" not in success.stderr
+    forged_environment = {
+        **os.environ,
+        "OMS_HUB_A0_REHEARSAL_INTERNAL_NONCE": "forged-old-launcher-marker",
+    }
+    forged = subprocess.run(
+        [
+            str(launcher_python),
+            str(script),
+            "--isolated-launch",
+            "--isolated-attestation-b64",
+            "forged",
+            "--isolated-attestation-sha256",
+            "forged",
+            "--mode",
+            "deterministic",
+            *common,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=forged_environment,
+    )
+    assert forged.returncode != 0
+    assert "unrecognized arguments" in forged.stderr
+    duplicate = subprocess.run(
+        [
+            str(launcher_python),
+            str(script),
+            "--isolated-launch",
+            "--isolated-launch",
+            "--mode",
+            "deterministic",
+            *common,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=forged_environment,
+    )
+    assert duplicate.returncode != 0
+    assert "unrecognized arguments" in duplicate.stderr
+    failed = subprocess.run(
+        [str(launcher_python), str(script), "--mode", "shadow", *common],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert failed.returncode == 23
 
 
 def test_implementation_identity_rejects_commit_mismatch(
