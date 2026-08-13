@@ -212,6 +212,10 @@ class FakeLibraryDocument {
     if (selector === "[data-reset-message]") return this.resetMessage;
     return null;
   }
+
+  addEventListener(type, handler) {
+    (this._listeners ||= {})[type] = handler;
+  }
 }
 
 const makeMemoryStorage = () => {

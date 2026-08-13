@@ -11,8 +11,8 @@
   <link rel="stylesheet" href="/static/reset.css">
   <link rel="stylesheet" href="/static/tokens.css">
   <link rel="stylesheet" href="/static/study-hub.css">
-  <link rel="stylesheet" href="/static/app.css?v=20260812.1">
-  <script src="/static/study_hub_shell.js?v=20260812.1" defer></script>
+  <link rel="stylesheet" href="/static/app.css?v=20260812.2">
+  <script src="/static/study_hub_shell.js?v=20260812.2" defer></script>
 </head>
 <body class="sh-app">
   <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -25,7 +25,8 @@
         <span>Study Hub</span>
       </a>
       <nav class="utility-nav sh-nav sh-topbar__nav" aria-label="Primary navigation">
-        <a class="sh-nav__link {% if current_path == '/' %}sh-nav__link--active{% endif %}" href="/" {% if current_path == "/" %}aria-current="page"{% endif %}>Dashboard</a>
+        <a class="sh-nav__link {% if current_path == '/' %}sh-nav__link--active{% endif %}" href="/" {% if current_path == "/" %}aria-current="page"{% endif %}>Home</a>
+        <a class="sh-nav__link {% if current_path == '/lectures' or current_path.startswith('/lectures/') %}sh-nav__link--active{% endif %}" href="/lectures" {% if current_path == '/lectures' or current_path.startswith('/lectures/') %}aria-current="page"{% endif %}>Lectures</a>
         <a class="sh-nav__link {% if current_path.startswith('/anki') %}sh-nav__link--active{% endif %}" href="/anki" {% if current_path.startswith('/anki') %}aria-current="page"{% endif %}>Anki</a>
         <a class="sh-nav__link {% if current_path.startswith('/studio') %}sh-nav__link--active{% endif %}" href="/studio" {% if current_path.startswith('/studio') %}aria-current="page"{% endif %}>Quiz Builder</a>
         <a class="sh-nav__link {% if current_path.startswith('/public/quizzes') %}sh-nav__link--active{% endif %}" href="/public/quizzes" {% if current_path.startswith('/public/quizzes') %}aria-current="page"{% endif %}>Quizzes</a>
@@ -61,7 +62,8 @@
     <label class="sh-field-label" for="command-query">Search destinations</label>
     <input class="sh-input" id="command-query" type="search" autocomplete="off" placeholder="Try “slides” or “review”" data-command-query autofocus>
     <nav class="sh-command__results" aria-label="Study Hub destinations" data-command-results>
-      <a href="/" data-command-item>Dashboard <span>Resume study work</span></a>
+      <a href="/" data-command-item>Home <span>Resume study work</span></a>
+      <a href="/lectures" data-command-item>Lectures <span>Browse courses and exams</span></a>
       <a href="/anki" data-command-item>Anki <span>Find and curate cards</span></a>
       <a href="/studio" data-command-item>Quiz Builder <span>Generate or import quizzes</span></a>
       <a href="/public/quizzes" data-command-item>Quizzes <span>Open released lecture quizzes</span></a>
@@ -80,7 +82,7 @@
       <button class="sh-iconbtn" type="button" data-close-dialog aria-label="Close navigation">×</button>
     </div>
     <nav aria-label="Mobile navigation">
-      <a href="/" data-dialog-initial-focus>Dashboard</a><a href="/anki">Anki</a><a href="/studio">Quiz Builder</a>
+      <a href="/" data-dialog-initial-focus>Home</a><a href="/lectures">Lectures</a><a href="/anki">Anki</a><a href="/studio">Quiz Builder</a>
       <a href="/public/quizzes">Quizzes</a><a href="/public/practice-questions">Practice Questions</a>
       <a href="/uploads/slides">Upload slides</a><a href="/uploads/transcripts">Upload transcript</a>
       <a href="/quarantine">Quarantine</a><a href="/review">Review</a><a href="/settings">Settings</a>

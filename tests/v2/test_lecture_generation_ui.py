@@ -105,7 +105,7 @@ def test_dashboard_has_separate_slide_and_transcript_uploads(tmp_path):
         )
     )
 
-    page = TestClient(app).get("/")
+    page = TestClient(app).get("/lectures")
 
     assert 'href="/uploads/slides"' in page.text
     assert "+ Upload lecture" in page.text
@@ -128,7 +128,7 @@ def test_dashboard_only_exposes_the_first_course_and_exam_by_default(tmp_path):
         LectureInput("Neuro", 1, 1, "Brain", "", None)
     )
 
-    page = TestClient(app).get("/")
+    page = TestClient(app).get("/lectures")
 
     assert page.status_code == 200
     assert page.text.count('aria-expanded="true"') == 2

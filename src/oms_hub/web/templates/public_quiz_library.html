@@ -23,7 +23,8 @@
     </a>
     {% if owner_navigation %}
     <nav class="utility-nav sh-nav" aria-label="Primary navigation">
-      <a class="sh-nav__link" href="/">Dashboard</a>
+      <a class="sh-nav__link" href="/">Home</a>
+      <a class="sh-nav__link" href="/lectures">Lectures</a>
       <a class="sh-nav__link" href="/anki">Anki</a>
       <a class="sh-nav__link" href="/studio">Quiz Builder</a>
       <a class="sh-nav__link {% if library_path == quiz_library_path %}sh-nav__link--active{% endif %}" href="{{ quiz_library_path }}" {% if library_path == quiz_library_path %}aria-current="page"{% endif %}>Quizzes</a>
@@ -64,13 +65,13 @@
       <section class="course-card sh-card" style="--sh-hue: {{ course.hue }}" data-course-key="{{ course.key }}">
         <button class="disclosure course-button" type="button" data-focus-key="course:{{ course.key }}" aria-expanded="false" aria-controls="course-{{ loop.index }}">
           <span><span class="sh-subject-dot" aria-hidden="true"></span> {{ course.name }}</span>
-          <span><span class="count" data-course-count>{{ course.quiz_count }} quiz{{ '' if course.quiz_count == 1 else 'zes' }}</span> <span class="chevron sh-disclose" aria-hidden="true">▸</span></span>
+          <span><span class="chevron sh-disclose" aria-hidden="true">▸</span></span>
         </button>
         <div id="course-{{ loop.index }}" class="course-content" hidden>
           {% for exam in course.exams %}
           <section class="exam-card" data-exam-key="{{ course.key }}:{{ exam.number }}">
             <button class="disclosure exam-button" type="button" data-focus-key="exam:{{ course.key }}:{{ exam.number }}" aria-expanded="false" aria-controls="course-{{ course_index }}-exam-{{ loop.index }}">
-              <span>Exam {{ exam.number }} <span data-exam-count>{{ exam.quiz_count }} quiz{{ '' if exam.quiz_count == 1 else 'zes' }}</span></span>
+              <span>Exam {{ exam.number }}</span>
               <span class="chevron sh-disclose" aria-hidden="true">▸</span>
             </button>
             <div id="course-{{ course_index }}-exam-{{ loop.index }}" class="lecture-list" hidden>

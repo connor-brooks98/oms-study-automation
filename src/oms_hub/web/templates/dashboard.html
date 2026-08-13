@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Course library · Study Hub{% endblock %}
+{% block title %}Lectures · Study Hub{% endblock %}
 {% block content %}
 <section class="page-shell sh-container dashboard-page">
   <div class="page-heading sh-header">
     <div>
       <p class="eyebrow sh-eyebrow">Study workspace</p>
-      <h1 class="sh-title">Course library</h1>
-      <p class="page-summary sh-subtitle">Pick up the next lecture task, or open a course to inspect its workflow.</p>
+      <h1 class="sh-title">Lectures</h1>
+      <p class="page-summary sh-subtitle">Choose a course, exam, and lecture workspace.</p>
       {% if review_count %}
       <a class="review-count sh-pill sh-pill--warn" href="/review">{{ review_count }} needs review</a>
       {% endif %}
@@ -16,32 +16,6 @@
       <a class="button primary sh-btn sh-btn--primary" href="/uploads/slides">+ Upload lecture</a>
     </div>
   </div>
-
-  <section class="dashboard-workbench" aria-label="Study shortcuts">
-    <article class="dashboard-next sh-card">
-      <p class="sh-section-label">Next action</p>
-      {% if review_count %}
-      <h2>Resolve stopped study work</h2>
-      <p>{{ review_count }} item{{ '' if review_count == 1 else 's' }} need a decision before processing can continue.</p>
-      <a class="sh-btn sh-btn--primary" href="/review">Open review</a>
-      {% elif courses and courses[0].exams and courses[0].exams[0].lectures %}
-      {% set next_lecture = courses[0].exams[0].lectures[0] %}
-      <h2>Continue {{ next_lecture.title }}</h2>
-      <p>Open the lecture workspace to review sources, processing, and study outputs.</p>
-      <a class="sh-btn sh-btn--primary" href="/lectures/{{ next_lecture.lecture.id }}">Open lecture</a>
-      {% else %}
-      <h2>Set up the study library</h2>
-      <p>Import the lecture tracker to create courses, exams, and lecture workflows.</p>
-      <a class="sh-btn sh-btn--primary" href="/settings">Open settings</a>
-      {% endif %}
-    </article>
-    <aside class="dashboard-quick sh-panel" aria-labelledby="dashboard-quick-title">
-      <p class="sh-section-label" id="dashboard-quick-title">Learning access</p>
-      <a href="/public/quizzes"><span>Lecture quizzes</span><span aria-hidden="true">→</span></a>
-      <a href="/public/practice-questions"><span>Practice questions</span><span aria-hidden="true">→</span></a>
-      <p class="dashboard-quick__note">Released study sets open in the classmate-safe public view.</p>
-    </aside>
-  </section>
 
   <div class="dashboard-section-heading">
     <div><h2>Courses</h2><p>{{ courses|length }} course{{ '' if courses|length == 1 else 's' }} · course → exam → lecture</p></div>
