@@ -910,11 +910,15 @@ def test_expected_red_m12_s4c_resolved_classifier_batches_exactly_thirty_cards()
     class RecordingGenerator:
         def __init__(self) -> None:
             self.batches: list[tuple[int, ...]] = []
+            self._lock = threading.Lock()
 
         def generate_text(self, _instruction: str, input_text: str, **kwargs: object) -> object:
             cards = json.loads(input_text)["cards"]
             note_ids = tuple(item["note_id"] for item in cards)
-            self.batches.append(note_ids)
+            # S4c provider calls are concurrent, so this records identity rather
+            # than assuming a scheduler-dependent entry or completion order.
+            with self._lock:
+                self.batches.append(note_ids)
             value = CardClassificationBatchOutput(
                 results=tuple(
                     CardClassification(
@@ -930,7 +934,7 @@ def test_expected_red_m12_s4c_resolved_classifier_batches_exactly_thirty_cards()
                 text=value.model_dump_json(),
                 provider=kwargs["provider"],  # type: ignore[index]
                 model=kwargs["model"],  # type: ignore[index]
-                request_id=f"s4c-{len(self.batches)}",
+                request_id=f"s4c-{note_ids[0]}",
                 input_tokens=1,
                 output_tokens=1,
                 cost_microusd=1,
@@ -995,7 +999,17 @@ def test_expected_red_m12_s4c_resolved_classifier_batches_exactly_thirty_cards()
         product.payload["classifier"]["telemetry"]["model"]
         == job.resolved_model_config.classify_s4.model
     )
-    assert [len(batch) for batch in generator.batches] == [30, 1]
+    expected_batches = (tuple(range(1, 31)), (31,))
+    assert len(generator.batches) == len(expected_batches)
+    assert sorted(generator.batches) == sorted(expected_batches)
+    assert [
+        (batch["batch_index"], batch["note_ids"], batch["request_id"])
+        for batch in product.payload["classifier"]["telemetry"]["batches"]
+    ] == [
+        (0, list(expected_batches[0]), "s4c-1"),
+        (1, list(expected_batches[1]), "s4c-31"),
+    ]
+    assert product.payload["classifier"]["telemetry"]["request_ids"] == ["s4c-1", "s4c-31"]
 
 
 def test_expected_red_m16_s4b_uses_bounded_concurrency_and_deterministic_aggregation() -> None:
