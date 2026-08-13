@@ -47,8 +47,7 @@ def _repo(request: Request) -> CatalogRepository:
     return CatalogRepository(request.app.state.database)
 
 
-@router.get("/", response_class=HTMLResponse)
-def dashboard(request: Request) -> HTMLResponse:
+def _dashboard_context(request: Request) -> dict[str, object]:
     repository = _repo(request)
     ingestion = IngestionRepository(request.app.state.database)
     grouped: OrderedDict[str, dict[int, list[dict[str, object]]]] = (
@@ -103,10 +102,7 @@ def dashboard(request: Request) -> HTMLResponse:
             [],
         ).append(v2_row)
     review_count += len(repository.list_import_issues())
-    return templates.TemplateResponse(
-        request=request,
-        name="dashboard.html",
-        context={
+    return {
             "courses": [
                 {
                     "name": subject,
@@ -125,7 +121,24 @@ def dashboard(request: Request) -> HTMLResponse:
                 for subject, exams in grouped.items()
             ],
             "review_count": review_count,
-        },
+        }
+
+
+@router.get("/", response_class=HTMLResponse)
+def dashboard(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="home.html",
+        context=_dashboard_context(request),
+    )
+
+
+@router.get("/lectures", response_class=HTMLResponse)
+def lecture_library(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="dashboard.html",
+        context=_dashboard_context(request),
     )
 
 

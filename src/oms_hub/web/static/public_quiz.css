@@ -252,7 +252,7 @@
   align-items: center;
   gap: .45rem;
 }
-.quiz-answer-row.sh-option { padding: 0; }
+.quiz-answer-row.sh-option { padding: var(--sp-1); }
 
 .quiz-answer,
 .quiz-strike:not(.sh-iconbtn) {
@@ -261,7 +261,16 @@
   border-radius: .55rem;
   background: white;
 }
-.quiz-strike.sh-iconbtn { align-self: center; margin: 0; }
+.quiz-strike.sh-iconbtn {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  align-self: center;
+  margin: 0;
+  padding: 0;
+  font: 400 1.45rem/1 var(--font-sans);
+}
 
 .quiz-answer {
   display: grid;

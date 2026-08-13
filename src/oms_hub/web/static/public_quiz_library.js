@@ -260,6 +260,11 @@
         await managementRequest(documentRef, saveButton, form.dataset.titleUrl, { title: cleanedTitle });
       });
     });
+    documentRef.addEventListener?.("click", (event) => {
+      documentRef.querySelectorAll?.("[data-quiz-overflow][open]").forEach((menu) => {
+        if (!menu.contains?.(event.target)) menu.open = false;
+      });
+    });
     documentRef.querySelectorAll("[data-move-quiz-library]").forEach((button) => {
       button.addEventListener("click", async () => {
         closeOverflow(button);

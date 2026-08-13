@@ -23,7 +23,8 @@
     </a>
     {% if owner_navigation %}
     <nav class="utility-nav sh-nav" aria-label="Primary navigation">
-      <a class="sh-nav__link" href="/">Dashboard</a>
+      <a class="sh-nav__link" href="/">Home</a>
+      <a class="sh-nav__link" href="/lectures">Lectures</a>
       <a class="sh-nav__link" href="/anki">Anki</a>
       <a class="sh-nav__link" href="/studio">Quiz Builder</a>
       <a class="sh-nav__link {% if library_path == quiz_library_path %}sh-nav__link--active{% endif %}" href="{{ quiz_library_path }}" {% if library_path == quiz_library_path %}aria-current="page"{% endif %}>Quizzes</a>
@@ -64,33 +65,35 @@
     <div class="course-list">
       {% for course in courses %}
       {% set course_index = loop.index %}
-      <section class="course-card sh-card" style="--sh-hue: {{ course.hue }}">
-        <button class="disclosure course-button" type="button" aria-expanded="{{ 'true' if loop.first else 'false' }}" aria-controls="course-{{ loop.index }}">
+      {% set course_is_first = loop.first %}
+      <section class="course-card sh-card" style="--sh-hue: {{ course.hue }}" data-course-key="{{ course.key }}">
+        <button class="disclosure course-button" type="button" data-focus-key="course:{{ course.key }}" aria-expanded="false" aria-controls="course-{{ loop.index }}">
           <span><span class="sh-subject-dot" aria-hidden="true"></span> {{ course.name }}</span>
-          <span><span class="count">{{ course.quiz_count }} quiz{{ '' if course.quiz_count == 1 else 'zes' }}</span> <span class="chevron sh-disclose {% if loop.first %}is-open{% endif %}" aria-hidden="true">▸</span></span>
+          <span><span class="chevron sh-disclose" aria-hidden="true">▸</span></span>
         </button>
-        <div id="course-{{ loop.index }}" class="course-content" {% if not loop.first %}hidden{% endif %}>
+        <div id="course-{{ loop.index }}" class="course-content" hidden>
           {% for exam in course.exams %}
-          <section class="exam-card sh-card">
-            <button class="disclosure exam-button" type="button" aria-expanded="{{ 'true' if loop.first else 'false' }}" aria-controls="course-{{ course_index }}-exam-{{ loop.index }}">
+          <section class="exam-card" data-exam-key="{{ course.key }}:{{ exam.number }}">
+            <button class="disclosure exam-button" type="button" data-focus-key="exam:{{ course.key }}:{{ exam.number }}" aria-expanded="false" aria-controls="course-{{ course_index }}-exam-{{ loop.index }}">
               <span>Exam {{ exam.number }}</span>
               <span class="chevron sh-disclose" aria-hidden="true">▸</span>
             </button>
-            <div id="course-{{ course_index }}-exam-{{ loop.index }}" class="lecture-list" {% if not loop.first %}hidden{% endif %}>
+            <div id="course-{{ course_index }}-exam-{{ loop.index }}" class="lecture-list" hidden>
               {% for row in exam.quizzes %}
-              <article class="lecture-row sh-row" {% if management_mode %}data-quiz-order-row data-order-url="/api/published-quizzes/{{ row.token }}/order"{% endif %}>
+              <article class="lecture-row sh-row" data-quiz-row data-quiz-token="{{ row.token }}" data-quiz-version="{{ row.version }}" {% if management_mode %}data-quiz-order-row data-order-url="/api/published-quizzes/{{ row.token }}/order"{% endif %}>
                 {% if management_mode %}
                 <button
                   class="sh-iconbtn quiz-drag-handle"
                   type="button"
                   data-quiz-drag-handle
+                  data-quiz-title-for="{{ row.token }}"
                   aria-label="Reorder {{ row.title }}. Use Arrow Up or Arrow Down."
                   title="Reorder quiz"
                 >⠿</button>
                 {% endif %}
-                <a class="quiz-link sh-row__title" href="{{ row.url }}" data-quiz-row data-quiz-token="{{ row.token }}" data-quiz-version="{{ row.version }}">
+                <a class="quiz-link sh-row__title" href="{{ row.url }}">
                   <span>
-                    <strong>{{ row.primary_label }}{% if not row.is_studio %} · {{ row.title }}{% endif %}</strong>
+                    <strong>{% if not row.is_studio %}{{ row.primary_label }} · {% endif %}<span data-quiz-title-for="{{ row.token }}">{{ row.title }}</span></strong>
                     {% if row.secondary_label %}<small>{{ row.secondary_label }}</small>{% endif %}
                   </span>
                   <span class="progress-pill sh-pill" data-quiz-progress>Not started</span>
@@ -102,12 +105,13 @@
                     data-reset-quiz
                     data-quiz-token="{{ row.token }}"
                     data-quiz-version="{{ row.version }}"
+                    data-quiz-title-for="{{ row.token }}"
                     aria-label="Restart {{ row.title }}"
-                    title="Restart quiz"
+                    title="Restart {{ row.title }}"
                   >↻</button>
                   {% if row.outline_url or management_mode %}
                   <details class="quiz-overflow" data-quiz-overflow>
-                    <summary class="sh-iconbtn" aria-label="More actions for {{ row.title }}" title="More actions">⋯</summary>
+                    <summary class="sh-iconbtn" data-quiz-title-for="{{ row.token }}" aria-label="More actions for {{ row.title }}" title="More actions">⋯</summary>
                     <div class="quiz-overflow__menu">
                       {% if row.outline_url %}
                       <a class="button outline-button sh-btn sh-btn--secondary" href="{{ row.outline_url }}" target="_blank" rel="noopener">Lecture Outline</a>

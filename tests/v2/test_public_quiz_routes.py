@@ -142,9 +142,11 @@ def test_local_owner_library_keeps_private_navigation_without_management_control
     assert managed.status_code == 200
     assert published.token in public.text
     assert "Study Hub Quizzes" not in public.text
-    assert 'href="/">Dashboard</a>' in public.text
+    assert 'href="/">Home</a>' in public.text
+    assert 'href="/lectures">Lectures</a>' in public.text
     assert "NUC online" not in public.text
-    assert 'href="/">Dashboard</a>' in managed.text
+    assert 'href="/">Home</a>' in managed.text
+    assert 'href="/lectures">Lectures</a>' in managed.text
     assert "Study Hub Quizzes" not in managed.text
     assert 'data-reset-quiz' in public.text
     assert 'title="Restart quiz"' in public.text

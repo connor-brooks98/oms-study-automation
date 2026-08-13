@@ -53,7 +53,8 @@ def test_private_shell_uses_approved_navigation_and_dialog_contracts() -> None:
     shell_js = static_source("study_hub_shell.js")
 
     assert 'class="site-header sh-topbar"' in base
-    assert "Dashboard</a>" in base
+    assert "Home</a>" in base
+    assert "Lectures</a>" in base
     assert "Anki</a>" in base
     assert "Quiz Builder</a>" in base
     assert "Practice Questions</a>" in base
@@ -69,7 +70,7 @@ def test_private_shell_uses_approved_navigation_and_dialog_contracts() -> None:
 
     assert '<dialog class="sh-dialog sh-command" id="command-palette"' in base
     assert '<dialog class="sh-dialog sh-mobile-nav" id="mobile-navigation"' in base
-    assert 'href="/" data-dialog-initial-focus>Dashboard</a>' in base
+    assert 'href="/" data-dialog-initial-focus>Home</a>' in base
     assert 'aria-keyshortcuts="Meta+K Control+K"' in base
     assert "event.metaKey || event.ctrlKey" in shell_js
     assert 'event.key === "ArrowDown" || event.key === "ArrowUp"' in shell_js
@@ -78,6 +79,7 @@ def test_private_shell_uses_approved_navigation_and_dialog_contracts() -> None:
 
 def test_template_layout_matrix_uses_locked_containers_and_headers() -> None:
     wide = (
+        "home.html",
         "dashboard.html",
         "lecture.html",
         "settings.html",
@@ -103,6 +105,7 @@ def test_template_layout_matrix_uses_locked_containers_and_headers() -> None:
         assert "sh-container--narrow" in source(name), name
 
     for name in (
+        "home.html",
         "dashboard.html",
         "lecture.html",
         "settings.html",
@@ -148,7 +151,7 @@ def test_presentational_contracts_cover_forms_and_deferred_review_hooks() -> Non
 
 
 def test_daily_workbench_keeps_progress_labels_and_unavailable_actions_honest() -> None:
-    dashboard = source("dashboard.html")
+    dashboard = source("home.html")
     lecture = source("lecture.html")
     uploads = source("uploads.html")
     review = source("review.html")
@@ -491,7 +494,7 @@ def test_targeted_visual_acceptance_layouts_are_scoped_and_responsive() -> None:
     )[0]
     assert "border-radius: inherit;" in option_rule
 
-    assert "[data-workflow-panel] {\n  display: grid;\n  gap: var(--sp-4);" in app_css
+    assert "[data-workflow-panel] {\n  display: grid;\n  gap: var(--sp-6);" in app_css
     assert (
         "[data-workflow-panel] .studio-runner form {\n  display: grid;\n  gap: var(--sp-4);"
         in app_css

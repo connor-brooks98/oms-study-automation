@@ -363,6 +363,7 @@ button.exam-toggle {
   flex: none;
   border-radius: .2rem;
   background: oklch(0.55 0.11 var(--course-hue));
+  margin-block-start: .3rem;
 }
 .course-badge {
   display: inline-flex;
@@ -440,8 +441,10 @@ button.exam-toggle {
   background: var(--surface);
   font-size: .76rem;
 }
-.metadata-panel { padding: 1rem 1.2rem; }
-.metadata-panel summary { display: flex; min-height: var(--control-h); align-items: center; cursor: pointer; font-size: .85rem; font-weight: 600; }
+.metadata-panel { padding: var(--sp-3) var(--sp-5); }
+.metadata-panel summary { display: flex; min-height: var(--control-h); align-items: center; gap: var(--sp-2); cursor: pointer; font-size: .85rem; font-weight: 600; }
+.metadata-panel summary { list-style: none; }
+.metadata-panel summary::-webkit-details-marker { display: none; }
 
 form { display: grid; gap: .8rem; margin-top: 1rem; }
 label { display: grid; gap: .3rem; color: var(--text-2); font-size: .8rem; font-weight: 500; }
@@ -1956,7 +1959,7 @@ code { overflow-wrap: anywhere; }
 .studio-workflow-switch { display: flex; flex-wrap: wrap; gap: .65rem; margin: 0 0 1rem; }
 [data-workflow-panel] {
   display: grid;
-  gap: var(--sp-4);
+  gap: var(--sp-6);
   margin-bottom: var(--sp-4);
 }
 [data-workflow-panel] .studio-source-grid,
@@ -2323,6 +2326,10 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
 }
 .settings-disclosure:last-of-type { border-bottom: 1px solid var(--border); }
 .settings-disclosure > summary { min-height: 88px; padding: var(--sp-4) 0; }
+.settings-disclosure > summary > .sh-disclose {
+  order: 2;
+  margin-inline: auto var(--sp-3);
+}
 .settings-disclosure-title { margin: 0; font-size: var(--fs-h3); line-height: 1.25; }
 .settings-disclosure-content { padding: var(--sp-5) 0 var(--sp-8) calc(var(--sp-5) + var(--sp-2)); }
 .provider-card.sh-card { box-shadow: none; }
@@ -2344,6 +2351,7 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
   border-radius: var(--r-md);
   background: var(--surface);
 }
+.studio-status.sh-card { margin-block-start: var(--sp-1); }
 .studio-intake-form {
   display: flex;
   height: 100%;
