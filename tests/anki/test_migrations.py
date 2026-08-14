@@ -745,11 +745,10 @@ def test_schema_v12_contract_upgrade_backfills_historical_provenance_idempotentl
         artifact_root = tmp_path / "legacy-artifacts"
         artifact_path = artifact_root / artifact.relative_path
         artifact_path.parent.mkdir(parents=True)
-        artifact_path.write_text(
-            "{\"artifact_version\":1,\"job_id\":\"00000000-0000-0000-0000-000000000013\","
-            "\"kind\":\"classification\",\"metadata\":{\"note_count\":3},"
-            "\"payload\":{\"note_ids\":[11,12,13]},\"stage\":\"retrieval_pass_1\"}\n",
-            encoding="utf-8",
+        artifact_path.write_bytes(
+            b"{\"artifact_version\":1,\"job_id\":\"00000000-0000-0000-0000-000000000013\","
+            b"\"kind\":\"classification\",\"metadata\":{\"note_count\":3},"
+            b"\"payload\":{\"note_ids\":[11,12,13]},\"stage\":\"retrieval_pass_1\"}\n",
         )
         artifacts = StageArtifactStore(artifact_root)
         assert artifacts.read(artifact, job=job) == {"note_ids": [11, 12, 13]}
