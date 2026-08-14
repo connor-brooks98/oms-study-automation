@@ -453,6 +453,9 @@ def test_export_closes_real_existing_artifact_fk_cycle_without_unrelated_rows(
 ) -> None:
     fixture = _failed_job_fixture(tmp_path)
     database_path = fixture["database"]  # type: ignore[assignment]
+    previous_pdf = fixture["data"] / "imports" / "previous-immutable.pdf"  # type: ignore[operator]
+    previous_pdf.parent.mkdir()
+    previous_pdf.write_bytes(b"%PDF-previous-immutable\n")
     connection = sqlite3.connect(database_path)
     try:
         revision_id = connection.execute("SELECT id FROM study_revisions").fetchone()[0]
@@ -493,8 +496,8 @@ def test_export_closes_real_existing_artifact_fk_cycle_without_unrelated_rows(
         )
         connection.execute(
             "UPDATE existing_artifact_imports SET transcript_revision_id = ?, "
-            "outline_id = ? WHERE id = ?",
-            (revision_id, outline_id, import_id),
+            "outline_id = ?, previous_immutable_pdf_path = ? WHERE id = ?",
+            (revision_id, outline_id, str(previous_pdf), import_id),
         )
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         connection.commit()
@@ -518,8 +521,93 @@ def test_export_closes_real_existing_artifact_fk_cycle_without_unrelated_rows(
         assert exported.execute("SELECT COUNT(*) FROM anki_curation_jobs").fetchone() == (1,)
         assert exported.execute("SELECT COUNT(*) FROM study_revisions").fetchone() == (1,)
         assert exported.execute("SELECT COUNT(*) FROM outline_outputs").fetchone() == (1,)
+        assert exported.execute(
+            "SELECT previous_immutable_pdf_path FROM existing_artifact_imports WHERE id = ?",
+            (import_id,),
+        ).fetchone() == (str(previous_pdf),)
     finally:
         exported.close()
+    copied_previous_pdf = (
+        capsule / "sources" / "a0data" / previous_pdf.relative_to(fixture["data"])  # type: ignore[arg-type]
+    )
+    assert copied_previous_pdf.read_bytes() == previous_pdf.read_bytes()
+
+
+def test_export_rejects_registered_file_missing_from_job_scoped_database_closure(
+    tmp_path: Path,
+) -> None:
+    fixture = _failed_job_fixture(tmp_path)
+    missing = fixture["data"] / "missing" / "registered.txt"  # type: ignore[operator]
+    connection = sqlite3.connect(fixture["database"])  # type: ignore[arg-type]
+    try:
+        connection.execute(
+            "UPDATE study_revisions SET canonical_source_path = ?", (str(missing),)
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    connection = sqlite3.connect(fixture["database"])  # type: ignore[arg-type]
+    try:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        connection.close()
+
+    with pytest.raises(CapsuleIntegrityError, match="source artifact is unavailable"):
+        _export(fixture, tmp_path / "missing-registered-file-capsule")
+
+
+def test_export_rejects_registered_file_outside_approved_roots(tmp_path: Path) -> None:
+    fixture = _failed_job_fixture(tmp_path)
+    outside = tmp_path / "outside-root" / "registered.txt"
+    outside.parent.mkdir()
+    outside.write_text("outside", encoding="utf-8")
+    connection = sqlite3.connect(fixture["database"])  # type: ignore[arg-type]
+    try:
+        connection.execute(
+            "UPDATE study_revisions SET canonical_source_path = ?", (str(outside),)
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    connection = sqlite3.connect(fixture["database"])  # type: ignore[arg-type]
+    try:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        connection.close()
+
+    with pytest.raises(CapsuleIntegrityError, match="outside registered roots"):
+        _export(fixture, tmp_path / "outside-registered-file-capsule")
+
+
+def test_export_rejects_registered_file_through_indirect_ancestor(tmp_path: Path) -> None:
+    fixture = _failed_job_fixture(tmp_path)
+    outside = tmp_path / "outside-root" / "escaped.txt"
+    outside.parent.mkdir()
+    outside.write_text("outside", encoding="utf-8")
+    indirect = fixture["data"] / "indirect"  # type: ignore[operator]
+    try:
+        indirect.symlink_to(outside.parent, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symbolic links are unavailable for the indirect-path regression: {exc}")
+    indirect_path = indirect / outside.name
+    connection = sqlite3.connect(fixture["database"])  # type: ignore[arg-type]
+    try:
+        connection.execute(
+            "UPDATE study_revisions SET canonical_source_path = ?", (str(indirect_path),)
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    connection = sqlite3.connect(fixture["database"])  # type: ignore[arg-type]
+    try:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        connection.close()
+
+    destination = tmp_path / "indirect-registered-file-capsule"
+    with pytest.raises(CapsuleIntegrityError, match="source artifact is unavailable or indirect"):
+        _export(fixture, destination)
+    assert not destination.exists()
 
 
 def test_export_omits_sensitive_rows_and_scrubs_outline_generation_details(tmp_path: Path) -> None:

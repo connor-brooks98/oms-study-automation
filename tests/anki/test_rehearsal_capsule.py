@@ -48,10 +48,12 @@ def _write_minimal_database(path: Path, source: Path, *, schema: int = 25) -> No
         connection.execute("CREATE TABLE schema_version (id INTEGER PRIMARY KEY, version INTEGER)")
         connection.execute("INSERT INTO schema_version VALUES (1, ?)", (schema,))
         connection.execute(
-            "CREATE TABLE study_revisions (id INTEGER PRIMARY KEY, immutable_source_path TEXT)"
+            "CREATE TABLE study_revisions ("
+            "id INTEGER PRIMARY KEY, immutable_source_path TEXT, immutable_derived_path TEXT, "
+            "canonical_source_path TEXT, canonical_derived_path TEXT, icloud_path TEXT)"
         )
         connection.execute(
-            "INSERT INTO study_revisions VALUES (1, ?)",
+            "INSERT INTO study_revisions (id, immutable_source_path) VALUES (1, ?)",
             (str(source),),
         )
 
@@ -70,7 +72,12 @@ def _capsule(tmp_path: Path, *, database_schema: int = 25) -> Path:
     return root
 
 
-def _refresh_manifest(root: Path, *, database_schema: int = 25) -> None:
+def _refresh_manifest(
+    root: Path,
+    *,
+    database_schema: int = 25,
+    source_root: str = r"C:\Study",
+) -> None:
     manifest = build_capsule_manifest(
         root,
         identity=CapsuleIdentity(
@@ -83,7 +90,7 @@ def _refresh_manifest(root: Path, *, database_schema: int = 25) -> None:
             semantic_note_count=28_257,
         ),
         logical_roots={"study": "roots/study"},
-        source_roots={"study": r"C:\Study"},
+        source_roots={"study": source_root},
     )
     (root / "capsule.json").write_text(
         json.dumps(manifest.model_dump(mode="json"), sort_keys=True),
@@ -129,6 +136,10 @@ def test_materializer_rebases_only_registered_paths_and_preserves_read_only_caps
     tmp_path: Path,
 ) -> None:
     root = _capsule(tmp_path)
+    with closing(sqlite3.connect(root / "hub" / "hub.db")) as connection:
+        assert connection.execute(
+            "SELECT immutable_source_path FROM study_revisions WHERE id = 1"
+        ).fetchone() == (r"C:\Study\lecture.txt",)
     make_capsule_read_only(root)
     before_hashes, before_modes = _source_snapshot(root)
     overlay = materialize_capsule(root, tmp_path / "overlay")
@@ -141,6 +152,10 @@ def test_materializer_rebases_only_registered_paths_and_preserves_read_only_caps
     assert os.stat(overlay.database_path).st_mode & stat.S_IWUSR
     (overlay.root / "rehearsal" / "overlay-writable.txt").write_text("ok", encoding="utf-8")
     assert _source_snapshot(root) == (before_hashes, before_modes)
+    with closing(sqlite3.connect(root / "hub" / "hub.db")) as connection:
+        assert connection.execute(
+            "SELECT immutable_source_path FROM study_revisions WHERE id = 1"
+        ).fetchone() == (r"C:\Study\lecture.txt",)
     with pytest.raises(CapsuleIntegrityError, match="already exists"):
         materialize_capsule(root, overlay.root)
 
@@ -165,6 +180,29 @@ def test_materialized_windows_overlay_path_is_not_rejected_as_source_residue(
     )
 
 
+@pytest.mark.parametrize(
+    ("source_root", "source_path"),
+    (
+        (r"C:\Study", "C:/Study/lecture.txt"),
+        (r"\\server\share", r"\\server\share\lecture.txt"),
+    ),
+)
+def test_materializer_rebases_supported_windows_absolute_path_forms(
+    tmp_path: Path, source_root: str, source_path: str
+) -> None:
+    root = _capsule(tmp_path)
+    database = root / "hub" / "hub.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("UPDATE study_revisions SET immutable_source_path = ?", (source_path,))
+    _refresh_manifest(root, source_root=source_root)
+
+    overlay = materialize_capsule(root, tmp_path / "overlay")
+    with closing(sqlite3.connect(overlay.database_path)) as connection:
+        assert connection.execute(
+            "SELECT immutable_source_path FROM study_revisions WHERE id = 1"
+        ).fetchone() == (str(overlay.root / "roots" / "study" / "lecture.txt"),)
+
+
 def test_materializer_rejects_unknown_future_schema_v28(tmp_path: Path) -> None:
     root = _capsule(tmp_path, database_schema=28)
     with pytest.raises(
@@ -183,6 +221,98 @@ def test_materializer_rejects_unknown_windows_absolute_path(tmp_path: Path) -> N
     # the integrity check, is the asserted failure.
     _refresh_manifest(root)
     with pytest.raises(CapsuleIntegrityError, match="unregistered Windows path"):
+        materialize_capsule(root, tmp_path / "overlay")
+    assert not (tmp_path / "overlay").exists()
+
+
+@pytest.mark.parametrize("value", ("C:/escape.txt", r"\\server\share\escape.txt"))
+def test_materializer_rejects_unregistered_supported_windows_absolute_path_forms(
+    tmp_path: Path, value: str
+) -> None:
+    root = _capsule(tmp_path)
+    database = root / "hub" / "hub.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("CREATE TABLE unknown_paths (id INTEGER, path TEXT)")
+        connection.execute("INSERT INTO unknown_paths VALUES (1, ?)", (value,))
+    _refresh_manifest(root)
+
+    with pytest.raises(CapsuleIntegrityError, match="unregistered Windows path"):
+        materialize_capsule(root, tmp_path / "overlay")
+    assert not (tmp_path / "overlay").exists()
+
+
+def test_materializer_rejects_registered_path_when_its_overlay_target_is_missing(
+    tmp_path: Path,
+) -> None:
+    root = _capsule(tmp_path)
+    database = root / "hub" / "hub.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute(
+            "UPDATE study_revisions SET immutable_source_path = ?", (r"C:\Study\missing.txt",)
+        )
+    _refresh_manifest(root)
+
+    with pytest.raises(CapsuleIntegrityError, match="materialized path target is unavailable"):
+        materialize_capsule(root, tmp_path / "overlay")
+    assert not (tmp_path / "overlay").exists()
+
+
+def test_materializer_keeps_import_audit_path_in_capsule_until_overlay_rewrite(
+    tmp_path: Path,
+) -> None:
+    root = _capsule(tmp_path)
+    previous_pdf = root / "roots" / "study" / "previous-immutable.pdf"
+    previous_pdf.write_bytes(b"%PDF-previous\n")
+    database = root / "hub" / "hub.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute(
+            "CREATE TABLE existing_artifact_imports ("
+            "id INTEGER PRIMARY KEY, canonical_transcript_path TEXT, canonical_outline_path TEXT, "
+            "immutable_transcript_path TEXT, immutable_outline_path TEXT, "
+            "previous_immutable_pdf_path TEXT, imported_immutable_pdf_path TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO existing_artifact_imports "
+            "(id, previous_immutable_pdf_path) VALUES (1, ?)",
+            (r"C:\Study\previous-immutable.pdf",),
+        )
+    _refresh_manifest(root)
+    make_capsule_read_only(root)
+
+    overlay = materialize_capsule(root, tmp_path / "overlay")
+    with closing(sqlite3.connect(root / "hub" / "hub.db")) as connection:
+        assert connection.execute(
+            "SELECT previous_immutable_pdf_path FROM existing_artifact_imports WHERE id = 1"
+        ).fetchone() == (r"C:\Study\previous-immutable.pdf",)
+    with closing(sqlite3.connect(overlay.database_path)) as connection:
+        assert connection.execute(
+            "SELECT previous_immutable_pdf_path FROM existing_artifact_imports WHERE id = 1"
+        ).fetchone() == (str(overlay.root / "roots" / "study" / previous_pdf.name),)
+
+
+def test_materializer_rejects_registered_table_with_schema_registry_drift(tmp_path: Path) -> None:
+    root = _capsule(tmp_path)
+    database = root / "hub" / "hub.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute(
+            "CREATE TABLE existing_artifact_imports "
+            "(id INTEGER PRIMARY KEY, previous_immutable_pdf_path TEXT)"
+        )
+    _refresh_manifest(root)
+
+    with pytest.raises(CapsuleIntegrityError, match="path registry/schema drift"):
+        materialize_capsule(root, tmp_path / "overlay")
+    assert not (tmp_path / "overlay").exists()
+
+
+def test_materializer_rejects_non_string_registered_path_value(tmp_path: Path) -> None:
+    root = _capsule(tmp_path)
+    database = root / "hub" / "hub.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("UPDATE study_revisions SET immutable_source_path = ?", (b"not-a-path",))
+    _refresh_manifest(root)
+
+    with pytest.raises(CapsuleIntegrityError, match="registered path has a non-string value"):
         materialize_capsule(root, tmp_path / "overlay")
     assert not (tmp_path / "overlay").exists()
 

@@ -25,13 +25,12 @@ from oms_hub.anki.rehearsal.capsule import (
     verify_capsule,
     write_capsule_manifest,
 )
+from oms_hub.anki.rehearsal.path_contract import enumerate_registered_paths
 from oms_hub.anki.rehearsal.regressions import historical_regression_catalog
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.anki.semantic.store import SemanticSnapshotStore
 from oms_hub.db import Database
-from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.models import SchemaVersionModel
-from oms_hub.study_generation.repository import GenerationRepository
 
 _ROOT_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
@@ -118,19 +117,18 @@ def export_capsule(
             job = repository.require_job(job_id)
             if job.state is not CurationState.FAILED:
                 raise CapsuleIntegrityError("capsule export requires the recorded failed job")
-            ingestion = IngestionRepository(database)
-            generation = GenerationRepository(database)
             with database.session() as session:
                 schema_row = session.get(SchemaVersionModel, 1)
                 if schema_row is None:
                     raise CapsuleIntegrityError("source database has no schema identity")
                 database_schema = schema_row.version
-            referenced_files = _job_source_files(job, ingestion, generation)
             job_artifacts = _bound_job_artifacts(
                 anki_root,
                 job,
                 repository.list_stage_artifacts(job_id),
             )
+
+        referenced_files = _registered_database_source_files(capsule_database, database_schema)
 
         _require_database_snapshot_matches(database_path, backup_after)
         before = _source_component_snapshot(database_path, anki_root, job_artifacts)
@@ -241,34 +239,16 @@ def export_capsule(
         raise
 
 
-def _job_source_files(
-    job: CurationJob,
-    ingestion: IngestionRepository,
-    generation: GenerationRepository,
-) -> tuple[Path, ...]:
-    source_revision_ids = job.source_revision_ids
-    paths: set[Path] = set()
-    for revision_id in source_revision_ids:
-        revision = ingestion.get_study_revision(revision_id)
-        for value in (
-            revision.immutable_source_path,
-            revision.immutable_derived_path,
-            revision.canonical_source_path,
-            revision.canonical_derived_path,
-            revision.icloud_path,
-        ):
-            if value is not None:
-                paths.add(value)
-    outline_id = job.summary_outline_id
-    if outline_id is not None:
-        outline = generation.outline(outline_id)
-        if outline is None:
-            raise CapsuleIntegrityError("frozen summary outline is unavailable")
-        paths.add(outline.path)
-        if outline.immutable_path is not None:
-            paths.add(outline.immutable_path)
+def _registered_database_source_files(database: Path, schema: int) -> tuple[Path, ...]:
+    """Return the exact de-duplicated registered file closure of the export."""
+
+    with closing(sqlite3.connect(database)) as connection:
+        paths = {
+            Path(registered_path.value)
+            for registered_path in enumerate_registered_paths(connection, schema)
+        }
     if not paths:
-        raise CapsuleIntegrityError("frozen job has no source artifacts")
+        raise CapsuleIntegrityError("job-scoped database has no registered source artifacts")
     return tuple(sorted(paths, key=str))
 
 
@@ -276,7 +256,41 @@ def _copy_logical_file(source: Path, capsule: Path, roots: dict[str, Path]) -> N
     if not source.is_file() or source.is_symlink():
         raise CapsuleIntegrityError(f"source artifact is unavailable or indirect: {source}")
     name, relative = _registered_root_relative(source, roots)
+    _require_direct_logical_source_file(source, roots[name])
     _copy_verified_file(source, capsule / "sources" / name / relative)
+
+
+def _require_direct_logical_source_file(source: Path, root: Path) -> None:
+    """Prove a registered lexical path is directly contained by its real root."""
+
+    try:
+        relative = source.relative_to(root)
+    except ValueError as exc:
+        raise CapsuleIntegrityError("source artifact is outside registered roots") from exc
+    current = root
+    for part in (None, *relative.parts):
+        if part is not None:
+            current = current / part
+        if _is_indirect_path_component(current):
+            raise CapsuleIntegrityError(f"source artifact is unavailable or indirect: {source}")
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved_source = source.resolve(strict=True)
+        resolved_source.relative_to(resolved_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise CapsuleIntegrityError("source artifact escapes its registered logical root") from exc
+
+
+def _is_indirect_path_component(path: Path) -> bool:
+    """Reject links and Windows junctions/reparse points when exposed by Python."""
+
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        return bool(is_junction()) if callable(is_junction) else False
+    except OSError:
+        return True
 
 
 def _bound_job_artifacts(

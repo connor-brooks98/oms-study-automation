@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -48,6 +49,7 @@ from oms_hub.anki.repository import AnkiCurationRepository, _validate_provider_e
 from oms_hub.db import Database
 
 Mode = Literal["deterministic", "shadow"]
+RunGoal = Literal["golden", "first_replay_miss"]
 ProviderCheckpoint = Literal["begun", "dispatched", "response_received", "terminal"]
 _FAILURE_INJECTION_STAGES = frozenset(
     {
@@ -71,6 +73,8 @@ _SECRET_MARKERS = (
 )
 _MAX_BODY = 4096
 _REPLAY_MANIFEST_NAME = "replay-supplement.json"
+_STRUCTURED_EMPTY_PACK_ERROR = re.compile(r"missing structured replay response ([0-9a-f]{64})\Z")
+_VECTOR_EMPTY_PACK_ERROR = "replay vector validation failed"
 _WINDOWS_RUNTIME_PROBE = """import json, sys, sysconfig
 paths = sysconfig.get_paths()
 dependencies = [path for path in (paths.get('purelib'), paths.get('platlib')) if path]
@@ -195,6 +199,7 @@ class RehearsalRequest:
     replay_supplement: Path | None = None
     expected_replay_supplement_manifest_sha256: str | None = None
     failure_injection: tuple[CurationStage, ProviderCheckpoint] | None = None
+    run_goal: RunGoal = "golden"
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +286,9 @@ class RehearsalResult:
         "Native NUC/Windows PowerShell capsule export pending",
         "Native NUC/Windows capsule execution pending",
     )
+    run_goal: RunGoal = "golden"
+    outcome: Literal["golden_success", "expected_replay_miss"] = "golden_success"
+    expected_replay_miss: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,6 +450,8 @@ class ProcessRehearsal:
         manifest = self._validate_destinations()
         overlay = materialize_capsule(self.request.capsule, self.request.overlay)
         self._install_replay_supplement(overlay)
+        if self.request.run_goal == "first_replay_miss":
+            _validate_empty_overlay_replay(overlay.root)
         database = Database(f"sqlite:///{overlay.database_path}")
         try:
             self._record("capsule_materialized", overlay=str(overlay.root))
@@ -516,6 +526,36 @@ class ProcessRehearsal:
                 client = self._start_and_connect(overlay, manifest)
                 self._record("process_restarted", job_id=str(job_id))
             final = self._poll(client, job_id, terminal=True)
+            if self.request.run_goal == "first_replay_miss":
+                miss = self._validate_expected_replay_miss(final, repository, job_id)
+                self._assert_smoke_http_transcript(client, job_id)
+                # The partial smoke claim is only made after every child has
+                # exited.  Do not let _stop_child validate a ledger while a
+                # sibling child could still be running.
+                self._stop_all()
+                adapter_ledger, egress_ledger = self._validate_runtime_evidence(overlay)
+                self._validate_expected_replay_miss_runtime(adapter_ledger, egress_ledger)
+                self._write_expected_replay_miss_evidence(
+                    manifest,
+                    overlay,
+                    client,
+                    repository,
+                    job_id,
+                    final,
+                    miss,
+                    adapter_ledger,
+                    egress_ledger,
+                )
+                _verify_evidence_zip(self.request.evidence_zip)
+                return RehearsalResult(
+                    job_id,
+                    overlay.root,
+                    self.request.evidence_zip,
+                    self._timeline,
+                    run_goal="first_replay_miss",
+                    outcome="expected_replay_miss",
+                    expected_replay_miss=miss,
+                )
             self._assert_provider_ledger_is_restart_safe(
                 repository,
                 job_id,
@@ -596,6 +636,8 @@ class ProcessRehearsal:
             raise ValueError("evidence destination must not already exist")
         if not 1024 <= self.request.port <= 65535:
             raise ValueError("rehearsal port must be in 1024..65535")
+        if self.request.run_goal not in {"golden", "first_replay_miss"}:
+            raise ValueError("rehearsal run goal is invalid")
         if self.request.mode == "shadow" and not self.request.shadow_egress_pins_json:
             raise ValueError("shadow rehearsal requires pinned egress JSON")
         if self.request.mode == "deterministic" and self.request.shadow_egress_pins_json:
@@ -619,6 +661,19 @@ class ProcessRehearsal:
             )
         if self.request.mode == "deterministic" and self.request.replay_supplement is None:
             raise ValueError("deterministic rehearsal requires a verified replay supplement")
+        if self.request.run_goal == "first_replay_miss":
+            if self.request.mode != "deterministic":
+                raise ValueError("first replay miss requires deterministic mode")
+            if self.request.restart_after_durable_boundary:
+                raise ValueError("first replay miss must disable restart")
+            if self.request.failure_injection is not None:
+                raise ValueError("first replay miss cannot use failure injection")
+            if self.request.replay_supplement is None:
+                raise ValueError("first replay miss requires a replay supplement")
+            _validate_empty_replay_supplement(
+                self.request.replay_supplement,
+                self.request.expected_replay_supplement_manifest_sha256,
+            )
         return manifest
 
     @staticmethod
@@ -850,10 +905,7 @@ class ProcessRehearsal:
 
     def _startup_ready_path(self, serial: int) -> Path:
         return (
-            self.request.overlay
-            / "rehearsal"
-            / "runtime-evidence"
-            / f"startup-{serial}.ready.json"
+            self.request.overlay / "rehearsal" / "runtime-evidence" / f"startup-{serial}.ready.json"
         )
 
     def _startup_release_path(self, serial: int) -> Path:
@@ -993,9 +1045,7 @@ class ProcessRehearsal:
                 attestation_path=attestation_path,
                 startup_ready_path=startup_ready_path,
                 startup_release_path=startup_release_path,
-                runtime_executable=self._windows_runtime_executable()
-                if _is_windows()
-                else None,
+                runtime_executable=self._windows_runtime_executable() if _is_windows() else None,
             )
             stdout_path = logs / f"serve-{serial}.stdout.log"
             stderr_path = logs / f"serve-{serial}.stderr.log"
@@ -1164,9 +1214,10 @@ class ProcessRehearsal:
         if _is_windows():
             if self._windows_runtime_identity is None:
                 raise RuntimeError("Windows runtime identity was not preflighted")
-            if Path(value["python_executable"]).resolve() != Path(
-                self._windows_runtime_identity["base_executable"]
-            ).resolve():
+            if (
+                Path(value["python_executable"]).resolve()
+                != Path(self._windows_runtime_identity["base_executable"]).resolve()
+            ):
                 raise RuntimeError("Hub source import attestation has the wrong runtime executable")
             if value["python_version"] != self._windows_runtime_identity["python_version"]:
                 raise RuntimeError("Hub source import attestation has the wrong runtime version")
@@ -1717,6 +1768,146 @@ class ProcessRehearsal:
         )
         return adapter, egress
 
+    def _assert_smoke_http_transcript(self, client: LoopbackHttp, job_id: UUID) -> None:
+        """Prove the partial goal never exercised review or mutation routes."""
+        allowed = {
+            ("GET", "/health"),
+            ("POST", "/api/anki/jobs"),
+            ("GET", f"/api/anki/jobs/{job_id}"),
+        }
+        if not client.transcript:
+            raise RuntimeError("expected replay miss has no HTTP transcript")
+        for item in client.transcript:
+            if not isinstance(item, dict):
+                raise RuntimeError("expected replay miss HTTP transcript is malformed")
+            method, path, status = item.get("method"), item.get("path"), item.get("status")
+            if not isinstance(status, int):
+                raise RuntimeError("expected replay miss HTTP transcript is malformed")
+            if (method, path) not in allowed:
+                raise RuntimeError("expected replay miss exercised a forbidden HTTP route")
+        health = [
+            item
+            for item in client.transcript
+            if item.get("method") == "GET" and item.get("path") == "/health"
+        ]
+        if not health or any(item.get("status") != 200 for item in health):
+            raise RuntimeError("expected replay miss lacks a healthy loopback attestation")
+        created = [
+            item
+            for item in client.transcript
+            if item.get("method") == "POST" and item.get("path") == "/api/anki/jobs"
+        ]
+        if len(created) != 1 or created[0].get("status") != 201:
+            raise RuntimeError("expected replay miss lacks the required HTTP job creation")
+        statuses = [
+            item
+            for item in client.transcript
+            if item.get("method") == "GET" and item.get("path") == f"/api/anki/jobs/{job_id}"
+        ]
+        if not statuses or any(item.get("status") != 200 for item in statuses):
+            raise RuntimeError("expected replay miss lacks a successful job-status poll")
+
+    def _validate_expected_replay_miss(
+        self, final: dict[str, Any], repository: AnkiCurationRepository, job_id: UUID
+    ) -> dict[str, Any]:
+        """Accept only the deliberate empty-pack miss, never a generic failure."""
+        if final.get("state") != "failed":
+            raise RuntimeError("expected replay miss did not reach a failed terminal job")
+        error = final.get("error")
+        if not isinstance(error, str):
+            raise RuntimeError("expected replay miss has no safe terminal job error")
+        rows = repository.list_provider_attempt_events(job_id)
+        namespace = _replay_namespace_sha256(repository.require_job(job_id))
+        return _expected_empty_replay_miss(rows, namespace, error)
+
+    def _write_expected_replay_miss_evidence(
+        self,
+        manifest: CapsuleManifest,
+        overlay: MaterializedCapsule,
+        client: LoopbackHttp,
+        repository: AnkiCurationRepository,
+        job_id: UUID,
+        final: dict[str, Any],
+        miss: dict[str, Any],
+        adapter_ledger: dict[str, Any],
+        egress_ledger: dict[str, Any],
+    ) -> None:
+        """Package a redacted, explicitly partial actual-process smoke result."""
+        if self._source_attestation is None:
+            raise RuntimeError("expected replay miss lacks source-process attestation")
+        if not self._children or any(item.observation.ended_at is None for item in self._children):
+            raise RuntimeError("expected replay miss has live children during evidence packaging")
+        records: dict[str, Any] = {
+            "outcome.json": {
+                "result": "EXPECTED_REPLAY_MISS",
+                "ready_for_review": False,
+                "execution_kind": "actual_hub_process_rehearsal",
+                "run_goal": "first_replay_miss",
+                "native_phase_b_acceptance_complete": False,
+                "a0_ready": False,
+                "native_prerequisite": (
+                    "Phase A native capsule materialization must pass before Phase B native "
+                    "execution can be accepted"
+                ),
+            },
+            "job.json": {
+                "id": str(job_id),
+                "state": final.get("state"),
+                "error": final.get("error"),
+            },
+            "expected-replay-miss.json": miss,
+            "capsule.json": manifest.model_dump(mode="json"),
+            "implementation.json": {
+                "repository": str(self.request.implementation_repository.resolve()),
+                "commit": self.request.expected_implementation_commit,
+                "tree": self.request.expected_implementation_tree,
+                "trusted_python": str(self.request.trusted_python.resolve()),
+                "trusted_python_sha256": _sha256_file(self.request.trusted_python),
+                "windows_runtime_identity": self._windows_runtime_identity,
+                "source_attestation": self._source_attestation,
+            },
+            "overlay.json": {
+                "root": str(overlay.root),
+                "database": str(overlay.database_path),
+                "path_audit": [asdict(row) for row in overlay.path_audit],
+            },
+            "processes.json": [
+                asdict(item.observation) | {"argv": _redact_argv(list(item.observation.argv))}
+                for item in self._children
+            ],
+            "timeline.json": self._timeline,
+            "http-transcript.json": _smoke_http_transcript(client.transcript),
+            "provider-attempt-ledger.json": repository.list_provider_attempt_events(job_id),
+            "read-only-anki-mutation-ledger.json": adapter_ledger,
+            "egress-decisions.json": egress_ledger,
+            "process-logs.json": {
+                f"{child.stdout_path.name}": _file_descriptor(child.stdout_path)
+                for child in self._children
+            }
+            | {
+                f"{child.stderr_path.name}": _file_descriptor(child.stderr_path)
+                for child in self._children
+            },
+        }
+        _write_deterministic_zip(self.request.evidence_zip, records)
+
+    def _validate_expected_replay_miss_runtime(
+        self, adapter_ledger: dict[str, Any], egress_ledger: dict[str, Any]
+    ) -> None:
+        """The smoke goal permits no Anki mutation attempt or non-loopback egress."""
+        adapter_records = adapter_ledger.get("records")
+        egress_records = egress_ledger.get("records")
+        if adapter_records != [] or not isinstance(egress_records, list):
+            raise RuntimeError(
+                "expected replay miss requires an empty read-only Anki mutation ledger"
+            )
+        authorizations = _require_no_denied_egress_authorizations(egress_records, "runtime")
+        if any(
+            str(row.get("host", "")).casefold().rstrip(".") not in {"localhost", "127.0.0.1", "::1"}
+            for row in authorizations
+        ):
+            raise RuntimeError("expected replay miss runtime evidence records non-loopback egress")
+
 
 def fresh_job_payload(failed: CurationJob) -> dict[str, Any]:
     """Create a new API request from the domain object, never a copied DB row."""
@@ -1912,8 +2103,7 @@ def _validate_recovered_provider_lifecycle(events: list[dict[str, object]]) -> N
     if dispatches > 1:
         raise RuntimeError("recovered provider logical call duplicated provider dispatch")
     requires_dispatch = any(
-        row.get("event")
-        in {"dispatched", "response_received", *_TERMINAL_PROVIDER_EVENTS}
+        row.get("event") in {"dispatched", "response_received", *_TERMINAL_PROVIDER_EVENTS}
         for row in events
     )
     if requires_dispatch and dispatches != 1:
@@ -1999,10 +2189,17 @@ class _CtypesWindowsJobApi:
             ]
 
         class _IoCounters(ctypes.Structure):
-            _fields_ = [(name, ctypes.c_ulonglong) for name in (
-                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
-            )]
+            _fields_ = [
+                (name, ctypes.c_ulonglong)
+                for name in (
+                    "ReadOperationCount",
+                    "WriteOperationCount",
+                    "OtherOperationCount",
+                    "ReadTransferCount",
+                    "WriteTransferCount",
+                    "OtherTransferCount",
+                )
+            ]
 
         class _ExtendedLimit(ctypes.Structure):
             _fields_ = [
@@ -2034,13 +2231,20 @@ class _CtypesWindowsJobApi:
         self._kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
         self._kernel32.CreateJobObjectW.restype = wintypes.HANDLE
         self._kernel32.SetInformationJobObject.argtypes = [
-            wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
         ]
         self._kernel32.SetInformationJobObject.restype = wintypes.BOOL
         self._kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
         self._kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
         self._kernel32.QueryInformationJobObject.argtypes = [
-            wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD, wintypes.LPVOID,
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.LPVOID,
         ]
         self._kernel32.QueryInformationJobObject.restype = wintypes.BOOL
         self._kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
@@ -2314,6 +2518,207 @@ def _file_descriptor(path: Path) -> dict[str, Any]:
 
 def _verify_replay_supplement(root: Path, expected_manifest_sha256: str | None) -> tuple[str, ...]:
     return tuple(sorted(_replay_supplement_entries(root, expected_manifest_sha256)))
+
+
+def _validate_empty_replay_supplement(root: Path, expected_manifest_sha256: str | None) -> None:
+    """Require semantic emptiness for the one authorized deterministic miss."""
+    entries = _replay_supplement_entries(root, expected_manifest_sha256)
+    structured = root / "structured.json"
+    try:
+        structured_value = json.loads(structured.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("first replay miss structured replay is malformed") from exc
+    if structured_value != {}:
+        raise ValueError("first replay miss requires an empty structured replay")
+    vector_entries = [name for name in entries if name.startswith("vectors/")]
+    if set(vector_entries).difference({"vectors/manifest.json"}):
+        raise ValueError("first replay miss replay vectors must have no payload files")
+    if "vectors/manifest.json" in entries:
+        try:
+            vector_manifest = json.loads((root / "vectors" / "manifest.json").read_text("utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("first replay miss vector manifest is malformed") from exc
+        if vector_manifest != {}:
+            raise ValueError("first replay miss requires an empty vector manifest")
+
+
+def _validate_empty_overlay_replay(root: Path) -> None:
+    """Fail closed unless the materialized replay tree is exactly empty-pack safe."""
+    replay = root / "replay"
+    if replay.is_symlink() or not replay.is_dir():
+        raise ValueError("first replay miss overlay replay directory is unavailable or indirect")
+    files: set[str] = set()
+    directories: set[str] = set()
+    for path in replay.rglob("*"):
+        if path.is_symlink():
+            raise ValueError("first replay miss overlay replay contains a symbolic link")
+        relative = path.relative_to(replay).as_posix()
+        if path.is_dir():
+            directories.add(relative)
+        elif path.is_file():
+            files.add(relative)
+        else:
+            raise ValueError("first replay miss overlay replay contains an indirect entry")
+    if files.difference({"structured.json", "vectors/manifest.json"}) or directories.difference(
+        {"vectors"}
+    ):
+        raise ValueError("first replay miss overlay replay contains payload or unknown files")
+    if "structured.json" not in files:
+        raise ValueError("first replay miss overlay replay lacks structured.json")
+    try:
+        structured = json.loads((replay / "structured.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("first replay miss overlay structured replay is malformed") from exc
+    if structured != {}:
+        raise ValueError("first replay miss overlay structured replay is not empty")
+    if "vectors" in directories and "vectors/manifest.json" not in files:
+        raise ValueError("first replay miss overlay vectors directory lacks its empty manifest")
+    if "vectors/manifest.json" in files:
+        try:
+            vector_manifest = json.loads(
+                (replay / "vectors" / "manifest.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("first replay miss overlay vector manifest is malformed") from exc
+        if vector_manifest != {}:
+            raise ValueError("first replay miss overlay vector manifest is not empty")
+
+
+def _expected_empty_replay_miss(
+    rows: list[dict[str, object]], replay_namespace_sha256: str, job_error: str
+) -> dict[str, Any]:
+    """Bind a safe terminal job error to exactly one durable provider call."""
+    if not rows:
+        raise RuntimeError("expected replay miss has no durable provider evidence")
+    try:
+        groups = _stable_logical_call_event_groups(rows, replay_namespace_sha256)
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError("expected replay miss provider evidence is malformed") from exc
+    if len(groups) != 1:
+        raise RuntimeError("expected replay miss requires exactly one logical provider call")
+    events = next(iter(groups.values()))
+    if len(events) != 3:
+        raise RuntimeError("expected replay miss provider chain has an unexpected topology")
+    identity_keys = (
+        "stage",
+        "stage_attempt",
+        "mode",
+        "call_index",
+        "subcall_ordinal",
+        "kind",
+        "request_sha256",
+        "instruction_sha256",
+        "input_sha256",
+        "output_schema_sha256",
+        "generation_parameters_sha256",
+        "batch_note_ids_sha256",
+    )
+    first = events[0]
+    event_ids = [row.get("id") for row in events]
+    if not all(isinstance(value, int) for value in event_ids):
+        raise RuntimeError("expected replay miss provider evidence is not append-only")
+    ordered_event_ids = cast(list[int], event_ids)
+    if ordered_event_ids != sorted(set(ordered_event_ids)):
+        raise RuntimeError("expected replay miss provider evidence is not append-only")
+    if any(not _has_safe_replay_identity(row, identity_keys) for row in events):
+        raise RuntimeError("expected replay miss provider evidence lacks durable identity")
+    if any(row.get(key) != first.get(key) for row in events for key in identity_keys):
+        raise RuntimeError("expected replay miss provider chain changes identity")
+    if [row.get("event") for row in events[:2]] != ["begun", "dispatched"]:
+        raise RuntimeError("expected replay miss provider chain is not append-only")
+    if any(
+        row.get("response_text") is not None
+        or row.get("response_sha256") is not None
+        or row.get("event") in {"response_received", "accepted"}
+        for row in events
+    ):
+        raise RuntimeError("expected replay miss provider evidence includes a response")
+    terminal = events[-1]
+    terminal_event = terminal.get("event")
+    terminal_error = terminal.get("validation_error")
+    if not isinstance(terminal_error, str):
+        raise RuntimeError("expected replay miss provider terminal error is malformed")
+    structured = _STRUCTURED_EMPTY_PACK_ERROR.fullmatch(job_error)
+    if structured is not None:
+        if terminal_event != "transport_failed" or terminal_error != job_error:
+            raise RuntimeError("structured replay miss does not match durable provider evidence")
+        if first.get("kind") not in {"primary", "repair"}:
+            raise RuntimeError("structured replay miss has an unexpected provider call kind")
+        expected_structured_topology = {
+            "stage": CurationStage.CARD_LEDGER.value,
+            "stage_attempt": 1,
+            "mode": "canonical",
+            "kind": "primary",
+            "batch_index": 0,
+            "batch_note_ids": [],
+            "batch_note_ids_sha256": hashlib.sha256(b"[]").hexdigest(),
+            "subcall_ordinal": 0,
+        }
+        if any(first.get(key) != value for key, value in expected_structured_topology.items()):
+            raise RuntimeError("structured replay miss has an unexpected first-call topology")
+        result: dict[str, Any] = {
+            "kind": "structured_empty_pack",
+            "key": structured.group(1),
+        }
+    elif job_error == _VECTOR_EMPTY_PACK_ERROR:
+        raise RuntimeError("vector replay miss cannot satisfy the empty structured-pack smoke goal")
+    else:
+        raise RuntimeError("terminal job failure is not a recognized deterministic replay miss")
+    result.update(
+        {
+            "stage": first["stage"],
+            "stage_attempt": first["stage_attempt"],
+            "call_index": first["call_index"],
+            "subcall_ordinal": first["subcall_ordinal"],
+            "request_sha256": first["request_sha256"],
+            "provider_chain": [str(row["event"]) for row in events],
+        }
+    )
+    return result
+
+
+def _has_safe_replay_identity(row: dict[str, object], keys: tuple[str, ...]) -> bool:
+    if not isinstance(row.get("id"), int) or cast(int, row["id"]) <= 0:
+        return False
+    if not isinstance(row.get("stage"), str) or not isinstance(row.get("mode"), str):
+        return False
+    if row.get("stage_attempt") is None or row.get("call_index") is None:
+        return False
+    if not isinstance(row.get("stage_attempt"), int) or not isinstance(row.get("call_index"), int):
+        return False
+    if cast(int, row["stage_attempt"]) < 1 or cast(int, row["call_index"]) < 1:
+        return False
+    if not isinstance(row.get("subcall_ordinal"), int) or cast(int, row["subcall_ordinal"]) < 0:
+        return False
+    for key in keys:
+        if key.endswith("sha256") and not isinstance(row.get(key), str):
+            return False
+        if key.endswith("sha256") and not _is_sha256(cast(str, row[key])):
+            return False
+    return isinstance(row.get("kind"), str)
+
+
+def _smoke_http_transcript(transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep route/status evidence while excluding request and response plaintext."""
+    redacted: list[dict[str, Any]] = []
+    for item in transcript:
+        method, path, status = item.get("method"), item.get("path"), item.get("status")
+        if not isinstance(method, str) or not isinstance(path, str) or not isinstance(status, int):
+            raise RuntimeError("expected replay miss HTTP transcript is malformed")
+        redacted.append(
+            {
+                "method": method,
+                "path": path,
+                "status": status,
+                "request_sha256": hashlib.sha256(
+                    _canonical_json(item.get("request_body")).encode()
+                ).hexdigest(),
+                "response_sha256": hashlib.sha256(
+                    _canonical_json(item.get("response_body")).encode()
+                ).hexdigest(),
+            }
+        )
+    return redacted
 
 
 def _replay_supplement_entries(

@@ -33,6 +33,7 @@ from oms_hub.anki.rehearsal.process import (
     RehearsalRequest,
     RehearsalResult,
     _environment_evidence,
+    _expected_empty_replay_miss,
     _failure_injection_stage_order,
     _load_runtime_ledger,
     _replay_namespace_sha256,
@@ -40,6 +41,8 @@ from oms_hub.anki.rehearsal.process import (
     _stable_logical_call_ids,
     _validate_adapter_ledger,
     _validate_egress_ledger,
+    _validate_empty_overlay_replay,
+    _validate_empty_replay_supplement,
     _verify_replay_supplement,
     _write_deterministic_zip,
     fresh_job_payload,
@@ -330,6 +333,382 @@ def _replay_supplement(tmp_path: Path) -> tuple[Path, str]:
     manifest_path = root / "replay-supplement.json"
     manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
     return root, hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+
+def _refresh_replay_supplement_manifest(root: Path) -> str:
+    files = [
+        {
+            "path": path.relative_to(root).as_posix(),
+            "bytes": path.stat().st_size,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.name != "replay-supplement.json"
+    ]
+    manifest = root / "replay-supplement.json"
+    manifest.write_text(
+        json.dumps({"schema_version": 1, "manifest_rule": "self-excluding", "files": files}),
+        encoding="utf-8",
+    )
+    return hashlib.sha256(manifest.read_bytes()).hexdigest()
+
+
+def _empty_replay_miss_rows(
+    terminal: str = "transport_failed",
+    *,
+    kind: str = "primary",
+    provider: str = "openai",
+    **topology: object,
+) -> list[dict[str, object]]:
+    common: dict[str, object] = {
+        "stage": "card_ledger",
+        "stage_attempt": 1,
+        "mode": "canonical",
+        "call_index": 7,
+        "subcall_ordinal": 0,
+        "batch_index": 0,
+        "batch_note_ids": [],
+        "batch_note_ids_sha256": hashlib.sha256(b"[]").hexdigest(),
+        "kind": kind,
+        "provider": provider,
+        "model": "fixture",
+        "instruction_sha256": "b" * 64,
+        "input_sha256": "c" * 64,
+        "output_schema_sha256": "d" * 64,
+        "generation_parameters": {},
+        "generation_parameters_sha256": "e" * 64,
+        "cache_prefix_sha256": None,
+        "request_sha256": "f" * 64,
+        "request_id": None,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_microusd": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "response_sha256": None,
+        "response_text": None,
+        "missing_note_ids": [],
+        "extra_note_ids": [],
+        "duplicate_note_ids": [],
+        "diagnostic_source": None,
+        "http_status": None,
+        "created_at": "2026-08-13T00:00:00+00:00",
+    }
+    common.update(topology)
+    error = (
+        f"missing structured replay response {'1' * 64}"
+        if terminal == "transport_failed"
+        else "replay vector validation failed"
+    )
+    return [
+        common
+        | {
+            "id": ordinal,
+            "event": event,
+            "validation_error": error if event == terminal else None,
+        }
+        for ordinal, event in enumerate(("begun", "dispatched", terminal), 1)
+    ]
+
+
+def test_first_replay_miss_defaults_to_golden_and_rejects_invalid_combinations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    supplement, supplement_sha256 = _replay_supplement(tmp_path)
+    capsule = tmp_path / "capsule"
+    capsule.mkdir()
+    (capsule / "capsule.json").write_text("{}", encoding="utf-8")
+    capsule_sha256 = hashlib.sha256((capsule / "capsule.json").read_bytes()).hexdigest()
+    monkeypatch.setattr(ProcessRehearsal, "_verify_implementation_identity", lambda self: None)
+    monkeypatch.setattr(process_module, "verify_capsule", lambda _capsule: SimpleNamespace())
+    golden = _request(
+        tmp_path,
+        capsule=capsule,
+        expected_manifest_sha256=capsule_sha256,
+        replay_supplement=supplement,
+        expected_replay_supplement_manifest_sha256=supplement_sha256,
+    )
+    assert golden.run_goal == "golden"
+    for changes, message in (
+        ({"mode": "shadow", "shadow_egress_pins_json": "{}"}, "deterministic mode"),
+        ({"restart_after_durable_boundary": True}, "disable restart"),
+        ({"failure_injection": (CurationStage.CARD_RESIDUAL, "begun")}, "failure injection"),
+    ):
+        values = {
+            "capsule": capsule,
+            "expected_manifest_sha256": capsule_sha256,
+            "replay_supplement": supplement,
+            "expected_replay_supplement_manifest_sha256": supplement_sha256,
+            "run_goal": "first_replay_miss",
+            "restart_after_durable_boundary": False,
+        } | changes
+        request = _request(tmp_path, **values)
+        with pytest.raises(ValueError, match=message):
+            ProcessRehearsal(request)._validate_destinations()
+
+
+def test_first_replay_miss_rejects_nonempty_or_malformed_replay_before_child_launch(
+    tmp_path: Path,
+) -> None:
+    supplement, supplement_sha256 = _replay_supplement(tmp_path)
+    (supplement / "structured.json").write_text('{"not":"empty"}', encoding="utf-8")
+    supplement_sha256 = _refresh_replay_supplement_manifest(supplement)
+    with pytest.raises(ValueError, match="empty structured replay"):
+        _validate_empty_replay_supplement(supplement, supplement_sha256)
+    malformed, _malformed_sha256 = _replay_supplement(tmp_path / "malformed")
+    (malformed / "vectors" / "manifest.json").write_text("[]", encoding="utf-8")
+    # Rebuild just the test supplement manifest so this exercises semantic
+    # validation rather than its earlier byte-integrity gate.
+    malformed_sha256 = _refresh_replay_supplement_manifest(malformed)
+    with pytest.raises(ValueError, match="empty vector manifest"):
+        _validate_empty_replay_supplement(malformed, malformed_sha256)
+
+
+def test_first_replay_miss_rejects_capsule_carried_overlay_payload_before_connect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _request(tmp_path, run_goal="first_replay_miss", restart_after_durable_boundary=False)
+    overlay_root = tmp_path / "overlay"
+    (overlay_root / "replay" / "vectors").mkdir(parents=True)
+    (overlay_root / "replay" / "structured.json").write_text("{}", encoding="utf-8")
+    (overlay_root / "replay" / "vectors" / "payload.npy").write_bytes(b"not a vector")
+    overlay = SimpleNamespace(root=overlay_root, database_path=overlay_root / "db.sqlite")
+    connected = False
+    monkeypatch.setattr(ProcessRehearsal, "_validate_destinations", lambda self: SimpleNamespace())
+    monkeypatch.setattr(process_module, "materialize_capsule", lambda *_args: overlay)
+    monkeypatch.setattr(ProcessRehearsal, "_install_replay_supplement", lambda *_args: None)
+
+    def connect(*_args: object) -> LoopbackHttp:
+        nonlocal connected
+        connected = True
+        raise AssertionError("overlay replay validation must precede connection")
+
+    monkeypatch.setattr(ProcessRehearsal, "_start_and_connect", connect)
+    with pytest.raises(ValueError, match="payload or unknown"):
+        ProcessRehearsal(request).run()
+    assert connected is False
+    with pytest.raises(ValueError, match="payload or unknown"):
+        _validate_empty_overlay_replay(overlay_root)
+
+
+def test_expected_replay_miss_requires_exact_safe_error_and_single_chain() -> None:
+    namespace = "0" * 64
+    structured_rows = _empty_replay_miss_rows()
+    miss = _expected_empty_replay_miss(
+        structured_rows, namespace, f"missing structured replay response {'1' * 64}"
+    )
+    assert miss["kind"] == "structured_empty_pack"
+    assert miss["provider_chain"] == ["begun", "dispatched", "transport_failed"]
+    structured_error = f"missing structured replay response {'1' * 64}"
+    for rows, error in (
+        (structured_rows + _empty_replay_miss_rows(), structured_error),
+        (
+            structured_rows[:-1] + [structured_rows[-1] | {"event": "validation_failed"}],
+            structured_error,
+        ),
+        (
+            _empty_replay_miss_rows("validation_failed", kind="query_embedding", provider="replay"),
+            "replay vector validation failed",
+        ),
+        (structured_rows, "arbitrary worker failure"),
+        (
+            structured_rows[:-1] + [structured_rows[-1] | {"response_text": "forbidden"}],
+            structured_error,
+        ),
+    ):
+        with pytest.raises(RuntimeError):
+            _expected_empty_replay_miss(rows, namespace, error)
+
+
+@pytest.mark.parametrize(
+    "topology",
+    (
+        {"stage": "card_residual"},
+        {"stage_attempt": 2},
+        {"mode": "shadow"},
+        {"kind": "repair"},
+        {"batch_index": 1},
+        {"batch_note_ids": [1]},
+        {"subcall_ordinal": 1},
+    ),
+)
+def test_expected_structured_replay_miss_rejects_wrong_s2_first_topology(
+    topology: dict[str, object],
+) -> None:
+    with pytest.raises(RuntimeError, match="topology"):
+        _expected_empty_replay_miss(
+            _empty_replay_miss_rows(**topology),
+            "0" * 64,
+            f"missing structured replay response {'1' * 64}",
+        )
+
+
+def test_smoke_http_transcript_requires_health_create_and_status(tmp_path: Path) -> None:
+    harness = ProcessRehearsal(_request(tmp_path, restart_after_durable_boundary=False))
+    job_id = UUID(int=2)
+    client = SimpleNamespace(
+        transcript=[
+            {"method": "GET", "path": "/health", "status": 200},
+            {"method": "POST", "path": "/api/anki/jobs", "status": 201},
+            {"method": "GET", "path": f"/api/anki/jobs/{job_id}", "status": 200},
+        ]
+    )
+    harness._assert_smoke_http_transcript(client, job_id)
+    for transcript in (
+        client.transcript[1:],
+        [client.transcript[0], client.transcript[2]],
+        [client.transcript[0], client.transcript[1]],
+        [{"method": "GET", "path": "/health", "status": "200"}, *client.transcript[1:]],
+    ):
+        with pytest.raises(RuntimeError):
+            harness._assert_smoke_http_transcript(SimpleNamespace(transcript=transcript), job_id)
+    for forbidden in ("review", "envelope", "apply", "retry", "restart"):
+        with pytest.raises(RuntimeError):
+            harness._assert_smoke_http_transcript(
+                SimpleNamespace(
+                    transcript=[
+                        *client.transcript,
+                        {
+                            "method": "POST",
+                            "path": f"/api/anki/jobs/{job_id}/{forbidden}",
+                            "status": 200,
+                        },
+                    ]
+                ),
+                job_id,
+            )
+
+
+def test_smoke_runtime_ledger_requires_empty_mutations_and_loopback_only(tmp_path: Path) -> None:
+    harness = ProcessRehearsal(_request(tmp_path, restart_after_durable_boundary=False))
+    adapter = {"records": []}
+    loopback = {"records": [{"kind": "authorization", "host": "127.0.0.1", "allowed": True}]}
+    harness._validate_expected_replay_miss_runtime(adapter, loopback)
+    with pytest.raises(RuntimeError, match="empty read-only"):
+        harness._validate_expected_replay_miss_runtime(
+            {"records": [{"action": "addNotes"}]}, loopback
+        )
+    with pytest.raises(RuntimeError, match="non-loopback"):
+        harness._validate_expected_replay_miss_runtime(
+            adapter,
+            {"records": [{"kind": "authorization", "host": "provider.example", "allowed": True}]},
+        )
+
+
+def test_process_run_executes_expected_replay_miss_branch_in_safe_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _request(tmp_path, run_goal="first_replay_miss", restart_after_durable_boundary=False)
+    harness = ProcessRehearsal(request)
+    job_id = UUID(int=2)
+    order: list[str] = []
+    child = SimpleNamespace(
+        observation=process_module.ProcessObservation(7, 7, "start", None, None, ("python",))
+    )
+    harness._children = [child]
+    manifest = SimpleNamespace()
+    overlay = SimpleNamespace(
+        root=tmp_path / "overlay", database_path=tmp_path / "overlay/db.sqlite"
+    )
+    (overlay.root / "replay").mkdir(parents=True)
+    (overlay.root / "replay" / "structured.json").write_text("{}", encoding="utf-8")
+    repository = SimpleNamespace(require_job=lambda _job_id: SimpleNamespace(id=UUID(int=1)))
+    client = SimpleNamespace(request=lambda *_args: (201, {"id": str(job_id)}))
+    monkeypatch.setattr(ProcessRehearsal, "_validate_destinations", lambda self: manifest)
+    monkeypatch.setattr(
+        process_module, "materialize_capsule", lambda *_args: order.append("materialize") or overlay
+    )
+    monkeypatch.setattr(
+        ProcessRehearsal, "_install_replay_supplement", lambda *_args: order.append("install")
+    )
+    monkeypatch.setattr(
+        process_module, "Database", lambda _url: SimpleNamespace(close=lambda: None)
+    )
+    monkeypatch.setattr(process_module, "AnkiCurationRepository", lambda _database: repository)
+    monkeypatch.setattr(
+        ProcessRehearsal, "_start_and_connect", lambda *_args: order.append("connect") or client
+    )
+    monkeypatch.setattr(process_module, "fresh_job_payload", lambda _failed: {})
+    monkeypatch.setattr(
+        ProcessRehearsal,
+        "_poll",
+        lambda *_args, **_kwargs: (
+            order.append("poll")
+            or {"state": "failed", "error": "missing structured replay response " + "1" * 64}
+        ),
+    )
+    monkeypatch.setattr(
+        ProcessRehearsal,
+        "_validate_expected_replay_miss",
+        lambda *_args: order.append("miss") or {"kind": "structured_empty_pack"},
+    )
+    monkeypatch.setattr(
+        ProcessRehearsal, "_assert_smoke_http_transcript", lambda *_args: order.append("http")
+    )
+
+    def stop_all(_overlay: object = None) -> None:
+        order.append("stop")
+        child.observation = process_module.ProcessObservation(7, 7, "start", "end", 0, ("python",))
+
+    def runtime(_overlay: object) -> tuple[dict[str, object], dict[str, object]]:
+        assert child.observation.ended_at == "end"
+        order.append("runtime")
+        return {"records": []}, {"records": []}
+
+    def policy(*_args: object) -> None:
+        assert child.observation.ended_at == "end"
+        order.append("policy")
+
+    def write(*_args: object) -> None:
+        assert child.observation.ended_at == "end"
+        order.append("write")
+        _write_deterministic_zip(
+            request.evidence_zip, {"outcome.json": {"result": "EXPECTED_REPLAY_MISS"}}
+        )
+
+    original_verify = process_module._verify_evidence_zip
+    monkeypatch.setattr(ProcessRehearsal, "_stop_all", lambda self, overlay=None: stop_all(overlay))
+    monkeypatch.setattr(
+        ProcessRehearsal, "_validate_runtime_evidence", lambda self, value: runtime(value)
+    )
+    monkeypatch.setattr(
+        ProcessRehearsal,
+        "_validate_expected_replay_miss_runtime",
+        lambda self, *args: policy(*args),
+    )
+    monkeypatch.setattr(
+        ProcessRehearsal, "_write_expected_replay_miss_evidence", lambda self, *args: write(*args)
+    )
+    monkeypatch.setattr(
+        process_module,
+        "_verify_evidence_zip",
+        lambda path: order.append("verify") or original_verify(path),
+    )
+    monkeypatch.setattr(
+        ProcessRehearsal, "_restart_after_durable_boundary", lambda *_args: pytest.fail("restart")
+    )
+    monkeypatch.setattr(
+        ProcessRehearsal,
+        "_assert_provider_ledger_is_restart_safe",
+        lambda *_args: pytest.fail("golden provider check"),
+    )
+    monkeypatch.setattr(
+        process_module, "unchanged_review_payload", lambda *_args: pytest.fail("golden review")
+    )
+
+    result = harness.run()
+
+    assert result.outcome == "expected_replay_miss"
+    assert result.run_goal == "first_replay_miss"
+    assert order.index("materialize") < order.index("install") < order.index("connect")
+    assert order.index("connect") < order.index("poll") < order.index("miss") < order.index("http")
+    assert order.index("http") < order.index("stop") < order.index("runtime")
+    assert (
+        order.index("runtime")
+        < order.index("policy")
+        < order.index("write")
+        < order.index("verify")
+    )
 
 
 def test_refuses_existing_overlay_and_evidence_before_capsule_access(tmp_path: Path) -> None:
@@ -1442,6 +1821,83 @@ def test_standalone_launcher_has_no_public_child_only_arguments() -> None:
     }
 
 
+def test_standalone_launcher_forwards_optional_run_goal_without_changing_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = Path(__file__).parents[2] / "scripts" / "run-a0-rehearsal.py"
+    launcher = runpy.run_path(str(script), run_name="launcher_test")
+    parser = launcher["_parser"]()
+    required = [
+        "--capsule",
+        "capsule",
+        "--overlay",
+        "overlay",
+        "--mode",
+        "deterministic",
+        "--port",
+        "8788",
+        "--evidence-zip",
+        "evidence.zip",
+        "--failed-job-id",
+        "12345678-1234-5678-1234-567812345678",
+        "--expected-manifest-sha256",
+        "0" * 64,
+        "--implementation-repository",
+        "implementation",
+        "--expected-implementation-commit",
+        "a" * 40,
+        "--expected-implementation-tree",
+        "b" * 40,
+        "--trusted-python",
+        str(Path(sys.executable)),
+    ]
+    default_request = RehearsalRequest(**vars(parser.parse_args(required)))
+    assert default_request.run_goal == "golden"
+    assert default_request.restart_after_durable_boundary is True
+    smoke_without_no_restart = RehearsalRequest(
+        **vars(parser.parse_args([*required, "--run-goal", "first_replay_miss"]))
+    )
+    assert smoke_without_no_restart.run_goal == "first_replay_miss"
+    assert smoke_without_no_restart.restart_after_durable_boundary is True
+    supplement, supplement_sha256 = _replay_supplement(tmp_path)
+    capsule = tmp_path / "capsule"
+    capsule.mkdir()
+    (capsule / "capsule.json").write_text("{}", encoding="utf-8")
+    capsule_sha256 = hashlib.sha256((capsule / "capsule.json").read_bytes()).hexdigest()
+    mapped_smoke_without_restart = RehearsalRequest(
+        **vars(
+            parser.parse_args(
+                [
+                    *required,
+                    "--capsule",
+                    str(capsule),
+                    "--overlay",
+                    str(tmp_path / "mapped-overlay"),
+                    "--evidence-zip",
+                    str(tmp_path / "mapped.zip"),
+                    "--expected-manifest-sha256",
+                    capsule_sha256,
+                    "--replay-supplement",
+                    str(supplement),
+                    "--expected-replay-supplement-manifest-sha256",
+                    supplement_sha256,
+                    "--run-goal",
+                    "first_replay_miss",
+                ]
+            )
+        )
+    )
+    monkeypatch.setattr(ProcessRehearsal, "_verify_implementation_identity", lambda self: None)
+    monkeypatch.setattr(process_module, "verify_capsule", lambda _capsule: SimpleNamespace())
+    with pytest.raises(ValueError, match="disable restart"):
+        ProcessRehearsal(mapped_smoke_without_restart)._validate_destinations()
+    smoke_request = RehearsalRequest(
+        **vars(parser.parse_args([*required, "--run-goal", "first_replay_miss", "--no-restart"]))
+    )
+    assert smoke_request.run_goal == "first_replay_miss"
+    assert smoke_request.restart_after_durable_boundary is False
+
+
 def test_standalone_launcher_full_reexec_uses_venv_dependencies_and_propagates_exit(
     tmp_path: Path,
 ) -> None:
@@ -1504,6 +1960,8 @@ def test_standalone_launcher_full_reexec_uses_venv_dependencies_and_propagates_e
         "            'job_id': pydantic.__version__,\n"
         "            'overlay': 'overlay',\n"
         "            'evidence_zip': 'evidence',\n"
+        "            'run_goal': self.request.kwargs['run_goal'],\n"
+        "            'outcome': 'golden_success',\n"
         "        })()\n",
         encoding="utf-8",
     )
@@ -1537,11 +1995,26 @@ def test_standalone_launcher_full_reexec_uses_venv_dependencies_and_propagates_e
         text=True,
     ).stdout.strip()
     common = [
-        "--capsule", str(tmp_path / "capsule"), "--overlay", str(tmp_path / "overlay"),
-        "--port", "8765", "--evidence-zip", str(tmp_path / "evidence.zip"),
-        "--failed-job-id", str(UUID(int=1)), "--expected-manifest-sha256", "0" * 64,
-        "--implementation-repository", str(repository), "--expected-implementation-commit", commit,
-        "--expected-implementation-tree", tree, "--trusted-python", str(launcher_python),
+        "--capsule",
+        str(tmp_path / "capsule"),
+        "--overlay",
+        str(tmp_path / "overlay"),
+        "--port",
+        "8765",
+        "--evidence-zip",
+        str(tmp_path / "evidence.zip"),
+        "--failed-job-id",
+        str(UUID(int=1)),
+        "--expected-manifest-sha256",
+        "0" * 64,
+        "--implementation-repository",
+        str(repository),
+        "--expected-implementation-commit",
+        commit,
+        "--expected-implementation-tree",
+        tree,
+        "--trusted-python",
+        str(launcher_python),
     ]
     success = subprocess.run(
         [str(launcher_python), str(script), "--mode", "deterministic", *common],
@@ -1552,6 +2025,7 @@ def test_standalone_launcher_full_reexec_uses_venv_dependencies_and_propagates_e
     )
     assert success.returncode == 0
     assert "job_id=transported-dependency" in success.stdout
+    assert "run_goal=golden outcome=golden_success" in success.stdout
     assert "PYTHONPATH" not in success.stderr
     forged_environment = {
         **os.environ,
@@ -1904,10 +2378,13 @@ def test_crash_egress_authorization_gate_rejects_denial_but_allows_lifecycle_mar
     ]
     with pytest.raises(RuntimeError, match="crash evidence records denied or forbidden"):
         _require_no_denied_egress_authorizations(records, "crash")
-    assert _require_no_denied_egress_authorizations(
-        [{"kind": "startup", "allowed": None}, {"kind": "shutdown", "allowed": None}],
-        "crash",
-    ) == []
+    assert (
+        _require_no_denied_egress_authorizations(
+            [{"kind": "startup", "allowed": None}, {"kind": "shutdown", "allowed": None}],
+            "crash",
+        )
+        == []
+    )
 
 
 def test_runtime_evidence_missing_file_fails_closed(tmp_path: Path) -> None:

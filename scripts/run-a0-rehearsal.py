@@ -42,6 +42,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--replay-supplement", type=Path)
     parser.add_argument("--expected-replay-supplement-manifest-sha256")
     parser.add_argument("--timeout-seconds", type=float, default=300.0)
+    parser.add_argument("--run-goal", choices=("golden", "first_replay_miss"), default="golden")
+    parser.add_argument(
+        "--no-restart",
+        dest="restart_after_durable_boundary",
+        action="store_false",
+        default=True,
+        help="disable the durable-boundary restart (required for first_replay_miss)",
+    )
     return parser
 
 
@@ -164,16 +172,20 @@ def _validate_isolated_runtime(
 ) -> list[str]:
     document = _decode_attestation(encoded_attestation, attestation_sha256)
     expected_keys = {
-        "schema_version", "parent_pid", "launcher", "launcher_sha256", "runtime",
-        "runtime_sha256", "runtime_version", "runtime_implementation", "runtime_cache_tag",
+        "schema_version",
+        "parent_pid",
+        "launcher",
+        "launcher_sha256",
+        "runtime",
+        "runtime_sha256",
+        "runtime_version",
+        "runtime_implementation",
+        "runtime_cache_tag",
         "dependency_paths",
     }
     if set(document) != expected_keys or document["schema_version"] != 1:
         raise RuntimeError("isolated launch attestation is invalid")
-    if (
-        type(document["parent_pid"]) is not int
-        or os.getppid() != document["parent_pid"]
-    ):
+    if type(document["parent_pid"]) is not int or os.getppid() != document["parent_pid"]:
         raise RuntimeError("isolated launch has no trusted parent origin")
     runtime = Path(str(document["runtime"])).resolve()
     if runtime != Path(sys.executable).resolve() or not runtime.is_file():
@@ -262,7 +274,10 @@ def _isolated_main(payload: object) -> int:
 
     request = vars(args).copy()
     result = ProcessRehearsal(RehearsalRequest(**request)).run()
-    print(f"job_id={result.job_id} overlay={result.overlay} evidence={result.evidence_zip}")
+    print(
+        f"job_id={result.job_id} overlay={result.overlay} evidence={result.evidence_zip} "
+        f"run_goal={result.run_goal} outcome={result.outcome}"
+    )
     return 0
 
 

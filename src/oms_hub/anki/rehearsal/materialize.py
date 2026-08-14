@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import shutil
 import sqlite3
 import stat
@@ -11,59 +10,21 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 
+from oms_hub.anki.rehearsal import path_contract
 from oms_hub.anki.rehearsal.capsule import (
     CapsuleIntegrityError,
     verify_capsule,
     verify_capsule_contents,
 )
-from oms_hub.migrations import LATEST_SCHEMA_VERSION
+from oms_hub.anki.rehearsal.path_contract import (
+    contains_windows_absolute_path,
+    enumerate_registered_paths,
+    is_windows_absolute_path,
+    registered_path_columns,
+)
 
-PATH_REGISTRY_VERSION = 1
-_WINDOWS_ABSOLUTE = re.compile(r"(?i)(?:^|[\"'])([a-z]:\\[^\"'\r\n]*)")
-
-# This registry is intentionally explicit. New schema path fields must be added
-# here and covered by a migration/materialization regression before use.
-_PATH_COLUMNS: dict[int, dict[str, tuple[str, ...]]] = {
-    25: {
-        "upload_items": ("staged_path",),
-        "study_revisions": (
-            "immutable_source_path",
-            "immutable_derived_path",
-            "canonical_source_path",
-            "canonical_derived_path",
-            "icloud_path",
-        ),
-        "study_prompt_settings": ("path",),
-        "generation_jobs": ("prompt_path",),
-        "outline_outputs": ("path", "immutable_path"),
-        "existing_artifact_imports": (
-            "canonical_transcript_path",
-            "canonical_outline_path",
-            "immutable_transcript_path",
-            "immutable_outline_path",
-            "previous_immutable_pdf_path",
-            "imported_immutable_pdf_path",
-        ),
-        "studio_sources": ("payload_path",),
-        "studio_quiz_image_requirements": ("asset_path",),
-        "published_quiz_media": ("path",),
-    }
-}
-_PATH_COLUMNS[26] = _PATH_COLUMNS[25]
-# Schema v27 adds provider-attempt subcall identity only; it introduces no
-# persisted path field, so its materialization registry is deliberately equal
-# to v26.  Future schemas must be added explicitly here.
-_PATH_COLUMNS[27] = _PATH_COLUMNS[26]
-
-
-def _assert_path_registry_synchronized() -> None:
-    """Fail closed when a supported database schema lacks path ownership."""
-
-    expected = set(range(25, LATEST_SCHEMA_VERSION + 1))
-    if set(_PATH_COLUMNS) != expected or LATEST_SCHEMA_VERSION not in _PATH_COLUMNS:
-        raise CapsuleIntegrityError("path registry is not synchronized with supported schemas")
-
-
+PATH_REGISTRY_VERSION = path_contract.PATH_REGISTRY_VERSION
+_PATH_COLUMNS = path_contract._PATH_COLUMNS
 @dataclass(frozen=True, slots=True)
 class PathMaterializationAudit:
     table: str
@@ -164,58 +125,34 @@ def _materialize_paths(
     source_roots: dict[str, str],
     logical_roots: dict[str, Path],
 ) -> tuple[PathMaterializationAudit, ...]:
-    _assert_path_registry_synchronized()
-    registry = _PATH_COLUMNS.get(schema)
-    if registry is None:
-        raise CapsuleIntegrityError(f"unsupported path registry for database schema {schema}")
     audits: list[PathMaterializationAudit] = []
     with closing(sqlite3.connect(database)) as connection, connection:
-        tables = {
-            str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-            )
-        }
-        registered = {
-            (table, column)
-            for table, columns in registry.items()
-            if table in tables
-            for column in columns
-        }
-        for table, column in sorted(registered):
-            actual_columns = {
-                str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')
-            }
-            if column not in actual_columns:
+        registered = set(registered_path_columns(connection, schema))
+        for registered_path in enumerate_registered_paths(connection, schema):
+            if not is_windows_absolute_path(registered_path.value):
                 continue
-            rows = list(
-                connection.execute(
-                    f'SELECT rowid, "{column}" FROM "{table}" WHERE "{column}" IS NOT NULL'
+            logical_name, relative = _resolve_logical_path(registered_path.value, source_roots)
+            target = logical_roots[logical_name].joinpath(*relative.parts)
+            if not target.is_file() and not target.is_dir():
+                raise CapsuleIntegrityError(
+                    "materialized path target is unavailable: "
+                    f"{registered_path.table}.{registered_path.column}"
+                )
+            connection.execute(
+                f'UPDATE "{registered_path.table}" SET "{registered_path.column}" = ? '
+                "WHERE rowid = ?",
+                (str(target), registered_path.rowid),
+            )
+            audits.append(
+                PathMaterializationAudit(
+                    table=registered_path.table,
+                    rowid=registered_path.rowid,
+                    column=registered_path.column,
+                    old_path_sha256=hashlib.sha256(registered_path.value.encode()).hexdigest(),
+                    logical_root=logical_name,
+                    new_path=str(target),
                 )
             )
-            for rowid, raw in rows:
-                if not isinstance(raw, str) or not _is_windows_absolute(raw):
-                    continue
-                logical_name, relative = _resolve_logical_path(raw, source_roots)
-                target = logical_roots[logical_name].joinpath(*relative.parts)
-                if not target.is_file() and not target.is_dir():
-                    raise CapsuleIntegrityError(
-                        f"materialized path target is unavailable: {table}.{column}"
-                    )
-                connection.execute(
-                    f'UPDATE "{table}" SET "{column}" = ? WHERE rowid = ?',
-                    (str(target), int(rowid)),
-                )
-                audits.append(
-                    PathMaterializationAudit(
-                        table=table,
-                        rowid=int(rowid),
-                        column=column,
-                        old_path_sha256=hashlib.sha256(raw.encode()).hexdigest(),
-                        logical_root=logical_name,
-                        new_path=str(target),
-                    )
-                )
         _reject_unregistered_windows_paths(connection, registered, logical_roots)
         foreign_key_rows = list(connection.execute("PRAGMA foreign_key_check"))
         if foreign_key_rows:
@@ -272,7 +209,7 @@ def _reject_unregistered_windows_paths(
             for (value,) in connection.execute(
                 f'SELECT "{column}" FROM "{table}" WHERE "{column}" IS NOT NULL'
             ):
-                if isinstance(value, str) and _WINDOWS_ABSOLUTE.search(value):
+                if isinstance(value, str) and contains_windows_absolute_path(value):
                     if (table, column) in registered:
                         if _is_materialized_logical_path(value, logical_roots):
                             continue
@@ -308,4 +245,6 @@ def _path_like_column(column: str) -> bool:
 
 
 def _is_windows_absolute(value: str) -> bool:
-    return bool(re.match(r"(?i)^[a-z]:\\", value))
+    """Compatibility alias for the shared Windows absolute-path recognizer."""
+
+    return is_windows_absolute_path(value)
