@@ -329,7 +329,7 @@ class SocketEgressGuard:
                 socket.socket.send = guarded_send  # type: ignore[assignment,method-assign]
                 socket.socket.sendto = guarded_sendto  # type: ignore[assignment,method-assign]
                 if self._original_sendmsg is not None:
-                    socket.socket.sendmsg = guarded_sendmsg  # type: ignore[assignment,method-assign]
+                    setattr(socket.socket, "sendmsg", guarded_sendmsg)  # noqa: B010
                 self.__class__._active = self
             except BaseException:
                 self.__class__._active = None
