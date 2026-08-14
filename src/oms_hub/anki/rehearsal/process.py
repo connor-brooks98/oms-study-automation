@@ -82,6 +82,9 @@ payload = {'base_executable': sys._base_executable, 'version': sys.version}
 payload['dependency_paths'] = dependencies
 print(json.dumps(payload))
 """
+_WINDOWS_CHILD_CAPABILITY_PROBE = """import _overlapped
+import asyncio
+"""
 _VERIFIED_SOURCE_BOOTSTRAP = """import hashlib, json, os, signal, subprocess, sys, sysconfig, time
 from pathlib import Path
 if not (sys.flags.isolated and sys.flags.no_site and sys.flags.ignore_environment):
@@ -842,6 +845,8 @@ class ProcessRehearsal:
                     ),
                 }
             )
+        if _is_windows():
+            env["SYSTEMROOT"] = _windows_system_root()
         return env
 
     def _consume_failure_injection(
@@ -984,6 +989,28 @@ class ProcessRehearsal:
             raise RuntimeError("Windows direct runtime changed after preflight")
         return executable
 
+    def _probe_windows_child_capability(self, environment: dict[str, str]) -> None:
+        """Fail before containment if the allowlisted child cannot import its stdlib."""
+        try:
+            completed = subprocess.run(
+                [
+                    str(self._windows_runtime_executable()),
+                    "-I",
+                    "-S",
+                    "-c",
+                    _WINDOWS_CHILD_CAPABILITY_PROBE,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=environment,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Windows child capability preflight timed out") from exc
+        if completed.returncode != 0:
+            raise RuntimeError("Windows child capability preflight failed before Hub startup")
+
     def _required_source_tree_sha256(self) -> str:
         if self._source_tree_sha256 is None:
             raise RuntimeError("implementation source tree was not verified")
@@ -1029,12 +1056,16 @@ class ProcessRehearsal:
         stdout: BinaryIO | None = None
         stderr: BinaryIO | None = None
         try:
-            logs = overlay.root / "rehearsal" / "process-logs"
-            logs.mkdir(parents=True, exist_ok=True)
             serial = len(self._children) + 1
             attestation_path = self._child_attestation_path(serial)
             startup_ready_path = self._startup_ready_path(serial)
             startup_release_path = self._startup_release_path(serial)
+            environment = self._environment(overlay, manifest)
+            runtime_executable = self._windows_runtime_executable() if _is_windows() else None
+            if _is_windows():
+                self._probe_windows_child_capability(environment)
+            logs = overlay.root / "rehearsal" / "process-logs"
+            logs.mkdir(parents=True, exist_ok=True)
             job = _WindowsJob.create() if _is_windows() else None
             for path in (attestation_path, startup_ready_path, startup_release_path):
                 try:
@@ -1045,14 +1076,14 @@ class ProcessRehearsal:
                 attestation_path=attestation_path,
                 startup_ready_path=startup_ready_path,
                 startup_release_path=startup_release_path,
-                runtime_executable=self._windows_runtime_executable() if _is_windows() else None,
+                runtime_executable=runtime_executable,
             )
             stdout_path = logs / f"serve-{serial}.stdout.log"
             stderr_path = logs / f"serve-{serial}.stderr.log"
             stdout = stdout_path.open("wb")
             stderr = stderr_path.open("wb")
             popen_kwargs: dict[str, Any] = {
-                "env": self._environment(overlay, manifest),
+                "env": environment,
                 "stdout": stdout,
                 "stderr": stderr,
             }
@@ -1551,6 +1582,53 @@ class ProcessRehearsal:
     def _stop_child(
         self, child: _Child, overlay: MaterializedCapsule | None = None, *, hard: bool = False
     ) -> None:
+        preinitialization_exit = (
+            overlay is not None
+            and not hard
+            and self._is_windows_preinitialization_exit(child, overlay)
+        )
+        if preinitialization_exit:
+            # This bootstrap has already exited after the parent released its
+            # exact identity handshake. Closing its empty KILL_ON_JOB_CLOSE
+            # job preserves containment without sending CTRL_BREAK to a dead
+            # process (which can itself fail before this state is classified).
+            cleanup_error: BaseException | None = None
+            if child.job is not None and not child.job.closed:
+                try:
+                    child.job.close()
+                except BaseException as exc:
+                    cleanup_error = exc
+            child.observation = ProcessObservation(
+                child.observation.pid,
+                child.runtime_pid,
+                child.observation.started_at,
+                _timestamp(),
+                child.process.returncode,
+                child.observation.argv,
+            )
+            for stream_name, stream in (("stdout", child.stdout), ("stderr", child.stderr)):
+                try:
+                    stream.close()
+                except BaseException as exc:
+                    if cleanup_error is None:
+                        cleanup_error = exc
+                    else:
+                        cleanup_error.add_note(f"startup {stream_name} close failed: {exc}")
+            self._record(
+                "process_stopped",
+                process_pid=child.process.pid,
+                runtime_pid=child.runtime_pid,
+                exit_code=child.process.returncode,
+                hard_termination=hard,
+            )
+            self._record(
+                "windows_preinitialization_exit_without_runtime_ledgers",
+                process_pid=child.process.pid,
+                exit_code=child.process.returncode,
+            )
+            if cleanup_error is not None:
+                raise cleanup_error
+            return
         if _is_windows() and child.job is not None and not child.job.closed:
             self._stop_windows_job_child(child, hard=hard)
         elif child.process.poll() is None:
@@ -1574,6 +1652,35 @@ class ProcessRehearsal:
         )
         if overlay is not None and not hard:
             self._validate_runtime_evidence(overlay)
+
+    def _is_windows_preinitialization_exit(
+        self, child: _Child, overlay: MaterializedCapsule
+    ) -> bool:
+        """Recognize only the released Windows bootstrap that failed before import."""
+        if not _is_windows() or child.process.returncode in {None, 0}:
+            return False
+        if (
+            child.startup_ready_path is None
+            or child.startup_release_path is None
+            or child.attestation_path is None
+        ):
+            return False
+        expected = {
+            "schema_version": 1,
+            "pid": child.process.pid,
+            "run_nonce": self._runtime_evidence_nonce,
+        }
+        ready = _load_exact_json_identity(child.startup_ready_path, expected)
+        release = _load_exact_json_identity(child.startup_release_path, expected)
+        directory = overlay.root / "rehearsal" / "runtime-evidence"
+        artifacts = (
+            child.attestation_path,
+            directory / "read-only-anki-mutation-ledger.json",
+            directory / "egress-decisions.json",
+        )
+        return ready and release and all(
+            not path.exists() and not path.is_symlink() for path in artifacts
+        )
 
     def _stop_windows_job_child(self, child: _Child, *, hard: bool) -> None:
         job = child.job
@@ -2322,6 +2429,27 @@ def _windows_job_api() -> _CtypesWindowsJobApi:
 
 def _is_windows() -> bool:
     return os.name == "nt"
+
+
+def _windows_system_root() -> str:
+    """Return the sole Windows host value admitted into a rehearsal child."""
+    value = next(
+        (item for key, item in os.environ.items() if key.casefold() == "systemroot"), None
+    )
+    if not value:
+        raise ValueError("Windows SYSTEMROOT is unavailable")
+    root = Path(value)
+    if not root.is_absolute() or not root.is_dir():
+        raise ValueError("Windows SYSTEMROOT must be an existing absolute directory")
+    return str(root.resolve())
+
+
+def _load_exact_json_identity(path: Path, expected: dict[str, object]) -> bool:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(value, dict) and value == expected
 
 
 def _windows_popen_handle(process: subprocess.Popen[bytes]) -> int:

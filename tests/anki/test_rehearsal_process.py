@@ -911,7 +911,7 @@ def test_windows_job_setup_preserves_setinformation_failure_when_close_also_fail
     assert any("close" in note for note in getattr(raised.value, "__notes__", ()))
 
 
-def test_windows_startup_environment_failure_closes_job_and_opened_streams(
+def test_windows_startup_environment_failure_precedes_job_and_log_creation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class FakeJob:
@@ -946,11 +946,9 @@ def test_windows_startup_environment_failure_closes_job_and_opened_streams(
     monkeypatch.setattr(harness, "_environment", fail_environment)
     with pytest.raises(ValueError, match="bad environment"):
         harness._start_and_connect(overlay, SimpleNamespace())  # type: ignore[arg-type]
-    assert job.close_calls == 1
+    assert job.close_calls == 0
     logs = overlay.root / "rehearsal" / "process-logs"
-    for path in (logs / "serve-1.stdout.log", logs / "serve-1.stderr.log"):
-        with path.open("ab") as stream:
-            stream.write(b"closed-by-parent\n")
+    assert not logs.exists()
 
 
 def test_windows_handshake_releases_only_self_bound_runtime(
@@ -1392,6 +1390,279 @@ def test_command_and_environment_are_explicit_and_overlay_bound(
     assert "AssignProcessToJobObject" not in command[4]
     assert "handle_list" not in command[4]
     assert command[4].index("temporary.write_text") < command[4].index("raise SystemExit")
+
+
+def test_windows_environment_adds_only_canonical_systemroot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = ProcessRehearsal(_request(tmp_path))
+    harness._source_tree_sha256 = "c" * 64
+    overlay = type(
+        "Overlay",
+        (),
+        {"root": tmp_path / "overlay", "database_path": tmp_path / "overlay/hub/hub.db"},
+    )()
+    prompt_directory = overlay.root / "sources/repository/src/oms_hub/anki/prompt_assets"
+    prompt_directory.mkdir(parents=True)
+    system_root = tmp_path / "Windows"
+    system_root.mkdir()
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        process_module.os,
+        "environ",
+        {"PATH": "allowlisted-path", "WINDIR": "forbidden", "sYsTeMrOoT": str(system_root)},
+    )
+
+    environment = harness._environment(
+        overlay, SimpleNamespace(logical_roots={"repository": "sources/repository"})
+    )
+
+    assert environment["SYSTEMROOT"] == str(system_root.resolve())
+    assert "sYsTeMrOoT" not in environment
+    assert "WINDIR" not in environment
+    assert {key for key in environment if not key.startswith("OMS_HUB_")} == {
+        "PATH",
+        "SYSTEMROOT",
+    }
+
+
+def test_windows_child_capability_preflight_uses_exact_child_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeJob:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    harness = ProcessRehearsal(_request(tmp_path))
+    executable = Path(sys.executable).resolve()
+    harness._windows_runtime_identity = {
+        "base_executable": str(executable),
+        "base_executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+        "python_version": "test",
+        "dependency_paths": [],
+    }
+    overlay = SimpleNamespace(root=tmp_path / "overlay")
+    environment = {"PATH": "allowlisted-path", "SYSTEMROOT": str(tmp_path)}
+    job = FakeJob()
+    subprocess_calls: list[tuple[list[str], dict[str, object]]] = []
+    popen_environments: list[dict[str, str]] = []
+
+    def capability_run(argv: list[str], **kwargs: object) -> SimpleNamespace:
+        subprocess_calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def halt_after_preflight(_argv: list[str], **kwargs: object) -> subprocess.Popen[bytes]:
+        popen_environments.append(cast(dict[str, str], kwargs["env"]))
+        raise RuntimeError("halt after capability preflight")
+
+    monkeypatch.setattr(harness, "_assert_loopback_port_is_free", lambda: None)
+    monkeypatch.setattr(harness, "_environment", lambda *_args: environment)
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(process_module.subprocess, "run", capability_run)
+    monkeypatch.setattr(process_module.subprocess, "CREATE_NEW_PROCESS_GROUP", 0, raising=False)
+    monkeypatch.setattr(process_module._WindowsJob, "create", classmethod(lambda _cls: job))
+    harness._popen = halt_after_preflight
+
+    with pytest.raises(RuntimeError, match="halt after capability preflight"):
+        harness._start_and_connect(overlay, SimpleNamespace())  # type: ignore[arg-type]
+
+    assert subprocess_calls == [
+        (
+            [
+                str(executable),
+                "-I",
+                "-S",
+                "-c",
+                process_module._WINDOWS_CHILD_CAPABILITY_PROBE,
+            ],
+            {
+                "check": False,
+                "capture_output": True,
+                "text": True,
+                "timeout": 10,
+                "env": environment,
+            },
+        )
+    ]
+    assert popen_environments == [environment]
+    assert popen_environments[0] is environment
+    assert job.closed is True
+
+
+def test_windows_child_capability_failure_precedes_job_log_and_hub_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = ProcessRehearsal(_request(tmp_path))
+    executable = Path(sys.executable).resolve()
+    harness._windows_runtime_identity = {
+        "base_executable": str(executable),
+        "base_executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+        "python_version": "test",
+        "dependency_paths": [],
+    }
+    overlay = SimpleNamespace(root=tmp_path / "overlay")
+    monkeypatch.setattr(harness, "_assert_loopback_port_is_free", lambda: None)
+    monkeypatch.setattr(harness, "_environment", lambda *_args: {"PATH": "allowlisted"})
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        process_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="", stderr="failure"),
+    )
+    monkeypatch.setattr(
+        process_module._WindowsJob,
+        "create",
+        classmethod(lambda _cls: pytest.fail("Job creation must follow capability preflight")),
+    )
+    harness._popen = lambda *_args, **_kwargs: pytest.fail("Hub child must not start")
+
+    with pytest.raises(RuntimeError, match="capability preflight failed"):
+        harness._start_and_connect(overlay, SimpleNamespace())  # type: ignore[arg-type]
+    assert not (overlay.root / "rehearsal" / "process-logs").exists()
+
+
+def _exited_windows_preinitialization_child(
+    tmp_path: Path, harness: ProcessRehearsal, *, exit_code: int = 1
+) -> tuple[SimpleNamespace, process_module._Child]:
+    class ExitedProcess:
+        pid = 73
+
+        def __init__(self) -> None:
+            self.returncode = exit_code
+
+        def poll(self) -> int:
+            return self.returncode
+
+    evidence = tmp_path / "overlay/rehearsal/runtime-evidence"
+    evidence.mkdir(parents=True)
+    identity = {"schema_version": 1, "pid": 73, "run_nonce": harness._runtime_evidence_nonce}
+    ready = evidence / "startup-1.ready.json"
+    release = evidence / "startup-1.release.json"
+    ready.write_text(json.dumps(identity), encoding="utf-8")
+    release.write_text(json.dumps(identity), encoding="utf-8")
+    stdout_path = tmp_path / "stdout.log"
+    stderr_path = tmp_path / "stderr.log"
+    child = process_module._Child(
+        ExitedProcess(),  # type: ignore[arg-type]
+        process_module.ProcessObservation(73, None, "start", None, None, ("python",)),
+        stdout_path,
+        stderr_path,
+        stdout_path.open("wb"),
+        stderr_path.open("wb"),
+        attestation_path=evidence / "implementation-source-1.json",
+        startup_ready_path=ready,
+        startup_release_path=release,
+    )
+    return SimpleNamespace(root=tmp_path / "overlay"), child
+
+
+def test_windows_preinitialization_exit_skips_only_absent_runtime_ledgers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = ProcessRehearsal(_request(tmp_path, runtime_evidence_nonce="nonce"))
+    overlay, child = _exited_windows_preinitialization_child(tmp_path, harness)
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+
+    harness._stop_child(child, overlay)  # type: ignore[arg-type]
+
+    assert harness._timeline[-1] == {
+        "at": harness._timeline[-1]["at"],
+        "event": "windows_preinitialization_exit_without_runtime_ledgers",
+        "process_pid": 73,
+        "exit_code": 1,
+    }
+
+
+def test_windows_preinitialization_exit_closes_job_without_signaling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeJob:
+        def __init__(self) -> None:
+            self.closed = False
+            self.calls: list[str] = []
+
+        def send_ctrl_break(self, _process_group_id: int) -> None:
+            self.calls.append("ctrl_break")
+
+        def terminate(self) -> None:
+            self.calls.append("terminate")
+
+        def close(self) -> None:
+            self.calls.append("close")
+            self.closed = True
+
+    harness = ProcessRehearsal(_request(tmp_path, runtime_evidence_nonce="nonce"))
+    overlay, child = _exited_windows_preinitialization_child(tmp_path, harness)
+    job = FakeJob()
+    child.job = job  # type: ignore[assignment]
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+
+    harness._stop_child(child, overlay)  # type: ignore[arg-type]
+
+    assert job.calls == ["close"]
+    assert job.closed is True
+    assert child.stdout.closed is True
+    assert child.stderr.closed is True
+    assert [entry["event"] for entry in harness._timeline[-2:]] == [
+        "process_stopped",
+        "windows_preinitialization_exit_without_runtime_ledgers",
+    ]
+
+
+@pytest.mark.parametrize(
+    "case",
+    ("source_attestation", "partial_ledger", "malformed_handshake", "successful_exit"),
+)
+def test_windows_preinitialization_ledger_exception_remains_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    harness = ProcessRehearsal(_request(tmp_path, runtime_evidence_nonce="nonce"))
+    overlay, child = _exited_windows_preinitialization_child(
+        tmp_path, harness, exit_code=0 if case == "successful_exit" else 1
+    )
+    evidence = overlay.root / "rehearsal" / "runtime-evidence"
+    if case == "source_attestation":
+        assert child.attestation_path is not None
+        child.attestation_path.write_text("{}", encoding="utf-8")
+    elif case == "partial_ledger":
+        (evidence / "read-only-anki-mutation-ledger.json").write_text("{}", encoding="utf-8")
+    elif case == "malformed_handshake":
+        assert child.startup_ready_path is not None
+        child.startup_ready_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+
+    with pytest.raises(RuntimeError, match="runtime evidence is missing"):
+        harness._stop_child(child, overlay)  # type: ignore[arg-type]
+
+
+def test_run_preserves_startup_error_when_cleanup_runtime_validation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = ProcessRehearsal(_request(tmp_path))
+    overlay = SimpleNamespace(root=tmp_path / "overlay", database_path=tmp_path / "overlay/hub.db")
+    monkeypatch.setattr(harness, "_validate_destinations", lambda: SimpleNamespace())
+    monkeypatch.setattr(process_module, "materialize_capsule", lambda *_args: overlay)
+    monkeypatch.setattr(harness, "_install_replay_supplement", lambda _overlay: None)
+    monkeypatch.setattr(
+        process_module, "Database", lambda _url: SimpleNamespace(close=lambda: None)
+    )
+    monkeypatch.setattr(
+        harness,
+        "_start_and_connect",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("startup primary failure")),
+    )
+    monkeypatch.setattr(
+        harness,
+        "_stop_all",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("cleanup runtime evidence failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="startup primary failure") as raised:
+        harness.run()
+    assert any("cleanup runtime evidence failure" in note for note in raised.value.__notes__)
 
 
 def test_restarted_child_environment_is_disarmed_after_archiving_initial_interlock(
