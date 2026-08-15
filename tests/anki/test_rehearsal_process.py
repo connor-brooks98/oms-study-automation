@@ -1335,6 +1335,7 @@ def test_windows_attestation_requires_canonical_preflight_dependency_paths(
         "tree": harness.request.expected_implementation_tree,
         "source_tree_sha256": "c" * 64,
         "source_files": {},
+        "child_cwd": str((harness.request.overlay / "rehearsal/runtime-cwd").resolve()),
     }
     attestation.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr(process_module, "_is_windows", lambda: True)
@@ -1363,6 +1364,11 @@ def test_windows_attestation_requires_canonical_preflight_dependency_paths(
     }
     attestation.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(RuntimeError, match="dependency closure"):
+        harness._validate_source_attestation(attestation)
+    payload["runtime_dependencies"] = dependency_modules
+    payload["child_cwd"] = str(tmp_path / "outside-cwd")
+    attestation.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="wrong child cwd"):
         harness._validate_source_attestation(attestation)
 
 
@@ -1596,6 +1602,7 @@ def test_command_and_environment_are_explicit_and_overlay_bound(
     assert "main(['serve'])" not in command[5]
     assert "build_parser().parse_args(['serve'])" in command[5]
     assert "server_arguments.handler(server_arguments)" in command[5]
+    assert "payload['child_cwd'] = str(Path.cwd().resolve())" in command[5]
     assert command[0] == str(harness.request.trusted_python.resolve())
     assert "AssignProcessToJobObject" not in command[5]
     assert "handle_list" not in command[5]
@@ -1855,6 +1862,61 @@ def test_environment_fails_closed_without_materialized_a0data_root(tmp_path: Pat
         )
 
 
+def test_child_cwd_is_overlay_bound_and_dotenv_values_are_cleared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    supervisor = tmp_path / "supervisor"
+    supervisor.mkdir()
+    dotenv = supervisor / ".env"
+    dotenv.write_text(
+        "OMS_HUB_PUBLIC_HOSTNAME=evil.example.com\n"
+        "OMS_HUB_ANKI_AGENT_HOSTNAME=agent.example.com\n"
+        "VOYAGE_API_KEY=leaked-key\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(supervisor)
+    captured: dict[str, object] = {}
+
+    class CapturedLaunch(RuntimeError):
+        pass
+
+    def capture_popen(argv: list[str], **kwargs: object) -> Any:
+        captured["argv"] = argv
+        captured.update(kwargs)
+        raise CapturedLaunch("captured controlled child launch")
+
+    harness = ProcessRehearsal(_request(tmp_path), popen=capture_popen)  # type: ignore[arg-type]
+    harness._source_tree_sha256 = "c" * 64
+    overlay = SimpleNamespace(
+        root=tmp_path / "overlay", database_path=tmp_path / "overlay/hub/hub.db"
+    )
+    (overlay.root / "sources/repository/src/oms_hub/anki/prompt_assets").mkdir(
+        parents=True
+    )
+    (overlay.root / "sources/a0data").mkdir(parents=True)
+    manifest = SimpleNamespace(
+        logical_roots={"a0data": "sources/a0data", "repository": "sources/repository"}
+    )
+    monkeypatch.setattr(harness, "_assert_loopback_port_is_free", lambda: None)
+
+    with pytest.raises(CapturedLaunch, match="controlled child launch"):
+        harness._start_and_connect(overlay, manifest)  # type: ignore[arg-type]
+
+    workdir = (overlay.root / "rehearsal/runtime-cwd").resolve()
+    assert captured["cwd"] == str(workdir)
+    assert workdir.is_dir()
+    assert not (workdir / ".env").exists()
+    environment = cast(dict[str, str], captured["env"])
+    assert environment["OMS_HUB_PUBLIC_HOSTNAME"] == ""
+    assert environment["OMS_HUB_ANKI_AGENT_HOSTNAME"] == ""
+    assert environment["VOYAGE_API_KEY"] == ""
+    assert environment["OMS_HUB_CLOUDFLARE_ACCESS_ISSUER"] == ""
+    assert environment["OMS_HUB_CLOUDFLARE_ACCESS_AUDIENCE"] == ""
+    assert environment["OMS_HUB_CLOUDFLARE_ACCESS_ALLOWED_EMAIL"] == ""
+    assert dotenv.read_text(encoding="utf-8").startswith("OMS_HUB_PUBLIC_HOSTNAME=")
+    assert not any(item["event"] == "process_started" for item in harness._timeline)
+
+
 def test_windows_environment_adds_only_canonical_systemroot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1890,6 +1952,7 @@ def test_windows_environment_adds_only_canonical_systemroot(
     assert {key for key in environment if not key.startswith("OMS_HUB_")} == {
         "PATH",
         "SYSTEMROOT",
+        "VOYAGE_API_KEY",
     }
 
 

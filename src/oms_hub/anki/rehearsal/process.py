@@ -205,6 +205,7 @@ payload['no_site'] = bool(sys.flags.no_site)
 payload['ignore_environment'] = bool(sys.flags.ignore_environment)
 payload['bootstrap_dependency_paths'] = dependency_paths
 payload['runtime_dependencies'] = runtime_dependencies
+payload['child_cwd'] = str(Path.cwd().resolve())
 attestation.write_text(json.dumps(payload, sort_keys=True), encoding='utf-8')
 server_arguments = oms_hub.cli.build_parser().parse_args(['serve'])
 raise SystemExit(server_arguments.handler(server_arguments))
@@ -854,6 +855,12 @@ class ProcessRehearsal:
             "OMS_HUB_DASHBOARD_PORT": str(self.request.port),
             "OMS_HUB_ANKI_WORKER_POLL_SECONDS": "0.5",
             "OMS_HUB_ANKI_CONNECT_URL": "http://127.0.0.1:8765",
+            "OMS_HUB_PUBLIC_HOSTNAME": "",
+            "OMS_HUB_ANKI_AGENT_HOSTNAME": "",
+            "VOYAGE_API_KEY": "",
+            "OMS_HUB_CLOUDFLARE_ACCESS_ISSUER": "",
+            "OMS_HUB_CLOUDFLARE_ACCESS_AUDIENCE": "",
+            "OMS_HUB_CLOUDFLARE_ACCESS_ALLOWED_EMAIL": "",
         }
         if self.request.mode == "shadow":
             env["OMS_HUB_ANKI_REHEARSAL_EGRESS_PINS_JSON"] = (
@@ -1148,10 +1155,18 @@ class ProcessRehearsal:
             stderr_path = logs / f"serve-{serial}.stderr.log"
             stdout = stdout_path.open("wb")
             stderr = stderr_path.open("wb")
+            workdir = overlay.root / "rehearsal" / "runtime-cwd"
+            workdir.mkdir(parents=True, exist_ok=True)
+            if workdir.is_symlink():
+                raise RuntimeError("rehearsal child cwd is an indirect path")
+            if (workdir / ".env").exists() or (workdir / ".env").is_symlink():
+                raise RuntimeError("rehearsal child cwd contains dotenv configuration")
+            resolved_workdir = workdir.resolve()
             popen_kwargs: dict[str, Any] = {
                 "env": environment,
                 "stdout": stdout,
                 "stderr": stderr,
+                "cwd": str(resolved_workdir),
             }
             if _is_windows():
                 if job is None:
@@ -1190,7 +1205,12 @@ class ProcessRehearsal:
             job=job,
         )
         self._children.append(tracked)
-        self._record("process_started", pid=child.pid, argv=_redact_argv(argv))
+        self._record(
+            "process_started",
+            pid=child.pid,
+            argv=_redact_argv(argv),
+            cwd=str(resolved_workdir),
+        )
         client = self._http_factory(self.request.port)
         deadline = self._clock() + min(30.0, self.request.timeout_seconds)
         if _is_windows():
@@ -1345,6 +1365,10 @@ class ProcessRehearsal:
             or not isinstance(value.get("source_files"), dict)
         ):
             raise RuntimeError("Hub source import attestation has an invalid source identity")
+        child_cwd = value.get("child_cwd")
+        expected_cwd = (self.request.overlay / "rehearsal" / "runtime-cwd").resolve()
+        if not isinstance(child_cwd, str) or Path(child_cwd).resolve() != expected_cwd:
+            raise RuntimeError("Hub source import attestation has the wrong child cwd")
         self._source_attestation = value
 
     def _attested_runtime_pid(self) -> int:
