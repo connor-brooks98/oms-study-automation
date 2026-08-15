@@ -267,12 +267,13 @@ def _isolated_main(payload: object) -> int:
         payload["attestation_b64"], payload["attestation_sha256"], trusted_python
     )
     sys.path[:0] = [str(source), *dependency_paths]
-    from oms_hub.anki.rehearsal.process import (  # type: ignore[import-untyped]
+    from oms_hub.anki.rehearsal.process import (
         ProcessRehearsal,
         RehearsalRequest,
     )
 
     request = vars(args).copy()
+    request["trusted_dependency_paths"] = tuple(Path(value) for value in dependency_paths)
     result = ProcessRehearsal(RehearsalRequest(**request)).run()
     print(
         f"job_id={result.job_id} overlay={result.overlay} evidence={result.evidence_zip} "

@@ -75,17 +75,34 @@ _MAX_BODY = 4096
 _REPLAY_MANIFEST_NAME = "replay-supplement.json"
 _STRUCTURED_EMPTY_PACK_ERROR = re.compile(r"missing structured replay response ([0-9a-f]{64})\Z")
 _VECTOR_EMPTY_PACK_ERROR = "replay vector validation failed"
-_WINDOWS_RUNTIME_PROBE = """import json, sys, sysconfig
-paths = sysconfig.get_paths()
-dependencies = [path for path in (paths.get('purelib'), paths.get('platlib')) if path]
+_RUNTIME_DEPENDENCY_MODULES = ("fastapi", "sqlalchemy", "starlette", "uvicorn")
+_WINDOWS_RUNTIME_PROBE = """import json, sys
 payload = {'base_executable': sys._base_executable, 'version': sys.version}
-payload['dependency_paths'] = dependencies
 print(json.dumps(payload))
 """
 _WINDOWS_CHILD_CAPABILITY_PROBE = """import _overlapped
 import asyncio
+import importlib
+import importlib.metadata
+import json
+import sys
+from pathlib import Path
+paths = [Path(value).resolve() for value in json.loads(sys.argv[1])]
+sys.path[:0] = [str(path) for path in paths]
+dependencies = {}
+for name in ('fastapi', 'sqlalchemy', 'starlette', 'uvicorn'):
+    module = importlib.import_module(name)
+    origin = Path(module.__file__).resolve()
+    if not any(origin.is_relative_to(path) for path in paths):
+        raise RuntimeError(f'{name} imported outside trusted dependency paths')
+    dependencies[name] = {
+        'origin': str(origin),
+        'version': importlib.metadata.version(name),
+    }
+print(json.dumps({'schema_version': 1, 'dependencies': dependencies}, sort_keys=True))
 """
-_VERIFIED_SOURCE_BOOTSTRAP = """import hashlib, json, os, signal, subprocess, sys, sysconfig, time
+_VERIFIED_SOURCE_BOOTSTRAP = """import hashlib, importlib, importlib.metadata, json, os
+import signal, subprocess, sys, sysconfig, time
 from pathlib import Path
 if not (sys.flags.isolated and sys.flags.no_site and sys.flags.ignore_environment):
     raise RuntimeError('verified source bootstrap requires Python -I -S')
@@ -154,6 +171,16 @@ for value in probed_dependency_paths:
 sys.path[:0] = [str(source), *dependency_paths]
 import oms_hub
 import oms_hub.cli
+runtime_dependencies = {}
+for name in ('fastapi', 'sqlalchemy', 'starlette', 'uvicorn'):
+    module = importlib.import_module(name)
+    origin = Path(module.__file__).resolve()
+    if not any(origin.is_relative_to(Path(value).resolve()) for value in dependency_paths):
+        raise RuntimeError(f'{name} imported outside trusted dependency paths')
+    runtime_dependencies[name] = {
+        'origin': str(origin),
+        'version': importlib.metadata.version(name),
+    }
 def under(path):
     try: Path(path).resolve().relative_to(source); return True
     except ValueError: return False
@@ -177,6 +204,7 @@ payload['isolated'] = bool(sys.flags.isolated)
 payload['no_site'] = bool(sys.flags.no_site)
 payload['ignore_environment'] = bool(sys.flags.ignore_environment)
 payload['bootstrap_dependency_paths'] = dependency_paths
+payload['runtime_dependencies'] = runtime_dependencies
 attestation.write_text(json.dumps(payload, sort_keys=True), encoding='utf-8')
 raise SystemExit(oms_hub.cli.main(['serve']))
 """
@@ -195,6 +223,7 @@ class RehearsalRequest:
     expected_implementation_commit: str
     expected_implementation_tree: str
     trusted_python: Path
+    trusted_dependency_paths: tuple[Path, ...] = ()
     shadow_egress_pins_json: str | None = None
     timeout_seconds: float = 300.0
     restart_after_durable_boundary: bool = True
@@ -951,7 +980,14 @@ class ProcessRehearsal:
 
     def _probe_windows_runtime(self) -> dict[str, Any]:
         completed = subprocess.run(
-            [str(self.request.trusted_python.resolve()), "-I", "-S", "-c", _WINDOWS_RUNTIME_PROBE],
+            [
+                str(self.request.trusted_python.absolute()),
+                "-I",
+                "-S",
+                "-B",
+                "-c",
+                _WINDOWS_RUNTIME_PROBE,
+            ],
             check=False,
             capture_output=True,
             text=True,
@@ -963,23 +999,38 @@ class ProcessRehearsal:
             value = json.loads(completed.stdout)
         except json.JSONDecodeError as exc:
             raise ValueError("trusted Python Windows runtime probe is invalid") from exc
-        if not isinstance(value, dict) or not isinstance(value.get("base_executable"), str):
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"base_executable", "version"}
+            or not isinstance(value.get("base_executable"), str)
+            or not isinstance(value.get("version"), str)
+        ):
             raise ValueError("trusted Python Windows runtime probe is invalid")
         executable = Path(value["base_executable"])
         if not executable.is_absolute() or not executable.is_file():
             raise ValueError("trusted Python base executable is unavailable")
-        paths = value.get("dependency_paths")
-        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
-            raise ValueError("trusted Python dependency paths are invalid")
-        dependency_paths = list(dict.fromkeys(Path(path) for path in paths))
-        if not all(path.is_absolute() and path.is_dir() for path in dependency_paths):
-            raise ValueError("trusted Python dependency paths are unavailable")
+        dependency_paths = self._trusted_dependency_paths()
         return {
             "base_executable": str(executable),
             "base_executable_sha256": _sha256_file(executable),
             "python_version": value.get("version"),
             "dependency_paths": [str(path) for path in dependency_paths],
         }
+
+    def _trusted_dependency_paths(self) -> list[Path]:
+        dependency_paths: list[Path] = []
+        for supplied in self.request.trusted_dependency_paths:
+            path = Path(supplied)
+            if not path.is_absolute() or path.is_symlink() or not path.is_dir():
+                raise ValueError("trusted Python dependency paths are unavailable or indirect")
+            resolved = path.resolve(strict=True)
+            if resolved.is_symlink() or not resolved.is_dir():
+                raise ValueError("trusted Python dependency paths are unavailable or indirect")
+            if resolved not in dependency_paths:
+                dependency_paths.append(resolved)
+        if not dependency_paths:
+            raise ValueError("trusted Python dependency paths are unavailable")
+        return dependency_paths
 
     def _windows_runtime_executable(self) -> Path:
         if self._windows_runtime_identity is None:
@@ -990,15 +1041,20 @@ class ProcessRehearsal:
         return executable
 
     def _probe_windows_child_capability(self, environment: dict[str, str]) -> None:
-        """Fail before containment if the allowlisted child cannot import its stdlib."""
+        """Fail before containment if the allowlisted runtime closure is unavailable."""
+        if self._windows_runtime_identity is None:
+            raise RuntimeError("Windows runtime identity was not preflighted")
+        dependency_paths = cast(list[str], self._windows_runtime_identity["dependency_paths"])
         try:
             completed = subprocess.run(
                 [
                     str(self._windows_runtime_executable()),
                     "-I",
                     "-S",
+                    "-B",
                     "-c",
                     _WINDOWS_CHILD_CAPABILITY_PROBE,
+                    _canonical_json(dependency_paths),
                 ],
                 check=False,
                 capture_output=True,
@@ -1010,6 +1066,12 @@ class ProcessRehearsal:
             raise RuntimeError("Windows child capability preflight timed out") from exc
         if completed.returncode != 0:
             raise RuntimeError("Windows child capability preflight failed before Hub startup")
+        try:
+            evidence = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Windows dependency closure evidence is malformed") from exc
+        dependencies = _validate_runtime_dependency_closure(evidence, dependency_paths)
+        self._windows_runtime_identity["dependency_modules"] = dependencies
 
     def _required_source_tree_sha256(self) -> str:
         if self._source_tree_sha256 is None:
@@ -1263,6 +1325,13 @@ class ProcessRehearsal:
         )
         if value.get("bootstrap_dependency_paths") != expected_dependency_paths:
             raise RuntimeError("Hub source import attestation has the wrong dependency paths")
+        if _is_windows():
+            if self._windows_runtime_identity is None:
+                raise RuntimeError("Windows runtime identity was not preflighted")
+            if value.get("runtime_dependencies") != self._windows_runtime_identity.get(
+                "dependency_modules"
+            ):
+                raise RuntimeError("Hub source import attestation has the wrong dependency closure")
         if (
             value.get("pid") is None
             or value.get("run_nonce") != self._runtime_evidence_nonce
@@ -2450,6 +2519,41 @@ def _load_exact_json_identity(path: Path, expected: dict[str, object]) -> bool:
     except (OSError, json.JSONDecodeError):
         return False
     return isinstance(value, dict) and value == expected
+
+
+def _validate_runtime_dependency_closure(
+    evidence: object, dependency_paths: list[str]
+) -> dict[str, dict[str, str]]:
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != {"schema_version", "dependencies"}
+        or evidence.get("schema_version") != 1
+        or not isinstance(evidence.get("dependencies"), dict)
+    ):
+        raise RuntimeError("Windows dependency closure evidence is malformed")
+    dependencies = cast(dict[object, object], evidence["dependencies"])
+    if set(dependencies) != set(_RUNTIME_DEPENDENCY_MODULES):
+        raise RuntimeError("Windows dependency closure evidence is incomplete")
+    roots = [Path(value).resolve() for value in dependency_paths]
+    validated: dict[str, dict[str, str]] = {}
+    for name in _RUNTIME_DEPENDENCY_MODULES:
+        item = dependencies.get(name)
+        if not isinstance(item, dict) or set(item) != {"origin", "version"}:
+            raise RuntimeError("Windows dependency closure evidence is malformed")
+        origin_value = item.get("origin")
+        version = item.get("version")
+        if not isinstance(origin_value, str) or not isinstance(version, str) or not version:
+            raise RuntimeError("Windows dependency closure evidence is malformed")
+        origin = Path(origin_value)
+        if (
+            not origin.is_absolute()
+            or not origin.is_file()
+            or origin.is_symlink()
+            or not any(origin.resolve().is_relative_to(root) for root in roots)
+        ):
+            raise RuntimeError("Windows dependency closure imported outside trusted paths")
+        validated[name] = {"origin": str(origin.resolve()), "version": version}
+    return validated
 
 
 def _windows_popen_handle(process: subprocess.Popen[bytes]) -> int:

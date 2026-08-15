@@ -1080,7 +1080,7 @@ def test_windows_runtime_probe_rejects_relative_executable(
         lambda *_args, **_kwargs: SimpleNamespace(
             returncode=0,
             stdout=json.dumps(
-                {"base_executable": "python.exe", "version": "test", "dependency_paths": []}
+                {"base_executable": "python.exe", "version": "test"}
             ),
         ),
     )
@@ -1091,9 +1091,14 @@ def test_windows_runtime_probe_rejects_relative_executable(
 def test_windows_runtime_probe_canonicalizes_duplicate_dependency_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    harness = ProcessRehearsal(_request(tmp_path))
     dependency = tmp_path / "site-packages"
     dependency.mkdir()
+    harness = ProcessRehearsal(
+        _request(
+            tmp_path,
+            trusted_dependency_paths=(dependency.resolve(), dependency.resolve()),
+        )
+    )
     monkeypatch.setattr(
         process_module.subprocess,
         "run",
@@ -1103,7 +1108,6 @@ def test_windows_runtime_probe_canonicalizes_duplicate_dependency_paths(
                 {
                     "base_executable": sys.executable,
                     "version": "test",
-                    "dependency_paths": [str(dependency), str(dependency)],
                 }
             ),
         ),
@@ -1115,6 +1119,170 @@ def test_windows_runtime_probe_canonicalizes_duplicate_dependency_paths(
     assert json.loads(command[-1]) == [str(dependency)]
 
 
+def test_windows_runtime_probe_uses_launcher_attested_real_venv_dependency_path(
+    tmp_path: Path,
+) -> None:
+    launcher_venv = tmp_path / "launcher-venv"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--copies", "--without-pip", str(launcher_venv)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    launcher_python = launcher_venv / (
+        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    )
+    if os.name != "nt":
+        library_name = sysconfig.get_config_var("LDLIBRARY")
+        assert isinstance(library_name, str)
+        source_library = Path(sys.base_prefix) / "lib" / library_name
+        assert source_library.is_file()
+        target_library = launcher_venv / "lib" / library_name
+        target_library.parent.mkdir(exist_ok=True)
+        shutil.copy2(source_library, target_library)
+    purelib = Path(
+        subprocess.run(
+            [
+                str(launcher_python),
+                "-c",
+                "import sysconfig;print(sysconfig.get_paths()['purelib'])",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    purelib.mkdir(parents=True, exist_ok=True)
+    harness = ProcessRehearsal(
+        _request(
+            tmp_path,
+            trusted_python=launcher_python,
+            trusted_dependency_paths=(purelib.resolve(),),
+        )
+    )
+
+    identity = harness._probe_windows_runtime()
+
+    assert identity["dependency_paths"] == [str(purelib.resolve())]
+
+
+def test_windows_runtime_rejects_missing_or_indirect_attested_dependency_paths(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="dependency paths are unavailable"):
+        ProcessRehearsal(_request(tmp_path))._trusted_dependency_paths()
+    with pytest.raises(ValueError, match="unavailable or indirect"):
+        ProcessRehearsal(
+            _request(tmp_path, trusted_dependency_paths=(Path("relative-site-packages"),))
+        )._trusted_dependency_paths()
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    (
+        None,
+        {"schema_version": 1, "dependencies": {}},
+        {
+            "schema_version": 1,
+            "dependencies": {
+                name: {"origin": "/missing", "version": "test"}
+                for name in ("fastapi", "sqlalchemy", "starlette")
+            },
+        },
+        {
+            "schema_version": 1,
+            "dependencies": {
+                name: {"origin": "/missing"}
+                for name in ("fastapi", "sqlalchemy", "starlette", "uvicorn")
+            },
+        },
+    ),
+)
+def test_windows_dependency_closure_rejects_malformed_or_incomplete_evidence(
+    evidence: object,
+) -> None:
+    with pytest.raises(RuntimeError, match="dependency closure"):
+        process_module._validate_runtime_dependency_closure(evidence, [str(Path.cwd())])
+
+
+def test_windows_child_capability_requires_runtime_identity(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(RuntimeError, match="identity was not preflighted"):
+        ProcessRehearsal(_request(tmp_path))._probe_windows_child_capability({})
+
+
+def test_windows_child_capability_rejects_malformed_success_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dependency = tmp_path / "site-packages"
+    dependency.mkdir()
+    runtime = Path(sys.executable).resolve()
+    harness = ProcessRehearsal(
+        _request(tmp_path, trusted_dependency_paths=(dependency.resolve(),))
+    )
+    harness._windows_runtime_identity = {
+        "base_executable": str(runtime),
+        "base_executable_sha256": hashlib.sha256(runtime.read_bytes()).hexdigest(),
+        "python_version": sys.version,
+        "dependency_paths": [str(dependency.resolve())],
+    }
+    monkeypatch.setattr(
+        process_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="not-json", stderr=""),
+    )
+    with pytest.raises(RuntimeError, match="evidence is malformed"):
+        harness._probe_windows_child_capability({})
+
+
+def test_windows_child_capability_rejects_dependency_origin_outside_attested_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dependency = tmp_path / "site-packages"
+    dependency.mkdir()
+    outside = tmp_path / "outside"
+    outside_origins: dict[str, Path] = {}
+    for name in ("fastapi", "sqlalchemy", "starlette", "uvicorn"):
+        origin = outside / name / "__init__.py"
+        origin.parent.mkdir(parents=True)
+        origin.write_text("", encoding="utf-8")
+        outside_origins[name] = origin
+    runtime = Path(sys.executable).resolve()
+    harness = ProcessRehearsal(
+        _request(tmp_path, trusted_dependency_paths=(dependency.resolve(),))
+    )
+    harness._windows_runtime_identity = {
+        "base_executable": str(runtime),
+        "base_executable_sha256": hashlib.sha256(runtime.read_bytes()).hexdigest(),
+        "python_version": sys.version,
+        "dependency_paths": [str(dependency.resolve())],
+    }
+    monkeypatch.setattr(
+        process_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "schema_version": 1,
+                    "dependencies": {
+                        name: {
+                            "origin": str(outside_origins[name]),
+                            "version": "test",
+                        }
+                        for name in ("fastapi", "sqlalchemy", "starlette", "uvicorn")
+                    },
+                }
+            ),
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="dependency closure"):
+        harness._probe_windows_child_capability({"SYSTEMROOT": str(tmp_path)})
+
+
 def test_windows_attestation_requires_canonical_preflight_dependency_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1123,6 +1291,16 @@ def test_windows_attestation_requires_canonical_preflight_dependency_paths(
     source.mkdir(parents=True)
     dependency = tmp_path / "site-packages"
     dependency.mkdir()
+    dependency_modules = {
+        name: {
+            "origin": str(dependency / name / "__init__.py"),
+            "version": "test",
+        }
+        for name in ("fastapi", "sqlalchemy", "starlette", "uvicorn")
+    }
+    for evidence in dependency_modules.values():
+        Path(cast(str, evidence["origin"])).parent.mkdir(parents=True)
+        Path(cast(str, evidence["origin"])).write_text("", encoding="utf-8")
     harness = ProcessRehearsal(_request(tmp_path, implementation_repository=implementation))
     harness._source_tree_sha256 = "c" * 64
     harness._windows_runtime_identity = {
@@ -1130,6 +1308,7 @@ def test_windows_attestation_requires_canonical_preflight_dependency_paths(
         "base_executable_sha256": "a" * 64,
         "python_version": "test",
         "dependency_paths": [str(dependency)],
+        "dependency_modules": dependency_modules,
     }
     attestation = tmp_path / "attestation.json"
     payload = {
@@ -1144,6 +1323,7 @@ def test_windows_attestation_requires_canonical_preflight_dependency_paths(
         "no_site": True,
         "ignore_environment": True,
         "bootstrap_dependency_paths": [str(dependency)],
+        "runtime_dependencies": dependency_modules,
         "pid": 34,
         "run_nonce": harness._runtime_evidence_nonce,
         "commit": harness.request.expected_implementation_commit,
@@ -1167,6 +1347,17 @@ def test_windows_attestation_requires_canonical_preflight_dependency_paths(
     payload["python_version"] = "wrong"
     attestation.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(RuntimeError, match="wrong runtime version"):
+        harness._validate_source_attestation(attestation)
+    payload["python_version"] = "test"
+    payload["runtime_dependencies"] = {
+        **dependency_modules,
+        "uvicorn": {
+            "origin": str(tmp_path / "outside" / "uvicorn" / "__init__.py"),
+            "version": "test",
+        },
+    }
+    attestation.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="dependency closure"):
         harness._validate_source_attestation(attestation)
 
 
@@ -1436,13 +1627,28 @@ def test_windows_child_capability_preflight_uses_exact_child_environment(
         def close(self) -> None:
             self.closed = True
 
-    harness = ProcessRehearsal(_request(tmp_path))
+    dependency = tmp_path / "site-packages"
+    dependency.mkdir()
+    dependency_evidence = {
+        name: {
+            "origin": str(dependency / name / "__init__.py"),
+            "version": "test",
+        }
+        for name in ("fastapi", "sqlalchemy", "starlette", "uvicorn")
+    }
+    for item in dependency_evidence.values():
+        origin = Path(cast(str, item["origin"]))
+        origin.parent.mkdir(parents=True)
+        origin.write_text("", encoding="utf-8")
+    harness = ProcessRehearsal(
+        _request(tmp_path, trusted_dependency_paths=(dependency.resolve(),))
+    )
     executable = Path(sys.executable).resolve()
     harness._windows_runtime_identity = {
         "base_executable": str(executable),
         "base_executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
         "python_version": "test",
-        "dependency_paths": [],
+        "dependency_paths": [str(dependency.resolve())],
     }
     overlay = SimpleNamespace(root=tmp_path / "overlay")
     environment = {"PATH": "allowlisted-path", "SYSTEMROOT": str(tmp_path)}
@@ -1452,7 +1658,13 @@ def test_windows_child_capability_preflight_uses_exact_child_environment(
 
     def capability_run(argv: list[str], **kwargs: object) -> SimpleNamespace:
         subprocess_calls.append((argv, kwargs))
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {"schema_version": 1, "dependencies": dependency_evidence}
+            ),
+            stderr="",
+        )
 
     def halt_after_preflight(_argv: list[str], **kwargs: object) -> subprocess.Popen[bytes]:
         popen_environments.append(cast(dict[str, str], kwargs["env"]))
@@ -1475,8 +1687,10 @@ def test_windows_child_capability_preflight_uses_exact_child_environment(
                 str(executable),
                 "-I",
                 "-S",
+                "-B",
                 "-c",
                 process_module._WINDOWS_CHILD_CAPABILITY_PROBE,
+                json.dumps([str(dependency.resolve())], separators=(",", ":")),
             ],
             {
                 "check": False,
@@ -2226,6 +2440,11 @@ def test_standalone_launcher_full_reexec_uses_venv_dependencies_and_propagates_e
         "class ProcessRehearsal:\n"
         "    def __init__(self, request): self.request = request\n"
         "    def run(self):\n"
+        "        if not self.request.kwargs['trusted_dependency_paths']:\n"
+        "            raise SystemExit(24)\n"
+        "        if not any('site-packages' in str(path) for path in "
+        "self.request.kwargs['trusted_dependency_paths']):\n"
+        "            raise SystemExit(25)\n"
         "        if self.request.kwargs['mode'] == 'shadow': raise SystemExit(23)\n"
         "        return type('Result', (), {\n"
         "            'job_id': pydantic.__version__,\n"
