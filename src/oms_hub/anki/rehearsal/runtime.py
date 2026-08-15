@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -55,12 +56,14 @@ class ReadOnlyAnkiGateway:
     async def find_notes(self, query: str) -> list[int]:
         normalized = query.strip()
         if not normalized:
-            return [note.note_id for note in self.companion.list_notes()]
+            return [note.note_id for note in await asyncio.to_thread(self.companion.list_notes)]
         if normalized.startswith("nid:"):
             values = normalized.removeprefix("nid:").split(",")
             requested = {int(value) for value in values if value.strip().isdigit()}
             return [
-                note.note_id for note in self.companion.list_notes() if note.note_id in requested
+                note.note_id
+                for note in await asyncio.to_thread(self.companion.list_notes)
+                if note.note_id in requested
             ]
         raise AnkiConnectActionError("rehearsal adapter supports only empty or nid searches")
 

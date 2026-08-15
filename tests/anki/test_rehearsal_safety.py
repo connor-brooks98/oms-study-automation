@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
@@ -40,6 +41,65 @@ class _FixedEmbedder:
 
     def embed(self, texts: list[str]) -> np.ndarray:
         return np.asarray([[1.0, 0.0] for _ in texts], dtype=np.float32)
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_note_ids"),
+    [("", [123, 456]), ("nid:456,123", [123, 456])],
+)
+def test_read_only_gateway_find_notes_keeps_the_event_loop_responsive(
+    query: str, expected_note_ids: list[int]
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    probe_completed = threading.Event()
+    probe_done = asyncio.Event()
+    coordination: dict[str, bool] = {}
+    list_notes_thread_id: list[int] = []
+    probe_ran_while_scan_blocked: list[bool] = []
+    loop_thread_id = threading.get_ident()
+
+    def list_notes() -> list[SimpleNamespace]:
+        list_notes_thread_id.append(threading.get_ident())
+        entered.set()
+        assert release.wait(timeout=2)
+        return [SimpleNamespace(note_id=123), SimpleNamespace(note_id=456)]
+
+    async def probe() -> None:
+        probe_ran_while_scan_blocked.append(not release.is_set())
+        probe_completed.set()
+        probe_done.set()
+
+    async def exercise() -> None:
+        loop = asyncio.get_running_loop()
+        gateway = ReadOnlyAnkiGateway(SimpleNamespace(list_notes=list_notes))
+        find_notes_task = asyncio.create_task(gateway.find_notes(query))
+
+        def coordinate() -> None:
+            coordination["scan_entered"] = entered.wait(timeout=2)
+            if not coordination["scan_entered"]:
+                return
+            loop.call_soon_threadsafe(lambda: asyncio.create_task(probe()))
+            if not probe_completed.wait(timeout=2):
+                release.set()
+
+        coordinator = threading.Thread(target=coordinate)
+        coordinator.start()
+        try:
+            await asyncio.wait_for(probe_done.wait(), timeout=3)
+            assert coordination["scan_entered"]
+            assert probe_ran_while_scan_blocked == [True]
+            assert list_notes_thread_id and list_notes_thread_id[0] != loop_thread_id
+            release.set()
+            assert await find_notes_task == expected_note_ids
+        finally:
+            release.set()
+            if not find_notes_task.done():
+                await asyncio.wait_for(find_notes_task, timeout=2)
+            coordinator.join(timeout=2)
+            assert not coordinator.is_alive()
+
+    asyncio.run(exercise())
 
 
 def test_read_only_gateway_serves_snapshot_and_rejects_mutation(tmp_path: Path) -> None:
