@@ -206,7 +206,8 @@ payload['ignore_environment'] = bool(sys.flags.ignore_environment)
 payload['bootstrap_dependency_paths'] = dependency_paths
 payload['runtime_dependencies'] = runtime_dependencies
 attestation.write_text(json.dumps(payload, sort_keys=True), encoding='utf-8')
-raise SystemExit(oms_hub.cli.main(['serve']))
+server_arguments = oms_hub.cli.build_parser().parse_args(['serve'])
+raise SystemExit(server_arguments.handler(server_arguments))
 """
 
 
@@ -915,6 +916,7 @@ class ProcessRehearsal:
             str((runtime_executable or self.request.trusted_python).resolve()),
             "-I",
             "-S",
+            "-B",
             "-c",
             _VERIFIED_SOURCE_BOOTSTRAP,
             str(self.request.implementation_repository.resolve() / "src"),
@@ -1192,7 +1194,7 @@ class ProcessRehearsal:
         if _is_windows():
             self._release_windows_runtime_after_handshake(tracked, deadline)
         while True:
-            if child.poll() is not None and not (_is_windows() and tracked.job is not None):
+            if child.poll() is not None:
                 raise RuntimeError(f"oms-hub serve exited during startup: {child.returncode}")
             try:
                 health = client.bootstrap_csrf()
@@ -1725,7 +1727,7 @@ class ProcessRehearsal:
     def _is_windows_preinitialization_exit(
         self, child: _Child, overlay: MaterializedCapsule
     ) -> bool:
-        """Recognize only the released Windows bootstrap that failed before import."""
+        """Recognize a released Windows bootstrap that failed before runtime ledgers."""
         if not _is_windows() or child.process.returncode in {None, 0}:
             return False
         if (
@@ -1742,13 +1744,12 @@ class ProcessRehearsal:
         ready = _load_exact_json_identity(child.startup_ready_path, expected)
         release = _load_exact_json_identity(child.startup_release_path, expected)
         directory = overlay.root / "rehearsal" / "runtime-evidence"
-        artifacts = (
-            child.attestation_path,
+        ledgers = (
             directory / "read-only-anki-mutation-ledger.json",
             directory / "egress-decisions.json",
         )
         return ready and release and all(
-            not path.exists() and not path.is_symlink() for path in artifacts
+            not path.exists() and not path.is_symlink() for path in ledgers
         )
 
     def _stop_windows_job_child(self, child: _Child, *, hard: bool) -> None:

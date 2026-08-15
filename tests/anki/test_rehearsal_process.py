@@ -14,6 +14,7 @@ from ast import Import, ImportFrom, parse
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from urllib.error import URLError
 from uuid import UUID
 
 import pytest
@@ -1562,8 +1563,14 @@ def test_command_and_environment_are_explicit_and_overlay_bound(
     prompt_directory.mkdir(parents=True)
     manifest = SimpleNamespace(logical_roots={"repository": "sources/repository"})
     environment = harness._environment(overlay, manifest)  # type: ignore[arg-type]
-    assert command[:4] == [str(harness.request.trusted_python.resolve()), "-I", "-S", "-c"]
-    assert command[5] == str((harness.request.implementation_repository / "src").resolve())
+    assert command[:5] == [
+        str(harness.request.trusted_python.resolve()),
+        "-I",
+        "-S",
+        "-B",
+        "-c",
+    ]
+    assert command[6] == str((harness.request.implementation_repository / "src").resolve())
     assert environment["OMS_HUB_DATABASE_URL"] == f"sqlite:///{overlay.database_path}"
     assert environment["OMS_HUB_ANKI_REHEARSAL_OVERLAY_DIR"] == str(overlay.root)
     assert environment["OMS_HUB_ANKI_REHEARSAL_RUN_NONCE"] == harness._runtime_evidence_nonce
@@ -1575,12 +1582,15 @@ def test_command_and_environment_are_explicit_and_overlay_bound(
     assert environment["OMS_HUB_ANKI_PROMPT_DIRECTORY"] == str(prompt_directory)
     assert environment["OMS_HUB_DASHBOARD_HOST"] == "127.0.0.1"
     assert "PYTHONPATH" not in environment
-    assert "sys.flags.no_site" in command[4]
-    assert "bootstrap_dependency_paths" in command[4]
+    assert "sys.flags.no_site" in command[5]
+    assert "bootstrap_dependency_paths" in command[5]
+    assert "main(['serve'])" not in command[5]
+    assert "build_parser().parse_args(['serve'])" in command[5]
+    assert "server_arguments.handler(server_arguments)" in command[5]
     assert command[0] == str(harness.request.trusted_python.resolve())
-    assert "AssignProcessToJobObject" not in command[4]
-    assert "handle_list" not in command[4]
-    assert command[4].index("temporary.write_text") < command[4].index("raise SystemExit")
+    assert "AssignProcessToJobObject" not in command[5]
+    assert "handle_list" not in command[5]
+    assert command[5].index("temporary.write_text") < command[5].index("raise SystemExit")
 
 
 def test_windows_environment_adds_only_canonical_systemroot(
@@ -1790,6 +1800,22 @@ def test_windows_preinitialization_exit_skips_only_absent_runtime_ledgers(
     }
 
 
+def test_windows_startup_exit_after_source_attestation_skips_absent_runtime_ledgers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = ProcessRehearsal(_request(tmp_path, runtime_evidence_nonce="nonce"))
+    overlay, child = _exited_windows_preinitialization_child(tmp_path, harness)
+    assert child.attestation_path is not None
+    child.attestation_path.write_text('{"source":"attested"}', encoding="utf-8")
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+
+    harness._stop_child(child, overlay)  # type: ignore[arg-type]
+
+    assert harness._timeline[-1]["event"] == (
+        "windows_preinitialization_exit_without_runtime_ledgers"
+    )
+
+
 def test_windows_preinitialization_exit_closes_job_without_signaling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1828,7 +1854,7 @@ def test_windows_preinitialization_exit_closes_job_without_signaling(
 
 @pytest.mark.parametrize(
     "case",
-    ("source_attestation", "partial_ledger", "malformed_handshake", "successful_exit"),
+    ("partial_ledger", "malformed_handshake", "successful_exit"),
 )
 def test_windows_preinitialization_ledger_exception_remains_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
@@ -1838,10 +1864,7 @@ def test_windows_preinitialization_ledger_exception_remains_fail_closed(
         tmp_path, harness, exit_code=0 if case == "successful_exit" else 1
     )
     evidence = overlay.root / "rehearsal" / "runtime-evidence"
-    if case == "source_attestation":
-        assert child.attestation_path is not None
-        child.attestation_path.write_text("{}", encoding="utf-8")
-    elif case == "partial_ledger":
+    if case == "partial_ledger":
         (evidence / "read-only-anki-mutation-ledger.json").write_text("{}", encoding="utf-8")
     elif case == "malformed_handshake":
         assert child.startup_ready_path is not None
@@ -1850,6 +1873,60 @@ def test_windows_preinitialization_ledger_exception_remains_fail_closed(
 
     with pytest.raises(RuntimeError, match="runtime evidence is missing"):
         harness._stop_child(child, overlay)  # type: ignore[arg-type]
+
+
+def test_windows_direct_runtime_exit_is_reported_before_loopback_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeProcess:
+        pid = 73
+        returncode = 1
+        _handle = 91
+
+        def poll(self) -> int:
+            return self.returncode
+
+    class FakeJob:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Client:
+        calls = 0
+
+        def bootstrap_csrf(self) -> object:
+            self.calls += 1
+            raise URLError("unreachable")
+
+    harness = ProcessRehearsal(_request(tmp_path))
+    overlay = SimpleNamespace(root=tmp_path / "overlay")
+    environment = {"PATH": "allowlisted", "SYSTEMROOT": str(tmp_path)}
+    runtime = Path(sys.executable).resolve()
+    job = FakeJob()
+    client = Client()
+    clock = iter((0.0, 30.0))
+    monkeypatch.setattr(harness, "_assert_loopback_port_is_free", lambda: None)
+    monkeypatch.setattr(harness, "_environment", lambda *_args: environment)
+    monkeypatch.setattr(harness, "_windows_runtime_executable", lambda: runtime)
+    monkeypatch.setattr(harness, "_probe_windows_child_capability", lambda _env: None)
+    monkeypatch.setattr(harness, "_release_windows_runtime_after_handshake", lambda *_args: None)
+    monkeypatch.setattr(harness, "_clock", lambda: next(clock))
+    monkeypatch.setattr(process_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(process_module.subprocess, "CREATE_NEW_PROCESS_GROUP", 0, raising=False)
+    monkeypatch.setattr(process_module._WindowsJob, "create", classmethod(lambda _cls: job))
+    harness._popen = lambda *_args, **_kwargs: FakeProcess()  # type: ignore[assignment]
+    harness._http_factory = lambda _port: client  # type: ignore[assignment]
+
+    try:
+        with pytest.raises(RuntimeError, match="serve exited during startup: 1"):
+            harness._start_and_connect(overlay, SimpleNamespace())  # type: ignore[arg-type]
+        assert client.calls == 0
+    finally:
+        for child in harness._children:
+            child.stdout.close()
+            child.stderr.close()
+        job.close()
 
 
 def test_run_preserves_startup_error_when_cleanup_runtime_validation_fails(
@@ -2517,6 +2594,7 @@ def test_standalone_launcher_full_reexec_uses_venv_dependencies_and_propagates_e
     assert "job_id=transported-dependency" in success.stdout
     assert "run_goal=golden outcome=golden_success" in success.stdout
     assert "PYTHONPATH" not in success.stderr
+    assert not list(repository.rglob("*.pyc"))
     forged_environment = {
         **os.environ,
         "OMS_HUB_A0_REHEARSAL_INTERNAL_NONCE": "forged-old-launcher-marker",

@@ -39,16 +39,37 @@ verifier's explicit incomplete-metadata error. The minimal GREEN correction
 reads `Version` through `distribution.metadata.get`, matching the existing
 `Name` handling.
 
+Phase B3 then proved the dependency closure but exposed the next startup
+boundary: the verified bootstrap called `oms_hub.cli.main(['serve'])` even
+though `main` accepts no arguments, and both source-importing children allowed
+bytecode writes. The next valid RED run proved four guarantees were absent:
+
+- the Job-contained child command did not include `-B`;
+- bootstrap did not dispatch `serve` through `build_parser` and its handler;
+- a nonzero direct Windows runtime exit was hidden behind the loopback timeout;
+  and
+- cleanup required runtime ledgers even when an exact released child exited
+  nonzero before those ledgers could be initialized but after source attestation.
+
+A separate full launcher re-exec RED produced candidate `.pyc` files, proving
+the outer isolated launcher also required `-B`. The GREEN implementation adds
+`-B` to both source-importing children, uses parser/handler CLI dispatch,
+reports the direct runtime exit immediately, and skips only wholly absent
+runtime ledgers for an exact failed ready/release handshake. Partial ledgers,
+malformed handshakes, and successful exits remain fail-closed.
+
 ## GREEN implementation evidence
 
-- Focused process and runtime-lock suites: 100 passed.
-- Selected A0 suite: 325 passed.
+- Focused process and runtime-lock suites: 101 passed.
+- Selected A0 suite: 326 passed.
 - Ruff: clean.
 - Windows/A0 mypy scope: clean across 15 source files.
 - `git diff --check`: clean.
 - Runtime-lock verifier coverage: 95% (73 statements, 4 missing).
 - Changed executable lines in `process.py`: 52 of 55 covered, 94.55%.
-- Whole legacy `process.py`: 67% (1,523 statements, 506 missing). This is a
+- New startup-correction executable lines: 2 of 2 covered; full launcher
+  re-exec behavior separately proves the command-string and `-B` guarantees.
+- Whole legacy `process.py`: 68% (1,523 statements, 493 missing). This is a
   pre-existing whole-module coverage gap and is not represented as passing an
   80% whole-file threshold.
 
@@ -83,8 +104,10 @@ before/after checks were identical. The native conclusion was:
 
 ## Scope boundary
 
-This evidence proves the corrected physical-path and dependency-closure model,
-not native rehearsal acceptance. No source synchronization, launcher run,
-server start, rehearsal retry, staging, commit, or push was performed for this
-correction. Checkpoint commits were intentionally omitted because this work was
-authorized for completion and findings review, not for Git publication.
+The dependency-closure candidate was committed as `254638f` and Phase B3
+confirmed its runtime path, distribution lock, and module-origin attestations.
+Phase B3 did not achieve native rehearsal acceptance because CLI dispatch failed
+before Hub health; its root remains preserved. The subsequent startup correction
+is currently uncommitted, and no additional native retry has been performed.
+Checkpoint commits for its RED/GREEN stages were intentionally deferred pending
+the next Git-publication authorization; the evidence above preserves both gates.

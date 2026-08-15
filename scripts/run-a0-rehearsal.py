@@ -236,6 +236,7 @@ def _reexec_isolated(trusted_python: Path) -> int:
             str(runtime),
             "-I",
             "-S",
+            "-B",
             "-c",
             _ISOLATED_BOOTSTRAP,
             str(Path(__file__).resolve()),
