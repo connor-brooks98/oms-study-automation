@@ -811,15 +811,17 @@ class ProcessRehearsal:
     def _environment(
         self, overlay: MaterializedCapsule, manifest: CapsuleManifest
     ) -> dict[str, str]:
-        data = overlay.root / "runtime-data"
         anki = overlay.root / "anki"
         replay = overlay.root / "replay"
-        study = overlay.root / "study"
-        icloud_staging = overlay.root / "icloud-staging"
         try:
             repository_root = overlay.root / manifest.logical_roots["repository"]
+            data = overlay.root / manifest.logical_roots["a0data"]
         except KeyError as exc:
-            raise ValueError("capsule has no materialized repository root") from exc
+            raise ValueError(f"capsule has no materialized {exc.args[0]} root") from exc
+        if not data.is_dir() or data.is_symlink():
+            raise ValueError("materialized a0data root is unavailable")
+        study = data / "study-root"
+        icloud_staging = data / "icloud-staging"
         prompt_directory = repository_root / "src" / "oms_hub" / "anki" / "prompt_assets"
         if not prompt_directory.is_dir():
             raise ValueError("materialized repository prompt assets are unavailable")

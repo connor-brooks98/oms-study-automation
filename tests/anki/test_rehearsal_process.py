@@ -5,6 +5,7 @@ import json
 import os
 import runpy
 import shutil
+import sqlite3
 import subprocess
 import sys
 import sysconfig
@@ -50,6 +51,9 @@ from oms_hub.anki.rehearsal.process import (
     run_failure_injection_matrix,
     unchanged_review_payload,
 )
+from oms_hub.db import Database
+from oms_hub.ingestion.repository import IngestionRepository
+from oms_hub.web.anki_routes import _outline_ready_for_curation
 
 
 def _request(tmp_path: Path, **changes: object) -> RehearsalRequest:
@@ -1561,7 +1565,11 @@ def test_command_and_environment_are_explicit_and_overlay_bound(
     command = harness._command()
     prompt_directory = overlay.root / "sources/repository/src/oms_hub/anki/prompt_assets"
     prompt_directory.mkdir(parents=True)
-    manifest = SimpleNamespace(logical_roots={"repository": "sources/repository"})
+    data_root = overlay.root / "sources/a0data"
+    data_root.mkdir(parents=True)
+    manifest = SimpleNamespace(
+        logical_roots={"a0data": "sources/a0data", "repository": "sources/repository"}
+    )
     environment = harness._environment(overlay, manifest)  # type: ignore[arg-type]
     assert command[:5] == [
         str(harness.request.trusted_python.resolve()),
@@ -1575,8 +1583,9 @@ def test_command_and_environment_are_explicit_and_overlay_bound(
     assert environment["OMS_HUB_ANKI_REHEARSAL_OVERLAY_DIR"] == str(overlay.root)
     assert environment["OMS_HUB_ANKI_REHEARSAL_RUN_NONCE"] == harness._runtime_evidence_nonce
     assert environment["OMS_HUB_ANKI_REHEARSAL_SOURCE_TREE_SHA256"] == "c" * 64
-    assert environment["OMS_HUB_STUDY_ROOT"] == str(overlay.root / "study")
-    assert environment["OMS_HUB_ICLOUD_STAGING_ROOT"] == str(overlay.root / "icloud-staging")
+    assert environment["OMS_HUB_DATA_DIR"] == str(data_root)
+    assert environment["OMS_HUB_STUDY_ROOT"] == str(data_root / "study-root")
+    assert environment["OMS_HUB_ICLOUD_STAGING_ROOT"] == str(data_root / "icloud-staging")
     assert Path(environment["OMS_HUB_STUDY_ROOT"]).is_dir()
     assert Path(environment["OMS_HUB_ICLOUD_STAGING_ROOT"]).is_dir()
     assert environment["OMS_HUB_ANKI_PROMPT_DIRECTORY"] == str(prompt_directory)
@@ -1593,6 +1602,259 @@ def test_command_and_environment_are_explicit_and_overlay_bound(
     assert command[5].index("temporary.write_text") < command[5].index("raise SystemExit")
 
 
+def test_materialized_a0data_roots_preserve_imported_audit_and_outline_readiness(
+    tmp_path: Path,
+) -> None:
+    harness = ProcessRehearsal(_request(tmp_path))
+    harness._source_tree_sha256 = "c" * 64
+    overlay_root = tmp_path / "overlay"
+    database_path = overlay_root / "hub/hub.db"
+    prompt_directory = overlay_root / "sources/repository/src/oms_hub/anki/prompt_assets"
+    prompt_directory.mkdir(parents=True)
+    data_root = overlay_root / "sources/a0data"
+    data_root.mkdir(parents=True)
+    overlay = SimpleNamespace(root=overlay_root, database_path=database_path)
+    manifest = SimpleNamespace(
+        logical_roots={"a0data": "sources/a0data", "repository": "sources/repository"}
+    )
+    environment = harness._environment(overlay, manifest)  # type: ignore[arg-type]
+
+    artifact_v2_root = data_root / "artifacts/v2"
+    import_id = "12345678-1234-4678-9234-567812345678"
+    import_root = data_root / "artifacts/existing-imports" / import_id
+    study_root = data_root / "study-root"
+    icloud_root = data_root / "icloud-staging"
+    lecture_root = study_root / "Heme"
+    icloud_lecture_root = icloud_root / "Heme"
+    for root in (artifact_v2_root, import_root, lecture_root, icloud_lecture_root):
+        root.mkdir(parents=True, exist_ok=True)
+
+    def write(path: Path, payload: bytes) -> tuple[Path, str]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        return path, hashlib.sha256(payload).hexdigest()
+
+    slide_source, slide_source_sha = write(
+        artifact_v2_root / "slides/source.pptx", b"materialized-slide-source"
+    )
+    previous_pdf, previous_pdf_sha = write(
+        artifact_v2_root / "slides/previous.pdf", b"previous-slide-pdf"
+    )
+    imported_pdf, imported_pdf_sha = write(import_root / "derived-slide.pdf", b"imported-slide-pdf")
+    canonical_slide_source, _ = write(lecture_root / "source.pptx", slide_source.read_bytes())
+    canonical_slide_pdf, _ = write(lecture_root / "slides.pdf", imported_pdf.read_bytes())
+    icloud_slide_pdf, _ = write(icloud_lecture_root / "slides.pdf", imported_pdf.read_bytes())
+    transcript_archive, transcript_sha = write(
+        import_root / "cleaned.txt", b"cleaned imported transcript"
+    )
+    transcript_canonical, _ = write(lecture_root / "cleaned.txt", transcript_archive.read_bytes())
+    outline_archive, outline_sha = write(
+        import_root / "outline.pdf", b"%PDF materialized imported outline"
+    )
+    outline_canonical, _ = write(lecture_root / "outline.pdf", outline_archive.read_bytes())
+
+    database_path.parent.mkdir(parents=True)
+    database = Database(f"sqlite:///{database_path}")
+    database.migrate()
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute(
+            """
+            INSERT INTO study_revisions (
+                id, upload_item_id, lecture_id, kind, source_sha256,
+                immutable_source_path, derived_sha256, immutable_derived_path,
+                canonical_source_path, canonical_derived_path, icloud_path,
+                provenance_kind, import_id, state, current, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                "slide-item",
+                24,
+                "slides",
+                slide_source_sha,
+                str(slide_source),
+                imported_pdf_sha,
+                str(imported_pdf),
+                str(canonical_slide_source),
+                str(canonical_slide_pdf),
+                str(icloud_slide_pdf),
+                "imported_derived",
+                import_id,
+                "current",
+                1,
+                "2026-08-15T00:00:00+00:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO study_revisions (
+                id, upload_item_id, lecture_id, kind, source_sha256,
+                immutable_source_path, derived_sha256, immutable_derived_path,
+                canonical_source_path, canonical_derived_path, provenance_kind,
+                import_id, state, current, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                2,
+                "transcript-item",
+                24,
+                "transcripts",
+                transcript_sha,
+                str(transcript_archive),
+                transcript_sha,
+                str(transcript_archive),
+                str(transcript_canonical),
+                str(transcript_canonical),
+                "imported_cleaned",
+                import_id,
+                "current",
+                1,
+                "2026-08-15T00:00:00+00:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO outline_outputs (
+                id, lecture_id, job_id, path, sha256, current, created_at,
+                provenance_kind, immutable_path, slide_revision_id, slide_sha256,
+                slide_source_sha256, transcript_revision_id, transcript_sha256, import_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                24,
+                None,
+                str(outline_canonical),
+                outline_sha,
+                1,
+                "2026-08-15T00:00:00+00:00",
+                "imported_notebooklm",
+                str(outline_archive),
+                1,
+                imported_pdf_sha,
+                slide_source_sha,
+                2,
+                transcript_sha,
+                import_id,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO existing_artifact_imports (
+                id, bundle_sha256, lecture_id, slide_revision_id,
+                slide_source_sha256, slide_pdf_sha256, transcript_sha256,
+                outline_sha256, subject, exam_number, lecture_number, topic,
+                canonical_transcript_path, canonical_outline_path,
+                immutable_transcript_path, immutable_outline_path, status, attempts,
+                transcript_revision_id, outline_id, expected_current_pdf_sha256,
+                previous_pdf_sha256, previous_immutable_pdf_path, imported_pdf_sha256,
+                imported_immutable_pdf_path, derived_provenance, adoption_operator,
+                adoption_reason, adoption_confirmed_at, recovery_phase, created_at, updated_at
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            """,
+            (
+                import_id,
+                "f" * 64,
+                24,
+                1,
+                slide_source_sha,
+                imported_pdf_sha,
+                transcript_sha,
+                outline_sha,
+                "Heme",
+                1,
+                2,
+                "Materialized roots",
+                str(transcript_canonical),
+                str(outline_canonical),
+                str(transcript_archive),
+                str(outline_archive),
+                "complete",
+                1,
+                2,
+                1,
+                previous_pdf_sha,
+                previous_pdf_sha,
+                str(previous_pdf),
+                imported_pdf_sha,
+                str(imported_pdf),
+                "imported_derived",
+                "a0-test",
+                "prove materialized rehearsal roots",
+                "2026-08-15T00:00:00+00:00",
+                "committed",
+                "2026-08-15T00:00:00+00:00",
+                "2026-08-15T00:00:00+00:00",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    corrected = IngestionRepository(
+        database,
+        artifact_v2_root=Path(environment["OMS_HUB_DATA_DIR"]) / "artifacts/v2",
+        study_root=Path(environment["OMS_HUB_STUDY_ROOT"]),
+        icloud_root=Path(environment["OMS_HUB_ICLOUD_STAGING_ROOT"]),
+    )
+    stale = IngestionRepository(
+        database,
+        artifact_v2_root=overlay_root / "runtime-data/artifacts/v2",
+        study_root=overlay_root / "study",
+        icloud_root=overlay_root / "icloud-staging",
+    )
+    try:
+        slide = corrected.get_study_revision(1)
+        assert not stale.imported_derived_audit_matches(slide)
+        assert corrected.imported_derived_audit_matches(slide)
+        outline = SimpleNamespace(
+            current=True,
+            path=outline_canonical,
+            sha256=outline_sha,
+            provenance_kind="imported_notebooklm",
+            immutable_path=outline_archive,
+            slide_revision_id=1,
+            slide_sha256=imported_pdf_sha,
+            slide_source_sha256=slide_source_sha,
+            transcript_revision_id=2,
+            transcript_sha256=transcript_sha,
+            import_id=import_id,
+        )
+        assert _outline_ready_for_curation(outline, corrected)
+    finally:
+        database.close()
+
+
+def test_environment_fails_closed_without_materialized_a0data_root(tmp_path: Path) -> None:
+    harness = ProcessRehearsal(_request(tmp_path))
+    harness._source_tree_sha256 = "c" * 64
+    overlay = SimpleNamespace(
+        root=tmp_path / "overlay", database_path=tmp_path / "overlay/hub/hub.db"
+    )
+    (overlay.root / "sources/repository/src/oms_hub/anki/prompt_assets").mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="no materialized a0data root"):
+        harness._environment(  # type: ignore[arg-type]
+            overlay,
+            SimpleNamespace(logical_roots={"repository": "sources/repository"}),
+        )
+    with pytest.raises(ValueError, match="materialized a0data root is unavailable"):
+        harness._environment(  # type: ignore[arg-type]
+            overlay,
+            SimpleNamespace(
+                logical_roots={
+                    "a0data": "sources/missing-a0data",
+                    "repository": "sources/repository",
+                }
+            ),
+        )
+
+
 def test_windows_environment_adds_only_canonical_systemroot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1605,6 +1867,7 @@ def test_windows_environment_adds_only_canonical_systemroot(
     )()
     prompt_directory = overlay.root / "sources/repository/src/oms_hub/anki/prompt_assets"
     prompt_directory.mkdir(parents=True)
+    (overlay.root / "sources/a0data").mkdir(parents=True)
     system_root = tmp_path / "Windows"
     system_root.mkdir()
     monkeypatch.setattr(process_module, "_is_windows", lambda: True)
@@ -1615,7 +1878,10 @@ def test_windows_environment_adds_only_canonical_systemroot(
     )
 
     environment = harness._environment(
-        overlay, SimpleNamespace(logical_roots={"repository": "sources/repository"})
+        overlay,
+        SimpleNamespace(
+            logical_roots={"a0data": "sources/a0data", "repository": "sources/repository"}
+        ),
     )
 
     assert environment["SYSTEMROOT"] == str(system_root.resolve())
@@ -1970,7 +2236,10 @@ def test_restarted_child_environment_is_disarmed_after_archiving_initial_interlo
     )()
     prompt_directory = overlay.root / "sources/repository/src/oms_hub/anki/prompt_assets"
     prompt_directory.mkdir(parents=True)
-    manifest = SimpleNamespace(logical_roots={"repository": "sources/repository"})
+    (overlay.root / "sources/a0data").mkdir(parents=True)
+    manifest = SimpleNamespace(
+        logical_roots={"a0data": "sources/a0data", "repository": "sources/repository"}
+    )
     first = harness._environment(overlay, manifest)  # type: ignore[arg-type]
     assert first["OMS_HUB_ANKI_REHEARSAL_FAILURE_STAGE"] == "card_residual"
     evidence = overlay.root / "rehearsal" / "runtime-evidence"
