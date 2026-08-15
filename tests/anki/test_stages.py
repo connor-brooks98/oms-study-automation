@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,7 +61,7 @@ from oms_hub.anki.domain import (
 from oms_hub.anki.gaps import GapBatchV2
 from oms_hub.anki.judgment import JudgmentCacheRecord
 from oms_hub.anki.normalize import NormalizedNote
-from oms_hub.anki.pipeline import PinnedInputChanged
+from oms_hub.anki.pipeline import PinnedInputChanged, StageProduct
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
 from oms_hub.anki.prompts import AnkiPromptLibrary, StaticPromptSynchronizer
 from oms_hub.anki.reconciliation import (
@@ -1120,6 +1121,176 @@ class ReadyRuntime:
             sync_available=True,
             blocking_reason=None,
         )
+
+
+@pytest.mark.parametrize(
+    "contract_version",
+    [PipelineContractVersion.CARD_CENTRIC_V1, PipelineContractVersion.CARD_CENTRIC_V2],
+)
+def test_card_centric_source_index_build_keeps_event_loop_responsive(
+    contract_version: PipelineContractVersion,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    probe_completed = threading.Event()
+    probe_done = asyncio.Event()
+    coordination: dict[str, bool] = {}
+    list_notes_thread_id: list[int] = []
+    probe_ran_while_scan_blocked: list[bool] = []
+    extraction_calls: list[tuple[tuple[int, ...], int | None]] = []
+    loop_thread_id = threading.get_ident()
+    passages = (
+        SourcePassage.create(
+            revision_id=7,
+            lecture_id=12,
+            artifact_id="summary-7",
+            source_kind=SourceKind.SUMMARY,
+            locator="summary:1",
+            text="Summary evidence.",
+        ),
+        SourcePassage.create(
+            revision_id=8,
+            lecture_id=12,
+            artifact_id="transcript-8",
+            source_kind=SourceKind.TRANSCRIPT,
+            locator="00:00",
+            text="Transcript evidence.",
+        ),
+        SourcePassage.create(
+            revision_id=9,
+            lecture_id=12,
+            artifact_id="vision-9",
+            source_kind=SourceKind.VISION,
+            locator="slide:1",
+            text="Vision-only evidence.",
+        ),
+    )
+
+    def note(
+        note_id: int,
+        *,
+        tags: tuple[str, ...],
+        deck_names: tuple[str, ...],
+    ) -> NormalizedNote:
+        return NormalizedNote(
+            note_id=note_id,
+            model_name="AnKingOverhaul",
+            text=f"Card {note_id}",
+            extra="Fixture extra.",
+            raw_fields={"Text": f"Card {note_id}"},
+            tags=tags,
+            card_ids=(note_id + 1000,),
+            media=(),
+            token_signature=f"card {note_id}",
+            content_sha256=f"{note_id:064x}",
+            deck_names=deck_names,
+        )
+
+    def list_notes() -> list[NormalizedNote]:
+        list_notes_thread_id.append(threading.get_ident())
+        entered.set()
+        assert release.wait(timeout=2)
+        return [
+            note(20, tags=("#AK_Step::Heme",), deck_names=("AnKing",)),
+            note(10, tags=("#Pathoma",), deck_names=("AnKing",)),
+            note(30, tags=("#AK_Step::Heme",), deck_names=("Other",)),
+        ]
+
+    def extract(
+        revision_ids: tuple[int, ...],
+        *,
+        summary_outline_id: int | None,
+    ) -> tuple[SourcePassage, ...]:
+        extraction_calls.append((revision_ids, summary_outline_id))
+        return passages
+
+    async def probe() -> None:
+        probe_ran_while_scan_blocked.append(not release.is_set())
+        probe_completed.set()
+        probe_done.set()
+
+    async def exercise() -> StageProduct:
+        loop = asyncio.get_running_loop()
+        runner = CurationServicesRunner.__new__(CurationServicesRunner)
+        runner.source_extractor = SimpleNamespace(extract=extract)
+        runner.companion = SimpleNamespace(list_notes=list_notes)
+        context = SimpleNamespace(
+            job=SimpleNamespace(
+                source_revision_ids=(7, 8, 9),
+                summary_outline_id=99,
+                lecture_id=12,
+                pipeline_contract_version=contract_version,
+                index_snapshot_id="index-snapshot",
+                source_revision_hashes={7: "a" * 64, 8: "b" * 64, 9: "c" * 64},
+                summary_outline_sha256="d" * 64,
+                deck_allowlist=("AnKing",),
+                tag_allowlist=("heme",),
+                companion_generation="companion-snapshot",
+            )
+        )
+        source_index_task = asyncio.create_task(runner._source_index(context))
+
+        def coordinate() -> None:
+            coordination["scan_entered"] = entered.wait(timeout=2)
+            if not coordination["scan_entered"]:
+                return
+            loop.call_soon_threadsafe(lambda: asyncio.create_task(probe()))
+            if not probe_completed.wait(timeout=2):
+                release.set()
+
+        coordinator = threading.Thread(target=coordinate)
+        coordinator.start()
+        try:
+            await asyncio.wait_for(probe_done.wait(), timeout=3)
+            assert coordination["scan_entered"]
+            assert probe_ran_while_scan_blocked == [True]
+            assert list_notes_thread_id and list_notes_thread_id[0] != loop_thread_id
+            release.set()
+            return await source_index_task
+        finally:
+            release.set()
+            if not source_index_task.done():
+                await asyncio.wait_for(source_index_task, timeout=2)
+            coordinator.join(timeout=2)
+            assert not coordinator.is_alive()
+
+    product = asyncio.run(exercise())
+
+    assert extraction_calls == [((7, 8, 9), 99)]
+    assert product.kind == "card_centric_source_index"
+    assert [card["note_id"] for card in product.payload["cards"]] == [20, 10, 30]
+    assert [passage["source_kind"] for passage in product.payload["source_index"]["passages"]] == [
+        "summary",
+        "transcript",
+    ]
+    assert product.payload["source_index"]["snapshot_id"] == "index-snapshot"
+    census = product.payload["census"]
+    assert {
+        key: census[key]
+        for key in (
+            "snapshot_id",
+            "denominator_count",
+            "tagged_count",
+            "other_system_tagged_count",
+            "untagged_count",
+            "deck_excluded_count",
+            "excluded_count",
+            "mapping",
+        )
+    } == {
+        "snapshot_id": "companion-snapshot",
+        "denominator_count": 2,
+        "tagged_count": 1,
+        "other_system_tagged_count": 0,
+        "untagged_count": 1,
+        "deck_excluded_count": 1,
+        "excluded_count": 1,
+        "mapping": {
+            "10": "untagged",
+            "20": "target_tagged",
+            "30": "deck_excluded",
+        },
+    }
 
 
 def _card_record(note_id: int, tags: tuple[str, ...]) -> CardRecord:

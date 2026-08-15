@@ -589,37 +589,10 @@ class CurationServicesRunner:
         if any(passage.lecture_id != context.job.lecture_id for passage in passages):
             raise ValueError("selected source revisions contain another lecture")
         if context.job.pipeline_contract_version.value in {"card_centric_v1", "card_centric_v2"}:
-            usable = [
-                passage
-                for passage in passages
-                if passage.source_kind
-                in {
-                    SourceKind.SUMMARY,
-                    SourceKind.TRANSCRIPT,
-                    SourceKind.SLIDE,
-                    SourceKind.SPEAKER_NOTES,
-                }
-            ]
-            source = build_source_index(
-                usable,
-                snapshot_id=context.job.index_snapshot_id,
-                source_revision_hashes=context.job.source_revision_hashes,
-                summary_outline_sha256=context.job.summary_outline_sha256,
-            )
-            cards = tuple(_card_record(note) for note in self.companion.list_notes())
-            census = build_snapshot_census(
-                cards,
-                deck_allowlist=context.job.deck_allowlist,
-                scope_tokens=context.job.tag_allowlist,
-                snapshot_id=context.job.companion_generation or context.job.index_snapshot_id,
-            )
-            return StageProduct(
-                kind="card_centric_source_index",
-                payload={
-                    "source_index": source.model_dump(mode="json"),
-                    "census": census.model_dump(mode="json"),
-                    "cards": [card.model_dump(mode="json") for card in cards],
-                },
+            return await asyncio.to_thread(
+                self._build_card_centric_source_index,
+                context,
+                passages,
             )
         generation = await self.source_indexes(context.job.id).refresh(passages)
         return StageProduct(
@@ -631,6 +604,44 @@ class CurationServicesRunner:
                 "passages": [_passage_payload(passage) for passage in passages],
             },
             job_pins={"source_index_generation": str(generation.generation)},
+        )
+
+    def _build_card_centric_source_index(
+        self,
+        context: StageContext,
+        passages: Sequence[SourcePassage],
+    ) -> StageProduct:
+        usable = [
+            passage
+            for passage in passages
+            if passage.source_kind
+            in {
+                SourceKind.SUMMARY,
+                SourceKind.TRANSCRIPT,
+                SourceKind.SLIDE,
+                SourceKind.SPEAKER_NOTES,
+            }
+        ]
+        source = build_source_index(
+            usable,
+            snapshot_id=context.job.index_snapshot_id,
+            source_revision_hashes=context.job.source_revision_hashes,
+            summary_outline_sha256=context.job.summary_outline_sha256,
+        )
+        cards = tuple(_card_record(note) for note in self.companion.list_notes())
+        census = build_snapshot_census(
+            cards,
+            deck_allowlist=context.job.deck_allowlist,
+            scope_tokens=context.job.tag_allowlist,
+            snapshot_id=context.job.companion_generation or context.job.index_snapshot_id,
+        )
+        return StageProduct(
+            kind="card_centric_source_index",
+            payload={
+                "source_index": source.model_dump(mode="json"),
+                "census": census.model_dump(mode="json"),
+                "cards": [card.model_dump(mode="json") for card in cards],
+            },
         )
 
     async def _card_ledger(self, context: StageContext) -> StageProduct:
