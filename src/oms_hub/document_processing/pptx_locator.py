@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
@@ -19,9 +19,20 @@ from oms_hub.document_processing.domain import (
     SourceSnapshot,
 )
 
+if TYPE_CHECKING:
+    from oms_hub.document_processing.run_styles import StyledTextRunSidecar
+
 
 class PptxLocatorEnricher:
     """Restore unambiguous slide, notes, and image locations for an Anydoc result."""
+
+    def extract_run_styles(self, snapshot: SourceSnapshot) -> StyledTextRunSidecar:
+        """Return the separate immutable style sidecar; never changes ParsedDocument."""
+        from oms_hub.document_processing.run_styles import extract_styled_text_run_sidecar
+
+        return extract_styled_text_run_sidecar(
+            snapshot.path, source_id=snapshot.id, source_sha256=snapshot.sha256
+        )
 
     def enrich(self, snapshot: SourceSnapshot, parsed: ParsedDocument) -> ParsedDocument:
         presentation = Presentation(str(snapshot.path))
@@ -236,11 +247,17 @@ def _slide_segments(
 
 
 def _walk_shapes(shapes: Iterable[Any]) -> Iterable[Any]:
-    for shape in shapes:
+    yield from (shape for shape, _ in walk_shapes_with_paths(shapes))
+
+
+def walk_shapes_with_paths(shapes: Iterable[Any]) -> Iterable[tuple[Any, tuple[int, ...]]]:
+    """Yield non-group shapes in XML order with their canonical group path."""
+    for index, shape in enumerate(shapes, start=1):
         if shape.shape_type is MSO_SHAPE_TYPE.GROUP:
-            yield from _walk_shapes(shape.shapes)
+            for descendant, path in walk_shapes_with_paths(shape.shapes):
+                yield descendant, (index, *path)
         else:
-            yield shape
+            yield shape, (index,)
 
 
 def _shape_content(shape: Any) -> tuple[str, SegmentKind]:

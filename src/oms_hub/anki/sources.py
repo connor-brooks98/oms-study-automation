@@ -8,10 +8,18 @@ from typing import Literal, Protocol
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
+from oms_hub.anki.contracts import canonical_payload_sha256
+from oms_hub.anki.course_policy import CourseCurationPolicy
 from oms_hub.anki.domain import SourceKind
+from oms_hub.document_processing.run_styles import (
+    StyledTextRunSidecar,
+    matches_policy_color,
+    normalized_text_sha256,
+)
 from oms_hub.ingestion.domain import StudyRevision, UploadKind
 from oms_hub.study_generation.domain import OutlineRecord
 
@@ -147,6 +155,78 @@ class SourcePassage:
         if self.source_kind is SourceKind.SUMMARY:
             return f"Lecture {self.lecture_id}, NotebookLM summary"
         return f"Lecture {self.lecture_id}, transcript"
+
+
+class SourceEmphasisEvidence(BaseModel):
+    """Policy-specific, additive evidence projected from an immutable style sidecar."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_id: str = ""
+    source_id: str = Field(min_length=1)
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sidecar_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    locator: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    normalized_text_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    emphasis_kind: Literal["colored_text"] = "colored_text"
+    normalized_color: str = Field(pattern=r"^[0-9A-F]{6}$")
+    policy_match: bool = True
+    policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provenance_hash: str = ""
+
+    def canonical_payload(self) -> dict[str, object]:
+        return self.model_dump(mode="json", exclude={"evidence_id", "provenance_hash"})
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> "SourceEmphasisEvidence":
+        if not self.text.strip():
+            raise ValueError("source emphasis evidence text cannot be blank")
+        if not self.policy_match:
+            raise ValueError("source emphasis evidence must be a policy match")
+        if self.normalized_text_sha256 != normalized_text_sha256(self.text):
+            raise ValueError("emphasis normalized text hash does not match its text")
+        provenance = canonical_payload_sha256(self.canonical_payload())
+        evidence_id = hashlib.sha256(
+            ("source-emphasis-evidence-v1\0" + provenance).encode("utf-8")
+        ).hexdigest()
+        if self.provenance_hash not in {"", provenance}:
+            raise ValueError("emphasis provenance hash does not match its canonical payload")
+        if self.evidence_id not in {"", evidence_id}:
+            raise ValueError("emphasis evidence ID does not match its canonical payload")
+        if not self.provenance_hash:
+            object.__setattr__(self, "provenance_hash", provenance)
+        if not self.evidence_id:
+            object.__setattr__(self, "evidence_id", evidence_id)
+        return self
+
+
+def project_source_emphasis_evidence(
+    sidecar: StyledTextRunSidecar, policy: CourseCurationPolicy
+) -> tuple[SourceEmphasisEvidence, ...]:
+    """Select only nonblank colored runs matching this frozen policy."""
+    if policy.emphasis_mode not in {"colored_text", "combined"}:
+        return ()
+    evidence: list[SourceEmphasisEvidence] = []
+    for run in sidecar.runs:
+        if not run.text.strip() or not matches_policy_color(run, policy.emphasis_colors):
+            continue
+        resolved_color = run.resolved_color
+        if resolved_color is None:
+            continue
+        evidence.append(
+            SourceEmphasisEvidence(
+                source_id=run.source_id,
+                source_sha256=run.source_sha256,
+                sidecar_sha256=sidecar.sidecar_sha256,
+                locator=run.locator,
+                text=" ".join(run.text.split()),
+                normalized_text_sha256=run.normalized_text_sha256,
+                normalized_color=resolved_color,
+                policy_sha256=policy.policy_sha256,
+            )
+        )
+    return tuple(evidence)
 
 
 class SummaryMalformedError(ValueError):

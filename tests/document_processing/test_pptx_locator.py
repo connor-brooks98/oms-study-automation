@@ -15,7 +15,7 @@ from oms_hub.document_processing.domain import (
     ParsedSegment,
     SegmentKind,
 )
-from oms_hub.document_processing.pptx_locator import PptxLocatorEnricher
+from oms_hub.document_processing.pptx_locator import PptxLocatorEnricher, walk_shapes_with_paths
 from oms_hub.document_processing.presentation_render import PresentationRenderer
 from oms_hub.files.office import OfficeUnavailableError
 from tests.document_processing.pptx_factory import SlideFixture, build_pptx, snapshot_for
@@ -41,6 +41,21 @@ def test_enricher_uses_slide_order_for_text_notes_and_picture_locators(tmp_path:
     assert tuple(segment.locator.label for segment in images) == ("slide 1 image 1",)
     assert images[0].asset_keys == (parsed.assets[0].key,)
     assert all(segment.locator.slide_number is not None for segment in parsed.segments)
+
+
+def test_recursive_shape_walk_exposes_xml_order_group_paths(tmp_path: Path) -> None:
+    source = build_pptx(tmp_path / "groups.pptx", slides=(SlideFixture("Title", "Body"),))
+    presentation = Presentation(source)
+    group = presentation.slides[0].shapes.add_group_shape()
+    nested = group.shapes.add_group_shape()
+    nested.shapes.add_textbox(Inches(1), Inches(1), Inches(1), Inches(1)).text = "Nested"
+    presentation.save(source)
+
+    reopened = Presentation(source)
+    located = tuple(walk_shapes_with_paths(reopened.slides[0].shapes))
+
+    assert located[-1][1] == (3, 1, 1)
+    assert located[-1][0].text == "Nested"
 
 
 def test_enricher_retains_unmatched_anydoc_asset_without_auto_binding(tmp_path: Path) -> None:
