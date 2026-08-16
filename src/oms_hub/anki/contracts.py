@@ -66,9 +66,9 @@ class CreateCurationJobRequest(ContractModel):
     gap_prompt_version: Annotated[str, Field(min_length=1, max_length=100)]
     provider: Literal["openai", "gemini", "anthropic", "openrouter"]
     model: Annotated[str, Field(max_length=200)] | None = None
-    pipeline_contract_version: Literal["retrieval_v4", "card_centric_v1", "card_centric_v2"] = (
-        "retrieval_v4"
-    )
+    pipeline_contract_version: Literal[
+        "retrieval_v4", "card_centric_v1", "card_centric_v2", "card_centric_v3"
+    ] = "retrieval_v4"
     resolved_model_config: dict[str, Any] | None = None
     source_revision_hashes: dict[
         Annotated[int, Field(gt=0)],
@@ -90,6 +90,7 @@ class CreateCurationJobRequest(ContractModel):
         ]
         | None
     ) = None
+    policy_sha256: Sha256 | None = None
 
     @field_validator("deck_allowlist", mode="before")
     @classmethod
@@ -155,6 +156,15 @@ class CreateCurationJobRequest(ContractModel):
             raise ValueError("source revision hashes must match selected revisions")
         if (self.summary_outline_id is None) != (self.summary_outline_sha256 is None):
             raise ValueError("summary outline ID and hash must be supplied together")
+        if self.policy_sha256 is not None and self.pipeline_contract_version != "card_centric_v3":
+            raise ValueError("policy pin is supported only by card-centric v3")
+        v3_routes = {"scope_r3", "cheap_classify_r7", "thorough_classify_r7", "generation_r9"}
+        if (
+            self.pipeline_contract_version != "card_centric_v3"
+            and self.resolved_model_config is not None
+            and v3_routes & set(self.resolved_model_config)
+        ):
+            raise ValueError("v3 model-tier routes are supported only by card-centric v3")
         return self
 
     def to_domain(self, *, model: str) -> CreateCurationJob:
@@ -187,6 +197,7 @@ class CreateCurationJobRequest(ContractModel):
             companion_generation=self.companion_generation,
             summary_outline_id=self.summary_outline_id,
             summary_outline_sha256=self.summary_outline_sha256,
+            policy_sha256=self.policy_sha256,
         )
 
 
@@ -220,6 +231,9 @@ def _resolved_model_config(
                 ),
             )
 
+        def optional_stage(name: str) -> ResolvedStageModel | None:
+            return stage(name) if value.get(name) is not None else None
+
         classifier_execution: ResolvedClassifierExecution | None
         if "classifier_execution" in value:
             execution_value = value["classifier_execution"]
@@ -244,6 +258,10 @@ def _resolved_model_config(
                 stage("fast_classify_s4b") if value.get("fast_classify_s4b") is not None else None
             ),
             classifier_execution=classifier_execution,
+            scope_r3=optional_stage("scope_r3"),
+            cheap_classify_r7=optional_stage("cheap_classify_r7"),
+            thorough_classify_r7=optional_stage("thorough_classify_r7"),
+            generation_r9=optional_stage("generation_r9"),
         )
         if version in {
             PipelineContractVersion.CARD_CENTRIC_V1,

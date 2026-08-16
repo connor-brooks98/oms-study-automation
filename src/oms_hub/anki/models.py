@@ -23,6 +23,21 @@ class AnkiCurationInstructionModel(Base):
     )
 
 
+class CourseCurationPolicyModel(Base):
+    __tablename__ = "course_curation_policy"
+    __table_args__ = (
+        UniqueConstraint("policy_id", "revision"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    policy_id: Mapped[str] = mapped_column(String(200))
+    revision: Mapped[int]
+    payload_json: Mapped[str] = mapped_column(Text)
+    policy_sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
 class AnkiCurationJobModel(Base):
     __tablename__ = "anki_curation_jobs"
     __table_args__ = (Index("ix_anki_curation_jobs_state_created", "state", "created_at"),)
@@ -109,6 +124,7 @@ class AnkiCurationJobModel(Base):
         default=EMPTY_SHA256,
         server_default=EMPTY_SHA256,
     )
+    policy_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     apply_state: Mapped[str] = mapped_column(
         String(50),
         default="pending",

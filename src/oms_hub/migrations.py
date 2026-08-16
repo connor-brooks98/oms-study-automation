@@ -2,16 +2,18 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import inspect, select, text
+from sqlalchemy import Table, inspect, select, text
 
 import oms_hub.anki.models  # noqa: F401
 from oms_hub.anki.card_centric import (
     _redacted_invalid_response,
     validate_persisted_s2_generation_parameters,
 )
+from oms_hub.anki.course_policy import CourseCurationPolicy
+from oms_hub.anki.models import CourseCurationPolicyModel
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.files.trusted_paths import (
     is_indirection,
@@ -35,7 +37,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 27
+LATEST_SCHEMA_VERSION = 28
 
 
 def _ensure_column(
@@ -232,6 +234,88 @@ def _upgrade_provider_attempt_subcall_ordinal_v27(database: "Database") -> None:
                 "(job_id, stage, stage_attempt, mode, call_index, subcall_ordinal, event)"
             )
         )
+
+
+def _upgrade_course_curation_policy_v28(database: "Database") -> None:
+    """Add immutable policy revisions and an optional v3 job pin."""
+    policy_table = cast(Table, CourseCurationPolicyModel.__table__)
+    policy_table.create(database.engine, checkfirst=True)
+    _ensure_column(database, "anki_curation_jobs", "policy_sha256", "VARCHAR(64)")
+
+
+def _validate_course_curation_policy_v28(database: "Database") -> None:
+    """Fail closed when a claimed v28 database lacks its new immutable contracts."""
+    inspector = inspect(database.engine)
+    table = "course_curation_policy"
+    if not inspector.has_table(table):
+        raise RuntimeError("schema v28 is missing course curation policy revisions")
+    columns = {column["name"]: column for column in inspector.get_columns(table)}
+    required = {
+        "id", "policy_id", "revision", "payload_json", "policy_sha256", "created_at", "updated_at"
+    }
+    if missing := required - set(columns):
+        raise RuntimeError(
+            "schema v28 policy columns are incomplete: " + ", ".join(sorted(missing))
+        )
+    if any(columns[name]["nullable"] for name in required - {"id"}):
+        raise RuntimeError("schema v28 policy columns must be non-null")
+    unique_sets = {
+        tuple(item["column_names"])
+        for item in inspector.get_unique_constraints(table)
+    }
+    if ("policy_id", "revision") not in unique_sets:
+        raise RuntimeError("schema v28 policy revision identity is not unique")
+    jobs = {column["name"]: column for column in inspector.get_columns("anki_curation_jobs")}
+    if "policy_sha256" not in jobs or not jobs["policy_sha256"]["nullable"]:
+        raise RuntimeError("schema v28 job policy pin must be nullable")
+    with database.engine.connect() as connection:
+        policies = list(
+            connection.execute(
+                text(
+                    "SELECT policy_id, revision, payload_json, policy_sha256 "
+                    "FROM course_curation_policy"
+                )
+            ).mappings()
+        )
+        policy_hashes: set[str] = set()
+        for row in policies:
+            try:
+                payload = json.loads(row["payload_json"])
+                canonical = json.dumps(
+                    payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                )
+                if canonical != row["payload_json"]:
+                    raise ValueError("payload is not canonical")
+                policy = CourseCurationPolicy.model_validate(
+                    {**payload, "policy_sha256": row["policy_sha256"]}
+                )
+                canonical_policy_payload = json.dumps(
+                    policy.canonical_payload(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                if canonical_policy_payload != row["payload_json"]:
+                    raise ValueError("payload does not match canonical policy")
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise RuntimeError("schema v28 policy row is invalid") from error
+            if policy.policy_id != row["policy_id"] or policy.revision != row["revision"]:
+                raise RuntimeError("schema v28 policy row identity is invalid")
+            policy_hashes.add(policy.policy_sha256)
+        if "pipeline_contract_version" not in jobs:
+            return
+        pinned_jobs = connection.execute(
+            text(
+                "SELECT pipeline_contract_version, policy_sha256 FROM anki_curation_jobs "
+                "WHERE policy_sha256 IS NOT NULL"
+            )
+        ).mappings()
+        for row in pinned_jobs:
+            if (
+                row["pipeline_contract_version"] != "card_centric_v3"
+                or row["policy_sha256"] not in policy_hashes
+            ):
+                raise RuntimeError("schema v28 job policy pin is invalid")
 
 
 def _validate_card_ledger_attempt_lifecycles_v25(
@@ -2016,6 +2100,7 @@ def migrate_database(database: "Database") -> None:
             _validate_imported_derived_adoptions_v23(database)
             _validate_card_ledger_attempts_v25(database)
             _validate_provider_attempt_events_v26(database)
+            _validate_course_curation_policy_v28(database)
             return
         if version == 20:
             _validate_complete_v20_import_graph(database)
@@ -2054,6 +2139,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_imported_derived_slide_v23(database)
     _upgrade_card_ledger_attempt_diagnostics_v25(database)
     _upgrade_provider_attempt_subcall_ordinal_v27(database)
+    _upgrade_course_curation_policy_v28(database)
     _validate_import_schema_structure(database, version=LATEST_SCHEMA_VERSION)
     _validate_complete_existing_artifact_graph(database)
     _validate_current_artifact_indexes(database)
@@ -2061,6 +2147,7 @@ def migrate_database(database: "Database") -> None:
     _validate_imported_derived_adoptions_v23(database)
     _validate_card_ledger_attempts_v25(database)
     _validate_provider_attempt_events_v26(database)
+    _validate_course_curation_policy_v28(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

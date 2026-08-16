@@ -23,6 +23,7 @@ from oms_hub.anki.correction_contracts import (
     SelectionMetadata,
     SelectionTier,
 )
+from oms_hub.anki.course_policy import CourseCurationPolicy, PolicyEmphasisColor
 from oms_hub.anki.domain import (
     ApplyState,
     Candidate,
@@ -55,7 +56,7 @@ from oms_hub.anki.models import (
     AnkiEnvelopeOperationModel,
     AnkiReviewedReconciliationModel,
 )
-from oms_hub.anki.pipeline import pipeline_stages
+from oms_hub.anki.pipeline import UnsupportedPipelineContract, pipeline_stages
 from oms_hub.anki.provider_attempts import (
     ProviderAttemptEvent,
     ProviderAttemptIdentity,
@@ -76,6 +77,7 @@ from oms_hub.anki.repository import (
 from oms_hub.anki.tag_policy import TagPolicy
 from oms_hub.db import Database
 from oms_hub.llm.domain import ProviderName
+from oms_hub.migrations import migrate_database
 from oms_hub.models import LectureModel
 
 
@@ -172,6 +174,56 @@ def _job_request(
         summary_outline_id=91,
         summary_outline_sha256="b" * 64,
     )
+
+
+@pytest.mark.parametrize(
+    ("version", "pin", "error"),
+    (
+        ("card_centric_v2", "valid", "job policy pin"),
+        ("card_centric_v3", "dangling", "job policy pin"),
+    ),
+)
+def test_current_v28_rejects_invalid_policy_pin_in_isolation(
+    tmp_path: Path, version: str, pin: str, error: str
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    policy = CourseCurationPolicy(
+        policy_id="policy", revision=1, course_id="course", professor_label="professor",
+        scope_instruction="scope", emphasis_mode="colored_text",
+        emphasis_colors=(PolicyEmphasisColor(rgb="FF0000", label="red"),),
+        missing_emphasis_fallback="block", tag_scope_mode="hard_filter",
+        classification_strictness="strict", generation_style_profile="style",
+        ordinary_cost_limit_microusd=1, hard_stop_cost_limit_microusd=1,
+    )
+    repository.create_policy_revision(policy)
+    with repository.database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE anki_curation_jobs SET pipeline_contract_version = :version, "
+                "policy_sha256 = :sha WHERE id = :id"
+            ),
+            {
+                "version": version,
+                "sha": policy.policy_sha256 if pin == "valid" else "a" * 64,
+                "id": str(job.id),
+            },
+        )
+    with pytest.raises(RuntimeError, match=error):
+        migrate_database(repository.database)
+
+
+def test_v3_job_creation_fails_before_persistence(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    request = replace(
+        _job_request(lecture_id),
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V3,
+        policy_sha256="a" * 64,
+    )
+    with pytest.raises(UnsupportedPipelineContract, match="contract-only"):
+        repository.create_job(request)
+    with repository.database.engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM anki_curation_jobs")).scalar_one() == 0
 
 
 def test_provider_attempt_events_are_fenced_ordered_and_exactly_idempotent(
@@ -1618,7 +1670,7 @@ def test_v24_card_ledger_evidence_survives_reopen_upgrade_without_rewriting(
         for candidate_model, outcome in fixtures
         if candidate_model == model
     ]
-    assert version == 27
+    assert version == 28
 
 
 def test_card_ledger_transport_failure_persists_only_safe_diagnostics(

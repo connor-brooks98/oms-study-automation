@@ -47,6 +47,19 @@ class CurationState(StrEnum):
     FAILED = "failed"
     CANCELED = "canceled"
     REMOVED = "removed"
+    V3_R0_PREFLIGHT = "v3_r0_preflight"
+    V3_R1_SOURCE_INDEX = "v3_r1_source_index"
+    V3_R2_FIDELITY = "v3_r2_fidelity"
+    V3_R3_SCOPE = "v3_r3_scope"
+    V3_R4_INDEX_VERIFICATION = "v3_r4_index_verification"
+    V3_R5_RETRIEVAL = "v3_r5_retrieval"
+    V3_R6_CALIBRATION = "v3_r6_calibration"
+    V3_R7_CLASSIFICATION = "v3_r7_classification"
+    V3_R8_GAP_CONFIRMATION = "v3_r8_gap_confirmation"
+    V3_R9_GENERATION = "v3_r9_generation"
+    V3_R10_DEDUPE = "v3_r10_dedupe"
+    V3_R11_REVIEW = "v3_r11_review"
+    V3_R12_APPLY = "v3_r12_apply"
 
 
 class CurationStage(StrEnum):
@@ -82,12 +95,26 @@ class CurationStage(StrEnum):
     CARD_RESIDUAL = "card_residual"
     CARD_GAP_FILL = "card_gap_fill"
     CARD_SELECTION = "card_selection"
+    V3_R0_PREFLIGHT = "v3_r0_preflight"
+    V3_R1_SOURCE_INDEX = "v3_r1_source_index"
+    V3_R2_FIDELITY = "v3_r2_fidelity"
+    V3_R3_SCOPE = "v3_r3_scope"
+    V3_R4_INDEX_VERIFICATION = "v3_r4_index_verification"
+    V3_R5_RETRIEVAL = "v3_r5_retrieval"
+    V3_R6_CALIBRATION = "v3_r6_calibration"
+    V3_R7_CLASSIFICATION = "v3_r7_classification"
+    V3_R8_GAP_CONFIRMATION = "v3_r8_gap_confirmation"
+    V3_R9_GENERATION = "v3_r9_generation"
+    V3_R10_DEDUPE = "v3_r10_dedupe"
+    V3_R11_REVIEW = "v3_r11_review"
+    V3_R12_APPLY = "v3_r12_apply"
 
 
 class PipelineContractVersion(StrEnum):
     RETRIEVAL_V4 = "retrieval_v4"
     CARD_CENTRIC_V1 = "card_centric_v1"
     CARD_CENTRIC_V2 = "card_centric_v2"
+    CARD_CENTRIC_V3 = "card_centric_v3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +214,12 @@ class ResolvedModelConfiguration:
     # an explicit execution document so batch/concurrency inputs participate in
     # the resolved-model hash and every downstream replay identity.
     classifier_execution: ResolvedClassifierExecution | None = None
+    # These optional routes are the v3 tier identity only.  V3 remains
+    # unexecutable until its later stage implementation is authorized.
+    scope_r3: ResolvedStageModel | None = None
+    cheap_classify_r7: ResolvedStageModel | None = None
+    thorough_classify_r7: ResolvedStageModel | None = None
+    generation_r9: ResolvedStageModel | None = None
 
     def __post_init__(self) -> None:
         if not self.profile.strip():
@@ -270,6 +303,14 @@ class ResolvedModelConfiguration:
             document["fast_classify_s4b"] = stage(self.fast_classify_s4b)
         if self.classifier_execution is not None:
             document["classifier_execution"] = self.classifier_execution.canonical_document()
+        for name, value in (
+            ("scope_r3", self.scope_r3),
+            ("cheap_classify_r7", self.cheap_classify_r7),
+            ("thorough_classify_r7", self.thorough_classify_r7),
+            ("generation_r9", self.generation_r9),
+        ):
+            if value is not None:
+                document[name] = stage(value)
         return document
 
     def require_card_centric_v2_fast_classifier(self) -> None:
@@ -286,6 +327,17 @@ class ResolvedModelConfiguration:
                 "card-centric v2 S4b requires an approved provider, a nonblank model, "
                 "and disabled thinking"
             )
+
+    def has_v3_tier_routes(self) -> bool:
+        return any(
+            route is not None
+            for route in (
+                self.scope_r3,
+                self.cheap_classify_r7,
+                self.thorough_classify_r7,
+                self.generation_r9,
+            )
+        )
 
 
 class RetrievalPass(StrEnum):
@@ -347,6 +399,33 @@ class CreateCurationJob:
     companion_generation: str | None = None
     summary_outline_id: int | None = None
     summary_outline_sha256: str | None = None
+    policy_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        v3_only = self.policy_sha256 is not None or (
+            self.resolved_model_config is not None
+            and self.resolved_model_config.has_v3_tier_routes()
+        )
+        if (
+            v3_only
+            and self.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V3
+        ):
+            raise ValueError("v3-only policy and model-tier fields require card_centric_v3")
+
+
+# Frozen names only.  Phase H wires these into runtime replay identity.
+V3_REPLAY_IDENTITY_FIELDS = (
+    "policy_sha256",
+    "policy_revision",
+    "style_fidelity_sha256",
+    "scope_sha256",
+    "lexical_generation",
+    "semantic_generation",
+    "retrieval_calibration_sha256",
+    "evidence_bundle_sha256",
+    "model_tier_escalation_identity",
+    "cost_policy_rate_table_sha256",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,6 +466,7 @@ class CurationJob:
     updated_at: str
     summary_outline_id: int | None = None
     summary_outline_sha256: str | None = None
+    policy_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -17,12 +17,14 @@ from oms_hub.anki.domain import (
     StageArtifact,
 )
 from oms_hub.anki.pipeline import (
+    CARD_CENTRIC_V3_STAGES,
     PIPELINE_STAGES,
     CurationPipeline,
     PinnedInputChanged,
     StageArtifactStore,
     StageContext,
     StageProduct,
+    UnsupportedPipelineContract,
     _stage_input_hash,
     pipeline_stages,
     stage_definition,
@@ -62,6 +64,14 @@ class MutableInputValidator:
         del job_id
         if self.error is not None:
             raise PinnedInputChanged(self.error)
+
+
+def test_v3_graph_is_frozen_but_pipeline_lookup_fails_closed() -> None:
+    assert len(CARD_CENTRIC_V3_STAGES) == 13
+    assert CARD_CENTRIC_V3_STAGES[0].stage.value == "v3_r0_preflight"
+    assert CARD_CENTRIC_V3_STAGES[-1].stage.value == "v3_r12_apply"
+    with pytest.raises(UnsupportedPipelineContract, match="no mutation"):
+        pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V3)
 
 
 def test_stage_artifact_store_rejects_document_provenance_mismatch(tmp_path: Path) -> None:

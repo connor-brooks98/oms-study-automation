@@ -1,8 +1,15 @@
+import json
+
 import pytest
 from pydantic import ValidationError
 
 from oms_hub.anki.contracts import CreateCurationJobRequest, TagPatchContract
-from oms_hub.anki.domain import ResolvedClassifierExecution, ResolvedModelConfiguration
+from oms_hub.anki.domain import (
+    V3_REPLAY_IDENTITY_FIELDS,
+    CreateCurationJob,
+    ResolvedClassifierExecution,
+    ResolvedModelConfiguration,
+)
 
 
 def _job_payload() -> dict[str, object]:
@@ -96,6 +103,56 @@ def test_create_job_allows_omitted_model() -> None:
     request = CreateCurationJobRequest.model_validate(payload)
 
     assert request.model is None
+
+
+def test_legacy_and_v2_model_documents_omit_v3_tier_fields() -> None:
+    legacy = ResolvedModelConfiguration.card_centric_default(
+        "anthropic", "claude-sonnet-5"
+    ).canonical_document()
+    v2 = ResolvedModelConfiguration.card_centric_v2_default(
+        "anthropic", "claude-sonnet-5"
+    ).canonical_document()
+    v3_keys = {"scope_r3", "cheap_classify_r7", "thorough_classify_r7", "generation_r9"}
+    assert not v3_keys & set(legacy)
+    assert not v3_keys & set(v2)
+    assert json.dumps(legacy, sort_keys=True, separators=(",", ":")) == (
+        '{"classify_s4":{"fixture_validation_signature":null,"model":"claude-sonnet-5",'
+        '"provider":"anthropic","thinking_mode":"disabled"},"gap_fill_s7":'
+        '{"fixture_validation_signature":null,"model":"claude-sonnet-5",'
+        '"provider":"anthropic","thinking_mode":"default"},"ledger_s2":'
+        '{"fixture_validation_signature":null,"model":"claude-sonnet-5",'
+        '"provider":"anthropic","thinking_mode":"default"},"profile":"card_centric_default",'
+        '"residual_s6":{"fixture_validation_signature":null,"model":"claude-sonnet-5",'
+        '"provider":"anthropic","thinking_mode":"disabled"},"residual_unlocked":false}'
+    )
+
+
+def test_v3_only_fields_are_rejected_for_legacy_requests_and_domain_calls() -> None:
+    payload = _job_payload()
+    payload["resolved_model_config"] = {
+        **ResolvedModelConfiguration.card_centric_default(
+            "anthropic", "claude-sonnet-5"
+        ).canonical_document(),
+        "scope_r3": {"provider": "anthropic", "model": "claude-sonnet-5"},
+    }
+    with pytest.raises(ValidationError, match="v3 model-tier"):
+        CreateCurationJobRequest.model_validate(payload)
+    with pytest.raises(ValueError, match="v3-only"):
+        CreateCurationJob(
+            lecture_id=1, block_id=None, source_revision_ids=(1,), deck_allowlist=("Deck",),
+            tag_allowlist=("tag",), instruction_text="", target_deck="Deck", target_tag="tag",
+            index_snapshot_id="index", lcl_prompt_version="lcl", judgment_rubric_version="judge",
+            gap_prompt_version="gap", provider="anthropic", model="claude-sonnet-5",
+            policy_sha256="a" * 64,
+        )
+
+
+def test_phase_h_replay_binding_fields_are_frozen_in_order() -> None:
+    assert V3_REPLAY_IDENTITY_FIELDS == (
+        "policy_sha256", "policy_revision", "style_fidelity_sha256", "scope_sha256",
+        "lexical_generation", "semantic_generation", "retrieval_calibration_sha256",
+        "evidence_bundle_sha256", "model_tier_escalation_identity", "cost_policy_rate_table_sha256",
+    )
 
 
 def test_create_job_rejects_blank_model() -> None:

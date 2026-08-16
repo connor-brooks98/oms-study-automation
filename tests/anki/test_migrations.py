@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from contextlib import closing
 from dataclasses import replace
@@ -7,11 +8,17 @@ from uuid import UUID
 import pytest
 from sqlalchemy import inspect, text
 
+from oms_hub.anki.course_policy import CourseCurationPolicy, PolicyEmphasisColor
 from oms_hub.anki.domain import PipelineContractVersion
 from oms_hub.anki.pipeline import PinnedInputChanged, StageArtifactStore
 from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.db import Database
-from oms_hub.migrations import LATEST_SCHEMA_VERSION, _upgrade_provider_attempt_subcall_ordinal_v27
+from oms_hub.migrations import (
+    LATEST_SCHEMA_VERSION,
+    _upgrade_course_curation_policy_v28,
+    _upgrade_provider_attempt_subcall_ordinal_v27,
+    migrate_database,
+)
 
 APPROVED_ANKI_TABLES = {
     "anki_curation_instructions",
@@ -74,6 +81,119 @@ def test_v26_provider_attempt_events_upgrade_preserves_rows_and_adds_subcall_ide
         "subcall_ordinal",
         "event",
     ) in unique_indexes
+    database.close()
+
+
+def test_v27_policy_upgrade_preserves_job_rows_and_adds_v28_contracts(tmp_path: Path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'v27-policy.db'}")
+    with database.engine.begin() as connection:
+        connection.execute(text("CREATE TABLE anki_curation_jobs (id TEXT PRIMARY KEY)"))
+        connection.execute(text("INSERT INTO anki_curation_jobs (id) VALUES ('existing-job')"))
+    _upgrade_course_curation_policy_v28(database)
+    inspector = inspect(database.engine)
+    assert inspector.has_table("course_curation_policy")
+    columns = {column["name"] for column in inspector.get_columns("anki_curation_jobs")}
+    assert "policy_sha256" in columns
+    with database.engine.connect() as connection:
+        job_id = connection.execute(text("SELECT id FROM anki_curation_jobs")).scalar_one()
+        assert job_id == "existing-job"
+    database.close()
+
+
+def test_claimed_v28_missing_policy_contract_fails_closed(tmp_path: Path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'claimed-v28.db'}")
+    database.migrate()
+    with database.engine.begin() as connection:
+        connection.execute(text("DROP TABLE course_curation_policy"))
+    with pytest.raises(RuntimeError, match="course curation policy"):
+        migrate_database(database)
+    database.close()
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "error"),
+    (
+        ("payload_json", "{}", "policy row"),
+        ("policy_sha256", "0" * 64, "policy row"),
+        ("policy_id", "other", "policy row identity"),
+    ),
+)
+def test_current_v28_rejects_tampered_policy_rows_and_pins(
+    tmp_path: Path, column: str, value: str, error: str
+) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'tampered-v28.db'}")
+    database.migrate()
+    policy = CourseCurationPolicy(
+        policy_id="policy", revision=1, course_id="course", professor_label="professor",
+        scope_instruction="scope", emphasis_mode="colored_text",
+        emphasis_colors=(PolicyEmphasisColor(rgb="FF0000", label="red"),),
+        missing_emphasis_fallback="block", tag_scope_mode="hard_filter",
+        classification_strictness="strict", generation_style_profile="style",
+        ordinary_cost_limit_microusd=1, hard_stop_cost_limit_microusd=1,
+    )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO course_curation_policy "
+                "(policy_id, revision, payload_json, policy_sha256, created_at, updated_at) "
+                "VALUES (:id, :revision, :payload, :sha, 'now', 'now')"
+            ),
+            {
+                "id": policy.policy_id,
+                "revision": policy.revision,
+                "payload": json.dumps(
+                    policy.canonical_payload(), sort_keys=True, separators=(",", ":")
+                ),
+                "sha": policy.policy_sha256,
+            },
+        )
+        connection.execute(
+            text(f"UPDATE course_curation_policy SET {column} = :value"), {"value": value}
+        )
+    with pytest.raises(RuntimeError, match=error):
+        migrate_database(database)
+    database.close()
+
+
+@pytest.mark.parametrize(
+    "payload_update", ({"policy_id": " policy "}, {"policy_sha256": "x" * 64})
+)
+def test_current_v28_rejects_canonical_policy_payload_drift(
+    tmp_path: Path, payload_update: dict[str, str]
+) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'payload-drift.db'}")
+    database.migrate()
+    policy = CourseCurationPolicy(
+        policy_id="policy",
+        revision=1,
+        course_id="course",
+        professor_label="professor",
+        scope_instruction="scope",
+        emphasis_mode="colored_text",
+        emphasis_colors=(PolicyEmphasisColor(rgb="FF0000", label="red"),),
+        missing_emphasis_fallback="block",
+        tag_scope_mode="hard_filter",
+        classification_strictness="strict",
+        generation_style_profile="style",
+        ordinary_cost_limit_microusd=1,
+        hard_stop_cost_limit_microusd=1,
+    )
+    payload = {**policy.canonical_payload(), **payload_update}
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO course_curation_policy "
+                "(policy_id, revision, payload_json, policy_sha256, created_at, updated_at) "
+                "VALUES (:id, 1, :payload, :sha, 'now', 'now')"
+            ),
+            {
+                "id": "policy",
+                "payload": json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                "sha": policy.policy_sha256,
+            },
+        )
+    with pytest.raises(RuntimeError, match="policy row"):
+        migrate_database(database)
     database.close()
 
 

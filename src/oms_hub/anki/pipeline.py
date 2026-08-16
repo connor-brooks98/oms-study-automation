@@ -250,6 +250,67 @@ CARD_CENTRIC_V2_STAGES = (
         CurationState.CARD_RECONCILING, CurationStage.RECONCILIATION, CurationState.READY_FOR_REVIEW
     ),
 )
+# Frozen architecture graph only.  ``pipeline_stages`` intentionally rejects
+# it until later phases provide every handler and execution boundary.
+CARD_CENTRIC_V3_STAGES = (
+    PipelineStageDefinition(
+        CurationState.V3_R0_PREFLIGHT,
+        CurationStage.V3_R0_PREFLIGHT,
+        CurationState.V3_R1_SOURCE_INDEX,
+    ),
+    PipelineStageDefinition(
+        CurationState.V3_R1_SOURCE_INDEX,
+        CurationStage.V3_R1_SOURCE_INDEX,
+        CurationState.V3_R2_FIDELITY,
+    ),
+    PipelineStageDefinition(
+        CurationState.V3_R2_FIDELITY, CurationStage.V3_R2_FIDELITY, CurationState.V3_R3_SCOPE
+    ),
+    PipelineStageDefinition(
+        CurationState.V3_R3_SCOPE,
+        CurationStage.V3_R3_SCOPE,
+        CurationState.V3_R4_INDEX_VERIFICATION,
+    ),
+    PipelineStageDefinition(
+        CurationState.V3_R4_INDEX_VERIFICATION,
+        CurationStage.V3_R4_INDEX_VERIFICATION,
+        CurationState.V3_R5_RETRIEVAL,
+    ),
+    PipelineStageDefinition(
+        CurationState.V3_R5_RETRIEVAL,
+        CurationStage.V3_R5_RETRIEVAL,
+        CurationState.V3_R6_CALIBRATION,
+    ),
+    PipelineStageDefinition(
+        CurationState.V3_R6_CALIBRATION,
+        CurationStage.V3_R6_CALIBRATION,
+        CurationState.V3_R7_CLASSIFICATION,
+    ),
+    PipelineStageDefinition(
+        CurationState.V3_R7_CLASSIFICATION,
+        CurationStage.V3_R7_CLASSIFICATION,
+        CurationState.V3_R8_GAP_CONFIRMATION,
+    ),
+    PipelineStageDefinition(
+        CurationState.V3_R8_GAP_CONFIRMATION,
+        CurationStage.V3_R8_GAP_CONFIRMATION,
+        CurationState.V3_R9_GENERATION,
+    ),
+    PipelineStageDefinition(
+        CurationState.V3_R9_GENERATION,
+        CurationStage.V3_R9_GENERATION,
+        CurationState.V3_R10_DEDUPE,
+    ),
+    PipelineStageDefinition(
+        CurationState.V3_R10_DEDUPE, CurationStage.V3_R10_DEDUPE, CurationState.V3_R11_REVIEW
+    ),
+    PipelineStageDefinition(
+        CurationState.V3_R11_REVIEW, CurationStage.V3_R11_REVIEW, CurationState.V3_R12_APPLY
+    ),
+    PipelineStageDefinition(
+        CurationState.V3_R12_APPLY, CurationStage.V3_R12_APPLY, CurationState.COMPLETE
+    ),
+)
 _STAGE_BY_STATE = {definition.state: definition for definition in PIPELINE_STAGES}
 
 

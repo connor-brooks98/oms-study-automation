@@ -39,6 +39,7 @@ from oms_hub.anki.correction_contracts import (
     PinnedLectureMetadata,
     _sha,
 )
+from oms_hub.anki.course_policy import CourseCurationPolicy
 from oms_hub.anki.domain import (
     AgentCommandType,
     AgentState,
@@ -90,6 +91,7 @@ from oms_hub.anki.models import (
     AnkiStageReplayInputModel,
     AnkiStageSettingModel,
     AnkiTagPatchModel,
+    CourseCurationPolicyModel,
 )
 from oms_hub.anki.provider_attempts import (
     ProviderAttemptIndeterminate,
@@ -448,9 +450,10 @@ def _configuration_document(
     model_config_sha256: str,
     semantic_generation: str | None,
     companion_generation: str | None,
+    policy_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Return the complete canonical job configuration used for provenance."""
-    return {
+    document = {
         "block_id": block_id,
         "source_revision_ids": tuple(source_revision_ids),
         "source_revision_hashes": source_revision_hashes,
@@ -471,6 +474,9 @@ def _configuration_document(
         "semantic_generation": semantic_generation,
         "companion_generation": companion_generation,
     }
+    if pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3:
+        document["policy_sha256"] = policy_sha256
+    return document
 
 
 def _configuration_sha256(configuration: dict[str, Any]) -> str:
@@ -513,6 +519,12 @@ class AnkiCurationRepository:
         self.database = database
 
     def create_job(self, request: CreateCurationJob) -> CurationJob:
+        if request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3:
+            from oms_hub.anki.pipeline import UnsupportedPipelineContract
+
+            raise UnsupportedPipelineContract(
+                "card_centric_v3 is contract-only; no job or execution path is available"
+            )
         if (
             request.pipeline_contract_version
             in {PipelineContractVersion.CARD_CENTRIC_V1, PipelineContractVersion.CARD_CENTRIC_V2}
@@ -575,6 +587,7 @@ class AnkiCurationRepository:
             model_config_sha256=model_config_sha256,
             semantic_generation=request.semantic_generation,
             companion_generation=request.companion_generation,
+            policy_sha256=request.policy_sha256,
         )
         with self.database.session() as session:
             lecture = session.get(LectureModel, request.lecture_id)
@@ -616,6 +629,7 @@ class AnkiCurationRepository:
                 semantic_generation=request.semantic_generation,
                 companion_generation=request.companion_generation,
                 configuration_sha256=_configuration_sha256(configuration),
+                policy_sha256=request.policy_sha256,
                 apply_state=ApplyState.PENDING.value,
                 instruction_text=request.instruction_text,
                 instruction_sha256=_sha256_text(request.instruction_text),
@@ -626,6 +640,57 @@ class AnkiCurationRepository:
             session.add(stored)
             session.flush()
             return self._job(stored)
+
+    def create_policy_revision(self, policy: CourseCurationPolicy) -> CourseCurationPolicy:
+        """Append a policy revision, allowing only an exact idempotent retry."""
+        payload_json = _canonical_json(policy.canonical_payload())
+        with self.database.session() as session:
+            existing = session.scalar(
+                select(CourseCurationPolicyModel).where(
+                    CourseCurationPolicyModel.policy_id == policy.policy_id,
+                    CourseCurationPolicyModel.revision == policy.revision,
+                )
+            )
+            if existing is not None:
+                if (
+                    existing.policy_sha256 == policy.policy_sha256
+                    and existing.payload_json == payload_json
+                ):
+                    return self._course_policy(existing)
+                raise ValueError(
+                    "course policy revision identity already exists with different payload"
+                )
+            session.add(
+                CourseCurationPolicyModel(
+                    policy_id=policy.policy_id,
+                    revision=policy.revision,
+                    payload_json=payload_json,
+                    policy_sha256=policy.policy_sha256,
+                )
+            )
+            session.flush()
+            return policy
+
+    def get_policy_revision(self, policy_id: str, revision: int) -> CourseCurationPolicy:
+        with self.database.session() as session:
+            stored = session.scalar(
+                select(CourseCurationPolicyModel).where(
+                    CourseCurationPolicyModel.policy_id == policy_id,
+                    CourseCurationPolicyModel.revision == revision,
+                )
+            )
+            if stored is None:
+                raise KeyError((policy_id, revision))
+            return self._course_policy(stored)
+
+    def list_policy_revisions(self, policy_id: str) -> tuple[CourseCurationPolicy, ...]:
+        with self.database.session() as session:
+            rows = session.scalars(
+                select(CourseCurationPolicyModel)
+                .where(CourseCurationPolicyModel.policy_id == policy_id)
+                .order_by(CourseCurationPolicyModel.revision)
+            ).all()
+            return tuple(self._course_policy(row) for row in rows)
 
     def card_centric_profile(self) -> ResolvedModelConfiguration | None:
         """The local Study Hub has one signed-in operator; this is that user's default."""
@@ -1499,6 +1564,7 @@ class AnkiCurationRepository:
                 model_config_sha256=job.model_config_sha256,
                 semantic_generation=job.semantic_generation,
                 companion_generation=job.companion_generation,
+                policy_sha256=job.policy_sha256,
             )
         )
         job.source_index_generation = None
@@ -3422,7 +3488,20 @@ class AnkiCurationRepository:
             updated_at=stored.updated_at,
             summary_outline_id=stored.summary_outline_id,
             summary_outline_sha256=stored.summary_outline_sha256,
+            policy_sha256=stored.policy_sha256,
         )
+
+    @staticmethod
+    def _course_policy(stored: CourseCurationPolicyModel) -> CourseCurationPolicy:
+        payload = cast(dict[str, Any], json.loads(stored.payload_json))
+        policy = CourseCurationPolicy.model_validate(
+            {**payload, "policy_sha256": stored.policy_sha256}
+        )
+        if _canonical_json(policy.canonical_payload()) != stored.payload_json:
+            raise ValueError("stored course policy payload failed canonical integrity checks")
+        if policy.policy_id != stored.policy_id or policy.revision != stored.revision:
+            raise ValueError("stored course policy identity failed integrity checks")
+        return policy
 
     @staticmethod
     def _stage(stored: AnkiJobStageModel) -> JobStage:
