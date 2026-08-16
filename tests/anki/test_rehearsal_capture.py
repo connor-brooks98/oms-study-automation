@@ -797,14 +797,42 @@ def test_windows_acl_parser_and_command_fail_closed(
     store = CaptureStore(tmp_path / "private", _load(tmp_path / "authorization.json"))
     store.root.mkdir()
     monkeypatch.setattr(capture_module, "_windows_current_principal", lambda: "DOMAIN\\owner")
+    calls: list[list[str]] = []
     replies = iter(
         [
+            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    f"{store.root} OWNER RIGHTS:(F)\n"
+                    "SYSTEM:(F)\n"
+                    "BUILTIN\\Administrators:(F)\n"
+                    "DOMAIN\\owner:(F)\n"
+                ),
+            ),
+            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(returncode=0, stdout=""),
             SimpleNamespace(returncode=0, stdout=""),
             SimpleNamespace(returncode=0, stdout="DOMAIN\\owner:(F)\n"),
         ]
     )
-    monkeypatch.setattr(capture_module.subprocess, "run", lambda *_args, **_kwargs: next(replies))
+
+    def run(arguments: list[str], **_kwargs: object) -> object:
+        calls.append(arguments)
+        return next(replies)
+
+    monkeypatch.setattr(capture_module.subprocess, "run", run)
     store._lock_windows_acl()
+    assert calls == [
+        ["icacls", str(store.root), "/inheritance:r"],
+        ["icacls", str(store.root)],
+        ["icacls", str(store.root), "/remove", "BUILTIN\\Administrators"],
+        ["icacls", str(store.root), "/remove", "OWNER RIGHTS"],
+        ["icacls", str(store.root), "/remove", "SYSTEM"],
+        ["icacls", str(store.root), "/grant:r", "DOMAIN\\owner:(OI)(CI)F"],
+        ["icacls", str(store.root)],
+    ]
     monkeypatch.setattr(
         capture_module.subprocess,
         "run",
@@ -814,6 +842,8 @@ def test_windows_acl_parser_and_command_fail_closed(
         store._lock_windows_acl()
     replies = iter(
         [
+            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(returncode=0, stdout="DOMAIN\\owner:(F)\n"),
             SimpleNamespace(returncode=0, stdout=""),
             SimpleNamespace(returncode=1, stdout=""),
         ]

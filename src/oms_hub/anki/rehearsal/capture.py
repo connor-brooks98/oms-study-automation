@@ -1300,7 +1300,7 @@ class CaptureStore:
         owner = _windows_current_principal()
         try:
             completed = subprocess.run(
-                ["icacls", str(self.root), "/inheritance:r", "/grant:r", f"{owner}:(OI)(CI)F"],
+                ["icacls", str(self.root), "/inheritance:r"],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -1309,6 +1309,38 @@ class CaptureStore:
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise CaptureDenied("capture store Windows owner-only ACL cannot be created") from exc
         if completed.returncode != 0:
+            raise CaptureDenied("capture store Windows owner-only ACL cannot be created")
+        current = subprocess.run(
+            ["icacls", str(self.root)], check=False, capture_output=True, text=True, timeout=10
+        )
+        principals = (
+            _windows_acl_principals(current.stdout, self.root)
+            if current.returncode == 0
+            else None
+        )
+        if principals is None:
+            raise CaptureDenied("capture store Windows owner-only ACL cannot be proven")
+        for principal in sorted(
+            {value for value in principals if value.casefold() != owner.casefold()},
+            key=str.casefold,
+        ):
+            removed = subprocess.run(
+                ["icacls", str(self.root), "/remove", principal],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if removed.returncode != 0:
+                raise CaptureDenied("capture store Windows owner-only ACL cannot be created")
+        granted = subprocess.run(
+            ["icacls", str(self.root), "/grant:r", f"{owner}:(OI)(CI)F"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if granted.returncode != 0:
             raise CaptureDenied("capture store Windows owner-only ACL cannot be created")
         verified = subprocess.run(
             ["icacls", str(self.root)], check=False, capture_output=True, text=True, timeout=10
@@ -1383,26 +1415,44 @@ def _windows_current_principal() -> str:
 
 def _windows_acl_is_owner_only(output: str, owner: str, root: Path | None = None) -> bool:
     owner_key = owner.casefold()
-    root_text = str(root) if root is not None else ""
-    ace_lines: list[str] = []
-    for index, raw in enumerate(output.splitlines()):
-        line = raw.strip()
-        if not line or line.casefold().startswith("successfully processed"):
-            continue
-        if index == 0 and root_text and line.casefold().startswith(root_text.casefold()):
-            line = line[len(root_text) :].strip()
-        if line:
-            ace_lines.append(line)
-    if not ace_lines:
+    entries = _windows_acl_entries(output, root)
+    if not entries:
         return False
-    for line in ace_lines:
-        principal, permissions = line.split(":", 1)
-        if principal.strip().casefold() != owner_key:
+    for principal, permissions in entries:
+        if principal.casefold() != owner_key:
             return False
         normalized = permissions.casefold().replace(" ", "")
         if "(i)" in normalized or "(f)" not in normalized:
             return False
     return True
+
+
+def _windows_acl_principals(output: str, root: Path | None = None) -> tuple[str, ...] | None:
+    entries = _windows_acl_entries(output, root)
+    if entries is None:
+        return None
+    return tuple(principal for principal, _permissions in entries)
+
+
+def _windows_acl_entries(
+    output: str, root: Path | None = None
+) -> tuple[tuple[str, str], ...] | None:
+    root_text = str(root) if root is not None else ""
+    entries: list[tuple[str, str]] = []
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line or line.casefold().startswith("successfully processed"):
+            continue
+        if root_text and line.casefold().startswith(root_text.casefold()):
+            line = line[len(root_text) :].strip()
+        if not line or ":" not in line:
+            return None
+        principal, permissions = line.split(":", 1)
+        principal = principal.strip()
+        if not principal or not permissions.strip():
+            return None
+        entries.append((principal, permissions))
+    return tuple(entries) if entries else None
 
 
 class CaptureStructuredTextGenerator(StructuredTextGenerator):
