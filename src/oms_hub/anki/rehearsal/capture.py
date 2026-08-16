@@ -1566,10 +1566,12 @@ class CaptureStructuredTextGenerator(StructuredTextGenerator):
         try:
             if (
                 generated.provider is not provider
-                or generated.model != model
+                or not _capture_returned_model_is_authorized(provider, model, generated.model)
                 or generated.output_tokens > reserved_tokens
             ):
                 raise CaptureDenied("captured structured response violates authorization")
+            if generated.model != model:
+                generated = replace(generated, model=model)
             self.store.record_structured(replay_key, generated)
             self.store.bind_private_response(
                 ordinal,
@@ -1581,6 +1583,23 @@ class CaptureStructuredTextGenerator(StructuredTextGenerator):
             self.store.complete(ordinal, observed_microusd=0, stored=False)
             raise CaptureIndeterminate("structured response was not durably captured") from exc
         return generated
+
+
+def _capture_returned_model_is_authorized(
+    provider: ProviderName, requested: str, returned: str
+) -> bool:
+    if returned == requested:
+        return True
+    if provider is not ProviderName.OPENAI:
+        return False
+    prefix = f"{requested}-"
+    if not returned.startswith(prefix):
+        return False
+    snapshot = returned[len(prefix) :]
+    try:
+        return datetime.strptime(snapshot, "%Y-%m-%d").strftime("%Y-%m-%d") == snapshot
+    except ValueError:
+        return False
 
 
 class CaptureStructuredTextService(StructuredTextService):

@@ -2480,6 +2480,132 @@ def test_capture_structured_service_injects_bound_before_attempt_and_replays(
     assert capture_module._capture_replay_generation_options.get() is None
 
 
+def test_capture_normalizes_authorized_openai_snapshot_model_for_replay(tmp_path: Path) -> None:
+    authorization_path, _digest = _authorization(tmp_path / "authorization.json")
+    document = json.loads(authorization_path.read_text(encoding="utf-8"))
+    document["structured"] = [
+        {
+            **document["structured"][0],
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "endpoint": "https://api.openai.com/v1/responses",
+        }
+    ]
+    document["egress_pins"] = {
+        "api.openai.com": ["203.0.113.1"],
+        "api.voyageai.com": ["203.0.113.2"],
+    }
+    authorization_path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+    authorization = CaptureAuthorization.load(
+        authorization_path,
+        hashlib.sha256(authorization_path.read_bytes()).hexdigest(),
+        commit=_COMMIT,
+        tree=_TREE,
+        capsule_sha256=_CAPSULE,
+        failed_job_id=_JOB,
+    )
+    store = CaptureStore(tmp_path / "private", authorization)
+    store.prepare()
+
+    class Inner:
+        def generate_text(self, *_args: object, **_kwargs: object) -> GeneratedText:
+            return GeneratedText(
+                "{}",
+                ProviderName.OPENAI,
+                "gpt-4o-mini-2024-07-18",
+                "request",
+                1,
+                1,
+                0,
+            )
+
+    wrapper = CaptureStructuredTextGenerator(
+        Inner(), store, {ProviderName.OPENAI: "https://api.openai.com/v1/responses"}
+    )
+    binding = ProviderAttemptBinding(
+        UUID(int=7),
+        CurationStage.CARD_FAST_CLASSIFY,
+        1,
+        "shadow",
+        lambda _event: None,
+        replay_namespace="capture-test",
+    )
+    with bind_provider_attempts(binding), provider_call_scope(batch_index=0):
+        begin_provider_call(
+            provider="openai",
+            model="gpt-4o-mini",
+            instruction="instruction",
+            input_text="input",
+            output_schema={},
+            generation_parameters={
+                "thinking": "disabled",
+                "thinking_budget_tokens": 1024,
+                "temperature": None,
+                "max_tokens": 10,
+            },
+            cacheable_source_prefix=None,
+        )
+        generated = wrapper.generate_text(
+            "instruction",
+            "input",
+            output_schema={},
+            provider=ProviderName.OPENAI,
+            model="gpt-4o-mini",
+            options=GenerationOptions(max_tokens=10),
+        )
+    assert generated.model == "gpt-4o-mini"
+    records = json.loads((store.pack / "structured.json").read_text(encoding="utf-8"))
+    assert {record["model"] for record in records.values()} == {"gpt-4o-mini"}
+    replay = ReplayStructuredTextGenerator(
+        store.pack / "structured.json", require_attempt_identity=True
+    )
+    replay_binding = ProviderAttemptBinding(
+        UUID(int=8),
+        CurationStage.CARD_FAST_CLASSIFY,
+        1,
+        "canonical",
+        lambda _event: None,
+        replay_namespace="capture-test",
+    )
+    with bind_provider_attempts(replay_binding), provider_call_scope(batch_index=0):
+        begin_provider_call(
+            provider="openai",
+            model="gpt-4o-mini",
+            instruction="instruction",
+            input_text="input",
+            output_schema={},
+            generation_parameters={
+                "thinking": "disabled",
+                "thinking_budget_tokens": 1024,
+                "temperature": None,
+                "max_tokens": 10,
+            },
+            cacheable_source_prefix=None,
+        )
+        replayed = replay.generate_text(
+            "instruction",
+            "input",
+            output_schema={},
+            provider=ProviderName.OPENAI,
+            model="gpt-4o-mini",
+            options=GenerationOptions(max_tokens=10),
+        )
+    assert replayed.model == "gpt-4o-mini"
+
+
+@pytest.mark.parametrize(
+    "returned",
+    ("gpt-4o", "gpt-4o-mini-latest", "gpt-4o-mini-2024-13-40"),
+)
+def test_capture_rejects_unrelated_openai_returned_model(returned: str) -> None:
+    assert not capture_module._capture_returned_model_is_authorized(
+        ProviderName.OPENAI, "gpt-4o-mini", returned
+    )
+    assert not capture_module._capture_returned_model_is_authorized(
+        ProviderName.ANTHROPIC, "claude-sonnet-5", "claude-sonnet-5-2026-06-30"
+    )
+
+
 @pytest.mark.parametrize(
     ("stage", "kind"),
     (
