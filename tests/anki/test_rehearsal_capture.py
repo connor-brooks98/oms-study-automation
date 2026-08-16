@@ -431,6 +431,172 @@ def test_capture_store_reserves_before_dispatch_and_rejects_collisions(tmp_path:
         store.finalize_pack()
 
 
+def test_capture_vector_collision_is_rejected_before_any_batch_file_is_written(
+    tmp_path: Path,
+) -> None:
+    store = CaptureStore(tmp_path / "private", _load(tmp_path / "authorization.json"))
+    store.prepare()
+    store.record_vectors(
+        ["existing"],
+        np.asarray([[1.0, 0.0]], dtype=np.float32),
+        model="voyage-4-large",
+        dimensions=2,
+        input_type="document",
+    )
+    replay = ReplayEmbeddingClient(
+        store.pack / "vectors", model="voyage-4-large", dimensions=2
+    )
+    new_key = replay._key("new", "document")  # noqa: SLF001 - published replay identity
+    manifest_path = store.pack / "vectors" / "manifest.json"
+    manifest_before = manifest_path.read_bytes()
+
+    with pytest.raises(CaptureDenied, match="different bytes"):
+        store.record_vectors(
+            ["new", "existing"],
+            np.asarray([[0.0, 1.0], [0.5, 0.5]], dtype=np.float32),
+            model="voyage-4-large",
+            dimensions=2,
+            input_type="document",
+        )
+
+    assert not (store.pack / "vectors" / "document" / f"{new_key}.npy").exists()
+    assert manifest_path.read_bytes() == manifest_before
+
+
+def test_capture_embedding_dispatches_only_unique_missing_vectors_and_reuses_pack(
+    tmp_path: Path,
+) -> None:
+    store = CaptureStore(tmp_path / "private", _load(tmp_path / "authorization.json"))
+    store.prepare()
+    events: list[ProviderEventEvidence] = []
+
+    class Live:
+        model = "voyage-4-large"
+        dimensions = 2
+        url = "https://api.voyageai.com/v1/embeddings"
+
+        def __init__(self) -> None:
+            self.batches: list[list[str]] = []
+
+        async def embed(self, texts: list[str], *, input_type: str) -> np.ndarray:
+            assert input_type == "document"
+            self.batches.append(list(texts))
+            vectors = {"existing": [1.0, 0.0], "new": [0.0, 1.0]}
+            return np.asarray([vectors[text] for text in texts], dtype=np.float32)
+
+        async def aclose(self) -> None:
+            return None
+
+    live = Live()
+    client = CaptureEmbeddingClient(live, store)  # type: ignore[arg-type]
+    binding = ProviderAttemptBinding(
+        UUID(int=9),
+        CurationStage.DEDUPE,
+        1,
+        "shadow",
+        events.append,
+        replay_namespace="capture-test",
+    )
+    with bind_provider_attempts(binding), provider_call_scope(batch_index=0, kind="embedding"):
+        first = asyncio.run(client.embed(["existing", "existing"], input_type="document"))
+    with bind_provider_attempts(binding), provider_call_scope(batch_index=1, kind="embedding"):
+        second = asyncio.run(client.embed(["new", "existing"], input_type="document"))
+    event_count = len(events)
+    with bind_provider_attempts(binding), provider_call_scope(batch_index=2, kind="embedding"):
+        repeated = asyncio.run(client.embed(["existing", "existing"], input_type="document"))
+
+    assert live.batches == [["existing"], ["new"]]
+    assert np.array_equal(first, np.asarray([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32))
+    assert np.array_equal(second, np.asarray([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32))
+    assert np.array_equal(repeated, np.asarray([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32))
+    assert len(events) == event_count
+    assert [event.event.event for event in events] == [
+        "begun",
+        "dispatched",
+        "response_received",
+        "accepted",
+        "begun",
+        "dispatched",
+        "response_received",
+        "accepted",
+    ]
+    assert [call["rows"] for call in store.calls()] == [1, 1]
+    assert [call["replay_request"]["normalized_texts"] for call in store.calls()] == [
+        ["existing"],
+        ["new"],
+    ]
+    response_events = [event for event in events if event.event.event == "response_received"]
+    for call, event in zip(store.calls(), response_events, strict=True):
+        assert store.private_response_matches(
+            call,
+            {
+                "response_sha256": event.event.response_sha256,
+                "input_sha256": event.input_sha256,
+                "generation_parameters_sha256": event.generation_parameters_sha256,
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("failure", "terminal"),
+    (
+        (CaptureDenied("retention failed"), "validation_failed"),
+        (OSError("retention failed"), "contract_failed"),
+    ),
+)
+def test_capture_embedding_records_response_before_retention_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+    terminal: str,
+) -> None:
+    store = CaptureStore(tmp_path / "private", _load(tmp_path / "authorization.json"))
+    store.prepare()
+    events: list[ProviderEventEvidence] = []
+
+    class Live:
+        model = "voyage-4-large"
+        dimensions = 2
+        url = "https://api.voyageai.com/v1/embeddings"
+
+        async def embed(self, texts: list[str], *, input_type: str) -> np.ndarray:
+            assert texts == ["new"]
+            assert input_type == "document"
+            return np.asarray([[1.0, 0.0]], dtype=np.float32)
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        store,
+        "record_vectors",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+    )
+    client = CaptureEmbeddingClient(Live(), store)  # type: ignore[arg-type]
+    binding = ProviderAttemptBinding(
+        UUID(int=10),
+        CurationStage.DEDUPE,
+        1,
+        "shadow",
+        events.append,
+        replay_namespace="capture-test",
+    )
+    with (
+        bind_provider_attempts(binding),
+        provider_call_scope(batch_index=0, kind="embedding"),
+        pytest.raises(capture_module.CaptureIndeterminate, match="not durably captured"),
+    ):
+        asyncio.run(client.embed(["new"], input_type="document"))
+
+    assert [event.event.event for event in events] == [
+        "begun",
+        "dispatched",
+        "response_received",
+        terminal,
+    ]
+    assert store.calls()[0]["stored"] is False
+
+
 def test_capture_private_response_binding_detects_tampered_structured_and_vectors(
     tmp_path: Path,
 ) -> None:

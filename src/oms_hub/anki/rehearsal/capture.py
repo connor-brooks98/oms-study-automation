@@ -1088,6 +1088,72 @@ class CaptureStore:
                 texts, vectors, model=model, dimensions=dimensions, input_type=input_type
             )
 
+    def recorded_vectors(
+        self,
+        texts: list[str],
+        *,
+        model: str,
+        dimensions: int,
+        input_type: InputType,
+    ) -> list[np.ndarray | None]:
+        """Return strictly verified captured rows without creating provider events."""
+        with self._lock:
+            replay = ReplayEmbeddingClient(
+                self.pack / "vectors", model=model, dimensions=dimensions
+            )
+            manifest = self._read_json(replay.root / "manifest.json", {})
+            if not isinstance(manifest, dict):
+                raise CaptureDenied("capture vector manifest is invalid")
+            result: list[np.ndarray | None] = []
+            for text in texts:
+                key = replay._key(text, input_type)  # noqa: SLF001 - published replay identity
+                record = manifest.get(key)
+                if record is None:
+                    result.append(None)
+                    continue
+                required = {
+                    "path",
+                    "sha256",
+                    "input_type",
+                    "text_sha256",
+                    "size_bytes",
+                    "dtype",
+                    "dimensions",
+                }
+                relative = f"{input_type}/{key}.npy"
+                if (
+                    not isinstance(record, dict)
+                    or set(record) != required
+                    or record.get("path") != relative
+                    or not _is_sha256(record.get("sha256"))
+                    or record.get("input_type") != input_type
+                    or record.get("text_sha256") != _sha256(" ".join(text.split()).encode())
+                    or type(record.get("size_bytes")) is not int
+                    or record["size_bytes"] < 0
+                    or not isinstance(record.get("dtype"), str)
+                    or not record["dtype"]
+                    or record.get("dimensions") != dimensions
+                ):
+                    raise CaptureDenied("captured replay vector record is invalid")
+                path = replay.root / relative
+                self._reject_indirect(path)
+                try:
+                    content = path.read_bytes()
+                    vector = np.load(path, allow_pickle=False)
+                except (OSError, ValueError) as exc:
+                    raise CaptureDenied("captured replay vector file is invalid") from exc
+                if (
+                    not isinstance(vector, np.ndarray)
+                    or len(content) != record["size_bytes"]
+                    or _sha256(content) != record["sha256"]
+                    or vector.dtype.name != record["dtype"]
+                    or vector.shape != (dimensions,)
+                    or not np.isfinite(vector).all()
+                ):
+                    raise CaptureDenied("captured replay vector file is invalid")
+                result.append(np.asarray(vector, dtype=np.float32))
+            return result
+
     def _record_vectors(
         self,
         texts: list[str],
@@ -1102,20 +1168,18 @@ class CaptureStore:
             raise CaptureDenied("capture vectors violate the replay contract")
         replay = ReplayEmbeddingClient(self.pack / "vectors", model=model, dimensions=dimensions)
         manifest = self._read_json(self.pack / "vectors" / "manifest.json", {})
+        if not isinstance(manifest, dict):
+            raise CaptureDenied("capture vector manifest is invalid")
         keys: list[str] = []
+        pending: dict[str, tuple[Path, bytes, dict[str, object]]] = {}
         for index, text in enumerate(texts):
             key = replay._key(text, input_type)  # noqa: SLF001 - published replay identity
             relative = f"{input_type}/{key}.npy"
             destination = replay.root / relative
-            destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             buffer = io.BytesIO()
             np.save(buffer, matrix[index], allow_pickle=False)
             raw = buffer.getvalue()
-            if destination.exists() and destination.read_bytes() != raw:
-                raise CaptureDenied("replay vector identity was reused with different bytes")
-            if not destination.exists():
-                self._write_bytes(destination, raw)
-            record = {
+            record: dict[str, object] = {
                 "path": relative,
                 "sha256": _sha256(raw),
                 "input_type": input_type,
@@ -1124,10 +1188,29 @@ class CaptureStore:
                 "dtype": matrix[index].dtype.name,
                 "dimensions": dimensions,
             }
-            if key in manifest and manifest[key] != record:
+            previous = pending.get(key)
+            if previous is not None:
+                if previous[1] != raw or previous[2] != record:
+                    raise CaptureDenied("replay vector identity was reused with different bytes")
+                keys.append(key)
+                continue
+            file_exists = destination.exists()
+            manifest_exists = key in manifest
+            if file_exists != manifest_exists:
+                raise CaptureDenied("replay vector file and manifest are inconsistent")
+            if file_exists:
+                self._reject_indirect(destination)
+                if destination.read_bytes() != raw:
+                    raise CaptureDenied("replay vector identity was reused with different bytes")
+            if manifest_exists and manifest[key] != record:
                 raise CaptureDenied("replay vector manifest identity changed")
+            pending[key] = (destination, raw, record)
             manifest[key] = record
             keys.append(key)
+        for destination, raw, _record in pending.values():
+            if not destination.exists():
+                destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                self._write_bytes(destination, raw)
         self._write_json(replay.root / "manifest.json", manifest)
         return keys
 
@@ -1651,7 +1734,7 @@ class CaptureStructuredTextService(StructuredTextService):
 
 
 class CaptureEmbeddingClient:
-    """One bounded, no-retry live Voyage batch per dynamic vector request."""
+    """One bounded, no-retry Voyage batch for each set of uncaptured vector keys."""
 
     def __init__(self, live: VoyageEmbeddingClient, store: CaptureStore) -> None:
         self.live = live
@@ -1663,14 +1746,36 @@ class CaptureEmbeddingClient:
         self, texts: Sequence[str], *, input_type: InputType
     ) -> FloatMatrix:
         normalized_texts = [" ".join(item.split()) for item in texts]
-        rows = normalized_texts
-        normalized_hashes = [_sha256(item.encode()) for item in normalized_texts]
         expected_kind = "query_embedding" if input_type == "query" else "embedding"
         scope = "query_embedding" if input_type == "query" else "proposal_embedding"
         self.store.authorization.allows_voyage(self.model, self.dimensions, self.live.url, scope)
-        input_bytes = sum(len(item.encode()) for item in rows)
-        if len(rows) > 1_000 or sum(len(item) for item in rows) > 280_000:
+        if len(normalized_texts) > 1_000 or sum(len(item) for item in normalized_texts) > 280_000:
             raise CaptureDenied("capture embedding request would require more than one dispatch")
+        recorded = self.store.recorded_vectors(
+            normalized_texts,
+            model=self.model,
+            dimensions=self.dimensions,
+            input_type=input_type,
+        )
+        replay = ReplayEmbeddingClient(
+            self.store.pack / "vectors", model=self.model, dimensions=self.dimensions
+        )
+        all_keys = [
+            replay._key(item, input_type) for item in normalized_texts  # noqa: SLF001
+        ]
+        missing: dict[str, str] = {}
+        for index, (key, vector) in enumerate(zip(all_keys, recorded, strict=True)):
+            if vector is None and key not in missing:
+                missing[key] = normalized_texts[index]
+        if not normalized_texts:
+            return np.empty((0, self.dimensions), dtype=np.float32)
+        if not missing:
+            return np.stack([cast(np.ndarray, vector) for vector in recorded]).astype(
+                np.float32, copy=False
+            )
+        rows = list(missing.values())
+        normalized_hashes = [_sha256(item.encode()) for item in rows]
+        input_bytes = sum(len(item.encode()) for item in rows)
         handle = begin_provider_call(
             provider="voyage",
             model=self.model,
@@ -1700,13 +1805,10 @@ class CaptureEmbeddingClient:
                 handle, "contract_failed", error="capture embedding stage is unauthorized"
             )
             raise CaptureDenied("capture embedding stage is not authorized")
-        replay = ReplayEmbeddingClient(
-            self.store.pack / "vectors", model=self.model, dimensions=self.dimensions
-        )
         replay_request = {
             "kind": "vectors",
-            "normalized_texts": normalized_texts,
-            "keys": [replay._key(item, input_type) for item in normalized_texts],  # noqa: SLF001
+            "normalized_texts": rows,
+            "keys": [replay._key(item, input_type) for item in rows],  # noqa: SLF001
             "text_sha256": normalized_hashes,
             "input_type": input_type,
             "dimensions": self.dimensions,
@@ -1728,6 +1830,26 @@ class CaptureEmbeddingClient:
         try:
             vectors = await self.live.embed(rows, input_type=input_type)
             matrix = np.asarray(vectors, dtype=np.float32)
+            response = json.dumps(
+                [_sha256(np.asarray(row, dtype=np.float32).tobytes()) for row in matrix],
+                separators=(",", ":"),
+            )
+            request_id = f"voyage:{_sha256(response.encode())[:24]}"
+        except Exception as exc:
+            self.store.complete(ordinal, observed_microusd=0, stored=False)
+            emit_provider_event(
+                handle,
+                "transport_failed",
+                error="capture Voyage response was not durably retained",
+            )
+            raise CaptureIndeterminate("Voyage response was not durably captured") from exc
+        emit_provider_event(
+            handle,
+            "response_received",
+            request_id=request_id,
+            response_text=response,
+        )
+        try:
             if matrix.shape != (len(rows), self.dimensions) or not np.isfinite(matrix).all():
                 raise CaptureDenied("Voyage response violates the capture vector contract")
             vector_keys = self.store.record_vectors(
@@ -1735,43 +1857,35 @@ class CaptureEmbeddingClient:
             )
             if vector_keys != replay_request["keys"]:
                 raise CaptureDenied("capture vector replay identity changed before storage")
-            response = json.dumps(
-                [_sha256(np.asarray(row, dtype=np.float32).tobytes()) for row in matrix],
-                separators=(",", ":"),
-            )
             self.store.bind_private_response(
                 ordinal,
                 _provider_response_sha256(response),
                 replay_request,
             )
             self.store.complete(ordinal, observed_microusd=0, stored=True)
-            emit_provider_event(
-                handle,
-                "response_received",
-                request_id=f"voyage:{_sha256(response.encode())[:24]}",
-                response_text=response,
+            recorded = self.store.recorded_vectors(
+                normalized_texts,
+                model=self.model,
+                dimensions=self.dimensions,
+                input_type=input_type,
             )
-            emit_provider_event(
-                handle, "accepted", request_id=f"voyage:{_sha256(response.encode())[:24]}"
+            if any(vector is None for vector in recorded):
+                raise CaptureDenied("capture vector replay pack is incomplete after storage")
+            result = np.stack([cast(np.ndarray, vector) for vector in recorded]).astype(
+                np.float32, copy=False
             )
-            return matrix
         except CaptureIndeterminate:
             raise
         except Exception as exc:
             self.store.complete(ordinal, observed_microusd=0, stored=False)
-            if isinstance(exc, CaptureDenied):
-                emit_provider_event(
-                    handle,
-                    "validation_failed",
-                    error="capture Voyage response was not durably retained",
-                )
-            else:
-                emit_provider_event(
-                    handle,
-                    "transport_failed",
-                    error="capture Voyage response was not durably retained",
-                )
+            emit_provider_event(
+                handle,
+                "validation_failed" if isinstance(exc, CaptureDenied) else "contract_failed",
+                error="capture Voyage response was not durably retained",
+            )
             raise CaptureIndeterminate("Voyage response was not durably captured") from exc
+        emit_provider_event(handle, "accepted", request_id=request_id)
+        return result
 
     async def aclose(self) -> None:
         await self.live.aclose()
