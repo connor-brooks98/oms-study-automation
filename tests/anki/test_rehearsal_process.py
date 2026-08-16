@@ -716,6 +716,51 @@ def test_process_run_executes_expected_replay_miss_branch_in_safe_order(
     )
 
 
+def test_populated_completion_binds_overlay_job_before_install_or_child_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _request(
+        tmp_path,
+        restart_after_durable_boundary=False,
+        replay_supplement=tmp_path / "supplement",
+    )
+    harness = ProcessRehearsal(request)
+    order: list[str] = []
+    overlay = SimpleNamespace(
+        root=tmp_path / "overlay", database_path=tmp_path / "overlay/hub.db"
+    )
+    repository = SimpleNamespace(
+        require_job=lambda _job_id: order.append("overlay-job") or SimpleNamespace(id=UUID(int=1))
+    )
+    monkeypatch.setattr(ProcessRehearsal, "_validate_destinations", lambda self: SimpleNamespace())
+    monkeypatch.setattr(process_module, "_supplement_is_populated", lambda _root: True)
+    monkeypatch.setattr(
+        process_module, "materialize_capsule", lambda *_args: order.append("materialize") or overlay
+    )
+    monkeypatch.setattr(
+        process_module, "Database", lambda _url: SimpleNamespace(close=lambda: None)
+    )
+    monkeypatch.setattr(process_module, "AnkiCurationRepository", lambda _database: repository)
+    monkeypatch.setattr(
+        ProcessRehearsal,
+        "_verify_populated_replay_completion",
+        lambda _self, _failed: order.append("completion-verify"),
+    )
+    monkeypatch.setattr(
+        ProcessRehearsal, "_install_replay_supplement", lambda *_args: order.append("install")
+    )
+    monkeypatch.setattr(
+        ProcessRehearsal,
+        "_start_and_connect",
+        lambda *_args: order.append("child-start")
+        or (_ for _ in ()).throw(RuntimeError("stop after ordering proof")),
+    )
+    monkeypatch.setattr(ProcessRehearsal, "_stop_all", lambda *_args, **_kwargs: None)
+    with pytest.raises(RuntimeError, match="ordering proof"):
+        harness.run()
+    assert order == ["materialize", "overlay-job", "completion-verify", "install", "child-start"]
+
+
 def test_refuses_existing_overlay_and_evidence_before_capsule_access(tmp_path: Path) -> None:
     overlay = tmp_path / "overlay"
     overlay.mkdir()

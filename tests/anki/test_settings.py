@@ -29,6 +29,23 @@ def test_anki_settings_default_to_disabled_and_data_directory_child(
     assert settings.transcript_prompt_path is None
 
 
+def test_capture_settings_reject_complete_or_partial_tuples_when_off(tmp_path: Path) -> None:
+    capture = {
+        "anki_rehearsal_capture_store": tmp_path / "private",
+        "anki_rehearsal_capture_authorization_manifest": tmp_path / "authorization.json",
+        "anki_rehearsal_capture_authorization_sha256": "a" * 64,
+        "anki_rehearsal_capture_candidate_commit": "b" * 40,
+        "anki_rehearsal_capture_candidate_tree": "c" * 40,
+        "anki_rehearsal_capture_capsule_manifest_sha256": "d" * 64,
+        "anki_rehearsal_capture_failed_job_id": "12345678-1234-5678-1234-567812345678",
+    }
+    with pytest.raises(ValidationError, match="complete shadow-only"):
+        Settings(_env_file=None, anki_rehearsal_mode="off", **capture)
+    for field, value in capture.items():
+        with pytest.raises(ValidationError, match="complete shadow-only"):
+            Settings(_env_file=None, anki_rehearsal_mode="off", **{field: value})
+
+
 def test_voyage_key_reads_standard_environment_variable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

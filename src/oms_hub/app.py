@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -6,8 +7,10 @@ import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import cast
+from typing import Any, Protocol, cast
+from uuid import UUID
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +28,16 @@ from oms_hub.anki.prompts import (
     GitPromptSynchronizer,
     PromptSynchronizer,
     StaticPromptSynchronizer,
+)
+from oms_hub.anki.rehearsal.capture import (
+    CaptureAnkiCurationRepository,
+    CaptureAuthorization,
+    CaptureDenied,
+    CaptureEmbeddingClient,
+    CaptureSecretStore,
+    CaptureStore,
+    CaptureStructuredTextGenerator,
+    CaptureStructuredTextService,
 )
 from oms_hub.anki.rehearsal.network import (
     EgressEvidenceLedger,
@@ -72,7 +85,7 @@ from oms_hub.llm.openai import OpenAIProvider
 from oms_hub.llm.openrouter import MedicalAccuracyGate, OpenRouterProvider
 from oms_hub.llm.repository import LLMSettingsRepository
 from oms_hub.llm.service import LLMService
-from oms_hub.llm.structured import StructuredTextService
+from oms_hub.llm.structured import StructuredTextGenerator, StructuredTextService
 from oms_hub.repositories import CatalogRepository
 from oms_hub.routing import expanded_path
 from oms_hub.runtime_settings import RuntimeSettingsRepository
@@ -88,7 +101,7 @@ from oms_hub.security.csrf import (
     origin_is_allowed,
 )
 from oms_hub.security.rate_limit import PublicQuizRateLimiter
-from oms_hub.security.secret_store import KeyringSecretStore
+from oms_hub.security.secret_store import VOYAGE_API_KEY_SECRET, KeyringSecretStore
 from oms_hub.slides.pipeline import SlidePipeline
 from oms_hub.study_generation.ai_settings import StudyAISettingsRepository
 from oms_hub.study_generation.domain import PromptKind
@@ -187,6 +200,281 @@ def _run_sync_worker(
         stop.wait(0.5 if worked else 5.0)
 
 
+def _capture_dependencies(
+    resolved: Settings,
+) -> tuple[CaptureAuthorization | None, CaptureStore | None, object | None]:
+    """Create capture credentials only after the parent-prepared private root is verified."""
+    if resolved.anki_rehearsal_capture_store is None:
+        return None, None, None
+    if resolved.anki_rehearsal_mode != "shadow":
+        raise ValueError("capture dependencies require shadow rehearsal mode")
+    assert resolved.anki_rehearsal_capture_authorization_manifest is not None
+    assert resolved.anki_rehearsal_capture_authorization_sha256 is not None
+    assert resolved.anki_rehearsal_capture_candidate_commit is not None
+    assert resolved.anki_rehearsal_capture_candidate_tree is not None
+    assert resolved.anki_rehearsal_capture_capsule_manifest_sha256 is not None
+    assert resolved.anki_rehearsal_capture_failed_job_id is not None
+    authorization = CaptureAuthorization.load(
+        resolved.anki_rehearsal_capture_authorization_manifest,
+        resolved.anki_rehearsal_capture_authorization_sha256,
+        commit=resolved.anki_rehearsal_capture_candidate_commit,
+        tree=resolved.anki_rehearsal_capture_candidate_tree,
+        capsule_sha256=resolved.anki_rehearsal_capture_capsule_manifest_sha256,
+        failed_job_id=resolved.anki_rehearsal_capture_failed_job_id,
+    )
+    store = CaptureStore(resolved.anki_rehearsal_capture_store, authorization)
+    store.verify_prepared()
+    secret_keys = {
+        "openai": "openai-api-key",
+        "gemini": "gemini-api-key",
+        "anthropic": "anthropic-api-key",
+        "openrouter": "openrouter-api-key",
+    }
+    allowed = frozenset(
+        {VOYAGE_API_KEY_SECRET}
+        | {secret_keys[row["provider"]] for row in authorization.document["structured"]}
+    )
+    return authorization, store, CaptureSecretStore(KeyringSecretStore(), allowed)
+
+
+def _provider_clients(
+    resolved: Settings, capture_store: CaptureStore | None
+) -> tuple[dict[ProviderName, Any], tuple[httpx.Client, ...]]:
+    if capture_store is None:
+        return {
+            ProviderName.OPENAI: OpenAIProvider(
+                input_usd_per_million=resolved.openai_input_usd_per_million,
+                output_usd_per_million=resolved.openai_output_usd_per_million,
+            ),
+            ProviderName.GEMINI: GeminiProvider(),
+            ProviderName.ANTHROPIC: AnthropicProvider(),
+            ProviderName.OPENROUTER: OpenRouterProvider(),
+        }, ()
+    if resolved.anki_rehearsal_mode != "shadow":
+        raise ValueError("capture providers require shadow rehearsal mode")
+    clients = tuple(httpx.Client(timeout=300.0, trust_env=False) for _ in range(4))
+    return {
+        ProviderName.OPENAI: OpenAIProvider(
+            input_usd_per_million=resolved.openai_input_usd_per_million,
+            output_usd_per_million=resolved.openai_output_usd_per_million,
+            http=clients[0],
+        ),
+        ProviderName.GEMINI: GeminiProvider(http=clients[1]),
+        ProviderName.ANTHROPIC: AnthropicProvider(http=clients[2]),
+        ProviderName.OPENROUTER: OpenRouterProvider(http=clients[3]),
+    }, clients
+
+
+def _anki_curation_repository(
+    database: Database, capture_store: CaptureStore | None
+) -> AnkiCurationRepository:
+    return (
+        CaptureAnkiCurationRepository(database)
+        if capture_store is not None
+        else AnkiCurationRepository(database)
+    )
+
+
+def _stage_attempt_limit(resolved: Settings, capture_store: CaptureStore | None) -> int:
+    """Capture never retries a stage after its one authorized live dispatch path."""
+    return 1 if capture_store is not None else resolved.anki_worker_max_stage_attempts
+
+
+_CAPTURE_CAPABILITY_HEADER = "x-oms-capture-capability"
+
+
+class _BufferedResponse(Protocol):
+    status_code: int
+    body_iterator: AsyncIterator[bytes]
+
+
+def _install_capture_control_plane(
+    app: FastAPI, store: CaptureStore, capability: str
+) -> None:
+    """Install the capture-only, capability-gated ASGI boundary last/outermost.
+
+    It buffers only the three tiny JSON responses permitted during capture so a
+    successful job id can be durably audited before any response reaches the
+    loopback client.  No ordinary app receives this middleware.
+    """
+    store.initialize_server_audit(capability)
+    lock = threading.RLock()
+    post_claimed = False
+    created_job_id: str | None = None
+    state = {"poisoned": False}
+    app.state.anki_capture_control_state = state
+
+    def poison() -> None:
+        state["poisoned"] = True
+        try:
+            store.poison_server_audit()
+        except CaptureDenied:
+            # The in-memory poison keeps this child closed; parent completion
+            # also fails because no complete audit can cover its transcript.
+            return
+
+    def raw_path(request: Request) -> str:
+        value = request.scope.get("raw_path", b"")
+        if not isinstance(value, bytes):
+            return "<invalid-raw-path>"
+        try:
+            decoded = value.decode("ascii")
+        except UnicodeDecodeError:
+            return "<invalid-raw-path>"
+        return decoded if decoded.startswith("/") else "<invalid-raw-path>"
+
+    def query_state(request: Request) -> str:
+        if "query_string" not in request.scope:
+            return "<invalid-query-string>"
+        value = request.scope["query_string"]
+        if not isinstance(value, bytes):
+            return "<invalid-query-string>"
+        if not value:
+            return "empty"
+        try:
+            value.decode("ascii")
+        except UnicodeDecodeError:
+            return "<invalid-query-string>"
+        return "present"
+
+    def deny(
+        *,
+        method: str,
+        raw: str,
+        canonical: str,
+        authenticated: bool,
+        status: int,
+        query: str,
+        job_id: str | None = None,
+    ) -> Response:
+        try:
+            store.record_server_request(
+                method=method,
+                raw_path=raw,
+                canonical_path=canonical,
+                authenticated=authenticated,
+                allowed=False,
+                status=status,
+                job_id=job_id,
+                query_state=query,
+            )
+        except CaptureDenied:
+            poison()
+            return JSONResponse({"detail": "capture audit unavailable"}, status_code=500)
+        return JSONResponse({"detail": "capture route is unavailable"}, status_code=status)
+
+    @app.middleware("http")
+    async def capture_control_plane(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        nonlocal post_claimed, created_job_id
+        if state["poisoned"]:
+            return JSONResponse({"detail": "capture audit unavailable"}, status_code=500)
+        method = request.method.upper()
+        raw = raw_path(request)
+        query = query_state(request)
+        canonical = request.scope.get("path")
+        if not isinstance(canonical, str) or not canonical.startswith("/"):
+            canonical = "<invalid-canonical-path>"
+        supplied = request.headers.get(_CAPTURE_CAPABILITY_HEADER)
+        authenticated = isinstance(supplied, str) and hmac.compare_digest(supplied, capability)
+        if not authenticated:
+            return deny(
+                method=method,
+                raw=raw,
+                canonical=canonical,
+                authenticated=False,
+                status=401,
+                query=query,
+            )
+        status_job_id: str | None = None
+        is_create = query == "empty" and method == "POST" and raw == canonical == "/api/anki/jobs"
+        is_health = query == "empty" and method == "GET" and raw == canonical == "/health"
+        is_status = (
+            query == "empty"
+            and method == "GET"
+            and raw == canonical
+            and raw.startswith("/api/anki/jobs/")
+        )
+        if is_status:
+            suffix = raw.removeprefix("/api/anki/jobs/")
+            try:
+                status_job_id = str(UUID(suffix))
+            except ValueError:
+                is_status = False
+            else:
+                is_status = suffix == status_job_id
+        with lock:
+            if is_create:
+                if post_claimed:
+                    return deny(
+                        method=method,
+                        raw=raw,
+                        canonical=canonical,
+                        authenticated=True,
+                        status=409,
+                        query=query,
+                    )
+                post_claimed = True
+            elif is_status and status_job_id != created_job_id:
+                return deny(
+                    method=method,
+                    raw=raw,
+                    canonical=canonical,
+                    authenticated=True,
+                    status=404,
+                    query=query,
+                    job_id=status_job_id,
+                )
+            elif not (is_health or is_status):
+                return deny(
+                    method=method,
+                    raw=raw,
+                    canonical=canonical,
+                    authenticated=True,
+                    status=404,
+                    query=query,
+                )
+        response = await call_next(request)
+        buffered_response = cast(_BufferedResponse, response)
+        body = b""
+        try:
+            body = b"".join([chunk async for chunk in buffered_response.body_iterator])
+            if is_create and buffered_response.status_code == 201:
+                value = json.loads(body)
+                candidate = value.get("id") if isinstance(value, dict) else None
+                created = str(UUID(candidate)) if isinstance(candidate, str) else None
+                if created is None or candidate != created:
+                    raise ValueError("capture job response lacks a canonical id")
+                with lock:
+                    if created_job_id is not None:
+                        raise ValueError("capture created job identity is already bound")
+                    created_job_id = created
+                status_job_id = created
+            if is_status and status_job_id is None:
+                raise ValueError("capture status request identity is unavailable")
+            store.record_server_request(
+                method=method,
+                raw_path=raw,
+                canonical_path=canonical,
+                authenticated=True,
+                allowed=True,
+                status=buffered_response.status_code,
+                job_id=status_job_id,
+                query_state=query,
+            )
+        except (CaptureDenied, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            poison()
+            return JSONResponse({"detail": "capture audit unavailable"}, status_code=500)
+
+        async def replay_body() -> AsyncIterator[bytes]:
+            yield body
+
+        buffered_response.body_iterator = replay_body()
+        return response
+
+
 @asynccontextmanager
 async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
     egress_guard = getattr(app.state, "anki_rehearsal_egress_guard", None)
@@ -247,12 +535,28 @@ async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
                             await runtime.aclose()
                     finally:
                         try:
-                            database = getattr(app.state, "database", None)
-                            if database is not None:
-                                database.close()
+                            for client in getattr(app.state, "anki_capture_http_clients", ()):
+                                client.close()
                         finally:
-                            if egress_guard is not None:
-                                egress_guard.uninstall()
+                            try:
+                                capture_control = getattr(
+                                    app.state, "anki_capture_control_state", None
+                                )
+                                capture_store = getattr(app.state, "anki_capture_store", None)
+                                if (
+                                    isinstance(capture_control, dict)
+                                    and capture_control.get("poisoned") is True
+                                    and isinstance(capture_store, CaptureStore)
+                                ):
+                                    capture_store.poison_server_audit()
+                            finally:
+                                try:
+                                    database = getattr(app.state, "database", None)
+                                    if database is not None:
+                                        database.close()
+                                finally:
+                                    if egress_guard is not None:
+                                        egress_guard.uninstall()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -567,11 +871,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if resolved.anki_enabled and resolved.anki_rehearsal_mode == "off"
         else None
     )
-    app.state.secrets = (
-        _RehearsalSecretStore()
-        if resolved.anki_rehearsal_mode != "off"
-        else KeyringSecretStore()
-    )
+    capture_authorization, capture_store, capture_secrets = _capture_dependencies(resolved)
+    if capture_secrets is not None:
+        app.state.secrets = capture_secrets
+    else:
+        app.state.secrets = (
+            _RehearsalSecretStore()
+            if resolved.anki_rehearsal_mode != "off"
+            else KeyringSecretStore()
+        )
     app.state.notebook_storage_migration_error = None
     if resolved.anki_rehearsal_mode == "off":
         try:
@@ -582,7 +890,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "continuing startup."
             )
     app.state.study_ai_settings = StudyAISettingsRepository(database)
-    app.state.anki_repository = AnkiCurationRepository(database)
+    app.state.anki_repository = _anki_curation_repository(database, capture_store)
     app.state.anki_tag_policy = TagPolicy(
         pipeline_owned_roots=("OMS",),
         approved_optional_roots=("AnkiHub_Optional::LMU_OMS_II",),
@@ -603,19 +911,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         database,
         default_openai_model=resolved.openai_model,
     )
+    provider_clients, capture_http_clients = _provider_clients(resolved, capture_store)
+    app.state.anki_capture_http_clients = capture_http_clients
     app.state.llm_service = LLMService(
         app.state.llm_settings,
         app.state.secrets,
-        {
-            ProviderName.OPENAI: OpenAIProvider(
-                input_usd_per_million=resolved.openai_input_usd_per_million,
-                output_usd_per_million=resolved.openai_output_usd_per_million,
-            ),
-            ProviderName.GEMINI: GeminiProvider(),
-            ProviderName.ANTHROPIC: AnthropicProvider(),
-            ProviderName.OPENROUTER: OpenRouterProvider(),
-        },
+        provider_clients,
     )
+    app.state.anki_capture_authorization = capture_authorization
+    app.state.anki_capture_store = capture_store
     app.state.medical_accuracy_gate = MedicalAccuracyGate(
         app.state.study_ai_settings,
         app.state.llm_service,
@@ -801,6 +1105,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 batch_size=resolved.anki_semantic_batch_size,
                 api_key=resolved.voyage_api_key_value,
             )
+        elif capture_store is not None:
+            runtime = AnkiRuntime(
+                ReadOnlyAnkiGateway(
+                    companion,
+                    evidence_directory=app.state.anki_rehearsal_evidence_directory,
+                    run_nonce=app.state.anki_rehearsal_run_nonce,
+                ),
+                NoopLauncher(),
+                startup_attempts=1,
+                startup_poll_seconds=0.01,
+            )
+            app.state.anki_runtime = runtime
+            live_voyage = VoyageEmbeddingClient(
+                app.state.secrets,
+                model=resolved.anki_semantic_model,
+                dimensions=resolved.anki_semantic_dimensions,
+                batch_size=1_000,
+                max_attempts=1,
+                split_on_limit=False,
+            )
+            embedder = CaptureEmbeddingClient(live_voyage, capture_store)
         else:
             assert replay_root is not None
             runtime = AnkiRuntime(
@@ -842,14 +1167,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 query_cache_size=resolved.anki_semantic_query_cache_size,
             )
 
-        if resolved.anki_rehearsal_mode == "deterministic":
+        structured_generator: StructuredTextGenerator
+        if capture_store is not None:
+            capture_endpoints = {
+                ProviderName.OPENAI: OpenAIProvider.url,
+                ProviderName.GEMINI: GeminiProvider.base_url,
+                ProviderName.ANTHROPIC: AnthropicProvider.url,
+                ProviderName.OPENROUTER: OpenRouterProvider.chat_url,
+            }
+            structured_generator = CaptureStructuredTextGenerator(
+                app.state.llm_service,
+                capture_store,
+                capture_endpoints,
+            )
+        elif resolved.anki_rehearsal_mode == "deterministic":
             assert replay_root is not None
             structured_generator = ReplayStructuredTextGenerator(
                 replay_root / "structured.json", require_attempt_identity=True
             )
         else:
             structured_generator = app.state.llm_service
-        structured = StructuredTextService(structured_generator)
+        structured = (
+            CaptureStructuredTextService(
+                structured_generator, capture_authorization, capture_endpoints
+            )
+            if capture_store is not None and capture_authorization is not None
+            else StructuredTextService(structured_generator)
+        )
         from oms_hub.anki.card_centric_fixture_service import ProductionFixtureClassifier
 
         app.state.card_centric_fixture_classifier = ProductionFixtureClassifier(structured)
@@ -926,7 +1270,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             worker_id="study-hub",
             lease_seconds=resolved.anki_worker_lease_seconds,
             poll_seconds=resolved.anki_worker_poll_seconds,
-            max_stage_attempts=(resolved.anki_worker_max_stage_attempts),
+            max_stage_attempts=_stage_attempt_limit(resolved, capture_store),
         )
     web_root = Path(__file__).parent / "web"
     app.mount(
@@ -983,5 +1327,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 }
             )
         return payload
+
+    if capture_store is not None:
+        capability = os.environ.get("OMS_HUB_ANKI_REHEARSAL_CAPTURE_CAPABILITY")
+        if capability is None:
+            raise ValueError("capture control-plane capability is required")
+        _install_capture_control_plane(app, capture_store, capability)
 
     return app

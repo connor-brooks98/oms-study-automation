@@ -1702,7 +1702,11 @@ class AnkiCurationRepository:
     ) -> None:
         """Append one S2 provider invocation without rewriting prior evidence."""
         parameters_json = _canonical_json(attempt.generation_parameters)
-        _validate_card_ledger_attempt_for_write(attempt, parameters_json)
+        _validate_card_ledger_attempt_for_write(
+            attempt,
+            parameters_json,
+            allow_hash_only_validation_failure=self._allow_hash_only_card_ledger_failure(),
+        )
         with self.database.session() as session:
             # In WAL mode, deferred reads do not fence a subsequent writer: a
             # stale worker can otherwise validate its lease and stage attempt,
@@ -1816,6 +1820,10 @@ class AnkiCurationRepository:
             # Surface a uniqueness violation inside the fenced transaction,
             # rather than deferring it until the session context commits.
             session.flush()
+
+    def _allow_hash_only_card_ledger_failure(self) -> bool:
+        """Capture may retain a validation-failure digest without its raw payload."""
+        return False
 
     def record_provider_attempt_event(
         self,
@@ -3639,6 +3647,8 @@ class AnkiCurationRepository:
 def _validate_card_ledger_attempt_for_write(
     attempt: CardCentricLedgerAttempt,
     parameters_json: str,
+    *,
+    allow_hash_only_validation_failure: bool = False,
 ) -> None:
     """Reject evidence that current-schema startup would fail closed on."""
     hashes = (attempt.instruction_sha256, attempt.generation_parameters_sha256)
@@ -3695,7 +3705,7 @@ def _validate_card_ledger_attempt_for_write(
             and attempt.invalid_response is None
         )
     elif attempt.outcome == "validation_failed":
-        valid_payload = (
+        plaintext_payload = (
             isinstance(attempt.validation_error, str)
             and bool(attempt.validation_error.strip())
             and len(attempt.validation_error) <= 2_000
@@ -3707,6 +3717,16 @@ def _validate_card_ledger_attempt_for_write(
             and hashlib.sha256(attempt.invalid_response.encode()).hexdigest()
             == attempt.invalid_response_sha256
         )
+        hash_only_payload = (
+            allow_hash_only_validation_failure
+            and isinstance(attempt.validation_error, str)
+            and bool(attempt.validation_error.strip())
+            and len(attempt.validation_error) <= 2_000
+            and attempt.invalid_response is None
+            and isinstance(attempt.invalid_response_sha256, str)
+            and bool(re.fullmatch(r"[0-9a-f]{64}", attempt.invalid_response_sha256))
+        )
+        valid_payload = plaintext_payload or hash_only_payload
     else:
         valid_payload = (
             isinstance(attempt.validation_error, str)

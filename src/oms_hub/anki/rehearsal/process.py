@@ -23,8 +23,11 @@ from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Any, BinaryIO, Literal, cast
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 from uuid import UUID
+
+from sqlalchemy import func, select
 
 from oms_hub.anki.contracts import (
     AddNotesOperation,
@@ -32,10 +35,14 @@ from oms_hub.anki.contracts import (
     CreateCurationJobRequest,
     RemoveTagsOperation,
 )
-from oms_hub.anki.domain import CurationJob, CurationStage
+from oms_hub.anki.domain import ApplyState, CurationJob, CurationStage, CurationState
+from oms_hub.anki.models import (
+    AnkiEnvelopeModel,
+    AnkiReviewChangeSetModel,
+    AnkiReviewedReconciliationModel,
+)
 from oms_hub.anki.provider_attempts import (
     ProviderAttemptIndeterminate,
-    _bounded_redacted,
     replay_namespace_from_job_source,
 )
 from oms_hub.anki.rehearsal.capsule import (
@@ -44,12 +51,23 @@ from oms_hub.anki.rehearsal.capsule import (
     _reject_sensitive_path,
     verify_capsule,
 )
+from oms_hub.anki.rehearsal.capture import (
+    CaptureAuthorization,
+    CaptureStore,
+    _is_indirect,
+    evidence_redact,
+    serialize_evidence_record,
+)
 from oms_hub.anki.rehearsal.materialize import MaterializedCapsule, materialize_capsule
 from oms_hub.anki.repository import AnkiCurationRepository, _validate_provider_event_append
 from oms_hub.db import Database
+from oms_hub.llm.anthropic import AnthropicProvider
+from oms_hub.llm.gemini import GeminiProvider
+from oms_hub.llm.openai import OpenAIProvider
+from oms_hub.llm.openrouter import OpenRouterProvider
 
 Mode = Literal["deterministic", "shadow"]
-RunGoal = Literal["golden", "first_replay_miss"]
+RunGoal = Literal["golden", "first_replay_miss", "capture"]
 ProviderCheckpoint = Literal["begun", "dispatched", "response_received", "terminal"]
 _FAILURE_INJECTION_STAGES = frozenset(
     {
@@ -232,8 +250,13 @@ class RehearsalRequest:
     runtime_evidence_nonce: str | None = None
     replay_supplement: Path | None = None
     expected_replay_supplement_manifest_sha256: str | None = None
+    replay_supplement_completion: Path | None = None
+    expected_replay_supplement_completion_sha256: str | None = None
     failure_injection: tuple[CurationStage, ProviderCheckpoint] | None = None
     run_goal: RunGoal = "golden"
+    capture_store: Path | None = None
+    capture_authorization_manifest: Path | None = None
+    expected_capture_authorization_manifest_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,7 +344,7 @@ class RehearsalResult:
         "Native NUC/Windows capsule execution pending",
     )
     run_goal: RunGoal = "golden"
-    outcome: Literal["golden_success", "expected_replay_miss"] = "golden_success"
+    outcome: Literal["golden_success", "expected_replay_miss", "capture_success"] = "golden_success"
     expected_replay_miss: dict[str, Any] | None = None
 
 
@@ -416,6 +439,12 @@ class LoopbackHttp:
         self._opener = build_opener(HTTPCookieProcessor(self.cookies))
         self.transcript: list[dict[str, Any]] = []
         self.csrf_token: str | None = None
+        self.capture_capability: str | None = None
+
+    def set_capture_capability(self, capability: str) -> None:
+        if len(capability) < 32:
+            raise ValueError("capture capability is unavailable")
+        self.capture_capability = capability
 
     def bootstrap_csrf(self) -> Any:
         _, health = self.request("GET", "/health")
@@ -430,6 +459,8 @@ class LoopbackHttp:
     ) -> tuple[int, Any]:
         encoded = None if body is None else json.dumps(body, sort_keys=True).encode("utf-8")
         headers = {"Accept": "application/json"}
+        if self.capture_capability is not None:
+            headers["X-OMS-Capture-Capability"] = self.capture_capability
         if encoded is not None:
             headers["Content-Type"] = "application/json"
         if method not in {"GET", "HEAD"}:
@@ -479,19 +510,37 @@ class ProcessRehearsal:
         self._source_tree_sha256: str | None = None
         self._windows_runtime_identity: dict[str, Any] | None = None
         self._failure_injection_consumed = False
+        self._capture_authorization: CaptureAuthorization | None = None
+        self._capture_store: CaptureStore | None = None
+        self._capture_capability = (
+            secrets.token_urlsafe(32) if request.run_goal == "capture" else None
+        )
 
     def run(self) -> RehearsalResult:
         manifest = self._validate_destinations()
+        if self.request.run_goal == "capture":
+            self._prepare_capture_store()
         overlay = materialize_capsule(self.request.capsule, self.request.overlay)
-        self._install_replay_supplement(overlay)
-        if self.request.run_goal == "first_replay_miss":
-            _validate_empty_overlay_replay(overlay.root)
         database = Database(f"sqlite:///{overlay.database_path}")
         try:
             self._record("capsule_materialized", overlay=str(overlay.root))
-            client = self._start_and_connect(overlay, manifest)
             repository = AnkiCurationRepository(database)
+            if (
+                self.request.run_goal == "golden"
+                and self.request.replay_supplement is not None
+                and _supplement_is_populated(self.request.replay_supplement)
+            ):
+                self._verify_populated_replay_completion(
+                    repository.require_job(self.request.failed_job_id)
+                )
+            self._install_replay_supplement(overlay)
+            if self.request.run_goal == "first_replay_miss":
+                _validate_empty_overlay_replay(overlay.root)
+            client = self._start_and_connect(overlay, manifest)
             failed = repository.require_job(self.request.failed_job_id)
+            if self.request.run_goal == "capture":
+                self._validate_capture_namespace(failed)
+                self._validate_capture_job_routes(failed)
             status, created = client.request("POST", "/api/anki/jobs", fresh_job_payload(failed))
             if (
                 status != 201
@@ -512,7 +561,7 @@ class ProcessRehearsal:
                 self._validate_fault_cutoff(repository, job_id, interlock)
                 precrash_rows = repository.list_provider_attempt_events(job_id)
                 before_logical_identity = _stable_logical_call_ids(
-                    precrash_rows, _replay_namespace_sha256(repository.require_job(job_id))
+                    precrash_rows, _replay_namespace_for_job(repository.require_job(job_id))
                 )
                 precrash_event_id_cutoff = _provider_event_id_cutoff(precrash_rows)
                 fault_interlock = interlock
@@ -590,6 +639,35 @@ class ProcessRehearsal:
                     outcome="expected_replay_miss",
                     expected_replay_miss=miss,
                 )
+            if self.request.run_goal == "capture":
+                if final.get("state") != "ready_for_review":
+                    raise RuntimeError(
+                        f"capture job did not reach READY_FOR_REVIEW: {final.get('state')!r}"
+                    )
+                self._assert_capture_http_transcript(client, job_id)
+                self._stop_all(overlay)
+                adapter_ledger, egress_ledger = self._validate_runtime_evidence(overlay)
+                self._validate_capture_runtime(adapter_ledger, egress_ledger)
+                server_audit = self._assert_capture_server_audit(client, job_id)
+                self._validate_capture_ready_for_review_state(repository, job_id)
+                self._write_capture_completion(
+                    manifest,
+                    overlay,
+                    client,
+                    repository,
+                    job_id,
+                    adapter_ledger,
+                    egress_ledger,
+                    server_audit,
+                )
+                return RehearsalResult(
+                    job_id,
+                    overlay.root,
+                    self.request.evidence_zip,
+                    self._timeline,
+                    run_goal="capture",
+                    outcome="capture_success",
+                )
             self._assert_provider_ledger_is_restart_safe(
                 repository,
                 job_id,
@@ -664,13 +742,13 @@ class ProcessRehearsal:
                 database.close()
 
     def _validate_destinations(self) -> CapsuleManifest:
-        if self.request.overlay.exists():
+        if os.path.lexists(self.request.overlay):
             raise ValueError("overlay destination must not already exist")
-        if self.request.evidence_zip.exists():
+        if os.path.lexists(self.request.evidence_zip):
             raise ValueError("evidence destination must not already exist")
         if not 1024 <= self.request.port <= 65535:
             raise ValueError("rehearsal port must be in 1024..65535")
-        if self.request.run_goal not in {"golden", "first_replay_miss"}:
+        if self.request.run_goal not in {"golden", "first_replay_miss", "capture"}:
             raise ValueError("rehearsal run goal is invalid")
         if self.request.mode == "shadow" and not self.request.shadow_egress_pins_json:
             raise ValueError("shadow rehearsal requires pinned egress JSON")
@@ -693,6 +771,19 @@ class ProcessRehearsal:
                 self.request.replay_supplement,
                 self.request.expected_replay_supplement_manifest_sha256,
             )
+            if self.request.run_goal == "golden" and _supplement_is_populated(
+                self.request.replay_supplement
+            ):
+                _verify_replay_completion(
+                    self.request.replay_supplement_completion,
+                    self.request.expected_replay_supplement_completion_sha256,
+                    supplement_root=self.request.replay_supplement,
+                    expected_manifest_sha256=self.request.expected_replay_supplement_manifest_sha256,
+                    expected_commit=self.request.expected_implementation_commit,
+                    expected_tree=self.request.expected_implementation_tree,
+                    expected_capsule_sha256=observed_manifest_sha256,
+                    expected_pack_sha256=self.request.expected_replay_supplement_manifest_sha256,
+                )
         if self.request.mode == "deterministic" and self.request.replay_supplement is None:
             raise ValueError("deterministic rehearsal requires a verified replay supplement")
         if self.request.run_goal == "first_replay_miss":
@@ -708,7 +799,126 @@ class ProcessRehearsal:
                 self.request.replay_supplement,
                 self.request.expected_replay_supplement_manifest_sha256,
             )
+            if (
+                self.request.replay_supplement_completion is not None
+                or self.request.expected_replay_supplement_completion_sha256 is not None
+            ):
+                raise ValueError("first replay miss forbids a completion manifest")
+        if self.request.run_goal == "capture":
+            if self.request.mode != "shadow":
+                raise ValueError("capture requires shadow mode")
+            if self.request.restart_after_durable_boundary:
+                raise ValueError("capture must disable restart")
+            if self.request.failure_injection is not None:
+                raise ValueError("capture cannot use failure injection")
+            if self.request.replay_supplement is not None:
+                raise ValueError("capture creates, not consumes, a replay supplement")
+            if (
+                self.request.replay_supplement_completion is not None
+                or self.request.expected_replay_supplement_completion_sha256 is not None
+            ):
+                raise ValueError("capture cannot consume a completion manifest")
+            values = (
+                self.request.capture_store,
+                self.request.capture_authorization_manifest,
+                self.request.expected_capture_authorization_manifest_sha256,
+            )
+            if any(value is None for value in values):
+                raise ValueError(
+                    "capture requires a private store and exact authorization manifest"
+                )
+            assert self.request.capture_store is not None
+            if os.path.lexists(self.request.capture_store):
+                raise ValueError("capture store destination must be absent")
+            assert self.request.capture_authorization_manifest is not None
+            assert self.request.expected_capture_authorization_manifest_sha256 is not None
+            self._capture_authorization = CaptureAuthorization.load(
+                self.request.capture_authorization_manifest,
+                self.request.expected_capture_authorization_manifest_sha256,
+                commit=self.request.expected_implementation_commit,
+                tree=self.request.expected_implementation_tree,
+                capsule_sha256=observed_manifest_sha256,
+                failed_job_id=str(self.request.failed_job_id),
+            )
+            if self._capture_authorization.document["egress_pins"] != json.loads(
+                self.request.shadow_egress_pins_json or "{}"
+            ):
+                raise ValueError("capture authorization egress pins do not match the launcher pins")
+        self._validate_destination_topology()
         return manifest
+
+    def _validate_destination_topology(self) -> None:
+        outputs = [
+            ("overlay", self.request.overlay),
+            ("evidence", self.request.evidence_zip),
+        ]
+        if self.request.capture_store is not None:
+            outputs.append(("capture store", self.request.capture_store))
+        canonical_outputs = [(name, _canonical_output_path(path)) for name, path in outputs]
+        for index, (name, destination) in enumerate(canonical_outputs):
+            for other_name, other in canonical_outputs[index + 1 :]:
+                if _path_contains(destination, other) or _path_contains(other, destination):
+                    raise ValueError(
+                        f"{name} and {other_name} destinations must be distinct and non-nested"
+                    )
+        immutable_inputs = [
+            self.request.capsule,
+            self.request.implementation_repository,
+        ]
+        if self.request.replay_supplement is not None:
+            immutable_inputs.append(self.request.replay_supplement)
+        if self.request.capture_authorization_manifest is not None:
+            immutable_inputs.append(self.request.capture_authorization_manifest)
+        if self.request.replay_supplement_completion is not None:
+            immutable_inputs.append(self.request.replay_supplement_completion)
+        canonical_inputs = [_canonical_input_path(path) for path in immutable_inputs]
+        for name, destination in canonical_outputs:
+            if any(
+                _path_contains(destination, source) or _path_contains(source, destination)
+                for source in canonical_inputs
+            ):
+                raise ValueError(
+                    f"{name} destination must not contain or be inside immutable input"
+                )
+
+    def _prepare_capture_store(self) -> None:
+        if self._capture_authorization is None or self.request.capture_store is None:
+            raise RuntimeError("capture authorization was not validated")
+        store = CaptureStore(self.request.capture_store, self._capture_authorization)
+        store.prepare()
+        self._capture_store = store
+        self._record(
+            "capture_store_prepared", authorization_sha256=self._capture_authorization.sha256
+        )
+
+    def _validate_capture_namespace(self, job: CurationJob) -> None:
+        if self._capture_authorization is None:
+            raise RuntimeError("capture authorization is unavailable")
+        actual = _replay_namespace_for_job(job)
+        if actual != self._capture_authorization.document["replay_namespace"]:
+            raise RuntimeError(
+                "capture authorization replay namespace does not match the job source"
+            )
+
+    def _validate_capture_job_routes(self, job: CurationJob) -> None:
+        if self._capture_authorization is None:
+            raise RuntimeError("capture authorization is unavailable")
+        config = job.resolved_model_config
+        stages = [config.ledger_s2, config.classify_s4, config.residual_s6, config.gap_fill_s7]
+        if config.fast_classify_s4b is not None:
+            stages.append(config.fast_classify_s4b)
+        reachable = {
+            (stage.provider, stage.model, _provider_endpoint(stage.provider, stage.model))
+            for stage in stages
+        }
+        authorized = {
+            (row["provider"], row["model"], row["endpoint"])
+            for row in self._capture_authorization.document["structured"]
+        }
+        if reachable != authorized:
+            raise RuntimeError(
+                "capture authorization structured routes do not exactly close the frozen job plan"
+            )
 
     @staticmethod
     def _validate_envelope_response(
@@ -809,6 +1019,28 @@ class ProcessRehearsal:
                 raise RuntimeError("copied replay supplement bytes do not match operator manifest")
         self._record("replay_supplement_installed", files=len(verified))
 
+    def _verify_populated_replay_completion(self, failed: CurationJob) -> None:
+        """Bind a populated pack to the exact failed job in the disposable overlay."""
+        supplement = self.request.replay_supplement
+        if (
+            self.request.run_goal != "golden"
+            or supplement is None
+            or not _supplement_is_populated(supplement)
+        ):
+            return
+        _verify_replay_completion(
+            self.request.replay_supplement_completion,
+            self.request.expected_replay_supplement_completion_sha256,
+            supplement_root=supplement,
+            expected_manifest_sha256=self.request.expected_replay_supplement_manifest_sha256,
+            expected_commit=self.request.expected_implementation_commit,
+            expected_tree=self.request.expected_implementation_tree,
+            expected_capsule_sha256=self.request.expected_manifest_sha256,
+            expected_pack_sha256=self.request.expected_replay_supplement_manifest_sha256,
+            expected_failed_job_id=str(self.request.failed_job_id),
+            expected_replay_namespace=_replay_namespace_for_job(failed),
+        )
+
     def _environment(
         self, overlay: MaterializedCapsule, manifest: CapsuleManifest
     ) -> dict[str, str]:
@@ -865,6 +1097,35 @@ class ProcessRehearsal:
         if self.request.mode == "shadow":
             env["OMS_HUB_ANKI_REHEARSAL_EGRESS_PINS_JSON"] = (
                 self.request.shadow_egress_pins_json or ""
+            )
+        if self.request.run_goal == "capture":
+            if (
+                self._capture_authorization is None
+                or self.request.capture_store is None
+                or self.request.capture_authorization_manifest is None
+                or self.request.expected_capture_authorization_manifest_sha256 is None
+            ):
+                raise RuntimeError("capture environment lacks validated authorization")
+            capture_store = str(self.request.capture_store)
+            capture_manifest = str(
+                self.request.capture_authorization_manifest.resolve(strict=True)
+            )
+            capture_sha256 = self.request.expected_capture_authorization_manifest_sha256
+            capture_commit = self.request.expected_implementation_commit
+            capture_tree = self.request.expected_implementation_tree
+            capsule_sha256 = self.request.expected_manifest_sha256
+            failed_job_id = str(self.request.failed_job_id)
+            env.update(
+                {
+                    "OMS_HUB_ANKI_REHEARSAL_CAPTURE_STORE": capture_store,
+                    "OMS_HUB_ANKI_REHEARSAL_CAPTURE_AUTHORIZATION_MANIFEST": capture_manifest,
+                    "OMS_HUB_ANKI_REHEARSAL_CAPTURE_AUTHORIZATION_SHA256": capture_sha256,
+                    "OMS_HUB_ANKI_REHEARSAL_CAPTURE_CANDIDATE_COMMIT": capture_commit,
+                    "OMS_HUB_ANKI_REHEARSAL_CAPTURE_CANDIDATE_TREE": capture_tree,
+                    "OMS_HUB_ANKI_REHEARSAL_CAPTURE_CAPSULE_MANIFEST_SHA256": capsule_sha256,
+                    "OMS_HUB_ANKI_REHEARSAL_CAPTURE_FAILED_JOB_ID": failed_job_id,
+                    "OMS_HUB_ANKI_REHEARSAL_CAPTURE_CAPABILITY": self._capture_capability or "",
+                }
             )
         if self.request.failure_injection is not None and not self._failure_injection_consumed:
             stage, event = self.request.failure_injection
@@ -1212,6 +1473,10 @@ class ProcessRehearsal:
             cwd=str(resolved_workdir),
         )
         client = self._http_factory(self.request.port)
+        if self.request.run_goal == "capture":
+            if self._capture_capability is None or not hasattr(client, "set_capture_capability"):
+                raise RuntimeError("capture loopback client cannot install its control capability")
+            client.set_capture_capability(self._capture_capability)
         deadline = self._clock() + min(30.0, self.request.timeout_seconds)
         if _is_windows():
             self._release_windows_runtime_after_handshake(tracked, deadline)
@@ -1612,7 +1877,7 @@ class ProcessRehearsal:
         for stage in CurationStage:
             repository.require_no_indeterminate_provider_attempt(job_id, stage)
         rows = repository.list_provider_attempt_events(job_id)
-        replay_namespace_sha256 = _replay_namespace_sha256(repository.require_job(job_id))
+        replay_namespace_sha256 = _replay_namespace_for_job(repository.require_job(job_id))
         logical = _stable_logical_call_ids(rows, replay_namespace_sha256)
         event_groups = _stable_logical_call_event_groups(rows, replay_namespace_sha256)
         for events in event_groups.values():
@@ -1774,8 +2039,10 @@ class ProcessRehearsal:
             directory / "read-only-anki-mutation-ledger.json",
             directory / "egress-decisions.json",
         )
-        return ready and release and all(
-            not path.exists() and not path.is_symlink() for path in ledgers
+        return (
+            ready
+            and release
+            and all(not path.exists() and not path.is_symlink() for path in ledgers)
         )
 
     def _stop_windows_job_child(self, child: _Child, *, hard: bool) -> None:
@@ -2010,6 +2277,323 @@ class ProcessRehearsal:
         if not statuses or any(item.get("status") != 200 for item in statuses):
             raise RuntimeError("expected replay miss lacks a successful job-status poll")
 
+    def _assert_capture_http_transcript(self, client: LoopbackHttp, job_id: UUID) -> None:
+        """Capture stops at READY_FOR_REVIEW and never creates a review artifact."""
+        allowed = {
+            ("GET", "/health"),
+            ("POST", "/api/anki/jobs"),
+            ("GET", f"/api/anki/jobs/{job_id}"),
+        }
+        if not client.transcript:
+            raise RuntimeError("capture has no HTTP transcript")
+        for item in client.transcript:
+            if not isinstance(item, dict) or (item.get("method"), item.get("path")) not in allowed:
+                raise RuntimeError("capture exercised a forbidden review, envelope, or apply route")
+        created = [
+            item
+            for item in client.transcript
+            if item.get("method") == "POST" and item.get("path") == "/api/anki/jobs"
+        ]
+        if len(created) != 1 or created[0].get("status") != 201:
+            raise RuntimeError("capture lacks exactly one successful job creation")
+        if not any(
+            item.get("method") == "GET"
+            and item.get("path") == f"/api/anki/jobs/{job_id}"
+            and item.get("status") == 200
+            for item in client.transcript
+        ):
+            raise RuntimeError("capture lacks a successful job status poll")
+
+    def _assert_capture_server_audit(
+        self, client: LoopbackHttp, job_id: UUID
+    ) -> dict[str, object]:
+        """Require private server observation, not merely the parent transcript."""
+        if self._capture_store is None:
+            raise RuntimeError("capture server audit is unavailable")
+        audit = self._capture_store.server_audit()
+        if self._capture_capability is None or audit.get("capability_sha256") != hashlib.sha256(
+            self._capture_capability.encode("utf-8")
+        ).hexdigest():
+            raise RuntimeError("capture server audit capability binding is invalid")
+        entries = audit.get("entries")
+        if not isinstance(entries, list) or not entries:
+            raise RuntimeError("capture server audit is empty")
+        if any(
+            not isinstance(entry, dict)
+            or entry.get("authenticated") is not True
+            or entry.get("allowed") is not True
+            for entry in entries
+        ):
+            raise RuntimeError("capture server audit contains denied or unauthenticated traffic")
+        if any(entry.get("query_state") != "empty" for entry in entries):
+            raise RuntimeError("capture server audit contains a nonempty query string")
+        observed = [
+            (item.get("method"), item.get("path"), item.get("status"))
+            for item in client.transcript
+        ]
+        authoritative = [
+            (entry.get("method"), entry.get("canonical_path"), entry.get("status"))
+            for entry in entries
+        ]
+        if observed != authoritative:
+            raise RuntimeError("capture server audit does not cover the HTTP transcript")
+        health = [entry for entry in entries if entry.get("canonical_path") == "/health"]
+        created = [
+            entry
+            for entry in entries
+            if entry.get("canonical_path") == "/api/anki/jobs"
+        ]
+        statuses = [
+            entry
+            for entry in entries
+            if entry.get("canonical_path") == f"/api/anki/jobs/{job_id}"
+        ]
+        if (
+            len(health) != 1
+            or health[0].get("method") != "GET"
+            or health[0].get("raw_path") != "/health"
+            or health[0].get("status") != 200
+            or len(created) != 1
+            or created[0].get("method") != "POST"
+            or created[0].get("raw_path") != "/api/anki/jobs"
+            or created[0].get("status") != 201
+            or created[0].get("job_id") != str(job_id)
+            or not statuses
+            or any(
+                entry.get("method") != "GET"
+                or entry.get("raw_path") != f"/api/anki/jobs/{job_id}"
+                or entry.get("status") != 200
+                or entry.get("job_id") != str(job_id)
+                for entry in statuses
+            )
+            or len(entries) != len(health) + len(created) + len(statuses)
+        ):
+            raise RuntimeError("capture server audit violates the control-plane closure")
+        return audit
+
+    def _validate_capture_ready_for_review_state(
+        self, repository: AnkiCurationRepository, job_id: UUID
+    ) -> None:
+        """Read the persisted domain state after the child has stopped."""
+        job = repository.require_job(job_id)
+        if (
+            job.state is not CurationState.READY_FOR_REVIEW
+            or job.review_revision != 0
+            or job.apply_state is not ApplyState.PENDING
+        ):
+            raise RuntimeError("capture job has review, envelope, apply, or non-review-ready state")
+        with repository.database.session() as session:
+            artifacts = (
+                session.scalar(
+                    select(func.count())
+                    .select_from(AnkiReviewChangeSetModel)
+                    .where(AnkiReviewChangeSetModel.job_id == str(job_id))
+                ),
+                session.scalar(
+                    select(func.count())
+                    .select_from(AnkiReviewedReconciliationModel)
+                    .where(AnkiReviewedReconciliationModel.job_id == str(job_id))
+                ),
+                session.scalar(
+                    select(func.count())
+                    .select_from(AnkiEnvelopeModel)
+                    .where(AnkiEnvelopeModel.job_id == str(job_id))
+                ),
+            )
+        if any(value != 0 for value in artifacts):
+            raise RuntimeError("capture job has a persisted review or envelope artifact")
+
+    def _validate_capture_runtime(
+        self, adapter_ledger: dict[str, Any], egress_ledger: dict[str, Any]
+    ) -> None:
+        if adapter_ledger.get("records") != []:
+            raise RuntimeError("capture requires an empty read-only Anki mutation ledger")
+        if self._capture_authorization is None:
+            raise RuntimeError("capture authorization is unavailable")
+        records = egress_ledger.get("records")
+        if not isinstance(records, list):
+            raise RuntimeError("capture egress evidence is malformed")
+        authorizations = _require_no_denied_egress_authorizations(records, "capture")
+        permitted = set(self._capture_authorization.document["egress_pins"])
+        for row in authorizations:
+            host = row.get("host")
+            if host not in {"localhost", "127.0.0.1", "::1"} and host not in permitted:
+                raise RuntimeError("capture runtime egress is outside the authorization manifest")
+
+    def _write_capture_completion(
+        self,
+        manifest: CapsuleManifest,
+        overlay: MaterializedCapsule,
+        client: LoopbackHttp,
+        repository: AnkiCurationRepository,
+        job_id: UUID,
+        adapter_ledger: dict[str, Any],
+        egress_ledger: dict[str, Any],
+        server_audit: dict[str, object],
+    ) -> None:
+        if self._capture_store is None or self._capture_authorization is None:
+            raise RuntimeError("capture store is unavailable")
+        if server_audit != self._capture_store.server_audit():
+            raise RuntimeError("capture server audit changed before publication")
+        server_audit_projection = self._capture_store.server_audit_evidence_projection()
+        server_audit_sha256 = self._capture_store.server_audit_sha256()
+        observed_audit_sha256 = hashlib.sha256(
+            serialize_evidence_record(server_audit_projection)
+        ).hexdigest()
+        if server_audit_sha256 != observed_audit_sha256:
+            raise RuntimeError("capture server audit changed before publication")
+        self._validate_capture_namespace(repository.require_job(job_id))
+        provider_rows = repository.list_provider_attempt_events(job_id)
+        self._reconcile_capture_calls(provider_rows)
+        job = repository.require_job(job_id)
+        lineage = {
+            "schema_version": 1,
+            "authorization_sha256": self._capture_authorization.sha256,
+            "failed_job_id": str(self.request.failed_job_id),
+            "source_tree_sha256": self._required_source_tree_sha256(),
+            "replay_namespace_sha256": _replay_namespace_for_job(job),
+            "server_audit_sha256": server_audit_sha256,
+        }
+        self._capture_store.write_lineage(lineage)
+        pack_manifest, pack = self._capture_store.build_pack_manifest()
+        completion = {
+            "schema_version": 1,
+            "authorization_sha256": self._capture_authorization.sha256,
+            "candidate": {
+                "commit": self.request.expected_implementation_commit,
+                "tree": self.request.expected_implementation_tree,
+            },
+            "capsule_manifest_sha256": self.request.expected_manifest_sha256,
+            "failed_job_id": str(self.request.failed_job_id),
+            "job_id": str(job_id),
+            "source_tree_sha256": lineage["source_tree_sha256"],
+            "replay_namespace_sha256": lineage["replay_namespace_sha256"],
+            "server_audit_sha256": server_audit_sha256,
+            **pack,
+        }
+        records = {
+            "outcome.json": {
+                "result": "CAPTURE_READY_FOR_REVIEW",
+                "ready_for_review": True,
+                "run_goal": "capture",
+            },
+            "capture-completion.json": completion,
+            "capsule.json": manifest.model_dump(mode="json"),
+            "implementation.json": {
+                "commit": self.request.expected_implementation_commit,
+                "tree": self.request.expected_implementation_tree,
+                "source_attestation": self._source_attestation,
+            },
+            "job.json": {"id": str(job_id), "state": "ready_for_review"},
+            "http-transcript.json": _smoke_http_transcript(client.transcript),
+            "provider-attempt-ledger.json": _capture_provider_ledger_projection(provider_rows),
+            "read-only-anki-mutation-ledger.json": adapter_ledger,
+            "egress-decisions.json": egress_ledger,
+            "capture-server-audit.json": server_audit_projection,
+            "private-pack.json": {
+                "path": str(self._capture_store.pack),
+                "manifest_sha256": pack["pack_manifest_sha256"],
+            },
+        }
+        _write_deterministic_zip(self.request.evidence_zip, records)
+        _verify_evidence_zip(self.request.evidence_zip)
+        with zipfile.ZipFile(self.request.evidence_zip, "r") as archive:
+            published_audit_sha256 = hashlib.sha256(
+                archive.read("capture-server-audit.json")
+            ).hexdigest()
+        if published_audit_sha256 != server_audit_sha256:
+            raise RuntimeError("published capture server audit digest does not match completion")
+        self._capture_store.publish_pack_manifest(pack_manifest)
+        self._capture_store.write_completion(completion)
+
+    def _reconcile_capture_calls(self, rows: list[dict[str, object]]) -> None:
+        if self._capture_store is None:
+            raise RuntimeError("capture store is unavailable")
+        groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
+        for row in rows:
+            key = (
+                row.get("provider"),
+                row.get("model"),
+                row.get("request_sha256"),
+                row.get("stage"),
+                row.get("kind"),
+                row.get("batch_index"),
+                row.get("batch_note_ids_sha256"),
+                row.get("subcall_ordinal"),
+            )
+            groups.setdefault(key, []).append(row)
+        dispatched = {
+            key: events
+            for key, events in groups.items()
+            if any(event.get("event") == "dispatched" for event in events)
+        }
+        calls = self._capture_store.calls()
+        if len(dispatched) != len(calls):
+            raise RuntimeError("capture private store and provider dispatch ledger differ")
+        for call in calls:
+            if call.get("stored") is not True or call.get("observed_microusd") is None:
+                raise RuntimeError("capture private call is not durably stored")
+            replay = call.get("replay_identity")
+            if not isinstance(replay, dict):
+                raise RuntimeError("capture private call lacks replay identity")
+            if call["kind"] == "structured":
+                expected_kind = replay.get("call_kind")
+            elif call["kind"] == "query_embedding":
+                expected_kind = "query_embedding"
+            elif call["kind"] == "proposal_embedding":
+                expected_kind = "embedding"
+            else:
+                raise RuntimeError("capture private call kind is invalid")
+            if not isinstance(expected_kind, str):
+                raise RuntimeError("capture private call lacks an exact call kind")
+            matches = [
+                events
+                for key, events in dispatched.items()
+                if key[0] == call["provider"]
+                and key[1] == call["model"]
+                and key[2] == call["request_sha256"]
+                and key[3] == replay.get("stage")
+                and key[5] == replay.get("batch_ordinal")
+                and key[6] == replay.get("batch_note_ids_sha256")
+                and key[7] == replay.get("subcall_ordinal")
+                and key[4] == expected_kind
+            ]
+            if len(matches) != 1:
+                raise RuntimeError(
+                    "capture private call does not match exactly one provider dispatch"
+                )
+            events = sorted(matches[0], key=_provider_event_id)
+            names = [event.get("event") for event in events]
+            supported = {
+                ("begun", "dispatched", "response_received", "accepted"),
+                ("begun", "dispatched", "response_received", "validation_failed"),
+                ("begun", "dispatched", "response_received", "contract_failed"),
+                (
+                    "begun",
+                    "dispatched",
+                    "response_received",
+                    "accepted",
+                    "contract_failed",
+                ),
+            }
+            response_sha256 = events[2].get("response_sha256")
+            if (
+                tuple(names) not in supported
+                or not isinstance(response_sha256, str)
+                or not _is_sha256(response_sha256)
+                or call.get("response_sha256") != response_sha256
+            ):
+                raise RuntimeError(
+                    "capture provider lifecycle is not a usable response-backed topology"
+                )
+            replay_request = call.get("replay_request")
+            if not isinstance(replay_request, dict):
+                raise RuntimeError("capture private call lacks a pre-dispatch replay request")
+            if call["kind"] == "structured" and replay_request.get("replay_identity") != replay:
+                raise RuntimeError("capture structured replay identity changed after dispatch")
+            if not self._capture_store.private_response_matches(call, events[2]):
+                raise RuntimeError("capture private response does not match provider evidence")
+
     def _validate_expected_replay_miss(
         self, final: dict[str, Any], repository: AnkiCurationRepository, job_id: UUID
     ) -> dict[str, Any]:
@@ -2020,7 +2604,7 @@ class ProcessRehearsal:
         if not isinstance(error, str):
             raise RuntimeError("expected replay miss has no safe terminal job error")
         rows = repository.list_provider_attempt_events(job_id)
-        namespace = _replay_namespace_sha256(repository.require_job(job_id))
+        namespace = _replay_namespace_for_job(repository.require_job(job_id))
         return _expected_empty_replay_miss(rows, namespace, error)
 
     def _write_expected_replay_miss_evidence(
@@ -2340,8 +2924,9 @@ def _stable_provider_payload_sha256(row: dict[str, object], replay_namespace_sha
     ).hexdigest()
 
 
-def _replay_namespace_sha256(job: CurationJob) -> str:
-    namespace = replay_namespace_from_job_source(
+def _replay_namespace_for_job(job: CurationJob) -> str:
+    """Return the pipeline/provider replay identity without hashing it again."""
+    return replay_namespace_from_job_source(
         configuration_sha256=job.configuration_sha256,
         pipeline_contract_version=job.pipeline_contract_version.value,
         model_config_sha256=job.model_config_sha256,
@@ -2351,7 +2936,11 @@ def _replay_namespace_sha256(job: CurationJob) -> str:
         semantic_generation=job.semantic_generation,
         source_index_generation=job.source_index_generation,
     )
-    return hashlib.sha256(namespace.encode()).hexdigest()
+
+
+def _replay_namespace_sha256(job: CurationJob) -> str:
+    """Compatibility alias for tests; returns the canonical provider identity."""
+    return _replay_namespace_for_job(job)
 
 
 def _provider_event_id_cutoff(rows: list[dict[str, object]]) -> int:
@@ -2363,6 +2952,18 @@ def _provider_event_id(row: dict[str, object]) -> int:
     if not isinstance(identifier, int) or identifier <= 0:
         raise RuntimeError("provider-attempt evidence lacks append-only event identifiers")
     return identifier
+
+
+def _provider_endpoint(provider: str, model: str) -> str:
+    if provider == "openai":
+        return OpenAIProvider.url
+    if provider == "anthropic":
+        return AnthropicProvider.url
+    if provider == "openrouter":
+        return OpenRouterProvider.chat_url
+    if provider == "gemini":
+        return f"{GeminiProvider.base_url}/{quote(model, safe='')}:generateContent"
+    raise ValueError("capture structured provider has no code endpoint")
 
 
 class _CtypesWindowsJobApi:
@@ -2529,9 +3130,7 @@ def _is_windows() -> bool:
 
 def _windows_system_root() -> str:
     """Return the sole Windows host value admitted into a rehearsal child."""
-    value = next(
-        (item for key, item in os.environ.items() if key.casefold() == "systemroot"), None
-    )
+    value = next((item for key, item in os.environ.items() if key.casefold() == "systemroot"), None)
     if not value:
         raise ValueError("Windows SYSTEMROOT is unavailable")
     root = Path(value)
@@ -2639,20 +3238,7 @@ def _is_empty_structured_placeholder(path: Path) -> bool:
 
 
 def _redact(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: (
-                "[REDACTED]"
-                if any(marker in key.upper() for marker in _SECRET_MARKERS)
-                else _redact(item)
-            )
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact(item) for item in value]
-    if isinstance(value, str):
-        return _bounded_redacted(value)
-    return value
+    return evidence_redact(value)
 
 
 def _bounded(value: Any) -> Any:
@@ -2690,13 +3276,7 @@ def _environment_evidence(environment: dict[str, str]) -> dict[str, Any]:
 def _write_deterministic_zip(destination: Path, records: dict[str, Any]) -> None:
     if destination.exists():
         raise ValueError("evidence destination already exists")
-    entries = {
-        name: json.dumps(
-            _redact(value), sort_keys=True, separators=(",", ":"), default=str
-        ).encode()
-        + b"\n"
-        for name, value in records.items()
-    }
+    entries = {name: serialize_evidence_record(value) for name, value in records.items()}
     digest_manifest = {
         name: hashlib.sha256(value).hexdigest() for name, value in sorted(entries.items())
     }
@@ -2771,12 +3351,190 @@ def _canonical_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def _canonical_output_path(path: Path) -> Path:
+    if not path.is_absolute():
+        raise ValueError("operator mutable outputs must be absolute paths")
+    canonical = Path(os.path.abspath(path))
+    _reject_indirect_ancestors(canonical)
+    return canonical
+
+
+def _canonical_input_path(path: Path) -> Path:
+    try:
+        return path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("immutable input is unavailable or cannot be canonicalized") from exc
+
+
+def _reject_indirect_ancestors(path: Path) -> None:
+    current = Path(path.anchor)
+    for component in path.parts[1:]:
+        current /= component
+        if os.path.lexists(current) and _is_indirect(current):
+            raise ValueError("operator mutable output has a symlink or reparse-point ancestor")
+
+
+def _path_contains(container: Path, candidate: Path) -> bool:
+    try:
+        candidate.relative_to(container)
+    except ValueError:
+        return False
+    return True
+
+
 def _file_descriptor(path: Path) -> dict[str, Any]:
     return {"sha256": _sha256_file(path), "bytes": path.stat().st_size}
 
 
+def _capture_provider_ledger_projection(
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Keep capture audit metadata while excluding raw provider response payloads."""
+    return [{key: value for key, value in row.items() if key != "response_text"} for row in rows]
+
+
 def _verify_replay_supplement(root: Path, expected_manifest_sha256: str | None) -> tuple[str, ...]:
     return tuple(sorted(_replay_supplement_entries(root, expected_manifest_sha256)))
+
+
+def _supplement_is_populated(root: Path) -> bool:
+    try:
+        return json.loads((root / "structured.json").read_text(encoding="utf-8")) != {} or any(
+            path.name.endswith(".npy") for path in (root / "vectors").rglob("*")
+        )
+    except (OSError, ValueError):
+        return True
+
+
+def _verify_replay_completion(
+    path: Path | None,
+    expected_sha256: str | None,
+    *,
+    supplement_root: Path,
+    expected_manifest_sha256: str | None,
+    expected_commit: str,
+    expected_tree: str,
+    expected_capsule_sha256: str,
+    expected_pack_sha256: str | None,
+    expected_failed_job_id: str | None = None,
+    expected_replay_namespace: str | None = None,
+) -> None:
+    if path is None or expected_sha256 is None or not _is_sha256(expected_sha256):
+        raise ValueError("populated replay supplement requires an exact completion manifest")
+    components = (path.absolute(), *path.absolute().parents)
+    if (
+        any(_is_indirect(component) for component in components if component.exists())
+        or not path.is_file()
+        or _sha256_file(path) != expected_sha256
+    ):
+        raise ValueError("replay completion manifest is unavailable or mismatched")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("replay completion manifest is invalid") from exc
+    required = {
+        "schema_version",
+        "authorization_sha256",
+        "candidate",
+        "capsule_manifest_sha256",
+        "failed_job_id",
+        "job_id",
+        "source_tree_sha256",
+        "replay_namespace_sha256",
+        "server_audit_sha256",
+        "pack_manifest_sha256",
+        "ledger_sha256",
+    }
+    if not isinstance(value, dict) or set(value) != required or value.get("schema_version") != 1:
+        raise ValueError("replay completion manifest is invalid")
+    candidate = value.get("candidate")
+    hashes = {
+        "authorization_sha256",
+        "capsule_manifest_sha256",
+        "source_tree_sha256",
+        "replay_namespace_sha256",
+        "server_audit_sha256",
+        "pack_manifest_sha256",
+        "ledger_sha256",
+    }
+    if (
+        candidate != {"commit": expected_commit, "tree": expected_tree}
+        or value.get("capsule_manifest_sha256") != expected_capsule_sha256
+        or value.get("pack_manifest_sha256") != expected_pack_sha256
+        or any(
+            not isinstance(value.get(key), str) or not _is_sha256(cast(str, value.get(key)))
+            for key in hashes
+        )
+    ):
+        raise ValueError("replay completion manifest bindings do not match")
+    for key in ("failed_job_id", "job_id"):
+        raw = value.get(key)
+        try:
+            if not isinstance(raw, str) or str(UUID(raw)) != raw:
+                raise ValueError
+        except ValueError as exc:
+            raise ValueError("replay completion manifest has invalid job identities") from exc
+    entries = _replay_supplement_entries(supplement_root, expected_manifest_sha256)
+    lineage_path = supplement_root / "capture-lineage.json"
+    if (
+        "capture-lineage.json" not in entries
+        or lineage_path.is_symlink()
+        or not lineage_path.is_file()
+    ):
+        raise ValueError("replay completion lineage is unavailable")
+    try:
+        lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("replay completion lineage is invalid") from exc
+    required_lineage = {
+        "schema_version",
+        "authorization_sha256",
+        "failed_job_id",
+        "source_tree_sha256",
+        "replay_namespace_sha256",
+        "server_audit_sha256",
+    }
+    if (
+        not isinstance(lineage, dict)
+        or set(lineage) != required_lineage
+        or lineage.get("schema_version") != 1
+        or any(
+            not isinstance(lineage.get(key), str) or not _is_sha256(cast(str, lineage.get(key)))
+            for key in (
+                "authorization_sha256",
+                "source_tree_sha256",
+                "replay_namespace_sha256",
+                "server_audit_sha256",
+            )
+        )
+        or lineage.get("failed_job_id") != value.get("failed_job_id")
+        or any(
+            lineage.get(key) != value.get(key)
+            for key in (
+                "authorization_sha256",
+                "source_tree_sha256",
+                "replay_namespace_sha256",
+                "server_audit_sha256",
+            )
+        )
+    ):
+        raise ValueError("replay completion lineage does not match the verified pack")
+    if (
+        expected_failed_job_id is not None
+        and (
+            value.get("failed_job_id") != expected_failed_job_id
+            or lineage.get("failed_job_id") != expected_failed_job_id
+        )
+    ):
+        raise ValueError("replay completion failed-job lineage does not match the overlay")
+    if (
+        expected_replay_namespace is not None
+        and (
+            value.get("replay_namespace_sha256") != expected_replay_namespace
+            or lineage.get("replay_namespace_sha256") != expected_replay_namespace
+        )
+    ):
+        raise ValueError("replay completion namespace lineage does not match the overlay")
 
 
 def _validate_empty_replay_supplement(root: Path, expected_manifest_sha256: str | None) -> None:
@@ -2789,6 +3547,8 @@ def _validate_empty_replay_supplement(root: Path, expected_manifest_sha256: str 
         raise ValueError("first replay miss structured replay is malformed") from exc
     if structured_value != {}:
         raise ValueError("first replay miss requires an empty structured replay")
+    if "capture-lineage.json" in entries:
+        raise ValueError("first replay miss cannot consume capture lineage")
     vector_entries = [name for name in entries if name.startswith("vectors/")]
     if set(vector_entries).difference({"vectors/manifest.json"}):
         raise ValueError("first replay miss replay vectors must have no payload files")
@@ -3052,7 +3812,9 @@ def _replay_relative_is_allowed(relative: str) -> bool:
         _reject_sensitive_path(relative)
     except CapsuleIntegrityError:
         return False
-    return relative == "structured.json" or relative.startswith("vectors/")
+    return relative in {"structured.json", "capture-lineage.json"} or relative.startswith(
+        "vectors/"
+    )
 
 
 def _is_sha256(value: str) -> bool:

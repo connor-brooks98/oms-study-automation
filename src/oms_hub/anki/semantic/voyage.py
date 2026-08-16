@@ -36,6 +36,7 @@ class VoyageEmbeddingClient:
         batch_size: int = 128,
         max_attempts: int = 3,
         retry_base_seconds: float = 0.5,
+        split_on_limit: bool = True,
         api_key: str | None = None,
         http: httpx.AsyncClient | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -56,6 +57,7 @@ class VoyageEmbeddingClient:
         self.batch_size = batch_size
         self.max_attempts = max_attempts
         self.retry_base_seconds = retry_base_seconds
+        self.split_on_limit = split_on_limit
         self.api_key = api_key.strip() if api_key is not None else None
         self._sleep = sleep
         self._owns_http = http is None
@@ -154,6 +156,7 @@ class VoyageEmbeddingClient:
             detail = _extract_error_detail(response)
             if (
                 response.status_code == 400
+                and self.split_on_limit
                 and len(texts) > 1
                 and _LIMIT_DETAIL_PATTERN.search(detail)
             ):

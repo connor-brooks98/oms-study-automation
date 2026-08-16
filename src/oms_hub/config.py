@@ -77,6 +77,23 @@ class Settings(BaseSettings):
     anki_rehearsal_overlay_dir: Path | None = None
     anki_rehearsal_replay_dir: Path | None = None
     anki_rehearsal_egress_pins_json: str | None = None
+    # Capture is enabled only by the isolated launcher after it has bound the
+    # authorization document to the exact candidate/capsule/job identity.
+    anki_rehearsal_capture_store: Path | None = None
+    anki_rehearsal_capture_authorization_manifest: Path | None = None
+    anki_rehearsal_capture_authorization_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    anki_rehearsal_capture_candidate_commit: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{40}$"
+    )
+    anki_rehearsal_capture_candidate_tree: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{40}$"
+    )
+    anki_rehearsal_capture_capsule_manifest_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    anki_rehearsal_capture_failed_job_id: str | None = None
     anki_data_dir: Path | None = None
     anki_agent_hostname: str | None = None
     anki_agent_token_key: str = "anki-agent-token"
@@ -184,6 +201,23 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_local_service_ports(self) -> Self:
+        capture_values = (
+            self.anki_rehearsal_capture_store,
+            self.anki_rehearsal_capture_authorization_manifest,
+            self.anki_rehearsal_capture_authorization_sha256,
+            self.anki_rehearsal_capture_candidate_commit,
+            self.anki_rehearsal_capture_candidate_tree,
+            self.anki_rehearsal_capture_capsule_manifest_sha256,
+            self.anki_rehearsal_capture_failed_job_id,
+        )
+        if any(value is not None for value in capture_values):
+            if self.anki_rehearsal_mode != "shadow" or any(
+                value is None for value in capture_values
+            ):
+                raise ValueError("capture requires complete shadow-only authorization settings")
+            assert self.anki_rehearsal_capture_store is not None
+            if not self.anki_rehearsal_capture_store.is_absolute():
+                raise ValueError("capture store must be an absolute private path")
         anki_connect_port = urlsplit(self.anki_connect_url).port
         if self.anki_enabled and anki_connect_port == self.dashboard_port:
             raise ValueError(

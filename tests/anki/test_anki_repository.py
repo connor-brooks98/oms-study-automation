@@ -67,6 +67,8 @@ from oms_hub.anki.reconciliation import (
     CardCentricReconciliationInput,
     GeneratedResolution,
 )
+from oms_hub.anki.rehearsal.capture import CaptureAnkiCurationRepository
+from oms_hub.anki.rehearsal.process import ProcessRehearsal
 from oms_hub.anki.repository import (
     AnkiCurationRepository,
     InvalidCurationTransition,
@@ -943,6 +945,40 @@ def test_create_job_snapshots_all_mutable_inputs(tmp_path) -> None:
     assert job.lcl_prompt_version == "lcl-v1"
     assert job.judgment_rubric_version == "judgment-v1"
     assert job.gap_prompt_version == "gap-v1"
+
+
+def test_capture_ready_state_proof_rejects_persisted_review_and_envelope_artifacts(
+    tmp_path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    with repository.database.session() as session:
+        stored = session.get(AnkiCurationJobModel, str(job.id))
+        assert stored is not None
+        stored.state = CurationState.READY_FOR_REVIEW.value
+    ProcessRehearsal._validate_capture_ready_for_review_state(object(), repository, job.id)
+    with repository.database.session() as session:
+        session.add(
+            AnkiReviewedReconciliationModel(
+                job_id=str(job.id), review_revision=0, payload_json="{}"
+            )
+        )
+    with pytest.raises(RuntimeError, match="review or envelope artifact"):
+        ProcessRehearsal._validate_capture_ready_for_review_state(object(), repository, job.id)
+    with repository.database.session() as session:
+        session.query(AnkiReviewedReconciliationModel).delete()
+        session.add(
+            AnkiEnvelopeModel(
+                id=str(UUID(int=81)),
+                job_id=str(job.id),
+                payload_json="{}",
+                payload_sha256="a" * 64,
+                snapshot_id="snapshot-1",
+                state="pending",
+            )
+        )
+    with pytest.raises(RuntimeError, match="review or envelope artifact"):
+        ProcessRehearsal._validate_capture_ready_for_review_state(object(), repository, job.id)
 
 
 def test_claim_next_job_claims_oldest_queued_job_once(tmp_path) -> None:
@@ -1825,6 +1861,54 @@ def test_card_ledger_invalid_primary_then_repair_is_valid_at_startup(tmp_path: P
         (row["call_index"], row["kind"], row["outcome"])
         for row in repository.list_card_ledger_attempts(job.id)
     ] == [(1, "primary", "validation_failed"), (2, "repair", "accepted")]
+
+
+def test_capture_card_ledger_persists_only_invalid_response_hash_and_allows_repair(
+    tmp_path: Path,
+) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    capture = CaptureAnkiCurationRepository(repository.database)
+    job = repository.create_job(_job_request(lecture_id))
+    parameters = s2_generation_parameters(ProviderName.ANTHROPIC, "claude-sonnet-5")
+    parameters_json = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+    invalid = '{"importance":"low"}'
+    primary = CardCentricLedgerAttempt(
+        call_index=1,
+        kind="primary",
+        outcome="validation_failed",
+        provider=ProviderName.ANTHROPIC,
+        model="claude-sonnet-5",
+        instruction_sha256="a" * 64,
+        generation_parameters=parameters,
+        generation_parameters_sha256=hashlib.sha256(parameters_json.encode()).hexdigest(),
+        request_id="request-1",
+        input_tokens=1,
+        output_tokens=2,
+        cost_microusd=3,
+        validation_error="importance conflicts",
+        invalid_response_sha256=hashlib.sha256(invalid.encode()).hexdigest(),
+        invalid_response=invalid,
+    )
+    repair = replace(
+        primary,
+        call_index=2,
+        kind="repair",
+        outcome="accepted",
+        request_id="request-2",
+        validation_error=None,
+        invalid_response_sha256=None,
+        invalid_response=None,
+    )
+    repository.start_stage(job.id, CurationStage.CARD_LEDGER)
+    with pytest.raises(ValueError, match="outcome payload"):
+        _record_card_ledger_attempt(repository, job.id, replace(primary, invalid_response=None))
+    _record_card_ledger_attempt(capture, job.id, primary)
+    _record_card_ledger_attempt(capture, job.id, repair)
+    assert primary.invalid_response == invalid
+    rows = capture.list_card_ledger_attempts(job.id)
+    assert rows[0]["invalid_response"] is None
+    assert rows[0]["invalid_response_sha256"] == primary.invalid_response_sha256
+    assert rows[1]["outcome"] == "accepted"
 
 
 @pytest.mark.parametrize(

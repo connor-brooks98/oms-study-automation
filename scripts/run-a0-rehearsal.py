@@ -41,8 +41,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--shadow-egress-pins-json")
     parser.add_argument("--replay-supplement", type=Path)
     parser.add_argument("--expected-replay-supplement-manifest-sha256")
+    parser.add_argument("--replay-supplement-completion", type=Path)
+    parser.add_argument("--expected-replay-supplement-completion-sha256")
     parser.add_argument("--timeout-seconds", type=float, default=300.0)
-    parser.add_argument("--run-goal", choices=("golden", "first_replay_miss"), default="golden")
+    parser.add_argument(
+        "--run-goal", choices=("golden", "first_replay_miss", "capture"), default="golden"
+    )
+    parser.add_argument("--capture-store", type=Path)
+    parser.add_argument("--capture-authorization-manifest", type=Path)
+    parser.add_argument("--expected-capture-authorization-manifest-sha256")
     parser.add_argument(
         "--no-restart",
         dest="restart_after_durable_boundary",
