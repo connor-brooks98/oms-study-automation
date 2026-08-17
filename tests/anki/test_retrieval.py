@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Collection, Sequence
+from dataclasses import asdict
 
 from oms_hub.anki.domain import RetrievalPass
 from oms_hub.anki.index import CompanionFilters, SearchHit
@@ -70,11 +71,7 @@ class FakeSemanticSearch:
         eligible_note_ids: Collection[int] | None = None,
         limit: int,
     ) -> list[list[SemanticHit]]:
-        self.eligible_calls.append(
-            None
-            if eligible_note_ids is None
-            else set(eligible_note_ids)
-        )
+        self.eligible_calls.append(None if eligible_note_ids is None else set(eligible_note_ids))
         return [
             [
                 SemanticHit(
@@ -165,9 +162,46 @@ def test_semantic_variants_are_fused_before_modalities() -> None:
         )
 
         assert candidates[0].note_id == 1
-        assert candidates[0].scores["semantic_variant_fusion"] > (
-            candidates[1].scores["semantic_variant_fusion"]
+        assert (
+            candidates[0].scores["semantic_variant_fusion"]
+            > (candidates[1].scores["semantic_variant_fusion"])
         )
+
+    asyncio.run(scenario())
+
+
+def test_legacy_candidate_dump_scores_order_and_provenance_are_frozen() -> None:
+    async def scenario() -> None:
+        concept = _concept()
+        semantic = FakeSemanticSearch({query: [1] for query in concept.queries})
+        companion = FakeCompanionIndex(
+            [_note(1, tags=("OMS::Heme", "OMS::Heme::Block_1"), sources=("first",))],
+            eligible={1},
+            lexical=(1,),
+        )
+        candidates = await RetrievalService(
+            companion, semantic, per_concept_limit=5, global_limit=5
+        ).retrieve_pass_1(
+            concept,
+            RetrievalScope(lecture_tag_prefix="OMS::Heme", block_tag_prefix="OMS::Heme::Block_1"),
+        )
+        assert [candidate.note_id for candidate in candidates] == [1]
+        dump = asdict(candidates[0])
+        assert dump["scores"] == {
+            "semantic_variant_fusion": 3.5 / 61,
+            "base_rrf": 2 / 61,
+            "boost_total": 0.04,
+            "boosted_score": 2 / 61 + 0.04,
+        }
+        assert dump["provenance"] == {
+            "queries": list(concept.queries),
+            "evidence_ids": [],
+            "variant_ranks": {"variant_1": 1, "variant_2": 1, "variant_3": 1, "variant_4": 1},
+            "semantic_rank": 1,
+            "lexical_rank": 1,
+            "reasons": ["lecture_tag", "block_tag", "trusted_source"],
+        }
+        assert dump["reason"] == "lecture_tag, block_tag, trusted_source"
 
     asyncio.run(scenario())
 
@@ -177,9 +211,7 @@ def test_semantic_rows_use_the_production_searchable_text_hash() -> None:
         concept = _concept()
         note = _note(1)
         assert note.content_sha256 != content_hash(note.text)
-        semantic = FakeSemanticSearch(
-            {query: [1] for query in concept.queries}
-        )
+        semantic = FakeSemanticSearch({query: [1] for query in concept.queries})
         companion = FakeCompanionIndex([note], eligible={1})
         service = RetrievalService(
             companion,
@@ -256,9 +288,7 @@ def test_filters_are_applied_before_semantic_and_lexical_ranking() -> None:
             deck_allowlist=("AnKing Step Deck::Heme",),
             tag_allowlist=("#Pathoma",),
         )
-        semantic = FakeSemanticSearch(
-            {query: [99, 1, 2] for query in concept.queries}
-        )
+        semantic = FakeSemanticSearch({query: [99, 1, 2] for query in concept.queries})
         companion = FakeCompanionIndex(
             [_note(1), _note(2), _note(99)],
             eligible={1, 2},
@@ -301,9 +331,7 @@ def test_multiple_decks_are_retrieved_in_priority_groups() -> None:
 
         candidates = await service.retrieve_pass_1(
             concept,
-            RetrievalScope(
-                filters=CompanionFilters(deck_allowlist=("AnKing", "Sketchy"))
-            ),
+            RetrievalScope(filters=CompanionFilters(deck_allowlist=("AnKing", "Sketchy"))),
         )
 
         assert [candidate.note_id for candidate in candidates] == [1, 2]
@@ -319,9 +347,7 @@ def test_multiple_decks_are_retrieved_in_priority_groups() -> None:
 def test_rrf_boosts_are_bounded_and_explainable() -> None:
     async def scenario() -> None:
         concept = _concept()
-        semantic = FakeSemanticSearch(
-            {query: [1, 2] for query in concept.queries}
-        )
+        semantic = FakeSemanticSearch({query: [1, 2] for query in concept.queries})
         companion = FakeCompanionIndex(
             [
                 _note(1),
@@ -351,9 +377,7 @@ def test_rrf_boosts_are_bounded_and_explainable() -> None:
                 block_tag_prefix="OMS::Heme::Block_1",
             ),
         )
-        boosted = next(
-            candidate for candidate in candidates if candidate.note_id == 2
-        )
+        boosted = next(candidate for candidate in candidates if candidate.note_id == 2)
 
         assert boosted.scores["boost_total"] <= 0.05
         assert boosted.scores["boosted_score"] == (
@@ -369,9 +393,7 @@ def test_rrf_boosts_are_bounded_and_explainable() -> None:
 def test_deterministic_ties_and_candidate_caps() -> None:
     async def scenario() -> None:
         concept = _concept()
-        semantic = FakeSemanticSearch(
-            {query: [2, 1, 3] for query in concept.queries}
-        )
+        semantic = FakeSemanticSearch({query: [2, 1, 3] for query in concept.queries})
         companion = FakeCompanionIndex(
             [_note(1), _note(2), _note(3)],
             eligible={1, 2, 3},

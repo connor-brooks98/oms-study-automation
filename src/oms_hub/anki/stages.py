@@ -9,6 +9,15 @@ from typing import Any, Literal, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from oms_hub.anki.audit import AuditRunResult, CardAuditService
+from oms_hub.anki.calibration import (
+    calibrated_score,
+    canonical_sha256,
+    cluster_note_ids,
+    deck_and_tag_eligible,
+    effective_tag_mode,
+    frozen_config_payload,
+    pollution_diagnostic,
+)
 from oms_hub.anki.card_centric import (
     CARD_CENTRIC_UNCONDITIONAL_RESIDUAL_RATE,
     CardCentricClassifier,
@@ -42,6 +51,7 @@ from oms_hub.anki.card_centric_contracts import (
     TagScopeResult,
     serialize_card_centric_ledger,
 )
+from oms_hub.anki.card_centric_hybrid import CardCentricHybridRetriever, query_variants
 from oms_hub.anki.convergence import (
     ConvergenceState,
     ExpansionResult,
@@ -138,6 +148,7 @@ from oms_hub.anki.rescue import (
 from oms_hub.anki.retrieval import (
     RetrievalScope,
     RetrievalService,
+    hybrid_rank_fusion,
 )
 from oms_hub.anki.runtime import AnkiRuntime
 from oms_hub.anki.scope_contracts import LectureScope
@@ -483,6 +494,8 @@ class CurationServicesRunner:
             CurationStage.CARD_GAP_FILL: self._card_gap_fill,
             CurationStage.CARD_SELECTION: self._card_selection,
             CurationStage.V3_R3_SCOPE: self._v3_r3_scope,
+            CurationStage.V3_R5_RETRIEVAL: self._v3_r5_retrieval,
+            CurationStage.V3_R6_CALIBRATION: self._v3_r6_calibration,
         }
         return await handlers[context.stage](context)
 
@@ -527,6 +540,436 @@ class CurationServicesRunner:
             },
             usage=result.usage,
         )
+
+    async def _v3_r5_retrieval(self, context: StageContext) -> StageProduct:
+        """Offline-only R5 over the exact R3/R4 pins; R4 stays handler-free."""
+        if context.job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V3:
+            raise PinnedInputChanged("R5 retrieval requires the card_centric_v3 contract")
+        r0 = _payload(context, CurationStage.V3_R0_PREFLIGHT)
+        r3 = _payload(context, CurationStage.V3_R3_SCOPE)
+        r4 = _v3_r4_verification(
+            context, _payload(context, CurationStage.V3_R4_INDEX_VERIFICATION), r0
+        )
+        try:
+            policy = _r3_policy(context, r0)
+            scope = LectureScope.model_validate(r3["scope"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PinnedInputChanged("Pinned R5 scope is malformed") from exc
+        if scope.policy_sha256 != policy.policy_sha256 or r3.get(
+            "scope_sha256", scope.scope_sha256
+        ) not in {None, scope.scope_sha256}:
+            raise PinnedInputChanged("Pinned R5 scope identity changed")
+        if self.companion.snapshot_id() != r4["companion_generation"]:
+            raise PinnedInputChanged("current companion generation changed")
+        live_ids = self.companion.eligible_note_ids(
+            CompanionFilters(deck_allowlist=context.job.deck_allowlist)
+        )
+        if live_ids != {int(identity["note_id"]) for identity in r4["card_identities"]}:
+            raise PinnedInputChanged("current companion card closure changed")
+        for identity in r4["card_identities"]:
+            note = self.companion.get_note(int(identity["note_id"]))
+            if note is None or note.content_sha256 != identity["content_sha256"]:
+                raise PinnedInputChanged("current companion card identity changed")
+        snapshot = self.semantic.store.load(
+            expected_model=self.semantic.model,
+            expected_dimensions=self.semantic.dimensions,
+            expected_generation=r4["semantic_generation"],
+        )
+        manifest = r4["semantic_manifest"]
+        if (
+            str(snapshot.manifest.generation) != manifest["generation"]
+            or snapshot.manifest.model != manifest["model"]
+            or snapshot.manifest.dimensions != manifest["dimensions"]
+            or snapshot.manifest.matrix_sha256 != manifest["matrix_sha256"]
+        ):
+            raise PinnedInputChanged("current semantic manifest changed")
+        live_semantic = [
+            {
+                "note_id": note_id,
+                "semantic_content_sha256": snapshot.manifest.content_hashes[index],
+            }
+            for index, note_id in enumerate(snapshot.manifest.note_ids)
+            if note_id in live_ids
+        ]
+        if live_semantic != r4["semantic_identities"]:
+            raise PinnedInputChanged("current semantic identity closure changed")
+        requested = policy.tag_scope_mode
+        census = SnapshotCensus.model_validate(r4["census"])
+        mode = effective_tag_mode(requested, census_trusted=census.trust.decision == "trusted")
+        filters = CompanionFilters(
+            deck_allowlist=context.job.deck_allowlist,
+            # R5 must retain deck-eligible off-scope rows for R6 pollution audit.
+            tag_allowlist=(),
+        )
+        retriever = CardCentricHybridRetriever(self.companion, self.semantic)
+        config: dict[str, Any] = frozen_config_payload()
+        config_sha256 = canonical_sha256(config)
+        facts: list[dict[str, Any]] = []
+        for concept in scope.concepts:
+            for fact in concept.facts:
+                variants, trace = query_variants(
+                    fact_statement=fact.statement,
+                    canonical_statement=concept.canonical_statement,
+                    primary_entity=concept.primary_entity,
+                    aliases=concept.aliases,
+                    exact_terms=concept.exact_terms,
+                    professor_policy_basis=concept.professor_policy_basis,
+                    retrieval_queries=concept.retrieval_queries,
+                    max_variants=int(config["query_variant_limit"]),
+                    max_characters=int(config["query_character_limit"]),
+                )
+                with provider_call_scope(batch_index=len(facts), batch_note_ids=()):
+                    cards = await retriever.retrieve(
+                        variants=variants,
+                        exact_terms=concept.exact_terms,
+                        filters=filters,
+                        expected_generation=r4["semantic_generation"],
+                        variant_weights=cast(Sequence[float], config["semantic_variant_weights"]),
+                        semantic_eligible_note_ids={
+                            int(identity["note_id"]) for identity in r4["semantic_identities"]
+                        },
+                        raw_limit=int(config["raw_limit"]),
+                        rrf_k=int(config["rrf_k"]),
+                        boost_weights=cast(Mapping[str, float], config["boost_parameters"]),
+                        lecture_tag_prefix=(
+                            context.job.tag_allowlist[0] if context.job.tag_allowlist else None
+                        )
+                        if mode == "prior_boost"
+                        else None,
+                    )
+                candidates: list[dict[str, Any]] = []
+                for card in cards:
+                    category = census.mapping.get(card.note_id)
+                    if category is None:
+                        raise PinnedInputChanged("R5 raw candidate escapes pinned census")
+                    candidates.append(
+                        {
+                            "note_id": card.note_id,
+                            "content_sha256": card.content_sha256,
+                            "text": card.text,
+                            "extra": card.extra,
+                            "tags": list(card.tags),
+                            "decks": list(card.decks),
+                            "semantic_score": card.semantic_score,
+                            "semantic_variant_scores_raw": card.semantic_variant_scores,
+                            "variant_ranks": card.fusion.semantic_variant_ranks,
+                            "semantic_variant_scores": card.fusion.semantic_variant_scores,
+                            "semantic_rank": card.fusion.aggregate_semantic_rank,
+                            "lexical_rank": card.fusion.lexical_rank,
+                            "base_rrf": card.fusion.base_rrf,
+                            "boost_total": card.boost_total,
+                            "exact_match_reasons": list(card.exact_match_reasons),
+                        }
+                    )
+                fact_payload: dict[str, Any] = {
+                    "concept_id": concept.concept_id,
+                    "fact_id": fact.fact_id,
+                    "variants": list(variants),
+                    "query_trace": list(trace),
+                    "raw_semantic": [list(items) for items in retriever.last_semantic_trace],
+                    "raw_lexical": list(retriever.last_lexical_trace),
+                    "candidates": candidates,
+                }
+                fact_payload["query_sha256"] = canonical_sha256(fact_payload)
+                fact_payload["fact_sha256"] = canonical_sha256(fact_payload)
+                facts.append(fact_payload)
+        payload = {
+            "policy_sha256": policy.policy_sha256,
+            "scope_sha256": scope.scope_sha256,
+            "r4_verification_sha256": r4["verification_sha256"],
+            "semantic_generation": r4["semantic_generation"],
+            "requested_tag_mode": requested,
+            "effective_tag_mode": mode,
+            "config": config,
+            "config_sha256": config_sha256,
+            "facts": facts,
+        }
+        payload["artifact_sha256"] = canonical_sha256(payload)
+        return StageProduct(kind="card_centric_v3_retrieval", payload=payload)
+
+    async def _v3_r6_calibration(self, context: StageContext) -> StageProduct:
+        if context.job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V3:
+            raise PinnedInputChanged("R6 calibration requires the card_centric_v3 contract")
+        r5 = _payload(context, CurationStage.V3_R5_RETRIEVAL)
+        r4 = _v3_r4_verification(
+            context,
+            _payload(context, CurationStage.V3_R4_INDEX_VERIFICATION),
+            _payload(context, CurationStage.V3_R0_PREFLIGHT),
+        )
+        if r5.get("semantic_generation") != r4["semantic_generation"] or r5.get(
+            "artifact_sha256"
+        ) != canonical_sha256(
+            {key: value for key, value in r5.items() if key != "artifact_sha256"}
+        ):
+            raise PinnedInputChanged("Pinned R5 retrieval identity changed")
+        if r5.get("config_sha256") != canonical_sha256(r5.get("config")):
+            raise PinnedInputChanged("Pinned R5 calibration configuration changed")
+        if r5.get("config") != frozen_config_payload():
+            raise PinnedInputChanged("Pinned R5 calibration configuration is not frozen")
+        config = cast(Mapping[str, Any], r5["config"])
+        if float(config["rrf_floor"]) != 1 / (int(config["rrf_k"]) + int(config["raw_limit"])):
+            raise PinnedInputChanged("Pinned R5 RRF floor is inconsistent")
+        if config.get("tag_mode_version") != 1:
+            raise PinnedInputChanged("Pinned R5 tag semantics version is unsupported")
+        identities = {
+            int(item["note_id"]): str(item["semantic_content_sha256"])
+            for item in r4["semantic_identities"]
+        }
+        rows = [row for fact in r5.get("facts", []) for row in fact.get("candidates", [])]
+        card_identities = {
+            int(item["note_id"]): str(item["content_sha256"]) for item in r4["card_identities"]
+        }
+        if any(card_identities.get(int(row["note_id"])) != row["content_sha256"] for row in rows):
+            raise PinnedInputChanged("Pinned R5 candidate card identity changed")
+        census = SnapshotCensus.model_validate(r4["census"])
+        records: list[dict[str, Any]] = []
+        for fact_payload in r5.get("facts", []):
+            candidates = list(fact_payload.get("candidates", []))
+            by_id = {int(row["note_id"]): row for row in candidates}
+            diagnostics: list[dict[str, Any]] = []
+            weights: dict[str, float] = {}
+            for index, hits in enumerate(fact_payload.get("raw_semantic", []), start=1):
+                variant = f"variant_{index}"
+                diagnostic = pollution_diagnostic(
+                    [
+                        {
+                            "semantic_score": hit["score"],
+                            "in_scope": census.mapping.get(int(hit["note_id"])) == "target_tagged",
+                            "deck": sorted(by_id.get(int(hit["note_id"]), {}).get("decks", []))[0]
+                            if by_id.get(int(hit["note_id"]), {}).get("decks", [])
+                            else "",
+                            "tag_root": (
+                                sorted(by_id.get(int(hit["note_id"]), {}).get("tags", []))[0].split(
+                                    "::"
+                                )[0]
+                                if by_id.get(int(hit["note_id"]), {}).get("tags", [])
+                                else "<untagged>"
+                            ),
+                        }
+                        for hit in hits
+                    ],
+                    threshold=float(config["semantic_threshold"]),
+                    ceiling=int(config["pollution_ceiling"]),
+                    ratio_limit=float(config["pollution_ratio"]),
+                )
+                weights[variant] = (
+                    0.0
+                    if diagnostic.polluted
+                    else float(
+                        config["semantic_variant_weights"][
+                            min(index - 1, len(config["semantic_variant_weights"]) - 1)
+                        ]
+                    )
+                )
+                diagnostics.append(
+                    {
+                        "variant": variant,
+                        "raw_semantic_hit_count": len(hits),
+                        "raw_lexical_hit_count": len(fact_payload.get("raw_lexical", [])),
+                        "above_threshold_count": diagnostic.above_threshold_count,
+                        "off_scope_count": diagnostic.off_scope_count,
+                        "ratio": diagnostic.ratio,
+                        "polluted": diagnostic.polluted,
+                        "dominant_pattern": diagnostic.dominant_pattern,
+                        "semantic_lane_weight": weights[variant],
+                    }
+                )
+            rankings = {
+                variant: tuple(ranks.get(rank) for rank in range(1, max(ranks, default=0) + 1))
+                for variant in weights
+                for ranks in (
+                    {
+                        int(row["variant_ranks"][variant]): int(row["note_id"])
+                        for row in candidates
+                        if (
+                            variant in row["variant_ranks"]
+                            and weights[variant] > 0
+                            and float(row["semantic_variant_scores_raw"].get(variant, -1))
+                            >= float(config["semantic_threshold"])
+                        )
+                    },
+                )
+            }
+            lexical = tuple(
+                note_id
+                for _rank, note_id in sorted(
+                    (int(row["lexical_rank"]), int(row["note_id"]))
+                    for row in candidates
+                    if row["lexical_rank"] is not None
+                )
+            )
+            fused = {
+                row.note_id: row
+                for row in hybrid_rank_fusion(
+                    rankings,
+                    lexical,
+                    variant_weights=weights,
+                    rrf_k=int(config["rrf_k"]),
+                )
+            }
+            for query_diagnostic in diagnostics:
+                semantic_note_ids = {
+                    note_id
+                    for note_id, row in fused.items()
+                    if query_diagnostic["variant"] in row.semantic_variant_ranks
+                }
+                exact_lexical_note_ids = {
+                    int(row["note_id"])
+                    for row in candidates
+                    if row["lexical_rank"] is not None and row["exact_match_reasons"]
+                }
+                query_diagnostic["fused_candidate_count"] = len(
+                    semantic_note_ids | exact_lexical_note_ids
+                )
+                query_diagnostic["exact_only"] = (
+                    bool(exact_lexical_note_ids) and not semantic_note_ids
+                )
+                query_diagnostic["semantic_only"] = (
+                    bool(semantic_note_ids) and not exact_lexical_note_ids
+                )
+            clean_semantic_note_ids = {
+                note_id
+                for query_diagnostic in diagnostics
+                if not query_diagnostic["polluted"]
+                for note_id, fused_row in fused.items()
+                if query_diagnostic["variant"] in fused_row.semantic_variant_ranks
+            }
+            admitted: list[dict[str, Any]] = []
+            for row in candidates:
+                if not deck_and_tag_eligible(
+                    census.mapping.get(int(row["note_id"]), "deck_excluded"),
+                    mode=str(r5["effective_tag_mode"]),
+                ):
+                    continue
+                fusion = fused.get(int(row["note_id"]))
+                if fusion is None:
+                    continue
+                exact = bool(row["exact_match_reasons"])
+                clean_semantic = int(row["note_id"]) in clean_semantic_note_ids
+                score, disposition = calibrated_score(
+                    base_rrf=fusion.base_rrf,
+                    boost=float(row["boost_total"]),
+                    semantic_score=max(
+                        (
+                            float(score)
+                            for variant, score in row["semantic_variant_scores_raw"].items()
+                            if weights.get(variant, 0) > 0
+                            and float(score) >= float(config["semantic_threshold"])
+                        ),
+                        default=None,
+                    ),
+                    exact_match=exact,
+                    polluted=False,
+                    threshold=float(config["semantic_threshold"]),
+                )
+                if (not exact and not clean_semantic and fusion.lexical_rank is None) or (
+                    not exact and score < float(config["rrf_floor"])
+                ):
+                    continue
+                admitted.append(
+                    {
+                        **row,
+                        "semantic_rank": fusion.aggregate_semantic_rank,
+                        "lexical_rank": fusion.lexical_rank,
+                        "base_rrf": fusion.base_rrf,
+                        "calibrated_score": score,
+                        "disposition": disposition,
+                        "clean_semantic_lane": clean_semantic,
+                    }
+                )
+            admitted.sort(key=lambda row: (-float(row["calibrated_score"]), int(row["note_id"])))
+            retained = admitted[: int(config["per_fact_limit"])]
+            records.append(
+                {
+                    "concept_id": fact_payload["concept_id"],
+                    "fact_id": fact_payload["fact_id"],
+                    "query_diagnostics": diagnostics,
+                    "exact_only": bool(retained)
+                    and all(row["semantic_rank"] is None for row in retained),
+                    "semantic_only": bool(retained)
+                    and all(row["lexical_rank"] is None for row in retained),
+                    "all_candidates": retained,
+                    "per_fact_cap_excluded_note_ids": [
+                        int(row["note_id"]) for row in admitted[int(config["per_fact_limit"]) :]
+                    ],
+                    "per_fact_cap_exclusions": [
+                        {"note_id": int(row["note_id"]), "reason": "per_fact_cap"}
+                        for row in admitted[int(config["per_fact_limit"]) :]
+                    ],
+                    "global_cap_excluded_note_ids": [],
+                    "global_cap_exclusions": [],
+                }
+            )
+        globally_ranked = sorted(
+            (row for record in records for row in record["all_candidates"]),
+            key=lambda row: (-float(row["calibrated_score"]), int(row["note_id"])),
+        )
+        allowed: set[int] = set()
+        for row in globally_ranked:
+            if len(allowed) == int(config["global_unique_limit"]):
+                break
+            allowed.add(int(row["note_id"]))
+        for record in records:
+            record["global_cap_excluded_note_ids"] = [
+                int(row["note_id"])
+                for row in record["all_candidates"]
+                if int(row["note_id"]) not in allowed
+            ]
+            record["global_cap_exclusions"] = [
+                {"note_id": note_id, "reason": "global_unique_cap"}
+                for note_id in record["global_cap_excluded_note_ids"]
+            ]
+            record["all_candidates"] = [
+                row for row in record["all_candidates"] if int(row["note_id"]) in allowed
+            ]
+        covered = sorted(
+            {
+                int(row["note_id"])
+                for record in records
+                for row in record["all_candidates"]
+                if int(row["note_id"]) in identities
+            }
+        )
+        vectors = (
+            await self.semantic.pinned_document_vectors(
+                note_ids=covered, expected_generation=r4["semantic_generation"]
+            )
+            if covered
+            else {}
+        )
+        for record in records:
+            candidates = record["all_candidates"]
+            groups = cluster_note_ids(
+                candidates,
+                vectors=cast(Mapping[int, Sequence[float]], vectors),
+                cosine_threshold=float(config["cosine_cluster_threshold"]),
+            )
+            candidate_by_id = {int(row["note_id"]): row for row in candidates}
+            record["clusters"] = [
+                {
+                    "representative_note_id": min(
+                        siblings,
+                        key=lambda note_id: (
+                            -float(candidate_by_id[note_id]["calibrated_score"]),
+                            note_id,
+                        ),
+                    ),
+                    "sibling_note_ids": list(siblings),
+                    "missing_vector_note_ids": [
+                        note_id for note_id in siblings if note_id not in vectors
+                    ],
+                }
+                for siblings in groups
+            ]
+            record["fact_sha256"] = canonical_sha256(record)
+        payload = {
+            "r5_artifact_sha256": r5["artifact_sha256"],
+            "config_sha256": r5["config_sha256"],
+            "semantic_generation": r4["semantic_generation"],
+            "records": records,
+        }
+        payload["artifact_sha256"] = canonical_sha256(payload)
+        return StageProduct(kind="card_centric_v3_calibration", payload=payload)
 
     async def _preflight(self, context: StageContext) -> StageProduct:
         result = await self.runtime.ensure_running()
@@ -1029,13 +1472,7 @@ class CurationServicesRunner:
                         missing_note_ids=tuple(expected - set(observed)),
                         extra_note_ids=tuple(set(observed) - expected),
                         duplicate_note_ids=tuple(
-                            sorted(
-                                {
-                                    note_id
-                                    for note_id in observed
-                                    if observed.count(note_id) > 1
-                                }
-                            )
+                            sorted({note_id for note_id in observed if observed.count(note_id) > 1})
                         ),
                     )
                 if reason_code is None:
@@ -1315,11 +1752,7 @@ class CurationServicesRunner:
                     for item in sorted(usable, key=lambda item: item.note_id)
                 }
                 below_threshold = tuple(
-                    sorted(
-                        item.note_id
-                        for item in usable
-                        if 0.40 <= item.score < 0.50
-                    )
+                    sorted(item.note_id for item in usable if 0.40 <= item.score < 0.50)
                 )
                 row["below_classification_threshold_note_ids"] = list(below_threshold)
                 if top is None or top < 0.40:
@@ -1335,11 +1768,7 @@ class CurationServicesRunner:
                 gated = tuple(sorted(item.note_id for item in usable if item.score >= 0.50))
                 row["classified_note_ids"] = list(gated)
                 row["semantic_skip"] = False
-                row["disposition"] = (
-                    "classified"
-                    if gated
-                    else "below_classification_threshold"
-                )
+                row["disposition"] = "classified" if gated else "below_classification_threshold"
                 hit_ids.update(gated)
                 audit.append(row)
                 continue
@@ -1466,9 +1895,7 @@ class CurationServicesRunner:
                     for fact in missing_facts
                 ]
             else:
-                generation_input["forbidden_cloze_targets"] = list(
-                    ledger.forbidden_cloze_targets
-                )
+                generation_input["forbidden_cloze_targets"] = list(ledger.forbidden_cloze_targets)
             with provider_call_scope(batch_index=concept_index, defer_acceptance=True):
                 result = await asyncio.to_thread(
                     self.structured.generate_json,
@@ -1597,9 +2024,7 @@ class CurationServicesRunner:
             # P2 prevents these IDs from being a selection fallback.  P3 still
             # needs their terminal identities for the immutable candidate and
             # exclusion audit, and its selector excludes them explicitly.
-            fallback_ids = _unrecovered_s4a_exclusion_note_ids(
-                fallback_ids, classifications
-            )
+            fallback_ids = _unrecovered_s4a_exclusion_note_ids(fallback_ids, classifications)
             selection_result = select_high_yield_v2(
                 classifications,
                 fast_classifications=fast.results,
@@ -2893,10 +3318,7 @@ class CurationServicesRunner:
         if is_v2:
             try:
                 selection_result = QualitySelectionResult.model_validate(
-                    {
-                        name: selection[name]
-                        for name in QualitySelectionResult.model_fields
-                    }
+                    {name: selection[name] for name in QualitySelectionResult.model_fields}
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise PinnedInputChanged("card-centric selection artifact is malformed") from exc
@@ -2929,10 +3351,9 @@ class CurationServicesRunner:
             generated,
             semantic_dedupe_reviews,
         )
-        if (
-            [item.model_dump(mode="json") for item in terminal_resolutions]
-            != expected_terminal_resolutions
-        ):
+        if [
+            item.model_dump(mode="json") for item in terminal_resolutions
+        ] != expected_terminal_resolutions:
             raise PinnedInputChanged("card-centric selection terminal resolutions changed")
         raw_generated = _card_generated(context)
         raw_by_id = {item.card_id: item for item in raw_generated}
@@ -3002,11 +3423,7 @@ class CurationServicesRunner:
                 else ledger.forbidden_cloze_targets
             )
             for concept in ledger.concepts
-            for index in range(
-                concept.suggested_fact_count
-                if is_v2
-                else 1
-            )
+            for index in range(concept.suggested_fact_count if is_v2 else 1)
         }
         acknowledgement = (
             selection_result.overflow_acknowledgement.as_dict()
@@ -3150,9 +3567,7 @@ class CurationServicesRunner:
             target=int(
                 selection_result.target if selection_result is not None else selection["target"]
             ),
-            cap=int(
-                selection_result.cap if selection_result is not None else selection["cap"]
-            ),
+            cap=int(selection_result.cap if selection_result is not None else selection["cap"]),
             mandatory_nids=tuple(
                 selection_result.mandatory_note_ids
                 if selection_result is not None
@@ -3185,9 +3600,7 @@ class CurationServicesRunner:
                 selection_result.below_warning_floor if selection_result is not None else None
             ),
             semantic_review_required_card_ids=selected_review_ids,
-            historical_yes_rates=(
-                _pinned_card_v2_a11_history(context) if is_v2 else ()
-            ),
+            historical_yes_rates=(_pinned_card_v2_a11_history(context) if is_v2 else ()),
             t6_selected_nids=tuple(
                 note_id
                 for note_id in selection["selected_existing_note_ids"]
@@ -3450,9 +3863,7 @@ def _card_concept_centroid_terms(concept: CardConcept) -> tuple[str, ...]:
         raise PinnedInputChanged("card-centric concept primary entity is blank")
     terms = {primary}
     terms.update(
-        normalized
-        for alias in concept.aliases
-        if (normalized := normalize_semantic_text(alias))
+        normalized for alias in concept.aliases if (normalized := normalize_semantic_text(alias))
     )
     return (primary, *sorted(terms - {primary}))
 
@@ -3778,8 +4189,7 @@ def _validate_card_residual_v2_semantic_audit(context: StageContext) -> None:
     ):
         raise PinnedInputChanged("card-centric residual semantic eligibility audit is malformed")
     cards = {
-        card.note_id: card
-        for card in _card_records(_payload(context, CurationStage.SOURCE_INDEX))
+        card.note_id: card for card in _card_records(_payload(context, CurationStage.SOURCE_INDEX))
     }
     _, expected = _card_residual_v2_semantic_audit(cards)
     if (
@@ -4335,9 +4745,7 @@ def _validate_card_gap_batch_v2(
         if len(generated) == 1:
             card = generated[0]
             if card.split or card.split_index is not None:
-                raise PinnedInputChanged(
-                    f"Fact {fact_id}: unsplit output must omit split_index"
-                )
+                raise PinnedInputChanged(f"Fact {fact_id}: unsplit output must omit split_index")
             continue
         indices = [card.split_index for card in generated]
         if (
@@ -4467,9 +4875,7 @@ def _r3_passage(raw: object) -> SourcePassage:
         extraction_status=cast(Any, raw["extraction_status"]),
         slide_number=(int(raw["slide_number"]) if raw.get("slide_number") is not None else None),
         start_seconds=(
-            float(raw["start_seconds"])
-            if raw.get("start_seconds") is not None
-            else None
+            float(raw["start_seconds"]) if raw.get("start_seconds") is not None else None
         ),
         end_seconds=(float(raw["end_seconds"]) if raw.get("end_seconds") is not None else None),
         source_id=str(raw["source_id"]),
@@ -4572,9 +4978,88 @@ def _r3_reuse(
 
 
 def _r3_sha256(value: object) -> bool:
-    return isinstance(value, str) and len(value) == 64 and all(
-        character in "0123456789abcdef" for character in value
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def _v3_r4_verification(
+    context: StageContext,
+    payload: dict[str, Any],
+    r0: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate the frozen R4 closure before any R5 query embedding."""
+    required = {
+        "kind",
+        "policy_sha256",
+        "companion_generation",
+        "lexical_generation",
+        "semantic_generation",
+        "deck_allowlist",
+        "tag_allowlist",
+        "card_identities",
+        "cards_sha256",
+        "semantic_identities",
+        "semantic_manifest",
+        "semantic_manifest_sha256",
+        "census",
+        "census_sha256",
+        "verification_sha256",
+    }
+    if (
+        set(payload) - {"artifact_sha256"} != required
+        or payload.get("kind") != "card_centric_v3_index_verification"
+    ):
+        raise PinnedInputChanged("Pinned R4 verification is malformed")
+    if (
+        payload["policy_sha256"] != context.job.policy_sha256
+        or payload["policy_sha256"] != r0.get("policy_sha256")
+        or payload["companion_generation"] != context.job.companion_generation
+        or payload["lexical_generation"] != payload["companion_generation"]
+        or payload["semantic_generation"] != context.job.semantic_generation
+        or tuple(payload["deck_allowlist"]) != context.job.deck_allowlist
+        or tuple(payload["tag_allowlist"]) != context.job.tag_allowlist
+    ):
+        raise PinnedInputChanged("Pinned R4 generation or policy changed")
+    cards = payload["card_identities"]
+    semantic = payload["semantic_identities"]
+    if (
+        not isinstance(cards, list)
+        or not isinstance(semantic, list)
+        or len({int(row["note_id"]) for row in cards}) != len(cards)
+        or len({int(row["note_id"]) for row in semantic}) != len(semantic)
+        or cards != sorted(cards, key=lambda row: int(row["note_id"]))
+        or semantic != sorted(semantic, key=lambda row: int(row["note_id"]))
+        or canonical_sha256(cards) != payload["cards_sha256"]
+    ):
+        raise PinnedInputChanged("Pinned R4 identities are malformed")
+    for item in cards:
+        if not isinstance(item, dict) or set(item) != {"note_id", "content_sha256"}:
+            raise PinnedInputChanged("Pinned R4 card identity is malformed")
+    census = SnapshotCensus.model_validate(payload["census"])
+    if canonical_sha256(payload["census"]) != payload["census_sha256"] or set(census.mapping) != {
+        int(item["note_id"]) for item in cards
+    }:
+        raise PinnedInputChanged("Pinned R4 census closure changed")
+    manifest = payload["semantic_manifest"]
+    if not isinstance(manifest, dict) or set(manifest) != {
+        "generation",
+        "model",
+        "dimensions",
+        "matrix_sha256",
+    }:
+        raise PinnedInputChanged("Pinned R4 semantic manifest is malformed")
+    if (
+        manifest["generation"] != payload["semantic_generation"]
+        or canonical_sha256(manifest) != payload["semantic_manifest_sha256"]
+    ):
+        raise PinnedInputChanged("Pinned R4 semantic manifest changed")
+    verification = {key: value for key, value in payload.items() if key != "verification_sha256"}
+    if canonical_sha256(verification) != payload["verification_sha256"]:
+        raise PinnedInputChanged("Pinned R4 verification hash changed")
+    return payload
 
 
 def _resolved_prompt(
@@ -5367,7 +5852,8 @@ def _reviewable_pending_overflow(
             "selection_mandatory",
             "selection_conservation",
             "selection_metadata",
-        } <= set(report.passed)
+        }
+        <= set(report.passed)
     ):
         return False
     if snapshot.pipeline_contract_version == "card_centric_v1":
