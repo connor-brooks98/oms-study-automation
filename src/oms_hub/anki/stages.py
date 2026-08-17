@@ -81,7 +81,7 @@ from oms_hub.anki.correction_contracts import (
     PinnedLectureMetadata,
 )
 from oms_hub.anki.course_policy import CourseCurationPolicy
-from oms_hub.anki.dedupe import DeduplicationService
+from oms_hub.anki.dedupe import DeduplicationService, V3DedupeProposal
 from oms_hub.anki.domain import (
     Candidate,
     CurationStage,
@@ -103,6 +103,14 @@ from oms_hub.anki.evidence_bundle import (
     SelectedPassage,
 )
 from oms_hub.anki.fidelity_audit import R2FidelityDiagnostic
+from oms_hub.anki.gap_generation_v3 import (
+    R9GenerationService,
+    V3Evidence,
+    V3GeneratedCard,
+    V3GenerationFact,
+    V3GenerationRequest,
+    V3UnresolvedFact,
+)
 from oms_hub.anki.gaps import (
     ExistingGapSupport,
     GapCardProposal,
@@ -169,7 +177,7 @@ from oms_hub.anki.retrieval import (
     hybrid_rank_fusion,
 )
 from oms_hub.anki.runtime import AnkiRuntime
-from oms_hub.anki.scope_contracts import LectureScope
+from oms_hub.anki.scope_contracts import LectureScope, ScopedConcept, ScopedFact
 from oms_hub.anki.scope_service import (
     PinnedScopePrompt,
     ScopeInputError,
@@ -515,6 +523,9 @@ class CurationServicesRunner:
             CurationStage.V3_R5_RETRIEVAL: self._v3_r5_retrieval,
             CurationStage.V3_R6_CALIBRATION: self._v3_r6_calibration,
             CurationStage.V3_R7_CLASSIFICATION: self._v3_r7_classification,
+            CurationStage.V3_R8_GAP_CONFIRMATION: self._v3_r8_gap_confirmation,
+            CurationStage.V3_R9_GENERATION: self._v3_r9_generation,
+            CurationStage.V3_R10_DEDUPE: self._v3_r10_dedupe,
         }
         return await handlers[context.stage](context)
 
@@ -1074,6 +1085,371 @@ class CurationServicesRunner:
             usage=result.usage,
             blocking_error=result.blocking_error,
         )
+
+    async def _v3_r8_gap_confirmation(self, context: StageContext) -> StageProduct:
+        """Confirm gaps from retained R5 traces only; R8 never searches again."""
+        # Preserve the prior manual-seam behavior when Phase D's required R4
+        # artifact is absent; a real R8 dispatch always has this pin.
+        if CurationStage.V3_R4_INDEX_VERIFICATION not in context.prior_payloads:
+            raise KeyError(context.stage)
+        r0, scope, r4, r5, r6, r7 = _v3_phase_f_inputs(context)
+        policy = _r3_policy(context, r0)
+        if r7.get("blocking") or r7.get("blocking_error"):
+            return _v3_blocked_product("card_centric_v3_gap_confirmation", r7, "R7 is blocking")
+        initial_rows = _v3_r7_rows(r7)
+        initial_by_fact: dict[str, list[Mapping[str, Any]]] = {}
+        for row in initial_rows:
+            bundle_id = row.get("bundle_id")
+            if not isinstance(bundle_id, str):
+                raise PinnedInputChanged("Pinned R7 final partition is malformed")
+            fact_id = _v3_bundle_fact_id(r7, bundle_id)
+            initial_by_fact.setdefault(fact_id, []).append(row)
+        r5_by_fact = _v3_records_by_fact(r5, "facts")
+        r6_by_fact = _v3_records_by_fact(r6, "records")
+        source_evidence = _v3_scope_evidence(scope, _payload(context, CurationStage.V3_R3_SCOPE))
+        expected_ids = {
+            int(item["note_id"]): str(item["content_sha256"]) for item in r4["card_identities"]
+        }
+        semantic_ids = {
+            int(item["note_id"]): str(item["semantic_content_sha256"])
+            for item in r4["semantic_identities"]
+        }
+        semantic_coverage_incomplete = bool(set(expected_ids) - set(semantic_ids))
+        threshold = float(r5["config"]["semantic_threshold"])
+        raw_limit = int(r5["config"]["raw_limit"])
+        records: list[dict[str, Any]] = []
+        residual_bundles: list[CandidateEvidenceBundle] = []
+        for concept in scope.concepts:
+            for fact in concept.facts:
+                r5_fact, r6_fact = r5_by_fact[fact.fact_id], r6_by_fact[fact.fact_id]
+                diagnostics = _v3_r8_raw_safety(
+                    r5_fact, r6_fact, expected_ids, semantic_ids, threshold, raw_limit
+                )
+                initial = initial_by_fact.get(fact.fact_id, [])
+                if _v3_positive_initial(initial):
+                    state, reason = "covered_initial", "terminal initial support"
+                elif diagnostics:
+                    state, reason = "unresolved", "; ".join(diagnostics)
+                else:
+                    initial_ids = {
+                        int(candidate["note_id"]) for candidate in r6_fact["all_candidates"]
+                    }
+                    for candidate in r5_fact["candidates"]:
+                        note_id = int(candidate["note_id"])
+                        if note_id not in initial_ids and _v3_residual_qualifies(
+                            candidate, threshold
+                        ):
+                            residual_bundles.append(
+                                _v3_residual_bundle_from_fact(
+                                    concept,
+                                    fact,
+                                    source_evidence,
+                                    policy.policy_sha256,
+                                    scope.scope_sha256,
+                                    candidate,
+                                )
+                            )
+                    state, reason = "pending_residual", "no terminal initial coverage"
+                records.append(
+                    {
+                        "concept_id": concept.concept_id,
+                        "fact_id": fact.fact_id,
+                        "generation_allowed": fact.generation_allowed,
+                        "state": state,
+                        "reason": reason,
+                        "initial_note_ids": sorted(
+                            int(item["note_id"]) for item in r6_fact["all_candidates"]
+                        ),
+                        "residual_candidate_note_ids": [],
+                    }
+                )
+        residual_rows: list[dict[str, object]] = []
+        residual_error: str | None = None
+        residual_usage: StageUsage | None = None
+        if residual_bundles:
+            cheap, thorough, rate_table_sha256 = _r7_routes(context, r0)
+            result = await asyncio.to_thread(
+                R7ClassificationService(self.structured).classify,
+                bundles=tuple(
+                    sorted(
+                        residual_bundles,
+                        key=lambda item: (
+                            item.concept.concept_id,
+                            item.fact_id,
+                            item.candidate.note_id,
+                        ),
+                    )
+                ),
+                strictness=policy.classification_strictness,
+                cheap_route=cheap,
+                thorough_route=thorough,
+                repair_authorization=r0.get("r7_repair_authorization"),
+                rate_table_sha256=rate_table_sha256,
+                ordinary_limit_microusd=policy.ordinary_cost_limit_microusd,
+                hard_limit_microusd=policy.hard_stop_cost_limit_microusd,
+            )
+            residual_rows = list(cast(list[dict[str, object]], result.payload["final_partition"]))
+            residual_error = result.blocking_error or (
+                "R8 residual R7 classification is blocking" if result.payload["blocking"] else None
+            )
+            residual_usage = result.usage
+        by_fact_residual: dict[str, list[dict[str, object]]] = {}
+        by_bundle = {bundle.bundle_id: bundle for bundle in residual_bundles}
+        for row in residual_rows:
+            bundle = by_bundle.get(cast(str, row.get("bundle_id")))
+            if bundle is None:
+                raise PinnedInputChanged("R8 residual classifier escapes requested bundles")
+            by_fact_residual.setdefault(bundle.fact_id, []).append(row)
+        for record in records:
+            if record["state"] != "pending_residual":
+                continue
+            rows = by_fact_residual.get(cast(str, record["fact_id"]), [])
+            record["residual_candidate_note_ids"] = sorted(
+                bundle.candidate.note_id
+                for bundle in residual_bundles
+                if bundle.fact_id == record["fact_id"]
+            )
+            if residual_error:
+                record["state"], record["reason"] = "unresolved", residual_error
+            elif _v3_positive_initial(rows):
+                record["state"], record["reason"] = "covered_residual", "terminal residual support"
+            elif any(row.get("disposition") == "unresolved" for row in rows):
+                record["state"], record["reason"] = (
+                    "unresolved",
+                    "residual classification unresolved",
+                )
+            elif semantic_coverage_incomplete:
+                record["state"], record["reason"] = (
+                    "unresolved",
+                    "R4 semantic coverage is incomplete",
+                )
+            else:
+                record["state"], record["reason"] = (
+                    "confirmed_missing",
+                    "no qualifying existing card",
+                )
+        payload = {
+            "policy_sha256": policy.policy_sha256,
+            "scope_sha256": scope.scope_sha256,
+            "r4_verification_sha256": r4["verification_sha256"],
+            "r5_artifact_sha256": r5["artifact_sha256"],
+            "r6_artifact_sha256": r6["artifact_sha256"],
+            "r7_artifact_sha256": r7["artifact_sha256"],
+            "records": records,
+            "residual_r7": {
+                "bundles": [item.model_dump(mode="json") for item in residual_bundles],
+                "final_partition": residual_rows,
+            },
+        }
+        payload["artifact_sha256"] = canonical_sha256(payload)
+        return StageProduct(
+            kind="card_centric_v3_gap_confirmation",
+            payload=payload,
+            usage=residual_usage,
+            blocking_error=residual_error,
+        )
+
+    async def _v3_r9_generation(self, context: StageContext) -> StageProduct:
+        r0, scope, r4, r5, r6, r7 = _v3_phase_f_inputs(context)
+        r8 = _payload(context, CurationStage.V3_R8_GAP_CONFIRMATION)
+        _v3_artifact_valid(r8, "Pinned R8 gap confirmation identity changed")
+        policy = _r3_policy(context, r0)
+        if (
+            r8.get("policy_sha256") != policy.policy_sha256
+            or r8.get("scope_sha256") != scope.scope_sha256
+            or r8.get("r4_verification_sha256") != r4["verification_sha256"]
+            or r8.get("r5_artifact_sha256") != r5["artifact_sha256"]
+            or r8.get("r6_artifact_sha256") != r6["artifact_sha256"]
+            or r8.get("r7_artifact_sha256") != r7["artifact_sha256"]
+        ):
+            raise PinnedInputChanged("Pinned R8 closure changed")
+        route = context.job.resolved_model_config.generation_r9
+        if route is None or r0.get("generation_r9") != r7_route_document(route):
+            raise PinnedInputChanged("Pinned R9 generation route is unavailable")
+        evidence = _v3_scope_evidence(scope, _payload(context, CurationStage.V3_R3_SCOPE))
+        facts = {fact.fact_id: fact for concept in scope.concepts for fact in concept.facts}
+        requested = [
+            record
+            for record in _v3_r8_records(scope, r8)
+            if record.get("state") == "confirmed_missing"
+        ]
+        requests: list[V3GenerationRequest] = []
+        disabled: list[V3UnresolvedFact] = []
+        for record in requested:
+            fact = facts.get(cast(str, record.get("fact_id")))
+            if fact is None or record.get("generation_allowed") is not fact.generation_allowed:
+                raise PinnedInputChanged("Pinned R8 fact closure changed")
+            projection = V3GenerationFact(
+                fact_id=fact.fact_id,
+                statement=fact.statement,
+                evidence=tuple(
+                    V3Evidence(evidence_id=item, text=evidence[item]) for item in fact.evidence_ids
+                ),
+                forbidden_cloze_targets=fact.forbidden_cloze_targets,
+                generation_allowed=fact.generation_allowed,
+            )
+            if not fact.generation_allowed:
+                disabled.append(
+                    V3UnresolvedFact(
+                        fact_id=fact.fact_id, reason="generation disabled by scoped fact"
+                    )
+                )
+                continue
+            trial = V3GenerationRequest(
+                policy_sha256=policy.policy_sha256,
+                scope_sha256=scope.scope_sha256,
+                style_profile=policy.generation_style_profile,
+                facts=(projection,),
+            )
+            if requests:
+                try:
+                    combined = requests[-1].model_copy(
+                        update={"facts": (*requests[-1].facts, projection)}
+                    )
+                    requests[-1] = V3GenerationRequest.model_validate(
+                        combined.model_dump(mode="json")
+                    )
+                    continue
+                except ValueError:
+                    pass
+            requests.append(trial)
+        resolutions: list[dict[str, object]] = [item.model_dump(mode="json") for item in disabled]
+        calls: list[dict[str, object]] = []
+        usages: list[StageUsage] = []
+        blocking_errors: list[str] = []
+        service = R9GenerationService(self.structured)
+        for batch_index, request in enumerate(requests):
+            result, usage = await asyncio.to_thread(
+                service.generate,
+                request,
+                route=route,
+                repair_authorization=r0.get("r9_repair_authorization"),
+                rate_table_sha256=r0.get("rate_table_sha256"),
+                ordinary_limit_microusd=policy.ordinary_cost_limit_microusd,
+                hard_limit_microusd=policy.hard_stop_cost_limit_microusd,
+                batch_index=batch_index,
+            )
+            for item in result.resolutions:
+                value = item.model_dump(mode="json")
+                if isinstance(item, V3GeneratedCard):
+                    value["card_id"] = f"card:{item.fact_id}:{item.split_index or 1}"
+                resolutions.append(value)
+            calls.extend(result.calls)
+            if usage is not None:
+                usages.append(usage)
+            if result.blocking_error is not None:
+                blocking_errors.append(result.blocking_error)
+        _v3_r9_partition(resolutions, {cast(str, item["fact_id"]) for item in requested})
+        payload = {
+            "policy_sha256": policy.policy_sha256,
+            "scope_sha256": scope.scope_sha256,
+            "r8_artifact_sha256": r8["artifact_sha256"],
+            "requests": [item.model_dump(mode="json") for item in requests],
+            "resolutions": sorted(
+                resolutions,
+                key=lambda item: (
+                    str(item["fact_id"]),
+                    int(cast(int | str | None, item.get("split_index")) or 0),
+                    str(item.get("card_id", "")),
+                ),
+            ),
+            "calls": calls,
+        }
+        payload["artifact_sha256"] = canonical_sha256(payload)
+        return StageProduct(
+            kind="card_centric_v3_generation",
+            payload=payload,
+            usage=_v3_usage(usages),
+            blocking_error="; ".join(blocking_errors) or None,
+        )
+
+    async def _v3_r10_dedupe(self, context: StageContext) -> StageProduct:
+        r0, scope, r4, _r5, _r6, _r7 = _v3_phase_f_inputs(context)
+        r9 = _payload(context, CurationStage.V3_R9_GENERATION)
+        _v3_artifact_valid(r9, "Pinned R9 generation identity changed")
+        policy = _r3_policy(context, r0)
+        if (
+            r9.get("policy_sha256") != policy.policy_sha256
+            or r9.get("scope_sha256") != scope.scope_sha256
+            or r9.get("r8_artifact_sha256")
+            != _payload(context, CurationStage.V3_R8_GAP_CONFIRMATION).get("artifact_sha256")
+        ):
+            raise PinnedInputChanged("Pinned R9 closure changed")
+        cards = [item for item in r9.get("resolutions", []) if item.get("status") == "generated"]
+        proposals = tuple(
+            V3DedupeProposal(
+                str(item["card_id"]), str(item["fact_id"]), str(item["text"]), str(item["extra"])
+            )
+            for item in sorted(
+                cards,
+                key=lambda item: (
+                    str(item["fact_id"]),
+                    int(item.get("split_index") or 0),
+                    str(item["card_id"]),
+                ),
+            )
+        )
+        notes: list[NormalizedNote] = []
+        for identity in r4["card_identities"]:
+            note = self.companion.get_note(int(identity["note_id"]))
+            if note is None or note.content_sha256 != identity["content_sha256"]:
+                raise PinnedInputChanged("R10 existing-card closure changed")
+            notes.append(note)
+        semantic_ids = {int(item["note_id"]) for item in r4["semantic_identities"]}
+        vectors = (
+            await self.semantic.pinned_document_vectors(
+                note_ids=sorted({note.note_id for note in notes} & semantic_ids),
+                expected_generation=r4["semantic_generation"],
+            )
+            if proposals
+            else {}
+        )
+        if not set(vectors) <= semantic_ids:
+            raise PinnedInputChanged("R10 pinned vectors escape R4 semantic closure")
+        results = await DeduplicationService(self.embedder).classify_v3_batch(
+            proposals, notes, existing_document_vectors=vectors
+        )
+        by_id = {item.card_id: item for item in results}
+        rows: list[dict[str, object]] = []
+        for source in r9["resolutions"]:
+            value = dict(source)
+            if source.get("status") == "generated":
+                result = by_id[str(source["card_id"])]
+                value["dedupe"] = {
+                    "disposition": result.disposition,
+                    "duplicate_of": result.duplicate_of,
+                    "nearest_matches": [
+                        {
+                            "identifier": match.identifier,
+                            "score": match.score,
+                            "exact": match.exact,
+                        }
+                        for match in result.nearest_matches
+                    ],
+                    "missing_existing_vector_note_ids": list(
+                        result.missing_existing_vector_note_ids
+                    ),
+                }
+                value["status"] = (
+                    "generated"
+                    if result.disposition == "generated"
+                    else "unresolved"
+                    if result.disposition == "overlap"
+                    else (
+                        "duplicate_of_existing"
+                        if cast(str, result.duplicate_of).startswith("note:")
+                        else "duplicate_of_generated"
+                    )
+                )
+            rows.append(value)
+        payload = {
+            "policy_sha256": policy.policy_sha256,
+            "scope_sha256": scope.scope_sha256,
+            "r9_artifact_sha256": r9["artifact_sha256"],
+            "resolutions": rows,
+        }
+        payload["artifact_sha256"] = canonical_sha256(payload)
+        return StageProduct(kind="card_centric_v3_dedupe", payload=payload)
 
     async def _preflight(self, context: StageContext) -> StageProduct:
         result = await self.runtime.ensure_running()
@@ -4893,6 +5269,314 @@ def _pinned_card_v2_prompt(context: StageContext, prompt_id: str) -> str:
     ):
         raise PinnedInputChanged("Pinned v2 prompt snapshot is malformed")
     return content
+
+
+def _v3_phase_f_inputs(
+    context: StageContext,
+) -> tuple[
+    dict[str, Any], LectureScope, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]
+]:
+    if context.job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V3:
+        raise PinnedInputChanged("Phase F requires the card_centric_v3 contract")
+    r0 = _payload(context, CurationStage.V3_R0_PREFLIGHT)
+    r3 = _payload(context, CurationStage.V3_R3_SCOPE)
+    r4 = _v3_r4_verification(context, _payload(context, CurationStage.V3_R4_INDEX_VERIFICATION), r0)
+    r5 = _payload(context, CurationStage.V3_R5_RETRIEVAL)
+    r6 = _payload(context, CurationStage.V3_R6_CALIBRATION)
+    r7 = _payload(context, CurationStage.V3_R7_CLASSIFICATION)
+    try:
+        scope = LectureScope.model_validate(r3["scope"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PinnedInputChanged("Pinned Phase F scope is malformed") from exc
+    policy = _r3_policy(context, r0)
+    for artifact, message in (
+        (r5, "Pinned R5 retrieval identity changed"),
+        (r6, "Pinned R6 calibration identity changed"),
+        (r7, "Pinned R7 classification identity changed"),
+    ):
+        _v3_artifact_valid(artifact, message)
+    if (
+        scope.policy_sha256 != policy.policy_sha256
+        or r5.get("policy_sha256") != policy.policy_sha256
+        or r5.get("scope_sha256") != scope.scope_sha256
+        or r5.get("r4_verification_sha256") != r4["verification_sha256"]
+        or r6.get("policy_sha256") != policy.policy_sha256
+        or r6.get("scope_sha256") != scope.scope_sha256
+        or r6.get("r5_artifact_sha256") != r5.get("artifact_sha256")
+        or r7.get("policy_sha256") != policy.policy_sha256
+        or r7.get("scope_sha256") != scope.scope_sha256
+        or r7.get("r6_artifact_sha256") != r6.get("artifact_sha256")
+    ):
+        raise PinnedInputChanged("Pinned R0/R3/R5/R6/R7 closure changed")
+    _r7_routes(context, r0)
+    if (
+        r5.get("semantic_generation") != r4["semantic_generation"]
+        or r6.get("semantic_generation") != r4["semantic_generation"]
+    ):
+        raise PinnedInputChanged("Pinned Phase F semantic generation changed")
+    return r0, scope, r4, r5, r6, r7
+
+
+def _v3_artifact_valid(payload: Mapping[str, Any], message: str) -> None:
+    if payload.get("artifact_sha256") != canonical_sha256(
+        {key: value for key, value in payload.items() if key != "artifact_sha256"}
+    ):
+        raise PinnedInputChanged(message)
+
+
+def _v3_blocked_product(kind: str, r7: Mapping[str, Any], error: str) -> StageProduct:
+    payload = {"r7_artifact_sha256": r7["artifact_sha256"], "records": [], "blocking": error}
+    payload["artifact_sha256"] = canonical_sha256(payload)
+    return StageProduct(kind=kind, payload=payload, blocking_error=error)
+
+
+def _v3_r7_rows(r7: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    rows, bundles = r7.get("final_partition"), r7.get("bundles")
+    if not isinstance(rows, list) or not isinstance(bundles, list):
+        raise PinnedInputChanged("Pinned R7 final partition is malformed")
+    bundle_ids = [item.get("bundle_id") for item in bundles if isinstance(item, Mapping)]
+    row_ids = [item.get("bundle_id") for item in rows if isinstance(item, Mapping)]
+    if (
+        len(bundle_ids) != len(bundles)
+        or len(row_ids) != len(rows)
+        or set(bundle_ids) != set(row_ids)
+        or len(row_ids) != len(set(row_ids))
+        or r7.get("bundles_sha256") != canonical_payload_sha256(bundles)
+    ):
+        raise PinnedInputChanged("Pinned R7 final partition closure changed")
+    return cast(list[Mapping[str, Any]], rows)
+
+
+def _v3_bundle_fact_id(r7: Mapping[str, Any], bundle_id: str) -> str:
+    for bundle in cast(list[Mapping[str, Any]], r7["bundles"]):
+        if bundle.get("bundle_id") == bundle_id and isinstance(bundle.get("fact_id"), str):
+            return cast(str, bundle["fact_id"])
+    raise PinnedInputChanged("Pinned R7 bundle is unavailable")
+
+
+def _v3_records_by_fact(payload: Mapping[str, Any], name: str) -> dict[str, Mapping[str, Any]]:
+    raw = payload.get(name)
+    if not isinstance(raw, list):
+        raise PinnedInputChanged(f"Pinned {name} records are malformed")
+    records = {
+        cast(str, item.get("fact_id")): item
+        for item in raw
+        if isinstance(item, Mapping) and isinstance(item.get("fact_id"), str)
+    }
+    if len(records) != len(raw):
+        raise PinnedInputChanged(f"Pinned {name} fact closure is malformed")
+    return records
+
+
+def _v3_r8_raw_safety(
+    r5: Mapping[str, Any],
+    r6: Mapping[str, Any],
+    expected_ids: Mapping[int, str],
+    semantic_ids: Mapping[int, str],
+    threshold: float,
+    raw_limit: int,
+) -> list[str]:
+    candidates = r5.get("candidates")
+    raw_semantic, raw_lexical = r5.get("raw_semantic"), r5.get("raw_lexical")
+    if (
+        not isinstance(candidates, list)
+        or not isinstance(raw_semantic, list)
+        or not isinstance(raw_lexical, list)
+    ):
+        raise PinnedInputChanged("Pinned R5 raw traces are malformed")
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping) or expected_ids.get(
+            int(candidate.get("note_id", 0))
+        ) != candidate.get("content_sha256"):
+            raise PinnedInputChanged("Pinned R5 candidate closure changed")
+    for lane in raw_semantic:
+        if not isinstance(lane, list):
+            raise PinnedInputChanged("Pinned R5 semantic trace is malformed")
+        for hit in lane:
+            if (
+                not isinstance(hit, Mapping)
+                or int(hit.get("note_id", 0)) not in expected_ids
+                or not isinstance(hit.get("score"), (int, float))
+                or semantic_ids.get(int(hit.get("note_id", 0))) != hit.get("content_hash")
+            ):
+                raise PinnedInputChanged("Pinned R5 semantic raw-hit closure changed")
+    for hit in raw_lexical:
+        if not isinstance(hit, Mapping) or int(hit.get("note_id", 0)) not in expected_ids:
+            raise PinnedInputChanged("Pinned R5 lexical raw-hit closure changed")
+    problems: list[str] = []
+    if len(raw_lexical) >= raw_limit:
+        problems.append("lexical raw cap filled")
+    if any(
+        len(lane) >= raw_limit and float(lane[-1]["score"]) >= threshold
+        for lane in raw_semantic
+        if lane
+    ):
+        problems.append("semantic raw cap ends above threshold")
+    if r6.get("per_fact_cap_excluded_note_ids") or r6.get("global_cap_excluded_note_ids"):
+        problems.append("R6 candidate cap excluded a possible card")
+    candidates_by_id = {int(item["note_id"]): item for item in r6.get("all_candidates", [])}
+    for cluster in r6.get("clusters", []):
+        if not isinstance(cluster, Mapping):
+            raise PinnedInputChanged("Pinned R6 cluster is malformed")
+        representative = int(cluster.get("representative_note_id", 0))
+        for sibling in cluster.get("sibling_note_ids", []):
+            sibling_id = int(sibling)
+            if sibling_id != representative and candidates_by_id.get(sibling_id, {}).get(
+                "content_sha256"
+            ) != candidates_by_id.get(representative, {}).get("content_sha256"):
+                problems.append("non-identical R6 sibling remains unclassified")
+                break
+    return problems
+
+
+def _v3_residual_qualifies(candidate: Mapping[str, Any], threshold: float) -> bool:
+    return (
+        bool(candidate.get("exact_match_reasons"))
+        or candidate.get("lexical_rank") is not None
+        or (
+            candidate.get("semantic_score") is not None
+            and float(candidate["semantic_score"]) >= threshold
+        )
+    )
+
+
+def _v3_positive_initial(rows: Sequence[Mapping[str, Any]]) -> bool:
+    return any(
+        row.get("disposition") == "keep"
+        or (
+            row.get("disposition") == "redundant"
+            and bool(row.get("supporting_passage_ids"))
+            and isinstance(row.get("redundant_with_candidate_id"), str)
+        )
+        for row in rows
+    )
+
+
+def _v3_residual_bundle_from_fact(
+    concept: ScopedConcept,
+    fact: ScopedFact,
+    source_evidence: Mapping[str, str],
+    policy_sha256: str,
+    scope_sha256: str,
+    candidate: Mapping[str, Any],
+) -> CandidateEvidenceBundle:
+    """Project a residual candidate without depending on an initial R6 representative."""
+    note_id = int(candidate["note_id"])
+    projected = concept.model_copy(
+        update={"facts": (fact,), "source_evidence_ids": fact.evidence_ids}
+    )
+    seed: dict[str, Any] = {
+        "bundle_id": f"residual:{concept.concept_id}:{fact.fact_id}:note:{note_id}",
+        "policy_sha256": policy_sha256,
+        "scope_sha256": scope_sha256,
+        "concept": projected,
+        "fact_id": fact.fact_id,
+        "candidate": CandidateCardFields(
+            candidate_id=f"note:{note_id}",
+            note_id=note_id,
+            text=str(candidate["text"]),
+            extra=str(candidate["extra"]),
+            tags=tuple(sorted(candidate["tags"])),
+            deck="\n".join(sorted(candidate["decks"])),
+        ),
+        # R8 intentionally discards R5's tag boost and boosted calibrated score.
+        "retrieval_scores": _v3_residual_scores(candidate),
+        "exact_match_reasons": tuple(sorted(candidate["exact_match_reasons"])),
+        "selected_passages": tuple(
+            SelectedPassage(
+                passage_id=evidence_id,
+                text=source_evidence[evidence_id],
+                selection_reason="fact_scope_evidence",
+            )
+            for evidence_id in fact.evidence_ids
+        ),
+        "duplicate_sibling_ids": (),
+        "allowed_concept_ids": (concept.concept_id,),
+        "allowed_fact_ids": (fact.fact_id,),
+        "allowed_passage_ids": fact.evidence_ids,
+        "input_byte_estimate": 0,
+        "input_token_estimate": 0,
+        "max_input_bytes": MAX_BUNDLE_BYTES,
+        "max_input_tokens": MAX_BUNDLE_TOKENS,
+        "truncated": False,
+        "degraded": False,
+    }
+    return _r7_exact_bundle(seed)
+
+
+def _v3_residual_scores(candidate: Mapping[str, Any]) -> tuple[RetrievalScore, ...]:
+    return tuple(
+        sorted(
+            (
+                RetrievalScore(identity=name, score=float(candidate[name]))
+                for name in ("base_rrf", "semantic_score", "semantic_rank", "lexical_rank")
+                if candidate.get(name) is not None
+            ),
+            key=lambda item: item.identity,
+        )
+    )
+
+
+def _v3_scope_evidence(scope: LectureScope, r3: Mapping[str, Any]) -> dict[str, str]:
+    bundle = r3.get("source_bundle")
+    if (
+        not isinstance(bundle, Mapping)
+        or canonical_payload_sha256(bundle) != scope.source_bundle_sha256
+    ):
+        raise PinnedInputChanged("Pinned R3 source bundle identity changed")
+    values: dict[str, str] = {}
+    for item in cast(list[Mapping[str, Any]], bundle.get("evidence", [])):
+        evidence_id, text = item.get("evidence_id"), item.get("normalized_text")
+        if not isinstance(evidence_id, str) or not isinstance(text, str):
+            raise PinnedInputChanged("Pinned R3 evidence is malformed")
+        values[evidence_id] = text
+    if set(values) != {item.evidence_id for item in scope.evidence}:
+        raise PinnedInputChanged("Pinned R3 evidence closure changed")
+    return values
+
+
+def _v3_r9_partition(rows: Sequence[Mapping[str, object]], expected: set[str]) -> None:
+    grouped: dict[str, list[Mapping[str, object]]] = {fact_id: [] for fact_id in expected}
+    for row in rows:
+        fact_id = row.get("fact_id")
+        if fact_id not in grouped:
+            raise PinnedInputChanged("R9 output names an unrequested fact")
+        grouped[fact_id].append(row)
+    if any(not values for values in grouped.values()):
+        raise PinnedInputChanged("R9 output does not partition confirmed missing facts")
+
+
+def _v3_r8_records(scope: LectureScope, payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    records = payload.get("records")
+    if not isinstance(records, list):
+        raise PinnedInputChanged("Pinned R8 records are malformed")
+    expected = {fact.fact_id: fact for concept in scope.concepts for fact in concept.facts}
+    by_fact = {
+        cast(str, record.get("fact_id")): record
+        for record in records
+        if isinstance(record, Mapping) and isinstance(record.get("fact_id"), str)
+    }
+    if len(by_fact) != len(records) or set(by_fact) != set(expected):
+        raise PinnedInputChanged("Pinned R8 records do not partition scoped facts")
+    allowed = {"covered_initial", "covered_residual", "unresolved", "confirmed_missing"}
+    for fact_id, record in by_fact.items():
+        if (
+            record.get("state") not in allowed
+            or record.get("generation_allowed") is not expected[fact_id].generation_allowed
+        ):
+            raise PinnedInputChanged("Pinned R8 fact resolution is malformed")
+    return [by_fact[fact.fact_id] for concept in scope.concepts for fact in concept.facts]
+
+
+def _v3_usage(usages: Sequence[StageUsage]) -> StageUsage | None:
+    if not usages:
+        return None
+    return StageUsage(
+        request_id=f"r9:{len(usages)}",
+        input_tokens=sum(item.input_tokens for item in usages),
+        output_tokens=sum(item.output_tokens for item in usages),
+        cost_microusd=sum(item.cost_microusd for item in usages),
+    )
 
 
 def _r3_policy(context: StageContext, payload: dict[str, Any]) -> CourseCurationPolicy:

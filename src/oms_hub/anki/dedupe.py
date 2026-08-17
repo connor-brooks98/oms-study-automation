@@ -62,6 +62,25 @@ class LexicalDedupeAdvisory:
 
 
 @dataclass(frozen=True, slots=True)
+class V3DedupeProposal:
+    """The small R10 surface; deliberately independent of legacy gap proposals."""
+
+    card_id: str
+    fact_id: str
+    text: str
+    extra: str
+
+
+@dataclass(frozen=True, slots=True)
+class V3DedupeResult:
+    card_id: str
+    disposition: Literal["generated", "duplicate", "overlap"]
+    duplicate_of: str | None
+    nearest_matches: tuple[DedupeMatch, ...]
+    missing_existing_vector_note_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _Comparison:
     identifier: str
     text: str
@@ -76,10 +95,7 @@ class DeduplicationService:
         overlap_threshold: float = 0.86,
         nearest_limit: int = 5,
     ) -> None:
-        if not (
-            0 <= overlap_threshold < duplicate_threshold <= 1
-            and nearest_limit >= 1
-        ):
+        if not (0 <= overlap_threshold < duplicate_threshold <= 1 and nearest_limit >= 1):
             raise ValueError("deduplication thresholds are invalid")
         self.embedder = embedder
         self.duplicate_threshold = duplicate_threshold
@@ -124,9 +140,7 @@ class DeduplicationService:
             return DeduplicationResult(
                 disposition="duplicate",
                 nearest_matches=tuple(
-                    sorted(exact, key=lambda match: match.identifier)[
-                        : self.nearest_limit
-                    ]
+                    sorted(exact, key=lambda match: match.identifier)[: self.nearest_limit]
                 ),
             )
         if not comparisons:
@@ -150,11 +164,7 @@ class DeduplicationService:
             embedded = await self.embedder.embed(
                 [
                     _proposal_document_text(proposal),
-                    *(
-                        _proposal_document_text(other)
-                        for other in batch
-                        if other is not proposal
-                    ),
+                    *(_proposal_document_text(other) for other in batch if other is not proposal),
                 ],
                 input_type="document",
             )
@@ -231,6 +241,195 @@ class DeduplicationService:
         )[: self.nearest_limit]
         return LexicalDedupeAdvisory(candidates=tuple(candidates))
 
+    async def classify_v3_batch(
+        self,
+        proposals: Sequence[V3DedupeProposal],
+        existing_notes: Sequence[NormalizedNote],
+        *,
+        existing_document_vectors: Mapping[int, FloatMatrix],
+    ) -> tuple[V3DedupeResult, ...]:
+        """Deduplicate R9 cards once, in pinned document space where available.
+
+        Existing cards without a frozen vector are retained for exact comparison
+        and explicitly surfaced as exact-only diagnostics; they are never
+        silently embedded again.
+        """
+        ordered = tuple(proposals)
+        identities = tuple(_v3_proposal_order(item) for item in ordered)
+        if identities != tuple(sorted(identities)) or len(identities) != len(set(identities)):
+            raise ValueError("R10 proposals must be sorted and unique by fact/card ID")
+        note_ids = [note.note_id for note in existing_notes]
+        if len(note_ids) != len(set(note_ids)):
+            raise SemanticDedupeIntegrityError("R10 existing note identities are ambiguous")
+        if not ordered:
+            return ()
+        existing = tuple(sorted(existing_notes, key=lambda item: item.note_id))
+        missing = tuple(
+            note.note_id for note in existing if note.note_id not in existing_document_vectors
+        )
+        exact_results: dict[str, V3DedupeResult] = {}
+        deferred_exact: dict[str, str] = {}
+        pending: list[V3DedupeProposal] = []
+        for proposal in ordered:
+            text = _normalize_card_text(proposal.text, proposal.extra)
+            exact_existing = sorted(
+                [
+                    DedupeMatch(f"note:{note.note_id}", 1.0, True)
+                    for note in existing
+                    if _normalize_card_text(note.text, note.extra) == text
+                ],
+                key=_v3_match_order,
+            )
+            if exact_existing:
+                exact_results[proposal.card_id] = V3DedupeResult(
+                    proposal.card_id,
+                    "duplicate",
+                    exact_existing[0].identifier,
+                    tuple(exact_existing[: self.nearest_limit]),
+                    missing,
+                )
+            elif exact_pending := next(
+                (
+                    previous
+                    for previous in pending
+                    if _normalize_card_text(previous.text, previous.extra) == text
+                ),
+                None,
+            ):
+                deferred_exact[proposal.card_id] = exact_pending.card_id
+            else:
+                pending.append(proposal)
+        if not pending:
+            return tuple(exact_results[proposal.card_id] for proposal in ordered)
+        embedded = await self.embedder.embed(
+            [_v3_document_text(item) for item in pending], input_type="document"
+        )
+        try:
+            proposal_vectors = np.asarray(embedded, dtype=np.float32)
+        except (TypeError, ValueError) as exc:
+            raise SemanticDedupeIntegrityError(
+                "R10 proposal embeddings must be a numeric rectangular matrix"
+            ) from exc
+        _validate_embedding_vectors(proposal_vectors, expected_rows=len(pending))
+        if proposal_vectors.shape[1] < 1 or np.any(np.linalg.norm(proposal_vectors, axis=1) == 0):
+            raise SemanticDedupeIntegrityError(
+                "R10 proposal embeddings cannot contain zero vectors"
+            )
+        pinned: dict[int, np.ndarray] = {}
+        for note in existing:
+            vector = existing_document_vectors.get(note.note_id)
+            if vector is None:
+                continue
+            try:
+                row = np.asarray(vector, dtype=np.float32)
+            except (TypeError, ValueError) as exc:
+                raise SemanticDedupeIntegrityError("R10 pinned vectors must be numeric") from exc
+            if (
+                row.ndim != 1
+                or row.shape[0] != proposal_vectors.shape[1]
+                or not np.isfinite(row).all()
+            ):
+                raise SemanticDedupeIntegrityError("R10 pinned vector dimensions are incompatible")
+            if np.linalg.norm(row) == 0:
+                raise SemanticDedupeIntegrityError("R10 pinned vectors cannot contain zero vectors")
+            pinned[note.note_id] = row / np.linalg.norm(row)
+        proposal_normalized = proposal_vectors / np.linalg.norm(
+            proposal_vectors, axis=1, keepdims=True
+        )
+        accepted: list[tuple[V3DedupeProposal, np.ndarray]] = []
+        results: list[V3DedupeResult] = []
+        for index, proposal in enumerate(pending):
+            text = _normalize_card_text(proposal.text, proposal.extra)
+            exact = [
+                DedupeMatch(f"note:{note.note_id}", 1.0, True)
+                for note in existing
+                if _normalize_card_text(note.text, note.extra) == text
+            ] + [
+                DedupeMatch(item.card_id, 1.0, True)
+                for item, _vector in accepted
+                if _normalize_card_text(item.text, item.extra) == text
+            ]
+            exact.sort(key=_v3_match_order)
+            if exact:
+                results.append(
+                    V3DedupeResult(
+                        proposal.card_id,
+                        "duplicate",
+                        exact[0].identifier,
+                        tuple(exact[: self.nearest_limit]),
+                        missing,
+                    )
+                )
+                continue
+            semantic: list[DedupeMatch] = [
+                DedupeMatch(
+                    f"note:{note_id}",
+                    float(vector @ proposal_normalized[index]),
+                    False,
+                )
+                for note_id, vector in pinned.items()
+            ] + [
+                DedupeMatch(
+                    item.card_id,
+                    float(vector @ proposal_normalized[index]),
+                    False,
+                )
+                for item, vector in accepted
+            ]
+            semantic.sort(key=lambda item: (-item.score, *_v3_match_order(item)))
+            nearest = tuple(semantic[: self.nearest_limit])
+            highest = nearest[0] if nearest else None
+            if highest is not None and highest.score >= self.duplicate_threshold:
+                results.append(
+                    V3DedupeResult(
+                        proposal.card_id, "duplicate", highest.identifier, nearest, missing
+                    )
+                )
+            elif highest is not None and highest.score >= self.overlap_threshold:
+                results.append(V3DedupeResult(proposal.card_id, "overlap", None, nearest, missing))
+            else:
+                results.append(
+                    V3DedupeResult(proposal.card_id, "generated", None, nearest, missing)
+                )
+                accepted.append((proposal, proposal_normalized[index]))
+        semantic_results = {result.card_id: result for result in results}
+        final: list[V3DedupeResult] = []
+        for proposal in ordered:
+            if proposal.card_id in exact_results:
+                final.append(exact_results[proposal.card_id])
+                continue
+            if (canonical_id := deferred_exact.get(proposal.card_id)) is None:
+                final.append(semantic_results[proposal.card_id])
+                continue
+            canonical = semantic_results[canonical_id]
+            if canonical.disposition == "generated":
+                final.append(
+                    V3DedupeResult(
+                        proposal.card_id,
+                        "duplicate",
+                        canonical.card_id,
+                        (DedupeMatch(canonical.card_id, 1.0, True),),
+                        missing,
+                    )
+                )
+            elif canonical.disposition == "duplicate":
+                final.append(
+                    V3DedupeResult(
+                        proposal.card_id,
+                        "duplicate",
+                        canonical.duplicate_of,
+                        canonical.nearest_matches,
+                        missing,
+                    )
+                )
+            else:
+                final.append(
+                    V3DedupeResult(
+                        proposal.card_id, "overlap", None, canonical.nearest_matches, missing
+                    )
+                )
+        return tuple(final)
+
     def exhausted_retry_review(
         self,
         *,
@@ -250,6 +449,14 @@ class DeduplicationService:
             retry_exhausted=retry_exhausted,
             advisory=advisory,
         )
+
+
+def _v3_proposal_order(proposal: V3DedupeProposal) -> tuple[str, int, str]:
+    prefix = f"card:{proposal.fact_id}:"
+    ordinal = proposal.card_id.removeprefix(prefix)
+    if not proposal.card_id.startswith(prefix) or not ordinal.isdecimal() or int(ordinal) < 1:
+        raise ValueError("R10 card IDs must be card:{fact_id}:{positive_integer}")
+    return proposal.fact_id, int(ordinal), proposal.card_id
 
 
 def _comparisons(
@@ -325,6 +532,17 @@ def _proposal_identifier(proposal: GapCardProposal) -> str:
             return f"proposal:{legacy_identity}"
         return f"proposal:{card_id}"
     return f"proposal:{proposal.concept_id}"
+
+
+def _v3_document_text(proposal: V3DedupeProposal) -> str:
+    text = normalize_html(proposal.text)
+    return text if text.strip() else normalize_html(proposal.extra)
+
+
+def _v3_match_order(match: DedupeMatch) -> tuple[int, int | str]:
+    if match.identifier.startswith("note:"):
+        return 0, int(match.identifier.removeprefix("note:"))
+    return 1, match.identifier
 
 
 def _lexical_similarity(left: str, right: str) -> float:
