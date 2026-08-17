@@ -58,6 +58,7 @@ from oms_hub.anki.correction_contracts import (
     GeneratedResolutionKind,
     PinnedLectureMetadata,
 )
+from oms_hub.anki.course_policy import CourseCurationPolicy
 from oms_hub.anki.dedupe import DeduplicationService
 from oms_hub.anki.domain import (
     Candidate,
@@ -66,12 +67,14 @@ from oms_hub.anki.domain import (
     GapCard,
     PipelineContractVersion,
     ResolvedClassifierExecution,
+    ResolvedStageModel,
     RetrievalPass,
     SourceEvidence,
     SourceKind,
     SourceReference,
     StageUsage,
 )
+from oms_hub.anki.fidelity_audit import R2FidelityDiagnostic
 from oms_hub.anki.gaps import (
     ExistingGapSupport,
     GapCardProposal,
@@ -137,6 +140,13 @@ from oms_hub.anki.retrieval import (
     RetrievalService,
 )
 from oms_hub.anki.runtime import AnkiRuntime
+from oms_hub.anki.scope_contracts import LectureScope
+from oms_hub.anki.scope_service import (
+    PinnedScopePrompt,
+    ScopeInputError,
+    ScopeReuseArtifact,
+    ScopeService,
+)
 from oms_hub.anki.semantic.domain import EmbeddingClient
 from oms_hub.anki.semantic.service import SemanticIndexService, normalize_semantic_text
 from oms_hub.anki.semantic.store import SemanticSnapshotStore
@@ -147,6 +157,7 @@ from oms_hub.anki.source_index import (
 from oms_hub.anki.sources import (
     LectureSourceExtractor,
     OutlineRepository,
+    SourceEmphasisEvidence,
     SourcePassage,
 )
 from oms_hub.anki.v2_contracts import (
@@ -471,8 +482,51 @@ class CurationServicesRunner:
             CurationStage.CARD_RESIDUAL: self._card_residual,
             CurationStage.CARD_GAP_FILL: self._card_gap_fill,
             CurationStage.CARD_SELECTION: self._card_selection,
+            CurationStage.V3_R3_SCOPE: self._v3_r3_scope,
         }
         return await handlers[context.stage](context)
+
+    async def _v3_r3_scope(self, context: StageContext) -> StageProduct:
+        """Synthetic-only R3 seam; pipeline.py still rejects v3 execution."""
+        if context.job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V3:
+            raise PinnedInputChanged("R3 scope requires the card_centric_v3 contract")
+        r0 = _payload(context, CurationStage.V3_R0_PREFLIGHT)
+        r1 = _payload(context, CurationStage.V3_R1_SOURCE_INDEX)
+        r2 = _payload(context, CurationStage.V3_R2_FIDELITY)
+        policy = _r3_policy(context, r0)
+        route = _r3_route(context, r0)
+        prompt = _r3_prompt(r0)
+        passages = _r3_passages(r1)
+        emphasis = _r3_emphasis(r1)
+        fidelity = _r3_fidelity(policy, r1, r2, emphasis)
+        result = await asyncio.to_thread(
+            ScopeService(self.structured).generate_scope,
+            policy=policy,
+            fidelity=fidelity,
+            source_passages=passages,
+            emphasis_evidence=emphasis,
+            prompt=prompt,
+            route=route,
+            model_config_sha256=context.job.model_config_sha256,
+            existing=_r3_reuse(r0, context.replay_inputs),
+        )
+        return StageProduct(
+            kind="card_centric_v3_scope",
+            payload={
+                "scope": result.scope.model_dump(mode="json"),
+                "provider_input": result.provider_input,
+                "source_bundle": result.source_bundle,
+                "source_bundle_sha256": result.source_bundle_sha256,
+                "scope_request_sha256": result.scope_request_sha256,
+                "prompt_id": result.prompt_id,
+                "prompt_version": result.prompt_version,
+                "prompt_content_sha256": result.prompt_content_sha256,
+                "route": result.route,
+                "output_schema_sha256": result.output_schema_sha256,
+                "reused": result.reused,
+            },
+            usage=result.usage,
+        )
 
     async def _preflight(self, context: StageContext) -> StageProduct:
         result = await self.runtime.ensure_running()
@@ -4327,6 +4381,200 @@ def _pinned_card_v2_prompt(context: StageContext, prompt_id: str) -> str:
     ):
         raise PinnedInputChanged("Pinned v2 prompt snapshot is malformed")
     return content
+
+
+def _r3_policy(context: StageContext, payload: dict[str, Any]) -> CourseCurationPolicy:
+    raw = payload.get("policy")
+    try:
+        policy = CourseCurationPolicy.model_validate(raw)
+    except (TypeError, ValueError) as exc:
+        raise PinnedInputChanged("Pinned R3 policy is malformed") from exc
+    if (
+        payload.get("policy_sha256") != policy.policy_sha256
+        or payload.get("policy_revision") != policy.revision
+        or context.job.policy_sha256 != policy.policy_sha256
+        or payload.get("model_config_sha256") != context.job.model_config_sha256
+    ):
+        raise PinnedInputChanged("Pinned R3 policy identity changed")
+    return policy
+
+
+def _r3_route(context: StageContext, payload: dict[str, Any]) -> ResolvedStageModel:
+    route = context.job.resolved_model_config.scope_r3
+    if route is None:
+        raise PinnedInputChanged("Pinned R3 scope route is unavailable")
+    expected = {
+        "provider": route.provider,
+        "model": route.model,
+        "thinking_mode": route.thinking_mode,
+        "fixture_validation_signature": route.fixture_validation_signature,
+    }
+    if payload.get("scope_r3") != expected:
+        raise PinnedInputChanged("Pinned R3 scope route changed")
+    return route
+
+
+def _r3_prompt(payload: dict[str, Any]) -> PinnedScopePrompt:
+    snapshot = payload.get("prompt_snapshot")
+    if not isinstance(snapshot, list):
+        raise PinnedInputChanged("Pinned R3 prompt snapshot is malformed")
+    entries = [
+        entry
+        for entry in snapshot
+        if isinstance(entry, dict) and entry.get("id") == "card-centric-scope-v3"
+    ]
+    if len(entries) != 1:
+        raise PinnedInputChanged("Pinned R3 scope prompt is unavailable or duplicated")
+    entry = entries[0]
+    try:
+        metadata = PromptMetadata.model_validate(entry.get("metadata"))
+        return PinnedScopePrompt(
+            id=str(entry["id"]),
+            version=str(entry["version"]),
+            content=str(entry["content"]),
+            content_sha256=str(entry["content_sha256"]),
+            metadata=metadata,
+        )
+    except (KeyError, ScopeInputError, TypeError, ValueError) as exc:
+        raise PinnedInputChanged("Pinned R3 prompt snapshot is malformed") from exc
+
+
+def _r3_passages(payload: dict[str, Any]) -> tuple[SourcePassage, ...]:
+    raw = payload.get("passages")
+    if not isinstance(raw, list):
+        raise PinnedInputChanged("Pinned R3 source passages are malformed")
+    try:
+        passages = tuple(_r3_passage(item) for item in raw)
+    except (TypeError, ValueError) as exc:
+        raise PinnedInputChanged("Pinned R3 source passages are malformed") from exc
+    if len({passage.passage_id for passage in passages}) != len(passages):
+        raise PinnedInputChanged("Pinned R3 source passages have duplicate IDs")
+    return passages
+
+
+def _r3_passage(raw: object) -> SourcePassage:
+    if not isinstance(raw, Mapping):
+        raise TypeError("source passage is not an object")
+    source_kind = SourceKind(str(raw["source_kind"]))
+    summary_section = raw.get("summary_section")
+    passage = SourcePassage.create(
+        revision_id=int(raw["revision_id"]),
+        lecture_id=int(raw["lecture_id"]),
+        artifact_id=str(raw["artifact_id"]),
+        source_kind=source_kind,
+        locator=str(raw["locator"]),
+        text=str(raw["text"]),
+        extraction_status=cast(Any, raw["extraction_status"]),
+        slide_number=(int(raw["slide_number"]) if raw.get("slide_number") is not None else None),
+        start_seconds=(
+            float(raw["start_seconds"])
+            if raw.get("start_seconds") is not None
+            else None
+        ),
+        end_seconds=(float(raw["end_seconds"]) if raw.get("end_seconds") is not None else None),
+        source_id=str(raw["source_id"]),
+        summary_backrefs=tuple(str(item) for item in raw.get("summary_backrefs", ())),
+        summary_section=cast(Any, summary_section),
+    )
+    expected = {
+        "passage_id": passage.passage_id,
+        "source_id": passage.source_id,
+        "revision_id": passage.revision_id,
+        "lecture_id": passage.lecture_id,
+        "artifact_id": passage.artifact_id,
+        "source_kind": passage.source_kind.value,
+        "locator": passage.locator,
+        "text": passage.text,
+        "content_hash": passage.content_hash,
+        "extraction_status": passage.extraction_status,
+        "slide_number": passage.slide_number,
+        "start_seconds": passage.start_seconds,
+        "end_seconds": passage.end_seconds,
+        "summary_backrefs": list(passage.summary_backrefs),
+        "summary_section": passage.summary_section,
+    }
+    normalized_raw = dict(raw)
+    if "summary_backrefs" in normalized_raw:
+        normalized_raw["summary_backrefs"] = list(normalized_raw["summary_backrefs"])
+    if isinstance(normalized_raw.get("source_kind"), SourceKind):
+        normalized_raw["source_kind"] = normalized_raw["source_kind"].value
+    if set(normalized_raw) != set(expected) or normalized_raw != expected:
+        raise ValueError("source passage identity changed")
+    return passage
+
+
+def _r3_emphasis(payload: dict[str, Any]) -> tuple[SourceEmphasisEvidence, ...]:
+    raw = payload.get("emphasis_evidence")
+    if not isinstance(raw, list):
+        raise PinnedInputChanged("Pinned R3 emphasis evidence is malformed")
+    try:
+        evidence = tuple(SourceEmphasisEvidence.model_validate(item) for item in raw)
+    except (TypeError, ValueError) as exc:
+        raise PinnedInputChanged("Pinned R3 emphasis evidence is malformed") from exc
+    if len({item.evidence_id for item in evidence}) != len(evidence):
+        raise PinnedInputChanged("Pinned R3 emphasis evidence has duplicate IDs")
+    return evidence
+
+
+def _r3_fidelity(
+    policy: CourseCurationPolicy,
+    r1: dict[str, Any],
+    r2: dict[str, Any],
+    emphasis: Sequence[SourceEmphasisEvidence],
+) -> R2FidelityDiagnostic:
+    raw = r2.get("fidelity_diagnostic")
+    try:
+        fidelity = R2FidelityDiagnostic.model_validate(raw)
+    except (TypeError, ValueError) as exc:
+        raise PinnedInputChanged("Pinned R3 fidelity diagnostic is malformed") from exc
+    source_sha256 = r1.get("style_source_sha256")
+    sidecar_sha256 = r1.get("style_sidecar_sha256")
+    if (
+        not _r3_sha256(source_sha256)
+        or not _r3_sha256(sidecar_sha256)
+        or fidelity.policy_sha256 != policy.policy_sha256
+        or fidelity.source_sha256 != source_sha256
+        or fidelity.sidecar_sha256 != sidecar_sha256
+        or any(
+            item.policy_sha256 != policy.policy_sha256
+            or item.source_sha256 != source_sha256
+            or item.sidecar_sha256 != sidecar_sha256
+            for item in emphasis
+        )
+    ):
+        raise PinnedInputChanged("Pinned R3 style identity changed")
+    return fidelity
+
+
+def _r3_reuse(
+    r0: dict[str, Any],
+    replay_inputs: Mapping[str, Any],
+) -> ScopeReuseArtifact | None:
+    values = [
+        value
+        for value in (
+            r0.get("scope_r3_reuse"),
+            replay_inputs.get("scope_r3_reuse"),
+        )
+        if value is not None
+    ]
+    if not values:
+        return None
+    if len(values) != 1 or not isinstance(values[0], Mapping):
+        raise PinnedInputChanged("Pinned R3 scope reuse is malformed")
+    try:
+        return ScopeReuseArtifact(
+            scope=LectureScope.model_validate(values[0]["scope"]),
+            scope_request_sha256=str(values[0]["scope_request_sha256"]),
+        )
+    except (KeyError, ScopeInputError, TypeError, ValueError) as exc:
+        raise PinnedInputChanged("Pinned R3 scope reuse is malformed") from exc
+
+
+def _r3_sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
 
 
 def _resolved_prompt(

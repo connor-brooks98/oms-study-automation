@@ -27,6 +27,7 @@ _SCHEMA_ROLES: dict[str, PromptRole] = {
 }
 _SYSTEM_PROMPT_IDS = ("card-relevance-audit", "paraphrase-expansion")
 _CARD_CENTRIC_INTERNAL_PROMPT_IDS = (
+    "card-centric-scope-v3",
     "card-centric-ledger-v1",
     "card-centric-ledger-v2",
     "card-centric-classifier",
@@ -41,6 +42,7 @@ _CARD_CENTRIC_V2_PROMPT_IDS = (
     "card-centric-classifier",
     "card-centric-gap-v2",
 )
+_CARD_CENTRIC_V3_SCOPE_PROMPT_IDS = ("card-centric-scope-v3",)
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +207,12 @@ class AnkiPromptCatalogService:
         """
         return AnkiPromptLibrary(self.bundled_directory).load_many(
             _CARD_CENTRIC_V2_PROMPT_IDS
+        )
+
+    def load_card_centric_v3_scope_snapshot(self) -> AnkiPromptSnapshot:
+        """Resolve the single bundled R3 prompt into its immutable bytes."""
+        return AnkiPromptLibrary(self.bundled_directory).load_many(
+            _CARD_CENTRIC_V3_SCOPE_PROMPT_IDS
         )
 
 
