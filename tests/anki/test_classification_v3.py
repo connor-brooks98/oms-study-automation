@@ -2,6 +2,7 @@ import asyncio
 import json
 from contextlib import contextmanager
 from copy import deepcopy
+from datetime import UTC, datetime
 from hashlib import sha256
 from types import SimpleNamespace
 from uuid import uuid4
@@ -17,6 +18,14 @@ from oms_hub.anki.classification_v3 import (
     r7_pin_document,
 )
 from oms_hub.anki.contracts import canonical_payload_sha256
+from oms_hub.anki.cost_estimator import (
+    CostEstimator,
+    CostKind,
+    CostLedgerEntry,
+    FrozenRateTable,
+    ModelRate,
+    TokenUsage,
+)
 from oms_hub.anki.course_policy import CourseCurationPolicy
 from oms_hub.anki.domain import (
     CurationStage,
@@ -29,13 +38,12 @@ from oms_hub.anki.evidence_bundle import (
     CandidateEvidenceBundle,
     SelectedPassage,
 )
-from oms_hub.anki.pipeline import (
-    PinnedInputChanged,
-    UnsupportedPipelineContract,
-    pipeline_stages,
+from oms_hub.anki.pipeline import PinnedInputChanged, pipeline_stages
+from oms_hub.anki.provider_attempts import (
+    ProviderAttemptBinding,
+    bind_provider_attempts,
+    provider_cost_reservation,
 )
-from oms_hub.anki.provider_attempts import ProviderAttemptBinding, bind_provider_attempts
-from oms_hub.anki.repository import AnkiCurationRepository
 from oms_hub.anki.scope_contracts import (
     LectureScope,
     ScopedConcept,
@@ -48,6 +56,8 @@ from oms_hub.llm.structured import StructuredTextService
 
 
 class FakeGenerator:
+    offline_replay_only = True
+
     def __init__(self, responses: list[object]) -> None:
         self.responses = iter(responses)
         self.calls: list[dict[str, object]] = []
@@ -144,6 +154,28 @@ def _routes() -> tuple[ResolvedStageModel, ResolvedStageModel]:
         ResolvedStageModel("openai", "cheap", thinking_mode="disabled"),
         ResolvedStageModel("openai", "thorough", thinking_mode="disabled"),
     )
+
+
+def _add_r0_costs(r0: dict[str, object], *models: str) -> None:
+    table = FrozenRateTable(
+        tuple(ModelRate(model, 1, 0, 0, 1, 1) for model in sorted(set(models))),
+        datetime(2026, 8, 17, tzinfo=UTC),
+        "fixture",
+    )
+    policy = CourseCurationPolicy.model_validate(r0["policy"])
+    r0.update(
+        rate_table=table.document(),
+        rate_table_sha256=table.rate_table_sha256,
+        ordinary_cost_limit_microusd=policy.ordinary_cost_limit_microusd,
+        hard_stop_cost_limit_microusd=policy.hard_stop_cost_limit_microusd,
+        cost_ledger=[],
+        cost_ledger_sha256=sha256(b"[]").hexdigest(),
+    )
+
+
+def _empty_ledger(payload: dict[str, object]) -> None:
+    payload["cost_ledger"] = []
+    payload["cost_ledger_sha256"] = sha256(b"[]").hexdigest()
 
 
 def _stage_fixture() -> tuple[CurationServicesRunner, SimpleNamespace, FakeGenerator]:
@@ -269,6 +301,7 @@ def _stage_fixture() -> tuple[CurationServicesRunner, SimpleNamespace, FakeGener
         "scope_sha256": scope.scope_sha256,
         "facts": [],
     }
+    _empty_ledger(r5)
     r5["artifact_sha256"] = canonical_payload_sha256(r5)
     r6 = {
         "policy_sha256": policy.policy_sha256,
@@ -278,6 +311,7 @@ def _stage_fixture() -> tuple[CurationServicesRunner, SimpleNamespace, FakeGener
         "semantic_generation": "semantic",
         "records": records,
     }
+    _empty_ledger(r6)
     r6["artifact_sha256"] = canonical_payload_sha256(r6)
     cheap, thorough = _routes()
     model_config = ResolvedModelConfiguration(
@@ -298,14 +332,16 @@ def _stage_fixture() -> tuple[CurationServicesRunner, SimpleNamespace, FakeGener
         "model_config_sha256": model_config_sha256,
         "cheap_classify_r7": classification_v3.route_document(cheap),
         "thorough_classify_r7": classification_v3.route_document(thorough),
-        "rate_table_sha256": "d" * 64,
     }
-    r0["r7_classification"] = r7_pin_document(cheap, thorough, "d" * 64)
+    _add_r0_costs(r0, cheap.model, thorough.model)
+    r0["r7_classification"] = r7_pin_document(cheap, thorough, str(r0["rate_table_sha256"]))
     job = SimpleNamespace(
         pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V3,
+        id="classification-job",
         policy_sha256=policy.policy_sha256,
         model_config_sha256=model_config_sha256,
         resolved_model_config=model_config,
+        offline_replay_only=True,
     )
     context = SimpleNamespace(
         job=job,
@@ -314,6 +350,8 @@ def _stage_fixture() -> tuple[CurationServicesRunner, SimpleNamespace, FakeGener
             CurationStage.V3_R3_SCOPE: {
                 "scope": scope.model_dump(mode="json"),
                 "source_bundle": source_bundle,
+                "cost_ledger": [],
+                "cost_ledger_sha256": sha256(b"[]").hexdigest(),
             },
             CurationStage.V3_R5_RETRIEVAL: r5,
             CurationStage.V3_R6_CALIBRATION: r6,
@@ -331,6 +369,8 @@ def _stage_fixture() -> tuple[CurationServicesRunner, SimpleNamespace, FakeGener
     )
     runner = object.__new__(CurationServicesRunner)
     runner.structured = StructuredTextService(fake)
+    runner.embedder = SimpleNamespace(offline_replay_only=True)
+    runner.semantic = SimpleNamespace(embedder=SimpleNamespace(offline_replay_only=True))
     return runner, context, fake
 
 
@@ -703,7 +743,7 @@ def test_v3_r7_oversized_bundle_blocks_without_truncation_or_provider_call() -> 
     assert fake.calls == []
 
 
-def test_v3_r7_dispatch_exists_but_r8_and_v3_pipeline_job_creation_stay_fail_closed() -> None:
+def test_v3_r7_dispatch_exists_and_r8_retains_its_required_r4_closure() -> None:
     runner, context, _fake = _stage_fixture()
     context.stage = CurationStage.V3_R7_CLASSIFICATION
     product = asyncio.run(runner.run(context))
@@ -711,13 +751,10 @@ def test_v3_r7_dispatch_exists_but_r8_and_v3_pipeline_job_creation_stay_fail_clo
     context.stage = CurationStage.V3_R8_GAP_CONFIRMATION
     with pytest.raises(KeyError):
         asyncio.run(runner.run(context))
-    with pytest.raises(UnsupportedPipelineContract, match="no mutation"):
-        pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V3)
-    repository = object.__new__(AnkiCurationRepository)
-    with pytest.raises(UnsupportedPipelineContract, match="contract-only"):
-        repository.create_job(
-            SimpleNamespace(pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V3)
-        )
+    assert any(
+        definition.stage is CurationStage.V3_R8_GAP_CONFIRMATION
+        for definition in pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V3)
+    )
 
 
 def test_v3_r7_empty_r6_candidate_partition_is_hash_closed_without_provider_call() -> None:
@@ -967,6 +1004,25 @@ def _attempt_events() -> tuple[ProviderAttemptBinding, list[str]]:
     )
 
 
+def _reservation() -> dict[str, object]:
+    table = FrozenRateTable(
+        (ModelRate("fake", 1, 1, 1, 1, 1),), datetime(2026, 8, 17, tzinfo=UTC), "fixture"
+    )
+    estimator = CostEstimator(table)
+    usage = TokenUsage(input_tokens=1)
+    return CostLedgerEntry(
+        call_id="a" * 64,
+        stage="R7",
+        modality="structured",
+        model="fake",
+        request_sha256="b" * 64,
+        rate_table_sha256=table.rate_table_sha256,
+        estimator_version=estimator.version,
+        predicted=estimator.estimate(CostKind.PREDICTED, model="fake", usage=usage),
+        reserved=estimator.estimate(CostKind.RESERVED, model="fake", usage=usage),
+    ).document()
+
+
 def test_r7_bound_attempts_have_one_terminal_per_malformed_primary_and_repair() -> None:
     bundle = _bundle(1, "fact-1")
     error = "structured output failed JSON schema validation: $: invalid JSON at line 1, column 1"
@@ -976,7 +1032,7 @@ def test_r7_bound_attempts_have_one_terminal_per_malformed_primary_and_repair() 
     fake = FakeGenerator(["not json", {"rows": [_row(bundle, "keep", 9000)]}])
     cheap, thorough = _routes()
     binding, events = _attempt_events()
-    with bind_provider_attempts(binding):
+    with bind_provider_attempts(binding), provider_cost_reservation(_reservation()):
         result = R7ClassificationService(StructuredTextService(fake)).classify(
             bundles=(bundle,),
             strictness="strict",
@@ -1005,7 +1061,7 @@ def test_r7_bound_malformed_repair_has_no_duplicate_terminal_event() -> None:
     fake = FakeGenerator(["not json", "not json"])
     cheap, thorough = _routes()
     binding, events = _attempt_events()
-    with bind_provider_attempts(binding):
+    with bind_provider_attempts(binding), provider_cost_reservation(_reservation()):
         result = R7ClassificationService(StructuredTextService(fake)).classify(
             bundles=(bundle,),
             strictness="strict",
@@ -1037,7 +1093,7 @@ def test_r7_bound_local_invalid_batch_contract_fails_but_preserves_valid_termina
     )
     cheap, thorough = _routes()
     binding, events = _attempt_events()
-    with bind_provider_attempts(binding):
+    with bind_provider_attempts(binding), provider_cost_reservation(_reservation()):
         result = R7ClassificationService(StructuredTextService(fake)).classify(
             bundles=(first, second),
             strictness="strict",

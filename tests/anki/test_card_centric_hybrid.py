@@ -1,6 +1,8 @@
 import asyncio
+import hashlib
 from contextlib import contextmanager
 from copy import deepcopy
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +14,7 @@ from oms_hub.anki.calibration import (
 )
 from oms_hub.anki.card_centric_contracts import CensusTrust, SnapshotCensus
 from oms_hub.anki.card_centric_hybrid import query_variants
+from oms_hub.anki.cost_estimator import FrozenRateTable, ModelRate
 from oms_hub.anki.course_policy import CourseCurationPolicy
 from oms_hub.anki.domain import CurationStage, PipelineContractVersion
 from oms_hub.anki.index import SearchHit
@@ -27,6 +30,23 @@ from oms_hub.anki.scope_contracts import (
 from oms_hub.anki.semantic.domain import SemanticHit
 from oms_hub.anki.semantic.service import content_hash
 from oms_hub.anki.stages import CurationServicesRunner
+
+
+def _add_r0_costs(r0: dict[str, object], *models: str) -> None:
+    table = FrozenRateTable(
+        tuple(ModelRate(model, 1, 0, 0, 1, 1) for model in sorted(set(models))),
+        datetime(2026, 8, 17, tzinfo=UTC),
+        "fixture",
+    )
+    policy = CourseCurationPolicy.model_validate(r0["policy"])
+    r0.update(
+        rate_table=table.document(),
+        rate_table_sha256=table.rate_table_sha256,
+        ordinary_cost_limit_microusd=policy.ordinary_cost_limit_microusd,
+        hard_stop_cost_limit_microusd=policy.hard_stop_cost_limit_microusd,
+        cost_ledger=[],
+        cost_ledger_sha256=hashlib.sha256(b"[]").hexdigest(),
+    )
 
 
 def test_variants_dedupe_and_cap_deterministically() -> None:
@@ -111,6 +131,7 @@ class _FakeSemantic:
         )
         self.snapshot = SimpleNamespace(manifest=manifest)
         self.store = SimpleNamespace(load=lambda **_kwargs: self.snapshot)
+        self.embedder = SimpleNamespace(offline_replay_only=True)
 
     async def search(self, queries: tuple[str, ...], **_kwargs: object) -> list[list[SemanticHit]]:
         self.search_calls += 1
@@ -233,10 +254,13 @@ def _r5_fixture(
             ),
         )
         lexical_ids = (2,)
-    companion, semantic = _FakeCompanion(notes, lexical_ids=lexical_ids), _FakeSemantic(
-        notes,
-        hit_lists=hit_lists,
-        covered_note_ids=(1,) if partial_semantic_coverage else None,
+    companion, semantic = (
+        _FakeCompanion(notes, lexical_ids=lexical_ids),
+        _FakeSemantic(
+            notes,
+            hit_lists=hit_lists,
+            covered_note_ids=(1,) if partial_semantic_coverage else None,
+        ),
     )
     policy = CourseCurationPolicy(
         policy_id="policy",
@@ -342,29 +366,39 @@ def _r5_fixture(
     r4["verification_sha256"] = canonical_sha256(r4)
     job = SimpleNamespace(
         pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V3,
+        id="hybrid-job",
         policy_sha256=policy.policy_sha256,
         model_config_sha256="z" * 64,
         companion_generation="companion-1",
         semantic_generation="semantic-1",
         deck_allowlist=("Deck",),
         tag_allowlist=("#target",),
+        offline_replay_only=True,
     )
+    r0 = {
+        "policy": policy.model_dump(mode="json"),
+        "policy_sha256": policy.policy_sha256,
+        "policy_revision": policy.revision,
+        "model_config_sha256": "z" * 64,
+    }
+    _add_r0_costs(r0, "fake-model")
     context = SimpleNamespace(
         job=job,
         prior_payloads={
-            CurationStage.V3_R0_PREFLIGHT: {
-                "policy": policy.model_dump(mode="json"),
-                "policy_sha256": policy.policy_sha256,
-                "policy_revision": policy.revision,
-                "model_config_sha256": "z" * 64,
+            CurationStage.V3_R0_PREFLIGHT: r0,
+            CurationStage.V3_R3_SCOPE: {
+                "scope": scope.model_dump(mode="json"),
+                "cost_ledger": [],
+                "cost_ledger_sha256": hashlib.sha256(b"[]").hexdigest(),
             },
-            CurationStage.V3_R3_SCOPE: {"scope": scope.model_dump(mode="json")},
             CurationStage.V3_R4_INDEX_VERIFICATION: r4,
         },
         stage=CurationStage.V3_R5_RETRIEVAL,
     )
     runner = object.__new__(CurationServicesRunner)
     runner.companion, runner.semantic = companion, semantic
+    runner.structured = SimpleNamespace(generator=SimpleNamespace(offline_replay_only=True))
+    runner.embedder = SimpleNamespace(offline_replay_only=True)
     return runner, context, companion, semantic
 
 
@@ -482,10 +516,6 @@ def test_r5_r6_fake_only_success_and_hit_identity_failure(monkeypatch: pytest.Mo
     r6 = asyncio.run(runner.run(context))
     assert r6.kind == "card_centric_v3_calibration"
     assert semantic.search_calls == 1 and semantic.pinned_calls == 1 and len(calls) == 1
-    context.stage = CurationStage.V3_R4_INDEX_VERIFICATION
-    with pytest.raises(KeyError):
-        asyncio.run(runner.run(context))
-
     runner, context, _companion, semantic = _r5_fixture()
     semantic.hit_hash = "f" * 64
     product = asyncio.run(runner._v3_r5_retrieval(context))
@@ -561,9 +591,7 @@ def test_r6_global_cap_keeps_200_and_hashes_final_two_fact_state() -> None:
     before_queries = semantic.search_calls
     r6 = asyncio.run(runner._v3_r6_calibration(context)).payload
     assert semantic.search_calls == before_queries and semantic.pinned_calls == 0
-    retained_ids = {
-        row["note_id"] for record in r6["records"] for row in record["all_candidates"]
-    }
+    retained_ids = {row["note_id"] for record in r6["records"] for row in record["all_candidates"]}
     assert len(retained_ids) == 200
     assert sum(len(record["all_candidates"]) for record in r6["records"]) > 200
     assert sum(len(record["global_cap_exclusions"]) for record in r6["records"]) == 20

@@ -400,11 +400,18 @@ class CreateCurationJob:
     summary_outline_id: int | None = None
     summary_outline_sha256: str | None = None
     policy_sha256: str | None = None
+    rate_table_document: dict[str, object] | None = None
+    offline_replay_only: bool = False
 
     def __post_init__(self) -> None:
-        v3_only = self.policy_sha256 is not None or (
-            self.resolved_model_config is not None
-            and self.resolved_model_config.has_v3_tier_routes()
+        v3_only = (
+            self.policy_sha256 is not None
+            or self.rate_table_document is not None
+            or self.offline_replay_only
+            or (
+                self.resolved_model_config is not None
+                and self.resolved_model_config.has_v3_tier_routes()
+            )
         )
         if (
             v3_only
@@ -467,6 +474,9 @@ class CurationJob:
     summary_outline_id: int | None = None
     summary_outline_sha256: str | None = None
     policy_sha256: str | None = None
+    rate_table_document: dict[str, object] | None = None
+    rate_table_sha256: str | None = None
+    offline_replay_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)

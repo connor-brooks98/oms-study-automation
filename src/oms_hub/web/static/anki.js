@@ -280,6 +280,34 @@
     );
   };
 
+  const renderV3ReviewSurface = (documentRef, surface) => {
+    const v3 = surface?.v3;
+    if (!v3 || typeof v3 !== "object") return;
+    const host = documentRef.querySelector("[data-review-quality]");
+    if (!host) return;
+    host.hidden = false;
+    const details = element(documentRef, "details", "anki-v3-review");
+    details.open = true;
+    details.append(element(documentRef, "summary", "", "V3 review evidence (approval only)"));
+    [
+      v3.reason,
+      `Policy: ${v3.policy?.sha256 || "unavailable"}; enforcement ${v3.policy?.enforcement?.present === true ? "present" : "unavailable"}${v3.policy?.enforcement?.tier ? ` (${v3.policy.enforcement.tier})` : ""}`,
+      `Scope: ${(v3.scope?.fact_ids || []).join(", ") || "none"}; ${v3.scope?.degraded_mode || "unavailable"}`,
+      `Sources: ${(v3.scope?.sources || []).map((item) => item.source_id || item.evidence_id).join(", ") || "none"}`,
+      `Retrieval: exact ${(v3.retrieval?.exact_only_fact_ids || []).join(", ") || "none"}; polluted ${(v3.retrieval?.polluted_fact_ids || []).join(", ") || "none"}`,
+      `Evidence: grounding ${v3.evidence?.grounding || "unavailable"}; ${v3.evidence?.degraded_mode || "unavailable"}`,
+      ...(v3.evidence?.generated_grounding || []).map((item) => `Grounding: ${item.card_id} / ${item.fact_id}; evidence ${(item.evidence_ids || []).join(", ") || "none"}`),
+      `Classification: ${(v3.classification?.tiers || []).join(", ") || "none"}; escalations ${(v3.classification?.escalations || []).length}`,
+      `Selected existing: ${(v3.selected_existing_note_ids || []).join(", ") || "none"}`,
+      `Selected generated: ${(v3.selected_generated_card_ids || []).join(", ") || "none"}`,
+      `Resolution: duplicates ${(v3.resolution?.duplicate_fact_ids || []).join(", ") || "none"}`,
+      ...(v3.resolution?.unresolved || []).map((item) => `Unresolved: ${item.fact_id || "run"} / ${item.state || "unavailable"}; ${item.reason || "unavailable"}`),
+      `Cost calls: ${(v3.cost?.calls || []).length}`,
+      ...(v3.cost?.calls || []).map((item) => `Cost: ${item.stage || "unavailable"} / ${item.call_id || "unavailable"}; ${item.modality || "unavailable"} / ${item.model || "unavailable"}; predicted ${item.predicted?.microusd ?? "unavailable"}, reserved ${item.reserved?.microusd ?? "unavailable"}, observed ${item.observed?.microusd ?? "unavailable"} (${item.observed_estimated === true ? "estimated" : "reported"})`),
+    ].filter(Boolean).forEach((value) => details.append(element(documentRef, "p", "field-help", value)));
+    host.append(details);
+  };
+
   const sourceLabel = (kind) => ({
     slides: "Lecture slides",
     transcripts: "Lecture transcript",
@@ -1360,6 +1388,7 @@
     const reconciliation = reconciliationDisplay(review.reconciliation);
     renderConceptGroups(documentRef, review.concepts);
     renderReviewSurface(documentRef, review.review_surface || {});
+    renderV3ReviewSurface(documentRef, review.review_surface || {});
     documentRef.querySelector("[data-count-convergence]").textContent =
       convergence.count;
     documentRef.querySelector("[data-label-convergence]").textContent =
@@ -1915,7 +1944,9 @@
     reviewSurfaceDisplay,
     reviewSelectionDisplay,
     reviewSurfaceDetails,
+    renderReviewSurface,
     reviewViews,
+    renderV3ReviewSurface,
     renderProcessing,
     renderSourceChoices,
     resolveLecture,

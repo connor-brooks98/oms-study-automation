@@ -12,6 +12,8 @@ class ScopeEvidenceReference(BaseModel):
 
     evidence_id: str = Field(min_length=1, max_length=300)
     source_id: str = Field(min_length=1, max_length=300)
+    revision_id: int | None = Field(default=None, gt=0)
+    source_kind: str | None = Field(default=None, min_length=1, max_length=80)
     locator: str = Field(min_length=1, max_length=500)
     content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 

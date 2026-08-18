@@ -1,5 +1,7 @@
 import asyncio
+import hashlib
 import json
+from datetime import UTC, datetime
 from math import sqrt
 from types import SimpleNamespace
 from uuid import UUID
@@ -9,6 +11,15 @@ import pytest
 import oms_hub.anki.stages as stages
 from oms_hub.anki.classification_v3 import ESTIMATOR_VERSION
 from oms_hub.anki.contracts import canonical_payload_sha256
+from oms_hub.anki.cost_estimator import (
+    CostEstimator,
+    CostKind,
+    CostLedgerEntry,
+    FrozenRateTable,
+    ModelRate,
+    TokenUsage,
+)
+from oms_hub.anki.course_policy import CourseCurationPolicy
 from oms_hub.anki.dedupe import DeduplicationService, V3DedupeProposal
 from oms_hub.anki.domain import (
     CurationStage,
@@ -30,6 +41,7 @@ from oms_hub.anki.provider_attempts import (
     ProviderAttemptBinding,
     ProviderEventEvidence,
     bind_provider_attempts,
+    provider_cost_reservation,
 )
 from oms_hub.anki.scope_contracts import (
     LectureScope,
@@ -42,7 +54,50 @@ from oms_hub.llm.domain import GeneratedText, ProviderName
 from oms_hub.llm.structured import StructuredTextService
 
 
+def _add_r0_costs(r0: dict[str, object], *models: str) -> None:
+    table = FrozenRateTable(
+        tuple(ModelRate(model, 1, 0, 0, 1, 1) for model in sorted(set(models))),
+        datetime(2026, 8, 17, tzinfo=UTC),
+        "fixture",
+    )
+    policy = CourseCurationPolicy.model_validate(r0["policy"])
+    r0.update(
+        rate_table=table.document(),
+        rate_table_sha256=table.rate_table_sha256,
+        ordinary_cost_limit_microusd=policy.ordinary_cost_limit_microusd,
+        hard_stop_cost_limit_microusd=policy.hard_stop_cost_limit_microusd,
+        cost_ledger=[],
+        cost_ledger_sha256=hashlib.sha256(b"[]").hexdigest(),
+    )
+
+
+def _reservation() -> dict[str, object]:
+    table = FrozenRateTable(
+        (ModelRate("fake", 1, 1, 1, 1, 1),), datetime(2026, 8, 17, tzinfo=UTC), "fixture"
+    )
+    estimator = CostEstimator(table)
+    usage = TokenUsage(input_tokens=1)
+    return CostLedgerEntry(
+        call_id="a" * 64,
+        stage="R9",
+        modality="structured",
+        model="fake",
+        request_sha256="b" * 64,
+        rate_table_sha256=table.rate_table_sha256,
+        estimator_version=estimator.version,
+        predicted=estimator.estimate(CostKind.PREDICTED, model="fake", usage=usage),
+        reserved=estimator.estimate(CostKind.RESERVED, model="fake", usage=usage),
+    ).document()
+
+
+def _empty_ledger(payload: dict[str, object]) -> None:
+    payload["cost_ledger"] = []
+    payload["cost_ledger_sha256"] = hashlib.sha256(b"[]").hexdigest()
+
+
 class _FakeGenerator:
+    offline_replay_only = True
+
     def __init__(self, responses: list[object]) -> None:
         self.responses = iter(responses)
         self.calls: list[dict[str, object]] = []
@@ -64,6 +119,8 @@ class _FakeGenerator:
 
 
 class _Embedder:
+    offline_replay_only = True
+
     def __init__(self, rows: list[list[float]]) -> None:
         self.rows = rows
         self.calls: list[list[str]] = []
@@ -75,6 +132,8 @@ class _Embedder:
 
 
 class _RaisingEmbedder:
+    offline_replay_only = True
+
     async def embed(self, _values: list[str], *, input_type: str) -> list[list[float]]:
         raise AssertionError(f"R10 exact-only batch must not embed ({input_type})")
 
@@ -88,6 +147,8 @@ class _Companion:
 
 
 class _PinnedVectors:
+    embedder = SimpleNamespace(offline_replay_only=True)
+
     def __init__(self, vectors: dict[int, tuple[float, ...]]) -> None:
         self.vectors = vectors
         self.calls: list[tuple[tuple[int, ...], str]] = []
@@ -97,6 +158,14 @@ class _PinnedVectors:
     ) -> dict[int, tuple[float, ...]]:
         self.calls.append((tuple(note_ids), expected_generation))
         return {note_id: self.vectors[note_id] for note_id in note_ids}
+
+
+def _offline_runner(generator: _FakeGenerator) -> CurationServicesRunner:
+    runner = object.__new__(CurationServicesRunner)
+    runner.structured = StructuredTextService(generator)
+    runner.embedder = SimpleNamespace(offline_replay_only=True)
+    runner.semantic = SimpleNamespace(embedder=SimpleNamespace(offline_replay_only=True))
+    return runner
 
 
 def _request(*, allowed: bool = True) -> V3GenerationRequest:
@@ -133,7 +202,9 @@ def _generated_response() -> dict[str, object]:
     }
 
 
-def _repair_authorization(request: V3GenerationRequest) -> dict[str, object]:
+def _repair_authorization(
+    request: V3GenerationRequest, *, rate_table_sha256: str = "c" * 64
+) -> dict[str, object]:
     repair = _repair_document(
         request.provider_document(),
         GapValidationError("R9 output does not partition requested facts"),
@@ -141,7 +212,7 @@ def _repair_authorization(request: V3GenerationRequest) -> dict[str, object]:
     )
     values: dict[str, object] = {
         "policy_sha256": request.policy_sha256,
-        "rate_table_sha256": "c" * 64,
+        "rate_table_sha256": rate_table_sha256,
         "estimator_version": ESTIMATOR_VERSION,
         "repair_request_sha256": canonical_payload_sha256(repair),
         "predicted_total_before_repair_microusd": 0,
@@ -267,14 +338,17 @@ def test_r9_repair_transport_is_blocking_and_keeps_the_primary_lifecycle() -> No
     request = _request()
     fake = _FakeGenerator([{"resolutions": []}, RuntimeError("repair network")])
     events: list[ProviderEventEvidence] = []
-    with bind_provider_attempts(
-        ProviderAttemptBinding(
-            job_id=UUID("12345678-1234-5678-1234-567812345678"),
-            stage=CurationStage.V3_R9_GENERATION,
-            stage_attempt=1,
-            mode="canonical",
-            recorder=events.append,
-        )
+    with (
+        bind_provider_attempts(
+            ProviderAttemptBinding(
+                job_id=UUID("12345678-1234-5678-1234-567812345678"),
+                stage=CurationStage.V3_R9_GENERATION,
+                stage_attempt=1,
+                mode="canonical",
+                recorder=events.append,
+            )
+        ),
+        provider_cost_reservation(_reservation()),
     ):
         result, usage = R9GenerationService(StructuredTextService(fake)).generate(
             request,
@@ -422,14 +496,16 @@ def _r9_runner_artifacts(
         "policy_revision": 1,
         "model_config_sha256": "m" * 64,
         "generation_r9": route_document(route),
-        "rate_table_sha256": "c" * 64,
     }
+    _add_r0_costs(r0, route.model, "embedding")
     r4, r5, r6, r7 = (
         {"verification_sha256": "r4"},
         {"artifact_sha256": "r5"},
         {"artifact_sha256": "r6"},
         {"artifact_sha256": "r7"},
     )
+    for payload in (r5, r6, r7):
+        _empty_ledger(payload)
     r8 = {
         "policy_sha256": policy.policy_sha256,
         "scope_sha256": scope.scope_sha256,
@@ -439,12 +515,15 @@ def _r9_runner_artifacts(
         "r7_artifact_sha256": "r7",
         "records": records,
     }
+    _empty_ledger(r8)
     r8["artifact_sha256"] = canonical_payload_sha256(r8)
     job = SimpleNamespace(
         pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V3,
+        id="generation-job",
         policy_sha256=policy.policy_sha256,
         model_config_sha256="m" * 64,
         resolved_model_config=config,
+        offline_replay_only=True,
     )
     context = SimpleNamespace(
         job=job,
@@ -454,6 +533,8 @@ def _r9_runner_artifacts(
             CurationStage.V3_R3_SCOPE: {
                 "scope": scope.model_dump(mode="json"),
                 "source_bundle": source_bundle,
+                "cost_ledger": [],
+                "cost_ledger_sha256": hashlib.sha256(b"[]").hexdigest(),
             },
             CurationStage.V3_R4_INDEX_VERIFICATION: r4,
             CurationStage.V3_R5_RETRIEVAL: r5,
@@ -499,8 +580,7 @@ def test_r9_runner_dispatches_only_confirmed_allowed_and_checks_r8_partition(
     context, inputs = _r9_runner_artifacts(facts, records)
     monkeypatch.setattr(stages, "_v3_phase_f_inputs", lambda _context: inputs)
     fake = _FakeGenerator([_r9_response("f01")])
-    runner = object.__new__(CurationServicesRunner)
-    runner.structured = StructuredTextService(fake)
+    runner = _offline_runner(fake)
     product = asyncio.run(runner.run(context))
     assert [item["fact_id"] for item in fake.calls[0]["input"]["facts"]] == ["f01"]
     assert product.payload["resolutions"][0]["card_id"] == "card:f01:1"
@@ -541,11 +621,12 @@ def test_r9_runner_binds_each_batch_and_aggregates_the_single_failed_repair(
             for fact in facts[:16]
         ),
     )
-    r0["r9_repair_authorization"] = _repair_authorization(first_batch)
+    r0["r9_repair_authorization"] = _repair_authorization(
+        first_batch, rate_table_sha256=str(r0["rate_table_sha256"])
+    )
     monkeypatch.setattr(stages, "_v3_phase_f_inputs", lambda _context: inputs)
     fake = _FakeGenerator([{"resolutions": []}, {"resolutions": []}, _r9_response("f17")])
-    runner = object.__new__(CurationServicesRunner)
-    runner.structured = StructuredTextService(fake)
+    runner = _offline_runner(fake)
     events: list[ProviderEventEvidence] = []
     with bind_provider_attempts(
         ProviderAttemptBinding(
@@ -586,9 +667,10 @@ def test_r9_runner_binds_each_batch_and_aggregates_the_single_failed_repair(
     assert {item["fact_id"] for item in product.payload["resolutions"]} == {
         fact.fact_id for fact in facts
     }
-    assert next(item for item in product.payload["resolutions"] if item["fact_id"] == "f17")[
-        "status"
-    ] == "generated"
+    assert (
+        next(item for item in product.payload["resolutions"] if item["fact_id"] == "f17")["status"]
+        == "generated"
+    )
 
 
 @pytest.mark.parametrize(
@@ -617,8 +699,7 @@ def test_r9_runner_marks_transport_and_unauthorized_repair_failures_blocking(
         [{"fact_id": "f01", "generation_allowed": True, "state": "confirmed_missing"}],
     )
     monkeypatch.setattr(stages, "_v3_phase_f_inputs", lambda _context: inputs)
-    runner = object.__new__(CurationServicesRunner)
-    runner.structured = StructuredTextService(_FakeGenerator([response]))
+    runner = _offline_runner(_FakeGenerator([response]))
     product = asyncio.run(runner.run(context))
     assert product.blocking_error == expected and len(product.payload["calls"]) == call_count
     assert (product.usage.cost_microusd if product.usage else None) == cost
@@ -651,10 +732,11 @@ def test_r9_runner_preserves_mixed_batches_when_the_repair_is_exhausted(
             for fact in facts[:16]
         ),
     )
-    r0["r9_repair_authorization"] = _repair_authorization(first_batch)
+    r0["r9_repair_authorization"] = _repair_authorization(
+        first_batch, rate_table_sha256=str(r0["rate_table_sha256"])
+    )
     monkeypatch.setattr(stages, "_v3_phase_f_inputs", lambda _context: inputs)
-    runner = object.__new__(CurationServicesRunner)
-    runner.structured = StructuredTextService(
+    runner = _offline_runner(
         _FakeGenerator(
             [
                 {"resolutions": []},
@@ -697,12 +779,11 @@ def test_r9_runner_blocks_a_transport_failed_authorized_repair(
             ),
         ),
     )
-    r0["r9_repair_authorization"] = _repair_authorization(request)
-    monkeypatch.setattr(stages, "_v3_phase_f_inputs", lambda _context: inputs)
-    runner = object.__new__(CurationServicesRunner)
-    runner.structured = StructuredTextService(
-        _FakeGenerator([{"resolutions": []}, RuntimeError("repair network")])
+    r0["r9_repair_authorization"] = _repair_authorization(
+        request, rate_table_sha256=str(r0["rate_table_sha256"])
     )
+    monkeypatch.setattr(stages, "_v3_phase_f_inputs", lambda _context: inputs)
+    runner = _offline_runner(_FakeGenerator([{"resolutions": []}, RuntimeError("repair network")]))
     events: list[ProviderEventEvidence] = []
     with bind_provider_attempts(
         ProviderAttemptBinding(
@@ -763,9 +844,11 @@ def test_r10_runner_uses_exact_only_and_pinned_partial_vector_coverage(
             }
         ],
     }
+    _empty_ledger(r9)
     r9["artifact_sha256"] = canonical_payload_sha256(r9)
     context.prior_payloads[CurationStage.V3_R9_GENERATION] = r9
     exact_runner = object.__new__(CurationServicesRunner)
+    exact_runner.structured = StructuredTextService(_FakeGenerator([]))
     exact_runner.companion = _Companion((exact_note,))
     exact_runner.semantic = _PinnedVectors({})
     exact_runner.embedder = _RaisingEmbedder()
@@ -789,6 +872,7 @@ def test_r10_runner_uses_exact_only_and_pinned_partial_vector_coverage(
     semantic = _PinnedVectors({1: (1.0, 0.0)})
     embedder = _Embedder([[0.0, 1.0]])
     partial_runner = object.__new__(CurationServicesRunner)
+    partial_runner.structured = StructuredTextService(_FakeGenerator([]))
     partial_runner.companion = _Companion((covered, missing))
     partial_runner.semantic = semantic
     partial_runner.embedder = embedder
@@ -819,8 +903,7 @@ def test_r9_to_r10_runner_preserves_ten_numeric_split_ordinals(
         }
         for index, row in enumerate(split_response["resolutions"], start=1)
     ]
-    r9_runner = object.__new__(CurationServicesRunner)
-    r9_runner.structured = StructuredTextService(_FakeGenerator([split_response]))
+    r9_runner = _offline_runner(_FakeGenerator([split_response]))
     r9 = asyncio.run(r9_runner.run(context)).payload
     context.prior_payloads[CurationStage.V3_R9_GENERATION] = r9
     context.stage = CurationStage.V3_R10_DEDUPE
@@ -829,6 +912,7 @@ def test_r9_to_r10_runner_preserves_ten_numeric_split_ordinals(
         {"semantic_generation": "semantic-1", "card_identities": [], "semantic_identities": []}
     )
     r10_runner = object.__new__(CurationServicesRunner)
+    r10_runner.structured = StructuredTextService(_FakeGenerator([]))
     r10_runner.companion = _Companion(())
     r10_runner.semantic = _PinnedVectors({})
     r10_runner.embedder = _Embedder([[1.0, 0.0]] * 10)

@@ -22,7 +22,10 @@ from oms_hub.anki.card_centric import (
 )
 from oms_hub.anki.card_centric_review import (
     OverflowAcknowledgement,
+    V3ReviewReconciliation,
+    V3ReviewSnapshot,
     issue_acknowledgement,
+    reconcile_v3,
     selection_digest,
     verify_acknowledgement,
 )
@@ -39,6 +42,7 @@ from oms_hub.anki.correction_contracts import (
     PinnedLectureMetadata,
     _sha,
 )
+from oms_hub.anki.cost_estimator import FrozenRateTable
 from oms_hub.anki.course_policy import CourseCurationPolicy
 from oms_hub.anki.domain import (
     AgentCommandType,
@@ -108,7 +112,26 @@ from oms_hub.llm.domain import DiagnosticSource, ProviderName
 from oms_hub.models import LectureModel, utc_now
 
 ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
-    CurationState.QUEUED: {CurationState.PREFLIGHT, CurationState.FAILED},
+    CurationState.QUEUED: {
+        CurationState.PREFLIGHT,
+        CurationState.V3_R0_PREFLIGHT,
+        CurationState.FAILED,
+    },
+    CurationState.V3_R0_PREFLIGHT: {CurationState.V3_R1_SOURCE_INDEX, CurationState.FAILED},
+    CurationState.V3_R1_SOURCE_INDEX: {CurationState.V3_R2_FIDELITY, CurationState.FAILED},
+    CurationState.V3_R2_FIDELITY: {CurationState.V3_R3_SCOPE, CurationState.FAILED},
+    CurationState.V3_R3_SCOPE: {CurationState.V3_R4_INDEX_VERIFICATION, CurationState.FAILED},
+    CurationState.V3_R4_INDEX_VERIFICATION: {CurationState.V3_R5_RETRIEVAL, CurationState.FAILED},
+    CurationState.V3_R5_RETRIEVAL: {CurationState.V3_R6_CALIBRATION, CurationState.FAILED},
+    CurationState.V3_R6_CALIBRATION: {CurationState.V3_R7_CLASSIFICATION, CurationState.FAILED},
+    CurationState.V3_R7_CLASSIFICATION: {
+        CurationState.V3_R8_GAP_CONFIRMATION,
+        CurationState.FAILED,
+    },
+    CurationState.V3_R8_GAP_CONFIRMATION: {CurationState.V3_R9_GENERATION, CurationState.FAILED},
+    CurationState.V3_R9_GENERATION: {CurationState.V3_R10_DEDUPE, CurationState.FAILED},
+    CurationState.V3_R10_DEDUPE: {CurationState.V3_R11_REVIEW, CurationState.FAILED},
+    CurationState.V3_R11_REVIEW: {CurationState.READY_FOR_REVIEW, CurationState.FAILED},
     CurationState.PREFLIGHT: {
         CurationState.SNAPSHOTTING_EMBEDDINGS,
         CurationState.BUILDING_COMPANION_INDEX,
@@ -276,6 +299,18 @@ ALLOWED_TRANSITIONS: dict[CurationState, set[CurationState]] = {
         CurationState.DEDUPING,
         CurationState.GENERATING_GAPS,
         CurationState.RECONCILING,
+        CurationState.V3_R0_PREFLIGHT,
+        CurationState.V3_R1_SOURCE_INDEX,
+        CurationState.V3_R2_FIDELITY,
+        CurationState.V3_R3_SCOPE,
+        CurationState.V3_R4_INDEX_VERIFICATION,
+        CurationState.V3_R5_RETRIEVAL,
+        CurationState.V3_R6_CALIBRATION,
+        CurationState.V3_R7_CLASSIFICATION,
+        CurationState.V3_R8_GAP_CONFIRMATION,
+        CurationState.V3_R9_GENERATION,
+        CurationState.V3_R10_DEDUPE,
+        CurationState.V3_R11_REVIEW,
         CurationState.REMOVED,
     },
 }
@@ -311,6 +346,18 @@ _INTERRUPTED_PRE_REVIEW_STATES = {
     CurationState.DEDUPING,
     CurationState.GENERATING_GAPS,
     CurationState.RECONCILING,
+    CurationState.V3_R0_PREFLIGHT,
+    CurationState.V3_R1_SOURCE_INDEX,
+    CurationState.V3_R2_FIDELITY,
+    CurationState.V3_R3_SCOPE,
+    CurationState.V3_R4_INDEX_VERIFICATION,
+    CurationState.V3_R5_RETRIEVAL,
+    CurationState.V3_R6_CALIBRATION,
+    CurationState.V3_R7_CLASSIFICATION,
+    CurationState.V3_R8_GAP_CONFIRMATION,
+    CurationState.V3_R9_GENERATION,
+    CurationState.V3_R10_DEDUPE,
+    CurationState.V3_R11_REVIEW,
 }
 
 _CLAIMABLE_STATES = {
@@ -343,6 +390,18 @@ _CLAIMABLE_STATES = {
     CurationState.DEDUPING,
     CurationState.GENERATING_GAPS,
     CurationState.RECONCILING,
+    CurationState.V3_R0_PREFLIGHT,
+    CurationState.V3_R1_SOURCE_INDEX,
+    CurationState.V3_R2_FIDELITY,
+    CurationState.V3_R3_SCOPE,
+    CurationState.V3_R4_INDEX_VERIFICATION,
+    CurationState.V3_R5_RETRIEVAL,
+    CurationState.V3_R6_CALIBRATION,
+    CurationState.V3_R7_CLASSIFICATION,
+    CurationState.V3_R8_GAP_CONFIRMATION,
+    CurationState.V3_R9_GENERATION,
+    CurationState.V3_R10_DEDUPE,
+    CurationState.V3_R11_REVIEW,
 }
 
 _RETRY_STATE_BY_STAGE = {
@@ -372,6 +431,18 @@ _RETRY_STATE_BY_STAGE = {
     CurationStage.DEDUPE: CurationState.DEDUPING,
     CurationStage.GAPS: CurationState.GENERATING_GAPS,
     CurationStage.RECONCILIATION: CurationState.RECONCILING,
+    CurationStage.V3_R0_PREFLIGHT: CurationState.V3_R0_PREFLIGHT,
+    CurationStage.V3_R1_SOURCE_INDEX: CurationState.V3_R1_SOURCE_INDEX,
+    CurationStage.V3_R2_FIDELITY: CurationState.V3_R2_FIDELITY,
+    CurationStage.V3_R3_SCOPE: CurationState.V3_R3_SCOPE,
+    CurationStage.V3_R4_INDEX_VERIFICATION: CurationState.V3_R4_INDEX_VERIFICATION,
+    CurationStage.V3_R5_RETRIEVAL: CurationState.V3_R5_RETRIEVAL,
+    CurationStage.V3_R6_CALIBRATION: CurationState.V3_R6_CALIBRATION,
+    CurationStage.V3_R7_CLASSIFICATION: CurationState.V3_R7_CLASSIFICATION,
+    CurationStage.V3_R8_GAP_CONFIRMATION: CurationState.V3_R8_GAP_CONFIRMATION,
+    CurationStage.V3_R9_GENERATION: CurationState.V3_R9_GENERATION,
+    CurationStage.V3_R10_DEDUPE: CurationState.V3_R10_DEDUPE,
+    CurationStage.V3_R11_REVIEW: CurationState.V3_R11_REVIEW,
 }
 
 
@@ -417,9 +488,7 @@ def _validate_provider_event_append(prior: list[str], event: str) -> None:
         },
         # Schema-valid structured output can still fail a stage-level partition
         # contract. Preserve both facts in append-only order.
-        ("begun", "dispatched", "response_received", "accepted"): {
-            "contract_failed"
-        },
+        ("begun", "dispatched", "response_received", "accepted"): {"contract_failed"},
     }
     if event not in allowed.get(tuple(prior), set()):
         raise ValueError("provider attempt event lifecycle is invalid")
@@ -451,6 +520,8 @@ def _configuration_document(
     semantic_generation: str | None,
     companion_generation: str | None,
     policy_sha256: str | None = None,
+    rate_table_sha256: str | None = None,
+    offline_replay_only: bool = False,
 ) -> dict[str, Any]:
     """Return the complete canonical job configuration used for provenance."""
     document = {
@@ -476,6 +547,8 @@ def _configuration_document(
     }
     if pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3:
         document["policy_sha256"] = policy_sha256
+        document["rate_table_sha256"] = rate_table_sha256
+        document["offline_replay_only"] = offline_replay_only
     return document
 
 
@@ -502,12 +575,17 @@ def _same_unique_identity_set(
     )
 
 
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
 def is_semantic_dedupe_retry_hold(job: CurationJob) -> bool:
     """Whether a ready job is an S8 outage hold, not a reviewable result."""
-    return (
-        job.state is CurationState.READY_FOR_REVIEW
-        and _is_semantic_dedupe_retry_hold(job.error)
-    )
+    return job.state is CurationState.READY_FOR_REVIEW and _is_semantic_dedupe_retry_hold(job.error)
 
 
 def _is_semantic_dedupe_retry_hold(error: str | None) -> bool:
@@ -520,11 +598,35 @@ class AnkiCurationRepository:
 
     def create_job(self, request: CreateCurationJob) -> CurationJob:
         if request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3:
-            from oms_hub.anki.pipeline import UnsupportedPipelineContract
-
-            raise UnsupportedPipelineContract(
-                "card_centric_v3 is contract-only; no job or execution path is available"
-            )
+            if not request.offline_replay_only:
+                raise ValueError("card_centric_v3 is offline-replay-only")
+            if not _is_sha256(request.policy_sha256):
+                raise ValueError("card_centric_v3 requires an exact policy pin")
+            assert request.policy_sha256 is not None
+            if set(request.source_revision_hashes) != set(request.source_revision_ids) or not all(
+                _is_sha256(value) for value in request.source_revision_hashes.values()
+            ):
+                raise ValueError("card_centric_v3 requires exact source revision hash pins")
+            if not request.companion_generation or not request.semantic_generation:
+                raise ValueError("card_centric_v3 requires companion and semantic generation pins")
+            self.get_policy_by_sha256(request.policy_sha256)
+            if request.resolved_model_config is None or not all(
+                (
+                    request.resolved_model_config.scope_r3,
+                    request.resolved_model_config.cheap_classify_r7,
+                    request.resolved_model_config.thorough_classify_r7,
+                    request.resolved_model_config.generation_r9,
+                )
+            ):
+                raise ValueError("card_centric_v3 requires complete pinned model routes")
+            try:
+                table = FrozenRateTable.from_document(
+                    cast(dict[str, object], request.rate_table_document)
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("card_centric_v3 requires a complete frozen rate table") from exc
+        else:
+            table = None
         if (
             request.pipeline_contract_version
             in {PipelineContractVersion.CARD_CENTRIC_V1, PipelineContractVersion.CARD_CENTRIC_V2}
@@ -588,6 +690,8 @@ class AnkiCurationRepository:
             semantic_generation=request.semantic_generation,
             companion_generation=request.companion_generation,
             policy_sha256=request.policy_sha256,
+            rate_table_sha256=None if table is None else table.rate_table_sha256,
+            offline_replay_only=request.offline_replay_only,
         )
         with self.database.session() as session:
             lecture = session.get(LectureModel, request.lecture_id)
@@ -630,6 +734,9 @@ class AnkiCurationRepository:
                 companion_generation=request.companion_generation,
                 configuration_sha256=_configuration_sha256(configuration),
                 policy_sha256=request.policy_sha256,
+                v3_rate_table_json=None if table is None else _canonical_json(table.document()),
+                v3_rate_table_sha256=None if table is None else table.rate_table_sha256,
+                offline_replay_only=request.offline_replay_only,
                 apply_state=ApplyState.PENDING.value,
                 instruction_text=request.instruction_text,
                 instruction_sha256=_sha256_text(request.instruction_text),
@@ -682,6 +789,22 @@ class AnkiCurationRepository:
             if stored is None:
                 raise KeyError((policy_id, revision))
             return self._course_policy(stored)
+
+    def get_policy_by_sha256(self, policy_sha256: str) -> CourseCurationPolicy:
+        """Return the one immutable policy revision pinned by a v3 job."""
+        if not _is_sha256(policy_sha256):
+            raise ValueError("policy SHA-256 is invalid")
+        with self.database.session() as session:
+            rows = list(
+                session.scalars(
+                    select(CourseCurationPolicyModel).where(
+                        CourseCurationPolicyModel.policy_sha256 == policy_sha256
+                    )
+                )
+            )
+            if len(rows) != 1:
+                raise KeyError("pinned course policy is unavailable or ambiguous")
+            return self._course_policy(rows[0])
 
     def list_policy_revisions(self, policy_id: str) -> tuple[CourseCurationPolicy, ...]:
         with self.database.session() as session:
@@ -785,9 +908,7 @@ class AnkiCurationRepository:
                     not _same_unique_identity_set(selected_note_ids, frozen_notes)
                     or not _same_unique_identity_set(selected_generated_ids, frozen_generated)
                     or not _same_unique_identity_set(mandatory_note_ids, overflow_notes)
-                    or not _same_unique_identity_set(
-                        mandatory_generated_ids, overflow_generated
-                    )
+                    or not _same_unique_identity_set(mandatory_generated_ids, overflow_generated)
                     or cap != frozen_cap
                 ):
                     raise ValueError(
@@ -905,8 +1026,7 @@ class AnkiCurationRepository:
                     selected_generated_ids,
                     selection_order=selection_order,
                 )
-                and acknowledgement.mandatory_count
-                == mandatory_count
+                and acknowledgement.mandatory_count == mandatory_count
                 and acknowledgement.cap == cap
                 and acknowledgement.pipeline_contract_version == job.pipeline_contract_version
                 and acknowledgement.model_config_sha256 == job.model_config_sha256
@@ -1101,6 +1221,10 @@ class AnkiCurationRepository:
             if not isinstance(envelope, ActionEnvelopeV2):
                 return True
             job = self._require_job_model(session, UUID(row.job_id))
+            if job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V3.value:
+                # Phase G persists a revision-bound approval seam only; R12
+                # must stop here, before the coordinator can contact Anki.
+                return False
             if envelope.review_revision != job.review_revision:
                 return False
             reviewed = session.scalar(
@@ -1133,6 +1257,47 @@ class AnkiCurationRepository:
                     document=document,
                 )
             )
+
+    @staticmethod
+    def _valid_v3_envelope(
+        session: Session, job: AnkiCurationJobModel, envelope: ActionEnvelopeV2
+    ) -> bool:
+        if envelope.pipeline_contract_version != PipelineContractVersion.CARD_CENTRIC_V3.value:
+            return False
+        reviewed = session.scalar(
+            select(AnkiReviewedReconciliationModel).where(
+                AnkiReviewedReconciliationModel.job_id == job.id,
+                AnkiReviewedReconciliationModel.review_revision == envelope.review_revision,
+            )
+        )
+        if reviewed is None:
+            return False
+        try:
+            payload = cast(dict[str, Any], json.loads(reviewed.payload_json))
+            reconciliation = V3ReviewReconciliation.model_validate(
+                {
+                    key: payload[key]
+                    for key in (
+                        "snapshot",
+                        "can_render_envelope",
+                        "findings",
+                        "reconciliation_sha256",
+                    )
+                }
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+        snapshot = reconciliation.snapshot
+        return bool(
+            reconciliation.can_render_envelope
+            and envelope.policy_sha256 == snapshot.policy_sha256
+            and envelope.scope_sha256 == snapshot.scope_sha256
+            and envelope.r11_snapshot_sha256 == snapshot.snapshot_sha256
+            and envelope.r11_artifact_sha256 == payload.get("r11_artifact_sha256")
+            and envelope.rate_table_sha256 == snapshot.rate_table_sha256
+            and envelope.cost_ledger_sha256 == payload.get("cost_ledger_sha256")
+            and envelope.review_revision == job.review_revision
+        )
 
     def require_job(self, job_id: UUID) -> CurationJob:
         with self.database.session() as session:
@@ -1212,7 +1377,15 @@ class AnkiCurationRepository:
                     ),
                 )
                 .values(
-                    state=(CurationState.PREFLIGHT.value if queued else stored.state),
+                    state=(
+                        CurationState.V3_R0_PREFLIGHT.value
+                        if queued
+                        and stored.pipeline_contract_version
+                        == PipelineContractVersion.CARD_CENTRIC_V3.value
+                        else CurationState.PREFLIGHT.value
+                        if queued
+                        else stored.state
+                    ),
                     attempts=(
                         AnkiCurationJobModel.attempts + 1
                         if queued
@@ -1411,9 +1584,10 @@ class AnkiCurationRepository:
                 stored.state == CurationState.READY_FOR_REVIEW.value
                 and _is_semantic_dedupe_retry_hold(stored.error)
             ):
-                if CurationState.CARD_DEDUPING not in ALLOWED_TRANSITIONS[
-                    CurationState.READY_FOR_REVIEW
-                ]:
+                if (
+                    CurationState.CARD_DEDUPING
+                    not in ALLOWED_TRANSITIONS[CurationState.READY_FOR_REVIEW]
+                ):
                     raise InvalidCurationTransition(
                         "transition ready_for_review -> card_deduping is not allowed"
                     )
@@ -1787,9 +1961,7 @@ class AnkiCurationRepository:
             is_sqlite = session.bind is not None and session.bind.dialect.name == "sqlite"
             if is_sqlite:
                 session.execute(text("BEGIN IMMEDIATE"))
-            job_query = select(AnkiCurationJobModel).where(
-                AnkiCurationJobModel.id == str(job_id)
-            )
+            job_query = select(AnkiCurationJobModel).where(AnkiCurationJobModel.id == str(job_id))
             if not is_sqlite:
                 job_query = job_query.with_for_update()
             job = session.scalar(job_query)
@@ -1811,17 +1983,15 @@ class AnkiCurationRepository:
                 or stage.attempt_count != expected_stage_attempt
             ):
                 raise InvalidCurationTransition("card-ledger attempt is not running")
-            if (
-                (stage.provider is not None and stage.provider != attempt.provider.value)
-                or (stage.model is not None and stage.model != attempt.model)
+            if (stage.provider is not None and stage.provider != attempt.provider.value) or (
+                stage.model is not None and stage.model != attempt.model
             ):
                 raise ValueError("card-ledger attempt does not match the stage transport")
             if attempt.call_index == 2:
                 primary = session.scalar(
                     select(AnkiCardLedgerAttemptModel).where(
                         AnkiCardLedgerAttemptModel.job_id == str(job_id),
-                        AnkiCardLedgerAttemptModel.stage
-                        == CurationStage.CARD_LEDGER.value,
+                        AnkiCardLedgerAttemptModel.stage == CurationStage.CARD_LEDGER.value,
                         AnkiCardLedgerAttemptModel.stage_attempt == stage.attempt_count,
                         AnkiCardLedgerAttemptModel.call_index == 1,
                     )
@@ -1829,19 +1999,14 @@ class AnkiCurationRepository:
                 if primary is None:
                     raise ValueError("card-ledger repair requires a persisted primary call")
                 if primary.outcome != "validation_failed":
-                    raise ValueError(
-                        "card-ledger repair requires a validation-failed primary call"
-                    )
+                    raise ValueError("card-ledger repair requires a validation-failed primary call")
                 if (
                     primary.provider != attempt.provider.value
                     or primary.model != attempt.model
                     or primary.generation_parameters_json != parameters_json
-                    or primary.generation_parameters_sha256
-                    != attempt.generation_parameters_sha256
+                    or primary.generation_parameters_sha256 != attempt.generation_parameters_sha256
                 ):
-                    raise ValueError(
-                        "card-ledger repair must match the primary transport identity"
-                    )
+                    raise ValueError("card-ledger repair must match the primary transport identity")
             existing = session.scalar(
                 select(AnkiCardLedgerAttemptModel).where(
                     AnkiCardLedgerAttemptModel.job_id == str(job_id),
@@ -1932,6 +2097,12 @@ class AnkiCurationRepository:
             "duplicate_note_ids_json": _canonical_json(list(event.duplicate_note_ids)),
             "diagnostic_source": evidence.diagnostic_source,
             "http_status": evidence.http_status,
+            "cost_reservation_json": (
+                None
+                if evidence.cost_reservation is None
+                else _canonical_json(evidence.cost_reservation)
+            ),
+            "cost_reservation_sha256": evidence.cost_reservation_sha256,
         }
         with self.database.session() as session:
             is_sqlite = session.bind is not None and session.bind.dialect.name == "sqlite"
@@ -2049,6 +2220,12 @@ class AnkiCurationRepository:
                 "duplicate_note_ids": json.loads(row.duplicate_note_ids_json),
                 "diagnostic_source": row.diagnostic_source,
                 "http_status": row.http_status,
+                "cost_reservation": (
+                    None
+                    if row.cost_reservation_json is None
+                    else json.loads(row.cost_reservation_json)
+                ),
+                "cost_reservation_sha256": row.cost_reservation_sha256,
                 "created_at": row.created_at,
             }
             for row in rows
@@ -2375,6 +2552,8 @@ class AnkiCurationRepository:
         change_set: ReviewChangeSet,
         *,
         card_centric_snapshot: dict[str, Any] | None = None,
+        v3_review_artifact_sha256: str | None = None,
+        v3_cost_ledger_sha256: str | None = None,
     ) -> SavedReview:
         with self.database.session() as session:
             job = self._require_job_model(session, job_id)
@@ -2384,7 +2563,55 @@ class AnkiCurationRepository:
             if not reviewer or len(reviewer) > 200:
                 raise ValueError("reviewer is invalid")
             documented_t6_nids: set[int] = set()
-            if card_centric_snapshot is not None:
+            v3_snapshot: V3ReviewSnapshot | None = None
+            is_v3 = job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V3.value
+            if is_v3:
+                if card_centric_snapshot is None:
+                    raise ValueError("v3 review requires a committed R11 snapshot")
+                try:
+                    v3_snapshot = V3ReviewSnapshot.model_validate(card_centric_snapshot)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("v3 review requires a valid R11 snapshot") from exc
+                if (
+                    card_centric_snapshot.get("snapshot_sha256") != v3_snapshot.snapshot_sha256
+                    or not _is_sha256(v3_review_artifact_sha256)
+                    or not _is_sha256(v3_cost_ledger_sha256)
+                ):
+                    raise ValueError("v3 review requires exact R11 snapshot and identity")
+                visible_notes = {
+                    int(item["note_id"])
+                    for item in v3_snapshot.existing_candidates
+                    if isinstance(item.get("note_id"), int)
+                }
+                visible_cards = {
+                    str(item["card_id"])
+                    for item in v3_snapshot.generated_cards
+                    if isinstance(item.get("card_id"), str)
+                }
+                if not set(change_set.candidate_selections) <= visible_notes:
+                    raise ValueError("v3 review cannot select an invisible candidate")
+                canonical_notes = {
+                    int(item["note_id"])
+                    for item in v3_snapshot.existing_candidates
+                    if item.get("disposition") == "keep" and isinstance(item.get("note_id"), int)
+                }
+                redundant_notes = {
+                    int(item["note_id"])
+                    for item in v3_snapshot.existing_candidates
+                    if item.get("disposition") == "redundant"
+                    and isinstance(item.get("note_id"), int)
+                } - canonical_notes
+                if any(
+                    selected and note_id in redundant_notes
+                    for note_id, selected in change_set.candidate_selections.items()
+                ):
+                    raise ValueError("v3 review cannot select a redundant representative")
+                if any(
+                    edit.card_id and edit.card_id not in visible_cards
+                    for edit in change_set.gap_edits
+                ):
+                    raise ValueError("v3 review cannot edit an invisible generated card")
+            elif card_centric_snapshot is not None:
                 documented_t6_nids = set(
                     CardCentricReconciliationInput.model_validate(
                         card_centric_snapshot
@@ -2488,7 +2715,16 @@ class AnkiCurationRepository:
                     )
                 )
             job.review_revision += 1
-            if card_centric_snapshot is not None:
+            if is_v3:
+                self._persist_reviewed_v3_snapshot(
+                    session,
+                    job_id,
+                    revision=job.review_revision,
+                    snapshot_payload=cast(dict[str, Any], card_centric_snapshot),
+                    r11_artifact_sha256=cast(str, v3_review_artifact_sha256),
+                    cost_ledger_sha256=cast(str, v3_cost_ledger_sha256),
+                )
+            elif card_centric_snapshot is not None:
                 self._persist_reviewed_card_centric_snapshot(
                     session,
                     job_id,
@@ -2497,6 +2733,83 @@ class AnkiCurationRepository:
                 )
             session.flush()
             return SavedReview(job_id=job_id, revision=job.review_revision)
+
+    def _persist_reviewed_v3_snapshot(
+        self,
+        session: Session,
+        job_id: UUID,
+        *,
+        revision: int,
+        snapshot_payload: dict[str, Any],
+        r11_artifact_sha256: str,
+        cost_ledger_sha256: str,
+    ) -> None:
+        """Reconcile v3 persisted rows in the review transaction, without dispatch."""
+        snapshot = V3ReviewSnapshot.model_validate(snapshot_payload)
+        candidates = session.scalars(
+            select(AnkiCandidateModel).where(AnkiCandidateModel.job_id == str(job_id))
+        ).all()
+        cards = session.scalars(
+            select(AnkiGapCardModel).where(AnkiGapCardModel.job_id == str(job_id))
+        ).all()
+        candidate_rows = {item.note_id: item for item in candidates}
+        card_rows = {item.id: item for item in cards}
+        existing: list[dict[str, Any]] = []
+        for item in snapshot.existing_candidates:
+            value = dict(item)
+            note_id = value.get("note_id")
+            if not isinstance(note_id, int) or note_id not in candidate_rows:
+                raise ValueError("v3 review candidate is not a persisted row")
+            value["selected"] = candidate_rows[note_id].selected
+            existing.append(value)
+        generated: list[dict[str, Any]] = []
+        for item in snapshot.generated_cards:
+            value = dict(item)
+            card_id = value.get("card_id")
+            if not isinstance(card_id, str):
+                if value.get("status") == "unresolved":
+                    generated.append(value)
+                    continue
+                raise ValueError("v3 review generated card is not a persisted row")
+            if card_id not in card_rows:
+                raise ValueError("v3 review generated card is not a persisted row")
+            stored = card_rows[card_id]
+            value.update(text=stored.text, extra=stored.extra, selected=stored.selected)
+            generated.append(value)
+        visible_note_ids = {int(item["note_id"]) for item in snapshot.existing_candidates}
+        visible_card_ids = {str(item["card_id"]) for item in snapshot.generated_cards}
+        reviewed = V3ReviewSnapshot.model_validate(
+            {
+                **snapshot.canonical_payload(),
+                "existing_candidates": existing,
+                "generated_cards": generated,
+                "selected_existing_note_ids": sorted(
+                    item.note_id
+                    for item in candidates
+                    if item.selected and item.note_id in visible_note_ids
+                ),
+                "selected_generated_card_ids": sorted(
+                    item.id for item in cards if item.selected and item.id in visible_card_ids
+                ),
+                "snapshot_sha256": "",
+            }
+        )
+        reconciliation = reconcile_v3(reviewed)
+        session.add(
+            AnkiReviewedReconciliationModel(
+                job_id=str(job_id),
+                review_revision=revision,
+                payload_json=_canonical_json(
+                    {
+                        "contract_version": "card_centric_v3_r11",
+                        "r11_artifact_sha256": r11_artifact_sha256,
+                        "r11_snapshot_sha256": reviewed.snapshot_sha256,
+                        "cost_ledger_sha256": cost_ledger_sha256,
+                        **reconciliation.model_dump(mode="json"),
+                    }
+                ),
+            )
+        )
 
     def _persist_reviewed_card_centric_snapshot(
         self,
@@ -2807,6 +3120,20 @@ class AnkiCurationRepository:
         payload_json = _canonical_json(envelope.model_dump(mode="json"))
         with self.database.session() as session:
             job = self._require_job_model(session, job_id)
+            if (
+                job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V3.value
+                and envelope.contract_version != 2
+            ):
+                raise ValueError(
+                    "v3 jobs require a v3-bound action envelope; no mutation performed"
+                )
+            if job.pipeline_contract_version == PipelineContractVersion.CARD_CENTRIC_V3.value and (
+                not isinstance(envelope, ActionEnvelopeV2)
+                or not self._valid_v3_envelope(session, job, envelope)
+            ):
+                raise ValueError(
+                    "v3 envelope does not exactly bind the committed review; no mutation performed"
+                )
             if envelope.contract_version == 2:
                 if envelope.job_id != job_id:
                     raise ValueError(
@@ -3438,6 +3765,16 @@ class AnkiCurationRepository:
         pipeline_contract_version = PipelineContractVersion(stored.pipeline_contract_version)
         if pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V2:
             config.require_card_centric_v2_fast_classifier()
+        rate_document = (
+            None if stored.v3_rate_table_json is None else json.loads(stored.v3_rate_table_json)
+        )
+        if pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3:
+            try:
+                table = FrozenRateTable.from_document(cast(dict[str, object], rate_document))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("stored card-centric-v3 rate table is invalid") from exc
+            if table.rate_table_sha256 != stored.v3_rate_table_sha256:
+                raise ValueError("stored card-centric-v3 rate table hash changed")
         expected_model_config_sha256 = _sha256_text(_canonical_json(config.canonical_document()))
         if stored.resolved_model_config_json not in {"", "{}"} and (
             stored.model_config_sha256 != expected_model_config_sha256
@@ -3489,6 +3826,9 @@ class AnkiCurationRepository:
             summary_outline_id=stored.summary_outline_id,
             summary_outline_sha256=stored.summary_outline_sha256,
             policy_sha256=stored.policy_sha256,
+            rate_table_document=rate_document,
+            rate_table_sha256=stored.v3_rate_table_sha256,
+            offline_replay_only=stored.offline_replay_only,
         )
 
     @staticmethod
@@ -3644,6 +3984,12 @@ class AnkiCurationRepository:
                 bool(raw.get("residual_unlocked", False)),
                 stage("fast_classify_s4b") if raw.get("fast_classify_s4b") is not None else None,
                 classifier_execution(),
+                stage("scope_r3") if raw.get("scope_r3") is not None else None,
+                stage("cheap_classify_r7") if raw.get("cheap_classify_r7") is not None else None,
+                stage("thorough_classify_r7")
+                if raw.get("thorough_classify_r7") is not None
+                else None,
+                stage("generation_r9") if raw.get("generation_r9") is not None else None,
             )
             if _canonical_json(resolved.canonical_document()) != value:
                 raise ValueError("stored resolved model configuration is not canonical")
@@ -3772,10 +4118,7 @@ def _validate_card_ledger_attempt_for_write(
         )
     except ValueError as error:
         raise ValueError("card-ledger generation parameters are invalid") from error
-    if (
-        hashlib.sha256(parameters_json.encode()).hexdigest()
-        != attempt.generation_parameters_sha256
-    ):
+    if hashlib.sha256(parameters_json.encode()).hexdigest() != attempt.generation_parameters_sha256:
         raise ValueError("card-ledger generation parameter hash is invalid")
     if attempt.outcome == "accepted":
         valid_payload = (

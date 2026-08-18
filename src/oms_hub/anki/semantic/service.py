@@ -136,6 +136,7 @@ class SemanticIndexService:
         eligible_note_ids: Collection[int] | None = None,
         limit: int,
         expected_generation: str | None = None,
+        embedding_client: EmbeddingClient | None = None,
     ) -> list[list[SemanticHit]]:
         if limit < 1:
             raise ValueError("limit must be positive")
@@ -165,7 +166,9 @@ class SemanticIndexService:
         ]
         if not selected_rows:
             return [[] for _ in normalized_queries]
-        query_vectors = await self._query_vectors(normalized_queries)
+        query_vectors = await self._query_vectors(
+            normalized_queries, embedding_client=embedding_client
+        )
         matrix = snapshot.matrix[selected_rows].astype(np.float32)
         if expected_generation is not None:
             _validate_note_vectors(matrix, dimensions=self.dimensions)
@@ -246,9 +249,7 @@ class SemanticIndexService:
         if missing:
             raise SemanticCoverageError("pinned semantic snapshot lacks scoped notes")
         ordered_note_ids = tuple(sorted(requested_ids))
-        matrix = snapshot.matrix[[rows[note_id] for note_id in ordered_note_ids]].astype(
-            np.float32
-        )
+        matrix = snapshot.matrix[[rows[note_id] for note_id in ordered_note_ids]].astype(np.float32)
         _validate_note_vectors(matrix, dimensions=self.dimensions)
         vectors: dict[int, FloatMatrix] = {}
         for row, note_id in enumerate(ordered_note_ids):
@@ -276,8 +277,7 @@ class SemanticIndexService:
         }
         unavailable_note_ids = tuple(sorted(requested_ids - set(rows)))
         normalized_terms = [
-            tuple(normalize_semantic_text(term) for term in terms)
-            for terms in concept_terms
+            tuple(normalize_semantic_text(term) for term in terms) for terms in concept_terms
         ]
         if not normalized_terms or any(
             not terms or any(not term for term in terms) for terms in normalized_terms
@@ -292,9 +292,7 @@ class SemanticIndexService:
             centroids.append(_normalized_centroid(query_vectors[offset : offset + len(terms)]))
             offset += len(terms)
         ordered_note_ids = tuple(sorted(rows))
-        matrix = snapshot.matrix[[rows[note_id] for note_id in ordered_note_ids]].astype(
-            np.float32
-        )
+        matrix = snapshot.matrix[[rows[note_id] for note_id in ordered_note_ids]].astype(np.float32)
         _validate_note_vectors(matrix, dimensions=self.dimensions)
         centroid_matrix = np.asarray(centroids, dtype=np.float32)
         scores = matrix @ centroid_matrix.T
@@ -321,6 +319,8 @@ class SemanticIndexService:
     async def _query_vectors(
         self,
         queries: Sequence[str],
+        *,
+        embedding_client: EmbeddingClient | None = None,
     ) -> list[FloatMatrix]:
         resolved: dict[str, FloatMatrix] = {}
         missing_keys: list[str] = []
@@ -335,7 +335,7 @@ class SemanticIndexService:
                 missing_keys.append(key)
                 missing_queries.append(query)
         if missing_queries:
-            embedded = await self.embedder.embed(
+            embedded = await (embedding_client or self.embedder).embed(
                 missing_queries,
                 input_type="query",
             )

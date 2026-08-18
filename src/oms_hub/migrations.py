@@ -12,6 +12,7 @@ from oms_hub.anki.card_centric import (
     _redacted_invalid_response,
     validate_persisted_s2_generation_parameters,
 )
+from oms_hub.anki.cost_estimator import FrozenRateTable
 from oms_hub.anki.course_policy import CourseCurationPolicy
 from oms_hub.anki.models import CourseCurationPolicyModel
 from oms_hub.domain import StepStatus, V2StepName
@@ -37,7 +38,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 28
+LATEST_SCHEMA_VERSION = 29
 
 
 def _ensure_column(
@@ -65,18 +66,33 @@ def _validate_card_ledger_attempts_v25(database: "Database") -> None:
     column_rows = {item["name"]: item for item in inspector.get_columns(table)}
     columns = set(column_rows)
     required = {
-        "id", "job_id", "stage", "stage_attempt", "call_index", "kind", "outcome",
-        "provider", "model", "instruction_sha256", "generation_parameters_json",
-        "generation_parameters_sha256", "request_id", "input_tokens", "output_tokens",
-        "cost_microusd", "validation_error", "invalid_response_sha256", "invalid_response",
-        "diagnostic_source", "http_status",
+        "id",
+        "job_id",
+        "stage",
+        "stage_attempt",
+        "call_index",
+        "kind",
+        "outcome",
+        "provider",
+        "model",
+        "instruction_sha256",
+        "generation_parameters_json",
+        "generation_parameters_sha256",
+        "request_id",
+        "input_tokens",
+        "output_tokens",
+        "cost_microusd",
+        "validation_error",
+        "invalid_response_sha256",
+        "invalid_response",
+        "diagnostic_source",
+        "http_status",
         "created_at",
     }
     missing = sorted(required - columns)
     if missing:
         raise RuntimeError(
-            "schema v25 card-ledger attempt evidence is incomplete: "
-            + ", ".join(missing)
+            "schema v25 card-ledger attempt evidence is incomplete: " + ", ".join(missing)
         )
     unique_sets = {
         tuple(index["column_names"])
@@ -84,8 +100,7 @@ def _validate_card_ledger_attempts_v25(database: "Database") -> None:
         if index.get("unique")
     }
     unique_sets.update(
-        tuple(constraint["column_names"])
-        for constraint in inspector.get_unique_constraints(table)
+        tuple(constraint["column_names"]) for constraint in inspector.get_unique_constraints(table)
     )
     if ("job_id", "stage", "stage_attempt", "call_index") not in unique_sets:
         raise RuntimeError("schema v25 card-ledger attempt identity is not unique")
@@ -168,22 +183,47 @@ def _validate_provider_attempt_events_v26(database: "Database") -> None:
         raise RuntimeError("schema v26 is missing provider-attempt event evidence")
     column_rows = {item["name"]: item for item in inspector.get_columns(table)}
     required = {
-        "id", "job_id", "stage", "stage_attempt", "mode", "call_index", "subcall_ordinal",
-        "batch_index", "batch_note_ids_json", "batch_note_ids_sha256", "kind",
-        "event", "provider", "model", "instruction_sha256", "input_sha256",
-        "output_schema_sha256", "generation_parameters_json",
-        "generation_parameters_sha256", "cache_prefix_sha256", "request_sha256",
-        "request_id", "input_tokens", "output_tokens", "cost_microusd",
-        "cache_creation_input_tokens", "cache_read_input_tokens", "response_sha256",
-        "response_text", "validation_error", "missing_note_ids_json",
-        "extra_note_ids_json", "duplicate_note_ids_json", "diagnostic_source",
-        "http_status", "created_at",
+        "id",
+        "job_id",
+        "stage",
+        "stage_attempt",
+        "mode",
+        "call_index",
+        "subcall_ordinal",
+        "batch_index",
+        "batch_note_ids_json",
+        "batch_note_ids_sha256",
+        "kind",
+        "event",
+        "provider",
+        "model",
+        "instruction_sha256",
+        "input_sha256",
+        "output_schema_sha256",
+        "generation_parameters_json",
+        "generation_parameters_sha256",
+        "cache_prefix_sha256",
+        "request_sha256",
+        "request_id",
+        "input_tokens",
+        "output_tokens",
+        "cost_microusd",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "response_sha256",
+        "response_text",
+        "validation_error",
+        "missing_note_ids_json",
+        "extra_note_ids_json",
+        "duplicate_note_ids_json",
+        "diagnostic_source",
+        "http_status",
+        "created_at",
     }
     missing = sorted(required - set(column_rows))
     if missing:
         raise RuntimeError(
-            "schema v26 provider-attempt event evidence is incomplete: "
-            + ", ".join(missing)
+            "schema v26 provider-attempt event evidence is incomplete: " + ", ".join(missing)
         )
     unique_sets = {
         tuple(index["column_names"])
@@ -191,11 +231,16 @@ def _validate_provider_attempt_events_v26(database: "Database") -> None:
         if index.get("unique")
     }
     unique_sets.update(
-        tuple(constraint["column_names"])
-        for constraint in inspector.get_unique_constraints(table)
+        tuple(constraint["column_names"]) for constraint in inspector.get_unique_constraints(table)
     )
     identity = (
-        "job_id", "stage", "stage_attempt", "mode", "call_index", "subcall_ordinal", "event"
+        "job_id",
+        "stage",
+        "stage_attempt",
+        "mode",
+        "call_index",
+        "subcall_ordinal",
+        "event",
     )
     if identity not in unique_sets:
         raise RuntimeError("schema v26 provider-attempt event identity is not unique")
@@ -243,6 +288,63 @@ def _upgrade_course_curation_policy_v28(database: "Database") -> None:
     _ensure_column(database, "anki_curation_jobs", "policy_sha256", "VARCHAR(64)")
 
 
+def _upgrade_v3_durable_reservations_v29(database: "Database") -> None:
+    _ensure_column(
+        database, "anki_curation_jobs", "offline_replay_only", "BOOLEAN NOT NULL DEFAULT 0"
+    )
+    _ensure_column(database, "anki_curation_jobs", "v3_rate_table_json", "TEXT")
+    _ensure_column(database, "anki_curation_jobs", "v3_rate_table_sha256", "VARCHAR(64)")
+    _ensure_column(database, "anki_provider_attempt_events", "cost_reservation_json", "TEXT")
+    _ensure_column(
+        database, "anki_provider_attempt_events", "cost_reservation_sha256", "VARCHAR(64)"
+    )
+
+
+def _validate_v3_durable_reservations_v29(database: "Database") -> None:
+    inspector = inspect(database.engine)
+    events = {column["name"] for column in inspector.get_columns("anki_provider_attempt_events")}
+    jobs = {column["name"] for column in inspector.get_columns("anki_curation_jobs")}
+    if {"cost_reservation_json", "cost_reservation_sha256"} - events or {
+        "offline_replay_only",
+        "v3_rate_table_json",
+        "v3_rate_table_sha256",
+    } - jobs:
+        raise RuntimeError("schema v29 durable v3 reservation contract is incomplete")
+    with database.engine.connect() as connection:
+        if "pipeline_contract_version" not in jobs:
+            return
+        for row in connection.execute(
+            text(
+                "SELECT cost_reservation_json, cost_reservation_sha256 "
+                "FROM anki_provider_attempt_events"
+            )
+        ).mappings():
+            payload, digest = row["cost_reservation_json"], row["cost_reservation_sha256"]
+            if (payload is None) != (digest is None):
+                raise RuntimeError("schema v29 reservation fields must be paired")
+            if payload is not None and hashlib.sha256(payload.encode()).hexdigest() != digest:
+                raise RuntimeError("schema v29 reservation hash is invalid")
+        for row in connection.execute(
+            text(
+                "SELECT pipeline_contract_version, offline_replay_only, v3_rate_table_json, "
+                "v3_rate_table_sha256 FROM anki_curation_jobs"
+            )
+        ).mappings():
+            if row["pipeline_contract_version"] != "card_centric_v3":
+                continue
+            payload, digest = row["v3_rate_table_json"], row["v3_rate_table_sha256"]
+            if not row["offline_replay_only"] or payload is None or digest is None:
+                raise RuntimeError("schema v29 v3 job rate-table pin is incomplete")
+            try:
+                document = json.loads(payload)
+                table = FrozenRateTable.from_document(document)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError("schema v29 v3 job rate-table pin is invalid") from exc
+            canonical = json.dumps(table.document(), sort_keys=True, separators=(",", ":"))
+            if payload != canonical or digest != table.rate_table_sha256:
+                raise RuntimeError("schema v29 v3 job rate-table pin changed")
+
+
 def _validate_course_curation_policy_v28(database: "Database") -> None:
     """Fail closed when a claimed v28 database lacks its new immutable contracts."""
     inspector = inspect(database.engine)
@@ -251,7 +353,13 @@ def _validate_course_curation_policy_v28(database: "Database") -> None:
         raise RuntimeError("schema v28 is missing course curation policy revisions")
     columns = {column["name"]: column for column in inspector.get_columns(table)}
     required = {
-        "id", "policy_id", "revision", "payload_json", "policy_sha256", "created_at", "updated_at"
+        "id",
+        "policy_id",
+        "revision",
+        "payload_json",
+        "policy_sha256",
+        "created_at",
+        "updated_at",
     }
     if missing := required - set(columns):
         raise RuntimeError(
@@ -259,10 +367,7 @@ def _validate_course_curation_policy_v28(database: "Database") -> None:
         )
     if any(columns[name]["nullable"] for name in required - {"id"}):
         raise RuntimeError("schema v28 policy columns must be non-null")
-    unique_sets = {
-        tuple(item["column_names"])
-        for item in inspector.get_unique_constraints(table)
-    }
+    unique_sets = {tuple(item["column_names"]) for item in inspector.get_unique_constraints(table)}
     if ("policy_id", "revision") not in unique_sets:
         raise RuntimeError("schema v28 policy revision identity is not unique")
     jobs = {column["name"]: column for column in inspector.get_columns("anki_curation_jobs")}
@@ -344,8 +449,10 @@ def _validate_card_ledger_attempt_lifecycles_v25(
         ):
             raise RuntimeError("schema v25 card-ledger attempt transport identity is invalid")
         expected_transport = stage_transports.get((attempts[0]["job_id"], "card_ledger"))
-        if expected_transport is not None and all(expected_transport) and any(
-            (row["provider"], row["model"]) != expected_transport for row in attempts
+        if (
+            expected_transport is not None
+            and all(expected_transport)
+            and any((row["provider"], row["model"]) != expected_transport for row in attempts)
         ):
             raise RuntimeError("schema v25 card-ledger attempt stage transport is invalid")
 
@@ -372,14 +479,9 @@ def _validate_card_ledger_attempt_row(row: Any) -> None:
                 or len(row["request_id"]) > 200
             )
         )
+        or any(not re.fullmatch(r"[0-9a-f]{64}", str(row[name])) for name in required_hashes)
         or any(
-            not re.fullmatch(r"[0-9a-f]{64}", str(row[name]))
-            for name in required_hashes
-        )
-        or any(
-            not isinstance(row[name], int)
-            or isinstance(row[name], bool)
-            or row[name] < 0
+            not isinstance(row[name], int) or isinstance(row[name], bool) or row[name] < 0
             for name in ("input_tokens", "output_tokens", "cost_microusd")
         )
     ):
@@ -945,9 +1047,7 @@ def _validate_imported_derived_adoptions_v23(database: "Database") -> None:
             # exact prefix of those writes behind.  Their persisted spellings
             # still need component-by-component validation, even when their
             # parent directory has not yet been created.
-            safe_incomplete_paths = (
-                mandatory_incomplete_paths if preparing_precursor else all_paths
-            )
+            safe_incomplete_paths = mandatory_incomplete_paths if preparing_precursor else all_paths
             future_paths = (
                 transcript_path,
                 outline_immutable,
@@ -988,8 +1088,7 @@ def _validate_imported_derived_adoptions_v23(database: "Database") -> None:
                     for path in (all_paths if complete else safe_incomplete_paths)
                 )
                 or (
-                    preparing_precursor
-                    and not all(safe_future_path(path) for path in future_paths)
+                    preparing_precursor and not all(safe_future_path(path) for path in future_paths)
                 )
                 or (
                     complete
@@ -2101,6 +2200,7 @@ def migrate_database(database: "Database") -> None:
             _validate_card_ledger_attempts_v25(database)
             _validate_provider_attempt_events_v26(database)
             _validate_course_curation_policy_v28(database)
+            _validate_v3_durable_reservations_v29(database)
             return
         if version == 20:
             _validate_complete_v20_import_graph(database)
@@ -2140,6 +2240,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_card_ledger_attempt_diagnostics_v25(database)
     _upgrade_provider_attempt_subcall_ordinal_v27(database)
     _upgrade_course_curation_policy_v28(database)
+    _upgrade_v3_durable_reservations_v29(database)
     _validate_import_schema_structure(database, version=LATEST_SCHEMA_VERSION)
     _validate_complete_existing_artifact_graph(database)
     _validate_current_artifact_indexes(database)
@@ -2148,6 +2249,7 @@ def migrate_database(database: "Database") -> None:
     _validate_card_ledger_attempts_v25(database)
     _validate_provider_attempt_events_v26(database)
     _validate_course_curation_policy_v28(database)
+    _validate_v3_durable_reservations_v29(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

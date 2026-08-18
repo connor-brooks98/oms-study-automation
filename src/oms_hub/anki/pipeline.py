@@ -3,7 +3,7 @@ import json
 import os
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -11,6 +11,13 @@ from typing import Any, Protocol, cast
 from uuid import UUID
 
 from oms_hub.anki.card_centric import CardCentricLedgerAttempt
+from oms_hub.anki.cost_estimator import (
+    CostEstimator,
+    CostKind,
+    CostLedgerEntry,
+    FrozenRateTable,
+    TokenUsage,
+)
 from oms_hub.anki.domain import (
     Candidate,
     CurationJob,
@@ -250,8 +257,6 @@ CARD_CENTRIC_V2_STAGES = (
         CurationState.CARD_RECONCILING, CurationStage.RECONCILIATION, CurationState.READY_FOR_REVIEW
     ),
 )
-# Frozen architecture graph only.  ``pipeline_stages`` intentionally rejects
-# it until later phases provide every handler and execution boundary.
 CARD_CENTRIC_V3_STAGES = (
     PipelineStageDefinition(
         CurationState.V3_R0_PREFLIGHT,
@@ -305,8 +310,10 @@ CARD_CENTRIC_V3_STAGES = (
         CurationState.V3_R10_DEDUPE, CurationStage.V3_R10_DEDUPE, CurationState.V3_R11_REVIEW
     ),
     PipelineStageDefinition(
-        CurationState.V3_R11_REVIEW, CurationStage.V3_R11_REVIEW, CurationState.V3_R12_APPLY
+        CurationState.V3_R11_REVIEW, CurationStage.V3_R11_REVIEW, CurationState.READY_FOR_REVIEW
     ),
+    # R12 remains an explicit approval-gated seam.  The normal worker graph
+    # reaches review and cannot claim this state itself.
     PipelineStageDefinition(
         CurationState.V3_R12_APPLY, CurationStage.V3_R12_APPLY, CurationState.COMPLETE
     ),
@@ -325,6 +332,8 @@ def pipeline_stages(version: PipelineContractVersion) -> tuple[PipelineStageDefi
         return CARD_CENTRIC_V1_STAGES
     if version is PipelineContractVersion.CARD_CENTRIC_V2:
         return CARD_CENTRIC_V2_STAGES
+    if version is PipelineContractVersion.CARD_CENTRIC_V3:
+        return CARD_CENTRIC_V3_STAGES
     raise UnsupportedPipelineContract(
         f"pipeline contract {version.value} is unsupported; upgrade required; no mutation performed"
     )
@@ -345,6 +354,7 @@ class StageContext:
     # The S2 recorder is supplied only by the production pipeline so evidence
     # remains fenced to the executing stage attempt and worker lease.
     record_card_ledger_attempt: Callable[[CardCentricLedgerAttempt], None] | None = None
+    durable_cost_entries: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -637,6 +647,13 @@ class CurationPipeline:
         lease_clock: Callable[[], datetime] | None = None,
     ) -> StageRunResult | None:
         job = self.repository.require_job(job_id)
+        if (
+            job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3
+            and not job.offline_replay_only
+        ):
+            raise UnsupportedPipelineContract(
+                "card_centric_v3 requires the persisted offline replay pin"
+            )
         definition = stage_definition(job.state, job.pipeline_contract_version)
         if definition is None:
             return None
@@ -661,6 +678,7 @@ class CurationPipeline:
                 definition.stage,
             )
             committed_artifacts = tuple(self.repository.list_stage_artifacts(job_id))
+            durable_cost_entries = _durable_cost_entries(self.repository, job)
             prior_artifacts = tuple(
                 artifact
                 for artifact in committed_artifacts
@@ -713,6 +731,16 @@ class CurationPipeline:
                         semantic_generation=job.semantic_generation,
                         source_index_generation=job.source_index_generation,
                     ),
+                    stage_input_sha256=(
+                        _v3_provider_replay_stage_digest(
+                            job,
+                            definition.stage,
+                            replay_inputs=replay_inputs,
+                            prior_payloads=prior_payloads,
+                        )
+                        if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3
+                        else ""
+                    ),
                     recorder=lambda evidence: self.repository.record_provider_attempt_event(
                         evidence,
                         lease_owner=lease_owner,
@@ -730,6 +758,7 @@ class CurationPipeline:
                             replay_inputs=replay_inputs.document,
                             replay_inputs_sha256=replay_inputs.sha256,
                             record_card_ledger_attempt=record_card_ledger_attempt,
+                            durable_cost_entries=durable_cost_entries,
                         )
                     )
                 artifact = self.artifacts.write(
@@ -787,9 +816,107 @@ class CurationPipeline:
         )
 
 
-def _provider_transport_for_stage(
-    job: CurationJob, stage: CurationStage
-) -> ResolvedStageModel:
+def _durable_cost_entries(
+    repository: AnkiCurationRepository, job: CurationJob
+) -> tuple[dict[str, object], ...]:
+    """Recover only complete v3 provider calls; dispatched calls are fenced earlier."""
+    if job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V3:
+        return ()
+    if job.rate_table_document is None:
+        raise PinnedInputChanged("v3 durable cost recovery requires a frozen rate table")
+    table = FrozenRateTable.from_document(job.rate_table_document)
+    grouped: dict[tuple[object, ...], list[dict[str, object]]] = {}
+    for row in sorted(
+        repository.list_provider_attempt_events(job.id), key=lambda row: _event_int(row, "id")
+    ):
+        key = (
+            row["stage"],
+            row["stage_attempt"],
+            row["mode"],
+            row["call_index"],
+            row["subcall_ordinal"],
+        )
+        grouped.setdefault(key, []).append(row)
+    entries: dict[str, CostLedgerEntry] = {}
+    terminal = {"accepted", "validation_failed", "transport_failed", "contract_failed"}
+    for rows in grouped.values():
+        events = {str(row["event"]) for row in rows}
+        if not terminal & events:
+            continue
+        reservations = {
+            (
+                json.dumps(row["cost_reservation"], sort_keys=True, separators=(",", ":")),
+                row["cost_reservation_sha256"],
+            )
+            for row in rows
+            if row["cost_reservation"] is not None
+        }
+        if len(reservations) != 1 or any(row["cost_reservation"] is None for row in rows):
+            raise PinnedInputChanged("durable provider reservation lifecycle changed")
+        raw, digest = next(iter(reservations))
+        if hashlib.sha256(raw.encode()).hexdigest() != digest:
+            raise PinnedInputChanged("durable provider reservation hash changed")
+        entry = CostLedgerEntry.from_document(json.loads(raw), rate_table=table)
+        usage_row = next(
+            (
+                row
+                for row in reversed(rows)
+                if _event_int(row, "input_tokens")
+                or _event_int(row, "output_tokens")
+                or _event_int(row, "cache_creation_input_tokens")
+                or _event_int(row, "cache_read_input_tokens")
+            ),
+            None,
+        )
+        if usage_row is not None:
+            usage = TokenUsage(
+                input_tokens=max(
+                    0,
+                    _event_int(usage_row, "input_tokens")
+                    - _event_int(usage_row, "cache_creation_input_tokens")
+                    - _event_int(usage_row, "cache_read_input_tokens"),
+                ),
+                cache_creation_tokens=_event_int(usage_row, "cache_creation_input_tokens"),
+                cache_read_tokens=_event_int(usage_row, "cache_read_input_tokens"),
+                output_tokens=_event_int(usage_row, "output_tokens"),
+            )
+            entry = replace(
+                entry,
+                observed=CostEstimator(table).estimate(
+                    CostKind.OBSERVED, model=entry.model, usage=usage
+                ),
+            )
+        elif entry.modality == "embedding":
+            entry = replace(
+                entry,
+                observed=CostEstimator(table).estimate(
+                    CostKind.OBSERVED, model=entry.model, usage=entry.predicted.usage
+                ),
+                observed_estimated=True,
+            )
+        previous = entries.get(entry.call_id)
+        if previous is not None:
+            reservation = replace(previous, observed=None, observed_estimated=False)
+            replayed = replace(entry, observed=None, observed_estimated=False)
+            if reservation != replayed:
+                raise PinnedInputChanged("durable provider reservation call identity changed")
+            if (
+                previous.observed is not None
+                and entry.observed is not None
+                and previous.observed != entry.observed
+            ):
+                raise PinnedInputChanged("durable provider observation changed")
+            if previous.observed is not None:
+                continue
+        entries[entry.call_id] = entry
+    return tuple(item.document() for item in entries.values())
+
+
+def _event_int(row: Mapping[str, object], name: str) -> int:
+    return int(cast(int | str, row[name]))
+
+
+def _provider_transport_for_stage(job: CurationJob, stage: CurationStage) -> ResolvedStageModel:
     resolved = job.resolved_model_config
     if stage is CurationStage.CARD_LEDGER:
         return resolved.ledger_s2
@@ -801,6 +928,17 @@ def _provider_transport_for_stage(
         return resolved.residual_s6
     if stage is CurationStage.CARD_GAP_FILL:
         return resolved.gap_fill_s7
+    v3_routes = {
+        CurationStage.V3_R3_SCOPE: resolved.scope_r3,
+        CurationStage.V3_R7_CLASSIFICATION: resolved.cheap_classify_r7,
+        CurationStage.V3_R8_GAP_CONFIRMATION: resolved.cheap_classify_r7,
+        CurationStage.V3_R9_GENERATION: resolved.generation_r9,
+    }
+    if stage in v3_routes:
+        route = v3_routes[stage]
+        if route is None:
+            raise PinnedInputChanged("card-centric-v3 route is unavailable")
+        return route
     # Stages without a dedicated model preserve the job-level transport.
     return ResolvedStageModel(provider=job.provider, model=job.model)
 
@@ -854,15 +992,58 @@ def _stage_input_hash(
     return hashlib.sha256(_canonical_json(identity).encode("utf-8")).hexdigest()
 
 
+def _v3_provider_replay_stage_digest(
+    job: CurationJob,
+    stage: CurationStage,
+    *,
+    replay_inputs: _StageReplayInputs,
+    prior_payloads: Mapping[CurationStage, dict[str, Any]],
+) -> str:
+    """Replay-only v3 identity, excluding execution bookkeeping."""
+    identity = {
+        "stage": stage.value,
+        "configuration_sha256": job.configuration_sha256,
+        "model_config_sha256": job.model_config_sha256,
+        "prepared_replay_inputs": replay_inputs.canonical_json,
+        "prior_payload_sha256": {
+            prior_stage.value: hashlib.sha256(
+                _canonical_json(_v3_semantic_replay_projection(payload)).encode("utf-8")
+            ).hexdigest()
+            for prior_stage, payload in sorted(
+                prior_payloads.items(), key=lambda item: item[0].value
+            )
+        },
+    }
+    return hashlib.sha256(_canonical_json(identity).encode("utf-8")).hexdigest()
+
+
+def _v3_semantic_replay_projection(value: object) -> object:
+    """Drop non-semantic execution evidence from a v3 provider replay key."""
+    if isinstance(value, Mapping):
+        return {
+            key: _v3_semantic_replay_projection(item)
+            for key, item in value.items()
+            if isinstance(key, str)
+            and key not in {"artifact_sha256", "cost_ledger", "cost_ledger_sha256", "calls"}
+            and not key.endswith("_artifact_sha256")
+        }
+    if isinstance(value, (list, tuple)):
+        return [_v3_semantic_replay_projection(item) for item in value]
+    return value
+
+
 def _prepare_stage_replay_inputs(
     repository: AnkiCurationRepository,
     job: CurationJob,
     stage: CurationStage,
 ) -> _StageReplayInputs:
-    # P1-A replay documents are a v2-only identity extension. Legacy and v1
-    # jobs retain their exact historical stage hashes even after P1-A is
-    # deployed and exposes its repository API.
-    if job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V2:
+    # Legacy/v1 jobs retain their historical hashes.  v2/v3 use the existing
+    # first-write-wins stage input row; v3's empty baseline remains explicit
+    # so every later offline replay pack extends the same durable identity.
+    if job.pipeline_contract_version not in {
+        PipelineContractVersion.CARD_CENTRIC_V2,
+        PipelineContractVersion.CARD_CENTRIC_V3,
+    }:
         return _StageReplayInputs("", "", MappingProxyType({}))
     prepare = getattr(repository, "prepare_stage_replay_inputs", None)
     if prepare is None:

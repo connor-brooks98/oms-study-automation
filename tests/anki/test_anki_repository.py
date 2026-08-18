@@ -23,6 +23,7 @@ from oms_hub.anki.correction_contracts import (
     SelectionMetadata,
     SelectionTier,
 )
+from oms_hub.anki.cost_estimator import FrozenRateTable, ModelRate
 from oms_hub.anki.course_policy import CourseCurationPolicy, PolicyEmphasisColor
 from oms_hub.anki.domain import (
     ApplyState,
@@ -56,7 +57,7 @@ from oms_hub.anki.models import (
     AnkiEnvelopeOperationModel,
     AnkiReviewedReconciliationModel,
 )
-from oms_hub.anki.pipeline import UnsupportedPipelineContract, pipeline_stages
+from oms_hub.anki.pipeline import pipeline_stages
 from oms_hub.anki.provider_attempts import (
     ProviderAttemptEvent,
     ProviderAttemptIdentity,
@@ -121,6 +122,7 @@ def _provider_evidence(
         request_id="request-1" if response else None,
         response_text="{}" if response else None,
     )
+
 
 _OPEN_DATABASES: list[Database] = []
 
@@ -189,12 +191,19 @@ def test_current_v28_rejects_invalid_policy_pin_in_isolation(
     repository, lecture_id = _prepared_repository(tmp_path)
     job = repository.create_job(_job_request(lecture_id))
     policy = CourseCurationPolicy(
-        policy_id="policy", revision=1, course_id="course", professor_label="professor",
-        scope_instruction="scope", emphasis_mode="colored_text",
+        policy_id="policy",
+        revision=1,
+        course_id="course",
+        professor_label="professor",
+        scope_instruction="scope",
+        emphasis_mode="colored_text",
         emphasis_colors=(PolicyEmphasisColor(rgb="FF0000", label="red"),),
-        missing_emphasis_fallback="block", tag_scope_mode="hard_filter",
-        classification_strictness="strict", generation_style_profile="style",
-        ordinary_cost_limit_microusd=1, hard_stop_cost_limit_microusd=1,
+        missing_emphasis_fallback="block",
+        tag_scope_mode="hard_filter",
+        classification_strictness="strict",
+        generation_style_profile="style",
+        ordinary_cost_limit_microusd=1,
+        hard_stop_cost_limit_microusd=1,
     )
     repository.create_policy_revision(policy)
     with repository.database.engine.begin() as connection:
@@ -213,14 +222,63 @@ def test_current_v28_rejects_invalid_policy_pin_in_isolation(
         migrate_database(repository.database)
 
 
-def test_v3_job_creation_fails_before_persistence(tmp_path: Path) -> None:
+def test_v3_job_creation_requires_explicit_offline_replay_pin(tmp_path: Path) -> None:
     repository, lecture_id = _prepared_repository(tmp_path)
     request = replace(
         _job_request(lecture_id),
         pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V3,
         policy_sha256="a" * 64,
     )
-    with pytest.raises(UnsupportedPipelineContract, match="contract-only"):
+    with pytest.raises(ValueError, match="offline-replay-only"):
+        repository.create_job(request)
+    with repository.database.engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM anki_curation_jobs")).scalar_one() == 0
+
+
+@pytest.mark.parametrize("change", ("rate_table", "offline_replay"))
+def test_non_v3_job_rejects_v3_only_replay_pins(change: str) -> None:
+    values: dict[str, object] = {}
+    if change == "rate_table":
+        values["rate_table_document"] = FrozenRateTable(
+            (ModelRate("model", 1, 1, 1, 1, 1),), datetime(2026, 8, 17, tzinfo=UTC), "fixture"
+        ).document()
+    else:
+        values["offline_replay_only"] = True
+
+    with pytest.raises(ValueError, match="v3-only"):
+        replace(_job_request(1), **values)
+
+
+def test_v3_job_creation_rejects_unavailable_policy_before_any_job_write(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    route = ResolvedStageModel("openai", "model", thinking_mode="disabled")
+    config = ResolvedModelConfiguration(
+        "fixture",
+        route,
+        route,
+        route,
+        route,
+        scope_r3=route,
+        cheap_classify_r7=route,
+        thorough_classify_r7=route,
+        generation_r9=route,
+    )
+    table = FrozenRateTable(
+        (ModelRate("model", 1, 1, 1, 1, 1),), datetime(2026, 8, 17, tzinfo=UTC), "fixture"
+    )
+    request = replace(
+        _job_request(lecture_id),
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V3,
+        policy_sha256="a" * 64,
+        offline_replay_only=True,
+        resolved_model_config=config,
+        rate_table_document=table.document(),
+        source_revision_hashes={101: "b" * 64, 102: "c" * 64},
+        companion_generation="companion",
+        semantic_generation="semantic",
+    )
+
+    with pytest.raises(KeyError, match="pinned course policy"):
         repository.create_job(request)
     with repository.database.engine.connect() as connection:
         assert connection.execute(text("SELECT COUNT(*) FROM anki_curation_jobs")).scalar_one() == 0
@@ -279,9 +337,29 @@ def test_dispatched_provider_attempt_without_terminal_evidence_blocks_retry(
         _provider_evidence(identity, "dispatched"), lease_owner=None
     )
     with pytest.raises(ProviderAttemptIndeterminate):
-        repository.require_no_indeterminate_provider_attempt(
-            job.id, CurationStage.PREFLIGHT
-        )
+        repository.require_no_indeterminate_provider_attempt(job.id, CurationStage.PREFLIGHT)
+
+
+def test_begun_only_provider_attempt_is_retryable(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    job = repository.create_job(_job_request(lecture_id))
+    stage = repository.start_stage(job.id, CurationStage.PREFLIGHT)
+    identity = ProviderAttemptIdentity(
+        job_id=job.id,
+        stage=CurationStage.PREFLIGHT,
+        stage_attempt=stage.attempt_count,
+        mode="canonical",
+        call_index=1,
+        batch_index=0,
+        batch_note_ids=(),
+        kind="primary",
+    )
+
+    repository.record_provider_attempt_event(
+        _provider_evidence(identity, "begun"), lease_owner=None
+    )
+
+    repository.require_no_indeterminate_provider_attempt(job.id, CurationStage.PREFLIGHT)
 
 
 def test_response_received_in_ordinary_ledger_requires_manual_recovery(
@@ -347,23 +425,18 @@ def test_repository_pins_new_v2_execution_defaults_but_preserves_legacy_document
 ) -> None:
     repository, lecture_id = _prepared_repository(tmp_path)
     configured = replace(
-        ResolvedModelConfiguration.card_centric_v2_default(
-            "anthropic", "claude-sonnet-5"
-        ),
+        ResolvedModelConfiguration.card_centric_v2_default("anthropic", "claude-sonnet-5"),
         classifier_execution=None,
     )
-    legacy_json = json.dumps(
-        configured.canonical_document(), sort_keys=True, separators=(",", ":")
-    )
+    legacy_json = json.dumps(configured.canonical_document(), sort_keys=True, separators=(",", ":"))
 
-    legacy = repository._resolved_model_config(
-        legacy_json, "anthropic", "claude-sonnet-5"
-    )
+    legacy = repository._resolved_model_config(legacy_json, "anthropic", "claude-sonnet-5")
     assert legacy.classifier_execution is None
     assert legacy.resolved_classifier_execution() == ResolvedClassifierExecution()
-    assert json.dumps(
-        legacy.canonical_document(), sort_keys=True, separators=(",", ":")
-    ) == legacy_json
+    assert (
+        json.dumps(legacy.canonical_document(), sort_keys=True, separators=(",", ":"))
+        == legacy_json
+    )
 
     created = repository.create_job(
         replace(
@@ -851,7 +924,7 @@ def test_v2_mixed_overflow_acknowledgement_binds_full_selection_and_overflow_sli
         repository.issue_card_centric_overflow_acknowledgement(
             bad_job.id,
             review_revision=bad_job.review_revision,
-        selected_note_ids=storage_order,
+            selected_note_ids=storage_order,
             selected_generated_ids=(),
             mandatory_note_ids=(71,),
             mandatory_generated_ids=(),
@@ -1239,18 +1312,14 @@ def test_card_ledger_attempts_are_append_only_across_internal_and_manual_retries
         (1, 2, "accepted"),
         (2, 1, "accepted"),
     ]
-    assert rows[0]["invalid_response_sha256"] == hashlib.sha256(
-        b'{"importance":"low"}'
-    ).hexdigest()
+    assert rows[0]["invalid_response_sha256"] == hashlib.sha256(b'{"importance":"low"}').hexdigest()
     assert rows[0]["invalid_response"] == '{"importance":"low"}'
     assert rows[0]["generation_parameters_sha256"] == parameter_hash
 
     conflicting = replace(
         attempt(1, "validation_failed"),
         invalid_response='{"importance":"medium"}',
-        invalid_response_sha256=hashlib.sha256(
-            b'{"importance":"medium"}'
-        ).hexdigest(),
+        invalid_response_sha256=hashlib.sha256(b'{"importance":"medium"}').hexdigest(),
     )
     with pytest.raises(ValueError, match="identity was reused"):
         _record_card_ledger_attempt(repository, job.id, conflicting)
@@ -1348,9 +1417,9 @@ def test_card_ledger_sqlite_fence_rechecks_after_stale_precheck_before_append(
     successor_repository = AnkiCurationRepository(repository.database)
     job = repository.create_job(_job_request(lecture_id))
     started = datetime(2026, 8, 11, 12, 0, tzinfo=UTC)
-    assert stale_repository.claim_next_job(
-        started, worker_id="worker-a", lease_seconds=3
-    ) is not None
+    assert (
+        stale_repository.claim_next_job(started, worker_id="worker-a", lease_seconds=3) is not None
+    )
     first = stale_repository.start_stage(
         job.id,
         CurationStage.CARD_LEDGER,
@@ -1409,9 +1478,10 @@ def test_card_ledger_sqlite_fence_rechecks_after_stale_precheck_before_append(
     assert precheck_entered.wait(timeout=2)
 
     reclaimed_at = started + timedelta(seconds=4)
-    assert successor_repository.claim_next_job(
-        reclaimed_at, worker_id="worker-b", lease_seconds=30
-    ) is not None
+    assert (
+        successor_repository.claim_next_job(reclaimed_at, worker_id="worker-b", lease_seconds=30)
+        is not None
+    )
     second = successor_repository.start_stage(
         job.id,
         CurationStage.CARD_LEDGER,
@@ -1507,9 +1577,7 @@ def test_card_ledger_sqlite_fence_serializes_contention_and_replays_idempotently
             "model": "claude-sonnet-5",
             "instruction_sha256": "a" * 64,
             "generation_parameters": parameters,
-            "generation_parameters_sha256": hashlib.sha256(
-                parameters_json.encode()
-            ).hexdigest(),
+            "generation_parameters_sha256": hashlib.sha256(parameters_json.encode()).hexdigest(),
             "request_id": "request-1",
             "input_tokens": 1,
             "output_tokens": 2,
@@ -1563,9 +1631,7 @@ def test_card_ledger_attempt_rejects_partial_extra_and_mismatched_parameter_docu
                 replace(
                     base,
                     generation_parameters=document,
-                    generation_parameters_sha256=hashlib.sha256(
-                        document_json.encode()
-                    ).hexdigest(),
+                    generation_parameters_sha256=hashlib.sha256(document_json.encode()).hexdigest(),
                 ),
             )
     assert repository.list_card_ledger_attempts(job.id) == []
@@ -1645,9 +1711,7 @@ def test_v24_card_ledger_evidence_survives_reopen_upgrade_without_rewriting(
         connection.execute(
             text("ALTER TABLE anki_card_ledger_attempts DROP COLUMN diagnostic_source")
         )
-        connection.execute(
-            text("ALTER TABLE anki_card_ledger_attempts DROP COLUMN http_status")
-        )
+        connection.execute(text("ALTER TABLE anki_card_ledger_attempts DROP COLUMN http_status"))
     repository.database.close()
 
     with Database(f"sqlite:///{database_path}") as reopened:
@@ -1670,7 +1734,7 @@ def test_v24_card_ledger_evidence_survives_reopen_upgrade_without_rewriting(
         for candidate_model, outcome in fixtures
         if candidate_model == model
     ]
-    assert version == 28
+    assert version == 29
 
 
 def test_card_ledger_transport_failure_persists_only_safe_diagnostics(
@@ -1691,9 +1755,7 @@ def test_card_ledger_transport_failure_persists_only_safe_diagnostics(
             model="claude-sonnet-5",
             instruction_sha256="a" * 64,
             generation_parameters=parameters,
-            generation_parameters_sha256=hashlib.sha256(
-                parameters_json.encode()
-            ).hexdigest(),
+            generation_parameters_sha256=hashlib.sha256(parameters_json.encode()).hexdigest(),
             request_id="safe-provider-request-42",
             input_tokens=0,
             output_tokens=0,
@@ -1719,9 +1781,7 @@ def test_card_ledger_transport_failure_persists_only_safe_diagnostics(
             "model": "claude-sonnet-5",
             "instruction_sha256": "a" * 64,
             "generation_parameters": parameters,
-            "generation_parameters_sha256": hashlib.sha256(
-                parameters_json.encode()
-            ).hexdigest(),
+            "generation_parameters_sha256": hashlib.sha256(parameters_json.encode()).hexdigest(),
             "request_id": "safe-provider-request-42",
             "input_tokens": 0,
             "output_tokens": 0,
@@ -2111,6 +2171,30 @@ def test_failed_job_can_retry_its_failed_stage_without_losing_artifacts(
     )
     assert claimed_again is not None
     assert claimed_again.id == job.id
+
+
+def test_v3_pre_review_states_are_claimable_recoverable_and_retryable() -> None:
+    definitions = pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V3)
+    pre_review = tuple(
+        definition
+        for definition in definitions
+        if definition.stage is not CurationStage.V3_R12_APPLY
+    )
+
+    assert all(
+        definition.state in anki_repository_module._CLAIMABLE_STATES
+        and definition.state in anki_repository_module._INTERRUPTED_PRE_REVIEW_STATES
+        and anki_repository_module._RETRY_STATE_BY_STAGE[definition.stage] is definition.state
+        and definition.state in anki_repository_module.ALLOWED_TRANSITIONS[CurationState.FAILED]
+        for definition in pre_review
+    )
+    assert CurationState.V3_R12_APPLY not in anki_repository_module._CLAIMABLE_STATES
+    assert CurationState.V3_R12_APPLY not in anki_repository_module._INTERRUPTED_PRE_REVIEW_STATES
+    assert CurationStage.V3_R12_APPLY not in anki_repository_module._RETRY_STATE_BY_STAGE
+    assert (
+        CurationState.V3_R12_APPLY
+        not in anki_repository_module.ALLOWED_TRANSITIONS[CurationState.FAILED]
+    )
 
 
 def test_known_blank_scope_card_centric_failure_repairs_and_rewinds_from_source_index(

@@ -17,6 +17,7 @@ from oms_hub.anki.card_centric import CardCentricValidationError, resolve_card_c
 from oms_hub.anki.card_centric_contracts import CardConceptLedger
 from oms_hub.anki.card_centric_fixture import FixtureUnavailable
 from oms_hub.anki.card_centric_fixture_service import fixture_for, validate_fixture
+from oms_hub.anki.card_centric_review import V3ReviewSnapshot
 from oms_hub.anki.contracts import (
     AddNotesOperation,
     AddTagsOperation,
@@ -654,6 +655,60 @@ async def read_anki_review(
     candidates = repository.list_candidates(job_id)
     gaps = repository.list_gap_cards(job_id)
     evidence = repository.list_source_evidence(job_id)
+    if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3:
+        committed = _reconciliation_summary(request, job_id) or {}
+        snapshot_payload = committed.get("snapshot")
+        try:
+            snapshot = V3ReviewSnapshot.model_validate(snapshot_payload)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="v3 review requires a committed R11 snapshot",
+            ) from exc
+        r11_artifact_sha256 = committed.get("r11_artifact_sha256") or committed.get(
+            "artifact_sha256"
+        )
+        if not (
+            isinstance(r11_artifact_sha256, str)
+            and len(r11_artifact_sha256) == 64
+            and isinstance(committed.get("cost_ledger_sha256"), str)
+            and len(cast(str, committed["cost_ledger_sha256"])) == 64
+            and snapshot.snapshot_sha256
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="v3 review requires a committed R11 identity",
+            )
+        reviewed = _review_reconciliation_summary(committed, gaps, candidates)
+        return {
+            "job": _job_payload(job),
+            "convergence": _convergence_summary(request, job_id),
+            "reconciliation": _v3_reconciliation_payload(reviewed, job),
+            "review_surface": _review_surface_payload(request, job, reviewed),
+            "groups": {
+                "pass_1_matches": [
+                    _candidate_payload(request, candidate, include_note=False)
+                    for candidate in candidates
+                    if candidate.retrieval_pass.value == "pass_1"
+                ],
+                "recovered_in_pass_2": [
+                    _candidate_payload(request, candidate, include_note=False)
+                    for candidate in candidates
+                    if candidate.retrieval_pass
+                    in {RetrievalPass.PASS_2_RESCUE, RetrievalPass.CONVERGENCE}
+                ],
+                "generated_cards": [_gap_payload(card, evidence) for card in gaps],
+                "unresolved": _unresolved_payload(request, job_id, candidates, gaps, evidence),
+            },
+            "concepts": _concept_review_groups(candidates, gaps),
+            "evidence": [_evidence_payload(item) for item in evidence],
+            "tag_policy": _tag_policy_payload(_tag_policy(request)),
+            "can_edit": job.state is CurationState.READY_FOR_REVIEW,
+            "can_build_envelope": False,
+            "envelope_reason": (
+                "card_centric_v3 review is approval-only; Anki apply is not available"
+            ),
+        }
     reviewed_patches = _latest_tag_patches(repository.list_tag_patches(job_id))
     current = await _current_notes(
         _gateway(request),
@@ -711,8 +766,10 @@ async def read_anki_review(
         "tag_policy": _tag_policy_payload(_tag_policy(request)),
         "can_edit": job.state is CurationState.READY_FOR_REVIEW and not semantic_dedupe_hold,
         "can_build_envelope": (
-            job.state is CurationState.READY_FOR_REVIEW and reconciliation_allows_review
+            job.state is CurationState.READY_FOR_REVIEW
+            and reconciliation_allows_review
         ),
+        "envelope_reason": None,
     }
 
 
@@ -735,11 +792,41 @@ async def save_anki_review(
             detail="This review is already frozen or is not ready",
         )
     change_set = payload.to_domain()
+    committed: dict[str, Any] = {}
     if job.pipeline_contract_version in {
         PipelineContractVersion.CARD_CENTRIC_V1,
         PipelineContractVersion.CARD_CENTRIC_V2,
+        PipelineContractVersion.CARD_CENTRIC_V3,
     }:
         committed = _reconciliation_summary(request, job_id) or {}
+    if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3:
+        snapshot = committed.get("snapshot")
+        try:
+            v3_snapshot = V3ReviewSnapshot.model_validate(snapshot)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="v3 review requires a committed R11 snapshot",
+            ) from exc
+        r11_artifact_sha256 = committed.get("r11_artifact_sha256") or committed.get(
+            "artifact_sha256"
+        )
+        if not (
+            isinstance(r11_artifact_sha256, str)
+            and len(r11_artifact_sha256) == 64
+            and isinstance(committed.get("cost_ledger_sha256"), str)
+            and len(cast(str, committed["cost_ledger_sha256"])) == 64
+            and v3_snapshot.snapshot_sha256
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="v3 review requires a committed R11 identity",
+            )
+        if change_set.tag_patches:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="v3 review is approval-only and does not support tag patches",
+            )
     for edit in change_set.gap_edits:
         try:
             validate_gap_card_fields(edit.text.strip(), edit.extra.strip())
@@ -766,16 +853,21 @@ async def save_anki_review(
                     detail=str(exc),
                 ) from exc
     try:
-        snapshot = (
-            committed.get("snapshot")
-            if job.pipeline_contract_version
-            in {PipelineContractVersion.CARD_CENTRIC_V1, PipelineContractVersion.CARD_CENTRIC_V2}
-            else None
-        )
+        snapshot = committed.get("snapshot") if committed else None
         saved = repository.save_review(
             job_id,
             change_set,
             card_centric_snapshot=snapshot if isinstance(snapshot, dict) else None,
+            v3_review_artifact_sha256=(
+                committed.get("r11_artifact_sha256") or committed.get("artifact_sha256")
+                if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3
+                else None
+            ),
+            v3_cost_ledger_sha256=(
+                committed.get("cost_ledger_sha256")
+                if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3
+                else None
+            ),
         )
     except KeyError as exc:
         raise HTTPException(
@@ -943,6 +1035,16 @@ async def build_anki_envelope(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This job already has a frozen apply plan",
+        )
+    if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3:
+        # Phase G deliberately exposes only the R12 approval seam.  In
+        # particular, do not query Anki while a v3 review awaits approval.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "card_centric_v3 requires explicit revision-matching approval; "
+                "no Anki action is available"
+            ),
         )
     gap_cards = repository.list_gap_cards(job_id)
     reconciliation = _reconciliation_summary(request, job_id)
@@ -1203,9 +1305,7 @@ def _page_context(request: Request) -> dict[str, Any]:
                     else None
                 ),
                 "source_ready": (
-                    slides_ready
-                    and UploadKind.TRANSCRIPTS in current_kinds
-                    and outline_available
+                    slides_ready and UploadKind.TRANSCRIPTS in current_kinds and outline_available
                 ),
                 "source_status": {
                     "slides": slides_ready,
@@ -1430,8 +1530,9 @@ def _candidate_payload(
     *,
     current_note: CurrentCollectionNote | None = None,
     reviewed_patch: TagPatch | None = None,
+    include_note: bool = True,
 ) -> dict[str, Any]:
-    companion = getattr(request.app.state, "anki_companion_index", None)
+    companion = getattr(request.app.state, "anki_companion_index", None) if include_note else None
     note = companion.get_note(candidate.note_id) if companion is not None else None
     policy = _tag_policy(request)
     current_tags = (
@@ -1521,12 +1622,265 @@ def _evidence_payload(evidence: SourceEvidence) -> dict[str, Any]:
 _EVIDENCE_QUALITY_VALUES = frozenset({"primary_source", "summary_grounded", "fast_pass"})
 
 
+def _v3_reconciliation_payload(
+    reconciliation: dict[str, Any] | None, job: CurationJob
+) -> dict[str, Any]:
+    """Return only the v3 review identity; full R11 evidence stays in the repository."""
+    value = reconciliation or {}
+    snapshot = (
+        cast(dict[str, Any], value.get("snapshot"))
+        if isinstance(value.get("snapshot"), dict)
+        else {}
+    )
+    existing = snapshot.get("existing_candidates", [])
+    generated = snapshot.get("generated_cards", [])
+    return {
+        "contract_version": "card_centric_v3_r11",
+        "review_revision": job.review_revision,
+        "approval_only": True,
+        "approval_state": "ready" if value.get("can_render_envelope") is True else "blocked",
+        "r11_artifact_sha256": value.get("r11_artifact_sha256") or value.get("artifact_sha256"),
+        "r11_snapshot_sha256": value.get("r11_snapshot_sha256") or snapshot.get("snapshot_sha256"),
+        "cost_ledger_sha256": value.get("cost_ledger_sha256"),
+        "existing_note_ids": [
+            item.get("note_id")
+            for item in existing
+            if isinstance(item, dict) and isinstance(item.get("note_id"), int)
+        ],
+        "generated_card_ids": [
+            item.get("card_id")
+            for item in generated
+            if isinstance(item, dict) and isinstance(item.get("card_id"), str)
+        ],
+        "selected_existing_note_ids": snapshot.get("selected_existing_note_ids", []),
+        "selected_generated_card_ids": snapshot.get("selected_generated_card_ids", []),
+    }
+
+
 def _review_surface_payload(
     request: Request,
     job: CurationJob,
     reconciliation: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Expose committed v2 review evidence without changing its outcome semantics."""
+    if job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3:
+        snapshot = (reconciliation or {}).get("snapshot")
+        if not isinstance(snapshot, dict):
+            return {"v3": {"approval_only": True, "reason": "R11 snapshot is unavailable"}}
+        evidence = snapshot.get("evidence")
+        evidence = evidence if isinstance(evidence, dict) else {}
+
+        def document(value: object) -> dict[str, Any]:
+            return cast(dict[str, Any], value) if isinstance(value, dict) else {}
+
+        scope = document(evidence.get("scope"))
+        fidelity = document(evidence.get("r2_fidelity"))
+        retrieval = document(evidence.get("retrieval"))
+        calibration = document(evidence.get("calibration"))
+        classification = document(evidence.get("classification"))
+        enforcement = document(evidence.get("policy_enforcement"))
+        gap_confirmation = document(evidence.get("gap_confirmation"))
+        generation = document(evidence.get("generation"))
+        calibration_records = calibration.get("records", [])
+        calibration_records = calibration_records if isinstance(calibration_records, list) else []
+        classification_calls = classification.get("calls", [])
+        classification_calls = (
+            classification_calls if isinstance(classification_calls, list) else []
+        )
+        escalations = classification.get("escalations", [])
+        escalations = escalations if isinstance(escalations, list) else []
+        v3_dedupe = document(evidence.get("dedupe"))
+        dedupe_rows = v3_dedupe.get("resolutions", [])
+        dedupe_rows = dedupe_rows if isinstance(dedupe_rows, list) else []
+        generated_cards = snapshot.get("generated_cards", [])
+        generated_cards = generated_cards if isinstance(generated_cards, list) else []
+        scope_fact_ids = [
+            fact.get("fact_id")
+            for concept in scope.get("concepts", [])
+            if isinstance(concept, dict)
+            for fact in concept.get("facts", [])
+            if isinstance(fact, dict) and isinstance(fact.get("fact_id"), str)
+        ]
+        generated_grounding = sorted(
+            (
+                {
+                    "card_id": item["card_id"],
+                    "fact_id": item["fact_id"],
+                    "evidence_ids": item.get("evidence_ids", []),
+                }
+                for item in generated_cards
+                if isinstance(item, dict)
+                and isinstance(item.get("card_id"), str)
+                and isinstance(item.get("fact_id"), str)
+            ),
+            key=lambda item: (str(item["fact_id"]), str(item["card_id"])),
+        )
+        unresolved: list[dict[str, object]] = []
+        r8_rows = gap_confirmation.get("records", [])
+        for item in r8_rows if isinstance(r8_rows, list) else []:
+            if (
+                isinstance(item, dict)
+                and isinstance(item.get("fact_id"), str)
+                and item.get("state")
+                not in {"covered_initial", "covered_residual", "confirmed_missing"}
+            ):
+                unresolved.append(
+                    {
+                        "source": "r8",
+                        "fact_id": item["fact_id"],
+                        "state": item.get("state"),
+                        "reason": item.get("reason"),
+                    }
+                )
+        generation_rows = generation.get("resolutions", [])
+        for source, rows in (("r9", generation_rows), ("r10", dedupe_rows)):
+            for item in rows if isinstance(rows, list) else []:
+                if (
+                    isinstance(item, dict)
+                    and isinstance(item.get("fact_id"), str)
+                    and item.get("status") == "unresolved"
+                ):
+                    unresolved.append(
+                        {
+                            "source": source,
+                            "fact_id": item["fact_id"],
+                            "state": item["status"],
+                            "reason": item.get("reason"),
+                        }
+                    )
+        fact_ids = set(scope_fact_ids)
+        for finding in (reconciliation or {}).get("findings", []):
+            if not isinstance(finding, str):
+                continue
+            fact_id, separator, _reason = finding.partition(":")
+            unresolved.append(
+                {
+                    "source": "reconciliation",
+                    "fact_id": fact_id if separator and fact_id in fact_ids else None,
+                    "state": "finding",
+                    "reason": finding,
+                }
+            )
+        unresolved = list(
+            {
+                (item["source"], item["fact_id"], item["state"], item["reason"]): item
+                for item in unresolved
+            }.values()
+        )
+        unresolved.sort(
+            key=lambda item: (
+                {"r8": 0, "r9": 1, "r10": 2, "reconciliation": 3}[str(item["source"])],
+                str(item["fact_id"] or ""),
+                str(item["state"] or ""),
+                str(item["reason"] or ""),
+            )
+        )
+        return {
+            "v3": {
+                "approval_only": True,
+                "reason": "card_centric_v3 review is approval-only; Anki apply is unavailable",
+                "phase_g_safety": evidence.get("phase_g_safety", {}),
+                "policy": {
+                    "sha256": snapshot.get("policy_sha256"),
+                    "enforcement": {
+                        "present": bool(enforcement),
+                        "tier": enforcement.get("policy_enforcement", {}).get("tier")
+                        if isinstance(enforcement.get("policy_enforcement"), dict)
+                        else None,
+                    },
+                },
+                "scope": {
+                    "sha256": snapshot.get("scope_sha256"),
+                    "source_bundle_sha256": scope.get("source_bundle_sha256"),
+                    "degraded_mode": scope.get("degraded_mode"),
+                    "fact_ids": scope_fact_ids,
+                    "sources": [
+                        {
+                            key: item.get(key)
+                            for key in (
+                                "evidence_id",
+                                "source_id",
+                                "revision_id",
+                                "source_kind",
+                                "locator",
+                            )
+                        }
+                        for item in scope.get("evidence", [])
+                        if isinstance(item, dict)
+                    ],
+                },
+                "retrieval": {
+                    "effective_tag_mode": retrieval.get("effective_tag_mode"),
+                    "exact_only_fact_ids": [
+                        item.get("fact_id")
+                        for item in calibration_records
+                        if isinstance(item, dict) and item.get("exact_only") is True
+                    ],
+                    "polluted_fact_ids": [
+                        item.get("fact_id")
+                        for item in calibration_records
+                        if isinstance(item, dict)
+                        and any(
+                            diagnostic.get("polluted") is True
+                            for diagnostic in item.get("query_diagnostics", [])
+                            if isinstance(diagnostic, dict)
+                        )
+                    ],
+                },
+                "evidence": {
+                    "grounding": fidelity.get("fidelity", {}).get("grounding")
+                    if isinstance(fidelity.get("fidelity"), dict)
+                    else None,
+                    "degraded_mode": scope.get("degraded_mode"),
+                    "generated_grounding": generated_grounding,
+                },
+                "classification": {
+                    "tiers": sorted(
+                        {
+                            item.get("tier")
+                            for item in classification_calls
+                            if isinstance(item, dict) and isinstance(item.get("tier"), str)
+                        }
+                    ),
+                    "escalations": [
+                        {key: item.get(key) for key in ("bundle_id", "reason", "reasons")}
+                        for item in escalations
+                        if isinstance(item, dict)
+                    ],
+                },
+                "selected_existing_note_ids": snapshot.get("selected_existing_note_ids", []),
+                "selected_generated_card_ids": snapshot.get("selected_generated_card_ids", []),
+                "cost": {
+                    "calls": [
+                        {
+                            key: item.get(key)
+                            for key in (
+                                "stage",
+                                "call_id",
+                                "modality",
+                                "model",
+                                "predicted",
+                                "reserved",
+                                "observed",
+                                "observed_estimated",
+                            )
+                        }
+                        for item in evidence.get("cost_ledger", [])
+                        if isinstance(item, dict)
+                    ]
+                },
+                "resolution": {
+                    "duplicate_fact_ids": [
+                        item.get("fact_id")
+                        for item in dedupe_rows
+                        if isinstance(item, dict)
+                        and item.get("status")
+                        in {"duplicate_of_existing", "duplicate_of_generated"}
+                    ],
+                    "unresolved": unresolved,
+                },
+            }
+        }
     evidence_audit = _committed_stage_payload(request, job.id, CurationStage.CARD_EVIDENCE_AUDIT)
     coverage = _committed_stage_payload(request, job.id, CurationStage.CARD_COVERAGE)
     selection = _committed_stage_payload(request, job.id, CurationStage.CARD_SELECTION)
@@ -1933,7 +2287,11 @@ def _reconciliation_summary(
 ) -> dict[str, Any] | None:
     repository = _repository(request)
     job = repository.require_job(job_id) if hasattr(repository, "require_job") else None
-    if job is not None and job.pipeline_contract_version in {
+    if job is not None and job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3:
+        reviewed = repository.reviewed_reconciliation(job_id, job.review_revision)
+        if reviewed is not None or job.review_revision > 0:
+            return reviewed
+    elif job is not None and job.pipeline_contract_version in {
         PipelineContractVersion.CARD_CENTRIC_V1,
         PipelineContractVersion.CARD_CENTRIC_V2,
     }:
@@ -1948,7 +2306,13 @@ def _reconciliation_summary(
         (
             item
             for item in reversed(_repository(request).list_stage_artifacts(job_id))
-            if item.stage is CurationStage.RECONCILIATION
+            if item.stage
+            is (
+                CurationStage.V3_R11_REVIEW
+                if job is not None
+                and job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3
+                else CurationStage.RECONCILIATION
+            )
         ),
         None,
     )
@@ -1972,6 +2336,13 @@ def _review_reconciliation_summary(
     if not isinstance(snapshot_payload, dict):
         return committed
     try:
+        if "policy_sha256" in snapshot_payload and "scope_sha256" in snapshot_payload:
+            # R11 is already reprojected atomically by the repository; unlike
+            # legacy S9, do not reinterpret its fact-terminal closure here.
+            reconciliation = committed.get("reconciliation")
+            return (
+                {**committed, **reconciliation} if isinstance(reconciliation, dict) else committed
+            )
         if committed.get("contract_version") == "card_centric_s9_v1":
             snapshot = CardCentricReconciliationInput.model_validate(snapshot_payload)
             acknowledgement = overflow_acknowledgement or committed.get("selection", {}).get(

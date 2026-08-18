@@ -49,6 +49,7 @@ class ProviderAttemptIdentity:
     replay_namespace: str = "legacy"
     replay_attempt: int = 1
     subcall_ordinal: int = 0
+    stage_input_sha256: str = ""
 
     def __post_init__(self) -> None:
         if self.stage_attempt < 1 or self.call_index < 1 or self.replay_attempt < 1:
@@ -61,6 +62,8 @@ class ProviderAttemptIdentity:
             raise ValueError("provider replay namespace is required")
         if self.subcall_ordinal < 0:
             raise ValueError("provider subcall ordinal cannot be negative")
+        if self.stage_input_sha256 and not _is_sha256(self.stage_input_sha256):
+            raise ValueError("provider stage input SHA-256 is invalid")
 
     @property
     def batch_note_ids_sha256(self) -> str:
@@ -145,6 +148,8 @@ class ProviderEventEvidence:
     response_text: str | None = None
     diagnostic_source: str | None = None
     http_status: int | None = None
+    cost_reservation: dict[str, object] | None = None
+    cost_reservation_sha256: str | None = None
 
 
 ProviderEventRecorder = Callable[[ProviderEventEvidence], None]
@@ -159,16 +164,17 @@ class ProviderAttemptBinding:
     recorder: ProviderEventRecorder
     replay_namespace: str = "legacy"
     replay_attempt: int = 1
+    stage_input_sha256: str = ""
     _allocated_calls: set[int] = field(init=False, default_factory=set, repr=False)
-    _allocation_lock: threading.Lock = field(
-        init=False, default_factory=threading.Lock, repr=False
-    )
+    _allocation_lock: threading.Lock = field(init=False, default_factory=threading.Lock, repr=False)
 
     def __post_init__(self) -> None:
         if self.stage_attempt < 1 or self.replay_attempt < 1:
             raise ValueError("provider attempt stage ordinal must be positive")
         if not self.replay_namespace:
             raise ValueError("provider replay namespace is required")
+        if self.stage_input_sha256 and not _is_sha256(self.stage_input_sha256):
+            raise ValueError("provider stage input SHA-256 is invalid")
 
     def allocate_call_index(self, detail: ProviderCallDetail) -> int:
         """Allocate a deterministic *audit* integer from caller-supplied slots.
@@ -224,6 +230,8 @@ class ProviderCallHandle:
     generation_parameters: dict[str, object]
     generation_parameters_sha256: str
     cache_prefix_sha256: str | None
+    cost_reservation: dict[str, object] | None = None
+    cost_reservation_sha256: str | None = None
     defer_acceptance: bool = False
     deferred_accepted: dict[str, object] | None = field(default=None, repr=False)
 
@@ -237,6 +245,22 @@ _DETAIL: ContextVar[ProviderCallDetail | None] = ContextVar(
 _ACTIVE_HANDLE: ContextVar[ProviderCallHandle | None] = ContextVar(
     "anki_active_provider_call_handle", default=None
 )
+_COST_RESERVATION: ContextVar[tuple[dict[str, object], str] | None] = ContextVar(
+    "anki_provider_cost_reservation", default=None
+)
+
+
+@contextmanager
+def provider_cost_reservation(reservation: dict[str, object]) -> Iterator[None]:
+    canonical = json.dumps(
+        reservation, allow_nan=False, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    parsed = json.loads(canonical)
+    token = _COST_RESERVATION.set((parsed, hashlib.sha256(canonical.encode()).hexdigest()))
+    try:
+        yield
+    finally:
+        _COST_RESERVATION.reset(token)
 
 
 @contextmanager
@@ -299,6 +323,7 @@ def begin_provider_call(
         replay_namespace=binding.replay_namespace,
         replay_attempt=binding.replay_attempt,
         subcall_ordinal=detail.subcall_ordinal,
+        stage_input_sha256=binding.stage_input_sha256,
     )
     instruction_sha256 = hashlib.sha256(instruction.encode()).hexdigest()
     input_sha256 = hashlib.sha256(input_text.encode()).hexdigest()
@@ -321,6 +346,9 @@ def begin_provider_call(
             "identity": provider_attempt_identity_document(identity),
         }
     )
+    reservation = _COST_RESERVATION.get()
+    if identity.stage.value.startswith("v3_") and reservation is None:
+        raise ValueError("v3 provider dispatch requires a durable cost reservation")
     handle = ProviderCallHandle(
         binding,
         identity,
@@ -333,6 +361,8 @@ def begin_provider_call(
         generation_parameters,
         parameters_sha256,
         cache_prefix_sha256,
+        None if reservation is None else reservation[0],
+        None if reservation is None else reservation[1],
         detail.defer_acceptance,
     )
     _ACTIVE_HANDLE.set(handle)
@@ -342,7 +372,7 @@ def begin_provider_call(
 
 def provider_attempt_identity_document(identity: ProviderAttemptIdentity) -> dict[str, object]:
     """Audit identity; intentionally includes the actual job and capture mode."""
-    return {
+    document: dict[str, object] = {
         "job_id": str(identity.job_id),
         "stage": identity.stage.value,
         "durable_attempt": identity.stage_attempt,
@@ -353,11 +383,15 @@ def provider_attempt_identity_document(identity: ProviderAttemptIdentity) -> dic
         "batch_note_ids_sha256": identity.batch_note_ids_sha256,
         "subcall_ordinal": identity.subcall_ordinal,
     }
+    # Omit the empty optional field to preserve persisted v1/v2 request hashes.
+    if identity.stage_input_sha256:
+        document["stage_input_sha256"] = identity.stage_input_sha256
+    return document
 
 
 def provider_replay_identity_document(identity: ProviderAttemptIdentity) -> dict[str, object]:
     """Stable replay identity, independent of ephemeral job UUID and mode."""
-    return {
+    document: dict[str, object] = {
         "replay_namespace": identity.replay_namespace,
         "stage": identity.stage.value,
         "replay_attempt": identity.replay_attempt,
@@ -366,6 +400,9 @@ def provider_replay_identity_document(identity: ProviderAttemptIdentity) -> dict
         "batch_note_ids_sha256": identity.batch_note_ids_sha256,
         "subcall_ordinal": identity.subcall_ordinal,
     }
+    if identity.stage_input_sha256:
+        document["stage_input_sha256"] = identity.stage_input_sha256
+    return document
 
 
 def replay_namespace_from_job_source(
@@ -476,6 +513,8 @@ def emit_provider_event(
             response_text=bounded_response,
             diagnostic_source=diagnostic_source,
             http_status=http_status,
+            cost_reservation=handle.cost_reservation,
+            cost_reservation_sha256=handle.cost_reservation_sha256,
         )
     )
     _interlock_after_durable_provider_event(attempt_event)
@@ -628,6 +667,10 @@ def _safe_error(value: str | None) -> str | None:
     redacted = _bounded_redacted(value)
     assert redacted is not None
     return " ".join(redacted.split())[:2_000]
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 class ProviderAttemptLifecycle:

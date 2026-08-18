@@ -408,6 +408,74 @@ const buildSourceContainer = () => {
   return { documentRef, container };
 };
 
+test("v3 renderer displays bounded approval evidence without enabling envelopes", () => {
+  const documentRef = new FakeSourceDocument();
+  const host = documentRef.createElement("section");
+  const buildEnvelope = { disabled: true };
+  documentRef.register("review-quality", host);
+  const originalQuery = documentRef.querySelector.bind(documentRef);
+  documentRef.querySelector = (selector) => (
+    selector === "[data-review-quality]" ? host
+      : selector === "[data-build-envelope]" ? buildEnvelope
+        : originalQuery(selector)
+  );
+
+  anki.renderReviewSurface(documentRef, {});
+  assert.equal(host.hidden, true, "legacy rendering hides an empty quality host");
+
+  anki.renderV3ReviewSurface(documentRef, {
+    v3: {
+      approval_only: true,
+      reason: "approval only",
+      policy: { sha256: "a".repeat(64), enforcement: { present: true, tier: "professor" } },
+      scope: {
+        fact_ids: ["fact-a"],
+        degraded_mode: "none",
+        sources: [{ source_id: "slides" }],
+      },
+      retrieval: { exact_only_fact_ids: ["fact-a"], polluted_fact_ids: ["fact-b"] },
+      evidence: {
+        grounding: "cited",
+        degraded_mode: "none",
+        generated_grounding: [{ card_id: "card-1", fact_id: "fact-a", evidence_ids: ["e1"] }],
+      },
+      classification: { tiers: ["cheap", "thorough"], escalations: [{ reason: "low" }] },
+      selected_existing_note_ids: [7],
+      selected_generated_card_ids: ["card-1"],
+      resolution: {
+        duplicate_fact_ids: ["fact-c"],
+        unresolved: [{ fact_id: "fact-d", state: "unresolved", reason: "needs review" }],
+      },
+      cost: {
+        calls: [{
+          stage: "R7",
+          call_id: "call-1",
+          modality: "structured",
+          model: "fixture",
+          predicted: { microusd: 1 },
+          reserved: { microusd: 2 },
+          observed: { microusd: 1 },
+          observed_estimated: true,
+        }],
+      },
+    },
+  });
+
+  const lines = host.children[0].children.map((node) => node.textContent).join("\\n");
+  ["Policy:", "Scope:", "Sources:", "Retrieval:", "Evidence:", "Classification:", "Resolution:", "Cost calls:"]
+    .forEach((section) => assert.match(lines, new RegExp(section)));
+  assert.match(lines, /Selected existing: 7/);
+  assert.match(lines, /Selected generated: card-1/);
+  assert.match(lines, /Grounding: card-1 \/ fact-a; evidence e1/);
+  assert.match(lines, /Unresolved: fact-d \/ unresolved; needs review/);
+  assert.match(lines, /Cost: R7 \/ call-1; structured \/ fixture; predicted 1, reserved 2, observed 1 \(estimated\)/);
+  assert.equal(host.hidden, false, "v3 rendering reopens the host after legacy rendering");
+  assert.equal(buildEnvelope.disabled, true);
+
+  anki.renderV3ReviewSurface(documentRef, { selection: { selected_count: 1 } });
+  assert.equal(host.children.length, 1, "legacy review surfaces do not gain v3 details");
+});
+
 test("renderSourceChoices emits hidden inputs for ready slides and transcript sources", () => {
   const { documentRef, container } = buildSourceContainer();
 

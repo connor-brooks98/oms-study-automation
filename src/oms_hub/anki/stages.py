@@ -52,6 +52,7 @@ from oms_hub.anki.card_centric_contracts import (
     serialize_card_centric_ledger,
 )
 from oms_hub.anki.card_centric_hybrid import CardCentricHybridRetriever, query_variants
+from oms_hub.anki.card_centric_review import V3_PHASE_G_SAFETY, V3ReviewSnapshot, reconcile_v3
 from oms_hub.anki.classification_v3 import (
     MAX_BUNDLE_BYTES,
     MAX_BUNDLE_TOKENS,
@@ -80,6 +81,13 @@ from oms_hub.anki.correction_contracts import (
     GeneratedResolutionKind,
     PinnedLectureMetadata,
 )
+from oms_hub.anki.cost_estimator import (
+    RESERVED_INPUT_SAFETY_MULTIPLIER,
+    CostAuthorizationError,
+    FrozenRateTable,
+    StageCostSession,
+    TokenUsage,
+)
 from oms_hub.anki.course_policy import CourseCurationPolicy
 from oms_hub.anki.dedupe import DeduplicationService, V3DedupeProposal
 from oms_hub.anki.domain import (
@@ -102,7 +110,7 @@ from oms_hub.anki.evidence_bundle import (
     RetrievalScore,
     SelectedPassage,
 )
-from oms_hub.anki.fidelity_audit import R2FidelityDiagnostic
+from oms_hub.anki.fidelity_audit import R2FidelityDiagnostic, audit_fidelity
 from oms_hub.anki.gap_generation_v3 import (
     R9GenerationService,
     V3Evidence,
@@ -152,6 +160,7 @@ from oms_hub.anki.provider_attempts import (
     emit_provider_event,
     finalize_provider_call,
     provider_call_scope,
+    provider_cost_reservation,
 )
 from oms_hub.anki.reconciliation import (
     AuditResolution,
@@ -196,6 +205,7 @@ from oms_hub.anki.sources import (
     OutlineRepository,
     SourceEmphasisEvidence,
     SourcePassage,
+    project_source_emphasis_evidence,
 )
 from oms_hub.anki.v2_contracts import (
     AuditVerdictV2,
@@ -203,6 +213,7 @@ from oms_hub.anki.v2_contracts import (
     LectureConceptLedgerV2,
     MissingFactV2,
 )
+from oms_hub.document_processing.run_styles import extract_styled_text_run_sidecar
 from oms_hub.ingestion.domain import StudyRevision, UploadKind
 from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.llm.domain import GenerationOptions, ProviderCapabilities, ProviderName
@@ -492,6 +503,8 @@ class CurationServicesRunner:
         return self.llm_settings.get(_provider(context)).model
 
     async def run(self, context: StageContext) -> StageProduct:
+        if context.stage.value.startswith("v3_"):
+            self._require_v3_offline_execution(context)
         handlers = {
             CurationStage.PREFLIGHT: self._preflight,
             CurationStage.SOURCE_INDEX: self._source_index,
@@ -519,6 +532,10 @@ class CurationServicesRunner:
             CurationStage.CARD_RESIDUAL: self._card_residual,
             CurationStage.CARD_GAP_FILL: self._card_gap_fill,
             CurationStage.CARD_SELECTION: self._card_selection,
+            CurationStage.V3_R0_PREFLIGHT: self._v3_r0_preflight,
+            CurationStage.V3_R1_SOURCE_INDEX: self._v3_r1_source_index,
+            CurationStage.V3_R2_FIDELITY: self._v3_r2_fidelity,
+            CurationStage.V3_R4_INDEX_VERIFICATION: self._v3_r4_index_verification,
             CurationStage.V3_R3_SCOPE: self._v3_r3_scope,
             CurationStage.V3_R5_RETRIEVAL: self._v3_r5_retrieval,
             CurationStage.V3_R6_CALIBRATION: self._v3_r6_calibration,
@@ -526,14 +543,228 @@ class CurationServicesRunner:
             CurationStage.V3_R8_GAP_CONFIRMATION: self._v3_r8_gap_confirmation,
             CurationStage.V3_R9_GENERATION: self._v3_r9_generation,
             CurationStage.V3_R10_DEDUPE: self._v3_r10_dedupe,
+            CurationStage.V3_R11_REVIEW: self._v3_r11_review,
+            CurationStage.V3_R12_APPLY: self._v3_r12_apply,
         }
         return await handlers[context.stage](context)
+
+    def _require_v3_offline_execution(self, context: StageContext) -> None:
+        if not getattr(context.job, "offline_replay_only", False):
+            raise PinnedInputChanged("v3 requires the persisted offline replay pin")
+        if not all(
+            getattr(client, "offline_replay_only", False) is True
+            for client in (
+                getattr(self.structured, "generator", None),
+                self.embedder,
+                getattr(self.semantic, "embedder", None),
+            )
+        ):
+            raise PinnedInputChanged("v3 requires offline-only structured and embedding clients")
+
+    async def _v3_r0_preflight(self, context: StageContext) -> StageProduct:
+        if context.job.policy_sha256 is None:
+            raise PinnedInputChanged("R0 requires the persisted policy pin")
+        policy = self.repository.get_policy_by_sha256(context.job.policy_sha256)
+        if context.job.rate_table_document is None:
+            raise PinnedInputChanged("R0 requires the persisted frozen rate table")
+        table = FrozenRateTable.from_document(context.job.rate_table_document)
+        if table.rate_table_sha256 != context.job.rate_table_sha256:
+            raise PinnedInputChanged("R0 frozen rate table changed")
+        routes = context.job.resolved_model_config
+        if not all(
+            (
+                routes.scope_r3,
+                routes.cheap_classify_r7,
+                routes.thorough_classify_r7,
+                routes.generation_r9,
+            )
+        ):
+            raise PinnedInputChanged("R0 requires complete v3 model routes")
+        assert routes.scope_r3 is not None
+        assert routes.cheap_classify_r7 is not None
+        assert routes.thorough_classify_r7 is not None
+        assert routes.generation_r9 is not None
+        prompt = (
+            AnkiPromptLibrary(self.prompts.bundled_directory)
+            .load_many(("card-centric-scope-v3",))
+            .prompts[0]
+        )
+        payload: dict[str, object] = {
+            "policy": policy.model_dump(mode="json"),
+            "policy_sha256": policy.policy_sha256,
+            "policy_revision": policy.revision,
+            "ordinary_cost_limit_microusd": policy.ordinary_cost_limit_microusd,
+            "hard_stop_cost_limit_microusd": policy.hard_stop_cost_limit_microusd,
+            "rate_table": table.document(),
+            "rate_table_sha256": table.rate_table_sha256,
+            "model_config_sha256": context.job.model_config_sha256,
+            "scope_r3": r7_route_document(routes.scope_r3),
+            "cheap_classify_r7": r7_route_document(routes.cheap_classify_r7),
+            "thorough_classify_r7": r7_route_document(routes.thorough_classify_r7),
+            "generation_r9": r7_route_document(routes.generation_r9),
+            "r7_classification": r7_pin_document(
+                routes.cheap_classify_r7, routes.thorough_classify_r7, table.rate_table_sha256
+            ),
+            "prompt_snapshot": [
+                {
+                    "id": prompt.metadata.id,
+                    "version": prompt.metadata.version,
+                    "content": prompt.content,
+                    "content_sha256": prompt.content_sha256,
+                    "metadata": prompt.metadata.model_dump(mode="json", by_alias=True),
+                }
+            ],
+            "cost_ledger": [],
+            "cost_ledger_sha256": hashlib.sha256(b"[]").hexdigest(),
+            "offline_replay_only": True,
+        }
+        payload["artifact_sha256"] = canonical_sha256(payload)
+        return StageProduct(kind="card_centric_v3_preflight", payload=payload)
+
+    async def _v3_r1_source_index(self, context: StageContext) -> StageProduct:
+        r0 = _payload(context, CurationStage.V3_R0_PREFLIGHT)
+        policy = _r3_policy(context, r0)
+        if set(context.job.source_revision_hashes) != set(context.job.source_revision_ids):
+            raise PinnedInputChanged("R1 source revision pins are incomplete")
+        passages = await asyncio.to_thread(
+            self.source_extractor.extract,
+            context.job.source_revision_ids,
+            summary_outline_id=context.job.summary_outline_id,
+        )
+        slide = [item for item in passages if item.source_kind is SourceKind.SLIDE]
+        revisions = [
+            self.source_extractor.revisions.get_study_revision(item)
+            for item in context.job.source_revision_ids
+        ]
+        if any(
+            context.job.source_revision_hashes[revision.id] != revision_fingerprint(revision)
+            for revision in revisions
+        ):
+            raise PinnedInputChanged("R1 pinned source revision changed")
+        slide_revisions = [item for item in revisions if item.kind is UploadKind.SLIDES]
+        if len(slide_revisions) != 1 or not slide:
+            raise PinnedInputChanged("R1 requires exactly one pinned slide source")
+        revision = slide_revisions[0]
+        source_id = f"lecture:{context.job.lecture_id}:revision:{revision.id}:slides"
+        sidecar = await asyncio.to_thread(
+            extract_styled_text_run_sidecar,
+            revision.immutable_source_path,
+            source_id=source_id,
+            source_sha256=revision.source_sha256,
+        )
+        run_passages = [
+            SourcePassage.create(
+                revision_id=revision.id,
+                lecture_id=context.job.lecture_id,
+                artifact_id=revision.upload_item_id,
+                source_kind=SourceKind.SLIDE,
+                locator=run.locator,
+                text=run.text,
+                source_id=source_id,
+                slide_number=run.slide_number,
+            )
+            for run in sidecar.runs
+            if run.text.strip()
+        ]
+        emphasis = project_source_emphasis_evidence(sidecar, policy, revision_id=revision.id)
+        payload: dict[str, object] = {
+            "passages": [
+                _passage_payload(item)
+                for item in (
+                    *run_passages,
+                    *(item for item in passages if item.source_kind is not SourceKind.SLIDE),
+                )
+            ],
+            "style_sidecar": sidecar.model_dump(mode="json"),
+            "style_source_sha256": sidecar.source_sha256,
+            "style_sidecar_sha256": sidecar.sidecar_sha256,
+            "emphasis_evidence": [item.model_dump(mode="json") for item in emphasis],
+            "cost_ledger": [],
+            "cost_ledger_sha256": hashlib.sha256(b"[]").hexdigest(),
+        }
+        payload["artifact_sha256"] = canonical_sha256(payload)
+        return StageProduct(kind="card_centric_v3_source_index", payload=payload)
+
+    async def _v3_r2_fidelity(self, context: StageContext) -> StageProduct:
+        from oms_hub.document_processing.run_styles import StyledTextRunSidecar
+
+        r0 = _payload(context, CurationStage.V3_R0_PREFLIGHT)
+        r1 = _payload(context, CurationStage.V3_R1_SOURCE_INDEX)
+        policy = _r3_policy(context, r0)
+        sidecar = StyledTextRunSidecar.model_validate(r1["style_sidecar"])
+        diagnostic = audit_fidelity(sidecar, policy, source_passages=_r3_passages(r1))
+        payload: dict[str, object] = {
+            "fidelity_diagnostic": diagnostic.model_dump(mode="json"),
+            "cost_ledger": [],
+            "cost_ledger_sha256": hashlib.sha256(b"[]").hexdigest(),
+        }
+        payload["artifact_sha256"] = canonical_sha256(payload)
+        return StageProduct(
+            kind="card_centric_v3_fidelity",
+            payload=payload,
+            blocking_error=None if diagnostic.may_advance else f"R2 fidelity {diagnostic.status}",
+        )
+
+    async def _v3_r4_index_verification(self, context: StageContext) -> StageProduct:
+        r0 = _payload(context, CurationStage.V3_R0_PREFLIGHT)
+        policy = _r3_policy(context, r0)
+        eligible = set(
+            self.companion.eligible_note_ids(
+                CompanionFilters(deck_allowlist=context.job.deck_allowlist)
+            )
+        )
+        notes = tuple(note for note in self.companion.list_notes() if note.note_id in eligible)
+        snapshot = self.semantic.store.load(
+            expected_model=self.semantic.model,
+            expected_dimensions=self.semantic.dimensions,
+            expected_generation=context.job.semantic_generation,
+        )
+        cards = [{"note_id": note.note_id, "content_sha256": note.content_sha256} for note in notes]
+        census = build_snapshot_census(
+            tuple(_card_record(note) for note in notes),
+            deck_allowlist=context.job.deck_allowlist,
+            scope_tokens=context.job.tag_allowlist,
+            snapshot_id=context.job.companion_generation or context.job.index_snapshot_id,
+        )
+        semantic = [
+            {"note_id": note_id, "semantic_content_sha256": content_hash}
+            for note_id, content_hash in zip(
+                snapshot.manifest.note_ids, snapshot.manifest.content_hashes, strict=True
+            )
+            if note_id in eligible
+        ]
+        manifest = {
+            "generation": str(snapshot.manifest.generation),
+            "model": snapshot.manifest.model,
+            "dimensions": snapshot.manifest.dimensions,
+            "matrix_sha256": snapshot.manifest.matrix_sha256,
+        }
+        payload: dict[str, object] = {
+            "kind": "card_centric_v3_index_verification",
+            "policy_sha256": policy.policy_sha256,
+            "companion_generation": context.job.companion_generation,
+            "lexical_generation": context.job.companion_generation,
+            "semantic_generation": context.job.semantic_generation,
+            "deck_allowlist": list(context.job.deck_allowlist),
+            "tag_allowlist": list(context.job.tag_allowlist),
+            "card_identities": cards,
+            "cards_sha256": canonical_sha256(cards),
+            "semantic_identities": semantic,
+            "semantic_manifest": manifest,
+            "semantic_manifest_sha256": canonical_sha256(manifest),
+            "census": census.model_dump(mode="json"),
+            "census_sha256": canonical_sha256(census.model_dump(mode="json")),
+        }
+        payload["verification_sha256"] = canonical_sha256(payload)
+        payload["artifact_sha256"] = canonical_sha256(payload)
+        return StageProduct(kind="card_centric_v3_index_verification", payload=payload)
 
     async def _v3_r3_scope(self, context: StageContext) -> StageProduct:
         """Synthetic-only R3 seam; pipeline.py still rejects v3 execution."""
         if context.job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V3:
             raise PinnedInputChanged("R3 scope requires the card_centric_v3 contract")
         r0 = _payload(context, CurationStage.V3_R0_PREFLIGHT)
+        costs = _v3_cost_session(context, r0)
         r1 = _payload(context, CurationStage.V3_R1_SOURCE_INDEX)
         r2 = _payload(context, CurationStage.V3_R2_FIDELITY)
         policy = _r3_policy(context, r0)
@@ -543,7 +774,9 @@ class CurationServicesRunner:
         emphasis = _r3_emphasis(r1)
         fidelity = _r3_fidelity(policy, r1, r2, emphasis)
         result = await asyncio.to_thread(
-            ScopeService(self.structured).generate_scope,
+            ScopeService(
+                cast(StructuredTextService, _GuardedStructuredService(self.structured, costs, "R3"))
+            ).generate_scope,
             policy=policy,
             fidelity=fidelity,
             source_passages=passages,
@@ -552,22 +785,26 @@ class CurationServicesRunner:
             route=route,
             model_config_sha256=context.job.model_config_sha256,
             existing=_r3_reuse(r0, context.replay_inputs),
+            require_v3_provenance=True,
         )
+        payload: dict[str, Any] = {
+            "scope": result.scope.model_dump(mode="json"),
+            "provider_input": result.provider_input,
+            "source_bundle": result.source_bundle,
+            "source_bundle_sha256": result.source_bundle_sha256,
+            "scope_request_sha256": result.scope_request_sha256,
+            "prompt_id": result.prompt_id,
+            "prompt_version": result.prompt_version,
+            "prompt_content_sha256": result.prompt_content_sha256,
+            "route": result.route,
+            "output_schema_sha256": result.output_schema_sha256,
+            "reused": result.reused,
+        }
+        _seal_v3_costs(costs, payload)
+        payload["artifact_sha256"] = canonical_sha256(payload)
         return StageProduct(
             kind="card_centric_v3_scope",
-            payload={
-                "scope": result.scope.model_dump(mode="json"),
-                "provider_input": result.provider_input,
-                "source_bundle": result.source_bundle,
-                "source_bundle_sha256": result.source_bundle_sha256,
-                "scope_request_sha256": result.scope_request_sha256,
-                "prompt_id": result.prompt_id,
-                "prompt_version": result.prompt_version,
-                "prompt_content_sha256": result.prompt_content_sha256,
-                "route": result.route,
-                "output_schema_sha256": result.output_schema_sha256,
-                "reused": result.reused,
-            },
+            payload=payload,
             usage=result.usage,
         )
 
@@ -576,6 +813,7 @@ class CurationServicesRunner:
         if context.job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V3:
             raise PinnedInputChanged("R5 retrieval requires the card_centric_v3 contract")
         r0 = _payload(context, CurationStage.V3_R0_PREFLIGHT)
+        costs = _v3_cost_session(context, r0)
         r3 = _payload(context, CurationStage.V3_R3_SCOPE)
         r4 = _v3_r4_verification(
             context, _payload(context, CurationStage.V3_R4_INDEX_VERIFICATION), r0
@@ -631,7 +869,16 @@ class CurationServicesRunner:
             # R5 must retain deck-eligible off-scope rows for R6 pollution audit.
             tag_allowlist=(),
         )
-        retriever = CardCentricHybridRetriever(self.companion, self.semantic)
+        embedding_client = getattr(self.semantic, "embedder", None)
+        semantic = (
+            _CostedSemanticService(
+                self.semantic,
+                _GuardedEmbeddingClient(embedding_client, costs, "R5", self.semantic.model),
+            )
+            if embedding_client is not None
+            else self.semantic
+        )
+        retriever = CardCentricHybridRetriever(self.companion, semantic)
         config: dict[str, Any] = frozen_config_payload()
         config_sha256 = canonical_sha256(config)
         facts: list[dict[str, Any]] = []
@@ -714,6 +961,7 @@ class CurationServicesRunner:
             "config_sha256": config_sha256,
             "facts": facts,
         }
+        _seal_v3_costs(costs, payload)
         payload["artifact_sha256"] = canonical_sha256(payload)
         return StageProduct(kind="card_centric_v3_retrieval", payload=payload)
 
@@ -721,6 +969,7 @@ class CurationServicesRunner:
         if context.job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V3:
             raise PinnedInputChanged("R6 calibration requires the card_centric_v3 contract")
         r5 = _payload(context, CurationStage.V3_R5_RETRIEVAL)
+        costs = _v3_cost_session(context, _payload(context, CurationStage.V3_R0_PREFLIGHT))
         r4 = _v3_r4_verification(
             context,
             _payload(context, CurationStage.V3_R4_INDEX_VERIFICATION),
@@ -1000,6 +1249,7 @@ class CurationServicesRunner:
             "semantic_generation": r4["semantic_generation"],
             "records": records,
         }
+        _seal_v3_costs(costs, payload)
         payload["artifact_sha256"] = canonical_sha256(payload)
         return StageProduct(kind="card_centric_v3_calibration", payload=payload)
 
@@ -1008,6 +1258,7 @@ class CurationServicesRunner:
         if context.job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V3:
             raise PinnedInputChanged("R7 classification requires the card_centric_v3 contract")
         r0 = _payload(context, CurationStage.V3_R0_PREFLIGHT)
+        costs = _v3_cost_session(context, r0)
         r3 = _payload(context, CurationStage.V3_R3_SCOPE)
         r5 = _payload(context, CurationStage.V3_R5_RETRIEVAL)
         r6 = _payload(context, CurationStage.V3_R6_CALIBRATION)
@@ -1053,6 +1304,7 @@ class CurationServicesRunner:
                 "r6_artifact_sha256": r6["artifact_sha256"],
                 **payload,
             }
+            _seal_v3_costs(costs, payload)
             payload["artifact_sha256"] = canonical_sha256(payload)
             return StageProduct(
                 kind="card_centric_v3_classification",
@@ -1060,7 +1312,9 @@ class CurationServicesRunner:
                 blocking_error=str(exc),
             )
         result = await asyncio.to_thread(
-            R7ClassificationService(self.structured).classify,
+            R7ClassificationService(
+                cast(StructuredTextService, _GuardedStructuredService(self.structured, costs, "R7"))
+            ).classify,
             bundles=bundles,
             strictness=policy.classification_strictness,
             cheap_route=cheap,
@@ -1076,9 +1330,9 @@ class CurationServicesRunner:
             "r6_artifact_sha256": r6["artifact_sha256"],
             **result.payload,
         }
-        payload["artifact_sha256"] = canonical_sha256(
-            {key: value for key, value in payload.items() if key != "artifact_sha256"}
-        )
+        payload.pop("artifact_sha256", None)
+        _seal_v3_costs(costs, payload)
+        payload["artifact_sha256"] = canonical_sha256(payload)
         return StageProduct(
             kind="card_centric_v3_classification",
             payload=payload,
@@ -1093,9 +1347,12 @@ class CurationServicesRunner:
         if CurationStage.V3_R4_INDEX_VERIFICATION not in context.prior_payloads:
             raise KeyError(context.stage)
         r0, scope, r4, r5, r6, r7 = _v3_phase_f_inputs(context)
+        costs = _v3_cost_session(context, r0)
         policy = _r3_policy(context, r0)
         if r7.get("blocking") or r7.get("blocking_error"):
-            return _v3_blocked_product("card_centric_v3_gap_confirmation", r7, "R7 is blocking")
+            return _v3_blocked_product(
+                "card_centric_v3_gap_confirmation", r7, "R7 is blocking", costs=costs
+            )
         initial_rows = _v3_r7_rows(r7)
         initial_by_fact: dict[str, list[Mapping[str, Any]]] = {}
         for row in initial_rows:
@@ -1169,7 +1426,12 @@ class CurationServicesRunner:
         if residual_bundles:
             cheap, thorough, rate_table_sha256 = _r7_routes(context, r0)
             result = await asyncio.to_thread(
-                R7ClassificationService(self.structured).classify,
+                R7ClassificationService(
+                    cast(
+                        StructuredTextService,
+                        _GuardedStructuredService(self.structured, costs, "R8"),
+                    )
+                ).classify,
                 bundles=tuple(
                     sorted(
                         residual_bundles,
@@ -1241,6 +1503,7 @@ class CurationServicesRunner:
                 "final_partition": residual_rows,
             },
         }
+        _seal_v3_costs(costs, payload)
         payload["artifact_sha256"] = canonical_sha256(payload)
         return StageProduct(
             kind="card_centric_v3_gap_confirmation",
@@ -1251,6 +1514,7 @@ class CurationServicesRunner:
 
     async def _v3_r9_generation(self, context: StageContext) -> StageProduct:
         r0, scope, r4, r5, r6, r7 = _v3_phase_f_inputs(context)
+        costs = _v3_cost_session(context, r0)
         r8 = _payload(context, CurationStage.V3_R8_GAP_CONFIRMATION)
         _v3_artifact_valid(r8, "Pinned R8 gap confirmation identity changed")
         policy = _r3_policy(context, r0)
@@ -1317,7 +1581,9 @@ class CurationServicesRunner:
         calls: list[dict[str, object]] = []
         usages: list[StageUsage] = []
         blocking_errors: list[str] = []
-        service = R9GenerationService(self.structured)
+        service = R9GenerationService(
+            cast(StructuredTextService, _GuardedStructuredService(self.structured, costs, "R9"))
+        )
         for batch_index, request in enumerate(requests):
             result, usage = await asyncio.to_thread(
                 service.generate,
@@ -1355,6 +1621,7 @@ class CurationServicesRunner:
             ),
             "calls": calls,
         }
+        _seal_v3_costs(costs, payload)
         payload["artifact_sha256"] = canonical_sha256(payload)
         return StageProduct(
             kind="card_centric_v3_generation",
@@ -1365,6 +1632,7 @@ class CurationServicesRunner:
 
     async def _v3_r10_dedupe(self, context: StageContext) -> StageProduct:
         r0, scope, r4, _r5, _r6, _r7 = _v3_phase_f_inputs(context)
+        costs = _v3_cost_session(context, r0)
         r9 = _payload(context, CurationStage.V3_R9_GENERATION)
         _v3_artifact_valid(r9, "Pinned R9 generation identity changed")
         policy = _r3_policy(context, r0)
@@ -1406,9 +1674,11 @@ class CurationServicesRunner:
         )
         if not set(vectors) <= semantic_ids:
             raise PinnedInputChanged("R10 pinned vectors escape R4 semantic closure")
-        results = await DeduplicationService(self.embedder).classify_v3_batch(
-            proposals, notes, existing_document_vectors=vectors
-        )
+        results = await DeduplicationService(
+            _GuardedEmbeddingClient(
+                self.embedder, costs, "R10", getattr(self.semantic, "model", "embedding")
+            )
+        ).classify_v3_batch(proposals, notes, existing_document_vectors=vectors)
         by_id = {item.card_id: item for item in results}
         rows: list[dict[str, object]] = []
         for source in r9["resolutions"]:
@@ -1448,8 +1718,297 @@ class CurationServicesRunner:
             "r9_artifact_sha256": r9["artifact_sha256"],
             "resolutions": rows,
         }
+        _seal_v3_costs(costs, payload)
         payload["artifact_sha256"] = canonical_sha256(payload)
         return StageProduct(kind="card_centric_v3_dedupe", payload=payload)
+
+    async def _v3_r11_review(self, context: StageContext) -> StageProduct:
+        """Pure frozen review projection; it never calls a provider or Anki."""
+        if context.job.pipeline_contract_version is not PipelineContractVersion.CARD_CENTRIC_V3:
+            raise PinnedInputChanged("R11 review requires the card_centric_v3 contract")
+        r0_costs = _payload(context, CurationStage.V3_R0_PREFLIGHT)
+        costs = _v3_cost_session(context, r0_costs)
+        stages = (
+            CurationStage.V3_R0_PREFLIGHT,
+            CurationStage.V3_R1_SOURCE_INDEX,
+            CurationStage.V3_R2_FIDELITY,
+            CurationStage.V3_R3_SCOPE,
+            CurationStage.V3_R4_INDEX_VERIFICATION,
+            CurationStage.V3_R5_RETRIEVAL,
+            CurationStage.V3_R6_CALIBRATION,
+            CurationStage.V3_R7_CLASSIFICATION,
+            CurationStage.V3_R8_GAP_CONFIRMATION,
+            CurationStage.V3_R9_GENERATION,
+            CurationStage.V3_R10_DEDUPE,
+        )
+        # A missing prerequisite is deliberately a raw lookup failure here:
+        # the stage runner must never manufacture a partial review artifact.
+        products = {
+            f"R{index}": context.prior_payloads[stage] for index, stage in enumerate(stages)
+        }
+        hashes: dict[str, str] = {}
+        for name, payload in products.items():
+            value = payload.get("artifact_sha256")
+            if not isinstance(value, str) or len(value) != 64:
+                raise PinnedInputChanged(f"R11 requires a complete {name} artifact hash")
+            unsigned = {key: item for key, item in payload.items() if key != "artifact_sha256"}
+            if value != canonical_sha256(unsigned):
+                raise PinnedInputChanged(f"R11 rejected a tampered {name} artifact")
+            hashes[name] = value
+        r0, r3, r5, r6, r7, r8, r9, r10 = (
+            products["R0"],
+            products["R3"],
+            products["R5"],
+            products["R6"],
+            products["R7"],
+            products["R8"],
+            products["R9"],
+            products["R10"],
+        )
+        r4 = products["R4"]
+        scope = LectureScope.model_validate(r3.get("scope"))
+        for evidence in scope.evidence:
+            if evidence.revision_id is None or evidence.source_kind is None:
+                raise PinnedInputChanged("R11 scope evidence lacks pinned provenance")
+            try:
+                SourceKind(evidence.source_kind)
+            except (TypeError, ValueError) as exc:
+                raise PinnedInputChanged("R11 scope evidence lacks pinned provenance") from exc
+        policy = _r3_policy(context, r0)
+        if (
+            scope.policy_sha256 != policy.policy_sha256
+            or r10.get("scope_sha256") != scope.scope_sha256
+        ):
+            raise PinnedInputChanged("R11 policy/scope closure changed")
+        rate_table_sha256 = r0.get("rate_table_sha256")
+        if not isinstance(rate_table_sha256, str) or len(rate_table_sha256) != 64:
+            raise PinnedInputChanged("R11 requires the frozen R0 rate table")
+        bundle_candidates = {
+            str(bundle["bundle_id"]): {
+                **dict(cast(Mapping[str, Any], bundle["candidate"])),
+                "fact_id": bundle.get("fact_id"),
+            }
+            for bundle in cast(list[Mapping[str, Any]], r7.get("bundles", []))
+            if isinstance(bundle.get("bundle_id"), str)
+            and isinstance(bundle.get("candidate"), Mapping)
+        }
+        residual = cast(Mapping[str, Any], r8.get("residual_r7", {}))
+        bundle_candidates.update(
+            {
+                str(bundle["bundle_id"]): {
+                    **dict(cast(Mapping[str, Any], bundle["candidate"])),
+                    "fact_id": bundle.get("fact_id"),
+                }
+                for bundle in cast(list[Mapping[str, Any]], residual.get("bundles", []))
+                if isinstance(bundle.get("bundle_id"), str)
+                and isinstance(bundle.get("candidate"), Mapping)
+            }
+        )
+        final_rows = [
+            *_v3_r7_rows(r7),
+            *cast(list[dict[str, Any]], residual.get("final_partition", [])),
+        ]
+        existing_rows: list[dict[str, Any]] = []
+        existing_keys: set[tuple[int, str]] = set()
+        for row in final_rows:
+            bundle_id = row.get("bundle_id")
+            candidate = bundle_candidates.get(cast(str, bundle_id))
+            if candidate is None or not isinstance(candidate.get("note_id"), int):
+                raise PinnedInputChanged("R11 R7 selection lacks pinned candidate identity")
+            fact_id = candidate["fact_id"]
+            if not isinstance(fact_id, str):
+                raise PinnedInputChanged("R11 R7 selection lacks pinned fact identity")
+            existing_keys.add((candidate["note_id"], fact_id))
+            existing_rows.append(
+                dict(
+                    row,
+                    note_id=candidate["note_id"],
+                    fact_id=fact_id,
+                    content_sha256=candidate.get("content_sha256"),
+                    selected=(row.get("disposition") == "keep"),
+                )
+            )
+        for record in cast(list[Mapping[str, Any]], r6.get("records", [])):
+            fact_id = record.get("fact_id")
+            if not isinstance(fact_id, str):
+                raise PinnedInputChanged("R11 R6 record lacks fact identity")
+            candidates = {
+                int(item["note_id"]): item
+                for item in cast(list[Mapping[str, Any]], record.get("all_candidates", []))
+                if isinstance(item.get("note_id"), int)
+            }
+            for cluster in cast(list[Mapping[str, Any]], record.get("clusters", [])):
+                representative = cluster.get("representative_note_id")
+                if not isinstance(representative, int) or representative not in candidates:
+                    raise PinnedInputChanged("R11 R6 cluster lacks a visible representative")
+                for note_id in cluster.get("sibling_note_ids", []):
+                    if not isinstance(note_id, int) or note_id not in candidates:
+                        raise PinnedInputChanged("R11 R6 cluster lacks a visible sibling")
+                    if (note_id, fact_id) in existing_keys:
+                        continue
+                    cluster_candidate = candidates[note_id]
+                    existing_keys.add((note_id, fact_id))
+                    existing_rows.append(
+                        {
+                            "note_id": note_id,
+                            "fact_id": fact_id,
+                            "content_sha256": cluster_candidate.get("content_sha256"),
+                            "disposition": "redundant" if note_id != representative else "exclude",
+                            "redundant_with_candidate_id": (
+                                f"note:{representative}" if note_id != representative else None
+                            ),
+                            "selected": False,
+                        }
+                    )
+        for row in tuple(existing_rows):
+            target = row.get("redundant_with_candidate_id")
+            fact_id = row.get("fact_id")
+            if row.get("disposition") != "redundant" or not isinstance(target, str):
+                continue
+            if not target.startswith("note:") or not isinstance(fact_id, str):
+                raise PinnedInputChanged("R11 redundant target is malformed")
+            try:
+                note_id = int(target.removeprefix("note:"))
+            except ValueError as exc:
+                raise PinnedInputChanged("R11 redundant target is malformed") from exc
+            matching = [
+                item
+                for item in existing_rows
+                if item.get("note_id") == note_id and item.get("fact_id") == fact_id
+            ]
+            if matching:
+                matching[0]["disposition"] = "keep"
+                matching[0]["selected"] = True
+            else:
+                existing_keys.add((note_id, fact_id))
+                existing_rows.append(
+                    {
+                        "note_id": note_id,
+                        "fact_id": fact_id,
+                        "disposition": "keep",
+                        "selected": True,
+                        "canonical_for_redundant_note_id": row.get("note_id"),
+                    }
+                )
+        for row in cast(list[Mapping[str, Any]], r10.get("resolutions", [])):
+            dedupe = row.get("dedupe")
+            target = dedupe.get("duplicate_of") if isinstance(dedupe, Mapping) else None
+            fact_id = row.get("fact_id")
+            if row.get("status") != "duplicate_of_existing" or not isinstance(target, str):
+                continue
+            if not target.startswith("note:") or not isinstance(fact_id, str):
+                raise PinnedInputChanged("R11 R10 duplicate target is malformed")
+            try:
+                note_id = int(target.removeprefix("note:"))
+            except ValueError as exc:
+                raise PinnedInputChanged("R11 R10 duplicate target is malformed") from exc
+            matching = [
+                item
+                for item in existing_rows
+                if item.get("note_id") == note_id and item.get("fact_id") == fact_id
+            ]
+            if matching:
+                matching[0]["disposition"] = "keep"
+                matching[0]["selected"] = True
+            else:
+                existing_keys.add((note_id, fact_id))
+                existing_rows.append(
+                    {
+                        "note_id": note_id,
+                        "fact_id": fact_id,
+                        "disposition": "keep",
+                        "selected": True,
+                        "duplicate_target": True,
+                    }
+                )
+        existing = tuple(existing_rows)
+        generated = tuple(
+            dict(row, selected=(row.get("status") == "generated"))
+            for row in cast(list[dict[str, object]], r10.get("resolutions", []))
+            if isinstance(row.get("card_id"), str) and str(row["card_id"]).strip()
+        )
+        snapshot = V3ReviewSnapshot(
+            policy_sha256=policy.policy_sha256,
+            scope_sha256=scope.scope_sha256,
+            rate_table_sha256=rate_table_sha256,
+            r0_to_r10_sha256=hashes,
+            evidence={
+                "r0": {"policy": r0.get("policy"), "rate_table": r0.get("rate_table")},
+                "r1_source": products["R1"],
+                "r2_fidelity": products["R2"],
+                "r4_index_verification": products["R4"],
+                "scope": scope.model_dump(mode="json"),
+                "retrieval": r5,
+                "calibration": r6,
+                "classification": r7,
+                "gap_confirmation": r8,
+                "generation": r9,
+                "dedupe": r10,
+                "cost_ledger": r10.get("cost_ledger", []),
+                "policy_enforcement": products["R2"],
+                "phase_g_safety": V3_PHASE_G_SAFETY,
+            },
+            existing_candidates=existing,
+            generated_cards=generated,
+            selected_existing_note_ids=tuple(
+                sorted(
+                    {
+                        int(row["note_id"])
+                        for row in existing
+                        if row.get("selected") and isinstance(row.get("note_id"), int)
+                    }
+                )
+            ),
+            selected_generated_card_ids=tuple(
+                sorted(
+                    str(row["card_id"])
+                    for row in generated
+                    if row.get("selected") and row.get("card_id") is not None
+                )
+            ),
+        )
+        reconciliation = reconcile_v3(snapshot)
+        payload = {
+            "policy_sha256": policy.policy_sha256,
+            "scope_sha256": scope.scope_sha256,
+            "rate_table_sha256": rate_table_sha256,
+            "cost_ledger": r10.get("cost_ledger", []),
+            "cost_ledger_sha256": r10.get("cost_ledger_sha256"),
+            "snapshot": snapshot.model_dump(mode="json"),
+            "reconciliation": reconciliation.model_dump(mode="json"),
+        }
+        _seal_v3_costs(costs, payload)
+        payload["artifact_sha256"] = canonical_sha256(payload)
+        projected_candidates, projected_gap_cards = _v3_r11_persisted_rows(
+            scope=scope,
+            r4=r4,
+            existing=existing,
+            generated=generated,
+        )
+        return StageProduct(
+            kind="card_centric_v3_review",
+            payload=payload,
+            candidates=projected_candidates,
+            gap_cards=projected_gap_cards,
+        )
+
+    async def _v3_r12_apply(self, context: StageContext) -> StageProduct:
+        """Phase G seam only: approval is required and Anki is never contacted."""
+        r11 = _payload(context, CurationStage.V3_R11_REVIEW)
+        costs = _v3_cost_session(context, _payload(context, CurationStage.V3_R0_PREFLIGHT))
+        _v3_artifact_valid(r11, "R12 rejected a tampered R11 artifact")
+        payload = {
+            "r11_artifact_sha256": r11["artifact_sha256"],
+            "review_snapshot_sha256": r11.get("snapshot", {}).get("snapshot_sha256"),
+            "status": "approval_required",
+            "anki_mutated": False,
+            "phase_g_safety": V3_PHASE_G_SAFETY,
+            "cost_ledger": r11.get("cost_ledger", []),
+            "cost_ledger_sha256": r11.get("cost_ledger_sha256"),
+        }
+        _seal_v3_costs(costs, payload)
+        payload["artifact_sha256"] = canonical_sha256(payload)
+        return StageProduct(kind="card_centric_v3_apply_seam", payload=payload)
 
     async def _preflight(self, context: StageContext) -> StageProduct:
         result = await self.runtime.ensure_running()
@@ -5324,8 +5883,16 @@ def _v3_artifact_valid(payload: Mapping[str, Any], message: str) -> None:
         raise PinnedInputChanged(message)
 
 
-def _v3_blocked_product(kind: str, r7: Mapping[str, Any], error: str) -> StageProduct:
+def _v3_blocked_product(
+    kind: str,
+    r7: Mapping[str, Any],
+    error: str,
+    *,
+    costs: StageCostSession | None = None,
+) -> StageProduct:
     payload = {"r7_artifact_sha256": r7["artifact_sha256"], "records": [], "blocking": error}
+    if costs is not None:
+        _seal_v3_costs(costs, payload)
     payload["artifact_sha256"] = canonical_sha256(payload)
     return StageProduct(kind=kind, payload=payload, blocking_error=error)
 
@@ -6036,6 +6603,168 @@ def _r3_sha256(value: object) -> bool:
     )
 
 
+def _v3_r11_persisted_rows(
+    *,
+    scope: LectureScope,
+    r4: Mapping[str, Any],
+    existing: Sequence[Mapping[str, Any]],
+    generated: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[Candidate, ...], tuple[GapCard, ...]]:
+    """Project only R11 identities that can be atomically materialized."""
+    companion_generation = r4.get("companion_generation")
+    verification_sha256 = r4.get("verification_sha256")
+    identities = r4.get("card_identities")
+    if (
+        not isinstance(companion_generation, str)
+        or not companion_generation
+        or not isinstance(verification_sha256, str)
+        or len(verification_sha256) != 64
+        or not isinstance(identities, list)
+    ):
+        raise PinnedInputChanged("R11 lacks the validated R4 companion identity closure")
+    identity_by_note: dict[int, str] = {}
+    for identity in identities:
+        if (
+            not isinstance(identity, Mapping)
+            or not isinstance(identity.get("note_id"), int)
+            or not isinstance(identity.get("content_sha256"), str)
+            or len(cast(str, identity["content_sha256"])) != 64
+            or identity["note_id"] in identity_by_note
+        ):
+            raise PinnedInputChanged("R11 has a malformed R4 card identity")
+        identity_by_note[identity["note_id"]] = identity["content_sha256"]
+    facts = {
+        fact.fact_id: (concept.concept_id, fact)
+        for concept in scope.concepts
+        for fact in concept.facts
+    }
+    source_by_id = {
+        evidence.evidence_id: SourceReference(
+            source_kind=SourceKind(cast(str, evidence.source_kind)),
+            revision_id=cast(int, evidence.revision_id),
+            locator=evidence.locator,
+            content_hash=evidence.content_sha256,
+        )
+        for evidence in scope.evidence
+    }
+    rows_by_note: dict[int, list[dict[str, object]]] = {}
+    for row in existing:
+        note_id, fact_id = (
+            row.get("note_id"),
+            row.get("fact_id"),
+        )
+        if (
+            not isinstance(note_id, int)
+            or not isinstance(fact_id, str)
+            or fact_id not in facts
+            or note_id not in identity_by_note
+        ):
+            raise PinnedInputChanged("R11 selection lacks an exact R4 candidate identity")
+        disposition = row.get("disposition")
+        selected = row.get("selected")
+        if not isinstance(disposition, str) or not isinstance(selected, bool):
+            raise PinnedInputChanged("R11 selection is malformed")
+        rows_by_note.setdefault(note_id, []).append(
+            {
+                "fact_id": fact_id,
+                "concept_id": facts[fact_id][0],
+                "disposition": disposition,
+                "selected": selected,
+            }
+        )
+    candidates = tuple(
+        Candidate(
+            note_id=note_id,
+            content_hash=identity_by_note[note_id],
+            best_concept_id=cast(str, rows[0]["concept_id"]),
+            provenance={
+                "card_centric_v3": {
+                    "r4_verification_sha256": verification_sha256,
+                    "companion_generation": companion_generation,
+                    "note_id": note_id,
+                    "content_sha256": identity_by_note[note_id],
+                    "fact_rows": sorted(
+                        rows,
+                        key=lambda item: (
+                            cast(str, item["fact_id"]),
+                            cast(str, item["disposition"]),
+                        ),
+                    ),
+                }
+            },
+            scores={},
+            predicted_band="r11_review",
+            verdict=(
+                "keep"
+                if any(cast(bool, row["selected"]) for row in rows)
+                else cast(str, rows[0]["disposition"])
+            ),
+            confidence=1.0,
+            reason="validated R11 frozen review projection",
+            context_trap=False,
+            recall_direction="",
+            mnemonic_classification="",
+            dedupe_disposition=(
+                "keep"
+                if any(cast(bool, row["selected"]) for row in rows)
+                else cast(str, rows[0]["disposition"])
+            ),
+            selected=any(cast(bool, row["selected"]) for row in rows),
+            retrieval_pass=RetrievalPass.PASS_1,
+        )
+        for note_id, rows in sorted(rows_by_note.items())
+    )
+    cards: list[GapCard] = []
+    seen_card_ids: set[str] = set()
+    for row in generated:
+        status = row.get("status")
+        card_id, fact_id, text, extra, evidence_ids = (
+            row.get("card_id"),
+            row.get("fact_id"),
+            row.get("text"),
+            row.get("extra"),
+            row.get("evidence_ids"),
+        )
+        if (
+            not isinstance(status, str)
+            or status
+            not in {"generated", "duplicate_of_existing", "duplicate_of_generated", "unresolved"}
+            or not isinstance(card_id, str)
+            or not card_id.strip()
+            or card_id in seen_card_ids
+            or not isinstance(fact_id, str)
+            or fact_id not in facts
+            or not isinstance(text, str)
+            or not text.strip()
+            or not isinstance(extra, str)
+            or not isinstance(evidence_ids, list)
+            or not evidence_ids
+            or any(not isinstance(item, str) or item not in source_by_id for item in evidence_ids)
+        ):
+            raise PinnedInputChanged("R11 generated row lacks an exact persisted identity")
+        seen_card_ids.add(card_id)
+        cards.append(
+            GapCard(
+                concept_id=facts[fact_id][0],
+                text=text,
+                extra=extra,
+                selected=status == "generated",
+                validation_state=status,
+                source_refs=tuple(source_by_id[item] for item in evidence_ids),
+                evidence_ids=tuple(evidence_ids),
+                provenance={
+                    "card_centric_v3": {
+                        "fact_id": fact_id,
+                        "status": status,
+                        "policy_scope_sha256": scope.scope_sha256,
+                    }
+                },
+                card_id=card_id,
+            )
+        )
+    return candidates, tuple(cards)
+
+
 def _v3_r4_verification(
     context: StageContext,
     payload: dict[str, Any],
@@ -6107,7 +6836,11 @@ def _v3_r4_verification(
         or canonical_sha256(manifest) != payload["semantic_manifest_sha256"]
     ):
         raise PinnedInputChanged("Pinned R4 semantic manifest changed")
-    verification = {key: value for key, value in payload.items() if key != "verification_sha256"}
+    verification = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"verification_sha256", "artifact_sha256"}
+    }
     if canonical_sha256(verification) != payload["verification_sha256"]:
         raise PinnedInputChanged("Pinned R4 verification hash changed")
     return payload
@@ -6211,6 +6944,177 @@ def _payload(
         return context.prior_payloads[stage]
     except KeyError:
         raise PinnedInputChanged(f"Committed {stage.value} artifact is unavailable") from None
+
+
+def _v3_cost_session(context: StageContext, r0: Mapping[str, object]) -> StageCostSession:
+    """Build the fail-closed, exact-prefix ledger before any v3 provider seam."""
+    try:
+        return StageCostSession.from_prior(context, r0)
+    except CostAuthorizationError as exc:
+        raise PinnedInputChanged(str(exc)) from exc
+
+
+def _seal_v3_costs(costs: StageCostSession, payload: dict[str, object]) -> None:
+    costs.seal(payload)
+
+
+def _cost_token_estimate(value: str) -> int:
+    """Frozen conservative UTF-8 estimate; replace only with a pinned tokenizer version."""
+    return max(1, (len(value.encode("utf-8")) + 3) // 4)
+
+
+class _GuardedStructuredService:
+    """Reserve before the existing structured service starts its attempt lifecycle."""
+
+    def __init__(self, service: StructuredTextService, costs: StageCostSession, stage: str) -> None:
+        self._service = service
+        self._costs = costs
+        self._stage = stage
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._service, name)
+
+    def generate_json(
+        self,
+        instruction: str,
+        input_text: str,
+        *,
+        output_model: Any,
+        provider: ProviderName,
+        model: str,
+        options: GenerationOptions,
+    ) -> Any:
+        output_cap = options.max_tokens
+        if type(output_cap) is not int or output_cap < 1:
+            raise CostAuthorizationError("structured dispatch requires an explicit output cap")
+        request = {
+            "instruction": instruction,
+            "input": input_text,
+            "provider": provider.value,
+            "model": model,
+            "output_schema": output_model.model_json_schema(),
+            "options": {
+                "thinking": options.thinking.value,
+                "thinking_budget_tokens": options.thinking_budget_tokens,
+                "temperature": options.temperature,
+                "max_tokens": output_cap,
+            },
+        }
+        request_sha256 = canonical_payload_sha256(request)
+        prefix = options.cacheable_source_prefix or ""
+        input_tokens = _cost_token_estimate(instruction + input_text)
+        prefix_tokens = _cost_token_estimate(prefix) if prefix else 0
+        predicted_output = max(1, output_cap // 2)
+        entry = self._costs.reserve(
+            stage=self._stage,
+            modality="structured",
+            model=model,
+            request_sha256=request_sha256,
+            predicted_usage=TokenUsage(
+                input_tokens=input_tokens,
+                cache_creation_tokens=prefix_tokens,
+                output_tokens=predicted_output,
+            ),
+            reserved_usage=TokenUsage(
+                input_tokens=input_tokens * RESERVED_INPUT_SAFETY_MULTIPLIER,
+                cache_creation_tokens=prefix_tokens * RESERVED_INPUT_SAFETY_MULTIPLIER,
+                output_tokens=output_cap,
+            ),
+        )
+        try:
+            with provider_cost_reservation(
+                replace(entry, observed=None, observed_estimated=False).document()
+            ):
+                result = self._service.generate_json(
+                    instruction,
+                    input_text,
+                    output_model=output_model,
+                    provider=provider,
+                    model=model,
+                    options=options,
+                )
+        except StructuredOutputError as exc:
+            self._observe_structured(entry.call_id, exc.generation)
+            raise
+        self._observe_structured(entry.call_id, result)
+        return result
+
+    def _observe_structured(self, call_id: str, result: Any) -> None:
+        cache_creation = int(result.cache_creation_input_tokens)
+        cache_read = int(result.cache_read_input_tokens)
+        self._costs.observe(
+            call_id,
+            TokenUsage(
+                input_tokens=max(0, int(result.input_tokens) - cache_creation - cache_read),
+                cache_creation_tokens=cache_creation,
+                cache_read_tokens=cache_read,
+                output_tokens=int(result.output_tokens),
+            ),
+        )
+
+
+class _GuardedEmbeddingClient:
+    """The cache-miss/embed seam; embedding clients do not expose provider usage."""
+
+    def __init__(
+        self,
+        client: EmbeddingClient,
+        costs: StageCostSession,
+        stage: str,
+        fallback_model: str,
+    ) -> None:
+        self._client = client
+        self._costs = costs
+        self._stage = stage
+        model = getattr(client, "model", fallback_model)
+        self._model = model if isinstance(model, str) and model else fallback_model
+
+    async def embed(self, texts: Sequence[str], *, input_type: Literal["document", "query"]) -> Any:
+        request = {"input_type": input_type, "texts": list(texts), "model": self._model}
+        usage = TokenUsage(embedding_tokens=sum(_cost_token_estimate(text) for text in texts))
+        attempts = getattr(self._client, "max_attempts", 1)
+        batch_size = getattr(self._client, "batch_size", len(texts) or 1)
+        split_on_limit = bool(getattr(self._client, "split_on_limit", False))
+        if (
+            type(attempts) is not int
+            or attempts < 1
+            or type(batch_size) is not int
+            or batch_size < 1
+        ):
+            raise CostAuthorizationError("embedding delegate dispatch bound is unavailable")
+        batches = [
+            len(texts[index : index + batch_size]) for index in range(0, len(texts), batch_size)
+        ]
+        dispatches = attempts * sum((2 * size - 1) if split_on_limit else 1 for size in batches)
+        entry = self._costs.reserve(
+            stage=self._stage,
+            modality="embedding",
+            model=self._model,
+            request_sha256=canonical_payload_sha256(request),
+            predicted_usage=usage,
+            reserved_usage=TokenUsage(embedding_tokens=usage.embedding_tokens * dispatches),
+        )
+        with provider_cost_reservation(
+            replace(entry, observed=None, observed_estimated=False).document()
+        ):
+            result = await self._client.embed(texts, input_type=input_type)
+        self._costs.observe(entry.call_id, usage, estimated=True)
+        return result
+
+
+class _CostedSemanticService:
+    """Expose the existing query-cache override without changing retrieval contracts."""
+
+    def __init__(self, service: SemanticIndexService, embedder: EmbeddingClient) -> None:
+        self._service = service
+        self._embedder = embedder
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._service, name)
+
+    async def search(self, *args: Any, **kwargs: Any) -> Any:
+        kwargs["embedding_client"] = self._embedder
+        return await self._service.search(*args, **kwargs)
 
 
 def _source_passages(context: StageContext) -> list[SourcePassage]:

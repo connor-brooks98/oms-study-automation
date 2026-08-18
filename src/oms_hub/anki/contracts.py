@@ -545,7 +545,9 @@ ActionEnvelope = ActionEnvelopeV1
 class ActionEnvelopeV2(_ActionEnvelopeBase):
     contract_version: Literal[2] = 2
     job_id: UUID
-    pipeline_contract_version: Literal["card_centric_v1", "card_centric_v2"] = "card_centric_v1"
+    pipeline_contract_version: Literal[
+        "card_centric_v1", "card_centric_v2", "card_centric_v3"
+    ] = "card_centric_v1"
     model_config_sha256: Sha256
     # The digest is an integrity check; the canonical document makes the frozen
     # plan independently auditable and reproducible.
@@ -556,6 +558,46 @@ class ActionEnvelopeV2(_ActionEnvelopeBase):
     reconciliation_contract_version: Annotated[str, Field(min_length=1, max_length=100)]
     review_revision: Annotated[int, Field(ge=0)]
     overflow_acknowledgement_provenance: dict[str, Any]
+    # V3 identity is additive.  Legacy documents omit these fields exactly.
+    policy_sha256: Sha256 | None = None
+    scope_sha256: Sha256 | None = None
+    r11_artifact_sha256: Sha256 | None = None
+    r11_snapshot_sha256: Sha256 | None = None
+    rate_table_sha256: Sha256 | None = None
+    cost_ledger_sha256: Sha256 | None = None
+
+    @model_validator(mode="after")
+    def _v3_identity(self) -> "ActionEnvelopeV2":
+        values = (
+            self.policy_sha256,
+            self.scope_sha256,
+            self.r11_artifact_sha256,
+            self.r11_snapshot_sha256,
+            self.rate_table_sha256,
+            self.cost_ledger_sha256,
+        )
+        if self.pipeline_contract_version == "card_centric_v3":
+            if any(value is None for value in values):
+                raise ValueError(
+                    "v3 envelopes require policy, scope, R11, rate-table, and ledger identity"
+                )
+        elif any(value is not None for value in values):
+            raise ValueError("v3 envelope identity is not valid for legacy contracts")
+        return self
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        value = super().model_dump(**kwargs)
+        if self.pipeline_contract_version != "card_centric_v3":
+            for key in (
+                "policy_sha256",
+                "scope_sha256",
+                "r11_artifact_sha256",
+                "r11_snapshot_sha256",
+                "rate_table_sha256",
+                "cost_ledger_sha256",
+            ):
+                value.pop(key, None)
+        return value
 
 
 type ActionEnvelopeDocument = ActionEnvelopeV1 | ActionEnvelopeV2

@@ -26,6 +26,8 @@ class EmbeddingReplayEvidence:
 
 
 class ReplayEmbeddingClient:
+    offline_replay_only = True
+
     def __init__(self, root: Path, *, model: str, dimensions: int) -> None:
         self.root = root
         self.model = model
@@ -159,6 +161,7 @@ class ReplayEmbeddingClient:
     def _key(self, text: str, input_type: InputType) -> str:
         payload = f"{self.model}\0{self.dimensions}\0{input_type}\0{_normalize(text)}"
         return hashlib.sha256(payload.encode()).hexdigest()
+
     def _manifest(self, *, allow_missing: bool = False) -> dict[str, object]:
         path = self.root / "manifest.json"
         if not path.exists():

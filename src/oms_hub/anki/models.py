@@ -25,9 +25,7 @@ class AnkiCurationInstructionModel(Base):
 
 class CourseCurationPolicyModel(Base):
     __tablename__ = "course_curation_policy"
-    __table_args__ = (
-        UniqueConstraint("policy_id", "revision"),
-    )
+    __table_args__ = (UniqueConstraint("policy_id", "revision"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     policy_id: Mapped[str] = mapped_column(String(200))
@@ -125,6 +123,9 @@ class AnkiCurationJobModel(Base):
         server_default=EMPTY_SHA256,
     )
     policy_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    v3_rate_table_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    v3_rate_table_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    offline_replay_only: Mapped[bool] = mapped_column(default=False, server_default="0")
     apply_state: Mapped[str] = mapped_column(
         String(50),
         default="pending",
@@ -279,6 +280,8 @@ class AnkiProviderAttemptEventModel(Base):
     duplicate_note_ids_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
     diagnostic_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
     http_status: Mapped[int | None] = mapped_column(nullable=True)
+    cost_reservation_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cost_reservation_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
 
 

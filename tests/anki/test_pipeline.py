@@ -24,8 +24,8 @@ from oms_hub.anki.pipeline import (
     StageArtifactStore,
     StageContext,
     StageProduct,
-    UnsupportedPipelineContract,
     _stage_input_hash,
+    _v3_provider_replay_stage_digest,
     pipeline_stages,
     stage_definition,
 )
@@ -66,12 +66,62 @@ class MutableInputValidator:
             raise PinnedInputChanged(self.error)
 
 
-def test_v3_graph_is_frozen_but_pipeline_lookup_fails_closed() -> None:
+def test_v3_graph_is_loadable_and_retains_approval_only_r12() -> None:
     assert len(CARD_CENTRIC_V3_STAGES) == 13
     assert CARD_CENTRIC_V3_STAGES[0].stage.value == "v3_r0_preflight"
     assert CARD_CENTRIC_V3_STAGES[-1].stage.value == "v3_r12_apply"
-    with pytest.raises(UnsupportedPipelineContract, match="no mutation"):
-        pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V3)
+    assert pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V3) is CARD_CENTRIC_V3_STAGES
+    assert CARD_CENTRIC_V3_STAGES[-2].next_state == CurationState.READY_FOR_REVIEW
+
+
+def test_v3_provider_replay_digest_ignores_job_and_artifact_wrappers() -> None:
+    base = SimpleNamespace(configuration_sha256="a" * 64, model_config_sha256="b" * 64)
+    equivalent = SimpleNamespace(configuration_sha256="a" * 64, model_config_sha256="b" * 64)
+    replay = SimpleNamespace(canonical_json='{"schema_version":1}')
+    payloads = {CurationStage.V3_R0_PREFLIGHT: {"artifact_sha256": "x" * 64, "policy": "same"}}
+    assert _v3_provider_replay_stage_digest(
+        base, CurationStage.V3_R3_SCOPE, replay_inputs=replay, prior_payloads=payloads
+    ) == _v3_provider_replay_stage_digest(
+        equivalent, CurationStage.V3_R3_SCOPE, replay_inputs=replay, prior_payloads=payloads
+    )
+    assert _v3_provider_replay_stage_digest(
+        base, CurationStage.V3_R3_SCOPE, replay_inputs=replay, prior_payloads=payloads
+    ) != _v3_provider_replay_stage_digest(
+        base,
+        CurationStage.V3_R3_SCOPE,
+        replay_inputs=replay,
+        prior_payloads={CurationStage.V3_R0_PREFLIGHT: {"policy": "changed"}},
+    )
+
+
+def test_v3_provider_replay_digest_ignores_recursive_execution_bookkeeping() -> None:
+    job = SimpleNamespace(configuration_sha256="a" * 64, model_config_sha256="b" * 64)
+    replay = SimpleNamespace(canonical_json='{"schema_version":1}')
+    semantic = {
+        "decision": "keep",
+        "nested": {"verification_sha256": "c" * 64, "artifact_sha256": "d" * 64},
+        "cost_ledger": [{"call_id": "first"}],
+        "calls": [{"request_id": "first"}],
+        "r5_artifact_sha256": "e" * 64,
+    }
+    bookkeeping_changed = {
+        **semantic,
+        "nested": {"verification_sha256": "c" * 64, "artifact_sha256": "f" * 64},
+        "cost_ledger": [{"call_id": "second"}],
+        "calls": [{"request_id": "second"}],
+        "r5_artifact_sha256": "0" * 64,
+    }
+
+    def digest(payload: dict[str, object]) -> str:
+        return _v3_provider_replay_stage_digest(
+            job,
+            CurationStage.V3_R7_CLASSIFICATION,
+            replay_inputs=replay,
+            prior_payloads={CurationStage.V3_R6_CALIBRATION: payload},
+        )
+
+    assert digest(semantic) == digest(bookkeeping_changed)
+    assert digest(semantic) != digest({**semantic, "decision": "exclude"})
 
 
 def test_stage_artifact_store_rejects_document_provenance_mismatch(tmp_path: Path) -> None:

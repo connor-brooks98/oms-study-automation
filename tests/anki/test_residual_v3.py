@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+from datetime import UTC, datetime
 from hashlib import sha256
 from types import SimpleNamespace
 
@@ -8,6 +10,7 @@ import oms_hub.anki.stages as stages
 from oms_hub.anki.card_centric_contracts import CensusTrust, SnapshotCensus
 from oms_hub.anki.classification_v3 import r7_pin_document, route_document
 from oms_hub.anki.contracts import canonical_payload_sha256
+from oms_hub.anki.cost_estimator import FrozenRateTable, ModelRate
 from oms_hub.anki.course_policy import CourseCurationPolicy
 from oms_hub.anki.domain import (
     CurationStage,
@@ -24,6 +27,23 @@ from oms_hub.anki.scope_contracts import (
     ScopeEvidenceReference,
 )
 from oms_hub.anki.stages import CurationServicesRunner, _v3_r8_raw_safety, _v3_residual_qualifies
+
+
+def _add_r0_costs(r0: dict[str, object], *models: str) -> None:
+    table = FrozenRateTable(
+        tuple(ModelRate(model, 1, 0, 0, 1, 1) for model in sorted(set(models))),
+        datetime(2026, 8, 17, tzinfo=UTC),
+        "fixture",
+    )
+    policy = CourseCurationPolicy.model_validate(r0["policy"])
+    r0.update(
+        rate_table=table.document(),
+        rate_table_sha256=table.rate_table_sha256,
+        ordinary_cost_limit_microusd=policy.ordinary_cost_limit_microusd,
+        hard_stop_cost_limit_microusd=policy.hard_stop_cost_limit_microusd,
+        cost_ledger=[],
+        cost_ledger_sha256=hashlib.sha256(b"[]").hexdigest(),
+    )
 
 
 def _r5(*, raw_limit: int = 50) -> dict[str, object]:
@@ -81,15 +101,17 @@ def test_r8_raw_reuse_is_closed_and_caps_or_nonidentical_siblings_are_unresolved
     assert "non-identical R6 sibling remains unclassified" in problems
 
 
-def test_r8_never_retrieves_and_v3_pipeline_remains_fail_closed() -> None:
+def test_r8_never_retrieves_and_v3_pipeline_exposes_r8() -> None:
     assert _v3_residual_qualifies(
         {"exact_match_reasons": [], "lexical_rank": None, "semantic_score": 0.5}, 0.5
     )
     assert not _v3_residual_qualifies(
         {"exact_match_reasons": [], "lexical_rank": None, "semantic_score": 0.49}, 0.5
     )
-    with pytest.raises(Exception, match="unsupported"):
-        pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V3)
+    assert any(
+        definition.stage is CurationStage.V3_R8_GAP_CONFIRMATION
+        for definition in pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V3)
+    )
 
 
 def test_r8_dispatches_residual_bundle_without_initial_r6_representative(
@@ -161,9 +183,9 @@ def test_r8_dispatches_residual_bundle_without_initial_r6_representative(
         cheap_classify_r7=route_document(route),
         thorough_classify_r7=route_document(route),
         generation_r9=route_document(route),
-        rate_table_sha256="c" * 64,
-        r7_classification=r7_pin_document(route, route, "c" * 64),
     )
+    _add_r0_costs(r0, route.model)
+    r0["r7_classification"] = r7_pin_document(route, route, str(r0["rate_table_sha256"]))
     candidate = {
         "note_id": 9,
         "content_sha256": "d" * 64,
@@ -212,14 +234,22 @@ def test_r8_dispatches_residual_bundle_without_initial_r6_representative(
     }
     job = SimpleNamespace(
         pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V3,
+        id="residual-job",
         policy_sha256=policy.policy_sha256,
         model_config_sha256="m" * 64,
         resolved_model_config=model_config,
+        offline_replay_only=True,
     )
     context = SimpleNamespace(
         job=job,
         stage=CurationStage.V3_R8_GAP_CONFIRMATION,
-        prior_payloads={CurationStage.V3_R3_SCOPE: {}, CurationStage.V3_R4_INDEX_VERIFICATION: {}},
+        prior_payloads={
+            CurationStage.V3_R3_SCOPE: {
+                "cost_ledger": [],
+                "cost_ledger_sha256": hashlib.sha256(b"[]").hexdigest(),
+            },
+            CurationStage.V3_R4_INDEX_VERIFICATION: {},
+        },
     )
     monkeypatch.setattr(stages, "_v3_phase_f_inputs", lambda _context: (r0, scope, r4, r5, r6, r7))
     monkeypatch.setattr(stages, "_v3_scope_evidence", lambda *_args: {"e": "evidence"})
@@ -247,7 +277,9 @@ def test_r8_dispatches_residual_bundle_without_initial_r6_representative(
 
     monkeypatch.setattr(stages.R7ClassificationService, "classify", classify)
     runner = object.__new__(CurationServicesRunner)
-    runner.structured = object()
+    runner.structured = SimpleNamespace(generator=SimpleNamespace(offline_replay_only=True))
+    runner.embedder = SimpleNamespace(offline_replay_only=True)
+    runner.semantic = SimpleNamespace(embedder=SimpleNamespace(offline_replay_only=True))
     product = asyncio.run(runner.run(context))
     assert product.payload["records"][0]["state"] == "covered_residual" and len(calls) == 1
     assert product.usage == usage
@@ -404,9 +436,9 @@ def test_phase_f_rejects_an_r5_r4_closure_mismatch_before_every_handler_dispatch
         "model_config_sha256": "m" * 64,
         "cheap_classify_r7": route_document(route),
         "thorough_classify_r7": route_document(route),
-        "rate_table_sha256": "a" * 64,
-        "r7_classification": r7_pin_document(route, route, "a" * 64),
     }
+    _add_r0_costs(r0, route.model)
+    r0["r7_classification"] = r7_pin_document(route, route, str(r0["rate_table_sha256"]))
     r5 = {
         "policy_sha256": policy.policy_sha256,
         "scope_sha256": scope.scope_sha256,
@@ -429,6 +461,7 @@ def test_phase_f_rejects_an_r5_r4_closure_mismatch_before_every_handler_dispatch
     r7["artifact_sha256"] = stages.canonical_sha256(r7)
     job = SimpleNamespace(
         pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V3,
+        id="residual-closure-job",
         policy_sha256=policy.policy_sha256,
         model_config_sha256="m" * 64,
         resolved_model_config=config,
@@ -436,6 +469,7 @@ def test_phase_f_rejects_an_r5_r4_closure_mismatch_before_every_handler_dispatch
         semantic_generation="semantic-1",
         deck_allowlist=("Deck",),
         tag_allowlist=(),
+        offline_replay_only=True,
     )
     context = SimpleNamespace(
         job=job,
@@ -455,6 +489,9 @@ def test_phase_f_rejects_an_r5_r4_closure_mismatch_before_every_handler_dispatch
         },
     )
     runner = object.__new__(CurationServicesRunner)
+    runner.structured = SimpleNamespace(generator=SimpleNamespace(offline_replay_only=True))
+    runner.embedder = SimpleNamespace(offline_replay_only=True)
+    runner.semantic = SimpleNamespace(embedder=SimpleNamespace(offline_replay_only=True))
     for stage in (
         CurationStage.V3_R8_GAP_CONFIRMATION,
         CurationStage.V3_R9_GENERATION,

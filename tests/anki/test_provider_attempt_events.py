@@ -1,9 +1,11 @@
+import hashlib
 import json
 import os
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from threading import Barrier
 from uuid import uuid4
@@ -22,7 +24,9 @@ from oms_hub.anki.provider_attempts import (
     bind_provider_attempts,
     current_provider_attempt_identity,
     emit_provider_event,
+    provider_attempt_identity_document,
     provider_call_scope,
+    provider_cost_reservation,
 )
 from oms_hub.anki.rehearsal.structured import structured_request_key
 from oms_hub.llm.domain import GenerationOptions, ProviderName
@@ -90,10 +94,10 @@ def test_dispatched_without_response_is_indeterminate() -> None:
         "request header X_Goog_API_Key: secret-value",
         "request header x goog api key = secret-value",
         'provider failed: {"x-goog-api-key":"secret-value"}',
-        r'provider failed: {\"API_KEY\":\"secret-value\"}',
+        r"provider failed: {\"API_KEY\":\"secret-value\"}",
         "request header 'x-goog-api-key' = 'secret-value'",
-        '{"access_token":"secret,value\\\"still-secret","ok":true}',
-        r'{\"refresh_token\":\"secret,still-secret\"}',
+        '{"access_token":"secret,value\\"still-secret","ok":true}',
+        r"{\"refresh_token\":\"secret,still-secret\"}",
         'client_secret = "secret,value,still-secret", next=ok',
         "authorization: 'Bearer secret,value'",
         '{"cookie":"a=b, session=still-secret"}',
@@ -116,9 +120,7 @@ def test_deferred_acceptance_never_precedes_downstream_contract_failure() -> Non
         mode=identity.mode,
         recorder=lambda evidence: events.append(evidence.event.event),
     )
-    with bind_provider_attempts(binding), provider_call_scope(
-        batch_index=0, defer_acceptance=True
-    ):
+    with bind_provider_attempts(binding), provider_call_scope(batch_index=0, defer_acceptance=True):
         handle = begin_provider_call(
             provider="openai",
             model="model",
@@ -148,8 +150,9 @@ def test_replay_identity_survives_new_job_and_capture_mode() -> None:
             replay_namespace="frozen-source-namespace",
             recorder=events.append,
         )
-        with bind_provider_attempts(binding), provider_call_scope(
-            batch_index=3, batch_note_ids=(11, 12), kind="primary"
+        with (
+            bind_provider_attempts(binding),
+            provider_call_scope(batch_index=3, batch_note_ids=(11, 12), kind="primary"),
         ):
             handle = begin_provider_call(
                 provider="openai",
@@ -181,6 +184,109 @@ def test_replay_identity_survives_new_job_and_capture_mode() -> None:
     assert call_key(uuid4(), "shadow") == call_key(uuid4(), "canonical")
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("policy_revision", 2),
+        ("style_fidelity", "transcript_outline"),
+        ("scope_sha256", "b" * 64),
+        ("retrieval_calibration", "calibration-v2"),
+        ("evidence_bundle_sha256", "c" * 64),
+        ("tier_escalation", "thorough"),
+        ("rate_table_sha256", "d" * 64),
+    ),
+)
+def test_v3_replay_key_invalidates_each_frozen_stage_input_identity(
+    field: str, value: object
+) -> None:
+    """The real replay key hashes the canonical v3 request document, not a job ID."""
+    base = {
+        "policy_revision": 1,
+        "style_fidelity": "none",
+        "scope_sha256": "a" * 64,
+        "retrieval_calibration": "calibration-v1",
+        "evidence_bundle_sha256": "a" * 64,
+        "tier_escalation": "cheap",
+        "rate_table_sha256": "a" * 64,
+    }
+    changed = {**base, field: value}
+    identity = _identity()
+
+    def key(stage_input: dict[str, object]) -> str:
+        return structured_request_key(
+            "v3-stage",
+            "same-provider-request",
+            output_schema={"type": "object"},
+            provider=ProviderName.OPENAI,
+            model="model",
+            options=GenerationOptions(),
+            attempt_identity=replace(
+                identity,
+                stage_input_sha256=hashlib.sha256(
+                    json.dumps(stage_input, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest(),
+            ),
+        )
+
+    assert key(base) != key(changed)
+
+
+def test_v3_stage_input_digest_binds_request_sha_without_changing_legacy_identity() -> None:
+    legacy = _identity()
+    assert provider_attempt_identity_document(legacy) == {
+        "job_id": str(legacy.job_id),
+        "stage": legacy.stage.value,
+        "durable_attempt": 1,
+        "mode": "canonical",
+        "call_ordinal": 1,
+        "call_kind": "primary",
+        "batch_ordinal": 0,
+        "batch_note_ids_sha256": legacy.batch_note_ids_sha256,
+        "subcall_ordinal": 0,
+    }
+
+    def request_sha(stage_input_sha256: str) -> str:
+        identity = replace(
+            legacy,
+            stage=CurationStage.V3_R7_CLASSIFICATION,
+            stage_input_sha256=stage_input_sha256,
+        )
+        binding = ProviderAttemptBinding(
+            job_id=identity.job_id,
+            stage=identity.stage,
+            stage_attempt=identity.stage_attempt,
+            mode=identity.mode,
+            stage_input_sha256=identity.stage_input_sha256,
+            recorder=lambda _event: None,
+        )
+        with (
+            bind_provider_attempts(binding),
+            provider_call_scope(batch_index=0),
+            provider_cost_reservation({"call_id": stage_input_sha256}),
+        ):
+            handle = begin_provider_call(
+                provider="openai",
+                model="model",
+                instruction="instruction",
+                input_text="input",
+                output_schema={"type": "object"},
+                generation_parameters={},
+                cacheable_source_prefix=None,
+            )
+            emit_provider_event(handle, "transport_failed", error="test cleanup")
+            return handle.request_sha256
+
+    first = "a" * 64
+    second = "b" * 64
+    assert (
+        provider_attempt_identity_document(replace(legacy, stage_input_sha256=first))[
+            "stage_input_sha256"
+        ]
+        == first
+    )
+    assert request_sha(first) != request_sha(second)
+
+
 def test_batch_call_slots_are_order_independent_and_collision_fails() -> None:
     binding = ProviderAttemptBinding(
         job_id=uuid4(),
@@ -193,13 +299,23 @@ def test_batch_call_slots_are_order_independent_and_collision_fails() -> None:
     second = provider_call_scope(batch_index=0, batch_note_ids=(1,))
     with bind_provider_attempts(binding), second:
         left = begin_provider_call(
-            provider="openai", model="m", instruction="i", input_text="0",
-            output_schema={}, generation_parameters={}, cacheable_source_prefix=None,
+            provider="openai",
+            model="m",
+            instruction="i",
+            input_text="0",
+            output_schema={},
+            generation_parameters={},
+            cacheable_source_prefix=None,
         )
     with bind_provider_attempts(binding), first:
         right = begin_provider_call(
-            provider="openai", model="m", instruction="i", input_text="1",
-            output_schema={}, generation_parameters={}, cacheable_source_prefix=None,
+            provider="openai",
+            model="m",
+            instruction="i",
+            input_text="1",
+            output_schema={},
+            generation_parameters={},
+            cacheable_source_prefix=None,
         )
     assert left is not None and right is not None
     assert left.identity.call_index != right.identity.call_index
@@ -208,8 +324,13 @@ def test_batch_call_slots_are_order_independent_and_collision_fails() -> None:
     with bind_provider_attempts(binding), provider_call_scope(batch_index=0, batch_note_ids=(1,)):
         with pytest.raises(ValueError, match="collision"):
             begin_provider_call(
-                provider="openai", model="m", instruction="i", input_text="0",
-                output_schema={}, generation_parameters={}, cacheable_source_prefix=None,
+                provider="openai",
+                model="m",
+                instruction="i",
+                input_text="0",
+                output_schema={},
+                generation_parameters={},
+                cacheable_source_prefix=None,
             )
 
 
@@ -226,8 +347,9 @@ def test_batch_call_allocation_is_thread_safe_with_real_thread_contention() -> N
 
     def allocate(batch: int):
         barrier.wait(timeout=5)
-        with bind_provider_attempts(binding), provider_call_scope(
-            batch_index=batch, batch_note_ids=(batch + 1,)
+        with (
+            bind_provider_attempts(binding),
+            provider_call_scope(batch_index=batch, batch_note_ids=(batch + 1,)),
         ):
             return begin_provider_call(
                 provider="openai",
@@ -263,8 +385,9 @@ def test_provider_attempt_binding_cleans_active_identity_after_reversed_collisio
     def allocate_then_collide(batch: int) -> ProviderAttemptIdentity | None:
         handle = None
         try:
-            with bind_provider_attempts(binding), provider_call_scope(
-                batch_index=batch, batch_note_ids=(batch + 1,)
+            with (
+                bind_provider_attempts(binding),
+                provider_call_scope(batch_index=batch, batch_note_ids=(batch + 1,)),
             ):
                 barrier.wait(timeout=5)
                 handle = begin_provider_call(

@@ -2,11 +2,13 @@ import asyncio
 import hashlib
 import json
 from copy import deepcopy
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from oms_hub.anki.cost_estimator import FrozenRateTable, ModelRate
 from oms_hub.anki.course_policy import CourseCurationPolicy, PolicyEmphasisColor
 from oms_hub.anki.domain import (
     CurationStage,
@@ -40,6 +42,23 @@ _MODEL_CONFIG_SHA = "c" * 64
 _ROUTE = ResolvedStageModel("openai", "scope-fixture", "disabled")
 
 
+def _add_r0_costs(r0: dict[str, object], *models: str) -> None:
+    table = FrozenRateTable(
+        tuple(ModelRate(model, 1, 0, 0, 1, 1) for model in sorted(set(models))),
+        datetime(2026, 8, 17, tzinfo=UTC),
+        "fixture",
+    )
+    policy = CourseCurationPolicy.model_validate(r0["policy"])
+    r0.update(
+        rate_table=table.document(),
+        rate_table_sha256=table.rate_table_sha256,
+        ordinary_cost_limit_microusd=policy.ordinary_cost_limit_microusd,
+        hard_stop_cost_limit_microusd=policy.hard_stop_cost_limit_microusd,
+        cost_ledger=[],
+        cost_ledger_sha256=hashlib.sha256(b"[]").hexdigest(),
+    )
+
+
 class FakeGenerator:
     def __init__(self, response: object) -> None:
         self.response = response
@@ -56,10 +75,15 @@ def _policy(
     mode: str = "colored_text",
     fallback: str = "block",
 ) -> CourseCurationPolicy:
-    colors = (PolicyEmphasisColor(rgb="FF0000", label="high yield"),) if mode in {
-        "colored_text",
-        "combined",
-    } else ()
+    colors = (
+        (PolicyEmphasisColor(rgb="FF0000", label="high yield"),)
+        if mode
+        in {
+            "colored_text",
+            "combined",
+        }
+        else ()
+    )
     return CourseCurationPolicy(
         policy_id="course-policy",
         revision=3,
@@ -72,8 +96,8 @@ def _policy(
         tag_scope_mode="hard_filter",
         classification_strictness="strict",
         generation_style_profile="concise",
-        ordinary_cost_limit_microusd=1,
-        hard_stop_cost_limit_microusd=2,
+        ordinary_cost_limit_microusd=10_000_000,
+        hard_stop_cost_limit_microusd=10_000_000,
     )
 
 
@@ -93,6 +117,8 @@ def _emphasis(policy: CourseCurationPolicy) -> SourceEmphasisEvidence:
     text = "colored evidence"
     return SourceEmphasisEvidence(
         source_id="slide:1",
+        revision_id=1,
+        source_kind=SourceKind.SLIDE,
         source_sha256=_SOURCE_SHA,
         sidecar_sha256=_SIDECAR_SHA,
         locator="slide:1:run:1",
@@ -182,6 +208,108 @@ def _generate(
         existing=existing,
     )
     return generator, result
+
+
+def test_r3_colored_runs_bind_exact_source_locator_and_reject_ambiguous_provenance() -> None:
+    policy = _policy()
+    fidelity = _fidelity(policy, "continue")
+    fidelity = fidelity.model_copy(update={"matching_colored_count": 2, "diagnostic_sha256": ""})
+    first = _emphasis(policy)
+    second = SourceEmphasisEvidence.model_validate(
+        {
+            **first.canonical_payload(),
+            "locator": "slide:1:run:2",
+            "text": "second colored run",
+            "normalized_text_sha256": hashlib.sha256(b"second colored run").hexdigest(),
+        }
+    )
+    passages = (
+        SourcePassage.create(
+            revision_id=1,
+            lecture_id=1,
+            artifact_id="artifact",
+            source_kind=SourceKind.SLIDE,
+            locator=first.locator,
+            text=first.text,
+            source_id=first.source_id,
+        ),
+        SourcePassage.create(
+            revision_id=1,
+            lecture_id=1,
+            artifact_id="artifact",
+            source_kind=SourceKind.SLIDE,
+            locator=second.locator,
+            text=second.text,
+            source_id=second.source_id,
+        ),
+    )
+    generator = FakeGenerator(_response)
+    result = ScopeService(StructuredTextService(generator)).generate_scope(
+        policy=policy,
+        fidelity=fidelity,
+        source_passages=passages,
+        emphasis_evidence=(first, second),
+        prompt=_prompt(),
+        route=_ROUTE,
+        model_config_sha256=_MODEL_CONFIG_SHA,
+        require_v3_provenance=True,
+    )
+    assert [item["locator"] for item in result.source_bundle["evidence"]] == [
+        first.locator,
+        second.locator,
+    ] and len(generator.calls) == 1
+    for bad_passages in (
+        (*passages, passages[0]),
+        (
+            SourcePassage.create(
+                revision_id=1,
+                lecture_id=1,
+                artifact_id="artifact",
+                source_kind=SourceKind.TRANSCRIPT,
+                locator=first.locator,
+                text=first.text,
+                source_id=first.source_id,
+            ),
+            passages[1],
+        ),
+        (
+            SourcePassage.create(
+                revision_id=2,
+                lecture_id=1,
+                artifact_id="artifact",
+                source_kind=SourceKind.SLIDE,
+                locator=first.locator,
+                text=first.text,
+                source_id=first.source_id,
+            ),
+            passages[1],
+        ),
+        (
+            SourcePassage.create(
+                revision_id=1,
+                lecture_id=1,
+                artifact_id="artifact",
+                source_kind=SourceKind.SLIDE,
+                locator=first.locator,
+                text="wrong",
+                source_id=first.source_id,
+            ),
+            passages[1],
+        ),
+    ):
+        blocked = FakeGenerator(_response)
+        with pytest.raises(ScopeInputError):
+            ScopeService(StructuredTextService(blocked)).generate_scope(
+                policy=policy,
+                fidelity=fidelity,
+                source_passages=bad_passages,
+                emphasis_evidence=(first, second),
+                prompt=_prompt(),
+                route=_ROUTE,
+                model_config_sha256=_MODEL_CONFIG_SHA,
+                require_v3_provenance=True,
+            )
+        assert blocked.calls == []
 
 
 @pytest.mark.parametrize(
@@ -639,8 +767,36 @@ def test_r3_scope_stage_validates_version_route_style_and_counts_before_call() -
             }
         ],
     }
+    _add_r0_costs(r0, _ROUTE.model)
+    colored_passage = SourcePassage.create(
+        revision_id=1,
+        lecture_id=1,
+        artifact_id="artifact",
+        source_kind=SourceKind.SLIDE,
+        locator=emphasis.locator,
+        text=emphasis.text,
+        source_id=emphasis.source_id,
+    )
     r1 = {
-        "passages": [],
+        "passages": [
+            {
+                "passage_id": colored_passage.passage_id,
+                "source_id": colored_passage.source_id,
+                "revision_id": colored_passage.revision_id,
+                "lecture_id": colored_passage.lecture_id,
+                "artifact_id": colored_passage.artifact_id,
+                "source_kind": colored_passage.source_kind.value,
+                "locator": colored_passage.locator,
+                "text": colored_passage.text,
+                "content_hash": colored_passage.content_hash,
+                "extraction_status": colored_passage.extraction_status,
+                "slide_number": colored_passage.slide_number,
+                "start_seconds": colored_passage.start_seconds,
+                "end_seconds": colored_passage.end_seconds,
+                "summary_backrefs": list(colored_passage.summary_backrefs),
+                "summary_section": colored_passage.summary_section,
+            }
+        ],
         "emphasis_evidence": [emphasis.model_dump(mode="json")],
         "style_source_sha256": _SOURCE_SHA,
         "style_sidecar_sha256": _SIDECAR_SHA,
@@ -658,6 +814,7 @@ def test_r3_scope_stage_validates_version_route_style_and_counts_before_call() -
         return SimpleNamespace(
             job=SimpleNamespace(
                 pipeline_contract_version=version,
+                id="scope-job",
                 policy_sha256=policy.policy_sha256,
                 model_config_sha256=_MODEL_CONFIG_SHA,
                 resolved_model_config=SimpleNamespace(scope_r3=_ROUTE),
@@ -683,9 +840,7 @@ def test_r3_scope_stage_validates_version_route_style_and_counts_before_call() -
             payloads[CurationStage.V3_R1_SOURCE_INDEX]["style_source_sha256"] = "d" * 64
         with pytest.raises(PinnedInputChanged):
             asyncio.run(
-                runner._v3_r3_scope(
-                    context(PipelineContractVersion.CARD_CENTRIC_V3, payloads)
-                )
+                runner._v3_r3_scope(context(PipelineContractVersion.CARD_CENTRIC_V3, payloads))
             )
     assert generator.calls == []
 
@@ -712,9 +867,7 @@ def test_r3_scope_stage_validates_version_route_style_and_counts_before_call() -
     ]
     with pytest.raises(ScopeInputError, match="fidelity diagnostic"):
         asyncio.run(
-            runner._v3_r3_scope(
-                context(PipelineContractVersion.CARD_CENTRIC_V3, count_payloads)
-            )
+            runner._v3_r3_scope(context(PipelineContractVersion.CARD_CENTRIC_V3, count_payloads))
         )
     assert generator.calls == []
 

@@ -249,13 +249,19 @@ class EnvelopeBuilder:
         *args: Any,
         job_id: UUID,
         pipeline_contract_version: Literal[
-            "card_centric_v1", "card_centric_v2"
+            "card_centric_v1", "card_centric_v2", "card_centric_v3"
         ] = "card_centric_v1",
         model_config_sha256: str,
         resolved_model_config: dict[str, Any] | None = None,
         reconciliation_contract_version: str,
         review_revision: int,
         overflow_acknowledgement_provenance: dict[str, Any],
+        policy_sha256: str | None = None,
+        scope_sha256: str | None = None,
+        r11_artifact_sha256: str | None = None,
+        r11_snapshot_sha256: str | None = None,
+        rate_table_sha256: str | None = None,
+        cost_ledger_sha256: str | None = None,
         **kwargs: Any,
     ) -> ActionEnvelopeV2:
         """Lift the immutable V1 mutation plan into the job-bound V2 envelope."""
@@ -273,6 +279,12 @@ class EnvelopeBuilder:
                 "reconciliation_contract_version": reconciliation_contract_version,
                 "review_revision": review_revision,
                 "overflow_acknowledgement_provenance": overflow_acknowledgement_provenance,
+                "policy_sha256": policy_sha256,
+                "scope_sha256": scope_sha256,
+                "r11_artifact_sha256": r11_artifact_sha256,
+                "r11_snapshot_sha256": r11_snapshot_sha256,
+                "rate_table_sha256": rate_table_sha256,
+                "cost_ledger_sha256": cost_ledger_sha256,
                 "payload_sha256": "0" * 64,
             }
         )

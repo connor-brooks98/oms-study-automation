@@ -32,6 +32,8 @@ class StructuredReplayEvidence:
 class ReplayStructuredTextGenerator:
     """Content-addressed structured responses with no live-provider fallback."""
 
+    offline_replay_only = True
+
     def __init__(self, manifest_path: Path, *, require_attempt_identity: bool = False) -> None:
         self.manifest_path = manifest_path
         self.require_attempt_identity = require_attempt_identity

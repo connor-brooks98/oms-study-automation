@@ -29,12 +29,8 @@ ExtractionStatus = Literal["text", "vision", "vision_unavailable"]
 _SPACE = re.compile(r"\s+")
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
 _TIME = r"(?:\d{1,2}:)?\d{1,2}:\d{2}(?:[.,]\d+)?"
-_TIMESTAMP_RANGE = re.compile(
-    rf"^\s*(?P<start>{_TIME})\s*-->\s*(?P<end>{_TIME})\s*$"
-)
-_TIMESTAMP_PREFIX = re.compile(
-    rf"^\s*\[?(?P<start>{_TIME})\]?\s+(?P<text>.+?)\s*$"
-)
+_TIMESTAMP_RANGE = re.compile(rf"^\s*(?P<start>{_TIME})\s*-->\s*(?P<end>{_TIME})\s*$")
+_TIMESTAMP_PREFIX = re.compile(rf"^\s*\[?(?P<start>{_TIME})\]?\s+(?P<text>.+?)\s*$")
 _SUMMARY_CITATION = re.compile(r"\[([0-9,\s]+)\]")
 SummarySection = Literal["core", "depth", "emphasis"]
 _SUMMARY_HEADINGS: dict[str, SummarySection] = {
@@ -92,11 +88,7 @@ class SourcePassage:
         if start_seconds is not None and start_seconds < 0:
             raise ValueError("transcript start cannot be negative")
         if end_seconds is not None and (
-            end_seconds < 0
-            or (
-                start_seconds is not None
-                and end_seconds < start_seconds
-            )
+            end_seconds < 0 or (start_seconds is not None and end_seconds < start_seconds)
         ):
             raise ValueError("transcript end is invalid")
         content_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
@@ -112,7 +104,8 @@ class SourcePassage:
         )
         return cls(
             passage_id=hashlib.sha256(identity.encode("utf-8")).hexdigest(),
-            source_id=source_id or _default_source_id(
+            source_id=source_id
+            or _default_source_id(
                 lecture_id=lecture_id,
                 source_kind=source_kind,
                 locator=locator,
@@ -136,21 +129,12 @@ class SourcePassage:
     @property
     def citation(self) -> str:
         if self.slide_number is not None:
-            suffix = (
-                " speaker notes"
-                if self.source_kind is SourceKind.SPEAKER_NOTES
-                else ""
-            )
-            return (
-                f"Lecture {self.lecture_id}, slide "
-                f"{self.slide_number}{suffix}"
-            )
+            suffix = " speaker notes" if self.source_kind is SourceKind.SPEAKER_NOTES else ""
+            return f"Lecture {self.lecture_id}, slide {self.slide_number}{suffix}"
         if self.start_seconds is not None:
             interval = _format_time(self.start_seconds)
             if self.end_seconds is not None:
-                interval = (
-                    f"{interval}\N{EN DASH}{_format_time(self.end_seconds)}"
-                )
+                interval = f"{interval}\N{EN DASH}{_format_time(self.end_seconds)}"
             return f"Lecture {self.lecture_id}, transcript {interval}"
         if self.source_kind is SourceKind.SUMMARY:
             return f"Lecture {self.lecture_id}, NotebookLM summary"
@@ -164,6 +148,8 @@ class SourceEmphasisEvidence(BaseModel):
 
     evidence_id: str = ""
     source_id: str = Field(min_length=1)
+    revision_id: int | None = Field(default=None, gt=0)
+    source_kind: SourceKind | None = None
     source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     sidecar_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     locator: str = Field(min_length=1)
@@ -202,7 +188,11 @@ class SourceEmphasisEvidence(BaseModel):
 
 
 def project_source_emphasis_evidence(
-    sidecar: StyledTextRunSidecar, policy: CourseCurationPolicy
+    sidecar: StyledTextRunSidecar,
+    policy: CourseCurationPolicy,
+    *,
+    revision_id: int | None = None,
+    source_kind: SourceKind = SourceKind.SLIDE,
 ) -> tuple[SourceEmphasisEvidence, ...]:
     """Select only nonblank colored runs matching this frozen policy."""
     if policy.emphasis_mode not in {"colored_text", "combined"}:
@@ -217,6 +207,8 @@ def project_source_emphasis_evidence(
         evidence.append(
             SourceEmphasisEvidence(
                 source_id=run.source_id,
+                revision_id=revision_id,
+                source_kind=source_kind,
                 source_sha256=run.source_sha256,
                 sidecar_sha256=sidecar.sidecar_sha256,
                 locator=run.locator,
@@ -243,13 +235,10 @@ class NotebookSummaryParser:
             raise ValueError("NotebookLM summary SHA-256 does not match its pin")
         try:
             text = "\n".join(
-                page.extract_text() or ""
-                for page in PdfReader(BytesIO(payload)).pages
+                page.extract_text() or "" for page in PdfReader(BytesIO(payload)).pages
             )
         except PdfReadError as exc:
-            raise SummaryMalformedError(
-                "NotebookLM summary is not a readable PDF"
-            ) from exc
+            raise SummaryMalformedError("NotebookLM summary is not a readable PDF") from exc
         return self.parse_text(
             lecture_id=record.lecture_id,
             outline_id=record.id,
@@ -294,8 +283,7 @@ class NotebookSummaryParser:
         ]
         if missing:
             raise SummaryMalformedError(
-                "NotebookLM summary is missing required section(s): "
-                + ", ".join(missing)
+                "NotebookLM summary is missing required section(s): " + ", ".join(missing)
             )
 
         passages: list[SourcePassage] = []
@@ -323,9 +311,7 @@ class NotebookSummaryParser:
                         source_kind=SourceKind.SUMMARY,
                         locator=f"summary:{section}:{number}",
                         text=item,
-                        source_id=(
-                            f"SUM:{lecture_id}:{prefixes[section]}:{suffix}"
-                        ),
+                        source_id=(f"SUM:{lecture_id}:{prefixes[section]}:{suffix}"),
                         summary_backrefs=backrefs,
                         summary_section=section,
                     )
@@ -383,9 +369,7 @@ class LectureSourceExtractor:
         self.summary_parser = summary_parser or NotebookSummaryParser()
         self.vision = vision
         self.transcript_max_chars = transcript_max_chars
-        self.transcript_overlap_sentences = (
-            transcript_overlap_sentences
-        )
+        self.transcript_overlap_sentences = transcript_overlap_sentences
 
     def extract(
         self,
@@ -408,9 +392,7 @@ class LectureSourceExtractor:
             elif revision.kind is UploadKind.TRANSCRIPTS:
                 passages.extend(self._extract_transcript(revision))
             else:
-                raise ValueError(
-                    f"unsupported source revision kind: {revision.kind}"
-                )
+                raise ValueError(f"unsupported source revision kind: {revision.kind}")
         if summary_outline_id is not None:
             if self.outlines is None:
                 raise ValueError("summary outline repository is not configured")
@@ -458,9 +440,7 @@ class LectureSourceExtractor:
                 )
             notes = ""
             if slide.has_notes_slide:
-                notes = _normalize_text(
-                    slide.notes_slide.notes_text_frame.text
-                )
+                notes = _normalize_text(slide.notes_slide.notes_text_frame.text)
             if notes:
                 passages.append(
                     SourcePassage.create(
@@ -473,10 +453,7 @@ class LectureSourceExtractor:
                         slide_number=slide_number,
                     )
                 )
-            has_image = any(
-                shape.shape_type is MSO_SHAPE_TYPE.PICTURE
-                for shape in slide.shapes
-            )
+            has_image = any(shape.shape_type is MSO_SHAPE_TYPE.PICTURE for shape in slide.shapes)
             if not text and has_image:
                 description = (
                     self.vision.describe_slide(path, slide_number)
@@ -521,25 +498,15 @@ class LectureSourceExtractor:
         passages: list[SourcePassage] = []
         for position, window in enumerate(windows, start=1):
             start = next(
-                (
-                    unit.start_seconds
-                    for unit in window
-                    if unit.start_seconds is not None
-                ),
+                (unit.start_seconds for unit in window if unit.start_seconds is not None),
                 None,
             )
             end = next(
-                (
-                    unit.end_seconds
-                    for unit in reversed(window)
-                    if unit.end_seconds is not None
-                ),
+                (unit.end_seconds for unit in reversed(window) if unit.end_seconds is not None),
                 None,
             )
             time_locator = (
-                f"{_compact_time(start)}-{_compact_time(end)}"
-                if start is not None
-                else "untimed"
+                f"{_compact_time(start)}-{_compact_time(end)}" if start is not None else "untimed"
             )
             passages.append(
                 SourcePassage.create(

@@ -109,9 +109,10 @@ class _SelectedEvidence:
     normalized_text: str
     content_sha256: str
     source_kind: SourceKind | None = None
+    revision_id: int | None = None
 
     def document(self) -> dict[str, str]:
-        return {
+        document: dict[str, str] = {
             "evidence_type": self.evidence_type,
             "evidence_id": self.evidence_id,
             "source_id": self.source_id,
@@ -119,6 +120,11 @@ class _SelectedEvidence:
             "normalized_text": self.normalized_text,
             "content_sha256": self.content_sha256,
         }
+        if self.revision_id is not None:
+            document["revision_id"] = str(self.revision_id)
+        if self.source_kind is not None:
+            document["source_kind"] = self.source_kind.value
+        return document
 
 
 class ScopeService:
@@ -136,6 +142,7 @@ class ScopeService:
         route: ResolvedStageModel,
         model_config_sha256: str,
         existing: ScopeReuseArtifact | None = None,
+        require_v3_provenance: bool = False,
     ) -> ScopeGenerationResult:
         if not _is_sha256(model_config_sha256):
             raise ScopeInputError("model configuration hash is invalid")
@@ -143,7 +150,7 @@ class ScopeService:
             raise ScopeInputError("fidelity policy identity changed")
         _validate_fidelity_inputs(policy, fidelity, source_passages, emphasis_evidence)
         selected, degraded_mode = _select_evidence(
-            policy, fidelity, source_passages, emphasis_evidence
+            policy, fidelity, source_passages, emphasis_evidence, require_v3_provenance
         )
         evidence_document = [item.document() for item in selected]
         source_bundle: dict[str, object] = {
@@ -244,21 +251,35 @@ def _select_evidence(
     fidelity: R2FidelityDiagnostic,
     source_passages: Sequence[SourcePassage],
     emphasis_evidence: Sequence[SourceEmphasisEvidence],
+    require_v3_provenance: bool = False,
 ) -> tuple[tuple[_SelectedEvidence, ...], Literal["none", "transcript_outline"]]:
-    if fidelity.status in {
-        "blocked",
-        "confirmation_required",
-        "blocked_fallback_unavailable",
-    } or not fidelity.may_advance:
+    if (
+        fidelity.status
+        in {
+            "blocked",
+            "confirmation_required",
+            "blocked_fallback_unavailable",
+        }
+        or not fidelity.may_advance
+    ):
         raise ScopeInputError("fidelity blocks scope generation")
     _validate_evidence_namespace(source_passages, emphasis_evidence)
     passages = tuple(
-        _passage_evidence(passage)
-        for passage in source_passages
-        if passage.text.strip()
+        _passage_evidence(passage) for passage in source_passages if passage.text.strip()
     )
+    passages_by_identity: dict[tuple[str, str], SourcePassage] = {}
+    for passage in source_passages:
+        identity = (passage.source_id.strip(), passage.locator.strip())
+        if identity in passages_by_identity:
+            raise ScopeInputError("duplicate source passage identity is ambiguous")
+        passages_by_identity[identity] = passage
     emphasis = tuple(
-        _emphasis(item, policy.policy_sha256)
+        _emphasis(
+            item,
+            policy.policy_sha256,
+            passages_by_identity.get((item.source_id.strip(), item.locator.strip())),
+            require_v3_provenance,
+        )
         for item in emphasis_evidence
         if item.text.strip()
     )
@@ -275,23 +296,20 @@ def _select_evidence(
         selected = emphasis
         degraded_mode = "none"
     elif policy.emphasis_mode == "combined" and fidelity.status == "continue":
-        selected = (*emphasis, *(
-            item
-            for item in passages
-            if item.source_kind in {SourceKind.TRANSCRIPT, SourceKind.SUMMARY}
-        ))
+        selected = (
+            *emphasis,
+            *(
+                item
+                for item in passages
+                if item.source_kind in {SourceKind.TRANSCRIPT, SourceKind.SUMMARY}
+            ),
+        )
         degraded_mode = "none"
     elif policy.emphasis_mode == "transcript_emphasis" and fidelity.status == "not_applicable":
-        selected = tuple(
-            item
-            for item in passages
-            if item.source_kind is SourceKind.TRANSCRIPT
-        )
+        selected = tuple(item for item in passages if item.source_kind is SourceKind.TRANSCRIPT)
         degraded_mode = "none"
     elif policy.emphasis_mode == "outline_depth" and fidelity.status == "not_applicable":
-        selected = tuple(
-            item for item in passages if item.source_kind is SourceKind.SUMMARY
-        )
+        selected = tuple(item for item in passages if item.source_kind is SourceKind.SUMMARY)
         degraded_mode = "none"
     else:
         raise ScopeInputError("fidelity outcome does not authorize this policy mode")
@@ -313,12 +331,30 @@ def _passage_evidence(passage: SourcePassage) -> _SelectedEvidence:
         text,
         passage.content_hash,
         passage.source_kind,
+        passage.revision_id,
     )
 
 
-def _emphasis(item: SourceEmphasisEvidence, policy_sha256: str) -> _SelectedEvidence:
+def _emphasis(
+    item: SourceEmphasisEvidence,
+    policy_sha256: str,
+    source: SourcePassage | None,
+    require_v3_provenance: bool,
+) -> _SelectedEvidence:
     if item.policy_sha256 != policy_sha256 or not item.policy_match:
         raise ScopeInputError("emphasis evidence policy identity changed")
+    if require_v3_provenance and (
+        source is None
+        or source.source_kind is not SourceKind.SLIDE
+        or source.revision_id is None
+        or item.source_kind is not SourceKind.SLIDE
+        or item.revision_id is None
+        or source.revision_id != item.revision_id
+        or source.source_id != item.source_id
+        or source.locator != item.locator
+        or source.content_hash != item.normalized_text_sha256
+    ):
+        raise ScopeInputError("colored evidence lacks frozen slide provenance")
     return _SelectedEvidence(
         "colored_text",
         item.evidence_id,
@@ -326,6 +362,8 @@ def _emphasis(item: SourceEmphasisEvidence, policy_sha256: str) -> _SelectedEvid
         item.locator.strip(),
         _normalized_evidence_text(item.text),
         item.normalized_text_sha256,
+        None if source is None else source.source_kind,
+        None if source is None else source.revision_id,
     )
 
 
@@ -474,8 +512,7 @@ def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
             if not set(self.source_evidence_ids) <= allowed:
                 raise ValueError("concept cites evidence outside the authorized bundle")
             if any(
-                not set(fact.evidence_ids) <= set(self.source_evidence_ids)
-                for fact in self.facts
+                not set(fact.evidence_ids) <= set(self.source_evidence_ids) for fact in self.facts
             ):
                 raise ValueError("fact evidence escapes its concept evidence")
             return self
@@ -545,6 +582,8 @@ def _lecture_scope(
         ScopeEvidenceReference(
             evidence_id=item.evidence_id,
             source_id=item.source_id,
+            revision_id=item.revision_id,
+            source_kind=None if item.source_kind is None else item.source_kind.value,
             locator=item.locator,
             content_sha256=item.content_sha256,
         )
@@ -590,9 +629,7 @@ def _generation_options(prompt: PinnedScopePrompt, route: ResolvedStageModel) ->
     return GenerationOptions(
         cacheable_source_prefix=prompt.content if prompt.metadata.cache_prefix else None,
         thinking=(
-            ThinkingMode.ENABLED
-            if route.thinking_mode == "enabled"
-            else ThinkingMode.DISABLED
+            ThinkingMode.ENABLED if route.thinking_mode == "enabled" else ThinkingMode.DISABLED
         ),
         thinking_budget_tokens=1024,
         temperature=prompt.metadata.temperature if prompt.metadata.temperature is not None else 0.0,
