@@ -35,12 +35,19 @@ from oms_hub.anki.contracts import (
     CreateCurationJobRequest,
     RemoveTagsOperation,
 )
-from oms_hub.anki.domain import ApplyState, CurationJob, CurationStage, CurationState
+from oms_hub.anki.domain import (
+    ApplyState,
+    CurationJob,
+    CurationStage,
+    CurationState,
+    PipelineContractVersion,
+)
 from oms_hub.anki.models import (
     AnkiEnvelopeModel,
     AnkiReviewChangeSetModel,
     AnkiReviewedReconciliationModel,
 )
+from oms_hub.anki.pipeline import StageArtifactStore, pipeline_stages
 from oms_hub.anki.provider_attempts import (
     ProviderAttemptIndeterminate,
     replay_namespace_from_job_source,
@@ -540,14 +547,19 @@ class ProcessRehearsal:
             failed = repository.require_job(self.request.failed_job_id)
             if self.request.run_goal == "capture":
                 self._validate_capture_namespace(failed)
-                self._validate_capture_job_routes(failed)
-            status, created = client.request("POST", "/api/anki/jobs", fresh_job_payload(failed))
+                self._validate_capture_job_routes(failed, repository)
+            payload = (
+                fresh_job_payload(failed, live_capture=True)
+                if self.request.run_goal == "capture"
+                else fresh_job_payload(failed)
+            )
+            status, created = client.request("POST", "/api/anki/jobs", payload)
             if (
                 status != 201
                 or not isinstance(created, dict)
                 or not isinstance(created.get("id"), str)
             ):
-                raise RuntimeError(f"fresh card_centric_v2 job was rejected: HTTP {status}")
+                raise RuntimeError(f"fresh curation job was rejected: HTTP {status}")
             job_id = UUID(created["id"])
             self._record("job_created", job_id=str(job_id), source_failed_job_id=str(failed.id))
             before_logical_identity: set[tuple[object, ...]] | None = None
@@ -644,11 +656,33 @@ class ProcessRehearsal:
                     raise RuntimeError(
                         f"capture job did not reach READY_FOR_REVIEW: {final.get('state')!r}"
                     )
-                self._assert_capture_http_transcript(client, job_id)
+                review: dict[str, Any] | None = None
+                apply: dict[str, Any] | None = None
+                is_v3 = (
+                    repository.require_job(job_id).pipeline_contract_version
+                    is PipelineContractVersion.CARD_CENTRIC_V3
+                )
+                if is_v3:
+                    review_status, review_body = client.request(
+                        "GET", f"/api/anki/jobs/{job_id}/review"
+                    )
+                    if review_status != 200 or not isinstance(review_body, dict):
+                        raise RuntimeError("v3 capture review evidence is unavailable")
+                    review = review_body
+                    apply_status, apply_body = client.request(
+                        "POST",
+                        f"/api/anki/jobs/{job_id}/apply",
+                        {"review_revision": 0, "confirmation": "APPLY TO ANKI"},
+                    )
+                    if apply_status != 423 or not isinstance(apply_body, dict):
+                        raise RuntimeError("v3 capture apply boundary did not return 423")
+                    apply = apply_body
+                    self._record("live_acceptance_apply_gate", apply_status=apply_status)
+                self._assert_capture_http_transcript(client, job_id, v3=is_v3)
                 self._stop_all(overlay)
                 adapter_ledger, egress_ledger = self._validate_runtime_evidence(overlay)
                 self._validate_capture_runtime(adapter_ledger, egress_ledger)
-                server_audit = self._assert_capture_server_audit(client, job_id)
+                server_audit = self._assert_capture_server_audit(client, job_id, v3=is_v3)
                 self._validate_capture_ready_for_review_state(repository, job_id)
                 self._write_capture_completion(
                     manifest,
@@ -659,6 +693,9 @@ class ProcessRehearsal:
                     adapter_ledger,
                     egress_ledger,
                     server_audit,
+                    review=review,
+                    apply=apply,
+                    apply_status=423 if is_v3 else None,
                 )
                 return RehearsalResult(
                     job_id,
@@ -746,6 +783,10 @@ class ProcessRehearsal:
             raise ValueError("overlay destination must not already exist")
         if os.path.lexists(self.request.evidence_zip):
             raise ValueError("evidence destination must not already exist")
+        if self.request.run_goal == "capture" and os.path.lexists(
+            self.request.evidence_zip.with_suffix(".json")
+        ):
+            raise ValueError("live acceptance JSON destination must not already exist")
         if not 1024 <= self.request.port <= 65535:
             raise ValueError("rehearsal port must be in 1024..65535")
         if self.request.run_goal not in {"golden", "first_replay_miss", "capture"}:
@@ -852,6 +893,8 @@ class ProcessRehearsal:
             ("overlay", self.request.overlay),
             ("evidence", self.request.evidence_zip),
         ]
+        if self.request.run_goal == "capture":
+            outputs.append(("live acceptance JSON", self.request.evidence_zip.with_suffix(".json")))
         if self.request.capture_store is not None:
             outputs.append(("capture store", self.request.capture_store))
         canonical_outputs = [(name, _canonical_output_path(path)) for name, path in outputs]
@@ -900,16 +943,36 @@ class ProcessRehearsal:
                 "capture authorization replay namespace does not match the job source"
             )
 
-    def _validate_capture_job_routes(self, job: CurationJob) -> None:
+    def _validate_capture_job_routes(
+        self,
+        job: CurationJob,
+        repository: AnkiCurationRepository | None = None,
+    ) -> None:
         if self._capture_authorization is None:
             raise RuntimeError("capture authorization is unavailable")
         config = job.resolved_model_config
-        stages = [config.ledger_s2, config.classify_s4, config.residual_s6, config.gap_fill_s7]
-        if config.fast_classify_s4b is not None:
-            stages.append(config.fast_classify_s4b)
+        pipeline_version = getattr(
+            job,
+            "pipeline_contract_version",
+            PipelineContractVersion.CARD_CENTRIC_V2,
+        )
+        if pipeline_version is PipelineContractVersion.CARD_CENTRIC_V3:
+            stages = [
+                config.scope_r3,
+                config.cheap_classify_r7,
+                config.thorough_classify_r7,
+                config.generation_r9,
+            ]
+            if any(stage is None for stage in stages):
+                raise RuntimeError("capture v3 structured routes are incomplete")
+        else:
+            stages = [config.ledger_s2, config.classify_s4, config.residual_s6, config.gap_fill_s7]
+            if config.fast_classify_s4b is not None:
+                stages.append(config.fast_classify_s4b)
         reachable = {
             (stage.provider, stage.model, _provider_endpoint(stage.provider, stage.model))
             for stage in stages
+            if stage is not None
         }
         authorized = {
             (row["provider"], row["model"], row["endpoint"])
@@ -919,6 +982,19 @@ class ProcessRehearsal:
             raise RuntimeError(
                 "capture authorization structured routes do not exactly close the frozen job plan"
             )
+        if (
+            pipeline_version is PipelineContractVersion.CARD_CENTRIC_V3
+            and repository is not None
+        ):
+            if job.policy_sha256 is None:
+                raise RuntimeError("capture v3 policy pin is unavailable")
+            policy = repository.get_policy_by_sha256(job.policy_sha256)
+            authorized_cost = self._capture_authorization.maxima["total_reserved_microusd"]
+            if not (
+                0 < authorized_cost <= policy.ordinary_cost_limit_microusd
+                <= policy.hard_stop_cost_limit_microusd
+            ):
+                raise RuntimeError("capture cost authorization exceeds the frozen policy")
 
     @staticmethod
     def _validate_envelope_response(
@@ -2277,13 +2353,20 @@ class ProcessRehearsal:
         if not statuses or any(item.get("status") != 200 for item in statuses):
             raise RuntimeError("expected replay miss lacks a successful job-status poll")
 
-    def _assert_capture_http_transcript(self, client: LoopbackHttp, job_id: UUID) -> None:
-        """Capture stops at READY_FOR_REVIEW and never creates a review artifact."""
+    def _assert_capture_http_transcript(
+        self, client: LoopbackHttp, job_id: UUID, *, v3: bool = False
+    ) -> None:
+        """Capture stops at READY_FOR_REVIEW and never persists a review artifact."""
         allowed = {
             ("GET", "/health"),
             ("POST", "/api/anki/jobs"),
             ("GET", f"/api/anki/jobs/{job_id}"),
         }
+        if v3:
+            allowed |= {
+                ("GET", f"/api/anki/jobs/{job_id}/review"),
+                ("POST", f"/api/anki/jobs/{job_id}/apply"),
+            }
         if not client.transcript:
             raise RuntimeError("capture has no HTTP transcript")
         for item in client.transcript:
@@ -2303,9 +2386,26 @@ class ProcessRehearsal:
             for item in client.transcript
         ):
             raise RuntimeError("capture lacks a successful job status poll")
+        if v3:
+            review = [
+                item
+                for item in client.transcript
+                if (item.get("method"), item.get("path"))
+                == ("GET", f"/api/anki/jobs/{job_id}/review")
+            ]
+            apply = [
+                item
+                for item in client.transcript
+                if (item.get("method"), item.get("path"))
+                == ("POST", f"/api/anki/jobs/{job_id}/apply")
+            ]
+            if len(review) != 1 or review[0].get("status") != 200:
+                raise RuntimeError("v3 capture lacks one successful review read")
+            if len(apply) != 1 or apply[0].get("status") != 423:
+                raise RuntimeError("v3 capture lacks one apply-disabled proof")
 
     def _assert_capture_server_audit(
-        self, client: LoopbackHttp, job_id: UUID
+        self, client: LoopbackHttp, job_id: UUID, *, v3: bool = False
     ) -> dict[str, object]:
         """Require private server observation, not merely the parent transcript."""
         if self._capture_store is None:
@@ -2348,6 +2448,16 @@ class ProcessRehearsal:
             for entry in entries
             if entry.get("canonical_path") == f"/api/anki/jobs/{job_id}"
         ]
+        review = [
+            entry
+            for entry in entries
+            if entry.get("canonical_path") == f"/api/anki/jobs/{job_id}/review"
+        ]
+        apply = [
+            entry
+            for entry in entries
+            if entry.get("canonical_path") == f"/api/anki/jobs/{job_id}/apply"
+        ]
         if (
             len(health) != 1
             or health[0].get("method") != "GET"
@@ -2366,7 +2476,22 @@ class ProcessRehearsal:
                 or entry.get("job_id") != str(job_id)
                 for entry in statuses
             )
-            or len(entries) != len(health) + len(created) + len(statuses)
+            or (
+                v3
+                and (
+                    len(review) != 1
+                    or review[0].get("method") != "GET"
+                    or review[0].get("status") != 200
+                    or review[0].get("job_id") != str(job_id)
+                    or len(apply) != 1
+                    or apply[0].get("method") != "POST"
+                    or apply[0].get("status") != 423
+                    or apply[0].get("job_id") != str(job_id)
+                )
+            )
+            or (not v3 and (review or apply))
+            or len(entries)
+            != len(health) + len(created) + len(statuses) + len(review) + len(apply)
         ):
             raise RuntimeError("capture server audit violates the control-plane closure")
         return audit
@@ -2430,6 +2555,10 @@ class ProcessRehearsal:
         adapter_ledger: dict[str, Any],
         egress_ledger: dict[str, Any],
         server_audit: dict[str, object],
+        *,
+        review: dict[str, Any] | None = None,
+        apply: dict[str, Any] | None = None,
+        apply_status: int | None = None,
     ) -> None:
         if self._capture_store is None or self._capture_authorization is None:
             raise RuntimeError("capture store is unavailable")
@@ -2446,6 +2575,56 @@ class ProcessRehearsal:
         provider_rows = repository.list_provider_attempt_events(job_id)
         self._reconcile_capture_calls(provider_rows)
         job = repository.require_job(job_id)
+        is_v3 = (
+            getattr(job, "pipeline_contract_version", None)
+            is PipelineContractVersion.CARD_CENTRIC_V3
+        )
+        if is_v3 and (review is None or apply is None or apply_status != 423):
+            raise RuntimeError("v3 capture lacks exact review and apply-disabled evidence")
+        artifacts = repository.list_stage_artifacts(job_id) if is_v3 else []
+        if is_v3:
+            expected_stages = [
+                definition.stage
+                for definition in pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V3)
+                if definition.stage is not CurationStage.V3_R12_APPLY
+            ]
+            if [artifact.stage for artifact in artifacts] != expected_stages:
+                raise RuntimeError("v3 capture stage products are not the exact R0-R11 chain")
+        stage_products = [
+            {
+                "stage": artifact.stage.value,
+                "kind": artifact.kind,
+                "input_sha256": artifact.input_sha256,
+                "content_sha256": artifact.content_sha256,
+            }
+            for artifact in artifacts
+        ]
+        cost_ledger: list[dict[str, Any]] = []
+        cost_ledger_sha256: str | None = None
+        if is_v3:
+            r11 = next(
+                (
+                    artifact
+                    for artifact in artifacts
+                    if artifact.stage is CurationStage.V3_R11_REVIEW
+                ),
+                None,
+            )
+            if r11 is None:
+                raise RuntimeError("v3 capture lacks the committed R11 artifact")
+            document = StageArtifactStore(overlay.root / "anki" / "artifacts").read(r11, job=job)
+            payload = cast(dict[str, Any], document["payload"])
+            raw_ledger = payload.get("cost_ledger")
+            raw_sha256 = payload.get("cost_ledger_sha256")
+            if (
+                not isinstance(raw_ledger, list)
+                or not isinstance(raw_sha256, str)
+                or not _is_sha256(raw_sha256)
+                or hashlib.sha256(_canonical_json(raw_ledger).encode()).hexdigest() != raw_sha256
+            ):
+                raise RuntimeError("v3 capture R11 cost ledger is invalid")
+            cost_ledger = cast(list[dict[str, Any]], raw_ledger)
+            cost_ledger_sha256 = raw_sha256
         lineage = {
             "schema_version": 1,
             "authorization_sha256": self._capture_authorization.sha256,
@@ -2485,6 +2664,21 @@ class ProcessRehearsal:
                 "source_attestation": self._source_attestation,
             },
             "job.json": {"id": str(job_id), "state": "ready_for_review"},
+            "stage-products.json": stage_products,
+            "cost-ledger.json": {
+                "cost_ledger": cost_ledger,
+                "cost_ledger_sha256": cost_ledger_sha256,
+            },
+            "review-gate.json": {
+                "review": review,
+                "apply": apply,
+                "apply_status": apply_status,
+            },
+            "processes.json": [
+                asdict(item.observation) | {"argv": _redact_argv(list(item.observation.argv))}
+                for item in self._children
+            ],
+            "timeline.json": self._timeline,
             "http-transcript.json": _smoke_http_transcript(client.transcript),
             "provider-attempt-ledger.json": _capture_provider_ledger_projection(provider_rows),
             "read-only-anki-mutation-ledger.json": adapter_ledger,
@@ -2493,6 +2687,14 @@ class ProcessRehearsal:
             "private-pack.json": {
                 "path": str(self._capture_store.pack),
                 "manifest_sha256": pack["pack_manifest_sha256"],
+            },
+            "process-logs.json": {
+                f"{child.stdout_path.name}": _file_descriptor(child.stdout_path)
+                for child in self._children
+            }
+            | {
+                f"{child.stderr_path.name}": _file_descriptor(child.stderr_path)
+                for child in self._children
             },
         }
         _write_deterministic_zip(self.request.evidence_zip, records)
@@ -2505,6 +2707,23 @@ class ProcessRehearsal:
             raise RuntimeError("published capture server audit digest does not match completion")
         self._capture_store.publish_pack_manifest(pack_manifest)
         self._capture_store.write_completion(completion)
+        if is_v3:
+            _write_json_atomically(
+                self.request.evidence_zip.with_suffix(".json"),
+                {
+                    "schema_version": 1,
+                    "candidate": completion["candidate"],
+                    "job_id": str(job_id),
+                    "runtime_pid": self._attested_runtime_pid(),
+                    "stage_products": stage_products,
+                    "cost_ledger": cost_ledger,
+                    "cost_ledger_sha256": cost_ledger_sha256,
+                    "no_anki_mutation": adapter_ledger.get("records") == [],
+                    "apply_status": apply_status,
+                    "evidence_zip": str(self.request.evidence_zip),
+                    "evidence_zip_sha256": _sha256_file(self.request.evidence_zip),
+                },
+            )
 
     def _reconcile_capture_calls(self, rows: list[dict[str, object]]) -> None:
         if self._capture_store is None:
@@ -2696,10 +2915,14 @@ class ProcessRehearsal:
             raise RuntimeError("expected replay miss runtime evidence records non-loopback egress")
 
 
-def fresh_job_payload(failed: CurationJob) -> dict[str, Any]:
+def fresh_job_payload(failed: CurationJob, *, live_capture: bool = False) -> dict[str, Any]:
     """Create a new API request from the domain object, never a copied DB row."""
-    if failed.pipeline_contract_version.value != "card_centric_v2":
-        raise ValueError("preserved job must be card_centric_v2")
+    if failed.pipeline_contract_version not in {
+        PipelineContractVersion.CARD_CENTRIC_V2,
+        PipelineContractVersion.CARD_CENTRIC_V3,
+    }:
+        raise ValueError("preserved job must use a card-centric contract")
+    v3 = failed.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3
     request = CreateCurationJobRequest(
         lecture_id=failed.lecture_id,
         block_id=failed.block_id,
@@ -2715,13 +2938,16 @@ def fresh_job_payload(failed: CurationJob) -> dict[str, Any]:
         gap_prompt_version=failed.gap_prompt_version,
         provider=cast(Literal["openai", "gemini", "anthropic", "openrouter"], failed.provider),
         model=failed.model,
-        pipeline_contract_version="card_centric_v2",
+        pipeline_contract_version=failed.pipeline_contract_version.value,
         resolved_model_config=failed.resolved_model_config.canonical_document(),
         source_revision_hashes=failed.source_revision_hashes,
         summary_outline_id=failed.summary_outline_id,
         summary_outline_sha256=failed.summary_outline_sha256,
         semantic_generation=failed.semantic_generation,
         companion_generation=failed.companion_generation,
+        policy_sha256=getattr(failed, "policy_sha256", None),
+        rate_table_document=getattr(failed, "rate_table_document", None),
+        offline_replay_only=v3 and not live_capture,
     )
     return request.model_dump(mode="json")
 

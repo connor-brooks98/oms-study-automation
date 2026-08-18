@@ -12,6 +12,7 @@ import sysconfig
 import time
 import zipfile
 from ast import Import, ImportFrom, parse
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -21,7 +22,13 @@ from uuid import UUID
 import pytest
 
 from oms_hub.anki.contracts import CreateCurationJobRequest
-from oms_hub.anki.domain import CurationStage, PipelineContractVersion, ResolvedModelConfiguration
+from oms_hub.anki.cost_estimator import FrozenRateTable, ModelRate
+from oms_hub.anki.domain import (
+    CurationStage,
+    PipelineContractVersion,
+    ResolvedModelConfiguration,
+    ResolvedStageModel,
+)
 from oms_hub.anki.provider_attempts import (
     ProviderAttemptBinding,
     begin_provider_call,
@@ -1601,6 +1608,56 @@ def test_fresh_job_payload_matches_http_contract() -> None:
         CreateCurationJobRequest.model_validate(payload).pipeline_contract_version
         == "card_centric_v2"
     )
+
+
+def test_fresh_v3_capture_payload_preserves_pins_but_changes_only_execution_mode() -> None:
+    route = ResolvedStageModel("openrouter", "model", thinking_mode="disabled")
+    config = ResolvedModelConfiguration(
+        "v3",
+        route,
+        route,
+        route,
+        route,
+        scope_r3=route,
+        cheap_classify_r7=route,
+        thorough_classify_r7=route,
+        generation_r9=route,
+    )
+    table = FrozenRateTable(
+        (ModelRate("model", 1, 1, 1, 1, 1),), datetime(2026, 8, 17, tzinfo=UTC), "fixture"
+    )
+    job = SimpleNamespace(
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V3,
+        lecture_id=1,
+        block_id="block",
+        source_revision_ids=(2,),
+        deck_allowlist=("Deck",),
+        tag_allowlist=("Tag",),
+        instruction_text="",
+        target_deck="Deck",
+        target_tag="Tag",
+        index_snapshot_id="snapshot",
+        lcl_prompt_version="lcl-v1",
+        judgment_rubric_version="judgment-v1",
+        gap_prompt_version="gap-v1",
+        provider="openrouter",
+        model="model",
+        resolved_model_config=config,
+        source_revision_hashes={2: "a" * 64},
+        summary_outline_id=None,
+        summary_outline_sha256=None,
+        semantic_generation="semantic",
+        companion_generation="companion",
+        policy_sha256="b" * 64,
+        rate_table_document=table.document(),
+    )
+
+    replay = fresh_job_payload(job)  # type: ignore[arg-type]
+    capture = fresh_job_payload(job, live_capture=True)  # type: ignore[arg-type]
+
+    assert replay | {"offline_replay_only": False} == capture
+    assert replay["offline_replay_only"] is True
+    assert capture["rate_table_document"] == table.document()
 
 
 def test_command_and_environment_are_explicit_and_overlay_bound(

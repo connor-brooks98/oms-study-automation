@@ -284,6 +284,26 @@ def test_v3_resumed_stage_rejects_replaced_live_client_before_artifact_lookup() 
     assert generator.calls == 0
 
 
+def test_v3_live_execution_requires_the_capture_repository_and_capture_only_clients() -> None:
+    runner = object.__new__(CurationServicesRunner)
+    runner.structured = SimpleNamespace(generator=SimpleNamespace(capture_only=True))
+    runner.embedder = SimpleNamespace(capture_only=True)
+    runner.semantic = SimpleNamespace(embedder=SimpleNamespace(capture_only=True))
+    runner.repository = SimpleNamespace(allows_v3_live_capture=lambda: True)
+    context = StageContext(
+        job=SimpleNamespace(offline_replay_only=False),
+        stage=CurationStage.V3_R0_PREFLIGHT,
+        input_sha256="a" * 64,
+        prior_artifacts=(),
+        prior_payloads={},
+    )
+
+    runner._require_v3_offline_execution(context)  # noqa: SLF001
+    runner.repository = SimpleNamespace(allows_v3_live_capture=lambda: False)
+    with pytest.raises(PinnedInputChanged, match="capture-only"):
+        runner._require_v3_offline_execution(context)  # noqa: SLF001
+
+
 def test_v3_offline_golden_runner_reaches_review_with_durable_provider_evidence(
     tmp_path: Path,
 ) -> None:

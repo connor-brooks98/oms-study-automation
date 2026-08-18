@@ -549,17 +549,24 @@ class CurationServicesRunner:
         return await handlers[context.stage](context)
 
     def _require_v3_offline_execution(self, context: StageContext) -> None:
-        if not getattr(context.job, "offline_replay_only", False):
-            raise PinnedInputChanged("v3 requires the persisted offline replay pin")
-        if not all(
-            getattr(client, "offline_replay_only", False) is True
-            for client in (
-                getattr(self.structured, "generator", None),
-                self.embedder,
-                getattr(self.semantic, "embedder", None),
+        clients = (
+            getattr(self.structured, "generator", None),
+            self.embedder,
+            getattr(self.semantic, "embedder", None),
+        )
+        if getattr(context.job, "offline_replay_only", False):
+            allowed = all(
+                getattr(client, "offline_replay_only", False) is True for client in clients
             )
-        ):
-            raise PinnedInputChanged("v3 requires offline-only structured and embedding clients")
+        else:
+            allows_capture = getattr(self.repository, "allows_v3_live_capture", lambda: False)
+            allowed = allows_capture() and all(
+                getattr(client, "capture_only", False) is True for client in clients
+            )
+        if not allowed:
+            raise PinnedInputChanged(
+                "v3 requires offline-only replay clients or the capture-only live boundary"
+            )
 
     async def _v3_r0_preflight(self, context: StageContext) -> StageProduct:
         if context.job.policy_sha256 is None:
@@ -616,7 +623,6 @@ class CurationServicesRunner:
             ],
             "cost_ledger": [],
             "cost_ledger_sha256": hashlib.sha256(b"[]").hexdigest(),
-            "offline_replay_only": True,
         }
         payload["artifact_sha256"] = canonical_sha256(payload)
         return StageProduct(kind="card_centric_v3_preflight", payload=payload)

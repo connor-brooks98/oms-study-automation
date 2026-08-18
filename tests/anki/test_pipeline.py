@@ -24,6 +24,7 @@ from oms_hub.anki.pipeline import (
     StageArtifactStore,
     StageContext,
     StageProduct,
+    UnsupportedPipelineContract,
     _stage_input_hash,
     _v3_provider_replay_stage_digest,
     pipeline_stages,
@@ -72,6 +73,44 @@ def test_v3_graph_is_loadable_and_retains_approval_only_r12() -> None:
     assert CARD_CENTRIC_V3_STAGES[-1].stage.value == "v3_r12_apply"
     assert pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V3) is CARD_CENTRIC_V3_STAGES
     assert CARD_CENTRIC_V3_STAGES[-2].next_state == CurationState.READY_FOR_REVIEW
+
+
+def test_v3_live_pipeline_is_reachable_only_through_capture_repository(tmp_path: Path) -> None:
+    class ReachedStageBoundary(RuntimeError):
+        pass
+
+    job = SimpleNamespace(
+        id=UUID(int=1),
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V3,
+        offline_replay_only=False,
+        state=CurationState.V3_R0_PREFLIGHT,
+    )
+
+    class Repository:
+        capture = False
+
+        def require_job(self, _job_id: UUID) -> object:
+            return job
+
+        def allows_v3_live_capture(self) -> bool:
+            return self.capture
+
+        def require_no_indeterminate_provider_attempt(
+            self, _job_id: UUID, _stage: CurationStage
+        ) -> None:
+            raise ReachedStageBoundary
+
+    repository = Repository()
+    pipeline = CurationPipeline(  # type: ignore[arg-type]
+        repository,
+        StageArtifactStore(tmp_path / "artifacts"),
+        RecordingRunner(),
+    )
+    with pytest.raises(UnsupportedPipelineContract):
+        asyncio.run(pipeline.run_stage(job.id))
+    repository.capture = True
+    with pytest.raises(ReachedStageBoundary):
+        asyncio.run(pipeline.run_stage(job.id))
 
 
 def test_v3_provider_replay_digest_ignores_job_and_artifact_wrappers() -> None:

@@ -293,7 +293,7 @@ def _install_capture_control_plane(
 ) -> None:
     """Install the capture-only, capability-gated ASGI boundary last/outermost.
 
-    It buffers only the three tiny JSON responses permitted during capture so a
+    It buffers only the tiny JSON responses permitted during capture so a
     successful job id can be durably audited before any response reaches the
     loopback client.  No ordinary app receives this middleware.
     """
@@ -301,6 +301,7 @@ def _install_capture_control_plane(
     lock = threading.RLock()
     post_claimed = False
     created_job_id: str | None = None
+    capture_v3 = False
     state = {"poisoned": False}
     app.state.anki_capture_control_state = state
 
@@ -368,7 +369,7 @@ def _install_capture_control_plane(
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        nonlocal post_claimed, created_job_id
+        nonlocal post_claimed, created_job_id, capture_v3
         if state["poisoned"]:
             return JSONResponse({"detail": "capture audit unavailable"}, status_code=500)
         method = request.method.upper()
@@ -405,6 +406,26 @@ def _install_capture_control_plane(
                 is_status = False
             else:
                 is_status = suffix == status_job_id
+        review_path = (
+            None if created_job_id is None else f"/api/anki/jobs/{created_job_id}/review"
+        )
+        apply_path = (
+            None if created_job_id is None else f"/api/anki/jobs/{created_job_id}/apply"
+        )
+        is_v3_review = (
+            capture_v3
+            and query == "empty"
+            and method == "GET"
+            and raw == canonical == review_path
+        )
+        is_v3_apply = (
+            capture_v3
+            and query == "empty"
+            and method == "POST"
+            and raw == canonical == apply_path
+        )
+        if is_v3_review or is_v3_apply:
+            status_job_id = created_job_id
         with lock:
             if is_create:
                 if post_claimed:
@@ -427,7 +448,7 @@ def _install_capture_control_plane(
                     query=query,
                     job_id=status_job_id,
                 )
-            elif not (is_health or is_status):
+            elif not (is_health or is_status or is_v3_review or is_v3_apply):
                 return deny(
                     method=method,
                     raw=raw,
@@ -451,6 +472,12 @@ def _install_capture_control_plane(
                     if created_job_id is not None:
                         raise ValueError("capture created job identity is already bound")
                     created_job_id = created
+                    repository = getattr(app.state, "anki_repository", None)
+                    capture_v3 = bool(
+                        repository is not None
+                        and repository.require_job(UUID(created)).pipeline_contract_version.value
+                        == "card_centric_v3"
+                    )
                 status_job_id = created
             if is_status and status_job_id is None:
                 raise ValueError("capture status request identity is unavailable")

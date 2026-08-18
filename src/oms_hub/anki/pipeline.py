@@ -650,6 +650,7 @@ class CurationPipeline:
         if (
             job.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3
             and not job.offline_replay_only
+            and not getattr(self.repository, "allows_v3_live_capture", lambda: False)()
         ):
             raise UnsupportedPipelineContract(
                 "card_centric_v3 requires the persisted offline replay pin"

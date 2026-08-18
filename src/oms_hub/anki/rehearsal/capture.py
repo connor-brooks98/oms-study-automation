@@ -99,6 +99,9 @@ class CaptureAnkiCurationRepository(AnkiCurationRepository):
     def _allow_hash_only_card_ledger_failure(self) -> bool:
         return True
 
+    def allows_v3_live_capture(self) -> bool:
+        return True
+
 
 _HEX = frozenset("0123456789abcdef")
 _AUDIT_PATH_SENTINELS = frozenset({"<invalid-raw-path>", "<invalid-canonical-path>"})
@@ -112,14 +115,20 @@ _EVIDENCE_SECRET_MARKERS = (
     "CREDENTIAL",
     "AUTHORIZATION",
 )
-_CAPTURE_QUERY_STAGES = frozenset({"card_prefilter", "card_residual"})
-_CAPTURE_PROPOSAL_STAGES = frozenset({"dedupe"})
+_CAPTURE_QUERY_STAGES = frozenset(
+    {"card_prefilter", "card_residual", "v3_r5_retrieval"}
+)
+_CAPTURE_PROPOSAL_STAGES = frozenset({"dedupe", "v3_r10_dedupe"})
 _CAPTURE_STRUCTURED_KINDS = {
     "card_ledger": frozenset({"primary", "repair"}),
     "card_fast_classify": frozenset({"primary"}),
     "card_classify": frozenset({"primary", "repair"}),
     "card_residual": frozenset({"primary", "repair"}),
     "card_gap_fill": frozenset({"primary"}),
+    "v3_r3_scope": frozenset({"primary"}),
+    "v3_r7_classification": frozenset({"primary", "repair"}),
+    "v3_r8_gap_confirmation": frozenset({"primary", "repair"}),
+    "v3_r9_generation": frozenset({"primary", "repair"}),
 }
 _capture_replay_generation_options: ContextVar[GenerationOptions | None] = ContextVar(
     "capture_replay_generation_options", default=None
@@ -1476,10 +1485,11 @@ def _move_file_ex_write_through(source: Path, destination: Path) -> None:
     import ctypes
 
     flags = 0x1 | 0x8  # MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
-    result = ctypes.windll.kernel32.MoveFileExW(str(source), str(destination), flags)
+    windows = cast(Any, ctypes)
+    result = windows.windll.kernel32.MoveFileExW(str(source), str(destination), flags)
     if not result:
         raise CaptureDenied(
-            f"capture atomic write-through replacement failed: {ctypes.get_last_error()}"
+            f"capture atomic write-through replacement failed: {windows.get_last_error()}"
         )
 
 
@@ -1539,6 +1549,8 @@ def _windows_acl_entries(
 
 
 class CaptureStructuredTextGenerator(StructuredTextGenerator):
+    capture_only = True
+
     def __init__(
         self,
         inner: StructuredTextGenerator,
@@ -1735,6 +1747,8 @@ class CaptureStructuredTextService(StructuredTextService):
 
 class CaptureEmbeddingClient:
     """One bounded, no-retry Voyage batch for each set of uncaptured vector keys."""
+
+    capture_only = True
 
     def __init__(self, live: VoyageEmbeddingClient, store: CaptureStore) -> None:
         self.live = live

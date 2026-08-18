@@ -217,6 +217,48 @@ def test_capture_control_plane_is_server_authoritative_and_audited(tmp_path: Pat
     assert audit["entries"][2]["job_id"] == job_id
 
 
+def test_capture_control_plane_allows_only_v3_review_read_and_apply_423(tmp_path: Path) -> None:
+    capability = "capture-capability-not-for-evidence-123456"
+    store = CaptureStore(tmp_path / "private", _load(tmp_path / "authorization.json"))
+    store.prepare()
+    app = FastAPI()
+    job_id = UUID(int=72)
+    app.state.anki_repository = SimpleNamespace(
+        require_job=lambda _job_id: SimpleNamespace(
+            pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V3
+        )
+    )
+
+    @app.post("/api/anki/jobs", status_code=201)
+    def create() -> dict[str, str]:
+        return {"id": str(job_id)}
+
+    @app.get("/api/anki/jobs/{requested_job_id}")
+    def status(requested_job_id: UUID) -> dict[str, str]:
+        assert requested_job_id == job_id
+        return {"state": "ready_for_review"}
+
+    @app.get("/api/anki/jobs/{requested_job_id}/review")
+    def review(requested_job_id: UUID) -> dict[str, object]:
+        assert requested_job_id == job_id
+        return {"revision": 0}
+
+    @app.post("/api/anki/jobs/{requested_job_id}/apply", status_code=423)
+    def apply(requested_job_id: UUID) -> dict[str, str]:
+        assert requested_job_id == job_id
+        return {"detail": "disabled"}
+
+    app_module._install_capture_control_plane(app, store, capability)
+    client = TestClient(app)
+    headers = {"X-OMS-Capture-Capability": capability}
+
+    assert client.post("/api/anki/jobs", headers=headers).status_code == 201
+    assert client.get(f"/api/anki/jobs/{job_id}/review", headers=headers).status_code == 200
+    assert client.post(f"/api/anki/jobs/{job_id}/apply", headers=headers).status_code == 423
+    assert client.put(f"/api/anki/jobs/{job_id}/review", headers=headers).status_code == 404
+    assert client.post(f"/api/anki/jobs/{job_id}/envelope", headers=headers).status_code == 404
+
+
 def test_capture_control_plane_audits_invalid_asgi_paths_with_safe_sentinels(
     tmp_path: Path,
 ) -> None:
@@ -2507,6 +2549,130 @@ def test_capture_evidence_excludes_raw_provider_response_text(
         assert projected[0][key] == row[key]
     assert projected[0]["input_tokens"] == "[REDACTED]"
     assert projected[0]["output_tokens"] == "[REDACTED]"
+
+
+def test_v3_capture_writes_bounded_live_acceptance_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "capture"
+    root.mkdir()
+    request = _capture_request(root)
+    store = CaptureStore(root / "private", _load(root / "authorization.json"))
+    store.prepare()
+    store.initialize_server_audit("a" * 32)
+    ordinal = store.reserve(kind="structured", output_tokens=1, replay_identity=_identity())
+    store.record_structured(
+        "stable-key",
+        GeneratedText("{}", ProviderName.OPENROUTER, "test-model", "request", 0, 0, 0),
+    )
+    store.complete(ordinal, observed_microusd=0, stored=True)
+    store.record_vectors(
+        ["query"],
+        np.asarray([[1.0, 0.0]], dtype=np.float32),
+        model="voyage-4-large",
+        dimensions=2,
+        input_type="query",
+    )
+    harness = ProcessRehearsal(request)
+    harness._capture_store = store
+    harness._capture_authorization = store.authorization
+    harness._source_tree_sha256 = "e" * 64
+    harness._source_attestation = {"pid": 77}
+    stdout = root / "stdout.log"
+    stderr = root / "stderr.log"
+    stdout.write_text("", encoding="utf-8")
+    stderr.write_text("", encoding="utf-8")
+    harness._children = [
+        SimpleNamespace(
+            observation=process_module.ProcessObservation(
+                77, 77, "start", "end", 0, ("python", "serve")
+            ),
+            stdout_path=stdout,
+            stderr_path=stderr,
+        )
+    ]
+    monkeypatch.setattr(harness, "_validate_capture_namespace", lambda _job: None)
+    monkeypatch.setattr(harness, "_reconcile_capture_calls", lambda _rows: None)
+    monkeypatch.setattr(process_module, "_replay_namespace_for_job", lambda _job: "f" * 64)
+    artifacts = [
+        SimpleNamespace(
+            stage=definition.stage,
+            kind=f"product-{definition.stage.value}",
+            input_sha256=f"{index + 1:x}" * 64,
+            content_sha256=f"{index + 2:x}" * 64,
+        )
+        for index, definition in enumerate(
+            process_module.pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V3)
+        )
+        if definition.stage is not CurationStage.V3_R12_APPLY
+    ]
+    cost_ledger = [{"call_id": "r3:structured:0"}]
+    cost_ledger_sha256 = hashlib.sha256(
+        json.dumps(cost_ledger, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    monkeypatch.setattr(
+        process_module,
+        "StageArtifactStore",
+        lambda _root: SimpleNamespace(
+            read=lambda *_args, **_kwargs: {
+                "payload": {
+                    "cost_ledger": cost_ledger,
+                    "cost_ledger_sha256": cost_ledger_sha256,
+                }
+            }
+        ),
+    )
+    job = SimpleNamespace(pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V3)
+    repository = SimpleNamespace(
+        require_job=lambda _job_id: job,
+        list_provider_attempt_events=lambda _job_id: [],
+        list_stage_artifacts=lambda _job_id: artifacts,
+    )
+
+    harness._write_capture_completion(
+        SimpleNamespace(model_dump=lambda **_kwargs: {}),
+        SimpleNamespace(root=root / "overlay"),
+        SimpleNamespace(transcript=[]),
+        repository,
+        UUID(int=3),
+        {"records": []},
+        {"records": []},
+        store.server_audit(),
+        review={"revision": 0},
+        apply={"detail": "disabled"},
+        apply_status=423,
+    )
+
+    summary = json.loads(request.evidence_zip.with_suffix(".json").read_text())
+    assert summary["runtime_pid"] == 77
+    assert summary["apply_status"] == 423
+    assert summary["no_anki_mutation"] is True
+    assert [row["stage"] for row in summary["stage_products"]] == [
+        f"v3_r{index}_{name}"
+        for index, name in enumerate(
+            (
+                "preflight",
+                "source_index",
+                "fidelity",
+                "scope",
+                "index_verification",
+                "retrieval",
+                "calibration",
+                "classification",
+                "gap_confirmation",
+                "generation",
+                "dedupe",
+                "review",
+            )
+        )
+    ]
+    assert summary["evidence_zip_sha256"] == process_module._sha256_file(
+        request.evidence_zip
+    )
+    with zipfile.ZipFile(request.evidence_zip) as archive:
+        processes = json.loads(archive.read("processes.json"))
+        assert processes[0]["runtime_pid"] == 77
+        assert json.loads(archive.read("cost-ledger.json"))["cost_ledger"] == cost_ledger
 
 
 def test_capture_job_route_closure_uses_exact_code_endpoint_tuples(tmp_path: Path) -> None:

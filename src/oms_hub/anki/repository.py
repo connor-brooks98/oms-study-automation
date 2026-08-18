@@ -521,7 +521,6 @@ def _configuration_document(
     companion_generation: str | None,
     policy_sha256: str | None = None,
     rate_table_sha256: str | None = None,
-    offline_replay_only: bool = False,
 ) -> dict[str, Any]:
     """Return the complete canonical job configuration used for provenance."""
     document = {
@@ -548,7 +547,6 @@ def _configuration_document(
     if pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3:
         document["policy_sha256"] = policy_sha256
         document["rate_table_sha256"] = rate_table_sha256
-        document["offline_replay_only"] = offline_replay_only
     return document
 
 
@@ -598,7 +596,7 @@ class AnkiCurationRepository:
 
     def create_job(self, request: CreateCurationJob) -> CurationJob:
         if request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3:
-            if not request.offline_replay_only:
+            if not request.offline_replay_only and not self.allows_v3_live_capture():
                 raise ValueError("card_centric_v3 is offline-replay-only")
             if not _is_sha256(request.policy_sha256):
                 raise ValueError("card_centric_v3 requires an exact policy pin")
@@ -691,7 +689,6 @@ class AnkiCurationRepository:
             companion_generation=request.companion_generation,
             policy_sha256=request.policy_sha256,
             rate_table_sha256=None if table is None else table.rate_table_sha256,
-            offline_replay_only=request.offline_replay_only,
         )
         with self.database.session() as session:
             lecture = session.get(LectureModel, request.lecture_id)
@@ -789,6 +786,10 @@ class AnkiCurationRepository:
             if stored is None:
                 raise KeyError((policy_id, revision))
             return self._course_policy(stored)
+
+    def allows_v3_live_capture(self) -> bool:
+        """Ordinary repositories never authorize live v3 execution."""
+        return False
 
     def get_policy_by_sha256(self, policy_sha256: str) -> CourseCurationPolicy:
         """Return the one immutable policy revision pinned by a v3 job."""

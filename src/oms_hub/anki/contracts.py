@@ -91,6 +91,8 @@ class CreateCurationJobRequest(ContractModel):
         | None
     ) = None
     policy_sha256: Sha256 | None = None
+    rate_table_document: dict[str, Any] | None = None
+    offline_replay_only: bool = False
 
     @field_validator("deck_allowlist", mode="before")
     @classmethod
@@ -158,6 +160,10 @@ class CreateCurationJobRequest(ContractModel):
             raise ValueError("summary outline ID and hash must be supplied together")
         if self.policy_sha256 is not None and self.pipeline_contract_version != "card_centric_v3":
             raise ValueError("policy pin is supported only by card-centric v3")
+        if (
+            self.rate_table_document is not None or self.offline_replay_only
+        ) and self.pipeline_contract_version != "card_centric_v3":
+            raise ValueError("v3 execution pins are supported only by card-centric v3")
         v3_routes = {"scope_r3", "cheap_classify_r7", "thorough_classify_r7", "generation_r9"}
         if (
             self.pipeline_contract_version != "card_centric_v3"
@@ -198,6 +204,8 @@ class CreateCurationJobRequest(ContractModel):
             summary_outline_id=self.summary_outline_id,
             summary_outline_sha256=self.summary_outline_sha256,
             policy_sha256=self.policy_sha256,
+            rate_table_document=self.rate_table_document,
+            offline_replay_only=self.offline_replay_only,
         )
 
 

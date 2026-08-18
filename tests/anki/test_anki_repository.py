@@ -235,6 +235,60 @@ def test_v3_job_creation_requires_explicit_offline_replay_pin(tmp_path: Path) ->
         assert connection.execute(text("SELECT COUNT(*) FROM anki_curation_jobs")).scalar_one() == 0
 
 
+def test_capture_repository_is_the_only_live_v3_creation_boundary(tmp_path: Path) -> None:
+    repository, lecture_id = _prepared_repository(tmp_path)
+    policy = CourseCurationPolicy(
+        policy_id="policy",
+        revision=1,
+        course_id="course",
+        professor_label="professor",
+        scope_instruction="scope",
+        emphasis_mode="colored_text",
+        emphasis_colors=(PolicyEmphasisColor(rgb="FF0000", label="red"),),
+        missing_emphasis_fallback="block",
+        tag_scope_mode="hard_filter",
+        classification_strictness="strict",
+        generation_style_profile="style",
+        ordinary_cost_limit_microusd=500_000,
+        hard_stop_cost_limit_microusd=10_000_000,
+    )
+    repository.create_policy_revision(policy)
+    route = ResolvedStageModel("openrouter", "model", thinking_mode="disabled")
+    config = ResolvedModelConfiguration(
+        "v3",
+        route,
+        route,
+        route,
+        route,
+        scope_r3=route,
+        cheap_classify_r7=route,
+        thorough_classify_r7=route,
+        generation_r9=route,
+    )
+    table = FrozenRateTable(
+        (ModelRate("model", 1, 1, 1, 1, 1),), datetime(2026, 8, 17, tzinfo=UTC), "fixture"
+    )
+    request = replace(
+        _job_request(lecture_id),
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V3,
+        policy_sha256=policy.policy_sha256,
+        resolved_model_config=config,
+        rate_table_document=table.document(),
+        source_revision_hashes={101: "b" * 64, 102: "c" * 64},
+        companion_generation="companion",
+        semantic_generation="semantic",
+    )
+    with pytest.raises(ValueError, match="offline-replay-only"):
+        repository.create_job(request)
+
+    live = CaptureAnkiCurationRepository(repository.database).create_job(request)
+    replay = repository.create_job(replace(request, offline_replay_only=True))
+
+    assert live.offline_replay_only is False
+    assert replay.offline_replay_only is True
+    assert live.configuration_sha256 == replay.configuration_sha256
+
+
 @pytest.mark.parametrize("change", ("rate_table", "offline_replay"))
 def test_non_v3_job_rejects_v3_only_replay_pins(change: str) -> None:
     values: dict[str, object] = {}

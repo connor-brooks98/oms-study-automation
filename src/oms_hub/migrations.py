@@ -333,7 +333,7 @@ def _validate_v3_durable_reservations_v29(database: "Database") -> None:
             if row["pipeline_contract_version"] != "card_centric_v3":
                 continue
             payload, digest = row["v3_rate_table_json"], row["v3_rate_table_sha256"]
-            if not row["offline_replay_only"] or payload is None or digest is None:
+            if payload is None or digest is None:
                 raise RuntimeError("schema v29 v3 job rate-table pin is incomplete")
             try:
                 document = json.loads(payload)
