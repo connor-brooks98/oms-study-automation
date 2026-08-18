@@ -358,7 +358,7 @@ class QuizImportWorker:
             source_hashes=tuple(source.snapshot_sha256 or "" for source in sources),
             parser_versions=(),
             provider_model="deterministic",
-            prompt_version="supplied-answer-pairing-v2",
+            prompt_version="supplied-answer-pairing-v3",
             artifact_hashes=(_artifact_hash(self.repository, run.id, "extract"),),
             roles=tuple(role.value for role in roles),
         )
