@@ -345,6 +345,12 @@ def _review_question_payload(
         "selected_candidate_id": selected_candidate_id,
         "image_required": question.draft.image_ref is not None,
         "image_not_needed": question.image_not_needed,
+        "image_attached": question.chosen_image is not None,
+        "image_preview_url": (
+            f"/studio/runs/{run_id}/questions/{question.draft.question_id}/image/preview"
+            if run_id is not None and question.chosen_image is not None
+            else None
+        ),
         "candidates": [
             {
                 "candidate_id": item.candidate_id,
@@ -376,6 +382,7 @@ def _direct_review_payload(request: Request, run_id: str) -> dict[str, object]:
     questions = service.review(run_id)
     issues = service.issues(run_id)
     blockers = service.blockers(run_id)
+    candidates = service.candidates_by_question(run_id, questions)
     return {
         "run_id": run_id,
         "blockers": list(blockers),
@@ -397,8 +404,8 @@ def _direct_review_payload(request: Request, run_id: str) -> dict[str, object]:
         "questions": [
             _review_question_payload(
                 question,
-                service.candidates(run_id, question.draft.question_id),
-                service.selected_candidate_id(run_id, question.draft.question_id),
+                candidates.get(question.draft.question_id, ()),
+                question.selected_candidate_id,
                 run_id=run_id,
             )
             for question in questions
@@ -552,6 +559,60 @@ def select_practice_image_candidate(
         raise HTTPException(404, "Studio question was not found") from error
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
+
+
+@router.post("/runs/{run_id}/questions/{question_id}/image")
+def upload_practice_question_image(
+    request: Request,
+    run_id: str,
+    question_id: str,
+    file: Annotated[UploadFile, File()],
+    csrf_token: Annotated[str | None, Form()] = None,
+) -> Response:
+    require_form_csrf(request, csrf_token)
+    _direct_import_review_run(request, run_id)
+    payload = file.file.read(MAX_QUIZ_IMAGE_BYTES + 1)
+    try:
+        _practice_review(request).upload_image(
+            run_id,
+            question_id,
+            file.filename or "question-image",
+            payload,
+        )
+        return JSONResponse(
+            _direct_review_payload(request, run_id),
+            headers={"Cache-Control": "no-store"},
+        )
+    except ReviewArtifactUnavailable as error:
+        return _review_artifact_unavailable_response(error)
+    except KeyError as error:
+        raise HTTPException(404, "Studio question was not found") from error
+    except (QuizImageError, ValueError) as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@router.get("/runs/{run_id}/questions/{question_id}/image/preview")
+def preview_practice_question_image(
+    request: Request, run_id: str, question_id: str
+) -> Response:
+    _direct_import_review_run(request, run_id)
+    try:
+        question = _practice_review(request).question(run_id, question_id)
+        if question.chosen_image is None:
+            raise KeyError(question_id)
+        image = cast(
+            StudioRepository, request.app.state.studio_repository
+        ).import_review_image(run_id, question.chosen_image.key)
+    except ReviewArtifactUnavailable as error:
+        return _review_artifact_unavailable_response(error)
+    except KeyError as error:
+        raise HTTPException(404, "quiz image was not found") from error
+    return FileResponse(
+        image.path,
+        media_type=image.media_type,
+        content_disposition_type="inline",
+        headers={"Cache-Control": "private, no-store"},
+    )
 
 
 @router.get("/runs/{run_id}/questions/{question_id}/candidates/{candidate_id}/preview")

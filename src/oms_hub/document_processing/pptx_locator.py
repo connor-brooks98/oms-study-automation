@@ -378,6 +378,12 @@ def _shape_style_metadata(shape: Any) -> tuple[str, ...]:
                 continue
             if run.font.bold:
                 cues.append(f"bold: {text}")
+            if run.font.italic:
+                cues.append(f"italic: {text}")
+            if run.font.underline:
+                cues.append(f"underline: {text}")
+            if run._r.xpath("./a:rPr/a:highlight"):  # pyright: ignore[reportPrivateUsage]
+                cues.append(f"highlighted: {text}")
             color = getattr(getattr(run.font, "color", None), "rgb", None)
             if color is not None:
                 cues.append(f"color #{color}: {text}")

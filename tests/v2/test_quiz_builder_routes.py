@@ -1,4 +1,5 @@
 import json
+from io import BytesIO
 
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -593,6 +594,36 @@ def test_candidate_preview_is_question_scoped_and_selection_is_csrf_protected(tm
     assert restored.status_code == 200
     assert restored.json()["questions"][0]["image_not_needed"] is False
     assert "required image is unresolved" in restored.text
+
+
+def test_custom_image_can_be_uploaded_to_any_imported_question(tmp_path) -> None:
+    client = _client(tmp_path)
+    run_id = _direct_review_run(client)
+    payload = BytesIO()
+    Image.new("RGB", (4, 3), "purple").save(payload, format="PNG")
+    files = {"file": ("rash.png", payload.getvalue(), "image/png")}
+
+    forbidden = client.post(
+        f"/studio/runs/{run_id}/questions/question-1/image", files=files
+    )
+    uploaded = client.post(
+        f"/studio/runs/{run_id}/questions/question-1/image",
+        files=files,
+        headers=_csrf_headers(client),
+    )
+
+    question = uploaded.json()["questions"][0]
+    preview = client.get(question["image_preview_url"])
+    assert forbidden.status_code == 403
+    assert uploaded.status_code == 200
+    assert question["image_attached"] is True
+    assert question["image_required"] is True
+    assert question["selected_candidate_id"] is None
+    assert preview.status_code == 200
+    assert preview.headers["content-type"] == "image/png"
+    stored = client.app.state.practice_review.question(run_id, "question-1")
+    assert stored.chosen_image is not None
+    assert stored.chosen_image.source_title == "Reviewer upload"
 
 
 def test_imported_private_question_ids_are_replaced_for_preview_and_public_grading(

@@ -203,6 +203,34 @@
       toggle.textContent = question.image_not_needed ? "Require image" : "No image needed";
       section.append(toggle);
     }
+    if (question.image_attached) {
+      section.append(text(documentRef, "p", "An image is attached.", "sh-row__meta"));
+      if (question.image_preview_url && !question.selected_candidate_id) {
+        const preview = documentRef.createElement("img");
+        preview.src = question.image_preview_url;
+        preview.alt = "Uploaded question image";
+        preview.loading = "lazy";
+        section.append(preview);
+      }
+    }
+    const upload = documentRef.createElement("form");
+    upload.dataset.imageUpload = question.id;
+    upload.className = "studio-review-image-upload";
+    upload.enctype = "multipart/form-data";
+    const uploadLabel = documentRef.createElement("label");
+    uploadLabel.append(text(documentRef, "span", "Use my own image", "sh-field-label"));
+    const uploadInput = documentRef.createElement("input");
+    uploadInput.type = "file";
+    uploadInput.name = "file";
+    uploadInput.accept = "image/png,image/jpeg,image/webp";
+    uploadInput.required = true;
+    uploadLabel.append(uploadInput);
+    const uploadButton = documentRef.createElement("button");
+    uploadButton.type = "submit";
+    uploadButton.className = "sh-btn sh-btn--secondary";
+    uploadButton.textContent = "Upload image";
+    upload.append(uploadLabel, uploadButton);
+    section.append(upload);
     const list = documentRef.createElement("div");
     list.className = "studio-review-candidate-list";
     question.candidates.forEach((candidate) => {
@@ -238,11 +266,12 @@
     card.append(text(documentRef, "p", `Answer provenance: ${question.provenance || "unresolved"}`, "sh-row__meta"));
     card.append(text(documentRef, "p", `Extraction confidence: ${question.confidence}`, "sh-row__meta"));
     if (issues.length) {
+      const blocking = issues.some((issue) => issue.role === "err");
       card.append(text(
         documentRef,
         "p",
-        `Needs review: ${issues.map((issue) => issue.message).join(" · ")}`,
-        "sh-pill sh-pill--err",
+        `${blocking ? "Needs review" : "Review note"}: ${issues.map((issue) => issue.message).join(" · ")}`,
+        `sh-pill sh-pill--${blocking ? "err" : "warn"}`,
       ));
     }
     const refs = documentRef.createElement("ul");
@@ -290,10 +319,21 @@
       verify.disabled = Boolean(question.verified_at);
       card.append(verify);
     }
-    if (question.image_required || question.candidates.length) {
-      card.append(renderCandidates(documentRef, question));
-    }
+    card.append(renderCandidates(documentRef, question));
     return card;
+  };
+
+  const setReviewTab = (questions, tab) => {
+    const selected = tab === "ready" ? "ready" : "needs-review";
+    questions.dataset.activeReviewTab = selected;
+    Array.from(questions.querySelectorAll?.("[data-review-tab]") || []).forEach((button) => {
+      const active = button.dataset.reviewTab === selected;
+      button.classList.toggle("sh-seg__btn--active", active);
+      button.setAttribute("aria-selected", String(active));
+    });
+    Array.from(questions.querySelectorAll?.("[data-review-panel]") || []).forEach((panel) => {
+      panel.hidden = panel.dataset.reviewPanel !== selected;
+    });
   };
 
   const renderIssues = (documentRef, page, payload) => {
@@ -371,29 +411,54 @@
       questions.querySelectorAll?.("[data-question-id]") || [],
       (card) => [card.dataset.questionId, card],
     ));
-    const rendered = [];
-    if (shouldRenderNoCandidateEmpty(payload)) {
-      const empty = documentRef.createElement("section");
-      empty.className = "sh-empty";
-      empty.append(text(documentRef, "h3", "No image candidates were found.", "sh-empty__title"));
-      empty.append(text(documentRef, "p", "Continue answer review or add images only where required.", "sh-empty__text"));
-      rendered.push(empty);
-    }
+    const blockingQuestionIds = new Set(
+      (payload.issues || []).filter((issue) => issue.role === "err").map((issue) => issue.question_id),
+    );
+    const needsReview = [];
+    const ready = [];
     payload.questions.forEach((question) => {
       const current = existing.get(question.id);
-      rendered.push(current?.dataset.dirty === "true"
+      const card = current?.dataset.dirty === "true"
         ? current
         : renderQuestion(
           documentRef,
           question,
           (payload.issues || []).filter((issue) => issue.question_id === question.id),
-        ));
+        );
+      (blockingQuestionIds.has(question.id) ? needsReview : ready).push(card);
       existing.delete(question.id);
     });
     existing.forEach((card) => {
-      if (card.dataset.dirty === "true") rendered.push(card);
+      if (card.dataset.dirty === "true") needsReview.push(card);
     });
-    questions.replaceChildren(...rendered);
+    const tabs = documentRef.createElement("div");
+    tabs.className = "sh-seg studio-review-tabs";
+    tabs.setAttribute("role", "tablist");
+    const needsTab = documentRef.createElement("button");
+    needsTab.type = "button";
+    needsTab.className = "sh-btn sh-btn--secondary sh-seg__btn";
+    needsTab.dataset.reviewTab = "needs-review";
+    needsTab.setAttribute("role", "tab");
+    needsTab.textContent = `Needs review (${needsReview.length})`;
+    const readyTab = documentRef.createElement("button");
+    readyTab.type = "button";
+    readyTab.className = "sh-btn sh-btn--secondary sh-seg__btn";
+    readyTab.dataset.reviewTab = "ready";
+    readyTab.setAttribute("role", "tab");
+    readyTab.textContent = `Ready (${ready.length})`;
+    tabs.append(needsTab, readyTab);
+    const needsPanel = documentRef.createElement("section");
+    needsPanel.dataset.reviewPanel = "needs-review";
+    needsPanel.setAttribute("role", "tabpanel");
+    const readyPanel = documentRef.createElement("section");
+    readyPanel.dataset.reviewPanel = "ready";
+    readyPanel.setAttribute("role", "tabpanel");
+    if (needsReview.length) needsPanel.append(...needsReview);
+    else needsPanel.append(text(documentRef, "p", "No question issues remain.", "sh-empty__text"));
+    if (ready.length) readyPanel.append(...ready);
+    else readyPanel.append(text(documentRef, "p", "Questions move here as their issues are resolved.", "sh-empty__text"));
+    questions.replaceChildren(tabs, needsPanel, readyPanel);
+    setReviewTab(questions, questions.dataset.activeReviewTab || "needs-review");
     restoreRenderState(page, state);
   };
 
@@ -452,6 +517,32 @@
       return payload;
     };
     page.addEventListener("submit", async (event) => {
+      const imageUpload = event.target.closest?.("[data-image-upload]");
+      if (imageUpload) {
+        event.preventDefault();
+        const questionId = imageUpload.dataset.imageUpload;
+        const file = imageUpload.querySelector('input[name="file"]')?.files?.[0];
+        const localMessage = questionMessage(page, questionId) || message;
+        if (!file) {
+          localMessage.textContent = "Choose an image before uploading.";
+          return;
+        }
+        localMessage.textContent = "Uploading image…";
+        try {
+          const body = new root.FormData();
+          body.append("file", file);
+          const response = await fetchImpl(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/questions/${encodeURIComponent(questionId)}/image`, {
+            method: "POST", headers: { "X-CSRF-Token": csrf(documentRef) }, body,
+          });
+          const updated = await safeJson(response);
+          if (!response.ok) throw new Error(reviewErrorMessage(updated, "Image upload was rejected."));
+          render(documentRef, page, updated);
+          (questionMessage(page, questionId) || message).textContent = "Image uploaded.";
+        } catch (error) {
+          localMessage.textContent = error instanceof Error ? error.message : "Image could not be uploaded.";
+        }
+        return;
+      }
       const form = event.target.closest?.("[data-question-edit]");
       if (!form) return;
       event.preventDefault();
@@ -490,6 +581,11 @@
     page.addEventListener("input", markDirty);
     page.addEventListener("change", markDirty);
     page.addEventListener("click", async (event) => {
+      const reviewTab = event.target.closest?.("[data-review-tab]");
+      if (reviewTab) {
+        setReviewTab(page.querySelector("[data-review-questions]"), reviewTab.dataset.reviewTab);
+        return;
+      }
       const add = event.target.closest?.("[data-add-choice]");
       if (add) {
         const group = add.closest("[data-choices]");
@@ -551,7 +647,7 @@
     shouldRenderNoCandidateEmpty, normalizedEditPayload,
     candidateSelectionPayload, candidateSelectionUrl, captureRenderState,
     restoreRenderState, reindexChoiceRows, removeChoiceRow, choiceRow,
-    initialize, render, renderRunDiagnostics, applyQuestionSave, questionMessage, reviewErrorMessage,
+    initialize, render, renderRunDiagnostics, setReviewTab, applyQuestionSave, questionMessage, reviewErrorMessage,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) root.document.addEventListener("DOMContentLoaded", () => initialize(root.document), { once: true });

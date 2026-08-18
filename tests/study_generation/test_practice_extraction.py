@@ -130,6 +130,7 @@ def test_extractor_retries_schema_failure_once(tmp_path: Path) -> None:
 
     assert len(result.questions) == 2
     assert len(structured_generator.requests) == 2
+    assert "color, highlighting" in structured_generator.requests[0].instruction
     assert (
         "previous response failed schema validation"
         in structured_generator.requests[1].instruction

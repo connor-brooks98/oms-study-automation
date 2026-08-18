@@ -625,6 +625,30 @@ def test_import_candidates_hide_paths_and_selecting_one_publishes_media(tmp_path
     assert media[0].path.is_file()
 
 
+def test_candidate_batch_reuses_parse_and_extract_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, _ = _image_review_service(tmp_path)
+    first = service.question("run-1", "q1").draft
+    second = replace(first, question_id="q2", original_identifier="q2")
+    service.store("run-1", (first, second))
+    questions = service.review("run-1")
+    calls: list[str] = []
+    run_artifact = service.repository.run_artifact
+
+    def recorded(run_id: str, key: str):
+        calls.append(key)
+        return run_artifact(run_id, key)
+
+    monkeypatch.setattr(service.repository, "run_artifact", recorded)
+
+    candidates = service.candidates_by_question("run-1", questions)
+
+    assert set(candidates) == {"q1", "q2"}
+    assert calls.count("parse:source") == 1
+    assert calls.count("extract") == 1
+
+
 def test_import_candidate_selection_rejects_changed_source_file(tmp_path: Path) -> None:
     service, path = _image_review_service(tmp_path)
     candidate = service.candidates("run-1", "q1")[0]

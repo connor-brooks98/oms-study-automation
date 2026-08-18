@@ -14,6 +14,14 @@ class Element {
     this.value = "";
     this.open = false;
     this.parentElement = null;
+    this.classList = {
+      add: (name) => { if (!this.className.split(" ").includes(name)) this.className = `${this.className} ${name}`.trim(); },
+      toggle: (name, enabled) => {
+        const names = this.className.split(" ").filter(Boolean).filter((item) => item !== name);
+        if (enabled) names.push(name);
+        this.className = names.join(" ");
+      },
+    };
   }
 
   append(...items) {
@@ -52,6 +60,9 @@ class Element {
     if (selector === "[data-remove-choice]") return element.dataset.removeChoice === "true";
     if (selector === "[data-acknowledge-run-diagnostic]") return Boolean(element.dataset.acknowledgeRunDiagnostic);
     if (selector === "[data-image-override]") return Boolean(element.dataset.imageOverride);
+    if (selector === "[data-image-upload]") return Boolean(element.dataset.imageUpload);
+    if (selector === "[data-review-tab]") return Boolean(element.dataset.reviewTab);
+    if (selector === "[data-review-panel]") return Boolean(element.dataset.reviewPanel);
     if (selector === "[data-question-message]") return element.dataset.questionMessage === "true";
     if (selector === "details[data-state-key]") return element.tagName === "details" && Boolean(element.dataset.stateKey);
     if (selector === "[data-state-key]") return Boolean(element.dataset.stateKey);
@@ -82,6 +93,7 @@ const question = (id, stem) => ({
   source_refs: [], stem, choices: ["A", "B"], correct_index: 0,
   rationale: "Because", topic: null, area: null, learning_objective: null,
   verification_required: false, verified_at: null, candidates: [], selected_candidate_id: null,
+  image_required: false, image_not_needed: false, image_attached: false,
 });
 
 const reviewPage = () => {
@@ -464,6 +476,7 @@ test("image requirements can be marked unnecessary and restored", () => {
   });
 
   let toggle = questions.querySelector("[data-image-override]");
+  assert.equal(questions.querySelectorAll("[data-image-upload]").length, 1);
   assert.equal(toggle.textContent, "No image needed");
   assert.equal(toggle.dataset.imageNotNeeded, "false");
 
@@ -474,4 +487,36 @@ test("image requirements can be marked unnecessary and restored", () => {
   toggle = questions.querySelector("[data-image-override]");
   assert.equal(toggle.textContent, "Require image");
   assert.equal(toggle.dataset.imageNotNeeded, "true");
+});
+
+test("blocking questions and ready questions render in editable tabs", () => {
+  const { page, questions } = reviewPage();
+  review.render(documentRef, page, {
+    blockers: ["q1: answer is missing"],
+    issues: [{ question_id: "q1", message: "answer is missing", role: "err" }],
+    preview_url: null,
+    questions: [question("q1", "Blocked"), question("q2", "Ready")],
+  });
+
+  const tabs = questions.querySelectorAll("[data-review-tab]");
+  const panels = questions.querySelectorAll("[data-review-panel]");
+  assert.deepEqual(tabs.map((tab) => tab.textContent), ["Needs review (1)", "Ready (1)"]);
+  assert.equal(panels[0].querySelector("[data-question-id]").dataset.questionId, "q1");
+  assert.equal(panels[1].querySelector("[data-question-id]").dataset.questionId, "q2");
+  assert.equal(questions.querySelectorAll("[data-image-upload]").length, 2);
+  assert.equal(panels[0].hidden, false);
+  assert.equal(panels[1].hidden, true);
+
+  review.setReviewTab(questions, "ready");
+  assert.equal(panels[0].hidden, true);
+  assert.equal(panels[1].hidden, false);
+
+  review.render(documentRef, page, {
+    blockers: [], issues: [], preview_url: "/preview",
+    questions: [question("q1", "Fixed"), question("q2", "Ready")],
+  });
+  const updatedTabs = questions.querySelectorAll("[data-review-tab]");
+  const updatedPanels = questions.querySelectorAll("[data-review-panel]");
+  assert.deepEqual(updatedTabs.map((tab) => tab.textContent), ["Needs review (0)", "Ready (2)"]);
+  assert.equal(updatedPanels[1].querySelectorAll("[data-question-id]").length, 2);
 });

@@ -161,6 +161,35 @@ class StudioQuizImageService:
         )
         return image
 
+    def upload_import_review_image(
+        self,
+        run_id: str,
+        image_key: str,
+        original_filename: str,
+        payload: bytes,
+    ) -> StudioStoredImage:
+        sanitized = sanitize_quiz_image(payload)
+        safe_name = PurePosixPath(original_filename.replace("\\", "/")).name[:500]
+        path = self.media_root / run_id / f"{image_key}-{sanitized.sha256}.png"
+        verified_atomic_write(sanitized.payload, path)
+        image = StudioStoredImage(
+            path,
+            sanitized.sha256,
+            sanitized.media_type,
+            sanitized.width,
+            sanitized.height,
+            safe_name or "reviewer-image",
+        )
+        self.repository.bind_import_review_image(
+            run_id,
+            image_key,
+            "Reviewer upload",
+            "Question image",
+            "Reviewer-provided question image",
+            image,
+        )
+        return image
+
     def auto_bind_from_sources(
         self,
         run_id: str,

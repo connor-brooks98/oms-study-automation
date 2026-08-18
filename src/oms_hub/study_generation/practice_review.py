@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, cast
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from oms_hub.document_processing.domain import ParsedDocument
 from oms_hub.files.atomic import sha256_file
 from oms_hub.models import StudioRunArtifactModel
 from oms_hub.study_generation.domain import NativeQuiz, QuizChoice, QuizImageRef, QuizQuestion
@@ -21,6 +22,7 @@ from oms_hub.study_generation.practice_domain import (
     DiagnosticSeverity,
     QuestionDraft,
 )
+from oms_hub.study_generation.practice_extraction import ExtractionResult
 from oms_hub.study_generation.quiz_import_worker import (
     _document_from_json,
     _drafts_from_json,
@@ -135,20 +137,73 @@ class PracticeReviewService:
         question = self.question(run_id, question_id)
         return tuple(item.candidate for item in self._candidate_bindings(run_id, question))
 
+    def candidates_by_question(
+        self, run_id: str, questions: tuple[ReviewQuestion, ...]
+    ) -> dict[str, tuple[ImageCandidate, ...]]:
+        documents: dict[str, ParsedDocument | None] = {}
+        source_titles: dict[str, str] = {}
+        artifact = self.repository.run_artifact(run_id, "extract")
+        extraction = (
+            _extraction_from_json(artifact.payload_json)
+            if artifact
+            else ExtractionResult((), (), (), (), ())
+        )
+        return {
+            question.draft.question_id: tuple(
+                item.candidate
+                for item in self._candidate_bindings(
+                    run_id,
+                    question,
+                    documents=documents,
+                    source_titles=source_titles,
+                    extraction=extraction,
+                )
+            )
+            for question in questions
+        }
+
     def _candidate_bindings(
-        self, run_id: str, question: ReviewQuestion
+        self,
+        run_id: str,
+        question: ReviewQuestion,
+        *,
+        documents: dict[str, ParsedDocument | None] | None = None,
+        source_titles: dict[str, str] | None = None,
+        extraction: ExtractionResult | None = None,
     ) -> tuple[_ImageCandidateBinding, ...]:
         """Resolve media solely from immutable ``parse:{source_id}`` artifacts."""
         references = question.draft.source_refs
-        explicit = self._candidate_asset_keys(run_id, question.draft)
+        explicit = self._candidate_asset_keys(run_id, question.draft, extraction)
         bindings: dict[tuple[str, str], _ImageCandidateBinding] = {}
         for reference in references:
-            artifact = self.repository.run_artifact(run_id, f"parse:{reference.source_id}")
-            if artifact is None:
+            if documents is None:
+                artifact = self.repository.run_artifact(
+                    run_id, f"parse:{reference.source_id}"
+                )
+                document = (
+                    _document_from_json(artifact.payload_json) if artifact else None
+                )
+            else:
+                if reference.source_id not in documents:
+                    artifact = self.repository.run_artifact(
+                        run_id, f"parse:{reference.source_id}"
+                    )
+                    documents[reference.source_id] = (
+                        _document_from_json(artifact.payload_json) if artifact else None
+                    )
+                document = documents[reference.source_id]
+            if document is None:
                 continue
-            document = _document_from_json(artifact.payload_json)
-            source = self.repository.get(reference.source_id)
-            source_title = source.title if source is not None else reference.source_id
+            if source_titles is None:
+                source = self.repository.get(reference.source_id)
+                source_title = source.title if source is not None else reference.source_id
+            else:
+                if reference.source_id not in source_titles:
+                    source = self.repository.get(reference.source_id)
+                    source_titles[reference.source_id] = (
+                        source.title if source is not None else reference.source_id
+                    )
+                source_title = source_titles[reference.source_id]
             exact_locator = _locator_key(reference.locator)
             adjacent_asset_keys = _adjacent_asset_keys(document, reference.segment_key)
             for asset in document.assets:
@@ -265,6 +320,42 @@ class PracticeReviewService:
         )
         return updated
 
+    def upload_image(
+        self,
+        run_id: str,
+        question_id: str,
+        original_filename: str,
+        payload: bytes,
+    ) -> ReviewQuestion:
+        if self.image_service is None:
+            raise ValueError("imported image review is not configured")
+        current = self.question(run_id, question_id)
+        image_key = _image_key(question_id)
+        self.image_service.upload_import_review_image(
+            run_id, image_key, original_filename, payload
+        )
+        chosen = QuizImageRef(
+            image_key,
+            "Reviewer upload",
+            "Question image",
+            "Reviewer-provided question image",
+        )
+        updated = replace(
+            current,
+            draft=replace(current.draft, image_ref=chosen),
+            chosen_image=chosen,
+            selected_candidate_id=None,
+            image_not_needed=False,
+        )
+        self._save(
+            run_id,
+            tuple(
+                updated if item.draft.question_id == question_id else item
+                for item in self.review(run_id)
+            ),
+        )
+        return updated
+
     def selected_candidate_id(self, run_id: str, question_id: str) -> str | None:
         return self.question(run_id, question_id).selected_candidate_id
 
@@ -341,12 +432,16 @@ class PracticeReviewService:
         return tuple(initialized)
 
     def _candidate_asset_keys(
-        self, run_id: str, draft: QuestionDraft
+        self,
+        run_id: str,
+        draft: QuestionDraft,
+        extraction: ExtractionResult | None = None,
     ) -> frozenset[tuple[str, str]]:
-        artifact = self.repository.run_artifact(run_id, "extract")
-        if artifact is None:
-            return frozenset()
-        extraction = _extraction_from_json(artifact.payload_json)
+        if extraction is None:
+            artifact = self.repository.run_artifact(run_id, "extract")
+            if artifact is None:
+                return frozenset()
+            extraction = _extraction_from_json(artifact.payload_json)
         matches = [
             index
             for index, question in enumerate(extraction.questions)

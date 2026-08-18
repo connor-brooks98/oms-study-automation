@@ -28,7 +28,10 @@ _EXTRACTION_INSTRUCTION = """Extract supplied practice questions and answer-key 
 Return only JSON matching the provided schema. Preserve source wording, cite every
 question and answer with document-qualified source_segments, and cite only
 document-qualified candidate_assets present in the input. Do not invent
-questions, answers, references, or assets."""
+questions, answers, references, or assets. Treat source_style_metadata as evidence:
+on an answer slide following a question, an option emphasized by color, highlighting,
+bold, underline, or italics can mark the supplied correct answer. Explicit answer-key
+labels remain stronger evidence; ordinary emphasized medical terms are not answers."""
 
 
 class ExtractionTextGenerator(Protocol):

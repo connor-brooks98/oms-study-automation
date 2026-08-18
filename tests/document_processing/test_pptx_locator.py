@@ -6,6 +6,7 @@ from PIL import Image
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.oxml.xmlchemy import OxmlElement
 from pptx.util import Inches
 
 from oms_hub.document_processing import presentation_render
@@ -419,7 +420,7 @@ def test_enricher_does_not_count_speaker_notes_as_visible_screenshot_text(
     )
 
 
-def test_enricher_preserves_bold_and_color_as_sidecar_metadata(tmp_path: Path) -> None:
+def test_enricher_preserves_answer_emphasis_as_sidecar_metadata(tmp_path: Path) -> None:
     source = build_pptx(
         tmp_path / "formatted-answer.pptx",
         slides=(SlideFixture("Answer", "C) Correct answer"),),
@@ -427,7 +428,12 @@ def test_enricher_preserves_bold_and_color_as_sidecar_metadata(tmp_path: Path) -
     presentation = Presentation(source)
     run = presentation.slides[0].shapes[1].text_frame.paragraphs[0].runs[0]
     run.font.bold = True
+    run.font.italic = True
+    run.font.underline = True
     run.font.color.rgb = RGBColor(255, 0, 0)
+    highlight = OxmlElement("a:highlight")
+    highlight.append(OxmlElement("a:srgbClr"))
+    run._r.get_or_add_rPr().append(highlight)
     presentation.save(source)
 
     parsed = AnydocProcessor(PptxLocatorEnricher()).parse(
@@ -437,6 +443,9 @@ def test_enricher_preserves_bold_and_color_as_sidecar_metadata(tmp_path: Path) -
     formatted = next(segment for segment in parsed.segments if "Correct answer" in segment.text)
     assert formatted.style_metadata == (
         "bold: C) Correct answer",
+        "italic: C) Correct answer",
+        "underline: C) Correct answer",
+        "highlighted: C) Correct answer",
         "color #FF0000: C) Correct answer",
     )
 
