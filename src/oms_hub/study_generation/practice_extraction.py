@@ -24,14 +24,21 @@ from oms_hub.study_generation.practice_domain import (
 from oms_hub.study_generation.practice_matching import normalize_identifier
 
 _DEFAULT_MAX_INPUT_CHARACTERS = 60_000
+_STYLED_OPTION = re.compile(
+    r"^(?:bold|italic|underline|highlighted|color #[0-9a-f]{6}):\s*"
+    r"([A-H])[).:]\s*(.+)$",
+    re.IGNORECASE,
+)
+_OPTION_PREFIX = re.compile(r"^\s*[A-H][).:]\s*", re.IGNORECASE)
 _EXTRACTION_INSTRUCTION = """Extract supplied practice questions and answer-key entries.
 Return only JSON matching the provided schema. Preserve source wording, cite every
 question and answer with document-qualified source_segments, and cite only
 document-qualified candidate_assets present in the input. Do not invent
 questions, answers, references, or assets. Treat source_style_metadata as evidence:
-on an answer slide following a question, an option emphasized by color, highlighting,
-bold, underline, or italics can mark the supplied correct answer. Explicit answer-key
-labels remain stronger evidence; ordinary emphasized medical terms are not answers."""
+when a slide repeats the preceding question and exactly one option is emphasized by
+color, highlighting, bold, underline, or italics, record it as supplied_correct_index.
+Explicit answer-key labels remain stronger evidence; ordinary emphasized medical terms
+and slides with multiple emphasized options are not answers."""
 
 
 class ExtractionTextGenerator(Protocol):
@@ -135,7 +142,6 @@ class PracticeQuestionExtractor:
         metadata: list[ExtractionProviderMetadata] = []
         diagnostics: list[DraftDiagnostic] = []
         merged_questions: list[ExtractedQuestion] = []
-        question_source_refs: list[tuple[QuestionSourceRef, ...]] = []
         questions_by_composite: dict[
             tuple[str | None, tuple[SegmentCitation, ...]], list[ExtractedQuestion]
         ] = {}
@@ -191,9 +197,6 @@ class PracticeQuestionExtractor:
                     )
                 identifiers_by_source_refs.setdefault(citations, set()).add(normalized_identifier)
                 merged_questions.append(question)
-                question_source_refs.append(
-                    _resolve_question_source_refs(question, canonical_documents)
-                )
             for answer in payload.answers:
                 if answer not in answers:
                     answers.append(answer)
@@ -220,8 +223,15 @@ class PracticeQuestionExtractor:
                 )
             )
 
+        questions = _apply_unique_styled_answers(
+            tuple(merged_questions), canonical_documents
+        )
+        question_source_refs = [
+            _resolve_question_source_refs(question, canonical_documents)
+            for question in questions
+        ]
         return ExtractionResult(
-            tuple(merged_questions),
+            questions,
             tuple(answers),
             tuple(question_source_refs),
             tuple(metadata),
@@ -263,6 +273,81 @@ class PracticeQuestionExtractor:
 
 def _parse_payload(text: str) -> ExtractionPayload:
     return ExtractionPayload.model_validate(json.loads(text))
+
+
+def _apply_unique_styled_answers(
+    questions: tuple[ExtractedQuestion, ...],
+    documents: tuple[ParsedDocument, ...],
+) -> tuple[ExtractedQuestion, ...]:
+    segments = {
+        (document.source_id, segment.key): segment
+        for document in documents
+        for segment in document.segments
+    }
+    styled = tuple(
+        (document.source_id, segment)
+        for document in documents
+        for segment in document.segments
+        if segment.locator.slide_number is not None and segment.style_metadata
+    )
+    resolved: list[ExtractedQuestion] = []
+    for question in questions:
+        if question.supplied_correct_index is not None:
+            resolved.append(question)
+            continue
+        cited_locations = {
+            (citation.source_id, segment.locator.slide_number)
+            for citation in question.source_segments
+            if (segment := segments.get((citation.source_id, citation.segment_key))) is not None
+            and segment.locator.slide_number is not None
+        }
+        allowed_locations = cited_locations | {
+            (source_id, slide + 1) for source_id, slide in cited_locations
+        }
+        matches: list[tuple[int, SegmentCitation]] = []
+        for source_id, segment in styled:
+            if (source_id, segment.locator.slide_number) not in allowed_locations:
+                continue
+            for cue in segment.style_metadata:
+                match = _STYLED_OPTION.fullmatch(cue)
+                if match is None:
+                    continue
+                index = ord(match.group(1).upper()) - ord("A")
+                if index >= len(question.choices):
+                    continue
+                choice = _OPTION_PREFIX.sub("", question.choices[index]).strip()
+                if _normalize_answer_text(match.group(2)) == _normalize_answer_text(choice):
+                    matches.append(
+                        (
+                            index,
+                            SegmentCitation(
+                                source_id=source_id, segment_key=segment.key
+                            ),
+                        )
+                    )
+        indexes = {index for index, _ in matches}
+        if len(indexes) != 1:
+            resolved.append(question)
+            continue
+        index = indexes.pop()
+        citations = tuple(
+            dict.fromkeys((*question.source_segments, *(item for _, item in matches)))
+        )
+        resolved.append(
+            question.model_copy(
+                update={
+                    "supplied_correct_index": index,
+                    "rationale": question.rationale
+                    or f"Source-marked correct answer: {question.choices[index]}",
+                    "source_segments": citations,
+                }
+            )
+        )
+    return tuple(resolved)
+
+
+def _normalize_answer_text(value: str) -> str:
+    return " ".join(value.casefold().split()).rstrip(" .;:")
 
 
 def _source_document(document: ParsedDocument | SourceDocument) -> SourceDocument:

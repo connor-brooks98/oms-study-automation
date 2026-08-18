@@ -229,6 +229,106 @@ def test_prompt_includes_answer_formatting_sidecar_without_rewriting_text(
     )
 
 
+@pytest.mark.parametrize(
+    "cue",
+    (
+        "bold: B) Correct",
+        "italic: B) Correct",
+        "underline: B) Correct",
+        "highlighted: B) Correct",
+        "color #FF0000: B) Correct",
+    ),
+)
+def test_extractor_applies_unique_styled_option_on_following_slide(
+    tmp_path: Path, cue: str
+) -> None:
+    document = _document(
+        tmp_path,
+        segments=(
+            ParsedSegment(
+                "question",
+                SegmentKind.PARAGRAPH,
+                "Which answer? A) Wrong B) Correct",
+                DocumentLocator("slide 1", slide_number=1),
+            ),
+            ParsedSegment(
+                "answer",
+                SegmentKind.PARAGRAPH,
+                "Which answer? A) Wrong B) Correct",
+                DocumentLocator("slide 2", slide_number=2),
+                style_metadata=(cue,),
+            ),
+        ),
+    )
+    payload = {
+        "questions": [
+            {
+                "original_identifier": None,
+                "stem": "Which answer?",
+                "choices": ["Wrong", "Correct"],
+                "supplied_correct_index": None,
+                "rationale": None,
+                "source_segments": [
+                    {"source_id": "source-1", "segment_key": "question"}
+                ],
+                "candidate_assets": [],
+                "confidence": 0.9,
+            }
+        ],
+        "answers": [],
+    }
+
+    result = PracticeQuestionExtractor(
+        StructuredGenerator([json.dumps(payload)])
+    ).extract((document,))
+
+    assert result.questions[0].supplied_correct_index == 1
+    assert result.questions[0].rationale == "Source-marked correct answer: Correct"
+    assert result.questions[0].source_segments[-1].segment_key == "answer"
+
+
+def test_extractor_does_not_guess_when_multiple_options_are_styled(tmp_path: Path) -> None:
+    document = _document(
+        tmp_path,
+        segments=(
+            ParsedSegment(
+                "question",
+                SegmentKind.PARAGRAPH,
+                "Which answer? A) One B) Two",
+                DocumentLocator("slide 1", slide_number=1),
+            ),
+            ParsedSegment(
+                "answer",
+                SegmentKind.PARAGRAPH,
+                "Which answer? A) One B) Two",
+                DocumentLocator("slide 2", slide_number=2),
+                style_metadata=("bold: A) One", "bold: B) Two"),
+            ),
+        ),
+    )
+    payload = json.loads(valid_extraction_json())
+    payload["questions"] = [
+        {
+            "original_identifier": None,
+            "stem": "Which answer?",
+            "choices": ["One", "Two"],
+            "supplied_correct_index": None,
+            "rationale": None,
+            "source_segments": [
+                {"source_id": "source-1", "segment_key": "question"}
+            ],
+            "candidate_assets": [],
+            "confidence": 0.9,
+        }
+    ]
+
+    result = PracticeQuestionExtractor(
+        StructuredGenerator([json.dumps(payload)])
+    ).extract((document,))
+
+    assert result.questions[0].supplied_correct_index is None
+
+
 def test_extractor_blocks_partial_results_when_source_has_a_sequential_question_set(
     tmp_path: Path,
 ) -> None:

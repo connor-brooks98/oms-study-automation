@@ -118,6 +118,9 @@ def _enrich_segments(
                     )
                 }
             )
+    locations.update(
+        _ordered_fragment_locations(parsed_segments, source_segments, locations)
+    )
     enriched: list[ParsedSegment] = []
     styles_by_text: dict[str, tuple[str, ...]] = {}
     for source in source_segments:
@@ -160,6 +163,48 @@ def _enrich_segments(
     return _restore_slide_styles(tuple(enriched), source_segments)
 
 
+def _ordered_fragment_locations(
+    candidates: tuple[ParsedSegment, ...],
+    references: tuple[ParsedSegment, ...],
+    known: dict[str, DocumentLocator],
+) -> dict[str, DocumentLocator]:
+    """Locate split Anydoc blocks by their monotonic position in native slide text."""
+    found: dict[str, DocumentLocator] = {}
+    for kind in SegmentKind:
+        kind_references = tuple(item for item in references if item.kind is kind)
+        normalized_references = tuple(_normalize_text(item.text) for item in kind_references)
+        reference_index = 0
+        text_offset = 0
+        for candidate in (item for item in candidates if item.kind is kind):
+            normalized = _normalize_text(candidate.text)
+            if not normalized:
+                continue
+            if candidate.key in known:
+                match = next(
+                    (
+                        index
+                        for index in range(reference_index, len(kind_references))
+                        if kind_references[index].locator == known[candidate.key]
+                    ),
+                    None,
+                )
+                if match is not None:
+                    reference_index = match
+                    position = normalized_references[match].find(normalized)
+                    text_offset = position + len(normalized) if position >= 0 else 0
+                continue
+            for index in range(reference_index, len(kind_references)):
+                start = text_offset if index == reference_index else 0
+                position = normalized_references[index].find(normalized, start)
+                if position < 0:
+                    continue
+                found[candidate.key] = kind_references[index].locator
+                reference_index = index
+                text_offset = position + len(normalized)
+                break
+    return found
+
+
 def _restore_slide_styles(
     segments: tuple[ParsedSegment, ...],
     source_segments: tuple[ParsedSegment, ...],
@@ -187,10 +232,26 @@ def _restore_slide_styles(
             (
                 index
                 for index, segment in enumerate(restored)
-                if segment.locator.slide_number == slide_number and segment.text.strip()
+                if segment.locator.slide_number == slide_number
+                and segment.text.strip()
+                and any(
+                    _normalize_text(cue.partition(": ")[2])
+                    in _normalize_text(segment.text)
+                    for cue in remaining
+                    if cue.partition(": ")[2]
+                )
             ),
             None,
         )
+        if index is None:
+            index = next(
+                (
+                    index
+                    for index, segment in enumerate(restored)
+                    if segment.locator.slide_number == slide_number and segment.text.strip()
+                ),
+                None,
+            )
         if index is not None:
             restored[index] = replace(
                 restored[index],

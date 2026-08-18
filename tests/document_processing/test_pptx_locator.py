@@ -161,6 +161,52 @@ def test_enricher_restores_slide_style_when_anydoc_text_is_split_differently(
     assert enriched.segments[0].style_metadata == ("bold: C) Correct answer",)
 
 
+def test_enricher_maps_split_duplicate_question_and_answer_slides_in_order(
+    tmp_path: Path,
+) -> None:
+    body = "Question stem\nA) Wrong\nB) Correct"
+    source = build_pptx(
+        tmp_path / "split-duplicate.pptx",
+        slides=(SlideFixture("Question", body), SlideFixture("Answer", body)),
+    )
+    presentation = Presentation(source)
+    answer_run = presentation.slides[1].shapes[1].text_frame.paragraphs[2].runs[0]
+    answer_run.font.bold = True
+    presentation.save(source)
+    snapshot = snapshot_for(source)
+    parsed = ParsedDocument(
+        snapshot.id,
+        snapshot.sha256,
+        "pptx",
+        "fixture",
+        "1",
+        tuple(
+            ParsedSegment(
+                f"block-{index}",
+                SegmentKind.PARAGRAPH,
+                text,
+                DocumentLocator(f"block {index}"),
+            )
+            for index, text in enumerate(
+                ("Question stem", "A) Wrong\nB) Correct") * 2,
+                start=1,
+            )
+        ),
+        (),
+        (),
+    )
+
+    enriched = PptxLocatorEnricher().enrich(snapshot, parsed)
+
+    assert tuple(segment.locator.slide_number for segment in enriched.segments) == (
+        1,
+        1,
+        2,
+        2,
+    )
+    assert enriched.segments[3].style_metadata == ("bold: B) Correct",)
+
+
 def test_enricher_adds_slide_style_marker_when_candidate_has_no_slide_locator(
     tmp_path: Path,
 ) -> None:

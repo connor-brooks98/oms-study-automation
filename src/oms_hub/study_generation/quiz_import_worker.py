@@ -148,7 +148,7 @@ class QuizImportWorker:
         asset_root: Path,
         *,
         extraction_model: str | None = None,
-        extraction_prompt_version: str = "practice-extraction-v2",
+        extraction_prompt_version: str = "practice-extraction-v3",
     ) -> None:
         self.repository = repository
         self.parser = parser
