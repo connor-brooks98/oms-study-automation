@@ -343,6 +343,8 @@ def _review_question_payload(
         "area": question.area,
         "learning_objective": question.learning_objective,
         "selected_candidate_id": selected_candidate_id,
+        "image_required": question.draft.image_ref is not None,
+        "image_not_needed": question.image_not_needed,
         "candidates": [
             {
                 "candidate_id": item.candidate_id,
@@ -630,6 +632,27 @@ def _set_override(
     question_id: str,
     enabled: bool,
 ) -> JSONResponse:
+    try:
+        run = cast(StudioRepository, request.app.state.studio_repository).get_run(run_id)
+    except KeyError as error:
+        raise HTTPException(404, "Studio run was not found") from error
+    if run.workflow_kind is QuizWorkflowKind.DIRECT_IMPORT:
+        require_form_csrf(request, None)
+        _direct_import_review_run(request, run_id)
+        try:
+            _practice_review(request).set_image_not_needed(
+                run_id, question_id, enabled
+            )
+        except ReviewArtifactUnavailable as error:
+            return _review_artifact_unavailable_response(error)
+        except KeyError as error:
+            raise HTTPException(404, "Studio question was not found") from error
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+        return JSONResponse(
+            _direct_review_payload(request, run_id),
+            headers={"Cache-Control": "no-store"},
+        )
     require_form_csrf(request, None)
     try:
         review = request.app.state.studio_repository.set_image_override(

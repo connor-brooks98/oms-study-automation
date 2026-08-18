@@ -193,7 +193,16 @@
   const renderCandidates = (documentRef, question) => {
     const section = documentRef.createElement("section");
     section.className = "studio-review-candidates";
-    section.append(text(documentRef, "h4", "Image candidates", "sh-section-label"));
+    section.append(text(documentRef, "h4", "Question image", "sh-section-label"));
+    if (question.image_required) {
+      const toggle = documentRef.createElement("button");
+      toggle.type = "button";
+      toggle.dataset.imageOverride = question.id;
+      toggle.dataset.imageNotNeeded = String(Boolean(question.image_not_needed));
+      toggle.className = "sh-btn sh-btn--secondary";
+      toggle.textContent = question.image_not_needed ? "Require image" : "No image needed";
+      section.append(toggle);
+    }
     const list = documentRef.createElement("div");
     list.className = "studio-review-candidate-list";
     question.candidates.forEach((candidate) => {
@@ -281,7 +290,9 @@
       verify.disabled = Boolean(question.verified_at);
       card.append(verify);
     }
-    if (question.candidates.length) card.append(renderCandidates(documentRef, question));
+    if (question.image_required || question.candidates.length) {
+      card.append(renderCandidates(documentRef, question));
+    }
     return card;
   };
 
@@ -396,6 +407,12 @@
     return saved?.querySelector?.("[data-question-message]") || null;
   };
 
+  const questionMessage = (page, questionId) => {
+    const card = Array.from(page.querySelectorAll?.("[data-question-id]") || [])
+      .find((item) => item.dataset.questionId === questionId);
+    return card?.querySelector?.("[data-question-message]") || null;
+  };
+
   const safeJson = async (response) => { try { return await response.json(); } catch (_error) { return {}; } };
 
   const reviewErrorMessage = (payload, fallback) => {
@@ -492,11 +509,19 @@
         return;
       }
       const candidate = event.target.closest?.("[data-select-candidate]");
+      const imageOverride = event.target.closest?.("[data-image-override]");
       const acknowledgement = event.target.closest?.("[data-acknowledge-run-diagnostic]");
       const verify = event.target.closest?.("[data-verify-question]");
       const publish = event.target.closest?.("[data-publish-quiz]");
       try {
-        if (acknowledgement) {
+        if (imageOverride) {
+          const questionId = imageOverride.dataset.imageOverride;
+          const method = imageOverride.dataset.imageNotNeeded === "true" ? "DELETE" : "PUT";
+          const updated = await send(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/questions/${encodeURIComponent(questionId)}/image-override`, method);
+          render(documentRef, page, updated);
+          const localMessage = questionMessage(page, questionId) || message;
+          localMessage.textContent = method === "PUT" ? "Image marked as not needed." : "Image is required again.";
+        } else if (acknowledgement) {
           await send(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/run-diagnostics/${encodeURIComponent(acknowledgement.dataset.acknowledgeRunDiagnostic)}/acknowledgement`, "POST");
           await refresh();
           message.textContent = "Run diagnostic acknowledged.";
@@ -526,7 +551,7 @@
     shouldRenderNoCandidateEmpty, normalizedEditPayload,
     candidateSelectionPayload, candidateSelectionUrl, captureRenderState,
     restoreRenderState, reindexChoiceRows, removeChoiceRow, choiceRow,
-    initialize, render, renderRunDiagnostics, applyQuestionSave, reviewErrorMessage,
+    initialize, render, renderRunDiagnostics, applyQuestionSave, questionMessage, reviewErrorMessage,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) root.document.addEventListener("DOMContentLoaded", () => initialize(root.document), { once: true });

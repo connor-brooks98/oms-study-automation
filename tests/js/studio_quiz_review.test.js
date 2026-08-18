@@ -51,6 +51,7 @@ class Element {
     if (selector === "[data-add-choice]") return element.dataset.addChoice === "true";
     if (selector === "[data-remove-choice]") return element.dataset.removeChoice === "true";
     if (selector === "[data-acknowledge-run-diagnostic]") return Boolean(element.dataset.acknowledgeRunDiagnostic);
+    if (selector === "[data-image-override]") return Boolean(element.dataset.imageOverride);
     if (selector === "[data-question-message]") return element.dataset.questionMessage === "true";
     if (selector === "details[data-state-key]") return element.tagName === "details" && Boolean(element.dataset.stateKey);
     if (selector === "[data-state-key]") return Boolean(element.dataset.stateKey);
@@ -448,4 +449,29 @@ test("candidate selection and choice removal controls have stable focus keys", (
   const keys = questions.querySelectorAll("[data-focus-key]").map((element) => element.dataset.focusKey);
   assert.ok(keys.includes("question:q1:candidate:candidate-1"));
   assert.ok(keys.includes("question:q1:choice:0:remove"));
+});
+
+test("image requirements can be marked unnecessary and restored", () => {
+  const { page, questions } = reviewPage();
+  const item = question("q1", "Stem");
+  item.image_required = true;
+  item.image_not_needed = false;
+  review.render(documentRef, page, {
+    blockers: ["q1: required image is unresolved"],
+    issues: [{ question_id: "q1", message: "required image is unresolved", role: "err" }],
+    preview_url: null,
+    questions: [item],
+  });
+
+  let toggle = questions.querySelector("[data-image-override]");
+  assert.equal(toggle.textContent, "No image needed");
+  assert.equal(toggle.dataset.imageNotNeeded, "false");
+
+  item.image_not_needed = true;
+  review.render(documentRef, page, {
+    blockers: [], issues: [], preview_url: null, questions: [item],
+  });
+  toggle = questions.querySelector("[data-image-override]");
+  assert.equal(toggle.textContent, "Require image");
+  assert.equal(toggle.dataset.imageNotNeeded, "true");
 });

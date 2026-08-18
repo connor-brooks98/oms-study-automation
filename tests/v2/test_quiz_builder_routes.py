@@ -571,6 +571,14 @@ def test_candidate_preview_is_question_scoped_and_selection_is_csrf_protected(tm
         json={"image_candidate_id": candidate["candidate_id"]},
         headers=_csrf_headers(client),
     )
+    waived = client.put(
+        f"/studio/runs/{run_id}/questions/question-1/image-override",
+        headers=_csrf_headers(client),
+    )
+    restored = client.delete(
+        f"/studio/runs/{run_id}/questions/question-1/image-override",
+        headers=_csrf_headers(client),
+    )
 
     assert preview.status_code == 200
     assert preview.headers["content-type"] == "image/png"
@@ -579,6 +587,12 @@ def test_candidate_preview_is_question_scoped_and_selection_is_csrf_protected(tm
     assert forbidden.status_code == 403
     assert selected.status_code == 200
     assert selected.json()["questions"][0]["selected_candidate_id"] == candidate["candidate_id"]
+    assert waived.status_code == 200
+    assert waived.json()["questions"][0]["image_not_needed"] is True
+    assert "required image is unresolved" not in waived.text
+    assert restored.status_code == 200
+    assert restored.json()["questions"][0]["image_not_needed"] is False
+    assert "required image is unresolved" in restored.text
 
 
 def test_imported_private_question_ids_are_replaced_for_preview_and_public_grading(
