@@ -20,6 +20,8 @@ from oms_hub.document_processing.domain import (
 )
 from oms_hub.document_processing.ocr import LocalOcr
 
+_NATIVE_WORDS_WITH_OPTIONAL_IMAGE_OCR = 8
+
 
 class PptxLocatorEnricher:
     """Restore unambiguous slide, notes, and image locations for an Anydoc result."""
@@ -38,7 +40,12 @@ class PptxLocatorEnricher:
             assets,
         )
         ocr_segments, ocr_warnings = _ocr_slide_images(
-            presentation, segments, assets, asset_keys_by_location, self.ocr
+            presentation,
+            segments,
+            source_segments,
+            assets,
+            asset_keys_by_location,
+            self.ocr,
         )
         style_segments = _unmatched_style_segments(segments, source_segments)
         return replace(
@@ -380,6 +387,7 @@ def _shape_style_metadata(shape: Any) -> tuple[str, ...]:
 def _ocr_slide_images(
     presentation: Any,
     segments: tuple[ParsedSegment, ...],
+    source_segments: tuple[ParsedSegment, ...],
     assets: tuple[ParsedAsset, ...],
     asset_keys_by_location: dict[tuple[int, int], str],
     ocr: LocalOcr,
@@ -393,6 +401,13 @@ def _ocr_slide_images(
         for segment in segments
         if segment.locator.slide_number is not None and segment.text.strip()
     }
+    native_words_by_slide: dict[int, int] = {}
+    for segment in source_segments:
+        slide_number = segment.locator.slide_number
+        if slide_number is not None and segment.kind is not SegmentKind.NOTE:
+            native_words_by_slide[slide_number] = (
+                native_words_by_slide.get(slide_number, 0) + len(segment.text.split())
+            )
     assets_by_slide: dict[int, list[ParsedAsset]] = {}
     large_asset_locations: set[tuple[int, str]] = set()
     slide_area = presentation.slide_width * presentation.slide_height
@@ -440,7 +455,7 @@ def _ocr_slide_images(
                     asset_keys=tuple(asset.key for asset in candidates),
                 )
             )
-        else:
+        elif native_words_by_slide.get(slide_number, 0) < _NATIVE_WORDS_WITH_OPTIONAL_IMAGE_OCR:
             blockers.append(
                 f"BLOCKER: OCR is required but unavailable or empty for slide {slide_number}"
             )

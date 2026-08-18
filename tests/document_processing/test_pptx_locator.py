@@ -355,6 +355,70 @@ def test_enricher_reports_one_blocker_when_required_ocr_is_empty(tmp_path: Path)
     )
 
 
+def test_enricher_does_not_block_native_question_when_diagnostic_image_has_no_text(
+    tmp_path: Path,
+) -> None:
+    source = build_pptx(
+        tmp_path / "radiograph-question.pptx",
+        slides=(
+            SlideFixture(
+                "Question 1",
+                "Which diagnosis best explains this patient's chronic painful swollen knee image?",
+                image=True,
+            ),
+        ),
+    )
+    presentation = Presentation(source)
+    picture = next(
+        shape
+        for shape in presentation.slides[0].shapes
+        if shape.shape_type is MSO_SHAPE_TYPE.PICTURE
+    )
+    picture.width = Inches(9)
+    picture.height = Inches(5)
+    presentation.save(source)
+
+    parsed = AnydocProcessor(
+        PptxLocatorEnricher(LocalOcr(lambda _path: ""))
+    ).parse(snapshot_for(source), tmp_path / "assets")
+
+    assert all(not warning.startswith("BLOCKER:") for warning in parsed.warnings)
+    assert all(not segment.key.endswith("-ocr") for segment in parsed.segments)
+
+
+def test_enricher_does_not_count_speaker_notes_as_visible_screenshot_text(
+    tmp_path: Path,
+) -> None:
+    source = build_pptx(
+        tmp_path / "noted-screenshot.pptx",
+        slides=(
+            SlideFixture(
+                "Question 1",
+                "",
+                note="Tutor notes explain this screenshot in more than eight hidden words.",
+                image=True,
+            ),
+        ),
+    )
+    presentation = Presentation(source)
+    picture = next(
+        shape
+        for shape in presentation.slides[0].shapes
+        if shape.shape_type is MSO_SHAPE_TYPE.PICTURE
+    )
+    picture.width = Inches(9)
+    picture.height = Inches(5)
+    presentation.save(source)
+
+    parsed = AnydocProcessor(
+        PptxLocatorEnricher(LocalOcr(lambda _path: ""))
+    ).parse(snapshot_for(source), tmp_path / "assets")
+
+    assert tuple(warning for warning in parsed.warnings if warning.startswith("BLOCKER:")) == (
+        "BLOCKER: OCR is required but unavailable or empty for slide 1",
+    )
+
+
 def test_enricher_preserves_bold_and_color_as_sidecar_metadata(tmp_path: Path) -> None:
     source = build_pptx(
         tmp_path / "formatted-answer.pptx",
