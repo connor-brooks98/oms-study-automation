@@ -220,7 +220,7 @@
     return section;
   };
 
-  const renderQuestion = (documentRef, question) => {
+  const renderQuestion = (documentRef, question, issues = []) => {
     const card = documentRef.createElement("article");
     card.className = "sh-card studio-review-question";
     card.dataset.questionId = question.id;
@@ -228,6 +228,14 @@
     card.append(text(documentRef, "h3", question.original_identifier ? `Question ${question.original_identifier}` : question.id));
     card.append(text(documentRef, "p", `Answer provenance: ${question.provenance || "unresolved"}`, "sh-row__meta"));
     card.append(text(documentRef, "p", `Extraction confidence: ${question.confidence}`, "sh-row__meta"));
+    if (issues.length) {
+      card.append(text(
+        documentRef,
+        "p",
+        `Needs review: ${issues.map((issue) => issue.message).join(" · ")}`,
+        "sh-pill sh-pill--err",
+      ));
+    }
     const refs = documentRef.createElement("ul");
     refs.className = "studio-review-sources";
     refs.setAttribute("aria-label", "Source references");
@@ -258,7 +266,10 @@
     save.className = "sh-btn sh-btn--primary";
     save.dataset.focusKey = `question:${question.id}:save`;
     save.textContent = "Save question";
-    form.append(save);
+    const status = text(documentRef, "p", "", "studio-review-question-message");
+    status.dataset.questionMessage = "true";
+    status.setAttribute("aria-live", "polite");
+    form.append(save, status);
     card.append(form);
     if (question.verification_required) {
       const verify = documentRef.createElement("button");
@@ -361,7 +372,11 @@
       const current = existing.get(question.id);
       rendered.push(current?.dataset.dirty === "true"
         ? current
-        : renderQuestion(documentRef, question));
+        : renderQuestion(
+          documentRef,
+          question,
+          (payload.issues || []).filter((issue) => issue.question_id === question.id),
+        ));
       existing.delete(question.id);
     });
     existing.forEach((card) => {
@@ -373,8 +388,12 @@
 
   const applyQuestionSave = (documentRef, page, form, payload) => {
     const card = form.closest?.("[data-question-id]");
+    const questionId = card?.dataset.questionId;
     if (card) delete card.dataset.dirty;
     render(documentRef, page, payload);
+    const saved = Array.from(page.querySelectorAll?.("[data-question-id]") || [])
+      .find((item) => item.dataset.questionId === questionId);
+    return saved?.querySelector?.("[data-question-message]") || null;
   };
 
   const safeJson = async (response) => { try { return await response.json(); } catch (_error) { return {}; } };
@@ -426,20 +445,25 @@
         rationale: form.querySelector('[name="rationale"]').value, topic: form.querySelector('[name="topic"]').value,
         area: form.querySelector('[name="area"]').value, learning_objective: form.querySelector('[name="learning_objective"]').value,
       });
+      const localMessage = form.querySelector("[data-question-message]") || message;
       if (payload.choices.length < 2 || payload.choices.length > 8 || payload.correct_index < 0 || payload.correct_index >= payload.choices.length) {
-        message.textContent = "Provide two to eight choices and select the correct answer.";
+        localMessage.textContent = "Provide two to eight choices and select the correct answer.";
         return;
       }
       if (!payload.rationale) {
-        message.textContent = "Provide an answer rationale before saving.";
+        localMessage.textContent = "Provide an answer rationale before saving.";
         return;
       }
+      localMessage.textContent = "Saving…";
       try {
         const updated = await send(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/questions/${encodeURIComponent(form.dataset.questionEdit)}`, "PATCH", payload);
-        applyQuestionSave(documentRef, page, form, updated);
-        message.textContent = "Question saved.";
+        const savedMessage = applyQuestionSave(documentRef, page, form, updated) || message;
+        const remaining = (updated.issues || []).filter((issue) => issue.question_id === form.dataset.questionEdit);
+        savedMessage.textContent = remaining.length
+          ? `Question saved. Remaining: ${remaining.map((issue) => issue.message).join(" · ")}`
+          : "Question saved.";
       } catch (error) {
-        message.textContent = error instanceof Error ? error.message : "Question could not be saved.";
+        localMessage.textContent = error instanceof Error ? error.message : "Question could not be saved.";
       }
     });
     const markDirty = (event) => {

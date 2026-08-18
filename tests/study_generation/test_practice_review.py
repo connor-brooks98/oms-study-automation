@@ -700,6 +700,84 @@ def test_review_auto_selects_only_a_unique_exact_candidate(tmp_path: Path) -> No
     assert service.blockers("run-1") == ()
 
 
+def test_existing_review_prefers_the_cited_question_image_over_an_answer_image(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    _, first_document = _candidate_asset(tmp_path)
+    second_path = tmp_path / "answer.png"
+    Image.new("RGB", (3, 2), "blue").save(second_path, format="PNG")
+    second_asset = ParsedAsset(
+        "asset-2",
+        second_path,
+        "image/png",
+        sha256_file(second_path),
+        DocumentLocator("page 2 image", page_number=2),
+        3,
+        2,
+        "full-slide-render",
+    )
+    document = replace(
+        first_document,
+        segments=(
+            *first_document.segments,
+            ParsedSegment(
+                "answer-segment",
+                SegmentKind.PARAGRAPH,
+                "answer source",
+                DocumentLocator("page 2", page_number=2),
+                (second_asset.key,),
+            ),
+        ),
+        assets=(*first_document.assets, second_asset),
+    )
+    draft = replace(
+        _draft("q1", generated=False),
+        image_ref=QuizImageRef("manual-image", "source", "page 1", "image"),
+        source_refs=(
+            QuestionSourceRef("source", "segment", "page 1"),
+            QuestionSourceRef("source", "answer-segment", "page 2"),
+        ),
+    )
+    extracted = ExtractedQuestion(
+        original_identifier="q1",
+        stem=draft.stem,
+        choices=draft.choices,
+        supplied_correct_index=0,
+        rationale=draft.rationale,
+        source_segments=(
+            SegmentCitation(source_id="source", segment_key="segment"),
+            SegmentCitation(source_id="source", segment_key="answer-segment"),
+        ),
+        candidate_assets=(AssetCitation(source_id="source", asset_key="asset-1"),),
+        confidence=0.8,
+    )
+    service.repository.save_run_artifact(
+        "run-1", "parse:source", "b" * 64, _document_json(document)
+    )
+    service.repository.save_run_artifact(
+        "run-1",
+        "extract",
+        "c" * 64,
+        _extraction_json(ExtractionResult((extracted,), (), (draft.source_refs,), (), ())),
+    )
+    service.store("run-1", (draft,))
+    service.set_image_service(
+        StudioQuizImageService(service.repository, tmp_path / "quiz-media")
+    )
+
+    reviewed = service.review("run-1")[0]
+    selected = next(
+        candidate
+        for candidate in service.candidates("run-1", "q1")
+        if candidate.candidate_id == reviewed.selected_candidate_id
+    )
+
+    assert selected.asset_key == "asset-1"
+    assert reviewed.chosen_image is not None
+    assert service.blockers("run-1") == ()
+
+
 @pytest.mark.parametrize(
     "update",
     [

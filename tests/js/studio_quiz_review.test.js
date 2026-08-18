@@ -51,6 +51,7 @@ class Element {
     if (selector === "[data-add-choice]") return element.dataset.addChoice === "true";
     if (selector === "[data-remove-choice]") return element.dataset.removeChoice === "true";
     if (selector === "[data-acknowledge-run-diagnostic]") return Boolean(element.dataset.acknowledgeRunDiagnostic);
+    if (selector === "[data-question-message]") return element.dataset.questionMessage === "true";
     if (selector === "details[data-state-key]") return element.tagName === "details" && Boolean(element.dataset.stateKey);
     if (selector === "[data-state-key]") return Boolean(element.dataset.stateKey);
     if (selector === "[data-focus-key]") return Boolean(element.dataset.focusKey);
@@ -389,15 +390,20 @@ test("a successful question save applies authoritative blocker and answer state"
   saved.choices = ["A", "B", "C"];
   saved.correct_index = 2;
 
-  review.applyQuestionSave(documentRef, page, form, {
-    blockers: [], issues: [], preview_url: "/studio/runs/run-1/preview", questions: [saved],
+  const status = review.applyQuestionSave(documentRef, page, form, {
+    blockers: ["q1: required image is unresolved"],
+    issues: [{ question_id: "q1", message: "required image is unresolved", role: "err" }],
+    preview_url: null,
+    questions: [saved],
   });
 
   const savedCard = questions.querySelector("[data-question-id]");
   const correct = savedCard.querySelectorAll('input[name="correct_index"]');
   assert.notEqual(savedCard, dirtyCard);
   assert.equal(correct[2].checked, true);
-  assert.equal(publish.disabled, false);
+  assert.equal(publish.disabled, true);
+  assert.equal(status.dataset.questionMessage, "true");
+  assert.equal(savedCard.children.some((item) => item.textContent.includes("required image is unresolved")), true);
 });
 
 test("hard run diagnostics suppress the contradictory ready banner", () => {

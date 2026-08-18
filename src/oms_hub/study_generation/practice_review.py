@@ -198,7 +198,8 @@ class PracticeReviewService:
     ) -> ReviewQuestion:
         if self.image_service is None:
             raise ValueError("imported image review is not configured")
-        current = self.question(run_id, question_id)
+        questions = self.review(run_id)
+        current = self._find(questions, question_id)
         binding = next(
             (
                 item
@@ -209,8 +210,18 @@ class PracticeReviewService:
         )
         if binding is None:
             raise ValueError("image candidate is not available for this question")
+        return self._save_image_candidate(run_id, questions, current, binding)
+
+    def _save_image_candidate(
+        self,
+        run_id: str,
+        questions: tuple[ReviewQuestion, ...],
+        current: ReviewQuestion,
+        binding: _ImageCandidateBinding,
+    ) -> ReviewQuestion:
+        assert self.image_service is not None
         candidate = binding.candidate
-        image_key = _image_key(question_id)
+        image_key = _image_key(current.draft.question_id)
         self.image_service.copy_import_candidate(
             run_id,
             image_key,
@@ -236,8 +247,8 @@ class PracticeReviewService:
         self._save(
             run_id,
             tuple(
-                updated if item.draft.question_id == question_id else item
-                for item in self.review(run_id)
+                updated if item.draft.question_id == current.draft.question_id else item
+                for item in questions
             ),
         )
         return updated
@@ -272,17 +283,23 @@ class PracticeReviewService:
 
     def review(self, run_id: str) -> tuple[ReviewQuestion, ...]:
         stored = self.repository.run_artifact(run_id, _ARTIFACT_KEY)
-        if stored is not None:
-            return _questions_from_json(stored.payload_json)
-        normalized = self.repository.run_artifact(run_id, "normalized")
-        if normalized is None:
-            raise ReviewArtifactUnavailable(run_id)
-        questions = self._initialize_image_requirements(
+        first_review = stored is None
+        if stored is None:
+            normalized = self.repository.run_artifact(run_id, "normalized")
+            if normalized is None:
+                raise ReviewArtifactUnavailable(run_id)
+            questions = self._initialize_image_requirements(
+                run_id,
+                _drafts_from_json(normalized.payload_json),
+            )
+            self._save(run_id, questions)
+        else:
+            questions = _questions_from_json(stored.payload_json)
+        self._auto_select_unique_exact_candidate(
             run_id,
-            _drafts_from_json(normalized.payload_json),
+            questions,
+            allow_exact_fallback=first_review,
         )
-        self._save(run_id, questions)
-        self._auto_select_unique_exact_candidate(run_id, questions)
         stored = self.repository.run_artifact(run_id, _ARTIFACT_KEY)
         assert stored is not None
         return _questions_from_json(stored.payload_json)
@@ -319,24 +336,40 @@ class PracticeReviewService:
         return tuple(initialized)
 
     def _auto_select_unique_exact_candidate(
-        self, run_id: str, questions: tuple[ReviewQuestion, ...]
+        self,
+        run_id: str,
+        questions: tuple[ReviewQuestion, ...],
+        *,
+        allow_exact_fallback: bool,
     ) -> None:
-        """A unique exact source/page match is the only safe automatic selection."""
+        """Auto-select one cited asset, or one exact match during initialization."""
         if self.image_service is None:
             return
-        for question in questions:
+        current_questions = list(questions)
+        for index, question in enumerate(current_questions):
             if question.draft.image_ref is None or question.chosen_image is not None:
                 continue
-            exact = tuple(
+            candidates = self._candidate_bindings(run_id, question)
+            explicit = self._candidate_asset_keys(run_id, question.draft)
+            cited = tuple(
                 item
-                for item in self._candidate_bindings(run_id, question)
-                if item.candidate.exact_match
+                for item in candidates
+                if (item.candidate.source_id, item.candidate.asset_key) in explicit
             )
-            if len(exact) == 1:
-                self.select_image_candidate(
+            exact = tuple(item for item in candidates if item.candidate.exact_match)
+            selected = (
+                cited
+                if len(cited) == 1
+                else exact
+                if allow_exact_fallback
+                else ()
+            )
+            if len(selected) == 1:
+                current_questions[index] = self._save_image_candidate(
                     run_id,
-                    question.draft.question_id,
-                    exact[0].candidate.candidate_id,
+                    tuple(current_questions),
+                    question,
+                    selected[0],
                 )
 
     def _candidate_asset_keys(
