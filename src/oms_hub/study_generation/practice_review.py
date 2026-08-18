@@ -356,9 +356,17 @@ class PracticeReviewService:
                 for item in candidates
                 if (item.candidate.source_id, item.candidate.asset_key) in explicit
             )
+            required_locator = _locator_key(question.draft.image_ref.locator)
+            required = tuple(
+                item
+                for item in cited
+                if _locator_key(item.candidate.locator) == required_locator
+            )
             exact = tuple(item for item in candidates if item.candidate.exact_match)
             selected = (
-                cited
+                required
+                if len(required) == 1
+                else cited
                 if len(cited) == 1
                 else exact
                 if allow_exact_fallback

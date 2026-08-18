@@ -749,7 +749,10 @@ def test_existing_review_prefers_the_cited_question_image_over_an_answer_image(
             SegmentCitation(source_id="source", segment_key="segment"),
             SegmentCitation(source_id="source", segment_key="answer-segment"),
         ),
-        candidate_assets=(AssetCitation(source_id="source", asset_key="asset-1"),),
+        candidate_assets=(
+            AssetCitation(source_id="source", asset_key="asset-1"),
+            AssetCitation(source_id="source", asset_key="asset-2"),
+        ),
         confidence=0.8,
     )
     service.repository.save_run_artifact(
