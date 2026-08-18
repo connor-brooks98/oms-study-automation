@@ -48,8 +48,8 @@ def inspect_pdf(path: Path) -> PdfInspection:
         # is unavailable; pypdf still gives a conservative text/scanned signal.
         with path.open("rb") as stream:
             reader = PdfReader(stream, strict=True)
-            pages = tuple(reader.pages)
-        text_pages = sum(bool((page.extract_text() or "").strip()) for page in pages)
+            page_text = tuple((page.extract_text() or "").strip() for page in reader.pages)
+        text_pages = sum(bool(text) for text in page_text)
         if text_pages == validation.page_count:
             pdf_type = "text_based"
         elif text_pages == 0:
@@ -62,8 +62,8 @@ def inspect_pdf(path: Path) -> PdfInspection:
             page_count=validation.page_count,
             pages_needing_ocr=tuple(
                 index
-                for index, page in enumerate(pages)
-                if not (page.extract_text() or "").strip()
+                for index, text in enumerate(page_text, start=1)
+                if not text
             ),
             used_pdf_inspector=False,
         )

@@ -7,7 +7,7 @@ from pypdf import PdfWriter
 from oms_hub.document_processing.domain import SourceSnapshot
 from oms_hub.document_processing.ocr import LocalOcr
 from oms_hub.document_processing.pdf_adapter import PdfProcessor
-from oms_hub.files.pdf import PdfInspection
+from oms_hub.files.pdf import PdfInspection, inspect_pdf
 
 
 def _snapshot(path: Path) -> SourceSnapshot:
@@ -35,6 +35,19 @@ def _blank_pdf_pages(path: Path, count: int) -> SourceSnapshot:
     with path.open("wb") as stream:
         writer.write(stream)
     return _snapshot(path)
+
+
+def test_pdf_inspection_fallback_reads_pages_while_open_and_uses_one_based_numbers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    snapshot = _blank_pdf(tmp_path / "fallback-scanned.pdf")
+    monkeypatch.setitem(sys.modules, "pdf_inspector", None)
+
+    inspection = inspect_pdf(snapshot.path)
+
+    assert inspection.pdf_type == "scanned"
+    assert inspection.pages_needing_ocr == (1,)
+    assert inspection.used_pdf_inspector is False
 
 
 def test_scanned_pdf_returns_ocr_blocker_instead_of_empty_success(
