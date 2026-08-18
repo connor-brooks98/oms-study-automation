@@ -29,9 +29,9 @@ $GateDirectoryItem = Get-Item -LiteralPath $GateDirectory -Force
 if (($GateDirectoryItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
   throw "F28 gate directory must not be a reparse point."
 }
-$HubExecutable = Join-Path $ProjectRoot ".venv\Scripts\oms-hub.exe"
-if (-not (Test-Path -LiteralPath $HubExecutable)) {
-  throw "Study Hub executable not found under scheduled-task project root: $ProjectRoot"
+$HubPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $HubPython)) {
+  throw "Study Hub Python runtime not found under scheduled-task project root: $ProjectRoot"
 }
 
 $env:OMS_HUB_DEPLOYMENT_ROOT = $ProjectRoot
@@ -230,7 +230,7 @@ function Write-F28RecoveryAuthorization {
 
 Set-Location $ProjectRoot
 Write-Host "Starting Study Hub from $ProjectRoot (build $BuildRevision, tree $BuildTree)."
-& $HubExecutable serve
+& $HubPython -m oms_hub.cli serve
 $ServeExitCode = $LASTEXITCODE
 if ($ServeExitCode -eq 75) {
   try {

@@ -103,8 +103,16 @@ function Test-SameRootHubRuntime {
   $Prefix = $ExpectedRoot.TrimEnd("\") + "\"
   return @(
     Get-CimInstance Win32_Process | Where-Object {
-      [string]$_.Name -ieq "oms-hub.exe" -and
-      ([string]$_.ExecutablePath).StartsWith($Prefix, [System.StringComparison]::OrdinalIgnoreCase)
+      $UnderRoot = ([string]$_.ExecutablePath).StartsWith(
+        $Prefix,
+        [System.StringComparison]::OrdinalIgnoreCase
+      )
+      $IsLauncher = [string]$_.Name -ieq "oms-hub.exe"
+      $IsPythonModule = (
+        [string]$_.Name -ieq "python.exe" -and
+        [string]$_.CommandLine -match "(?i)oms[-_]hub"
+      )
+      $UnderRoot -and ($IsLauncher -or $IsPythonModule)
     }
   ).Count -gt 0
 }

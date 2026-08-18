@@ -23,7 +23,7 @@ def test_scheduled_launcher_propagates_the_exact_serve_exit_code() -> None:
     script = (ROOT / "scripts" / "start-hub.ps1").read_text(encoding="utf-8")
     lines = [line.strip() for line in script.splitlines() if line.strip()]
 
-    serve_index = lines.index("& $HubExecutable serve")
+    serve_index = lines.index("& $HubPython -m oms_hub.cli serve")
     assert lines[serve_index + 1] == "$ServeExitCode = $LASTEXITCODE"
     assert "if ($ServeExitCode -ne 0) {" in lines[serve_index + 2 :]
     assert (
@@ -751,7 +751,7 @@ def test_windows_installer_preflights_config_before_downtime_without_live_db_mut
         '      "Process"'
     )
     preflight_validate = script.index(
-        '& $ExistingHubExecutable validate-config', preflight_database
+        '& $ExistingHubPython -m oms_hub.cli validate-config', preflight_database
     )
     restore_environment = script.index("} finally {", preflight_validate)
     task_stop = script.index(
@@ -867,7 +867,7 @@ def test_windows_installer_fails_closed_after_every_install_native_command() -> 
             'Assert-NativeCommandSucceeded -Operation "Anydoc document parser import check"',
         ),
         (
-            'oms-hub.exe" validate-config',
+            'python.exe" -m oms_hub.cli validate-config',
             'Assert-NativeCommandSucceeded -Operation "Study Hub configuration validation"',
         ),
     )

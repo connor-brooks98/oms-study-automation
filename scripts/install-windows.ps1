@@ -644,9 +644,9 @@ if ($ExistingTask) {
   # Validate paths, loopback/access settings, and the pinned prompt before any
   # downtime. Point validation at an in-memory database so its migration check
   # cannot mutate the live database before the verified rollback backup.
-  $ExistingHubExecutable = Join-Path $ProjectRoot ".venv\Scripts\oms-hub.exe"
-  if (-not (Test-Path -LiteralPath $ExistingHubExecutable)) {
-    throw "Existing Study Hub executable not found: $ExistingHubExecutable"
+  $ExistingHubPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+  if (-not (Test-Path -LiteralPath $ExistingHubPython)) {
+    throw "Existing Study Hub Python runtime not found: $ExistingHubPython"
   }
   $PreviousProcessDatabaseUrl = [Environment]::GetEnvironmentVariable(
     "OMS_HUB_DATABASE_URL",
@@ -658,7 +658,7 @@ if ($ExistingTask) {
       "sqlite:///:memory:",
       "Process"
     )
-    & $ExistingHubExecutable validate-config
+    & $ExistingHubPython -m oms_hub.cli validate-config
     Assert-NativeCommandSucceeded -Operation "Existing Study Hub configuration preflight"
   } finally {
     [Environment]::SetEnvironmentVariable(
@@ -864,7 +864,7 @@ if ($PSCmdlet.ShouldProcess($ProjectRoot, "Install Study Hub V2")) {
     Copy-Item "$ProjectRoot\.env.example" "$ProjectRoot\.env"
     throw "Configure $ProjectRoot\.env, then run this installer again"
   }
-  & "$ProjectRoot\.venv\Scripts\oms-hub.exe" validate-config
+  & "$ProjectRoot\.venv\Scripts\python.exe" -m oms_hub.cli validate-config
   Assert-NativeCommandSucceeded -Operation "Study Hub configuration validation"
 }
 

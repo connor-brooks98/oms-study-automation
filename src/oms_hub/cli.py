@@ -349,3 +349,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     raise SystemExit(args.handler(args))
+
+
+if __name__ == "__main__":
+    main()
