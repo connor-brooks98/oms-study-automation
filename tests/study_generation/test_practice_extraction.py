@@ -329,6 +329,52 @@ def test_extractor_does_not_guess_when_multiple_options_are_styled(tmp_path: Pat
     assert result.questions[0].supplied_correct_index is None
 
 
+def test_extractor_does_not_apply_next_questions_styled_option(
+    tmp_path: Path,
+) -> None:
+    document = _document(
+        tmp_path,
+        segments=(
+            ParsedSegment(
+                "question-one",
+                SegmentKind.PARAGRAPH,
+                "What is the first diagnosis? A) Shared B) Other",
+                DocumentLocator("slide 1", slide_number=1),
+            ),
+            ParsedSegment(
+                "question-two",
+                SegmentKind.PARAGRAPH,
+                "What is the second diagnosis? A) Shared B) Different",
+                DocumentLocator("slide 2", slide_number=2),
+                style_metadata=("bold: A) Shared",),
+            ),
+        ),
+    )
+    payload = {
+        "questions": [
+            {
+                "original_identifier": None,
+                "stem": "What is the first diagnosis?",
+                "choices": ["Shared", "Other"],
+                "supplied_correct_index": None,
+                "rationale": None,
+                "source_segments": [
+                    {"source_id": "source-1", "segment_key": "question-one"}
+                ],
+                "candidate_assets": [],
+                "confidence": 0.9,
+            }
+        ],
+        "answers": [],
+    }
+
+    result = PracticeQuestionExtractor(
+        StructuredGenerator([json.dumps(payload)])
+    ).extract((document,))
+
+    assert result.questions[0].supplied_correct_index is None
+
+
 def test_extractor_blocks_partial_results_when_source_has_a_sequential_question_set(
     tmp_path: Path,
 ) -> None:

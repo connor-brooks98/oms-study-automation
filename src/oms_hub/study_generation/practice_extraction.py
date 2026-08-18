@@ -290,6 +290,18 @@ def _apply_unique_styled_answers(
         for segment in document.segments
         if segment.locator.slide_number is not None and segment.style_metadata
     )
+    slide_text = {
+        (document.source_id, slide_number): " ".join(
+            segment.text for segment in document.segments
+            if segment.locator.slide_number == slide_number and segment.text.strip()
+        )
+        for document in documents
+        for slide_number in {
+            segment.locator.slide_number
+            for segment in document.segments
+            if segment.locator.slide_number is not None
+        }
+    }
     resolved: list[ExtractedQuestion] = []
     for question in questions:
         if question.supplied_correct_index is not None:
@@ -306,7 +318,10 @@ def _apply_unique_styled_answers(
         }
         matches: list[tuple[int, SegmentCitation]] = []
         for source_id, segment in styled:
-            if (source_id, segment.locator.slide_number) not in allowed_locations:
+            location = (source_id, segment.locator.slide_number)
+            if location not in allowed_locations or not _slide_repeats_question(
+                question, slide_text.get(location, "")
+            ):
                 continue
             for cue in segment.style_metadata:
                 match = _STYLED_OPTION.fullmatch(cue)
@@ -348,6 +363,11 @@ def _apply_unique_styled_answers(
 
 def _normalize_answer_text(value: str) -> str:
     return " ".join(value.casefold().split()).rstrip(" .;:")
+
+
+def _slide_repeats_question(question: ExtractedQuestion, text: str) -> bool:
+    stem = " ".join(question.stem.casefold().split())
+    return len(stem) >= 12 and stem in " ".join(text.casefold().split())
 
 
 def _source_document(document: ParsedDocument | SourceDocument) -> SourceDocument:

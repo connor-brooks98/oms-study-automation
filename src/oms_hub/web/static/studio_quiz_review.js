@@ -330,10 +330,25 @@
       const active = button.dataset.reviewTab === selected;
       button.classList.toggle("sh-seg__btn--active", active);
       button.setAttribute("aria-selected", String(active));
+      button.tabIndex = active ? 0 : -1;
     });
     Array.from(questions.querySelectorAll?.("[data-review-panel]") || []).forEach((panel) => {
       panel.hidden = panel.dataset.reviewPanel !== selected;
     });
+  };
+
+  const moveReviewTab = (tab, key) => {
+    const tabs = Array.from(tab.parentElement?.querySelectorAll?.("[data-review-tab]") || []);
+    const current = tabs.indexOf(tab);
+    if (current < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(key)) return false;
+    const index = key === "Home"
+      ? 0
+      : key === "End"
+        ? tabs.length - 1
+        : (current + (key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    setReviewTab(tab.parentElement.parentElement, tabs[index].dataset.reviewTab);
+    tabs[index].focus();
+    return true;
   };
 
   const renderIssues = (documentRef, page, payload) => {
@@ -439,20 +454,28 @@
     needsTab.className = "sh-btn sh-btn--secondary sh-seg__btn";
     needsTab.dataset.reviewTab = "needs-review";
     needsTab.setAttribute("role", "tab");
+    needsTab.id = "studio-review-tab-needs-review";
+    needsTab.setAttribute("aria-controls", "studio-review-panel-needs-review");
     needsTab.textContent = `Needs review (${needsReview.length})`;
     const readyTab = documentRef.createElement("button");
     readyTab.type = "button";
     readyTab.className = "sh-btn sh-btn--secondary sh-seg__btn";
     readyTab.dataset.reviewTab = "ready";
     readyTab.setAttribute("role", "tab");
+    readyTab.id = "studio-review-tab-ready";
+    readyTab.setAttribute("aria-controls", "studio-review-panel-ready");
     readyTab.textContent = `Ready (${ready.length})`;
     tabs.append(needsTab, readyTab);
     const needsPanel = documentRef.createElement("section");
     needsPanel.dataset.reviewPanel = "needs-review";
     needsPanel.setAttribute("role", "tabpanel");
+    needsPanel.id = "studio-review-panel-needs-review";
+    needsPanel.setAttribute("aria-labelledby", needsTab.id);
     const readyPanel = documentRef.createElement("section");
     readyPanel.dataset.reviewPanel = "ready";
     readyPanel.setAttribute("role", "tabpanel");
+    readyPanel.id = "studio-review-panel-ready";
+    readyPanel.setAttribute("aria-labelledby", readyTab.id);
     if (needsReview.length) needsPanel.append(...needsReview);
     else needsPanel.append(text(documentRef, "p", "No question issues remain.", "sh-empty__text"));
     if (ready.length) readyPanel.append(...ready);
@@ -580,6 +603,10 @@
     };
     page.addEventListener("input", markDirty);
     page.addEventListener("change", markDirty);
+    page.addEventListener("keydown", (event) => {
+      const reviewTab = event.target.closest?.("[data-review-tab]");
+      if (reviewTab && moveReviewTab(reviewTab, event.key)) event.preventDefault();
+    });
     page.addEventListener("click", async (event) => {
       const reviewTab = event.target.closest?.("[data-review-tab]");
       if (reviewTab) {
@@ -647,7 +674,7 @@
     shouldRenderNoCandidateEmpty, normalizedEditPayload,
     candidateSelectionPayload, candidateSelectionUrl, captureRenderState,
     restoreRenderState, reindexChoiceRows, removeChoiceRow, choiceRow,
-    initialize, render, renderRunDiagnostics, setReviewTab, applyQuestionSave, questionMessage, reviewErrorMessage,
+    initialize, render, renderRunDiagnostics, setReviewTab, moveReviewTab, applyQuestionSave, questionMessage, reviewErrorMessage,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) root.document.addEventListener("DOMContentLoaded", () => initialize(root.document), { once: true });

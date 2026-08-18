@@ -506,10 +506,22 @@ test("blocking questions and ready questions render in editable tabs", () => {
   assert.equal(questions.querySelectorAll("[data-image-upload]").length, 2);
   assert.equal(panels[0].hidden, false);
   assert.equal(panels[1].hidden, true);
+  assert.equal(tabs[0]["aria-controls"], panels[0].id);
+  assert.equal(tabs[1]["aria-controls"], panels[1].id);
+  assert.equal(panels[0]["aria-labelledby"], tabs[0].id);
+  assert.equal(panels[1]["aria-labelledby"], tabs[1].id);
+  assert.equal(tabs[0].tabIndex, 0);
+  assert.equal(tabs[1].tabIndex, -1);
 
   review.setReviewTab(questions, "ready");
   assert.equal(panels[0].hidden, true);
   assert.equal(panels[1].hidden, false);
+  assert.equal(tabs[0].tabIndex, -1);
+  assert.equal(tabs[1].tabIndex, 0);
+  assert.equal(review.moveReviewTab(tabs[1], "ArrowRight"), true);
+  assert.equal(documentRef.activeElement, tabs[0]);
+  assert.equal(review.moveReviewTab(tabs[0], "End"), true);
+  assert.equal(documentRef.activeElement, tabs[1]);
 
   review.render(documentRef, page, {
     blockers: [], issues: [], preview_url: "/preview",
