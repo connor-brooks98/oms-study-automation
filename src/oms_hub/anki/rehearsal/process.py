@@ -697,11 +697,26 @@ class ProcessRehearsal:
                     apply=apply,
                     apply_status=423 if is_v3 else None,
                 )
+                native_gate_complete = is_v3 and _is_windows()
                 return RehearsalResult(
                     job_id,
                     overlay.root,
                     self.request.evidence_zip,
                     self._timeline,
+                    local_execution_evidence=(
+                        "NUC-native actual-process live acceptance performed"
+                        if native_gate_complete
+                        else "Local actual-process rehearsal execution performed"
+                    ),
+                    native_gate_complete=native_gate_complete,
+                    missing_evidence=(
+                        ()
+                        if native_gate_complete
+                        else (
+                            "Native NUC/Windows PowerShell capsule export pending",
+                            "Native NUC/Windows capsule execution pending",
+                        )
+                    ),
                     run_goal="capture",
                     outcome="capture_success",
                 )
@@ -2655,6 +2670,7 @@ class ProcessRehearsal:
                 "result": "CAPTURE_READY_FOR_REVIEW",
                 "ready_for_review": True,
                 "run_goal": "capture",
+                "native_gate_complete": is_v3 and _is_windows(),
             },
             "capture-completion.json": completion,
             "capsule.json": manifest.model_dump(mode="json"),
@@ -2715,6 +2731,7 @@ class ProcessRehearsal:
                     "candidate": completion["candidate"],
                     "job_id": str(job_id),
                     "runtime_pid": self._attested_runtime_pid(),
+                    "native_gate_complete": _is_windows(),
                     "stage_products": stage_products,
                     "cost_ledger": cost_ledger,
                     "cost_ledger_sha256": cost_ledger_sha256,

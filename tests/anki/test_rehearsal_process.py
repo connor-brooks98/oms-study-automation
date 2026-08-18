@@ -2963,6 +2963,7 @@ def test_standalone_launcher_full_reexec_uses_venv_dependencies_and_propagates_e
         "            'evidence_zip': 'evidence',\n"
         "            'run_goal': self.request.kwargs['run_goal'],\n"
         "            'outcome': 'golden_success',\n"
+        "            'native_gate_complete': False,\n"
         "        })()\n",
         encoding="utf-8",
     )
@@ -3027,6 +3028,7 @@ def test_standalone_launcher_full_reexec_uses_venv_dependencies_and_propagates_e
     assert success.returncode == 0
     assert "job_id=transported-dependency" in success.stdout
     assert "run_goal=golden outcome=golden_success" in success.stdout
+    assert "native_gate_complete=false" in success.stdout
     assert "PYTHONPATH" not in success.stderr
     assert not list(repository.rglob("*.pyc"))
     forged_environment = {

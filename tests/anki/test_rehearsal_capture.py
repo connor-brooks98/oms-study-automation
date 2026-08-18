@@ -2645,6 +2645,7 @@ def test_v3_capture_writes_bounded_live_acceptance_json(
 
     summary = json.loads(request.evidence_zip.with_suffix(".json").read_text())
     assert summary["runtime_pid"] == 77
+    assert summary["native_gate_complete"] is False
     assert summary["apply_status"] == 423
     assert summary["no_anki_mutation"] is True
     assert [row["stage"] for row in summary["stage_products"]] == [

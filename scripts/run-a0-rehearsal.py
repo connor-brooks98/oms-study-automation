@@ -285,7 +285,8 @@ def _isolated_main(payload: object) -> int:
     result = ProcessRehearsal(RehearsalRequest(**request)).run()
     print(
         f"job_id={result.job_id} overlay={result.overlay} evidence={result.evidence_zip} "
-        f"run_goal={result.run_goal} outcome={result.outcome}"
+        f"run_goal={result.run_goal} outcome={result.outcome} "
+        f"native_gate_complete={str(result.native_gate_complete).lower()}"
     )
     return 0
 
