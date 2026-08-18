@@ -3,6 +3,7 @@
 import json
 import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Protocol
 
 from pydantic import ValidationError
@@ -367,7 +368,19 @@ def _normalize_answer_text(value: str) -> str:
 
 def _slide_repeats_question(question: ExtractedQuestion, text: str) -> bool:
     stem = " ".join(question.stem.casefold().split())
-    return len(stem) >= 12 and stem in " ".join(text.casefold().split())
+    slide_text = " ".join(text.casefold().split())
+    if len(stem) < 12:
+        return False
+    if stem in slide_text:
+        return True
+    choices = tuple(
+        _normalize_answer_text(_OPTION_PREFIX.sub("", choice))
+        for choice in question.choices
+    )
+    if not all(choice and choice in slide_text for choice in choices):
+        return False
+    slide_stem = re.split(r"\s+a[).:]\s+", slide_text, maxsplit=1)[0]
+    return SequenceMatcher(None, stem, slide_stem).ratio() >= 0.9
 
 
 def _source_document(document: ParsedDocument | SourceDocument) -> SourceDocument:

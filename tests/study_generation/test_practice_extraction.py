@@ -375,6 +375,54 @@ def test_extractor_does_not_apply_next_questions_styled_option(
     assert result.questions[0].supplied_correct_index is None
 
 
+def test_extractor_accepts_repeated_slide_with_minor_stem_wording_change(
+    tmp_path: Path,
+) -> None:
+    document = _document(
+        tmp_path,
+        segments=(
+            ParsedSegment(
+                "question",
+                SegmentKind.PARAGRAPH,
+                "He develops flushing during his vancomycin infusion. What explains this? "
+                "A) Allergy B) Histamine release",
+                DocumentLocator("slide 1", slide_number=1),
+            ),
+            ParsedSegment(
+                "answer",
+                SegmentKind.PARAGRAPH,
+                "He develops flushing during his antibiotic infusion. What explains this? "
+                "A) Allergy B) Histamine release",
+                DocumentLocator("slide 2", slide_number=2),
+                style_metadata=("bold: B) Histamine release",),
+            ),
+        ),
+    )
+    payload = {
+        "questions": [
+            {
+                "original_identifier": None,
+                "stem": "He develops flushing during his vancomycin infusion. What explains this?",
+                "choices": ["Allergy", "Histamine release"],
+                "supplied_correct_index": None,
+                "rationale": None,
+                "source_segments": [
+                    {"source_id": "source-1", "segment_key": "question"}
+                ],
+                "candidate_assets": [],
+                "confidence": 0.9,
+            }
+        ],
+        "answers": [],
+    }
+
+    result = PracticeQuestionExtractor(
+        StructuredGenerator([json.dumps(payload)])
+    ).extract((document,))
+
+    assert result.questions[0].supplied_correct_index == 1
+
+
 def test_extractor_blocks_partial_results_when_source_has_a_sequential_question_set(
     tmp_path: Path,
 ) -> None:
