@@ -4,6 +4,8 @@ from pathlib import Path
 
 from PIL import Image
 from pptx import Presentation
+from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Inches
 
 from oms_hub.document_processing import presentation_render
@@ -15,6 +17,7 @@ from oms_hub.document_processing.domain import (
     ParsedSegment,
     SegmentKind,
 )
+from oms_hub.document_processing.ocr import LocalOcr
 from oms_hub.document_processing.pptx_locator import PptxLocatorEnricher
 from oms_hub.document_processing.presentation_render import PresentationRenderer
 from oms_hub.files.office import OfficeUnavailableError
@@ -121,6 +124,85 @@ def test_enricher_preserves_candidate_semantic_text_and_order_while_restoring_sl
     assert tuple(segment.locator.slide_number for segment in enriched.segments) == (1, 2)
 
 
+def test_enricher_restores_slide_style_when_anydoc_text_is_split_differently(
+    tmp_path: Path,
+) -> None:
+    source = build_pptx(
+        tmp_path / "split-style.pptx",
+        slides=(SlideFixture("Answer", "C) Correct answer"),),
+    )
+    presentation = Presentation(source)
+    run = presentation.slides[0].shapes[1].text_frame.paragraphs[0].runs[0]
+    run.font.bold = True
+    presentation.save(source)
+    snapshot = snapshot_for(source)
+    parsed = ParsedDocument(
+        snapshot.id,
+        snapshot.sha256,
+        "pptx",
+        "fixture",
+        "1",
+        (
+            ParsedSegment(
+                "semantic-answer",
+                SegmentKind.PARAGRAPH,
+                "Semantically split answer block",
+                DocumentLocator("block 1"),
+            ),
+        ),
+        (),
+        (),
+    )
+
+    enriched = PptxLocatorEnricher().enrich(snapshot, parsed)
+
+    assert enriched.segments[0].locator.slide_number == 1
+    assert enriched.segments[0].style_metadata == ("bold: C) Correct answer",)
+
+
+def test_enricher_adds_slide_style_marker_when_candidate_has_no_slide_locator(
+    tmp_path: Path,
+) -> None:
+    source = build_pptx(
+        tmp_path / "unlocated-style.pptx",
+        slides=(
+            SlideFixture("Question", "Which answer?"),
+            SlideFixture("Answer", "B) Correct"),
+        ),
+    )
+    presentation = Presentation(source)
+    presentation.slides[1].shapes[1].text_frame.paragraphs[0].runs[0].font.bold = True
+    presentation.save(source)
+    snapshot = snapshot_for(source)
+    parsed = ParsedDocument(
+        snapshot.id,
+        snapshot.sha256,
+        "pptx",
+        "fixture",
+        "1",
+        (
+            ParsedSegment(
+                "unlocated",
+                SegmentKind.PARAGRAPH,
+                "Candidate without matching location",
+                DocumentLocator("block 1"),
+            ),
+        ),
+        (),
+        (),
+    )
+
+    enriched = PptxLocatorEnricher().enrich(snapshot, parsed)
+
+    marker = next(
+        segment for segment in enriched.segments
+        if segment.key == "slide-2-style-metadata"
+    )
+    assert marker.text == ""
+    assert marker.locator.slide_number == 2
+    assert marker.style_metadata == ("bold: B) Correct",)
+
+
 def test_enricher_binds_repeated_media_on_one_slide_to_every_picture_occurrence(
     tmp_path: Path,
 ) -> None:
@@ -165,7 +247,174 @@ def test_enricher_leaves_media_reused_across_slides_unbound(tmp_path: Path) -> N
     )
     images = tuple(segment for segment in parsed.segments if segment.kind is SegmentKind.IMAGE)
     assert len(images) == 2
-    assert all(segment.locator.slide_number is None for segment in images)
+    assert tuple(segment.locator.slide_number for segment in images) == (1, 2)
+
+
+def test_enricher_ocrs_image_only_slide(tmp_path: Path) -> None:
+    source = build_pptx(
+        tmp_path / "image-only.pptx",
+        slides=(SlideFixture("", "", image=True),),
+    )
+
+    parsed = AnydocProcessor(
+        PptxLocatorEnricher(LocalOcr(lambda _path: "Question screenshot text"))
+    ).parse(snapshot_for(source), tmp_path / "assets")
+
+    ocr = tuple(segment for segment in parsed.segments if segment.key.endswith("-ocr"))
+    assert tuple(segment.text for segment in ocr) == ("Question screenshot text",)
+    assert ocr[0].locator.slide_number == 1
+
+
+def test_enricher_ocrs_large_picture_on_mixed_text_slide(tmp_path: Path) -> None:
+    source = build_pptx(
+        tmp_path / "mixed.pptx",
+        slides=(SlideFixture("Question 1", "Tutor note", image=True),),
+    )
+    presentation = Presentation(source)
+    picture = next(
+        shape for shape in presentation.slides[0].shapes
+        if shape.shape_type is MSO_SHAPE_TYPE.PICTURE
+    )
+    picture.width = Inches(9)
+    picture.height = Inches(5)
+    presentation.save(source)
+
+    parsed = AnydocProcessor(
+        PptxLocatorEnricher(LocalOcr(lambda _path: "Embedded Q-bank question"))
+    ).parse(snapshot_for(source), tmp_path / "assets")
+
+    assert "Embedded Q-bank question" in tuple(segment.text for segment in parsed.segments)
+
+
+def test_enricher_skips_small_logo_on_text_slide(tmp_path: Path) -> None:
+    source = build_pptx(
+        tmp_path / "logo.pptx",
+        slides=(SlideFixture("Question 1", "Visible question text", image=True),),
+    )
+    calls: list[Path] = []
+
+    parsed = AnydocProcessor(
+        PptxLocatorEnricher(LocalOcr(lambda path: calls.append(path) or "logo"))
+    ).parse(snapshot_for(source), tmp_path / "assets")
+
+    assert calls == []
+    assert all(not segment.key.endswith("-ocr") for segment in parsed.segments)
+    assert all(not warning.startswith("BLOCKER:") for warning in parsed.warnings)
+
+
+def test_enricher_large_picture_selection_is_slide_specific_for_reused_media(
+    tmp_path: Path,
+) -> None:
+    source = build_pptx(
+        tmp_path / "reused.pptx",
+        slides=(
+            SlideFixture("Question 1", "Tutor note", image=True),
+            SlideFixture("Question 2", "Tutor note", image=True),
+        ),
+    )
+    presentation = Presentation(source)
+    first = next(
+        shape for shape in presentation.slides[0].shapes
+        if shape.shape_type is MSO_SHAPE_TYPE.PICTURE
+    )
+    first.width = Inches(9)
+    first.height = Inches(5)
+    second = next(
+        shape for shape in presentation.slides[1].shapes
+        if shape.shape_type is MSO_SHAPE_TYPE.PICTURE
+    )
+    second.width = Inches(0.5)
+    second.height = Inches(0.5)
+    presentation.save(source)
+    calls: list[Path] = []
+
+    parsed = AnydocProcessor(
+        PptxLocatorEnricher(LocalOcr(lambda path: calls.append(path) or "large screenshot"))
+    ).parse(snapshot_for(source), tmp_path / "assets")
+
+    assert len(calls) == 1
+    assert tuple(
+        segment.locator.slide_number
+        for segment in parsed.segments
+        if segment.key.endswith("-ocr")
+    ) == (1,)
+
+
+def test_enricher_reports_one_blocker_when_required_ocr_is_empty(tmp_path: Path) -> None:
+    source = build_pptx(
+        tmp_path / "unreadable.pptx",
+        slides=(SlideFixture("", "", image=True),),
+    )
+
+    parsed = AnydocProcessor(
+        PptxLocatorEnricher(LocalOcr(lambda _path: ""))
+    ).parse(snapshot_for(source), tmp_path / "assets")
+
+    assert tuple(warning for warning in parsed.warnings if warning.startswith("BLOCKER:")) == (
+        "BLOCKER: OCR is required but unavailable or empty for slide 1",
+    )
+
+
+def test_enricher_preserves_bold_and_color_as_sidecar_metadata(tmp_path: Path) -> None:
+    source = build_pptx(
+        tmp_path / "formatted-answer.pptx",
+        slides=(SlideFixture("Answer", "C) Correct answer"),),
+    )
+    presentation = Presentation(source)
+    run = presentation.slides[0].shapes[1].text_frame.paragraphs[0].runs[0]
+    run.font.bold = True
+    run.font.color.rgb = RGBColor(255, 0, 0)
+    presentation.save(source)
+
+    parsed = AnydocProcessor(PptxLocatorEnricher()).parse(
+        snapshot_for(source), tmp_path / "assets"
+    )
+
+    formatted = next(segment for segment in parsed.segments if "Correct answer" in segment.text)
+    assert formatted.style_metadata == (
+        "bold: C) Correct answer",
+        "color #FF0000: C) Correct answer",
+    )
+
+
+def test_enricher_restores_missing_style_cues_when_one_cue_already_matched(
+    tmp_path: Path,
+) -> None:
+    source = build_pptx(
+        tmp_path / "partial-style.pptx",
+        slides=(SlideFixture("Styled title", "C) Correct answer"),),
+    )
+    presentation = Presentation(source)
+    presentation.slides[0].shapes[0].text_frame.paragraphs[0].runs[0].font.bold = True
+    presentation.slides[0].shapes[1].text_frame.paragraphs[0].runs[0].font.color.rgb = (
+        RGBColor(255, 0, 0)
+    )
+    presentation.save(source)
+    snapshot = snapshot_for(source)
+    parsed = ParsedDocument(
+        snapshot.id,
+        snapshot.sha256,
+        "pptx",
+        "fixture",
+        "1",
+        (
+            ParsedSegment(
+                "title-only",
+                SegmentKind.HEADING,
+                "Styled title",
+                DocumentLocator("block 1"),
+            ),
+        ),
+        (),
+        (),
+    )
+
+    enriched = PptxLocatorEnricher().enrich(snapshot, parsed)
+
+    assert enriched.segments[0].style_metadata == (
+        "bold: Styled title",
+        "color #FF0000: C) Correct answer",
+    )
 
 
 def test_renderer_persists_bounded_full_slide_candidates_with_slide_locators(

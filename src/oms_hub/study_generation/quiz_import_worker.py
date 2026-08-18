@@ -321,6 +321,18 @@ class QuizImportWorker:
                 for document, source, role in zip(documents, sources, roles, strict=True)
             )
         )
+        parser_blockers = tuple(
+            DraftDiagnostic(
+                "parser-blocker",
+                warning.removeprefix("BLOCKER: ").strip(),
+                DiagnosticSeverity.BLOCKER,
+            )
+            for document in documents
+            for warning in document.warnings
+            if warning.startswith("BLOCKER:")
+        )
+        if parser_blockers:
+            result = replace(result, diagnostics=(*result.diagnostics, *parser_blockers))
         provider = result.provider_metadata[-1] if result.provider_metadata else None
         self.repository.save_run_artifact(
             run.id,
@@ -346,7 +358,7 @@ class QuizImportWorker:
             source_hashes=tuple(source.snapshot_sha256 or "" for source in sources),
             parser_versions=(),
             provider_model="deterministic",
-            prompt_version="supplied-answer-pairing-v1",
+            prompt_version="supplied-answer-pairing-v2",
             artifact_hashes=(_artifact_hash(self.repository, run.id, "extract"),),
             roles=tuple(role.value for role in roles),
         )
@@ -362,13 +374,33 @@ class QuizImportWorker:
             extracted.answers,
             question_source_refs=extracted.question_source_refs,
         )
-        # Extraction-level blockers describe ambiguity even when deterministic pairing
-        # found a supplied answer; retain them as review work on every affected draft.
-        if extracted.diagnostics:
-            drafts = tuple(
-                replace(draft, diagnostics=(*draft.diagnostics, *extracted.diagnostics))
-                for draft in drafts
-            )
+        # Extraction-level ambiguity belongs to the run, not every question.  Copying
+        # it made one missing count look like N separate question failures.
+        self.repository.save_run_artifact(
+            run.id,
+            "review:run-diagnostics",
+            _artifact_hash(self.repository, run.id, "extract"),
+            json.dumps(
+                [
+                    {
+                        "code": item.code,
+                        "message": item.message,
+                        "severity": item.severity.value,
+                        "acknowledged": False,
+                        "overridable": item.code
+                        in {
+                            "conflicting-duplicate-question",
+                            "conflicting-question-identifier",
+                            "conflicting-question-source-reference",
+                            "incomplete-sequential-question-extraction",
+                        },
+                    }
+                    for item in extracted.diagnostics
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
         self.repository.save_run_artifact(run.id, "pair", signature, _drafts_json(drafts))
         return drafts
 
@@ -793,6 +825,7 @@ def _document_json(document: ParsedDocument) -> str:
                     "parent_key": item.parent_key,
                     "previous_key": item.previous_key,
                     "next_key": item.next_key,
+                    "style_metadata": list(item.style_metadata),
                 }
                 for item in document.segments
             ],
@@ -834,6 +867,7 @@ def _document_from_json(payload_json: str) -> ParsedDocument:
                 item["parent_key"],
                 item["previous_key"],
                 item["next_key"],
+                tuple(item.get("style_metadata", ())),
             )
             for item in payload["segments"]
         ),

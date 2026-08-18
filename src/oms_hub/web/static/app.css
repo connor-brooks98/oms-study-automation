@@ -427,6 +427,8 @@ button.exam-toggle {
   font: 400 .7rem/1.5 "IBM Plex Mono", monospace;
 }
 .file-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+.file-card .file-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
+.file-card .file-actions > * { min-width: 0; }
 .file-actions .button:not(.sh-btn) { min-height: var(--control-h); padding: .55rem .75rem; font-size: .78rem; }
 .checklist-card { padding: 1.25rem; margin-bottom: 1rem; }
 .section-heading { display: flex; justify-content: space-between; margin-bottom: 1rem; }
@@ -498,7 +500,7 @@ select:not(.sh-select):not(.sh-control) {
   background: var(--surface);
   font-size: .78rem;
 }
-.selected-file span:last-child { color: var(--text-3-strong); font-family: "IBM Plex Mono", monospace; }
+.selected-file-size { color: var(--text-3-strong); font-family: "IBM Plex Mono", monospace; }
 .upload-submit { margin-top: .2rem; }
 .upload-results { padding: 1.2rem; margin-top: 1rem; }
 .upload-results h2 { margin-bottom: .55rem; }
@@ -506,7 +508,9 @@ select:not(.sh-select):not(.sh-control) {
 .upload-progress { height: .45rem; margin-top: .8rem; overflow: hidden; border-radius: 999px; background: var(--surface); }
 .upload-progress span { display: block; width: 0; height: 100%; background: var(--processing); transition: width 150ms linear; }
 .upload-items { display: grid; gap: .4rem; margin: .8rem 0 0; padding: 0; list-style: none; }
+.upload-results, .upload-status, .upload-items, .upload-items li { min-width: 0; max-width: 100%; box-sizing: border-box; }
 .upload-items li { display: flex; justify-content: space-between; gap: 1rem; padding: .55rem .65rem; border-radius: .4rem; background: var(--surface); font-size: .78rem; }
+.upload-items li > span { min-width: 0; overflow-wrap: anywhere; }
 .duplicate-dialog {
   width: min(32rem, calc(100% - 2rem));
   padding: 1.5rem;
@@ -1971,8 +1975,8 @@ button.sh-command-trigger { min-height: var(--control-h); padding: var(--sp-2) v
 .upload-progress::-webkit-progress-bar { background: var(--surface); border-radius: var(--r-pill); }
 .upload-progress::-webkit-progress-value { background: var(--processing); border-radius: var(--r-pill); }
 .selected-file { min-width: 0; }
-.selected-file span:first-child { min-width: 0; overflow-wrap: anywhere; }
-.selected-file span:last-child { color: var(--text-3-strong); flex: none; }
+.selected-file-name { min-width: 0; overflow-wrap: anywhere; }
+.selected-file-size { color: var(--text-3-strong); flex: none; }
 .duplicate-actions { flex-wrap: wrap; }
 
 .review-section { padding-block: var(--sp-5); border-top: 1px solid var(--border); }

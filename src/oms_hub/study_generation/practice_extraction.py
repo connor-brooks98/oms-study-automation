@@ -346,9 +346,15 @@ def _source_header(source: SourceDocument) -> str:
 
 def _serialize_segment(segment: ParsedSegment, text: str | None = None) -> str:
     asset_keys = ", ".join(segment.asset_keys) if segment.asset_keys else "none"
+    style_metadata = (
+        f"source_style_metadata: {'; '.join(segment.style_metadata)}\n"
+        if segment.style_metadata
+        else ""
+    )
     return (
         f"locator: {segment.locator.label}\nsegment_key: {segment.key}\n"
         f"nearby_asset_keys: {asset_keys}\ntext: {segment.text if text is None else text}\n"
+        f"{style_metadata}"
     )
 
 

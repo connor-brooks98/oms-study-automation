@@ -92,6 +92,21 @@ test("submission freezes the picker manifest before mutable selection changes", 
   assert.equal(frozen[1].filename, "second.txt");
 });
 
+test("repeated file additions are additive, deduplicated, removable, and re-addable", () => {
+  const first = { name: "first.txt", size: 10, lastModified: 1 };
+  const duplicate = { name: "first.txt", size: 10, lastModified: 1 };
+  const second = { name: "second.txt", size: 20, lastModified: 2 };
+
+  let selected = uploads.appendUniqueFiles([], [first]);
+  selected = uploads.appendUniqueFiles(selected, [duplicate, second]);
+  assert.deepEqual(selected, [first, second]);
+
+  selected = uploads.removeFileAt(selected, 0);
+  assert.deepEqual(selected, [second]);
+  selected = uploads.appendUniqueFiles(selected, [first]);
+  assert.deepEqual(selected, [second, first]);
+});
+
 test("only authoritative lifecycle terminal state stops polling", () => {
   assert.equal(
     uploads.batchIsTerminal({ lifecycle: "active", outcome: "failed" }),

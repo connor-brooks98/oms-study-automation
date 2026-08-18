@@ -358,6 +358,61 @@ def test_confirmed_loser_cannot_bypass_cleaning_admission(tmp_path: Path) -> Non
     assert repository.require_item("loser").state is UploadState.NEEDS_REVIEW
 
 
+def test_keep_current_replacement_does_not_fail_later_item_in_same_batch(
+    tmp_path: Path,
+) -> None:
+    database, repository, first_lecture_id = _prepared(tmp_path)
+    catalog = CatalogRepository(database)
+    second_lecture_id = catalog.upsert_lecture(
+        LectureInput("Cardiology", 1, 8, "Arrhythmias", "Dr Test", None)
+    )
+    cleaner = CountingCleaner()
+    pipeline = _pipeline(database, tmp_path, cleaner)
+    _add(repository, tmp_path, "current")
+    repository.set_manual_assignment("current", first_lecture_id)
+    pipeline.process("current")
+
+    batch_id = repository.create_batch(UploadKind.TRANSCRIPTS)
+    for item_id in ("replacement", "later-valid"):
+        payload = f"{item_id} transcript with enough facts.".encode()
+        path = tmp_path / f"{item_id}.txt"
+        path.write_bytes(payload)
+        repository.add_item(
+            UploadKind.TRANSCRIPTS,
+            StagedUpload(
+                batch_id,
+                item_id,
+                path,
+                hashlib.sha256(payload).hexdigest(),
+                len(payload),
+                path.name,
+            ),
+        )
+    repository.set_manual_assignment("replacement", first_lecture_id)
+    repository.set_manual_assignment("later-valid", second_lecture_id)
+    service = IngestionService(
+        repository,
+        catalog,
+        UploadMatcher(),
+        StagingService(tmp_path / "staging", 1_000_000, 2_000_000),
+    )
+    service.confirm_processing("replacement")
+    proposed = pipeline.process("replacement")
+    assert proposed.state == "proposed"
+
+    kept = repository.keep_study_revision(proposed.id)
+    later = pipeline.process("later-valid")
+
+    assert kept.state == "kept"
+    assert repository.require_item("replacement").state is UploadState.COMPLETE
+    assert later.state == "current"
+    assert repository.require_item("later-valid").state is UploadState.COMPLETE
+    batch = repository.get_batch(batch_id)
+    assert batch is not None
+    assert batch.lifecycle == "terminal"
+    assert batch.outcome == "complete"
+
+
 def test_cleaning_admission_contention_retries_past_normal_attempt_cap(
     tmp_path: Path,
 ) -> None:

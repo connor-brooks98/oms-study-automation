@@ -43,7 +43,7 @@ def classify_public_path(path: str) -> PublicPathPolicy:
     if not parts or not parts[0] or len(parts) > 3:
         return PublicPathPolicy(False, is_canonical, None)
     if len(parts) == 1 or (
-        parts[1] in {"content", "answer"} and len(parts) == 2
+        parts[1] in {"content", "answer", "flags"} and len(parts) == 2
     ):
         return PublicPathPolicy(True, is_canonical, "general")
     if parts[1] == "outline" and len(parts) == 2:

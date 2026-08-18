@@ -201,6 +201,33 @@ def test_prompt_keeps_source_order_and_source_context(tmp_path: Path) -> None:
     assert prompt.index("segment_key: heading") < prompt.index("segment_key: questions-1")
 
 
+def test_prompt_includes_answer_formatting_sidecar_without_rewriting_text(
+    tmp_path: Path,
+) -> None:
+    document = _document(
+        tmp_path,
+        segments=(
+            ParsedSegment(
+                "questions-1",
+                SegmentKind.PARAGRAPH,
+                "C) Correct answer",
+                DocumentLocator("slide 2", slide_number=2),
+                style_metadata=("bold: C) Correct answer", "color #FF0000: C) Correct answer"),
+            ),
+        ),
+    )
+    generator = StructuredGenerator([valid_extraction_json()])
+
+    PracticeQuestionExtractor(generator).extract((document,))
+
+    prompt = generator.requests[0].input_text
+    assert "text: C) Correct answer" in prompt
+    assert (
+        "source_style_metadata: bold: C) Correct answer; color #FF0000: C) Correct answer"
+        in prompt
+    )
+
+
 def test_extractor_blocks_partial_results_when_source_has_a_sequential_question_set(
     tmp_path: Path,
 ) -> None:

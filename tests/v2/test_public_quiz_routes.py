@@ -7,6 +7,7 @@ from oms_hub.app import create_app
 from oms_hub.config import Settings
 from oms_hub.models import StudioRunModel
 from oms_hub.repositories import LectureInput
+from oms_hub.security.rate_limit import PublicQuizRateLimiter, RatePolicy
 from oms_hub.study_generation.domain import GenerationKind, PublishedQuizOrderDirection
 from oms_hub.study_generation.native_quiz import parse_native_quiz
 from oms_hub.study_generation.outline import OutlinePdfRenderer
@@ -107,6 +108,199 @@ def test_public_library_groups_only_published_quizzes(tmp_path):
     assert "Unpublished lecture" not in response.text
 
 
+def test_management_library_exposes_structured_editor_only_to_owner(tmp_path):
+    app, _published = _published_app(tmp_path)
+    public = TestClient(app).get("/public/quizzes")
+    managed = TestClient(app).get("/studio/library/quizzes")
+
+    assert "data-payload-questions" not in public.text
+    assert "correct_index" not in public.text
+    assert "data-payload-questions" in managed.text
+    assert "data-add-question" in managed.text
+    assert "data-add-choice" in managed.text
+
+
+def test_public_question_flags_require_csrf_group_and_notify_management(tmp_path):
+    app, published = _published_app(tmp_path)
+    url = f"/public/quizzes/{published.token}/flags"
+    payload = {
+        "version": published.version,
+        "question_id": "q1",
+        "reason": "inaccurate_question",
+    }
+
+    with TestClient(app) as client:
+        denied = client.post(url, json=payload)
+        client.get(f"/public/quizzes/{published.token}")
+        csrf = client.cookies.get("study_hub_csrf")
+        first = client.post(url, json=payload, headers={"X-CSRF-Token": csrf})
+        second = client.post(url, json=payload, headers={"X-CSRF-Token": csrf})
+        invalid_reason = client.post(
+            url,
+            json={**payload, "reason": "arbitrary"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        stale = client.post(
+            url,
+            json={**payload, "version": published.version + 1},
+            headers={"X-CSRF-Token": csrf},
+        )
+        wrong_question = client.post(
+            url,
+            json={**payload, "question_id": "q9"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        management = client.get("/studio/library/quizzes")
+        flags = client.get(f"/api/published-quizzes/{published.token}/flags")
+
+    assert denied.status_code == 403
+    assert first.status_code == second.status_code == 200
+    assert invalid_reason.status_code == 422
+    assert stale.status_code == wrong_question.status_code == 409
+    assert flags.json()["flags"] == [
+        {
+            "question_id": "q1",
+            "reason": "inaccurate_question",
+            "count": 2,
+            "version": published.version,
+        }
+    ]
+    assert 'aria-label="1 open question flag"' in management.text
+
+
+def test_public_hostname_allows_rate_limited_flags_but_not_management(tmp_path):
+    app, published = _published_app(tmp_path, public=True)
+    app.state.public_quiz_rate_limiter = PublicQuizRateLimiter(
+        general_client=RatePolicy(2, 60),
+        general_global=RatePolicy(10, 60),
+        outline_client=RatePolicy(2, 60),
+        clock=lambda: 100.0,
+    )
+    payload = {
+        "version": published.version,
+        "question_id": "q1",
+        "reason": "want_to_review",
+    }
+
+    with TestClient(app, base_url="https://study.example.com") as client:
+        client.get(f"/public/quizzes/{published.token}")
+        csrf = client.cookies.get("study_hub_csrf")
+        recorded = client.post(
+            f"/public/quizzes/{published.token}/flags",
+            json=payload,
+            headers={"X-CSRF-Token": csrf},
+        )
+        limited = client.post(
+            f"/public/quizzes/{published.token}/flags",
+            json=payload,
+            headers={"X-CSRF-Token": csrf},
+        )
+        management = client.get("/studio/library/quizzes")
+
+    assert recorded.status_code == 200
+    assert limited.status_code == 429
+    assert management.status_code == 503
+
+
+def test_structured_payload_edit_versions_quiz_resolves_flags_and_rejects_unknown_media(
+    tmp_path,
+):
+    app, published = _published_app(tmp_path)
+    flag_payload = {
+        "version": published.version,
+        "question_id": "q1",
+        "reason": "ambiguous_question",
+    }
+    edited = {
+        "title": published.title,
+        "questions": [
+            {
+                "stem": "Corrected stem?",
+                "choices": ["First", "Second", "Third"],
+                "correct_index": 1,
+                "rationale": "Second is correct.",
+                "image_ref": None,
+            },
+            {
+                "stem": "Added question?",
+                "choices": ["Yes", "No"],
+                "correct_index": 0,
+                "rationale": "Yes.",
+                "image_ref": None,
+            },
+        ],
+    }
+    invented_media = {
+        **edited,
+        "questions": [
+            {
+                **edited["questions"][0],
+                "image_ref": {
+                    "key": "invented-image",
+                    "source_title": "Slides",
+                    "locator": "slide 1",
+                    "description": "diagram",
+                },
+            }
+        ],
+    }
+
+    with TestClient(app) as client:
+        client.get(f"/public/quizzes/{published.token}")
+        csrf = client.cookies.get("study_hub_csrf")
+        client.post(
+            f"/public/quizzes/{published.token}/flags",
+            json=flag_payload,
+            headers={"X-CSRF-Token": csrf},
+        )
+        rejected = client.patch(
+            f"/api/published-quizzes/{published.token}/payload",
+            json={"payload_json": json.dumps(invented_media)},
+            headers={"X-CSRF-Token": csrf},
+        )
+        updated = client.patch(
+            f"/api/published-quizzes/{published.token}/payload",
+            json={"payload_json": json.dumps(edited)},
+            headers={"X-CSRF-Token": csrf},
+        )
+        flags = client.get(f"/api/published-quizzes/{published.token}/flags")
+        content = client.get(f"/public/quizzes/{published.token}/content")
+
+    assert rejected.status_code == 422
+    assert "unavailable image media" in rejected.json()["detail"]
+    assert updated.status_code == 200
+    assert updated.json()["version"] == published.version + 1
+    assert flags.json() == {"flags": []}
+    assert content.json()["version"] == published.version + 1
+    assert [question["stem"] for question in content.json()["questions"]] == [
+        "Corrected stem?",
+        "Added question?",
+    ]
+    assert "correct_index" not in content.text
+
+
+def test_question_payload_edit_keeps_an_authoritatively_renamed_title(tmp_path):
+    app, published = _published_app(tmp_path)
+    with TestClient(app) as client:
+        client.get(f"/public/quizzes/{published.token}")
+        csrf = client.cookies.get("study_hub_csrf")
+        renamed = client.patch(
+            f"/api/published-quizzes/{published.token}/title",
+            json={"title": "Renamed quiz"}, headers={"X-CSRF-Token": csrf},
+        )
+        updated = client.patch(
+            f"/api/published-quizzes/{published.token}/payload",
+            json={"payload_json": json.dumps({
+                "title": published.title,
+                "questions": [{"stem": "Updated?", "choices": ["A", "B"],
+                               "correct_index": 0, "rationale": "A."}],
+            })}, headers={"X-CSRF-Token": csrf},
+        )
+        content = client.get(f"/public/quizzes/{published.token}/content")
+    assert renamed.status_code == updated.status_code == 200
+    assert content.json()["title"] == "Renamed quiz"
+
+
 def test_public_library_starts_all_courses_and_exams_collapsed(tmp_path):
     app, _ = _published_app(tmp_path)
     cardio_lecture_id = app.state.catalog_repository.upsert_lecture(
@@ -149,7 +343,7 @@ def test_local_owner_library_keeps_private_navigation_without_management_control
     assert 'href="/lectures">Lectures</a>' in managed.text
     assert "Study Hub Quizzes" not in managed.text
     assert 'data-reset-quiz' in public.text
-    assert 'title="Restart Lecture 1 Practice Quiz"' in public.text
+    assert 'title="Restart General CNS Pathology"' in public.text
     for private_hook in (
         "data-quiz-drag-handle",
         "data-title-form",
@@ -304,7 +498,7 @@ def test_public_quiz_page_and_content_do_not_expose_answer_key(tmp_path):
         content = client.get(f"/public/quizzes/{published.token}/content")
 
     assert page.status_code == 200
-    assert "Lecture 1 Practice Quiz" in page.text
+    assert "General CNS Pathology" in page.text
     assert 'class="quiz-library-button sh-btn sh-btn--secondary"' in page.text
     assert "/public/quizzes/assets/player.css?v=" in page.text
     assert "/public/quizzes/assets/player.js?v=" in page.text
@@ -723,5 +917,5 @@ def test_mixed_library_uses_studio_label_and_lecture_number(tmp_path):
     assert "Practice Questions" in library.text
     assert "Studio quiz" not in library.text
     assert lecture.token in quiz_library.text
-    assert "Lecture 1" in quiz_library.text
+    assert "Neuro Lecture 01" in quiz_library.text
     assert "General CNS Pathology" in quiz_library.text

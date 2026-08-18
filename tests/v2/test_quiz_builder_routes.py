@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -411,6 +413,60 @@ def test_direct_review_data_is_safe_and_edits_and_verification_require_csrf(tmp_
     assert blocked_publication.status_code == 409
     assert verified.status_code == 200
     assert verified.json()["blockers"] == []
+
+
+def test_run_diagnostic_acknowledgement_is_csrf_protected_and_hard_items_reject(
+    tmp_path,
+) -> None:
+    client = _client(tmp_path)
+    run_id = _direct_review_run(client)
+    client.app.state.practice_review.verify_generated_answer(run_id, "question-1")
+    client.app.state.studio_repository.save_run_artifact(
+        run_id,
+        "review:run-diagnostics",
+        "a" * 64,
+        json.dumps(
+            [
+                {
+                    "code": "incomplete-sequential-question-extraction",
+                    "message": "Count needs review",
+                    "severity": "blocker",
+                    "overridable": True,
+                    "acknowledged": False,
+                },
+                {
+                    "code": "parser-blocker",
+                    "message": "OCR unavailable",
+                    "severity": "blocker",
+                    "overridable": False,
+                    "acknowledged": False,
+                },
+            ]
+        ),
+    )
+    soft_url = (
+        f"/studio/runs/{run_id}/run-diagnostics/"
+        "incomplete-sequential-question-extraction/acknowledgement"
+    )
+
+    data = client.get(f"/studio/runs/{run_id}/review/data")
+    denied = client.post(soft_url)
+    acknowledged = client.post(soft_url, headers=_csrf_headers(client))
+    hard = client.post(
+        f"/studio/runs/{run_id}/run-diagnostics/parser-blocker/acknowledgement",
+        headers=_csrf_headers(client),
+    )
+
+    assert [item["code"] for item in data.json()["run_diagnostics"]] == [
+        "incomplete-sequential-question-extraction",
+        "parser-blocker",
+    ]
+    assert denied.status_code == 403
+    assert acknowledged.status_code == 200
+    stored = {item["code"]: item for item in acknowledged.json()["run_diagnostics"]}
+    assert stored["incomplete-sequential-question-extraction"]["acknowledged"] is True
+    assert acknowledged.json()["blockers"] == ["OCR unavailable"]
+    assert hard.status_code == 409
 
 
 def test_direct_review_rejects_wrong_state_and_notebook_review_stays_compatible(tmp_path) -> None:

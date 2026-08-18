@@ -25,6 +25,7 @@ def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
         "outline_outputs",
         "quiz_outputs",
         "published_quizzes",
+        "published_quiz_flags",
         "studio_source_operations",
     } <= names
     source_columns = {
@@ -62,6 +63,38 @@ def test_latest_schema_adds_native_quiz_and_notebook_source_registry(tmp_path):
     with database.session() as session:
         version = session.execute(
             text("SELECT version FROM schema_version WHERE id = 1")
+        ).scalar_one()
+    assert version == LATEST_SCHEMA_VERSION
+
+
+def test_v23_adds_public_question_flags_from_v22_idempotently(tmp_path: Path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'hub.db'}")
+    database.migrate()
+    with database.engine.begin() as connection:
+        connection.execute(text("DROP TABLE published_quiz_flags"))
+        connection.execute(text("UPDATE schema_version SET version=22 WHERE id=1"))
+
+    database.migrate()
+    database.migrate()
+
+    inspector = inspect(database.engine)
+    assert inspector.has_table("published_quiz_flags")
+    assert {
+        "quiz_token",
+        "quiz_version",
+        "question_id",
+        "reason",
+        "occurrence_count",
+        "status",
+        "created_at",
+        "updated_at",
+    } <= {column["name"] for column in inspector.get_columns("published_quiz_flags")}
+    assert "ix_published_quiz_flags_open" in {
+        index["name"] for index in inspector.get_indexes("published_quiz_flags")
+    }
+    with database.engine.connect() as connection:
+        version = connection.execute(
+            text("SELECT version FROM schema_version WHERE id=1")
         ).scalar_one()
     assert version == LATEST_SCHEMA_VERSION
 

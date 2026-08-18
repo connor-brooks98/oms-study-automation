@@ -55,6 +55,32 @@ test("corrupt browser progress is treated as not started", () => {
   assert.equal(library.readProgress(storage, "token", 1), "Not started");
 });
 
+test("structured editor payload retains image metadata", () => {
+  const retained = {
+    stem: "stem", choices: ["A", "B"], correct_index: 1, rationale: "why",
+    image_ref: { key: "image-1", source_title: "source", locator: "slide 1", description: "diagram" },
+  };
+  const payload = JSON.parse(library.structuredPayload("Title", [retained]));
+  assert.equal(payload.questions[0].correct_index, 1);
+  assert.deepEqual(payload.questions[0].image_ref, retained.image_ref);
+});
+
+test("structured editor never shifts a selected answer past a blank choice", () => {
+  const fields = [
+    { value: "A" }, { value: "" }, { value: "C" },
+  ];
+  const radios = [{ checked: false }, { checked: false }, { checked: true }];
+  const question = {
+    dataset: { imageRef: "null" },
+    querySelectorAll(selector) { return selector === "[data-choice]" ? fields : radios; },
+    querySelector() { return { value: "text" }; },
+  };
+  const form = { querySelectorAll() { return [question]; } };
+  const result = library.readStructuredQuestions(form)[0];
+  assert.equal(result.correct_index, 2);
+  assert.deepEqual(result.choices, ["A", "", "C"]);
+});
+
 test("course disclosures keep aria and the shared glyph state in sync", () => {
   const glyph = {
     states: [],
@@ -645,6 +671,58 @@ test("library controls and direction sequences preserve management payloads", as
   assert.deepEqual(library.directionSequence(0, 3), ["down", "down", "down"]);
   assert.deepEqual(library.directionSequence(3, 1), ["up", "up"]);
   assert.deepEqual(library.directionSequence(2, 2), []);
+});
+
+test("pointer drag marks its target and submits the required direction", async () => {
+  const classes = () => {
+    const values = new Set();
+    return {
+      add: (...names) => names.forEach((name) => values.add(name)),
+      remove: (...names) => names.forEach((name) => values.delete(name)),
+      contains: (name) => values.has(name),
+    };
+  };
+  const parent = { querySelectorAll: () => [source, target] };
+  const source = {
+    dataset: { orderUrl: "/api/published-quizzes/tok1/order" },
+    parentElement: parent,
+    classList: classes(),
+  };
+  const target = { parentElement: parent, classList: classes() };
+  const handle = new FakeLibraryElement();
+  handle.closest = () => source;
+  handle.setPointerCapture = () => {};
+  const documentRef = new FakeLibraryDocument({});
+  documentRef.cookie = "study_hub_csrf=csrf-token";
+  documentRef.elementFromPoint = () => ({ closest: () => target });
+  documentRef.querySelectorAll = (selector) => (
+    selector === ".is-drop-target" ? [source, target] : []
+  );
+  const originalFetch = global.fetch;
+  const originalLocation = global.location;
+  const requests = [];
+  let reloads = 0;
+  global.fetch = async (_url, options) => {
+    requests.push(JSON.parse(options.body).direction);
+    return { ok: true, async json() { return {}; } };
+  };
+  global.location = { reload: () => { reloads += 1; } };
+  try {
+    library.bindPointerReorder(documentRef, handle);
+    handle._listeners.pointerdown[0]({ button: 0, pointerId: 7 });
+    handle._listeners.pointermove[0]({ pointerId: 7, clientX: 10, clientY: 20 });
+    assert.equal(source.classList.contains("is-dragging"), true);
+    assert.equal(target.classList.contains("is-drop-target"), true);
+    await handle._listeners.pointerup[0]({ pointerId: 7, clientX: 10, clientY: 20 });
+  } finally {
+    global.fetch = originalFetch;
+    global.location = originalLocation;
+  }
+
+  assert.deepEqual(requests, ["down"]);
+  assert.equal(reloads, 1);
+  assert.equal(source.classList.contains("is-dragging"), false);
+  assert.equal(target.classList.contains("is-drop-target"), false);
 });
 
 test("failed drag reorder keeps the control usable and reports the server detail", async () => {

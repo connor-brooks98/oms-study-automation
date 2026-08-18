@@ -1,3 +1,4 @@
+import json
 from dataclasses import asdict, replace
 from io import BytesIO
 from pathlib import Path
@@ -149,6 +150,68 @@ def test_generated_answer_blocks_until_same_question_is_verified(tmp_path: Path)
         service.to_native_quiz(run_id)
     service.verify_generated_answer(run_id, "q1")
     assert service.blockers(run_id) == ()
+
+
+def test_overridable_run_diagnostic_is_stored_once_and_acknowledgement_persists(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    service.store("run-1", (_draft("q1", generated=False), _draft("q2", generated=False)))
+    service.repository.save_run_artifact(
+        "run-1",
+        "review:run-diagnostics",
+        "a" * 64,
+        json.dumps(
+            [
+                {
+                    "code": "incomplete-sequential-question-extraction",
+                    "message": "Question count needs review",
+                    "severity": "blocker",
+                    "overridable": True,
+                    "acknowledged": False,
+                }
+            ]
+        ),
+    )
+
+    assert service.blockers("run-1") == ("Question count needs review",)
+    assert len(service.run_diagnostics("run-1")) == 1
+    with pytest.raises(ValueError, match="Question count needs review"):
+        service.to_native_quiz("run-1")
+
+    service.acknowledge_run_diagnostic(
+        "run-1", "incomplete-sequential-question-extraction"
+    )
+    reloaded = PracticeReviewService(service.repository)
+
+    assert reloaded.run_diagnostics("run-1")[0]["acknowledged"] is True
+    assert reloaded.blockers("run-1") == ()
+    assert len(reloaded.to_native_quiz("run-1").questions) == 2
+
+
+def test_hard_run_diagnostic_cannot_be_acknowledged(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.store("run-1", (_draft("q1", generated=False),))
+    service.repository.save_run_artifact(
+        "run-1",
+        "review:run-diagnostics",
+        "a" * 64,
+        json.dumps(
+            [
+                {
+                    "code": "parser-blocker",
+                    "message": "OCR is unavailable for slide 2",
+                    "severity": "blocker",
+                    "overridable": False,
+                    "acknowledged": False,
+                }
+            ]
+        ),
+    )
+
+    with pytest.raises(ValueError, match="cannot be acknowledged"):
+        service.acknowledge_run_diagnostic("run-1", "parser-blocker")
+    assert service.blockers("run-1") == ("OCR is unavailable for slide 2",)
 
 
 def test_claimed_run_reserves_scope_against_reviewed_direct_import_publish(

@@ -72,6 +72,53 @@
     }
   };
 
+  const structuredPayload = (title, questions) => JSON.stringify({ title, questions });
+
+  const readStructuredQuestions = (form) => [...form.querySelectorAll("[data-payload-question]")].map((question) => {
+    const pairs = [...question.querySelectorAll("[data-choice]")].map((field, index) => ({
+      choice: field.value.trim(), correct: question.querySelectorAll("[data-correct]")[index]?.checked,
+    }));
+    const choices = pairs.map((pair) => pair.choice);
+    const correct = pairs.findIndex((pair) => pair.correct);
+    const image = JSON.parse(question.dataset.imageRef || "null");
+    return {
+      stem: question.querySelector("[data-stem]").value.trim(), choices, correct_index: correct,
+      rationale: question.querySelector("[data-rationale]").value.trim(),
+      topic: question.querySelector("[data-topic]").value.trim() || null,
+      area: question.querySelector("[data-area]").value.trim() || null,
+      learning_objective: question.querySelector("[data-learning-objective]").value.trim() || null,
+      image_ref: image,
+    };
+  });
+
+  const editorChoiceRow = (documentRef, value = "", checked = false) => {
+    const label = documentRef.createElement("label");
+    const radio = documentRef.createElement("input");
+    radio.type = "radio"; radio.dataset.correct = "true"; radio.checked = checked;
+    const input = documentRef.createElement("input");
+    input.dataset.choice = "true"; input.required = true; input.value = value;
+    const remove = documentRef.createElement("button");
+    remove.type = "button"; remove.dataset.removeChoice = "true"; remove.textContent = "Remove choice";
+    label.append(radio, input, remove);
+    return label;
+  };
+  const editorQuestion = (documentRef) => {
+    const fieldset = documentRef.createElement("fieldset");
+    fieldset.dataset.payloadQuestion = "true";
+    fieldset.dataset.imageRef = "null";
+    [["stem", "Stem"], ["rationale", "Rationale"], ["topic", "Topic"], ["area", "Area"], ["learningObjective", "Learning objective"]].forEach(([key, labelText]) => {
+      const label = documentRef.createElement("label"); label.textContent = labelText;
+      const input = documentRef.createElement(key === "stem" || key === "rationale" ? "textarea" : "input");
+      input.dataset[key === "learningObjective" ? "learningObjective" : key] = "true";
+      label.append(input); fieldset.append(label);
+    });
+    const choices = documentRef.createElement("div"); choices.dataset.choices = "true";
+    choices.append(editorChoiceRow(documentRef, "", true), editorChoiceRow(documentRef));
+    const add = documentRef.createElement("button"); add.type = "button"; add.dataset.addChoice = "true"; add.textContent = "Add choice";
+    const remove = documentRef.createElement("button"); remove.type = "button"; remove.dataset.removeQuestion = "true"; remove.textContent = "Remove question";
+    fieldset.append(choices, add, remove); return fieldset;
+  };
+
   const messageNode = (documentRef) => documentRef.querySelector("[data-reset-message]");
   const report = (documentRef, message) => { messageNode(documentRef).textContent = message; };
   const reorderFailureStorageKey = "oms-study-hub-quiz-reorder-failure";
@@ -245,10 +292,13 @@
 
   const bindPointerReorder = (documentRef, handle) => {
     let dragging = null;
+    const clearTarget = () => documentRef.querySelectorAll?.(".is-drop-target")
+      .forEach((row) => row.classList?.remove("is-drop-target"));
     const finish = async (event) => {
       if (!dragging || (event.pointerId !== undefined && event.pointerId !== dragging.pointerId)) return;
       const source = dragging.row;
       source.classList?.remove("is-dragging");
+      clearTarget();
       const target = documentRef.elementFromPoint?.(event.clientX, event.clientY)
         ?.closest?.("[data-quiz-order-row]");
       const rows = orderRows(source);
@@ -265,10 +315,20 @@
       handle.setPointerCapture?.(event.pointerId);
       row.classList?.add("is-dragging");
     });
+    handle.addEventListener("pointermove", (event) => {
+      if (!dragging || event.pointerId !== dragging.pointerId) return;
+      clearTarget();
+      const target = documentRef.elementFromPoint?.(event.clientX, event.clientY)
+        ?.closest?.("[data-quiz-order-row]");
+      if (target && target !== dragging.row && target.parentElement === dragging.row.parentElement) {
+        target.classList?.add("is-drop-target");
+      }
+    });
     handle.addEventListener("pointerup", finish);
     handle.addEventListener("pointercancel", (event) => {
       if (dragging?.pointerId === event.pointerId) {
         dragging.row.classList?.remove("is-dragging");
+        clearTarget();
         dragging = null;
       }
     });
@@ -364,6 +424,71 @@
         }
       });
     });
+    documentRef.querySelectorAll("[data-payload-form]").forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = form.querySelector("button[type='submit']");
+        const questions = readStructuredQuestions(form);
+        if (!questions.length || questions.some((question) => question.choices.length < 2 || question.choices.length > 8 || question.choices.some((choice) => !choice) || question.correct_index < 0)) {
+          return report(documentRef, "Each quiz needs one question, two to eight choices, and a correct answer.");
+        }
+        button.disabled = true;
+        try {
+          const response = await root.fetch(form.dataset.payloadUrl, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json", "X-CSRF-Token": cookieValue(documentRef.cookie, "study_hub_csrf") || "" },
+            body: JSON.stringify({ payload_json: structuredPayload(form.querySelector("[data-payload-title]").value, questions) }),
+          });
+          if (!response.ok) throw new Error(await errorMessage(response, "Quiz questions could not be updated."));
+          root.location?.reload?.();
+        } catch (error) {
+          button.disabled = false;
+          report(documentRef, error instanceof Error ? error.message : "Quiz questions could not be updated.");
+        }
+      });
+    });
+    documentRef.addEventListener("click", (event) => {
+      const addQuestion = event.target.closest?.("[data-add-question]");
+      if (addQuestion) {
+        const group = addQuestion.closest("form").querySelector("[data-payload-questions]");
+        if (group.querySelectorAll("[data-payload-question]").length < 100) group.append(editorQuestion(documentRef));
+        return;
+      }
+      const removeQuestion = event.target.closest?.("[data-remove-question]");
+      if (removeQuestion) {
+        const form = removeQuestion.closest("form");
+        if (form.querySelectorAll("[data-payload-question]").length > 1) removeQuestion.closest("[data-payload-question]").remove();
+        return;
+      }
+      const removeChoice = event.target.closest?.("[data-remove-choice]");
+      if (removeChoice) {
+        const group = removeChoice.closest("[data-choices]");
+        if (group.querySelectorAll("[data-choice]").length > 2) removeChoice.closest("label").remove();
+        return;
+      }
+      const addChoice = event.target.closest?.("[data-add-choice]");
+      if (addChoice) {
+        const group = addChoice.closest("[data-payload-question]").querySelector("[data-choices]");
+        if (group.querySelectorAll("[data-choice]").length < 8) group.append(editorChoiceRow(documentRef));
+      }
+    });
+    documentRef.addEventListener("change", (event) => {
+      const radio = event.target.closest?.("[data-correct]");
+      if (radio?.checked) radio.closest("[data-payload-question]")
+        .querySelectorAll("[data-correct]").forEach((item) => { if (item !== radio) item.checked = false; });
+    });
+    documentRef.querySelectorAll("[data-view-flags]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          const response = await root.fetch(button.dataset.flagsUrl, { cache: "no-store" });
+          if (!response.ok) throw new Error(await errorMessage(response, "Quiz flags could not be read."));
+          const flags = (await response.json()).flags || [];
+          report(documentRef, flags.length
+            ? flags.map((flag) => `${flag.question_id}: ${flag.reason} (${flag.count})`).join(" · ")
+            : "No open question flags.");
+        } catch (error) { report(documentRef, error instanceof Error ? error.message : "Quiz flags could not be read."); }
+      });
+    });
     documentRef.addEventListener?.("click", (event) => {
       documentRef.querySelectorAll?.("[data-quiz-overflow][open]").forEach((menu) => {
         if (!menu.contains?.(event.target)) menu.open = false;
@@ -400,8 +525,9 @@
     initialize, progressKey, progressLabel, progressClass, readProgress, resetProgress,
     tryResetProgress,
     cookieValue, managementRequest, setExpanded, directionSequence, reorderRequest,
+    bindPointerReorder,
     reorderFailureStorageKey, storeReorderFailure, consumeReorderFailure, keyboardReorderDirection,
-    applyRenamedTitle, applyUnpublish, connectedFocusable, quizCountLabel,
+    applyRenamedTitle, applyUnpublish, connectedFocusable, quizCountLabel, structuredPayload, readStructuredQuestions,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) root.document.addEventListener("DOMContentLoaded", () => initialize(root.document, root.localStorage), { once: true });

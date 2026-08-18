@@ -33,6 +33,17 @@
 
   const selectionIsLocked = (activeSubmission) => Boolean(activeSubmission);
 
+  const fileKey = (file) => `${file.name}:${file.size}:${file.lastModified}`;
+
+  const appendUniqueFiles = (current, incoming) => {
+    const known = new Set(current.map(fileKey));
+    return current.concat(Array.from(incoming).filter((file) => !known.has(fileKey(file))));
+  };
+
+  const removeFileAt = (files, index) => (
+    files.filter((_file, itemIndex) => itemIndex !== index)
+  );
+
   const itemErrorText = (item) => item.error || "";
 
   const rejectionDetail = (payload, fallback) => {
@@ -310,16 +321,28 @@
 
     const showFiles = (files) => {
       if (selectionIsLocked(activeSubmission)) return;
-      chosenFiles = Array.from(files);
+      chosenFiles = appendUniqueFiles(chosenFiles, files);
+      input.value = ""; // permits selecting the same file again after removal
       selected.replaceChildren();
-      chosenFiles.forEach((file) => {
+      chosenFiles.forEach((file, index) => {
         const row = documentRef.createElement("div");
         row.className = "selected-file";
         const name = documentRef.createElement("span");
         const size = documentRef.createElement("span");
+        const remove = documentRef.createElement("button");
         name.textContent = file.name;
+        name.className = "selected-file-name";
         size.textContent = formatBytes(file.size);
-        row.append(name, size);
+        size.className = "selected-file-size";
+        remove.type = "button";
+        remove.className = "button secondary sh-btn sh-btn--secondary";
+        remove.setAttribute("aria-label", `Remove ${file.name}`);
+        remove.textContent = "Remove";
+        remove.addEventListener("click", () => {
+          chosenFiles = removeFileAt(chosenFiles, index);
+          showFiles([]);
+        });
+        row.append(name, size, remove);
         selected.append(row);
       });
       status.textContent = chosenFiles.length
@@ -572,8 +595,7 @@
     });
     zone.addEventListener("drop", (event) => {
       if (selectionIsLocked(activeSubmission)) return;
-      input.files = event.dataTransfer.files;
-      showFiles(input.files);
+      showFiles(event.dataTransfer.files);
     });
 
     if (dialog) {
@@ -746,6 +768,7 @@
   };
 
   const api = {
+    appendUniqueFiles,
     chunkFinalizeUrl,
     csrfToken,
     batchIsTerminal,
@@ -763,6 +786,7 @@
     itemErrorText,
     rejectionDetail,
     requestWithTimeout,
+    removeFileAt,
     selectionIsLocked,
     formatLecture,
     initialize,

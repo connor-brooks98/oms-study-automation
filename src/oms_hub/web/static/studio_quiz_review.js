@@ -280,7 +280,11 @@
     const issues = payload.issues || payload.blockers.map((message) => ({
       question_id: message.split(":", 1)[0], display_label: message.split(":", 1)[0], type: "review", message, role: "err",
     }));
-    if (!issues.length) {
+    const hasBlockingRunDiagnostic = (payload.run_diagnostics || []).some((diagnostic) => (
+      diagnostic.severity === "blocker"
+      && !(diagnostic.overridable && diagnostic.acknowledged)
+    ));
+    if (!issues.length && !hasBlockingRunDiagnostic) {
       const ready = documentRef.createElement("section");
       ready.className = "sh-empty";
       ready.append(text(documentRef, "h3", "Ready for preview and publication.", "sh-empty__title"));
@@ -311,9 +315,30 @@
     });
   };
 
+  const renderRunDiagnostics = (documentRef, page, payload) => {
+    const target = page.querySelector("[data-review-blockers]");
+    (payload.run_diagnostics || []).forEach((diagnostic) => {
+      const item = documentRef.createElement("section");
+      item.className = "studio-review-issue-group sh-card";
+      item.append(text(documentRef, "p", diagnostic.message, "sh-section-label"));
+      if (diagnostic.overridable && !diagnostic.acknowledged) {
+        const acknowledge = documentRef.createElement("button");
+        acknowledge.type = "button";
+        acknowledge.className = "sh-btn sh-btn--secondary";
+        acknowledge.dataset.acknowledgeRunDiagnostic = diagnostic.code;
+        acknowledge.textContent = "Acknowledge";
+        item.append(acknowledge);
+      } else if (!diagnostic.overridable) {
+        item.append(text(documentRef, "p", "Blocking diagnostic; acknowledgement is unavailable."));
+      }
+      target.append(item);
+    });
+  };
+
   const render = (documentRef, page, payload) => {
     const state = captureRenderState(documentRef, page);
     renderIssues(documentRef, page, payload);
+    renderRunDiagnostics(documentRef, page, payload);
     const publish = page.querySelector("[data-publish-quiz]");
     publish.disabled = !canPublish(payload.blockers);
     const preview = page.querySelector("[data-preview-link]");
@@ -443,10 +468,15 @@
         return;
       }
       const candidate = event.target.closest?.("[data-select-candidate]");
+      const acknowledgement = event.target.closest?.("[data-acknowledge-run-diagnostic]");
       const verify = event.target.closest?.("[data-verify-question]");
       const publish = event.target.closest?.("[data-publish-quiz]");
       try {
-        if (candidate) {
+        if (acknowledgement) {
+          await send(`/studio/runs/${encodeURIComponent(page.dataset.runId)}/run-diagnostics/${encodeURIComponent(acknowledgement.dataset.acknowledgeRunDiagnostic)}/acknowledgement`, "POST");
+          await refresh();
+          message.textContent = "Run diagnostic acknowledged.";
+        } else if (candidate) {
           const card = candidate.closest("[data-question-id]");
           await send(candidateSelectionUrl(page.dataset.runId, card.dataset.questionId), "POST", candidateSelectionPayload(candidate.dataset.selectCandidate));
           await refresh();
@@ -472,7 +502,7 @@
     shouldRenderNoCandidateEmpty, normalizedEditPayload,
     candidateSelectionPayload, candidateSelectionUrl, captureRenderState,
     restoreRenderState, reindexChoiceRows, removeChoiceRow, choiceRow,
-    initialize, render, applyQuestionSave, reviewErrorMessage,
+    initialize, render, renderRunDiagnostics, applyQuestionSave, reviewErrorMessage,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root.document) root.document.addEventListener("DOMContentLoaded", () => initialize(root.document), { once: true });

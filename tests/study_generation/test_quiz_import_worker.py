@@ -3,6 +3,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,6 +37,7 @@ from oms_hub.study_generation.practice_extraction import (
     ExtractionProviderMetadata,
     ExtractionResult,
 )
+from oms_hub.study_generation.practice_review import PracticeReviewService
 from oms_hub.study_generation.quiz_import_worker import (
     QuizImportWorker,
     _document_from_json,
@@ -111,6 +113,15 @@ class _Parser:
             ),
             (),
             (),
+        )
+
+
+class _BlockingParser(_Parser):
+    def parse(self, snapshot, asset_root: Path) -> ParsedDocument:
+        parsed = super().parse(snapshot, asset_root)
+        return replace(
+            parsed,
+            warnings=("BLOCKER: OCR is required but unavailable for slide 2",),
         )
 
 
@@ -230,6 +241,83 @@ def test_retry_reuses_completed_parse_artifacts(tmp_path: Path) -> None:
     assert parser.calls == 1  # one source, never reparsed on extraction retry
 
 
+def test_parser_blocker_is_one_hard_run_diagnostic_not_repeated_per_question(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    run = _queued_import(repository, tmp_path)
+    worker = QuizImportWorker(
+        repository,
+        _BlockingParser(),
+        _QuestionExtractor(),
+        _UnusedAnswers(),
+        object(),
+        tmp_path / "assets",
+    )
+
+    worker.run(repository.claim_next_run())
+
+    service = PracticeReviewService(repository)
+    diagnostics = service.run_diagnostics(run.id)
+    assert diagnostics == (
+        {
+            "acknowledged": False,
+            "code": "parser-blocker",
+            "message": "OCR is required but unavailable for slide 2",
+            "overridable": False,
+            "severity": "blocker",
+        },
+    )
+    pair = repository.run_artifact(run.id, "pair")
+    assert pair is not None
+    drafts = _drafts_from_json(pair.payload_json)
+    assert len(drafts) == 1
+    assert all(item.code != "parser-blocker" for item in drafts[0].diagnostics)
+    with pytest.raises(ValueError, match="cannot be acknowledged"):
+        service.acknowledge_run_diagnostic(run.id, "parser-blocker")
+
+
+def test_extraction_ambiguity_is_stored_once_as_overridable_run_diagnostic(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    run = _queued_import(repository, tmp_path)
+
+    class DiagnosticExtractor(_QuestionExtractor):
+        def extract(self, documents) -> ExtractionResult:
+            result = super().extract(documents)
+            return replace(
+                result,
+                diagnostics=(
+                    DraftDiagnostic(
+                        "incomplete-sequential-question-extraction",
+                        "Question count needs review",
+                        DiagnosticSeverity.BLOCKER,
+                    ),
+                ),
+            )
+
+    worker = QuizImportWorker(
+        repository,
+        _Parser(),
+        DiagnosticExtractor(),
+        _UnusedAnswers(),
+        object(),
+        tmp_path / "assets",
+    )
+
+    worker.run(repository.claim_next_run())
+
+    service = PracticeReviewService(repository)
+    assert len(service.run_diagnostics(run.id)) == 1
+    assert service.run_diagnostics(run.id)[0]["overridable"] is True
+    assert service.blockers(run.id).count("Question count needs review") == 1
+    service.acknowledge_run_diagnostic(
+        run.id, "incomplete-sequential-question-extraction"
+    )
+    assert "Question count needs review" not in service.blockers(run.id)
+
+
 def test_extraction_signature_changes_with_model_or_source() -> None:
     first = stage_signature(
         "extract",
@@ -261,6 +349,71 @@ def test_extraction_signature_changes_with_model_or_source() -> None:
             + b'"],"stage":"extract"}'
         ).hexdigest()
     )
+
+
+def test_parse_cache_is_rebuilt_after_parser_version_change(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    run = _queued_import(repository, tmp_path)
+    binding = repository.import_sources(run.id)[0]
+    source = repository.get(binding.source_id)
+    assert source is not None
+    delegate = _Parser()
+    old_document = ParsedDocument(
+        source.id,
+        source.snapshot_sha256 or "",
+        "text",
+        "test",
+        "1",
+        (
+            ParsedSegment(
+                "block-1",
+                SegmentKind.PARAGRAPH,
+                "stale cached question",
+                DocumentLocator("block 1"),
+            ),
+        ),
+        (),
+        (),
+    )
+    old_signature = stage_signature(
+        "parse",
+        source_hashes=(source.snapshot_sha256 or "",),
+        parser_versions=("anydoc:0.1.3", "pdf:1"),
+        provider_model="local",
+        prompt_version="canonical-document-v1",
+        roles=(ImportSourceRole.QUESTIONS.value,),
+    )
+    repository.save_run_artifact(
+        run.id,
+        f"parse:{source.id}",
+        old_signature,
+        _document_json(old_document),
+    )
+
+    class Router:
+        primary = SimpleNamespace(name="anydoc", version="0.1.4")
+        fallbacks = (SimpleNamespace(name="pdf", version="2"),)
+
+        def parse(self, snapshot, asset_root):
+            return delegate.parse(snapshot, asset_root)
+
+    worker = QuizImportWorker(
+        repository,
+        Router(),
+        _QuestionExtractor(),
+        _UnusedAnswers(),
+        object(),
+        tmp_path / "assets",
+    )
+    sources, roles = worker._sources(run)
+
+    documents = worker._parse(run, sources, roles)
+
+    assert delegate.calls == 1
+    assert documents[0].parser_version == "1"
+    artifact = repository.run_artifact(run.id, f"parse:{source.id}")
+    assert artifact is not None
+    assert artifact.signature_sha256 != old_signature
 
 
 def test_supporting_binding_is_attached_once_and_reused_for_answering(tmp_path: Path) -> None:

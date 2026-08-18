@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -197,8 +198,42 @@ def test_publish_keeps_token_and_increments_version_for_new_job(tmp_path):
         assert retried.version == 1
         assert regenerated.token == first.token
         assert regenerated.version == 2
-        assert regenerated.title == "Seizures Review"
+        assert regenerated.title == "Seizures"
         assert repository.published_quiz(first.token) == regenerated
+    finally:
+        repository.database.engine.dispose()
+
+
+def test_duplicate_public_flags_increment_atomically(tmp_path):
+    repository, lecture_id = prepared_repository(tmp_path)
+    try:
+        published = repository.publish_quiz(
+            lecture_id,
+            repository.queue(lecture_id, GenerationKind.QUIZ).id,
+            _quiz(),
+        )
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            tuple(
+                executor.map(
+                    lambda _index: repository.record_published_quiz_flag(
+                        published.token,
+                        published.version,
+                        "q1",
+                        "other",
+                    ),
+                    range(4),
+                )
+            )
+
+        assert repository.open_published_quiz_flags(published.token) == (
+            {
+                "question_id": "q1",
+                "reason": "other",
+                "count": 4,
+                "version": published.version,
+            },
+        )
     finally:
         repository.database.engine.dispose()
 

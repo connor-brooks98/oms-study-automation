@@ -51,7 +51,7 @@ def test_stylesheet_order_and_system_font_contract() -> None:
 def test_private_shell_stylesheets_share_one_release_version() -> None:
     base = source("base.html")
 
-    assert '{% set shell_asset_version = "20260813.1" %}' in base
+    assert '{% set shell_asset_version = "20260818.2" %}' in base
     for stylesheet in ("reset.css", "tokens.css", "study-hub.css", "app.css"):
         assert (
             f'href="/static/{stylesheet}?v={{{{ shell_asset_version }}}}"'
@@ -175,6 +175,24 @@ def test_daily_workbench_keeps_progress_labels_and_unavailable_actions_honest() 
     assert '<progress class="upload-progress" max="100" value="0"' in uploads
     assert "data-cancel-duplicate" in uploads
     assert "subject }} Lecture {{ \"%02d\"|format(lecture.lecture_number) }}" in review
+
+
+def test_upload_and_lecture_action_layouts_shrink_without_spilling() -> None:
+    app_css = static_source("app.css")
+    library_css = static_source("public_quiz_library.css")
+    uploads = source("uploads.html")
+    lecture = source("lecture.html")
+
+    assert ".upload-results, .upload-status, .upload-items, .upload-items li" in app_css
+    assert "overflow-wrap: anywhere" in app_css
+    assert ".selected-file-name" in app_css
+    assert ".selected-file-size" in app_css
+    assert ".file-card .file-actions" in app_css
+    assert "repeat(auto-fit, minmax(10rem, 1fr))" in app_css
+    assert "touch-action: none" in library_css
+    assert "uploads.js?v=20260818.2" in uploads
+    assert "Download Cleaned Transcript" in lecture
+    assert "Download Lecture Outline" in lecture
 
 
 def test_tracker_control_and_disclosure_scans_cover_the_locked_residuals() -> None:

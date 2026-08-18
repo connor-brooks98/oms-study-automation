@@ -143,6 +143,41 @@ test("answer request sends CSRF protection and keeps answers out of URL", async 
   assert.equal(feedback.correct, false);
 });
 
+test("flag request sends CSRF protection and the current quiz identity", async () => {
+  let captured;
+  await quiz.flagRequest(
+    async (url, options) => {
+      captured = { url, options };
+      return { ok: true };
+    },
+    "/public/quizzes/token/flags",
+    4,
+    "q2",
+    "inaccurate_question",
+    "csrf-token",
+  );
+
+  assert.equal(captured.url, "/public/quizzes/token/flags");
+  assert.equal(captured.options.method, "POST");
+  assert.equal(captured.options.headers["X-CSRF-Token"], "csrf-token");
+  assert.deepEqual(JSON.parse(captured.options.body), {
+    version: 4,
+    question_id: "q2",
+    reason: "inaccurate_question",
+  });
+  await assert.rejects(
+    quiz.flagRequest(
+      async () => ({ ok: false }),
+      "/public/quizzes/token/flags",
+      4,
+      "q2",
+      "other",
+      "csrf-token",
+    ),
+    /could not be recorded/,
+  );
+});
+
 test("question navigation and flags persist in quiz state", () => {
   let state = quiz.createQuizState({ ...content, questions: content.questions });
 

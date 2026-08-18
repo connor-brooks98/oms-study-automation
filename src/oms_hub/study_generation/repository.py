@@ -23,6 +23,7 @@ from oms_hub.models import (
     NotebookScopeLeaseModel,
     NotebookSourceMappingModel,
     OutlineOutputModel,
+    PublishedQuizFlagModel,
     PublishedQuizMediaModel,
     PublishedQuizModel,
     QuizOutputModel,
@@ -727,11 +728,13 @@ class GenerationRepository:
         job_id: str,
         quiz: NativeQuiz,
     ) -> PublishedQuizRecord:
-        self._validate_accuracy(quiz)
         with self.database.session() as session:
             lecture = session.get(LectureModel, lecture_id)
             if lecture is None:
                 raise ValueError("lecture was removed")
+            # Lecture generation owns this title; Studio/import labels remain untouched.
+            quiz = replace(quiz, title=lecture.topic.strip())
+            self._validate_accuracy(quiz)
             model = session.scalar(
                 select(PublishedQuizModel).where(
                     PublishedQuizModel.lecture_id == lecture_id,
@@ -809,6 +812,100 @@ class GenerationRepository:
             )
             session.flush()
             return self._published_quiz(model)
+
+    def replace_published_quiz_payload(self, token: str, payload_json: str) -> PublishedQuizRecord:
+        """Atomically validate, replace, and version a private editor update."""
+        quiz = parse_native_quiz(payload_json)
+        with self.database.session() as session:
+            model = self._active_published_quiz_in_session(session, token)
+            available_image_keys = set(
+                session.scalars(
+                    select(PublishedQuizMediaModel.image_key).where(
+                        PublishedQuizMediaModel.quiz_token == token
+                    )
+                ).all()
+            )
+            unknown_images = {
+                question.image_ref.key
+                for question in quiz.questions
+                if question.image_ref is not None
+            } - available_image_keys
+            if unknown_images:
+                raise ValueError(
+                    "quiz references unavailable image media: "
+                    + ", ".join(sorted(unknown_images))
+                )
+            old_version = model.version
+            # Question editing is intentionally title-neutral: a stale library form
+            # must not undo a title PATCH that already succeeded in this session.
+            quiz = replace(quiz, title=model.title)
+            model.payload_json = serialize_native_quiz(quiz)
+            model.version += 1
+            session.execute(
+                update(PublishedQuizFlagModel)
+                .where(
+                    PublishedQuizFlagModel.quiz_token == token,
+                    PublishedQuizFlagModel.quiz_version == old_version,
+                    PublishedQuizFlagModel.status == "open",
+                )
+                .values(status="resolved")
+            )
+            session.flush()
+            return self._published_quiz(model)
+
+    def record_published_quiz_flag(
+        self, token: str, version: int, question_id: str, reason: str
+    ) -> None:
+        with self.database.session() as session:
+            model = self._active_published_quiz_in_session(session, token)
+            question_ids = {
+                question.id for question in parse_native_quiz(model.payload_json).questions
+            }
+            if model.version != version or question_id not in question_ids:
+                raise ValueError("quiz question is no longer current")
+            session.execute(
+                text(
+                    "INSERT INTO published_quiz_flags "
+                    "(quiz_token, quiz_version, question_id, reason, occurrence_count, status, "
+                    "created_at, updated_at) "
+                    "VALUES (:token, :version, :question_id, :reason, 1, 'open', :now, :now) "
+                    "ON CONFLICT (quiz_token, quiz_version, question_id, reason) DO UPDATE SET "
+                    "occurrence_count = published_quiz_flags.occurrence_count + 1, "
+                    "status = 'open', updated_at = :now"
+                ),
+                {"token": token, "version": version, "question_id": question_id, "reason": reason,
+                 "now": datetime.now(UTC).isoformat()},
+            )
+
+    def open_published_quiz_flags(self, token: str) -> tuple[dict[str, object], ...]:
+        with self.database.session() as session:
+            self._active_published_quiz_in_session(session, token)
+            rows = session.scalars(
+                select(PublishedQuizFlagModel)
+                .where(
+                    PublishedQuizFlagModel.quiz_token == token,
+                    PublishedQuizFlagModel.status == "open",
+                )
+                .order_by(
+                    PublishedQuizFlagModel.updated_at.desc(),
+                    PublishedQuizFlagModel.id.desc(),
+                )
+            ).all()
+            return tuple({"question_id": row.question_id, "reason": row.reason,
+                          "count": row.occurrence_count, "version": row.quiz_version}
+                         for row in rows)
+
+    def open_published_quiz_flag_count(self, token: str) -> int:
+        with self.database.session() as session:
+            return int(
+                session.scalar(
+                    select(func.count(PublishedQuizFlagModel.id)).where(
+                        PublishedQuizFlagModel.quiz_token == token,
+                        PublishedQuizFlagModel.status == "open",
+                    )
+                )
+                or 0
+            )
 
     def move_published_quiz(
         self,

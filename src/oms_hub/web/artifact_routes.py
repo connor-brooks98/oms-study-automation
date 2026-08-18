@@ -41,6 +41,17 @@ def outline_artifact(request: Request, outline_id: int) -> FileResponse:
     return outline_pdf_response(request, record)
 
 
+@router.get("/artifacts/outlines/{outline_id}/download")
+def download_outline_artifact(request: Request, outline_id: int) -> FileResponse:
+    repository = GenerationRepository(request.app.state.database)
+    record = repository.outline(outline_id)
+    if record is None:
+        raise HTTPException(404, "outline was not found")
+    response = outline_pdf_response(request, record)
+    response.headers["Content-Disposition"] = f'attachment; filename="{record.path.name}"'
+    return response
+
+
 def outline_pdf_response(
     request: Request,
     record: OutlineRecord,

@@ -45,6 +45,37 @@ def test_lecture_page_shows_separate_outline_and_quiz_controls(tmp_path):
     assert "Lecture Quiz Generation" in page.text
 
 
+def test_lecture_page_links_previous_and_next_within_subject_exam_order(tmp_path):
+    app = create_app(
+        Settings(
+            _env_file=None,
+            data_dir=tmp_path,
+            database_url=f"sqlite:///{tmp_path / 'hub.db'}",
+        )
+    )
+    previous_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 1, 1, "Brain", "", None)
+    )
+    current_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 1, 2, "Spinal cord", "", None)
+    )
+    next_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("Neuro", 2, 1, "Neuropathy", "", None)
+    )
+    other_subject_id = app.state.catalog_repository.upsert_lecture(
+        LectureInput("MSK", 1, 1, "Shoulder", "", None)
+    )
+
+    page = TestClient(app).get(f"/lectures/{current_id}")
+
+    assert page.status_code == 200
+    assert f'href="/lectures/{previous_id}"' in page.text
+    assert f'href="/lectures/{next_id}"' in page.text
+    assert f'href="/lectures/{other_subject_id}"' not in page.text
+    assert "Previous lecture" in page.text
+    assert "Next lecture" in page.text
+
+
 def test_lecture_page_does_not_mark_a_changed_pdf_as_ready(tmp_path):
     app = create_app(
         Settings(

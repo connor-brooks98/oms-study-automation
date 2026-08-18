@@ -377,6 +377,7 @@ def _direct_review_payload(request: Request, run_id: str) -> dict[str, object]:
     return {
         "run_id": run_id,
         "blockers": list(blockers),
+        "run_diagnostics": list(service.run_diagnostics(run_id)),
         "issues": [
             {
                 "question_id": issue.question_id,
@@ -401,6 +402,22 @@ def _direct_review_payload(request: Request, run_id: str) -> dict[str, object]:
             for question in questions
         ],
     }
+
+
+@router.post("/runs/{run_id}/run-diagnostics/{code}/acknowledgement")
+def acknowledge_run_diagnostic(request: Request, run_id: str, code: str) -> Response:
+    require_form_csrf(request, None)
+    _direct_import_review_run(request, run_id)
+    try:
+        _practice_review(request).acknowledge_run_diagnostic(run_id, code)
+        return JSONResponse(
+            _direct_review_payload(request, run_id),
+            headers={"Cache-Control": "no-store"},
+        )
+    except KeyError as error:
+        raise HTTPException(404, "run diagnostic was not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
 
 
 def _review_artifact_unavailable_response(error: ReviewArtifactUnavailable) -> JSONResponse:

@@ -343,6 +343,26 @@
     return payload;
   };
 
+  const flagRequest = async (
+    fetchImpl,
+    url,
+    version,
+    questionId,
+    reason,
+    csrf,
+  ) => {
+    const response = await fetchImpl(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrf,
+      },
+      body: JSON.stringify({ version, question_id: questionId, reason }),
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error("Question flag could not be recorded.");
+  };
+
   const element = (documentRef, tag, className, text, focusKey) => {
     const node = documentRef.createElement(tag);
     if (className) node.className = className;
@@ -706,8 +726,24 @@
           flagSelect.append(option);
         }
         flagSelect.value = questionProgress.flagReason || "";
-        flagSelect.addEventListener("change", () => {
+        flagSelect.addEventListener("change", async () => {
           state = setFlagReason(state, question.id, flagSelect.value);
+          if (flagSelect.value) {
+            try {
+              await flagRequest(
+                fetchImpl,
+                `/public/quizzes/${content.token}/flags`,
+                content.version,
+                question.id,
+                flagSelect.value,
+                csrfToken(documentRef),
+              );
+            } catch (error) {
+              flagSelect.value = "";
+              state = setFlagReason(state, question.id, "");
+              // Keep the local selector honest; the next render exposes its normal status.
+            }
+          }
           persist();
         });
         flagLabel.append(flagSelect);
@@ -951,6 +987,7 @@
     FLAG_REASONS,
     addHighlight,
     answerRequest,
+    flagRequest,
     captureFocusKey,
     clearHighlights,
     createQuizState,

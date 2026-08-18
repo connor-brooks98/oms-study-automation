@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from oms_hub.study_generation.quiz_images import StudioQuizImageService
 
 _ARTIFACT_KEY = "review:questions"
+_RUN_DIAGNOSTICS_ARTIFACT_KEY = "review:run-diagnostics"
 
 _MANUALLY_RESOLVED_ANSWER_DIAGNOSTIC_CODES = frozenset(
     {
@@ -479,7 +480,45 @@ class PracticeReviewService:
         return updated
 
     def blockers(self, run_id: str) -> tuple[str, ...]:
-        return _blockers_from_issues(self.issues(run_id))
+        question_blockers = _blockers_from_issues(self.issues(run_id))
+        return (*question_blockers, *self.run_diagnostic_blockers(run_id))
+
+    def run_diagnostics(self, run_id: str) -> tuple[dict[str, object], ...]:
+        artifact = self.repository.run_artifact(run_id, _RUN_DIAGNOSTICS_ARTIFACT_KEY)
+        if artifact is None:
+            return ()
+        payload = json.loads(artifact.payload_json)
+        return tuple(item for item in payload if isinstance(item, dict))
+
+    def run_diagnostic_blockers(self, run_id: str) -> tuple[str, ...]:
+        return tuple(
+            str(item["message"])
+            for item in self.run_diagnostics(run_id)
+            if item.get("severity") == DiagnosticSeverity.BLOCKER.value
+            and not (item.get("overridable") and item.get("acknowledged"))
+        )
+
+    def acknowledge_run_diagnostic(self, run_id: str, code: str) -> None:
+        artifact = self.repository.run_artifact(run_id, _RUN_DIAGNOSTICS_ARTIFACT_KEY)
+        if artifact is None:
+            raise KeyError(code)
+        payload = json.loads(artifact.payload_json)
+        updated = False
+        for item in payload:
+            if item.get("code") == code:
+                if not item.get("overridable"):
+                    raise ValueError("this run diagnostic cannot be acknowledged")
+                item["acknowledged"] = True
+                updated = True
+        if not updated:
+            raise KeyError(code)
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        self.repository.save_run_artifact(
+            run_id,
+            _RUN_DIAGNOSTICS_ARTIFACT_KEY,
+            hashlib.sha256(serialized.encode()).hexdigest(),
+            serialized,
+        )
 
     def issues(self, run_id: str) -> tuple[ReviewIssue, ...]:
         return _issues(self.review(run_id))
@@ -495,9 +534,15 @@ class PracticeReviewService:
         )
         if artifact is None:
             raise ValueError("imported question review is missing")
+        blockers = self.run_diagnostic_blockers(run_id)
+        if blockers:
+            raise ValueError("; ".join(blockers))
         return _native_quiz(_questions_from_json(artifact.payload_json), title)
 
     def to_native_quiz(self, run_id: str, *, title: str | None = None) -> NativeQuiz:
+        blockers = self.run_diagnostic_blockers(run_id)
+        if blockers:
+            raise ValueError("; ".join(blockers))
         return _native_quiz(self.review(run_id), title or "Imported practice questions")
 
     def _save(self, run_id: str, questions: tuple[ReviewQuestion, ...]) -> None:

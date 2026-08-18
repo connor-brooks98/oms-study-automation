@@ -50,6 +50,7 @@ class Element {
     if (selector === "[data-choices]") return element.dataset.choices === "true";
     if (selector === "[data-add-choice]") return element.dataset.addChoice === "true";
     if (selector === "[data-remove-choice]") return element.dataset.removeChoice === "true";
+    if (selector === "[data-acknowledge-run-diagnostic]") return Boolean(element.dataset.acknowledgeRunDiagnostic);
     if (selector === "details[data-state-key]") return element.tagName === "details" && Boolean(element.dataset.stateKey);
     if (selector === "[data-state-key]") return Boolean(element.dataset.stateKey);
     if (selector === "[data-focus-key]") return Boolean(element.dataset.focusKey);
@@ -101,6 +102,64 @@ test("publish gating follows authoritative blocker state", () => {
   assert.equal(review.canPublish(["q1: answer is missing"]), false);
   assert.equal(review.blockersText([]), "Ready for preview and publication.");
   assert.match(review.blockersText(["first", "second"]), /first\nsecond/);
+});
+
+test("run diagnostics render once and only overridable blockers can be acknowledged", () => {
+  const { page, blockers, publish } = reviewPage();
+  review.render(documentRef, page, {
+    blockers: ["Count needs review", "OCR unavailable"],
+    issues: [],
+    run_diagnostics: [
+      {
+        code: "incomplete-sequential-question-extraction",
+        message: "Count needs review",
+        severity: "blocker",
+        overridable: true,
+        acknowledged: false,
+      },
+      {
+        code: "parser-blocker",
+        message: "OCR unavailable",
+        severity: "blocker",
+        overridable: false,
+        acknowledged: false,
+      },
+    ],
+    preview_url: null,
+    questions: [],
+  });
+
+  const acknowledgements = blockers.querySelectorAll("[data-acknowledge-run-diagnostic]");
+  assert.equal(acknowledgements.length, 1);
+  assert.equal(
+    acknowledgements[0].dataset.acknowledgeRunDiagnostic,
+    "incomplete-sequential-question-extraction",
+  );
+  assert.equal(publish.disabled, true);
+  assert.equal(
+    blockers.children.filter((item) => item.className === "studio-review-issue-group sh-card").length,
+    2,
+  );
+});
+
+test("acknowledged run diagnostic has no acknowledgement control", () => {
+  const { page, blockers, publish } = reviewPage();
+  review.render(documentRef, page, {
+    blockers: [],
+    issues: [],
+    run_diagnostics: [{
+      code: "incomplete-sequential-question-extraction",
+      message: "Count reviewed",
+      severity: "blocker",
+      overridable: true,
+      acknowledged: true,
+    }],
+    preview_url: null,
+    questions: [],
+  });
+
+  assert.equal(blockers.querySelectorAll("[data-acknowledge-run-diagnostic]").length, 0);
+  assert.equal(publish.disabled, false);
 });
 
 test("issue helpers retain roles, groups, and stable question anchors", () => {
@@ -339,6 +398,19 @@ test("a successful question save applies authoritative blocker and answer state"
   assert.notEqual(savedCard, dirtyCard);
   assert.equal(correct[2].checked, true);
   assert.equal(publish.disabled, false);
+});
+
+test("hard run diagnostics suppress the contradictory ready banner", () => {
+  const { page, blockers } = reviewPage();
+  review.render(documentRef, page, {
+    blockers: ["OCR unavailable"], issues: [], preview_url: null,
+    run_diagnostics: [{ message: "OCR unavailable", severity: "blocker", overridable: false, acknowledged: false }],
+    questions: [question("q1", "Stem")],
+  });
+  assert.equal(blockers.children.some((item) => item.textContent === "Ready for preview and publication."), false);
+  assert.equal(blockers.children.some((item) => item.children?.some(
+    (child) => child.textContent === "OCR unavailable",
+  )), true);
 });
 
 test("typed review-artifact envelopes retain recovery guidance with safe detail fallback", () => {

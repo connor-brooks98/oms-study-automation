@@ -26,7 +26,7 @@ class AnydocProcessor:
     """Convert a supported local file through Anydoc without importing it at startup."""
 
     name = "anydoc"
-    version = "0.1.3"
+    version = "0.1.4"
 
     def __init__(self, pptx_enricher: PptxLocatorEnricher) -> None:
         self.pptx_enricher = pptx_enricher

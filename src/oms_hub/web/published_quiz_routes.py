@@ -31,6 +31,10 @@ class PublishedQuizOrderMove(BaseModel):
     direction: PublishedQuizOrderDirection
 
 
+class PublishedQuizPayloadUpdate(BaseModel):
+    payload_json: Annotated[str, StringConstraints(min_length=2, max_length=200_000)]
+
+
 def _repository(request: Request) -> GenerationRepository:
     return cast(GenerationRepository, request.app.state.generation_repository)
 
@@ -171,3 +175,31 @@ def reorder_quiz(
             "display_order": published.display_order,
         }
     )
+
+
+@router.patch("/{token}/payload")
+def replace_quiz_payload(
+    request: Request,
+    token: _PublishedQuizToken,
+    payload: PublishedQuizPayloadUpdate,
+) -> JSONResponse:
+    require_form_csrf(request, None)
+    try:
+        published = _repository(request).replace_published_quiz_payload(
+            token, payload.payload_json
+        )
+    except KeyError as error:
+        raise HTTPException(404, "published quiz was not found") from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return JSONResponse(
+        {"token": published.token, "title": published.title, "version": published.version}
+    )
+
+
+@router.get("/{token}/flags")
+def open_quiz_flags(request: Request, token: _PublishedQuizToken) -> JSONResponse:
+    try:
+        return JSONResponse({"flags": _repository(request).open_published_quiz_flags(token)})
+    except KeyError as error:
+        raise HTTPException(404, "published quiz was not found") from error

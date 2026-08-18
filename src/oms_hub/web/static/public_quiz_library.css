@@ -97,6 +97,8 @@
 .progress-pill { flex: none; white-space: nowrap; }
 .quiz-drag-handle { align-self: center; padding: 0; color: var(--text-2); cursor: grab; font-size: 1.1rem; }
 .quiz-drag-handle:active, .lecture-row.is-dragging .quiz-drag-handle { cursor: grabbing; }
+.quiz-drag-handle { touch-action: none; }
+.lecture-row.is-drop-target { outline: 2px dashed var(--brand); outline-offset: 2px; }
 .lecture-row.is-dragging { opacity: .62; }
 .quiz-row-actions { display: flex; align-items: center; gap: var(--sp-2); }
 .quiz-row-actions, .quiz-overflow { position: relative; }

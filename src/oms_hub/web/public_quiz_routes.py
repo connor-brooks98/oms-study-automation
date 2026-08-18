@@ -15,6 +15,7 @@ from oms_hub.study_generation.native_quiz import (
 from oms_hub.study_generation.practice_domain import QuizContentKind
 from oms_hub.study_generation.repository import GenerationRepository
 from oms_hub.web.artifact_routes import outline_pdf_response
+from oms_hub.web.csrf import require_form_csrf
 from oms_hub.web.lecture_labels import lecture_label
 from oms_hub.web.routes import _course_hue
 
@@ -64,6 +65,17 @@ def _shared_style_version() -> str:
 class AnswerSubmission(BaseModel):
     question_id: _PublicId
     choice_id: _PublicId
+
+
+class QuestionFlagSubmission(BaseModel):
+    version: int
+    question_id: _PublicId
+    reason: Annotated[
+        str,
+        StringConstraints(
+            pattern=r"^(inaccurate_question|ambiguous_question|want_to_review|other)$"
+        ),
+    ]
 
 
 @router.get("/quizzes/assets/player.js", include_in_schema=False)
@@ -211,6 +223,39 @@ def _quiz_library(
                 ),
                 "secondary_label": lecture.topic if lecture is not None else None,
                 "url": f"/public/quizzes/{published.token}",
+                "open_flag_count": (
+                    repository.open_published_quiz_flag_count(published.token)
+                    if management_mode
+                    else 0
+                ),
+                "editor_questions": (
+                    [
+                        {
+                            "stem": question.stem,
+                            "choices": [choice.text for choice in question.choices],
+                            "correct_index": next(
+                                index
+                                for index, choice in enumerate(question.choices)
+                                if choice.id == question.correct_choice_id
+                            ),
+                            "rationale": question.rationale,
+                            "area": question.area,
+                            "topic": question.topic,
+                            "learning_objective": question.learning_objective,
+                            "image_ref": (
+                                {
+                                    "key": question.image_ref.key,
+                                    "source_title": question.image_ref.source_title,
+                                    "locator": question.image_ref.locator,
+                                    "description": question.image_ref.description,
+                                }
+                                if question.image_ref else None
+                            ),
+                        }
+                        for question in published.quiz.questions
+                    ]
+                    if management_mode else ()
+                ),
                 "outline_url": (
                     f"/public/quizzes/{published.token}/outline"
                     if outline is not None
@@ -465,3 +510,19 @@ def answer_question(
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.post("/quizzes/{token}/flags")
+def flag_question(
+    request: Request, token: str, submission: QuestionFlagSubmission
+) -> JSONResponse:
+    require_form_csrf(request, None)
+    try:
+        _repository(request).record_published_quiz_flag(
+            token, submission.version, submission.question_id, submission.reason
+        )
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    except KeyError as error:
+        raise HTTPException(404, "quiz was not found") from error
+    return JSONResponse({"status": "recorded"}, headers={"Cache-Control": "no-store"})

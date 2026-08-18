@@ -785,3 +785,21 @@ class PublishedQuizMediaModel(Base):
     height: Mapped[int]
     alt_text: Mapped[str] = mapped_column(String(1000))
     created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+
+
+class PublishedQuizFlagModel(Base):
+    __tablename__ = "published_quiz_flags"
+    __table_args__ = (
+        UniqueConstraint("quiz_token", "quiz_version", "question_id", "reason"),
+        Index("ix_published_quiz_flags_open", "quiz_token", "status", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    quiz_token: Mapped[str] = mapped_column(ForeignKey("published_quizzes.token"))
+    quiz_version: Mapped[int]
+    question_id: Mapped[str] = mapped_column(String(20))
+    reason: Mapped[str] = mapped_column(String(100))
+    occurrence_count: Mapped[int] = mapped_column(default=1)
+    status: Mapped[str] = mapped_column(String(20), default="open")
+    created_at: Mapped[str] = mapped_column(String(40), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(40), default=utc_now, onupdate=utc_now)

@@ -7,6 +7,10 @@
     <span>{{ lecture.subject }}</span><span aria-hidden="true">/</span>
     <span>Exam {{ lecture.exam_number }}</span>
   </nav>
+  <nav class="file-actions" aria-label="Lecture navigation">
+    {% if previous_lecture %}<a class="button secondary sh-btn sh-btn--secondary" href="/lectures/{{ previous_lecture.id }}">Previous lecture</a>{% endif %}
+    {% if next_lecture %}<a class="button secondary sh-btn sh-btn--secondary" href="/lectures/{{ next_lecture.id }}">Next lecture</a>{% endif %}
+  </nav>
 
   <header class="lecture-heading sh-header">
     <span class="course-rail sh-subject-spine" aria-hidden="true"></span>
@@ -64,7 +68,7 @@
       <div class="file-actions">
         <a class="button secondary sh-btn sh-btn--secondary" href="/uploads/transcripts?lecture_id={{ lecture.id }}">Upload Lecture Transcript</a>
         {% if transcript_revision %}
-        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ transcript_revision.id }}/raw">Open Raw Transcript</a>
+        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/{{ transcript_revision.id }}/cleaned/download">Download Cleaned Transcript</a>
         {% endif %}
         {% if transcript_revision and not transcript_problem %}
         <a class="button primary sh-btn sh-btn--primary" href="/artifacts/{{ transcript_revision.id }}/cleaned">Open Cleaned Transcript</a>
@@ -86,6 +90,7 @@
       <div class="file-actions">
         {% if outline_output %}
         <a class="button primary sh-btn sh-btn--primary" data-generation-link href="/artifacts/outlines/{{ outline_output.id }}">Open Lecture Outline</a>
+        <a class="button secondary sh-btn sh-btn--secondary" href="/artifacts/outlines/{{ outline_output.id }}/download">Download Lecture Outline</a>
         {% endif %}
         <button class="button sh-btn {{ 'secondary sh-btn--secondary' if outline_output else 'primary sh-btn--primary' }}" type="button" data-generate>Generate Outline</button>
       </div>
@@ -152,5 +157,5 @@
 </article>
 {% endblock %}
 {% block scripts %}
-<script src="/static/lecture.js?v=20260727.1" defer></script>
+<script src="/static/lecture.js?v=20260818.1" defer></script>
 {% endblock %}

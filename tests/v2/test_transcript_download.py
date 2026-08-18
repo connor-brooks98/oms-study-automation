@@ -86,6 +86,18 @@ def test_cleaned_review_page_offers_transcript_download(tmp_path):
     )
 
 
+def test_lecture_page_offers_cleaned_download_instead_of_raw_transcript(tmp_path):
+    client, revision_id, _, _ = _prepared_download(tmp_path)
+    lecture_id = client.app.state.catalog_repository.list_lectures()[0].id
+
+    response = client.get(f"/lectures/{lecture_id}")
+
+    assert response.status_code == 200
+    assert "Download Cleaned Transcript" in response.text
+    assert f'href="/artifacts/{revision_id}/cleaned/download"' in response.text
+    assert "Open Raw Transcript" not in response.text
+
+
 def test_download_returns_exact_bytes_with_descriptive_filename(tmp_path):
     client, revision_id, _, cleaned_bytes = _prepared_download(tmp_path)
 

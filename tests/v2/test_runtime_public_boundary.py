@@ -500,6 +500,7 @@ def test_successful_readiness_reports_database_and_current_schema(tmp_path) -> N
         ("/public/quizzes/token", "general"),
         ("/public/quizzes/token/content", "general"),
         ("/public/quizzes/token/answer", "general"),
+        ("/public/quizzes/token/flags", "general"),
         ("/public/quizzes/token/media/image-key", "general"),
         ("/public/quizzes/token/outline", "outline"),
         ("/public/quizzes/assets/player.js", "general"),

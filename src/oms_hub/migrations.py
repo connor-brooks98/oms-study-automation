@@ -23,7 +23,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 22
+LATEST_SCHEMA_VERSION = 23
 
 
 class StudioPublicationMigrationConflict(RuntimeError):
@@ -503,6 +503,12 @@ def _upgrade_published_quiz_display_order_v18(database: "Database") -> None:
     )
 
 
+def _upgrade_published_quiz_flags_v23(database: "Database") -> None:
+    """Additive aggregate public-question flags; fresh schemas already have it."""
+    if not inspect(database.engine).has_table("published_quiz_flags"):
+        database.create_schema()
+
+
 def _upgrade_gap_card_identity(database: "Database") -> None:
     if database.engine.dialect.name != "sqlite":
         return
@@ -647,6 +653,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_studio_source_operation_claims_v20(database)
     _upgrade_studio_source_scope_fence_v21(database)
     _upgrade_notebook_scope_leases_v22(database)
+    _upgrade_published_quiz_flags_v23(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)
