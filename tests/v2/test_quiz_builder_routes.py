@@ -23,6 +23,7 @@ from oms_hub.study_generation.practice_domain import (
 )
 from oms_hub.study_generation.quiz_import_worker import _document_json
 from oms_hub.study_generation.studio_domain import StudioSourceState, StudioSourceType
+from oms_hub.web.public_quiz_routes import _player_asset_version
 
 
 def _client(tmp_path) -> TestClient:
@@ -534,6 +535,7 @@ def test_imported_private_question_ids_are_replaced_for_preview_and_public_gradi
         f"/studio/runs/{run_id}/questions/question-1/verify-answer",
         headers=_csrf_headers(client),
     )
+    preview_page = client.get(f"/studio/runs/{run_id}/preview")
     preview_content = client.get(f"/studio/runs/{run_id}/preview/content")
     preview_answer = client.post(
         f"/studio/runs/{run_id}/preview/answer",
@@ -553,6 +555,14 @@ def test_imported_private_question_ids_are_replaced_for_preview_and_public_gradi
     )
 
     assert verified.status_code == 200
+    assert preview_page.status_code == 200
+    assert "/public/quizzes/assets/" not in preview_page.text
+    version = _player_asset_version()
+    for asset in ("reset.css", "tokens.css", "study-hub.css", "public_quiz.css"):
+        assert f'/static/{asset}?v={version}' in preview_page.text
+        assert client.get(f"/static/{asset}").status_code == 200
+    assert f'/static/public_quiz.js?v={version}' in preview_page.text
+    assert client.get("/static/public_quiz.js").status_code == 200
     assert preview_content.status_code == 200
     assert preview_content.json()["questions"][0]["id"] == "q1"
     assert "question-1" not in preview_content.text
