@@ -38,7 +38,7 @@ def test_stylesheet_order_and_system_font_contract() -> None:
     for name, page_css in (
         ("public_quiz.html", "/public/quizzes/assets/player.css"),
         ("public_quiz_library.html", "/public/quizzes/assets/library.css"),
-        ("studio_quiz_preview.html", "/public/quizzes/assets/player.css"),
+        ("studio_quiz_preview.html", "/static/public_quiz.css"),
     ):
         template = source(name)
         assert "IBM+Plex+Sans" not in template
@@ -46,6 +46,12 @@ def test_stylesheet_order_and_system_font_contract() -> None:
             template.index("reset.css") < template.index("study-hub.css") < template.index(page_css)
         )
         assert 'class="sh-app' in template or '<body class="sh-app"' in template
+
+    preview = source("studio_quiz_preview.html")
+    assert "/public/quizzes/assets/" not in preview
+    for asset in ("reset.css", "tokens.css", "study-hub.css", "public_quiz.css"):
+        assert f'/static/{asset}?v={{{{ player_asset_version }}}}' in preview
+    assert '/static/public_quiz.js?v={{ player_asset_version }}' in preview
 
 
 def test_private_shell_stylesheets_share_one_release_version() -> None:
