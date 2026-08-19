@@ -42,6 +42,7 @@ from oms_hub.study_generation.studio_repository import StudioRepository
 from oms_hub.study_generation.studio_service import StudioService
 from oms_hub.web.csrf import require_form_csrf
 from oms_hub.web.public_quiz_routes import (
+    _player_asset_version,
     practice_question_library_response,
     quiz_library_response,
 )
@@ -742,6 +743,7 @@ def preview_quiz_page(request: Request, run_id: str) -> Response:
                 "content_url": f"/studio/runs/{run_id}/preview/content",
                 "answer_url": f"/studio/runs/{run_id}/preview/answer",
                 "publish_url": f"/studio/runs/{run_id}/publication",
+                "player_asset_version": _player_asset_version(),
             },
             headers={"Cache-Control": "no-store"},
         )
@@ -754,6 +756,7 @@ def preview_quiz_page(request: Request, run_id: str) -> Response:
             "content_url": f"/studio/runs/{run_id}/preview/content",
             "answer_url": f"/studio/runs/{run_id}/preview/answer",
             "publish_url": f"/studio/runs/{run_id}/publication",
+            "player_asset_version": _player_asset_version(),
         },
         headers={"Cache-Control": "no-store"},
     )

@@ -8,10 +8,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/public/quizzes/assets/reset.css">
-  <link rel="stylesheet" href="/public/quizzes/assets/tokens.css">
-  <link rel="stylesheet" href="/public/quizzes/assets/study-hub.css">
-  <link rel="stylesheet" href="/public/quizzes/assets/player.css">
+  <link rel="stylesheet" href="/static/reset.css?v={{ player_asset_version }}">
+  <link rel="stylesheet" href="/static/tokens.css?v={{ player_asset_version }}">
+  <link rel="stylesheet" href="/static/study-hub.css?v={{ player_asset_version }}">
+  <link rel="stylesheet" href="/static/public_quiz.css?v={{ player_asset_version }}">
 </head>
 <body class="sh-app public-quiz-page">
   <a class="skip-link" href="#quiz-player">Skip to quiz</a>
@@ -42,7 +42,7 @@
       <p>Loading preview…</p>
     </section>
   </main>
-  <script src="/public/quizzes/assets/player.js" defer></script>
+  <script src="/static/public_quiz.js?v={{ player_asset_version }}" defer></script>
   <script src="/static/studio_quiz_preview.js" defer></script>
 </body>
 </html>
