@@ -25,7 +25,7 @@
       <h2>Drop {{ "PowerPoint" if is_slides else "transcript" }} files here</h2>
       <p id="upload-help">{{ "PPTX only" if is_slides else "TXT only" }} · multiple files supported · up to 100 MB each</p>
       <label for="upload-files" class="sr-only">Choose {{ "PowerPoint" if is_slides else "transcript" }} files</label>
-      <input id="upload-files" class="sr-only" name="files" type="file" accept="{{ accept }}" multiple required aria-describedby="upload-help">
+      <input id="upload-files" class="sr-only" name="files" type="file" accept="{{ accept }}" multiple aria-describedby="upload-help">
       <button class="button secondary sh-btn sh-btn--secondary upload-browse" type="button">Choose files</button>
     </div>
     <div class="selected-files" data-selected-files aria-live="polite"></div>

@@ -161,6 +161,15 @@ def test_presentational_contracts_cover_forms_and_deferred_review_hooks() -> Non
     assert "data-review-blockers" in source("studio_quiz_review.html")
 
 
+def test_upload_queue_owns_required_file_validation() -> None:
+    upload_input = next(
+        line for line in source("uploads.html").splitlines() if 'id="upload-files"' in line
+    )
+
+    assert " required" not in upload_input
+    assert "if (!chosenFiles.length)" in static_source("uploads.js")
+
+
 def test_daily_workbench_keeps_progress_labels_and_unavailable_actions_honest() -> None:
     dashboard = source("home.html")
     lecture = source("lecture.html")
