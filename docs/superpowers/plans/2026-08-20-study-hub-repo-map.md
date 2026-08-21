@@ -15,6 +15,12 @@ published-quiz, and public-quiz routers. `Database.migrate()` delegates to
 `src/oms_hub/anki/models.py`. The observed frontend root is `src/oms_hub/web/`,
 with `templates/` and `static/` below it.
 
+The exact `RepoMap` shape has no dedicated `frontend_root`, CSS, or deployment
+path keys. The human map identifies the frontend root/common `web/` prefixes;
+`main_navigation_files` retains the CSS entrypoint; deployment remains in
+`commands.deployment`. Task 0.2 may clarify a dedicated machine key only if it
+is required, because the v1 schema rejects unknown keys.
+
 ## Frozen paths
 
 | Area | Repository-relative paths |
@@ -23,14 +29,14 @@ with `templates/` and `static/` below it.
 | Configuration/secrets | `src/oms_hub/config.py`, `src/oms_hub/security/secret_store.py`, `src/oms_hub/web/settings_routes.py`, `.env.example` |
 | Central routes | `src/oms_hub/app.py` |
 | Navigation/shell | `src/oms_hub/web/templates/base.html`, `src/oms_hub/web/static/study_hub_shell.js`, `src/oms_hub/web/static/study-hub.css`, `src/oms_hub/web/static/tokens.css`, `src/oms_hub/web/static/reset.css`, `src/oms_hub/web/static/app.css` |
-| Main Hub lecture | `src/oms_hub/web/routes.py`, `src/oms_hub/web/templates/lecture.html`, `src/oms_hub/web/static/lecture.js` |
+| Main Hub (`/`) | `src/oms_hub/web/routes.py`, `src/oms_hub/web/templates/home.html` |
 | Public quiz player | `src/oms_hub/web/public_quiz_routes.py`, `src/oms_hub/web/templates/public_quiz.html`, `src/oms_hub/web/static/public_quiz.js`, `src/oms_hub/web/static/public_quiz.css` |
-| Dashboard | `src/oms_hub/web/routes.py`, `src/oms_hub/web/templates/dashboard.html`, `src/oms_hub/web/static/dashboard.js` |
-| Artifact/private preview | `src/oms_hub/web/artifact_routes.py`, `src/oms_hub/web/templates/artifact_text.html` |
+| Lecture library dashboard (`/lectures`) | `src/oms_hub/web/routes.py`, `src/oms_hub/web/templates/dashboard.html`, `src/oms_hub/web/static/dashboard.js` |
+| Artifact/private preview | `src/oms_hub/web/artifact_routes.py`, `src/oms_hub/artifacts.py`, `src/oms_hub/web/templates/artifact_text.html` |
 | Outline generation | `src/oms_hub/web/generation_routes.py`, `src/oms_hub/study_generation/service.py`, `src/oms_hub/study_generation/worker.py`, `src/oms_hub/study_generation/outline.py`, `src/oms_hub/study_generation/repository.py` |
 | Lecture quiz generation | `src/oms_hub/web/generation_routes.py`, `src/oms_hub/study_generation/service.py`, `src/oms_hub/study_generation/worker.py`, `src/oms_hub/study_generation/native_quiz.py`, `src/oms_hub/study_generation/repository.py` |
 | Custom quiz/Studio | `src/oms_hub/web/studio_routes.py`, `src/oms_hub/web/templates/notebook_studio.html`, `src/oms_hub/study_generation/studio_service.py`, `src/oms_hub/study_generation/studio_worker.py`, `src/oms_hub/study_generation/studio_repository.py`, `src/oms_hub/study_generation/quiz_import_worker.py`, `src/oms_hub/study_generation/practice_review.py`, `src/oms_hub/study_generation/quiz_images.py`, `src/oms_hub/models.py` |
-| Learner quiz attempt boundary | `src/oms_hub/web/public_quiz_routes.py` |
+| Learner quiz attempt boundary | `src/oms_hub/web/public_quiz_routes.py`, `src/oms_hub/web/static/public_quiz.js`, `src/oms_hub/web/static/public_quiz_library.js` |
 | Anki v2/local and agent boundaries | `src/oms_hub/anki/ankiconnect.py`, `src/oms_hub/anki/runtime.py`, `src/oms_hub/anki/apply.py`, `src/oms_hub/web/anki_routes.py`, `src/oms_hub/web/anki_agent_routes.py`, `src/oms_anki_agent`, `scripts/macos/com.omsstudy.anki-agent.plist`, `src/oms_hub/app.py` |
 | CI | `.github/workflows/ci.yml` |
 
@@ -56,9 +62,12 @@ local Windows pass.
 
 ## Boundary note: learner attempts
 
-`POST /quizzes/{token}/answer` in `public_quiz_routes.py` invokes
-`grade_answer` and immediately returns correctness, the correct choice ID, and
-rationale. It does not write a learner attempt record. Existing
+`POST /quizzes/{token}/answer` in `public_quiz_routes.py` invokes `grade_answer`
+and immediately returns correctness, the correct choice ID, and rationale. The
+public-player JavaScript persists/restores submitted answers, score, flags, and
+navigation in browser `localStorage`; the library JavaScript reads and resets
+that browser-local progress. Separately, the server does not write a learner
+attempt record or table. Existing
 `generation_attempts` and `studio_run_attempts` are generation/run retry
 records, not learner quiz-attempt persistence. Grounded-learning work must
 treat learner-attempt persistence as absent at this baseline.

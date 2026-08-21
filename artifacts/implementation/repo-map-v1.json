@@ -29,8 +29,7 @@
     ],
     "main_hub_files": [
       "src/oms_hub/web/routes.py",
-      "src/oms_hub/web/templates/lecture.html",
-      "src/oms_hub/web/static/lecture.js"
+      "src/oms_hub/web/templates/home.html"
     ],
     "quiz_page_files": [
       "src/oms_hub/web/public_quiz_routes.py",
@@ -45,6 +44,7 @@
     ],
     "artifact_preview_files": [
       "src/oms_hub/web/artifact_routes.py",
+      "src/oms_hub/artifacts.py",
       "src/oms_hub/web/templates/artifact_text.html"
     ],
     "outline_generator_files": [
@@ -73,7 +73,9 @@
       "src/oms_hub/models.py"
     ],
     "quiz_attempt_files": [
-      "src/oms_hub/web/public_quiz_routes.py"
+      "src/oms_hub/web/public_quiz_routes.py",
+      "src/oms_hub/web/static/public_quiz.js",
+      "src/oms_hub/web/static/public_quiz_library.js"
     ],
     "anki_v2_files": [
       "src/oms_hub/anki/ankiconnect.py",
