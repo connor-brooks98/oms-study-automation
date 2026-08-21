@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Study Hub frozen repository map v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "base_sha", "base_tree", "paths", "commands"],
+  "properties": {
+    "version": {"const": 1},
+    "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "base_tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "database_bootstrap_files",
+        "configuration_files",
+        "central_route_files",
+        "main_navigation_files",
+        "main_hub_files",
+        "quiz_page_files",
+        "dashboard_files",
+        "artifact_preview_files",
+        "outline_generator_files",
+        "lecture_quiz_generator_files",
+        "custom_quiz_generator_files",
+        "quiz_attempt_files",
+        "anki_v2_files",
+        "ci_files"
+      ],
+      "properties": {
+        "database_bootstrap_files": {"$ref": "#/$defs/path_list"},
+        "configuration_files": {"$ref": "#/$defs/path_list"},
+        "central_route_files": {"$ref": "#/$defs/path_list"},
+        "main_navigation_files": {"$ref": "#/$defs/path_list"},
+        "main_hub_files": {"$ref": "#/$defs/path_list"},
+        "quiz_page_files": {"$ref": "#/$defs/path_list"},
+        "dashboard_files": {"$ref": "#/$defs/path_list"},
+        "artifact_preview_files": {"$ref": "#/$defs/path_list"},
+        "outline_generator_files": {"$ref": "#/$defs/path_list"},
+        "lecture_quiz_generator_files": {"$ref": "#/$defs/path_list"},
+        "custom_quiz_generator_files": {"$ref": "#/$defs/path_list"},
+        "quiz_attempt_files": {"$ref": "#/$defs/path_list"},
+        "anki_v2_files": {"$ref": "#/$defs/path_list"},
+        "ci_files": {"$ref": "#/$defs/path_list"}
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "python_lint",
+        "python_types",
+        "python_tests",
+        "javascript_tests",
+        "windows_document_tests",
+        "deployment"
+      ],
+      "properties": {
+        "python_lint": {"$ref": "#/$defs/command"},
+        "python_types": {"$ref": "#/$defs/command"},
+        "python_tests": {"$ref": "#/$defs/command"},
+        "javascript_tests": {"$ref": "#/$defs/command"},
+        "windows_document_tests": {"$ref": "#/$defs/command"},
+        "deployment": {"$ref": "#/$defs/command"}
+      }
+    }
+  },
+  "$defs": {
+    "path_list": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+      }
+    },
+    "command": {"type": "string", "minLength": 1}
+  }
+}

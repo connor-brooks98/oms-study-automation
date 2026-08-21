@@ -1,0 +1,121 @@
+FFFF                                                                     [100%]
+=================================== FAILURES ===================================
+____________________ test_known_key_prints_each_frozen_path ____________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x107d02120>
+tmp_path = PosixPath('/private/var/folders/09/115hy48x3nn6mcm86v5rbq6c0000gn/T/pytest-of-connor/pytest-3682/test_known_key_prints_each_fro0')
+capsys = <_pytest.capture.CaptureFixture object at 0x107d02a20>
+
+    def test_known_key_prints_each_frozen_path(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+>       reader = _reader(monkeypatch, tmp_path, {"quiz_page_files": ["one", "two"]})
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/scripts/test_frozen_paths.py:29:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/scripts/test_frozen_paths.py:21: in _reader
+    spec.loader.exec_module(module)
+<frozen importlib._bootstrap_external>:995: in exec_module
+    ???
+<frozen importlib._bootstrap_external>:1132: in get_code
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <_frozen_importlib_external.SourceFileLoader object at 0x107d4e360>
+path = '/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol0/scripts/frozen_paths.py'
+
+>   ???
+E   FileNotFoundError: [Errno 2] No such file or directory: '/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol0/scripts/frozen_paths.py'
+
+<frozen importlib._bootstrap_external>:1190: FileNotFoundError
+________________ test_unknown_key_fails_with_a_specific_message ________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x107d4eb10>
+tmp_path = PosixPath('/private/var/folders/09/115hy48x3nn6mcm86v5rbq6c0000gn/T/pytest-of-connor/pytest-3682/test_unknown_key_fails_with_a_0')
+
+    def test_unknown_key_fails_with_a_specific_message(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+>       reader = _reader(monkeypatch, tmp_path, {"quiz_page_files": ["one"]})
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/scripts/test_frozen_paths.py:39:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/scripts/test_frozen_paths.py:21: in _reader
+    spec.loader.exec_module(module)
+<frozen importlib._bootstrap_external>:995: in exec_module
+    ???
+<frozen importlib._bootstrap_external>:1132: in get_code
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <_frozen_importlib_external.SourceFileLoader object at 0x107d4fda0>
+path = '/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol0/scripts/frozen_paths.py'
+
+>   ???
+E   FileNotFoundError: [Errno 2] No such file or directory: '/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol0/scripts/frozen_paths.py'
+
+<frozen importlib._bootstrap_external>:1190: FileNotFoundError
+________________ test_empty_list_fails_with_a_specific_message _________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x107d4f0e0>
+tmp_path = PosixPath('/private/var/folders/09/115hy48x3nn6mcm86v5rbq6c0000gn/T/pytest-of-connor/pytest-3682/test_empty_list_fails_with_a_s0')
+
+    def test_empty_list_fails_with_a_specific_message(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+>       reader = _reader(monkeypatch, tmp_path, {"quiz_page_files": []})
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/scripts/test_frozen_paths.py:49:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/scripts/test_frozen_paths.py:21: in _reader
+    spec.loader.exec_module(module)
+<frozen importlib._bootstrap_external>:995: in exec_module
+    ???
+<frozen importlib._bootstrap_external>:1132: in get_code
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <_frozen_importlib_external.SourceFileLoader object at 0x107d4f080>
+path = '/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol0/scripts/frozen_paths.py'
+
+>   ???
+E   FileNotFoundError: [Errno 2] No such file or directory: '/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol0/scripts/frozen_paths.py'
+
+<frozen importlib._bootstrap_external>:1190: FileNotFoundError
+____________ test_path_with_spaces_is_preserved_as_one_output_line _____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x107d4fd70>
+tmp_path = PosixPath('/private/var/folders/09/115hy48x3nn6mcm86v5rbq6c0000gn/T/pytest-of-connor/pytest-3682/test_path_with_spaces_is_prese0')
+capsys = <_pytest.capture.CaptureFixture object at 0x107d4fef0>
+
+    def test_path_with_spaces_is_preserved_as_one_output_line(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+>       reader = _reader(monkeypatch, tmp_path, {"quiz_page_files": ["docs/with spaces/file.md"]})
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/scripts/test_frozen_paths.py:59:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/scripts/test_frozen_paths.py:21: in _reader
+    spec.loader.exec_module(module)
+<frozen importlib._bootstrap_external>:995: in exec_module
+    ???
+<frozen importlib._bootstrap_external>:1132: in get_code
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <_frozen_importlib_external.SourceFileLoader object at 0x107dac110>
+path = '/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol0/scripts/frozen_paths.py'
+
+>   ???
+E   FileNotFoundError: [Errno 2] No such file or directory: '/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol0/scripts/frozen_paths.py'
+
+<frozen importlib._bootstrap_external>:1190: FileNotFoundError
+=========================== short test summary info ============================
+FAILED tests/scripts/test_frozen_paths.py::test_known_key_prints_each_frozen_path
+FAILED tests/scripts/test_frozen_paths.py::test_unknown_key_fails_with_a_specific_message
+FAILED tests/scripts/test_frozen_paths.py::test_empty_list_fails_with_a_specific_message
+FAILED tests/scripts/test_frozen_paths.py::test_path_with_spaces_is_preserved_as_one_output_line

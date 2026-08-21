@@ -1,0 +1,10 @@
+{
+  "command": "mypy src",
+  "duration_seconds": 6.381,
+  "ended_at": "2026-08-20T23:54:08.788346+00:00",
+  "execution_platform": "macOS-26.5.2-arm64-arm-64bit",
+  "exit_status": 0,
+  "started_at": "2026-08-20T23:54:02.407698+00:00",
+  "stderr": "",
+  "stdout": "Success: no issues found in 170 source files\n"
+}

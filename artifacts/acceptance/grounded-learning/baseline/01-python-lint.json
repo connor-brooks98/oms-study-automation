@@ -1,0 +1,10 @@
+{
+  "command": "ruff check src tests scripts",
+  "duration_seconds": 0.488,
+  "ended_at": "2026-08-20T23:54:02.398898+00:00",
+  "execution_platform": "macOS-26.5.2-arm64-arm-64bit",
+  "exit_status": 0,
+  "started_at": "2026-08-20T23:54:01.909927+00:00",
+  "stderr": "",
+  "stdout": "All checks passed!\n"
+}

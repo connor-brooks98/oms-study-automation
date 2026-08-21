@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "base_sha": "749d729010aa75bf160f996d39e11edccb883a58",
+  "base_tree": "c20af8e2df4991852014ec9f1f66462e5363d71d",
+  "paths": {
+    "database_bootstrap_files": [
+      "src/oms_hub/app.py",
+      "src/oms_hub/db.py",
+      "src/oms_hub/migrations.py",
+      "src/oms_hub/models.py",
+      "src/oms_hub/anki/models.py"
+    ],
+    "configuration_files": [
+      "src/oms_hub/config.py",
+      "src/oms_hub/security/secret_store.py",
+      "src/oms_hub/web/settings_routes.py",
+      ".env.example"
+    ],
+    "central_route_files": [
+      "src/oms_hub/app.py"
+    ],
+    "main_navigation_files": [
+      "src/oms_hub/web/templates/base.html",
+      "src/oms_hub/web/static/study_hub_shell.js",
+      "src/oms_hub/web/static/study-hub.css",
+      "src/oms_hub/web/static/tokens.css",
+      "src/oms_hub/web/static/reset.css",
+      "src/oms_hub/web/static/app.css"
+    ],
+    "main_hub_files": [
+      "src/oms_hub/web/routes.py",
+      "src/oms_hub/web/templates/lecture.html",
+      "src/oms_hub/web/static/lecture.js"
+    ],
+    "quiz_page_files": [
+      "src/oms_hub/web/public_quiz_routes.py",
+      "src/oms_hub/web/templates/public_quiz.html",
+      "src/oms_hub/web/static/public_quiz.js",
+      "src/oms_hub/web/static/public_quiz.css"
+    ],
+    "dashboard_files": [
+      "src/oms_hub/web/routes.py",
+      "src/oms_hub/web/templates/dashboard.html",
+      "src/oms_hub/web/static/dashboard.js"
+    ],
+    "artifact_preview_files": [
+      "src/oms_hub/web/artifact_routes.py",
+      "src/oms_hub/web/templates/artifact_text.html"
+    ],
+    "outline_generator_files": [
+      "src/oms_hub/web/generation_routes.py",
+      "src/oms_hub/study_generation/service.py",
+      "src/oms_hub/study_generation/worker.py",
+      "src/oms_hub/study_generation/outline.py",
+      "src/oms_hub/study_generation/repository.py"
+    ],
+    "lecture_quiz_generator_files": [
+      "src/oms_hub/web/generation_routes.py",
+      "src/oms_hub/study_generation/service.py",
+      "src/oms_hub/study_generation/worker.py",
+      "src/oms_hub/study_generation/native_quiz.py",
+      "src/oms_hub/study_generation/repository.py"
+    ],
+    "custom_quiz_generator_files": [
+      "src/oms_hub/web/studio_routes.py",
+      "src/oms_hub/web/templates/notebook_studio.html",
+      "src/oms_hub/study_generation/studio_service.py",
+      "src/oms_hub/study_generation/studio_worker.py",
+      "src/oms_hub/study_generation/studio_repository.py",
+      "src/oms_hub/study_generation/quiz_import_worker.py",
+      "src/oms_hub/study_generation/practice_review.py",
+      "src/oms_hub/study_generation/quiz_images.py",
+      "src/oms_hub/models.py"
+    ],
+    "quiz_attempt_files": [
+      "src/oms_hub/web/public_quiz_routes.py"
+    ],
+    "anki_v2_files": [
+      "src/oms_hub/anki/ankiconnect.py",
+      "src/oms_hub/anki/runtime.py",
+      "src/oms_hub/anki/apply.py",
+      "src/oms_hub/web/anki_routes.py",
+      "src/oms_hub/web/anki_agent_routes.py",
+      "src/oms_anki_agent",
+      "scripts/macos/com.omsstudy.anki-agent.plist",
+      "src/oms_hub/app.py"
+    ],
+    "ci_files": [
+      ".github/workflows/ci.yml"
+    ]
+  },
+  "commands": {
+    "python_lint": "ruff check src tests scripts",
+    "python_types": "mypy src",
+    "python_tests": "PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring pytest -q -m \"not windows_office\"",
+    "javascript_tests": "node --test \"tests/js/*.test.js\"",
+    "windows_document_tests": "$env:PYTEST_ADDOPTS='-m \"not windows_office\"'; .\\.venv\\Scripts\\python.exe -m pytest tests\\test_office_converter.py tests\\document_processing tests\\study_generation tests\\v2 -q",
+    "deployment": ".\\scripts\\install-windows.ps1"
+  }
+}

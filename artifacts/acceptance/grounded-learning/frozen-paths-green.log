@@ -1,0 +1,5 @@
+....                                                                     [100%]
+src/oms_hub/web/public_quiz_routes.py
+src/oms_hub/web/templates/public_quiz.html
+src/oms_hub/web/static/public_quiz.js
+src/oms_hub/web/static/public_quiz.css
