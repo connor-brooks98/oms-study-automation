@@ -5,13 +5,16 @@ import json
 import sys
 from pathlib import Path
 
-MAP = Path("artifacts/implementation/repo-map-v1.json")
+MAP = Path(__file__).resolve().parents[1] / "artifacts" / "implementation" / "repo-map-v1.json"
 
 
 def main() -> int:
     if len(sys.argv) != 2:
         raise SystemExit("usage: scripts/frozen_paths.py PATH_KEY")
-    data = json.loads(MAP.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(MAP.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit("unable to read frozen repository map") from exc
     key = sys.argv[1]
     try:
         paths = data["paths"][key]

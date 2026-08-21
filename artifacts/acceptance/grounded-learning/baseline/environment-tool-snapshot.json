@@ -1,0 +1,54 @@
+{
+  "captured_at": "2026-08-21T00:19:02Z",
+  "scope": "Task 0.1 Fix Round 2 local verification environment",
+  "baseline_sha": "749d729010aa75bf160f996d39e11edccb883a58",
+  "branch": "sol0/contracts-and-integration",
+  "environment": {
+    "python": {
+      "command": "/tmp/studyhub-task01-venv/bin/python --version",
+      "executable": "/tmp/studyhub-task01-venv/bin/python",
+      "version": "3.12.13 (main, May 10 2026, 19:20:41) [Clang 22.1.3 ]"
+    },
+    "platform": {
+      "platform": "macOS-26.5.2-arm64-arm-64bit",
+      "machine": "arm64",
+      "processor": "arm"
+    },
+    "node": {
+      "command": "node --version",
+      "version": "v26.0.0"
+    },
+    "ruff": {
+      "command": "/tmp/studyhub-task01-venv/bin/ruff --version",
+      "version": "ruff 0.16.4"
+    },
+    "mypy": {
+      "command": "/tmp/studyhub-task01-venv/bin/mypy --version",
+      "version": "mypy 1.20.2 (compiled: yes)"
+    },
+    "pytest": {
+      "command": "/tmp/studyhub-task01-venv/bin/pytest --version",
+      "version": "pytest 8.4.2"
+    }
+  },
+  "packages": {
+    "pymupdf_fitz": {
+      "distribution": "PyMuPDF",
+      "version": "1.28.2",
+      "provenance": "importlib.metadata.version; native pymupdf/fitz import was intentionally not run because the captured macOS baseline terminates in that native stack"
+    },
+    "anydoc": {
+      "distribution": "firecrawl-anydoc",
+      "version": "0.1.3"
+    },
+    "pdf_inspector": {
+      "distribution": "pdf-inspector",
+      "version": "0.2.6"
+    },
+    "project": {
+      "distribution": "oms-study-automation",
+      "version": "0.1.0"
+    }
+  },
+  "collection_command": "A read-only Python importlib.metadata/platform/subprocess probe; it does not enumerate environment variables or run pip freeze."
+}

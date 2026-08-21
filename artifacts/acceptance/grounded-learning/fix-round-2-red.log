@@ -1,0 +1,88 @@
+....F....FFF..                                                           [100%]
+=================================== FAILURES ===================================
+____ test_absolute_script_reads_the_frozen_map_outside_the_repository_root _____
+
+tmp_path = PosixPath('/private/var/folders/09/115hy48x3nn6mcm86v5rbq6c0000gn/T/pytest-of-connor/pytest-3689/test_absolute_script_reads_the0')
+
+    def test_absolute_script_reads_the_frozen_map_outside_the_repository_root(tmp_path: Path) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT), "quiz_page_files"],
+            cwd=tmp_path,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+>       assert completed.returncode == 0, completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E           File "/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol0/scripts/frozen_paths.py", line 28, in <module>
+E             raise SystemExit(main())
+E                              ^^^^^^
+E           File "/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol0/scripts/frozen_paths.py", line 14, in main
+E             data = json.loads(MAP.read_text(encoding="utf-8"))
+E                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           File "/Users/connor/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py", line 1027, in read_text
+E             with self.open(mode='r', encoding=encoding, errors=errors) as f:
+E                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           File "/Users/connor/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py", line 1013, in open
+E             return io.open(self, mode, buffering, encoding, errors, newline)
+E                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         FileNotFoundError: [Errno 2] No such file or directory: 'artifacts/implementation/repo-map-v1.json'
+E
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/tmp/studyhub-task01-venv/bin/python', '/Users/connor/Developer/worktrees/oms-study-automation...^^^^^^^^^^^^\nFileNotFoundError: [Errno 2] No such file or directory: \'artifacts/implementation/repo-map-v1.json\'\n').returncode
+
+tests/scripts/test_frozen_paths.py:75: AssertionError
+______ test_schema_rejects_absolute_and_traversal_paths[C:/temp/map.json] ______
+
+path = 'C:/temp/map.json'
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/tmp/map.json", "C:/temp/map.json", "C:\\temp\\map.json", "\\\\server\\share\\map.json", "../map.json", "src/../map.json"],
+    )
+    def test_schema_rejects_absolute_and_traversal_paths(path: str) -> None:
+        schema = _schema()
+
+>       with pytest.raises(SchemaViolation, match="pattern"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE <class 'test_repo_map_schema.SchemaViolation'>
+
+tests/scripts/test_repo_map_schema.py:90: Failed
+_____ test_schema_rejects_absolute_and_traversal_paths[C:\\temp\\map.json] _____
+
+path = 'C:\\temp\\map.json'
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/tmp/map.json", "C:/temp/map.json", "C:\\temp\\map.json", "\\\\server\\share\\map.json", "../map.json", "src/../map.json"],
+    )
+    def test_schema_rejects_absolute_and_traversal_paths(path: str) -> None:
+        schema = _schema()
+
+>       with pytest.raises(SchemaViolation, match="pattern"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE <class 'test_repo_map_schema.SchemaViolation'>
+
+tests/scripts/test_repo_map_schema.py:90: Failed
+_ test_schema_rejects_absolute_and_traversal_paths[\\\\server\\share\\map.json] _
+
+path = '\\\\server\\share\\map.json'
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/tmp/map.json", "C:/temp/map.json", "C:\\temp\\map.json", "\\\\server\\share\\map.json", "../map.json", "src/../map.json"],
+    )
+    def test_schema_rejects_absolute_and_traversal_paths(path: str) -> None:
+        schema = _schema()
+
+>       with pytest.raises(SchemaViolation, match="pattern"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE <class 'test_repo_map_schema.SchemaViolation'>
+
+tests/scripts/test_repo_map_schema.py:90: Failed
+=========================== short test summary info ============================
+FAILED tests/scripts/test_frozen_paths.py::test_absolute_script_reads_the_frozen_map_outside_the_repository_root
+FAILED tests/scripts/test_repo_map_schema.py::test_schema_rejects_absolute_and_traversal_paths[C:/temp/map.json]
+FAILED tests/scripts/test_repo_map_schema.py::test_schema_rejects_absolute_and_traversal_paths[C:\\temp\\map.json]
+FAILED tests/scripts/test_repo_map_schema.py::test_schema_rejects_absolute_and_traversal_paths[\\\\server\\share\\map.json]
