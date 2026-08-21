@@ -49,6 +49,11 @@ Deployment interface: .\scripts\install-windows.ps1
 The deployment interface is documented only and was not run. There is no
 `package.json`, Makefile, justfile, tox, or nox configuration at Gate 0.
 
+The hosted Windows baseline is separately preserved in
+`artifacts/acceptance/grounded-learning/baseline/windows-ci-32254255685.json`.
+It is a narrow redacted capture of the exact CI run/job/failure; it is not a
+local Windows pass.
+
 ## Boundary note: learner attempts
 
 `POST /quizzes/{token}/answer` in `public_quiz_routes.py` invokes

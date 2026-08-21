@@ -1,0 +1,43 @@
+{
+  "evidence_version": 1,
+  "classification_for_this_macos_task": "pre_existing_nonreproducible",
+  "source": "GitHub Actions read-only API and failed-log retrieval",
+  "workflow": {
+    "name": "CI",
+    "run_id": 32254255685,
+    "url": "https://github.com/connor-brooks98/oms-study-automation/actions/runs/32254255685",
+    "event": "push",
+    "base_commit_sha": "749d729010aa75bf160f996d39e11edccb883a58",
+    "created_at": "2026-08-19T12:44:42Z",
+    "updated_at": "2026-08-19T13:06:56Z",
+    "conclusion": "failure"
+  },
+  "job": {
+    "name": "Windows Python 3.12 document processors",
+    "id": 96072169375,
+    "url": "https://github.com/connor-brooks98/oms-study-automation/actions/runs/32254255685/job/96072169375",
+    "started_at": "2026-08-19T12:44:45Z",
+    "completed_at": "2026-08-19T13:06:55Z",
+    "conclusion": "failure"
+  },
+  "failed_step": "Install and test document processors",
+  "failed_test": "tests/document_processing/test_snapshots.py::test_url_snapshot_hard_deadline_stops_hanging_stream_read_without_writing",
+  "assertion": "assert completed.wait(1)",
+  "annotation": "tests\\document_processing\\test_snapshots.py:430: AssertionError",
+  "failed_log": {
+    "retrieval_command": "gh run view 32254255685 --log-failed | rg -C 5 'test_url_snapshot_hard_deadline_stops_hanging_stream_read_without_writing|assert completed\\.wait\\(1\\)'",
+    "retrieved_at": "2026-08-21T00:07:14Z",
+    "provenance": "Executed read-only against the configured GitHub remote; excerpt was narrowed before committing.",
+    "redaction": "Omitted runner temporary paths, object memory addresses, environment output, and all unrelated log lines.",
+    "excerpt": [
+      "2026-08-19T13:06:44.8365140Z ================================== FAILURES ===================================",
+      "2026-08-19T13:06:44.8366030Z __ test_url_snapshot_hard_deadline_stops_hanging_stream_read_without_writing __",
+      "2026-08-19T13:06:44.8382767Z >       assert completed.wait(1)",
+      "2026-08-19T13:06:44.8383247Z E       assert False",
+      "2026-08-19T13:06:44.8385261Z tests\\document_processing\\test_snapshots.py:430: AssertionError",
+      "2026-08-19T13:06:44.8387787Z FAILED tests/document_processing/test_snapshots.py::test_url_snapshot_hard_deadline_stops_hanging_stream_read_without_writing - assert False",
+      "2026-08-19T13:06:50.5781763Z ##[error]Process completed with exit code 1."
+    ]
+  },
+  "local_execution_boundary": "No local Windows pass is claimed. macOS local equivalent exits with signal 11 in PyMuPDF/fitz before this hosted assertion runs."
+}
