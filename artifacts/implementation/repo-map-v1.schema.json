@@ -5,7 +5,7 @@
   "additionalProperties": false,
   "required": ["version", "base_sha", "base_tree", "paths", "commands"],
   "properties": {
-    "version": {"const": 1},
+    "version": {"type": "integer", "const": 1},
     "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "base_tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "paths": {

@@ -1,0 +1,43 @@
+.F..........F........                                                    [100%]
+=================================== FAILURES ===================================
+______ test_schema_rejects_compact_constraint_mutations[boolean_version] _______
+
+name = 'boolean_version'
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "boolean_version",
+            "wrong_version",
+            "missing_required",
+            "unknown_root",
+            "unknown_paths",
+            "unknown_commands",
+            "wrong_path_list_type",
+            "wrong_command_type",
+            "empty_path_list",
+            "empty_path",
+            "empty_command",
+        ],
+    )
+    def test_schema_rejects_compact_constraint_mutations(name: str) -> None:
+        schema = _schema()
+        data = deepcopy(_actual_map())
+        _mutate(data, name)
+
+>       with pytest.raises(SchemaViolation):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE <class 'test_repo_map_schema.SchemaViolation'>
+
+tests/scripts/test_repo_map_schema.py:129: Failed
+_________________ test_schema_const_does_not_treat_true_as_one _________________
+
+    def test_schema_const_does_not_treat_true_as_one() -> None:
+>       with pytest.raises(SchemaViolation, match="const"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE <class 'test_repo_map_schema.SchemaViolation'>
+
+tests/scripts/test_repo_map_schema.py:134: Failed
+=========================== short test summary info ============================
+FAILED tests/scripts/test_repo_map_schema.py::test_schema_rejects_compact_constraint_mutations[boolean_version]
+FAILED tests/scripts/test_repo_map_schema.py::test_schema_const_does_not_treat_true_as_one
