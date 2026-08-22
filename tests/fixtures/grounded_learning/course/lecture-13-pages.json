@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "fixture_id": "synthetic_course_lecture_13_v1",
+  "source_document_id": "source_fixture_course_l13",
+  "source_revision_id": "sr_fixture_course_l13_v1",
+  "authority_class": "course_material",
+  "scope": {
+    "course_id": "heme",
+    "exam_id": "e2",
+    "lecture_id": "l13"
+  },
+  "pages": [
+    {
+      "page_number": 1,
+      "slide_number": 1,
+      "evidence_markers": [
+        "course_l13_intrinsic_pathway",
+        "course_l13_extrinsic_pathway"
+      ]
+    },
+    {
+      "page_number": 2,
+      "slide_number": 2,
+      "evidence_markers": [
+        "course_l13_pt",
+        "course_l13_ptt"
+      ]
+    },
+    {
+      "page_number": 3,
+      "slide_number": 3,
+      "evidence_markers": [
+        "course_l13_hemophilia_a"
+      ]
+    },
+    {
+      "page_number": 4,
+      "slide_number": 4,
+      "evidence_markers": [
+        "course_l13_hit_timing",
+        "course_l13_hit_mechanism"
+      ]
+    },
+    {
+      "page_number": 5,
+      "slide_number": 5,
+      "evidence_markers": [
+        "course_l13_dic_pattern"
+      ]
+    }
+  ]
+}
