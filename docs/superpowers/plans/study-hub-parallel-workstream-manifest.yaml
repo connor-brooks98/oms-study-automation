@@ -1,0 +1,1586 @@
+version: 1
+generated_for: Study Hub grounded adaptive learning implementation
+document_date: '2026-08-20'
+sources:
+  design: docs/superpowers/specs/2026-08-20-study-hub-grounded-adaptive-learning-design.md
+  plan: docs/superpowers/plans/2026-08-20-study-hub-grounded-adaptive-learning.md
+  repo_map: artifacts/implementation/repo-map-v1.json
+program:
+  repository: connor-brooks98/oms-study-automation
+  integration_branch: integration/studyhub-grounded-learning-v1
+  integration_owner: sol0
+  task_state_owner: sol0
+  base_sha_source: Task 0.1 baseline artifact
+  execution_model: parallel Sol workstreams; fresh Luna implementation per task; independent Terra specification
+    and quality reviews
+  prohibited_actions_without_owner_direction:
+  - push
+  - merge to main
+  - deploy
+  - create or push release tag
+  - delete branch or worktree
+  - modify production data
+  - write directly to collection.anki2
+  shared_file_policy: Only Sol-0 edits central wiring, shared contracts/configuration, dependency locks, central
+    migration registry, CI workflows, plan, or manifest.
+  contract_change_path: docs/implementation/contract-proposals/CP-{sequence}-{slug}.md
+  handoff_path: docs/implementation/handoffs/{task_id}.md
+roles:
+  sol: Workstream owner and subagent coordinator
+  luna: TDD implementation worker in the assigned worktree
+  terra_spec: Independent specification-compliance reviewer; no code edits
+  terra_quality: Independent code-quality/security reviewer; no code edits
+  program_terra: Combined release-diff reviewer at Gate 7
+gates:
+  gate_1_shared_contracts:
+    task: '0.6'
+    state: blocked
+  gate_2a_source_trust:
+    task: '1.8'
+    state: blocked
+  gate_2b_gemini_provider:
+    task: '2.8'
+    state: blocked
+  gate_3a_ask_backend:
+    task: '3.8'
+    state: blocked
+  gate_3b_ask_experience:
+    task: '4.7'
+    state: blocked
+  gate_4_board_questions:
+    task: '5.10'
+    state: blocked
+  gate_5_adaptive_learning:
+    task: '6.9'
+    state: blocked
+  gate_5b_practice_modes:
+    task: '6.16'
+    state: blocked
+  gate_6a_anki_runway:
+    task: '7.8'
+    state: blocked
+  gate_6b_journal_evidence:
+    task: '8.8'
+    state: blocked
+  gate_7_release:
+    task: '9.11'
+    state: blocked
+workstreams:
+- id: sol0
+  display: Sol-0
+  branch: sol0/contracts-and-integration
+  worktree: $WT_ROOT/sol0
+  ownership:
+  - shared contracts
+  - feature flags
+  - central wiring
+  - integration
+  - plan/manifest
+  - CI
+  tasks:
+  - '0.1'
+  - '0.2'
+  - '0.3'
+  - '0.4'
+  - '0.5'
+  - '0.6'
+  review_policy:
+  - terra_spec
+  - terra_quality
+  central_file_edits: true
+- id: sol1
+  display: Sol-1
+  branch: sol1/source-trust
+  worktree: $WT_ROOT/sol1
+  ownership:
+  - src/oms_hub/knowledge/**
+  - tests/knowledge/**
+  tasks:
+  - '1.1'
+  - '1.2'
+  - '1.3'
+  - '1.4'
+  - '1.5'
+  - '1.6'
+  - '1.7'
+  - '1.8'
+  review_policy:
+  - terra_spec
+  - terra_quality
+  central_file_edits: false
+- id: sol2
+  display: Sol-2
+  branch: sol2/gemini-indexing
+  worktree: $WT_ROOT/sol2
+  ownership:
+  - src/oms_hub/providers/gemini/**
+  - src/oms_hub/indexing/**
+  - matching tests
+  tasks:
+  - '2.1'
+  - '2.2'
+  - '2.3'
+  - '2.4'
+  - '2.5'
+  - '2.6'
+  - '2.7'
+  - '2.8'
+  review_policy:
+  - terra_spec
+  - terra_quality
+  central_file_edits: false
+- id: sol3
+  display: Sol-3
+  branch: sol3/ask-backend
+  worktree: $WT_ROOT/sol3
+  ownership:
+  - src/oms_hub/ask/**
+  - tests/ask/**
+  tasks:
+  - '3.1'
+  - '3.2'
+  - '3.3'
+  - '3.4'
+  - '3.5'
+  - '3.6'
+  - '3.7'
+  - '3.8'
+  review_policy:
+  - terra_spec
+  - terra_quality
+  central_file_edits: false
+- id: sol4
+  display: Sol-4
+  branch: sol4/ask-frontend
+  worktree: $WT_ROOT/sol4
+  ownership:
+  - scoped Ask frontend modules
+  - Ask JavaScript tests
+  - Ask CSS
+  tasks:
+  - '4.1'
+  - '4.2'
+  - '4.3'
+  - '4.4'
+  - '4.5'
+  - '4.6'
+  - '4.7'
+  review_policy:
+  - terra_spec
+  - terra_quality
+  central_file_edits: false
+- id: sol5
+  display: Sol-5
+  branch: sol5/board-questions
+  worktree: $WT_ROOT/sol5
+  ownership:
+  - src/oms_hub/questions/**
+  - src/oms_hub/artifacts/**
+  - evals/questions/**
+  tasks:
+  - '5.1'
+  - '5.2'
+  - '5.3'
+  - '5.4'
+  - '5.5'
+  - '5.6'
+  - '5.7'
+  - '5.8'
+  - '5.9'
+  - '5.10'
+  review_policy:
+  - terra_spec
+  - terra_quality
+  central_file_edits: false
+- id: sol6
+  display: Sol-6
+  branch: sol6/adaptive-mastery
+  worktree: $WT_ROOT/sol6
+  ownership:
+  - src/oms_hub/objectives/**
+  - src/oms_hub/mastery/**
+  - src/oms_hub/adaptive/**
+  tasks:
+  - '6.1'
+  - '6.2'
+  - '6.3'
+  - '6.4'
+  - '6.5'
+  - '6.6'
+  - '6.7'
+  - '6.8'
+  - '6.9'
+  review_policy:
+  - terra_spec
+  - terra_quality
+  central_file_edits: false
+- id: sol7
+  display: Sol-7
+  branch: sol7/anki-runway
+  worktree: $WT_ROOT/sol7
+  ownership:
+  - read-only Anki learning files
+  - src/oms_hub/planning/**
+  - scoped Runway UI
+  tasks:
+  - '7.1'
+  - '7.2'
+  - '7.3'
+  - '7.4'
+  - '7.5'
+  - '7.6'
+  - '7.7'
+  - '7.8'
+  review_policy:
+  - terra_spec
+  - terra_quality
+  central_file_edits: false
+- id: sol8
+  display: Sol-8
+  branch: sol8/journal-evidence
+  worktree: $WT_ROOT/sol8
+  ownership:
+  - src/oms_hub/journals/**
+  - tests/journals/**
+  - scoped journal UI
+  tasks:
+  - '8.1'
+  - '8.2'
+  - '8.3'
+  - '8.4'
+  - '8.5'
+  - '8.6'
+  - '8.7'
+  - '8.8'
+  review_policy:
+  - terra_spec
+  - terra_quality
+  central_file_edits: false
+- id: sol9
+  display: Sol-9
+  branch: sol9/evals-observability-release
+  worktree: $WT_ROOT/sol9
+  ownership:
+  - src/oms_hub/observability/**
+  - src/oms_hub/security/**
+  - evals/**
+  - release scripts/docs
+  tasks:
+  - '9.1'
+  - '9.2'
+  - '9.3'
+  - '9.4'
+  - '9.5'
+  - '9.6'
+  - '9.7'
+  - '9.8'
+  - '9.9'
+  - '9.10'
+  - '9.11'
+  review_policy:
+  - terra_spec
+  - terra_quality
+  central_file_edits: false
+- id: sol10
+  display: Sol-10
+  branch: sol10/practice-modes
+  worktree: $WT_ROOT/sol10
+  ownership:
+  - src/oms_hub/practice/**
+  - tests/practice/**
+  - scoped practice UI/tests
+  tasks:
+  - '6.10'
+  - '6.11'
+  - '6.12'
+  - '6.13'
+  - '6.14'
+  - '6.15'
+  - '6.16'
+  review_policy:
+  - terra_spec
+  - terra_quality
+  central_file_edits: false
+tasks:
+- id: '0.1'
+  title: Capture the immutable execution baseline
+  phase: Phase 0 — Baseline, repository map, contracts, and execution controls
+  workstream: sol0
+  branch: sol0/contracts-and-integration
+  depends_on: []
+  wave: 0
+  initial_state: ready
+  handoff: docs/implementation/handoffs/0.1.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '0.2'
+  title: Install the approved design, plan, and machine-readable manifest
+  phase: Phase 0 — Baseline, repository map, contracts, and execution controls
+  workstream: sol0
+  branch: sol0/contracts-and-integration
+  depends_on:
+  - '0.1'
+  wave: 0
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/0.2.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '0.3'
+  title: Create the shared feature-flag surface
+  phase: Phase 0 — Baseline, repository map, contracts, and execution controls
+  workstream: sol0
+  branch: sol0/contracts-and-integration
+  depends_on:
+  - '0.2'
+  wave: 0
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/0.3.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '0.4'
+  title: Freeze shared provider and wire contracts
+  phase: Phase 0 — Baseline, repository map, contracts, and execution controls
+  workstream: sol0
+  branch: sol0/contracts-and-integration
+  depends_on:
+  - '0.2'
+  wave: 0
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/0.4.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '0.5'
+  title: Create the shared test builders and synthetic source fixture
+  phase: Phase 0 — Baseline, repository map, contracts, and execution controls
+  workstream: sol0
+  branch: sol0/contracts-and-integration
+  depends_on:
+  - '0.4'
+  wave: 0
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/0.5.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '0.6'
+  title: Publish Gate 1 and unlock parallel branches
+  phase: Phase 0 — Baseline, repository map, contracts, and execution controls
+  workstream: sol0
+  branch: sol0/contracts-and-integration
+  depends_on:
+  - '0.3'
+  - '0.4'
+  - '0.5'
+  wave: 0
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/0.6.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+  delivers_gate: gate_1_shared_contracts
+- id: '1.1'
+  title: Implement deterministic source and evidence identifiers
+  phase: Phase 1 — Source Trust Foundation
+  workstream: sol1
+  branch: sol1/source-trust
+  depends_on:
+  - '0.6'
+  wave: 1
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/1.1.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '1.2'
+  title: Define source, revision, locator, and evidence domain models
+  phase: Phase 1 — Source Trust Foundation
+  workstream: sol1
+  branch: sol1/source-trust
+  depends_on:
+  - '1.1'
+  wave: 1
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/1.2.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '1.3'
+  title: Implement the source-trust repository schema
+  phase: Phase 1 — Source Trust Foundation
+  workstream: sol1
+  branch: sol1/source-trust
+  depends_on:
+  - '1.2'
+  wave: 1
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/1.3.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '1.4'
+  title: Implement normalized evidence extraction
+  phase: Phase 1 — Source Trust Foundation
+  workstream: sol1
+  branch: sol1/source-trust
+  depends_on:
+  - '1.3'
+  wave: 1
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/1.4.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '1.5'
+  title: Implement truth-mode and scope policy
+  phase: Phase 1 — Source Trust Foundation
+  workstream: sol1
+  branch: sol1/source-trust
+  depends_on:
+  - '1.2'
+  wave: 1
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/1.5.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '1.6'
+  title: Adapt current slide revisions into the source registry
+  phase: Phase 1 — Source Trust Foundation
+  workstream: sol1
+  branch: sol1/source-trust
+  depends_on:
+  - '1.4'
+  - '1.5'
+  wave: 1
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/1.6.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '1.7'
+  title: Add source revision and citation-preview application services
+  phase: Phase 1 — Source Trust Foundation
+  workstream: sol1
+  branch: sol1/source-trust
+  depends_on:
+  - '1.6'
+  wave: 1
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/1.7.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '1.8'
+  title: Deliver Source Trust Gate 2A
+  phase: Phase 1 — Source Trust Foundation
+  workstream: sol1
+  branch: sol1/source-trust
+  depends_on:
+  - '1.7'
+  wave: 1
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/1.8.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+  delivers_gate: gate_2a_source_trust
+- id: '2.1'
+  title: Add the pinned official Gemini SDK and provider configuration
+  phase: Phase 2 — Gemini File Search Provider and Durable Indexing
+  workstream: sol2
+  branch: sol2/gemini-indexing
+  depends_on:
+  - '0.6'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/2.1.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '2.2'
+  title: Implement the async Gemini client lifecycle and error translation
+  phase: Phase 2 — Gemini File Search Provider and Durable Indexing
+  workstream: sol2
+  branch: sol2/gemini-indexing
+  depends_on:
+  - '2.1'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/2.2.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '2.3'
+  title: Implement provider store and document lifecycle
+  phase: Phase 2 — Gemini File Search Provider and Durable Indexing
+  workstream: sol2
+  branch: sol2/gemini-indexing
+  depends_on:
+  - '2.2'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/2.3.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '2.4'
+  title: Implement resumable Files API upload followed by import
+  phase: Phase 2 — Gemini File Search Provider and Durable Indexing
+  workstream: sol2
+  branch: sol2/gemini-indexing
+  depends_on:
+  - '2.3'
+  - '1.8'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/2.4.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '2.5'
+  title: Reuse the ingestion worker for durable index jobs
+  phase: Phase 2 — Gemini File Search Provider and Durable Indexing
+  workstream: sol2
+  branch: sol2/gemini-indexing
+  depends_on:
+  - '2.4'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/2.5.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '2.6'
+  title: Implement multimodal lecture indexing and citation mapping inputs
+  phase: Phase 2 — Gemini File Search Provider and Durable Indexing
+  workstream: sol2
+  branch: sol2/gemini-indexing
+  depends_on:
+  - '2.5'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/2.6.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '2.7'
+  title: Add reconciliation, deletion, rebuild, health, and cost surfaces
+  phase: Phase 2 — Gemini File Search Provider and Durable Indexing
+  workstream: sol2
+  branch: sol2/gemini-indexing
+  depends_on:
+  - '2.6'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/2.7.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '2.8'
+  title: Add live Gemini contract smoke tests and deliver Gate 2B
+  phase: Phase 2 — Gemini File Search Provider and Durable Indexing
+  workstream: sol2
+  branch: sol2/gemini-indexing
+  depends_on:
+  - '2.7'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/2.8.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+  delivers_gate: gate_2b_gemini_provider
+- id: '3.1'
+  title: Define Ask request, response, context, and event models
+  phase: Phase 3A — Ask StudyHub Backend
+  workstream: sol3
+  branch: sol3/ask-backend
+  depends_on:
+  - '0.6'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/3.1.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '3.2'
+  title: Implement deterministic page-context resolution
+  phase: Phase 3A — Ask StudyHub Backend
+  workstream: sol3
+  branch: sol3/ask-backend
+  depends_on:
+  - '3.1'
+  - '1.8'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/3.2.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '3.3'
+  title: Implement pre-submit intent and answer-leak protection
+  phase: Phase 3A — Ask StudyHub Backend
+  workstream: sol3
+  branch: sol3/ask-backend
+  depends_on:
+  - '3.1'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/3.3.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '3.4'
+  title: Implement retrieval gateway and evidence packet construction
+  phase: Phase 3A — Ask StudyHub Backend
+  workstream: sol3
+  branch: sol3/ask-backend
+  depends_on:
+  - '3.2'
+  - '1.8'
+  - '2.8'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/3.4.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '3.5'
+  title: Implement grounded answer prompts and claim-level citation validation
+  phase: Phase 3A — Ask StudyHub Backend
+  workstream: sol3
+  branch: sol3/ask-backend
+  depends_on:
+  - '3.3'
+  - '3.4'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/3.5.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '3.6'
+  title: Persist scoped Ask threads, messages, and retrieval traces
+  phase: Phase 3A — Ask StudyHub Backend
+  workstream: sol3
+  branch: sol3/ask-backend
+  depends_on:
+  - '3.1'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/3.6.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '3.7'
+  title: Implement Ask service, provider fallback, and event stream
+  phase: Phase 3A — Ask StudyHub Backend
+  workstream: sol3
+  branch: sol3/ask-backend
+  depends_on:
+  - '3.5'
+  - '3.6'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/3.7.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '3.8'
+  title: Expose versioned Ask APIs and deliver backend Gate 3A
+  phase: Phase 3A — Ask StudyHub Backend
+  workstream: sol3
+  branch: sol3/ask-backend
+  depends_on:
+  - '3.7'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/3.8.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+  delivers_gate: gate_3a_ask_backend
+- id: '4.1'
+  title: Create the typed Ask browser client and store
+  phase: Phase 3B — Ask StudyHub Frontend and Citation UX
+  workstream: sol4
+  branch: sol4/ask-frontend
+  depends_on:
+  - '0.6'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/4.1.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '4.2'
+  title: Implement the reusable Ask bar
+  phase: Phase 3B — Ask StudyHub Frontend and Citation UX
+  workstream: sol4
+  branch: sol4/ask-frontend
+  depends_on:
+  - '4.1'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/4.2.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '4.3'
+  title: Add the main-hub Ask experience and scope selector
+  phase: Phase 3B — Ask StudyHub Frontend and Citation UX
+  workstream: sol4
+  branch: sol4/ask-frontend
+  depends_on:
+  - '4.2'
+  - '3.8'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/4.3.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '4.4'
+  title: Add the quiz-page Ask drawer and pre/post-submit state
+  phase: Phase 3B — Ask StudyHub Frontend and Citation UX
+  workstream: sol4
+  branch: sol4/ask-frontend
+  depends_on:
+  - '4.2'
+  - '3.8'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/4.4.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '4.5'
+  title: Implement citation chips and the canonical source drawer
+  phase: Phase 3B — Ask StudyHub Frontend and Citation UX
+  workstream: sol4
+  branch: sol4/ask-frontend
+  depends_on:
+  - '4.1'
+  - '1.7'
+  - '3.8'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/4.5.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '4.6'
+  title: Add Ask mobile, accessibility, error, and offline-read behavior
+  phase: Phase 3B — Ask StudyHub Frontend and Citation UX
+  workstream: sol4
+  branch: sol4/ask-frontend
+  depends_on:
+  - '4.3'
+  - '4.4'
+  - '4.5'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/4.6.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '4.7'
+  title: Deliver full Ask Gate 3B
+  phase: Phase 3B — Ask StudyHub Frontend and Citation UX
+  workstream: sol4
+  branch: sol4/ask-frontend
+  depends_on:
+  - '4.6'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/4.7.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+  delivers_gate: gate_3b_ask_experience
+- id: '5.1'
+  title: Wrap current outlines and quizzes as immutable artifact recipes
+  phase: Phase 4 — Preserve Existing Artifacts and Add the Board-Style Question Engine
+  workstream: sol5
+  branch: sol5/board-questions
+  depends_on:
+  - '0.6'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/5.1.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '5.2'
+  title: Persist artifact provenance and source dependency links
+  phase: Phase 4 — Preserve Existing Artifacts and Add the Board-Style Question Engine
+  workstream: sol5
+  branch: sol5/board-questions
+  depends_on:
+  - '5.1'
+  - '1.8'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/5.2.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '5.3'
+  title: Define board-question domain and wire schemas
+  phase: Phase 4 — Preserve Existing Artifacts and Add the Board-Style Question Engine
+  workstream: sol5
+  branch: sol5/board-questions
+  depends_on:
+  - '0.6'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/5.3.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '5.4'
+  title: Build bounded question evidence packets
+  phase: Phase 4 — Preserve Existing Artifacts and Add the Board-Style Question Engine
+  workstream: sol5
+  branch: sol5/board-questions
+  depends_on:
+  - '5.3'
+  - '1.8'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/5.4.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '5.5'
+  title: Implement board-question prompt, structured generation, and persistence
+  phase: Phase 4 — Preserve Existing Artifacts and Add the Board-Style Question Engine
+  workstream: sol5
+  branch: sol5/board-questions
+  depends_on:
+  - '5.4'
+  - '2.8'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/5.5.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '5.6'
+  title: Implement deterministic item and claim validators
+  phase: Phase 4 — Preserve Existing Artifacts and Add the Board-Style Question Engine
+  workstream: sol5
+  branch: sol5/board-questions
+  depends_on:
+  - '5.5'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/5.6.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '5.7'
+  title: Add an independent critic, bounded repair, and quarantine workflow
+  phase: Phase 4 — Preserve Existing Artifacts and Add the Board-Style Question Engine
+  workstream: sol5
+  branch: sol5/board-questions
+  depends_on:
+  - '5.6'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/5.7.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '5.8'
+  title: Expose board-question generation and “another like this” APIs
+  phase: Phase 4 — Preserve Existing Artifacts and Add the Board-Style Question Engine
+  workstream: sol5
+  branch: sol5/board-questions
+  depends_on:
+  - '5.7'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/5.8.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '5.9'
+  title: Build the blind NotebookLM-versus-Gemini benchmark harness
+  phase: Phase 4 — Preserve Existing Artifacts and Add the Board-Style Question Engine
+  workstream: sol5
+  branch: sol5/board-questions
+  depends_on:
+  - '5.1'
+  - '5.8'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/5.9.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '5.10'
+  title: Deliver Board Question Gate 4
+  phase: Phase 4 — Preserve Existing Artifacts and Add the Board-Style Question Engine
+  workstream: sol5
+  branch: sol5/board-questions
+  depends_on:
+  - '5.2'
+  - '5.9'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/5.10.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+  delivers_gate: gate_4_board_questions
+- id: '6.1'
+  title: Define source-derived objective domain and persistence
+  phase: Phase 5 — Objective Graph, Learner Events, Mastery, and Adaptive Practice
+  workstream: sol6
+  branch: sol6/adaptive-mastery
+  depends_on:
+  - '1.8'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.1.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '6.2'
+  title: Extract, deduplicate, and review proposed objectives
+  phase: Phase 5 — Objective Graph, Learner Events, Mastery, and Adaptive Practice
+  workstream: sol6
+  branch: sol6/adaptive-mastery
+  depends_on:
+  - '6.1'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.2.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '6.3'
+  title: Define immutable learner and assistance events
+  phase: Phase 5 — Objective Graph, Learner Events, Mastery, and Adaptive Practice
+  workstream: sol6
+  branch: sol6/adaptive-mastery
+  depends_on:
+  - '0.6'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.3.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '6.4'
+  title: Implement the transparent mastery engine
+  phase: Phase 5 — Objective Graph, Learner Events, Mastery, and Adaptive Practice
+  workstream: sol6
+  branch: sol6/adaptive-mastery
+  depends_on:
+  - '6.3'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.4.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '6.5'
+  title: Define adaptive queue and candidate-selection models
+  phase: Phase 5 — Objective Graph, Learner Events, Mastery, and Adaptive Practice
+  workstream: sol6
+  branch: sol6/adaptive-mastery
+  depends_on:
+  - '6.2'
+  - '6.4'
+  - '5.10'
+  wave: 4
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.5.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '6.6'
+  title: Implement deterministic adaptive objective and question selection
+  phase: Phase 5 — Objective Graph, Learner Events, Mastery, and Adaptive Practice
+  workstream: sol6
+  branch: sol6/adaptive-mastery
+  depends_on:
+  - '6.5'
+  wave: 4
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.6.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '6.7'
+  title: Implement immediate and delayed remediation
+  phase: Phase 5 — Objective Graph, Learner Events, Mastery, and Adaptive Practice
+  workstream: sol6
+  branch: sol6/adaptive-mastery
+  depends_on:
+  - '6.6'
+  wave: 4
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.7.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '6.8'
+  title: Expose adaptive sessions and mastery APIs
+  phase: Phase 5 — Objective Graph, Learner Events, Mastery, and Adaptive Practice
+  workstream: sol6
+  branch: sol6/adaptive-mastery
+  depends_on:
+  - '6.7'
+  wave: 4
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.8.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '6.9'
+  title: Deliver Adaptive Learning Gate 5
+  phase: Phase 5 — Objective Graph, Learner Events, Mastery, and Adaptive Practice
+  workstream: sol6
+  branch: sol6/adaptive-mastery
+  depends_on:
+  - '6.8'
+  wave: 4
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.9.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+  delivers_gate: gate_5_adaptive_learning
+- id: '6.10'
+  title: Define versioned practice-session policies
+  phase: Phase 5B — Practice Modes, Error Notebook, Blueprint Coverage, and Timed Blocks
+  workstream: sol10
+  branch: sol10/practice-modes
+  depends_on:
+  - '0.6'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.10.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '6.11'
+  title: Implement the custom block builder
+  phase: Phase 5B — Practice Modes, Error Notebook, Blueprint Coverage, and Timed Blocks
+  workstream: sol10
+  branch: sol10/practice-modes
+  depends_on:
+  - '6.10'
+  - '5.10'
+  wave: 4
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.11.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '6.12'
+  title: Add error classification and the longitudinal Error Notebook
+  phase: Phase 5B — Practice Modes, Error Notebook, Blueprint Coverage, and Timed Blocks
+  workstream: sol10
+  branch: sol10/practice-modes
+  depends_on:
+  - '6.10'
+  - '6.3'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.12.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '6.13'
+  title: Map objectives and questions to versioned COMLEX blueprint tags
+  phase: Phase 5B — Practice Modes, Error Notebook, Blueprint Coverage, and Timed Blocks
+  workstream: sol10
+  branch: sol10/practice-modes
+  depends_on:
+  - '0.6'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.13.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '6.14'
+  title: Add outline checkpoints and timed cumulative sessions
+  phase: Phase 5B — Practice Modes, Error Notebook, Blueprint Coverage, and Timed Blocks
+  workstream: sol10
+  branch: sol10/practice-modes
+  depends_on:
+  - '6.10'
+  - '6.13'
+  - '5.10'
+  wave: 4
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.14.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '6.15'
+  title: Expose practice, Error Notebook, and blueprint APIs
+  phase: Phase 5B — Practice Modes, Error Notebook, Blueprint Coverage, and Timed Blocks
+  workstream: sol10
+  branch: sol10/practice-modes
+  depends_on:
+  - '6.11'
+  - '6.12'
+  - '6.14'
+  - '4.7'
+  wave: 4
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.15.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '6.16'
+  title: Deliver Practice Modes Gate 5B
+  phase: Phase 5B — Practice Modes, Error Notebook, Blueprint Coverage, and Timed Blocks
+  workstream: sol10
+  branch: sol10/practice-modes
+  depends_on:
+  - '6.15'
+  wave: 4
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/6.16.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+  delivers_gate: gate_5b_practice_modes
+- id: '7.1'
+  title: Inventory and wrap the existing Anki v2 read-only surface
+  phase: Phase 6 — Read-Only Anki Learning Loop and Board Runway
+  workstream: sol7
+  branch: sol7/anki-runway
+  depends_on:
+  - '0.6'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/7.1.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '7.2'
+  title: Persist synchronized Anki snapshots with explicit staleness
+  phase: Phase 6 — Read-Only Anki Learning Loop and Board Runway
+  workstream: sol7
+  branch: sol7/anki-runway
+  depends_on:
+  - '7.1'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/7.2.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '7.3'
+  title: Map Anki notes to source-derived objectives
+  phase: Phase 6 — Read-Only Anki Learning Loop and Board Runway
+  workstream: sol7
+  branch: sol7/anki-runway
+  depends_on:
+  - '7.1'
+  - '6.2'
+  wave: 4
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/7.3.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '7.4'
+  title: Add missed-question-to-Anki and Anki-to-question recommendations
+  phase: Phase 6 — Read-Only Anki Learning Loop and Board Runway
+  workstream: sol7
+  branch: sol7/anki-runway
+  depends_on:
+  - '7.3'
+  - '6.9'
+  wave: 4
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/7.4.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '7.5'
+  title: Define Board Runway and planning records
+  phase: Phase 6 — Read-Only Anki Learning Loop and Board Runway
+  workstream: sol7
+  branch: sol7/anki-runway
+  depends_on:
+  - '0.6'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/7.5.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '7.6'
+  title: Implement the daily study allocation service
+  phase: Phase 6 — Read-Only Anki Learning Loop and Board Runway
+  workstream: sol7
+  branch: sol7/anki-runway
+  depends_on:
+  - '7.2'
+  - '7.5'
+  - '6.9'
+  wave: 4
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/7.6.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '7.7'
+  title: Expose Board Runway APIs and dashboard
+  phase: Phase 6 — Read-Only Anki Learning Loop and Board Runway
+  workstream: sol7
+  branch: sol7/anki-runway
+  depends_on:
+  - '7.4'
+  - '7.6'
+  wave: 4
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/7.7.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '7.8'
+  title: Deliver Anki and Board Runway Gate 6A
+  phase: Phase 6 — Read-Only Anki Learning Loop and Board Runway
+  workstream: sol7
+  branch: sol7/anki-runway
+  depends_on:
+  - '7.7'
+  wave: 4
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/7.8.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+  delivers_gate: gate_6a_anki_runway
+- id: '8.1'
+  title: Define journal records, article revisions, verification, and approval
+  phase: Phase 7 — Approved Journal Evidence and Course/Literature Discrepancy Handling
+  workstream: sol8
+  branch: sol8/journal-evidence
+  depends_on:
+  - '0.6'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/8.1.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '8.2'
+  title: Implement the NCBI E-utilities metadata client
+  phase: Phase 7 — Approved Journal Evidence and Course/Literature Discrepancy Handling
+  workstream: sol8
+  branch: sol8/journal-evidence
+  depends_on:
+  - '0.6'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/8.2.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '8.3'
+  title: Implement journal PDF/PMC import and content verification
+  phase: Phase 7 — Approved Journal Evidence and Course/Literature Discrepancy Handling
+  workstream: sol8
+  branch: sol8/journal-evidence
+  depends_on:
+  - '8.1'
+  - '8.2'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/8.3.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '8.4'
+  title: Register approved articles in Source Trust and the literature index
+  phase: Phase 7 — Approved Journal Evidence and Course/Literature Discrepancy Handling
+  workstream: sol8
+  branch: sol8/journal-evidence
+  depends_on:
+  - '8.3'
+  - '1.8'
+  - '2.8'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/8.4.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '8.5'
+  title: Implement explicit Course + Journals retrieval and discrepancy reporting
+  phase: Phase 7 — Approved Journal Evidence and Course/Literature Discrepancy Handling
+  workstream: sol8
+  branch: sol8/journal-evidence
+  depends_on:
+  - '8.4'
+  - '3.8'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/8.5.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '8.6'
+  title: Expose journal review, approval, and citation APIs
+  phase: Phase 7 — Approved Journal Evidence and Course/Literature Discrepancy Handling
+  workstream: sol8
+  branch: sol8/journal-evidence
+  depends_on:
+  - '8.4'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/8.6.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '8.7'
+  title: Integrate journal truth modes into Ask, artifacts, and board questions
+  phase: Phase 7 — Approved Journal Evidence and Course/Literature Discrepancy Handling
+  workstream: sol8
+  branch: sol8/journal-evidence
+  depends_on:
+  - '8.5'
+  - '8.6'
+  - '3.8'
+  - '5.10'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/8.7.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '8.8'
+  title: Deliver Journal Evidence Gate 6B
+  phase: Phase 7 — Approved Journal Evidence and Course/Literature Discrepancy Handling
+  workstream: sol8
+  branch: sol8/journal-evidence
+  depends_on:
+  - '8.7'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/8.8.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+  delivers_gate: gate_6b_journal_evidence
+- id: '9.1'
+  title: Implement AI request audit records and privacy-preserving redaction
+  phase: Phase 8 — Security, Observability, Evaluation, Migration, Canary, and Release
+  workstream: sol9
+  branch: sol9/evals-observability-release
+  depends_on:
+  - '0.6'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/9.1.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '9.2'
+  title: Add source prompt-injection, scope-confusion, and output-sanitization defenses
+  phase: Phase 8 — Security, Observability, Evaluation, Migration, Canary, and Release
+  workstream: sol9
+  branch: sol9/evals-observability-release
+  depends_on:
+  - '0.6'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/9.2.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '9.3'
+  title: Implement provider timeouts, circuit breakers, quotas, and cost controls
+  phase: Phase 8 — Security, Observability, Evaluation, Migration, Canary, and Release
+  workstream: sol9
+  branch: sol9/evals-observability-release
+  depends_on:
+  - '2.8'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/9.3.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '9.4'
+  title: Add operational metrics, diagnostics, and owner health UI
+  phase: Phase 8 — Security, Observability, Evaluation, Migration, Canary, and Release
+  workstream: sol9
+  branch: sol9/evals-observability-release
+  depends_on:
+  - '9.1'
+  - '9.3'
+  wave: 3
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/9.4.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '9.5'
+  title: Build the automated grounded-answer and question-quality evaluation harness
+  phase: Phase 8 — Security, Observability, Evaluation, Migration, Canary, and Release
+  workstream: sol9
+  branch: sol9/evals-observability-release
+  depends_on:
+  - '0.6'
+  wave: 2
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/9.5.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '9.6'
+  title: Add concurrency, restart, load, and browser performance tests
+  phase: Phase 8 — Security, Observability, Evaluation, Migration, Canary, and Release
+  workstream: sol9
+  branch: sol9/evals-observability-release
+  depends_on:
+  - '4.7'
+  - '5.10'
+  - '6.9'
+  - '6.16'
+  - '7.8'
+  - '8.8'
+  wave: 5
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/9.6.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '9.7'
+  title: Implement database migration, backup, restore, and rollback rehearsal
+  phase: Phase 8 — Security, Observability, Evaluation, Migration, Canary, and Release
+  workstream: sol9
+  branch: sol9/evals-observability-release
+  depends_on:
+  - '1.8'
+  - '2.8'
+  - '3.8'
+  - '5.10'
+  - '6.9'
+  - '6.16'
+  - '7.8'
+  - '8.8'
+  wave: 5
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/9.7.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '9.8'
+  title: Extend CI with contract, security, eval, and opt-in live lanes
+  phase: Phase 8 — Security, Observability, Evaluation, Migration, Canary, and Release
+  workstream: sol9
+  branch: sol9/evals-observability-release
+  depends_on:
+  - '9.2'
+  - '9.5'
+  - '9.7'
+  wave: 5
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/9.8.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '9.9'
+  title: Run a one-lecture shadow canary
+  phase: Phase 8 — Security, Observability, Evaluation, Migration, Canary, and Release
+  workstream: sol9
+  branch: sol9/evals-observability-release
+  depends_on:
+  - '4.7'
+  - '5.10'
+  - '9.4'
+  - '9.5'
+  - '9.8'
+  wave: 5
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/9.9.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '9.10'
+  title: Run one full exam-cycle acceptance and remove NotebookLM from the critical path
+  phase: Phase 8 — Security, Observability, Evaluation, Migration, Canary, and Release
+  workstream: sol9
+  branch: sol9/evals-observability-release
+  depends_on:
+  - '6.9'
+  - '6.16'
+  - '7.8'
+  - '8.8'
+  - '9.9'
+  wave: 5
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/9.10.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+- id: '9.11'
+  title: Deliver final Release Gate 7
+  phase: Phase 8 — Security, Observability, Evaluation, Migration, Canary, and Release
+  workstream: sol9
+  branch: sol9/evals-observability-release
+  depends_on:
+  - '9.6'
+  - '9.7'
+  - '9.8'
+  - '9.10'
+  wave: 5
+  initial_state: blocked
+  handoff: docs/implementation/handoffs/9.11.md
+  reviewers:
+  - terra_spec
+  - terra_quality
+  delivers_gate: gate_7_release
+merge_order:
+- sol1
+- sol2
+- sol3
+- sol4
+- sol5
+- sol6
+- sol10
+- sol7
+- sol8
+- sol9
+release_requirements:
+- all Gate 7 matrix items pass
+- Python CI green
+- JavaScript CI green
+- Windows document-processing CI green
+- live Gemini contract accepted
+- live NCBI contract accepted when journal evidence is enabled
+- controlled Anki immutability acceptance passed
+- backup, restore, provider-index rebuild, and feature-off rollback passed
+- program Terra approved combined diff
+- Connor explicitly chooses push/merge/deploy actions
+pins:
+  google_genai: 2.14.0
+  gemini_api_version: v1beta
+  file_search_model: gemini-3.7-flash
+  embedding_model: models/gemini-embedding-2
+  anki_connect_request_version: 6
+  provider_contract_schema: v1
+  knowledge_schema: v1
+  ask_schema: v1
+  question_schema: v1
+  mastery_schema: v1
+  practice_schema: v1
+  journal_schema: v1
