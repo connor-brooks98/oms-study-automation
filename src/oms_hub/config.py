@@ -1,12 +1,15 @@
 import re
+from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_serializer, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from oms_hub.features import FeatureFlag, FeatureFlags
 
 
 def _normalize_hostname(value: str | None, field_name: str) -> str | None:
@@ -31,6 +34,19 @@ def _validate_secret_key_name(value: str) -> str:
     return normalized
 
 
+def _legacy_compatible_feature_flags(values: Mapping[str, bool]) -> FeatureFlags:
+    return FeatureFlags.from_mapping(
+        {
+            FeatureFlag.LEGACY_NOTEBOOKLM_GENERATION.value: True,
+            **values,
+        }
+    )
+
+
+def _default_feature_flags() -> FeatureFlags:
+    return _legacy_compatible_feature_flags({})
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OMS_HUB_", env_file=".env", extra="ignore")
 
@@ -49,6 +65,7 @@ class Settings(BaseSettings):
     cloudflare_access_audience: str | None = None
     cloudflare_access_allowed_email: str | None = None
     allow_local_access: bool = True
+    feature_flags: FeatureFlags = Field(default_factory=_default_feature_flags)
     study_root: Path = Path(r"%USERPROFILE%\Documents\OMS II")
     icloud_staging_root: Path | None = None
     office_timeout_seconds: int = Field(default=180, ge=30, le=600)
@@ -130,6 +147,19 @@ class Settings(BaseSettings):
     def valid_timezone(cls, value: str) -> str:
         ZoneInfo(value)
         return value
+
+    @field_validator("feature_flags", mode="before")
+    @classmethod
+    def parse_feature_flags(cls, value: object) -> FeatureFlags:
+        if isinstance(value, FeatureFlags):
+            return value
+        if not isinstance(value, Mapping):
+            raise ValueError("feature_flags must be a mapping of flag names to bool values")
+        return _legacy_compatible_feature_flags(value)
+
+    @field_serializer("feature_flags")
+    def serialize_feature_flags(self, value: FeatureFlags) -> dict[str, bool]:
+        return {flag.value: enabled for flag, enabled in value.values.items()}
 
     @field_validator("transcript_prompt_sha256", mode="before")
     @classmethod
