@@ -172,6 +172,37 @@ def test_settings_preserves_explicit_legacy_notebooklm_disable(
     )
 
 
+def test_settings_normalizes_sparse_preconstructed_flags_and_round_trips() -> None:
+    settings = Settings(
+        _env_file=None,
+        feature_flags=FeatureFlags({FeatureFlag.SOURCE_TRUST_V1: True}),
+    )
+    round_tripped = Settings.model_validate(settings.model_dump(mode="python"))
+
+    for candidate in (settings, round_tripped):
+        assert candidate.feature_flags.is_enabled(FeatureFlag.SOURCE_TRUST_V1)
+        assert candidate.feature_flags.is_enabled(
+            FeatureFlag.LEGACY_NOTEBOOKLM_GENERATION
+        )
+
+
+def test_settings_preserves_preconstructed_explicit_legacy_disable() -> None:
+    settings = Settings(
+        _env_file=None,
+        feature_flags=FeatureFlags.from_mapping(
+            {FeatureFlag.LEGACY_NOTEBOOKLM_GENERATION.value: False}
+        ),
+    )
+    round_tripped = Settings.model_validate(settings.model_dump(mode="python"))
+
+    assert not settings.feature_flags.is_enabled(
+        FeatureFlag.LEGACY_NOTEBOOKLM_GENERATION
+    )
+    assert not round_tripped.feature_flags.is_enabled(
+        FeatureFlag.LEGACY_NOTEBOOKLM_GENERATION
+    )
+
+
 def test_runtime_settings_copy_preserves_flags_and_unrelated_configuration(
     tmp_path,
 ) -> None:

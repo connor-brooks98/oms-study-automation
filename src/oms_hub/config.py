@@ -152,7 +152,9 @@ class Settings(BaseSettings):
     @classmethod
     def parse_feature_flags(cls, value: object) -> FeatureFlags:
         if isinstance(value, FeatureFlags):
-            return value
+            return _legacy_compatible_feature_flags(
+                {flag.value: enabled for flag, enabled in value.values.items()}
+            )
         if not isinstance(value, Mapping):
             raise ValueError("feature_flags must be a mapping of flag names to bool values")
         return _legacy_compatible_feature_flags(value)
