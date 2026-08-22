@@ -56,14 +56,19 @@ def _source_markers(path: Path) -> list[str]:
     return MARKER_PATTERN.findall(path.read_text(encoding="utf-8"))
 
 
-def _source_paragraphs(path: Path) -> list[str]:
-    return [
-        paragraph
-        for paragraph in re.split(r"\n\s*\n", path.read_text(encoding="utf-8").strip())
-        if paragraph
-        and not paragraph.lstrip().startswith("#")
-        and paragraph != "This heading is metadata, not an evidence paragraph."
-    ]
+def _source_lines(path: Path) -> list[str]:
+    lines: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            assert not MARKER_PATTERN.search(line), "headings cannot hide evidence markers"
+            continue
+        if stripped == "This heading is metadata, not an evidence paragraph.":
+            continue
+        lines.append(line)
+    return lines
 
 
 def _mapping(value: object) -> dict[str, object]:
@@ -85,10 +90,10 @@ def test_synthetic_evidence_markers_are_unique() -> None:
 
 
 @pytest.mark.parametrize("path", (COURSE_SOURCE, LITERATURE_SOURCE))
-def test_every_source_paragraph_has_one_leading_marker(path: Path) -> None:
-    for paragraph in _source_paragraphs(path):
-        assert MARKER_START_PATTERN.match(paragraph)
-        assert len(MARKER_PATTERN.findall(paragraph)) == 1
+def test_every_source_line_has_one_leading_marker(path: Path) -> None:
+    for line in _source_lines(path):
+        assert MARKER_START_PATTERN.match(line)
+        assert len(MARKER_PATTERN.findall(line)) == 1
 
 
 def test_course_page_map_is_complete_and_stable() -> None:
@@ -338,12 +343,54 @@ def test_build_board_question_draft_defaults_are_deeply_independent() -> None:
     assert len({claim["claim_id"] for claim in first["claims"]}) == len(first["claims"])
     assert all(claim["text"] and claim["evidence_ids"] for claim in first["claims"])
 
-    first["options"][0]["evidence_ids"].append("mutated")
-    first["claims"][0]["evidence_ids"].append("mutated")
+    assert first["options"] is not second["options"]
+    assert first["claims"] is not second["claims"]
+    for index, option in enumerate(first["options"]):
+        assert option is not second["options"][index]
+        assert all(
+            option["evidence_ids"] is not sibling["evidence_ids"]
+            for sibling_index, sibling in enumerate(first["options"])
+            if sibling_index != index
+        )
+        assert option["evidence_ids"] is not second["options"][index]["evidence_ids"]
+    for index, claim in enumerate(first["claims"]):
+        assert claim is not second["claims"][index]
+        assert all(
+            claim["evidence_ids"] is not sibling["evidence_ids"]
+            for sibling_index, sibling in enumerate(first["claims"])
+            if sibling_index != index
+        )
+        assert claim["evidence_ids"] is not second["claims"][index]["evidence_ids"]
+
+    first["blueprint_tags"].append("mutated-blueprint")
     first["objective_ids"].append("mutated")
-    assert "mutated" not in second["options"][0]["evidence_ids"]
-    assert "mutated" not in second["claims"][0]["evidence_ids"]
+    first["options"][0]["text"] = "mutated-option"
+    first["claims"][0]["text"] = "mutated-claim"
+    assert "mutated-blueprint" not in second["blueprint_tags"]
     assert "mutated" not in second["objective_ids"]
+    assert second["options"][0]["text"] != "mutated-option"
+    assert first["options"][1]["text"] != "mutated-option"
+    assert second["claims"][0]["text"] != "mutated-claim"
+    assert first["claims"][1]["text"] != "mutated-claim"
+
+    for index, option in enumerate(first["options"]):
+        marker = f"mutated-option-evidence-{index}"
+        option["evidence_ids"].append(marker)
+        assert marker not in second["options"][index]["evidence_ids"]
+        assert all(
+            marker not in sibling["evidence_ids"]
+            for sibling_index, sibling in enumerate(first["options"])
+            if sibling_index != index
+        )
+    for index, claim in enumerate(first["claims"]):
+        marker = f"mutated-claim-evidence-{index}"
+        claim["evidence_ids"].append(marker)
+        assert marker not in second["claims"][index]["evidence_ids"]
+        assert all(
+            marker not in sibling["evidence_ids"]
+            for sibling_index, sibling in enumerate(first["claims"])
+            if sibling_index != index
+        )
 
 
 @pytest.mark.parametrize("option_count", (0, 3, 5))
