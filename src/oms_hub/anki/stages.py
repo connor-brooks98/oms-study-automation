@@ -6296,7 +6296,7 @@ def _v3_r7_bundles(
             candidate = by_note[representative_id]
             candidate_text = candidate.get("text")
             candidate_extra = candidate.get("extra")
-            tags = _r7_ordered_strings(candidate.get("tags"), "tags")
+            tags = _r7_ordered_strings(candidate.get("tags"), "tags", casefold=True)
             reasons = _r7_ordered_strings(candidate.get("exact_match_reasons"), "exact reasons")
             decks = candidate.get("decks")
             if (
@@ -6394,11 +6394,11 @@ def _r7_positive_ids(value: object) -> bool:
     )
 
 
-def _r7_ordered_strings(value: object, label: str) -> tuple[str, ...]:
+def _r7_ordered_strings(value: object, label: str, *, casefold: bool = False) -> tuple[str, ...]:
     if (
         not isinstance(value, list)
         or any(type(item) is not str or not item.strip() for item in value)
-        or value != sorted(value)
+        or value != sorted(value, key=str.casefold if casefold else None)
         or len(value) != len(set(value))
     ):
         raise PinnedInputChanged(f"Pinned R6 {label} are malformed")

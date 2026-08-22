@@ -22,7 +22,9 @@ class CandidateCardFields(BaseModel):
     @field_validator("tags")
     @classmethod
     def _ordered_tags(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        if not all(value.strip() for value in values) or values != tuple(sorted(values)):
+        if not all(value.strip() for value in values) or values != tuple(
+            sorted(values, key=str.casefold)
+        ):
             raise ValueError("candidate tags must be nonblank and deterministically ordered")
         if len(values) != len(set(values)):
             raise ValueError("candidate tags must be unique")

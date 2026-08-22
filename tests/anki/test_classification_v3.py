@@ -257,7 +257,7 @@ def _stage_fixture() -> tuple[CurationServicesRunner, SimpleNamespace, FakeGener
             "note_id": note_id,
             "text": text,
             "extra": f"extra-{note_id}",
-            "tags": ["tag:a", "tag:z"],
+            "tags": ["tag:a", "Tag:z"],
             "decks": ["Deck Z", "Deck A"],
             "base_rrf": 0.1,
             "boost_total": 0.02,
@@ -414,7 +414,7 @@ def test_v3_r7_stage_builds_hash_closed_bundle_only_artifact() -> None:
         "note_id": 1,
         "text": "front-1",
         "extra": "extra-1",
-        "tags": ["tag:a", "tag:z"],
+        "tags": ["tag:a", "Tag:z"],
         "deck": "Deck A\nDeck Z",
     }
     assert first["duplicate_sibling_ids"] == ["note:2"]
