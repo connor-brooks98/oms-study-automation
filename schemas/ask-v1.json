@@ -1,0 +1,33 @@
+{
+  "$defs": {
+    "AnswerEventType": {
+      "enum": [
+        "status",
+        "delta",
+        "citations",
+        "done",
+        "error"
+      ],
+      "title": "AnswerEventType",
+      "type": "string"
+    }
+  },
+  "$id": "ask-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "event_type": {
+      "$ref": "#/$defs/AnswerEventType"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    }
+  },
+  "required": [
+    "event_type",
+    "payload"
+  ],
+  "title": "AnswerEvent",
+  "type": "object"
+}

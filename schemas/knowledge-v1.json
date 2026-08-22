@@ -1,0 +1,205 @@
+{
+  "$defs": {
+    "AuthorityClass": {
+      "enum": [
+        "course_material",
+        "published_journal",
+        "generated_artifact",
+        "question_style_reference"
+      ],
+      "title": "AuthorityClass",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "properties": {
+        "authority_class": {
+          "$ref": "#/$defs/AuthorityClass"
+        },
+        "checksum": {
+          "title": "Checksum",
+          "type": "string"
+        },
+        "evidence_id": {
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "excerpt": {
+          "title": "Excerpt",
+          "type": "string"
+        },
+        "locator_kind": {
+          "title": "Locator Kind",
+          "type": "string"
+        },
+        "locator_value": {
+          "title": "Locator Value",
+          "type": "string"
+        },
+        "source_revision_id": {
+          "title": "Source Revision Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "source_revision_id",
+        "authority_class",
+        "locator_kind",
+        "locator_value",
+        "excerpt",
+        "checksum"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "ProviderHealth": {
+      "properties": {
+        "checked_at_iso": {
+          "title": "Checked At Iso",
+          "type": "string"
+        },
+        "detail": {
+          "title": "Detail",
+          "type": "string"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "ready": {
+          "title": "Ready",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "provider",
+        "ready",
+        "detail",
+        "checked_at_iso"
+      ],
+      "title": "ProviderHealth",
+      "type": "object"
+    },
+    "RetrievalRequest": {
+      "properties": {
+        "maximum_evidence": {
+          "default": 12,
+          "title": "Maximum Evidence",
+          "type": "integer"
+        },
+        "query": {
+          "title": "Query",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/RetrievalScope"
+        }
+      },
+      "required": [
+        "query",
+        "scope"
+      ],
+      "title": "RetrievalRequest",
+      "type": "object"
+    },
+    "RetrievalResult": {
+      "properties": {
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "insufficient_evidence": {
+          "title": "Insufficient Evidence",
+          "type": "boolean"
+        },
+        "provider_request_id": {
+          "title": "Provider Request Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "evidence",
+        "provider_request_id",
+        "insufficient_evidence"
+      ],
+      "title": "RetrievalResult",
+      "type": "object"
+    },
+    "RetrievalScope": {
+      "properties": {
+        "course_id": {
+          "title": "Course Id",
+          "type": "string"
+        },
+        "exam_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Exam Id"
+        },
+        "lecture_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Lecture Ids",
+          "type": "array"
+        },
+        "source_revision_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Revision Ids",
+          "type": "array"
+        },
+        "truth_mode": {
+          "$ref": "#/$defs/TruthMode"
+        }
+      },
+      "required": [
+        "course_id",
+        "exam_id",
+        "lecture_ids",
+        "truth_mode"
+      ],
+      "title": "RetrievalScope",
+      "type": "object"
+    },
+    "TruthMode": {
+      "enum": [
+        "course_only",
+        "course_and_literature",
+        "literature_only"
+      ],
+      "title": "TruthMode",
+      "type": "string"
+    }
+  },
+  "$id": "knowledge-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/RetrievalScope"
+    },
+    {
+      "$ref": "#/$defs/EvidenceRef"
+    },
+    {
+      "$ref": "#/$defs/RetrievalRequest"
+    },
+    {
+      "$ref": "#/$defs/RetrievalResult"
+    },
+    {
+      "$ref": "#/$defs/ProviderHealth"
+    }
+  ]
+}

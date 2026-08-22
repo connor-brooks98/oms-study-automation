@@ -1,0 +1,7 @@
+{
+  "$id": "practice-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Reserved contract namespace; no wire instances are valid until the owning domain contract is implemented.",
+  "not": {},
+  "title": "Study Hub practice contract v1 \u2014 reserved"
+}
