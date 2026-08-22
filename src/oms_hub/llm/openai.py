@@ -160,6 +160,8 @@ class OpenAIProvider:
             payload["max_output_tokens"] = options.max_tokens
         if options.temperature is not None:
             payload["temperature"] = options.temperature
+        if model.startswith("gpt-5.6"):
+            payload["reasoning"] = {"effort": "none"}
         response = self._request(api_key, payload)
         return self._generated_text(response, model)
 

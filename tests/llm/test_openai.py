@@ -266,6 +266,7 @@ def test_openai_structured_generation_sends_provider_safe_schema_copy():
     )
 
     payload = json.loads(route.calls.last.request.content)
+    assert payload["reasoning"] == {"effort": "none"}
     sent = payload["text"]["format"]["schema"]
     assert sent == {
         "type": "object",
