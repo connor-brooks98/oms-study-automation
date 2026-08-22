@@ -98,6 +98,24 @@ def test_answer_fake_exhaustion_occurs_at_invocation_and_records_request() -> No
     assert provider.requests == [request]
 
 
+def test_answer_fakes_copy_shared_configured_sequences_and_request_lists() -> None:
+    event = AnswerEvent(AnswerEventType.DONE, {})
+    configured = ((event,),)
+    first = FakeGroundedAnswerProvider(configured)
+    second = FakeGroundedAnswerProvider(configured)
+    first_request, second_request = _Request(), _Request()
+
+    assert _events(first, first_request) == [event]
+    assert first.responses == []
+    assert second.responses == [(event,)]
+    assert first.requests == [first_request]
+    assert second.requests == []
+    assert first.responses is not second.responses
+    assert first.requests is not second.requests
+    assert _events(second, second_request) == [event]
+    assert second.requests == [second_request]
+
+
 def test_fake_instances_and_configured_inputs_do_not_share_queues() -> None:
     responses = [RetrievalResult((), "one", False)]
     first = FakeRetrievalProvider(responses)
