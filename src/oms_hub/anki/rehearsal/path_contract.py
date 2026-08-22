@@ -47,6 +47,9 @@ _PATH_COLUMNS[26] = _PATH_COLUMNS[25]
 # Schema v27 adds provider-attempt subcall identity only; it introduces no
 # persisted path field, so its path registry is deliberately equal to v26.
 _PATH_COLUMNS[27] = _PATH_COLUMNS[26]
+# Schemas v28-v29 add policy and cost fields only; neither persists paths.
+_PATH_COLUMNS[28] = _PATH_COLUMNS[27]
+_PATH_COLUMNS[29] = _PATH_COLUMNS[28]
 
 
 @dataclass(frozen=True, slots=True)
