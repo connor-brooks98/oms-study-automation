@@ -361,6 +361,13 @@ def test_build_board_question_draft_defaults_are_deeply_independent() -> None:
             if sibling_index != index
         )
         assert claim["evidence_ids"] is not second["claims"][index]["evidence_ids"]
+    for options, claims in (
+        (first["options"], first["claims"]),
+        (second["options"], second["claims"]),
+    ):
+        for option in options:
+            for claim in claims:
+                assert option["evidence_ids"] is not claim["evidence_ids"]
 
     first["blueprint_tags"].append("mutated-blueprint")
     first["objective_ids"].append("mutated")
@@ -372,6 +379,14 @@ def test_build_board_question_draft_defaults_are_deeply_independent() -> None:
     assert first["options"][1]["text"] != "mutated-option"
     assert second["claims"][0]["text"] != "mutated-claim"
     assert first["claims"][1]["text"] != "mutated-claim"
+    cross_family_option_marker = "mutated-option-claim-boundary"
+    first["options"][0]["evidence_ids"].append(cross_family_option_marker)
+    assert cross_family_option_marker not in first["claims"][0]["evidence_ids"]
+    assert cross_family_option_marker not in second["claims"][0]["evidence_ids"]
+    cross_family_claim_marker = "mutated-claim-option-boundary"
+    first["claims"][0]["evidence_ids"].append(cross_family_claim_marker)
+    assert cross_family_claim_marker not in first["options"][0]["evidence_ids"]
+    assert cross_family_claim_marker not in second["options"][0]["evidence_ids"]
 
     for index, option in enumerate(first["options"]):
         marker = f"mutated-option-evidence-{index}"
