@@ -25,6 +25,7 @@ from oms_hub.anki.scope_service import (
     ScopeInputError,
     ScopeReuseArtifact,
     ScopeService,
+    _scope_output_model,
 )
 from oms_hub.anki.sources import SourceEmphasisEvidence, SourcePassage
 from oms_hub.anki.stages import (
@@ -40,6 +41,17 @@ _SOURCE_SHA = "a" * 64
 _SIDECAR_SHA = "b" * 64
 _MODEL_CONFIG_SHA = "c" * 64
 _ROUTE = ResolvedStageModel("openai", "scope-fixture", "disabled")
+
+
+def test_r3_provider_schema_has_bounded_output_cardinality() -> None:
+    schema = _scope_output_model({"evidence"}).model_json_schema()
+    concept = schema["$defs"]["SemanticConcept"]
+    fact = schema["$defs"]["SemanticFact"]
+
+    assert schema["properties"]["concepts"]["maxItems"] == 24
+    assert concept["properties"]["facts"]["maxItems"] == 3
+    assert concept["properties"]["retrieval_queries"]["maxItems"] == 4
+    assert fact["properties"]["evidence_ids"]["maxItems"] == 12
 
 
 def _add_r0_costs(r0: dict[str, object], *models: str) -> None:

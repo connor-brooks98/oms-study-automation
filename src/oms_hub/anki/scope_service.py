@@ -455,9 +455,9 @@ def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
         model_config = ConfigDict(extra="forbid", frozen=True)
 
         statement: str = Field(min_length=1, max_length=10_000)
-        evidence_ids: tuple[str, ...] = Field(min_length=1)
+        evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=12)
         generation_allowed: bool
-        forbidden_cloze_targets: tuple[str, ...] = ()
+        forbidden_cloze_targets: tuple[str, ...] = Field(default=(), max_length=12)
 
         @field_validator("statement", mode="before")
         @classmethod
@@ -480,15 +480,15 @@ def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
 
         canonical_statement: str = Field(min_length=1, max_length=10_000)
         primary_entity: str = Field(min_length=1, max_length=1_000)
-        aliases: tuple[str, ...] = ()
-        exact_terms: tuple[str, ...] = ()
+        aliases: tuple[str, ...] = Field(default=(), max_length=12)
+        exact_terms: tuple[str, ...] = Field(default=(), max_length=12)
         depth_tier: int = Field(ge=0, le=20)
         priority: int = Field(ge=0, le=100)
         reason: str = Field(min_length=1, max_length=10_000)
-        facts: tuple[SemanticFact, ...] = Field(min_length=1)
-        source_evidence_ids: tuple[str, ...] = Field(min_length=1)
-        professor_policy_basis: tuple[str, ...] = ()
-        retrieval_queries: tuple[str, ...] = Field(min_length=1)
+        facts: tuple[SemanticFact, ...] = Field(min_length=1, max_length=3)
+        source_evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=12)
+        professor_policy_basis: tuple[str, ...] = Field(default=(), max_length=12)
+        retrieval_queries: tuple[str, ...] = Field(min_length=1, max_length=4)
 
         @field_validator("canonical_statement", "primary_entity", "reason", mode="before")
         @classmethod
@@ -520,7 +520,7 @@ def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
     class SemanticScope(BaseModel):
         model_config = ConfigDict(extra="forbid", frozen=True)
 
-        concepts: tuple[SemanticConcept, ...] = Field(min_length=1)
+        concepts: tuple[SemanticConcept, ...] = Field(min_length=1, max_length=24)
 
         @model_validator(mode="after")
         def normalized_statements_are_unique(self) -> SemanticScope:
