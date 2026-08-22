@@ -108,6 +108,27 @@ def test_direct_construction_copies_and_freezes_values() -> None:
         flags.values[FeatureFlag.SOURCE_TRUST_V1] = False
 
 
+def test_direct_construction_rejects_non_bool_values() -> None:
+    values = cast(Mapping[FeatureFlag, bool], {FeatureFlag.SOURCE_TRUST_V1: "false"})
+
+    with pytest.raises(ValueError, match="source_trust_v1"):
+        FeatureFlags(values)
+
+
+def test_direct_construction_rejects_unknown_keys() -> None:
+    values = cast(Mapping[FeatureFlag, bool], {"invented_flag": True})
+
+    with pytest.raises(ValueError, match="invented_flag"):
+        FeatureFlags(values)
+
+
+def test_settings_rejects_preconstructed_invalid_flags() -> None:
+    values = cast(Mapping[FeatureFlag, bool], {FeatureFlag.SOURCE_TRUST_V1: "false"})
+
+    with pytest.raises(ValueError, match="source_trust_v1"):
+        Settings(_env_file=None, feature_flags=FeatureFlags(values))
+
+
 def test_features_package_exports_the_public_contract() -> None:
     assert ExportedFeatureFlag is FeatureFlag
     assert ExportedFeatureFlags is FeatureFlags

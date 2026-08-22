@@ -27,6 +27,18 @@ class FeatureFlags:
     values: Mapping[FeatureFlag, bool]
 
     def __post_init__(self) -> None:
+        unknown = sorted(
+            str(flag) for flag in self.values if not isinstance(flag, FeatureFlag)
+        )
+        if unknown:
+            raise ValueError(f"unknown feature flags: {unknown}")
+        invalid = sorted(
+            flag.value
+            for flag, value in self.values.items()
+            if not isinstance(value, bool)
+        )
+        if invalid:
+            raise ValueError(f"feature flags must be bool values: {invalid}")
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
 
     @classmethod
@@ -34,9 +46,6 @@ class FeatureFlags:
         unknown = sorted(set(values).difference(flag.value for flag in FeatureFlag))
         if unknown:
             raise ValueError(f"unknown feature flags: {unknown}")
-        invalid = sorted(name for name, value in values.items() if not isinstance(value, bool))
-        if invalid:
-            raise ValueError(f"feature flags must be bool values: {invalid}")
         mapped = {flag: values.get(flag.value, False) for flag in FeatureFlag}
         return cls(values=mapped)
 
