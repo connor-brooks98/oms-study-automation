@@ -13,9 +13,9 @@ import json
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema, create_model, field_validator
 
 from oms_hub.anki.contracts import canonical_payload_sha256
 from oms_hub.anki.domain import ResolvedStageModel, StageUsage
@@ -33,6 +33,7 @@ MAX_BUNDLE_BYTES = 16_384
 MAX_BUNDLE_TOKENS = 16_384
 CHEAP_BATCH_MAX = 16
 THOROUGH_BATCH_MAX = 8
+CLASSIFICATION_CANDIDATES_PER_FACT = 3
 SERIAL_CONCURRENCY = 1
 MAX_REPAIRS_TOTAL = 1
 ESTIMATOR_VERSION = "utf8-byte-upper-bound-v1"
@@ -42,7 +43,9 @@ CLASSIFICATION_CONFIG = {
     "bundle_max_input_tokens": MAX_BUNDLE_TOKENS,
     "cheap_batch_size": CHEAP_BATCH_MAX,
     "thorough_batch_size": THOROUGH_BATCH_MAX,
+    "candidates_per_fact": CLASSIFICATION_CANDIDATES_PER_FACT,
     "max_provider_input_bytes": MAX_PROVIDER_INPUT_BYTES,
+    "provider_schema_strategy": "batch-derived-enums-v1",
     "serial_concurrency": SERIAL_CONCURRENCY,
     "max_repairs_total": MAX_REPAIRS_TOTAL,
     "estimator_version": ESTIMATOR_VERSION,
@@ -99,6 +102,90 @@ class ProviderClassificationBatch(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     rows: tuple[ProviderClassificationRow, ...]
+
+
+def _provider_output_model(
+    tier: Literal["cheap", "thorough"], bundles: Sequence[CandidateEvidenceBundle]
+) -> type[BaseModel]:
+    bundle_ids = tuple(bundle.bundle_id for bundle in bundles)
+    candidate_ids = tuple(sorted({bundle.candidate.candidate_id for bundle in bundles}))
+    passage_ids = tuple(sorted({item for bundle in bundles for item in bundle.allowed_passage_ids}))
+    sibling_ids = tuple(
+        sorted({item for bundle in bundles for item in bundle.duplicate_sibling_ids})
+    )
+    dispositions = (
+        ("keep", "exclude", "redundant", "needs_review")
+        if tier == "cheap"
+        else ("keep", "exclude", "redundant", "unresolved")
+    )
+    row = create_model(
+        "ProviderClassificationRow",
+        __base__=ProviderClassificationRow,
+        bundle_id=(
+            Annotated[str, WithJsonSchema({"type": "string", "enum": list(bundle_ids)})],
+            ...,
+        ),
+        candidate_id=(
+            Annotated[str, WithJsonSchema({"type": "string", "enum": list(candidate_ids)})],
+            ...,
+        ),
+        disposition=(
+            Annotated[str, WithJsonSchema({"type": "string", "enum": list(dispositions)})],
+            ...,
+        ),
+        supporting_passage_ids=(
+            Annotated[
+                tuple[str, ...],
+                WithJsonSchema(
+                    {
+                        "type": "array",
+                        "items": {"type": "string", "enum": list(passage_ids)},
+                        "maxItems": len(passage_ids),
+                    }
+                ),
+            ],
+            (),
+        ),
+        conflicting_passage_ids=(
+            Annotated[
+                tuple[str, ...],
+                WithJsonSchema(
+                    {
+                        "type": "array",
+                        "items": {"type": "string", "enum": list(passage_ids)},
+                        "maxItems": len(passage_ids),
+                    }
+                ),
+            ],
+            (),
+        ),
+        redundant_with_candidate_id=(
+            Annotated[
+                str | None,
+                WithJsonSchema(
+                    {
+                        "anyOf": [
+                            *(
+                                ({"type": "string", "enum": list(sibling_ids)},)
+                                if sibling_ids
+                                else ()
+                            ),
+                            {"type": "null"},
+                        ]
+                    }
+                ),
+            ],
+            None,
+        ),
+    )
+    return create_model(
+        "ProviderClassificationBatch",
+        __base__=ProviderClassificationBatch,
+        rows=(
+            tuple[row, ...],
+            Field(json_schema_extra={"minItems": len(bundles), "maxItems": len(bundles)}),
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,7 +557,7 @@ class R7ClassificationService:
                 generated = self.structured.generate_json(
                     instruction,
                     _canonical_json(document),
-                    output_model=ProviderClassificationBatch,
+                    output_model=_provider_output_model(tier, bundles),
                     provider=ProviderName(route.provider),
                     model=route.model,
                     options=options,

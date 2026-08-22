@@ -54,6 +54,7 @@ from oms_hub.anki.card_centric_contracts import (
 from oms_hub.anki.card_centric_hybrid import CardCentricHybridRetriever, query_variants
 from oms_hub.anki.card_centric_review import V3_PHASE_G_SAFETY, V3ReviewSnapshot, reconcile_v3
 from oms_hub.anki.classification_v3 import (
+    CLASSIFICATION_CANDIDATES_PER_FACT,
     MAX_BUNDLE_BYTES,
     MAX_BUNDLE_TOKENS,
     ClassificationInputError,
@@ -6269,6 +6270,7 @@ def _v3_r7_bundles(
         if len(by_note) != len(candidates):
             raise PinnedInputChanged("Pinned R6 candidate identities are malformed")
         represented: set[int] = set()
+        fact_bundles: list[tuple[float, CandidateEvidenceBundle]] = []
         for cluster in clusters:
             if not isinstance(cluster, Mapping):
                 raise PinnedInputChanged("Pinned R6 cluster is malformed")
@@ -6354,11 +6356,18 @@ def _v3_r7_bundles(
                 "degraded": scope.degraded_mode != "none"
                 or representative_id in missing_vector_ids,
             }
-            built.append(_r7_exact_bundle(seed))
+            fact_bundles.append((float(candidate["calibrated_score"]), _r7_exact_bundle(seed)))
         if represented != set(by_note):
             raise PinnedInputChanged(
                 "Pinned R6 representatives/siblings do not partition candidates"
             )
+        built.extend(
+            bundle
+            for _score, bundle in sorted(
+                fact_bundles,
+                key=lambda item: (-item[0], item[1].candidate.note_id),
+            )[:CLASSIFICATION_CANDIDATES_PER_FACT]
+        )
     expected_facts = {fact.fact_id for concept in scope.concepts for fact in concept.facts}
     if observed_facts != expected_facts:
         raise PinnedInputChanged("Pinned R6 records do not partition R3 facts")

@@ -447,6 +447,51 @@ def test_v3_r7_stage_builds_hash_closed_bundle_only_artifact() -> None:
     assert payload["rate_table_sha256"] == pins["rate_table_sha256"]
 
 
+def test_v3_r7_caps_each_fact_and_exposes_exact_provider_enums() -> None:
+    runner, context, _fake = _stage_fixture()
+    record = context.prior_payloads[CurationStage.V3_R6_CALIBRATION]["records"][0]
+    template = record["all_candidates"][0]
+    record["all_candidates"] = []
+    record["clusters"] = []
+    for note_id, score in ((1, 0.1), (4, 0.4), (5, 0.3), (6, 0.2)):
+        candidate = deepcopy(template)
+        candidate.update(note_id=note_id, calibrated_score=score)
+        record["all_candidates"].append(candidate)
+        record["clusters"].append(
+            {
+                "representative_note_id": note_id,
+                "sibling_note_ids": [note_id],
+                "missing_vector_note_ids": [],
+            }
+        )
+    _reseal_r6(context)
+    fake = FakeGenerator(
+        [
+            {
+                "rows": [
+                    _row_for(f"bundle:concept-1:fact-1:note:{note_id}", f"note:{note_id}", "keep")
+                    for note_id in (4, 5, 6)
+                ]
+                + [_row_for("bundle:concept-1:fact-2:note:3", "note:3", "exclude")]
+            }
+        ]
+    )
+    runner.structured = StructuredTextService(fake)
+    product = asyncio.run(runner._v3_r7_classification(context))
+    assert [row["candidate"]["note_id"] for row in product.payload["bundles"]] == [4, 5, 6, 3]
+    row_schema = fake.calls[0]["output_schema"]["$defs"]["ProviderClassificationRow"]
+    assert row_schema["properties"]["candidate_id"]["enum"] == [
+        "note:3",
+        "note:4",
+        "note:5",
+        "note:6",
+    ]
+    assert row_schema["properties"]["supporting_passage_ids"]["items"]["enum"] == [
+        "passage-1",
+        "passage-2",
+    ]
+
+
 def _reseal_r6(context: SimpleNamespace) -> None:
     r6 = context.prior_payloads[CurationStage.V3_R6_CALIBRATION]
     for record in r6["records"]:
