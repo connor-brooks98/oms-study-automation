@@ -16,6 +16,48 @@ SCHEMA_NAMES = (
     "journal-v1.json",
 )
 RESERVED_NAMES = SCHEMA_NAMES[2:]
+RESERVED_SCHEMA_PAYLOADS = {
+    "question-v1.json": {
+        "$id": "question-v1.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": (
+            "Reserved contract namespace; no wire instances are valid until the owning domain "
+            "contract is implemented."
+        ),
+        "not": {},
+        "title": "Study Hub question contract v1 — reserved",
+    },
+    "mastery-v1.json": {
+        "$id": "mastery-v1.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": (
+            "Reserved contract namespace; no wire instances are valid until the owning domain "
+            "contract is implemented."
+        ),
+        "not": {},
+        "title": "Study Hub mastery contract v1 — reserved",
+    },
+    "practice-v1.json": {
+        "$id": "practice-v1.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": (
+            "Reserved contract namespace; no wire instances are valid until the owning domain "
+            "contract is implemented."
+        ),
+        "not": {},
+        "title": "Study Hub practice contract v1 — reserved",
+    },
+    "journal-v1.json": {
+        "$id": "journal-v1.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": (
+            "Reserved contract namespace; no wire instances are valid until the owning domain "
+            "contract is implemented."
+        ),
+        "not": {},
+        "title": "Study Hub journal contract v1 — reserved",
+    },
+}
 
 
 def _export(output_dir: Path) -> None:
@@ -64,22 +106,77 @@ def test_active_schemas_export_current_wire_contracts_and_reserved_are_fail_clos
         "course_and_literature",
         "literature_only",
     ]
-    assert set(knowledge["$defs"]["RetrievalScope"]["properties"]) == {
+    definitions = knowledge["$defs"]
+    assert set(definitions["RetrievalScope"]["properties"]) == {
         "course_id",
         "exam_id",
         "lecture_ids",
         "truth_mode",
         "source_revision_ids",
     }
-    assert set(ask["$defs"]["AnswerEventType"]["enum"]) == {
+    assert set(definitions["RetrievalScope"]["required"]) == {
+        "course_id",
+        "exam_id",
+        "lecture_ids",
+        "truth_mode",
+    }
+    assert set(definitions["EvidenceRef"]["properties"]) == {
+        "evidence_id",
+        "source_revision_id",
+        "authority_class",
+        "locator_kind",
+        "locator_value",
+        "excerpt",
+        "checksum",
+    }
+    assert set(definitions["EvidenceRef"]["required"]) == {
+        "evidence_id",
+        "source_revision_id",
+        "authority_class",
+        "locator_kind",
+        "locator_value",
+        "excerpt",
+        "checksum",
+    }
+    assert set(definitions["RetrievalRequest"]["properties"]) == {
+        "query",
+        "scope",
+        "maximum_evidence",
+    }
+    assert set(definitions["RetrievalRequest"]["required"]) == {"query", "scope"}
+    assert definitions["RetrievalRequest"]["properties"]["maximum_evidence"]["default"] == 12
+    assert set(definitions["RetrievalResult"]["properties"]) == {
+        "evidence",
+        "provider_request_id",
+        "insufficient_evidence",
+    }
+    assert set(definitions["RetrievalResult"]["required"]) == {
+        "evidence",
+        "provider_request_id",
+        "insufficient_evidence",
+    }
+    assert set(definitions["ProviderHealth"]["properties"]) == {
+        "provider",
+        "ready",
+        "detail",
+        "checked_at_iso",
+    }
+    assert set(definitions["ProviderHealth"]["required"]) == {
+        "provider",
+        "ready",
+        "detail",
+        "checked_at_iso",
+    }
+    assert ask["$defs"]["AnswerEventType"]["enum"] == [
         "status",
         "delta",
         "citations",
         "done",
         "error",
-    }
+    ]
     assert set(ask["properties"]) == {"event_type", "payload"}
+    assert set(ask["required"]) == {"event_type", "payload"}
 
     for name in RESERVED_NAMES:
         reserved = json.loads((tmp_path / name).read_text(encoding="utf-8"))
-        assert reserved["not"] == {}
+        assert reserved == RESERVED_SCHEMA_PAYLOADS[name]

@@ -55,7 +55,11 @@ class FakeRetrievalProvider:
             locator_kind=locator_kind,
             locator_value=locator_value,
             excerpt=text,
-            checksum=checksum or f"sha256:{sha256(text.encode('utf-8')).hexdigest()}",
+            checksum=(
+                f"sha256:{sha256(text.encode('utf-8')).hexdigest()}"
+                if checksum is None
+                else checksum
+            ),
         )
         return cls((RetrievalResult((evidence,), provider_request_id, False),))
 

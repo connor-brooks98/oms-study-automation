@@ -71,6 +71,12 @@ def test_retrieval_from_text_checksum_and_health_are_deterministic_and_configura
     assert asyncio.run(custom.health()) is health
 
 
+def test_retrieval_from_text_preserves_an_explicit_empty_checksum() -> None:
+    provider = FakeRetrievalProvider.from_text("ev_1", "sr_1", "HIT is prothrombotic.", checksum="")
+
+    assert provider.responses[0].evidence[0].checksum == ""
+
+
 def test_answer_fake_streams_events_fifo_and_captures_exact_request() -> None:
     first = AnswerEvent(AnswerEventType.STATUS, {"message": "retrieving"})
     second = AnswerEvent(AnswerEventType.DELTA, {"text": "HIT"})
