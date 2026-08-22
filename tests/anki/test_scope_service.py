@@ -35,6 +35,7 @@ from oms_hub.anki.stages import (
     _r3_prompt,
 )
 from oms_hub.llm.domain import GeneratedText, ProviderName
+from oms_hub.llm.openai import openai_output_schema
 from oms_hub.llm.structured import StructuredOutputError, StructuredTextService
 
 _SOURCE_SHA = "a" * 64
@@ -44,14 +45,17 @@ _ROUTE = ResolvedStageModel("openai", "scope-fixture", "disabled")
 
 
 def test_r3_provider_schema_has_bounded_output_cardinality() -> None:
-    schema = _scope_output_model({"evidence"}).model_json_schema()
+    schema = openai_output_schema(_scope_output_model({"evidence"}).model_json_schema())
     concept = schema["$defs"]["SemanticConcept"]
     fact = schema["$defs"]["SemanticFact"]
 
-    assert schema["properties"]["concepts"]["maxItems"] == 24
-    assert concept["properties"]["facts"]["maxItems"] == 3
+    assert schema["properties"]["concepts"]["maxItems"] == 20
+    assert concept["properties"]["facts"]["maxItems"] == 2
     assert concept["properties"]["retrieval_queries"]["maxItems"] == 4
-    assert fact["properties"]["evidence_ids"]["maxItems"] == 12
+    assert concept["properties"]["aliases"]["items"]["maxLength"] == 500
+    assert concept["properties"]["canonical_statement"]["maxLength"] == 500
+    assert fact["properties"]["evidence_ids"]["maxItems"] == 6
+    assert fact["properties"]["statement"]["maxLength"] == 1_000
 
 
 def _add_r0_costs(r0: dict[str, object], *models: str) -> None:

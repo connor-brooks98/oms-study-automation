@@ -7,7 +7,7 @@ import json
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -450,14 +450,15 @@ def _validate_fidelity_inputs(
 
 def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
     allowed = frozenset(allowed_evidence_ids)
+    bounded_item = Annotated[str, Field(min_length=1, max_length=500)]
 
     class SemanticFact(BaseModel):
         model_config = ConfigDict(extra="forbid", frozen=True)
 
-        statement: str = Field(min_length=1, max_length=10_000)
-        evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=12)
+        statement: str = Field(min_length=1, max_length=1_000)
+        evidence_ids: tuple[bounded_item, ...] = Field(min_length=1, max_length=6)
         generation_allowed: bool
-        forbidden_cloze_targets: tuple[str, ...] = Field(default=(), max_length=12)
+        forbidden_cloze_targets: tuple[bounded_item, ...] = Field(default=(), max_length=6)
 
         @field_validator("statement", mode="before")
         @classmethod
@@ -478,17 +479,17 @@ def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
     class SemanticConcept(BaseModel):
         model_config = ConfigDict(extra="forbid", frozen=True)
 
-        canonical_statement: str = Field(min_length=1, max_length=10_000)
-        primary_entity: str = Field(min_length=1, max_length=1_000)
-        aliases: tuple[str, ...] = Field(default=(), max_length=12)
-        exact_terms: tuple[str, ...] = Field(default=(), max_length=12)
+        canonical_statement: str = Field(min_length=1, max_length=500)
+        primary_entity: str = Field(min_length=1, max_length=300)
+        aliases: tuple[bounded_item, ...] = Field(default=(), max_length=6)
+        exact_terms: tuple[bounded_item, ...] = Field(default=(), max_length=6)
         depth_tier: int = Field(ge=0, le=20)
         priority: int = Field(ge=0, le=100)
-        reason: str = Field(min_length=1, max_length=10_000)
-        facts: tuple[SemanticFact, ...] = Field(min_length=1, max_length=3)
-        source_evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=12)
-        professor_policy_basis: tuple[str, ...] = Field(default=(), max_length=12)
-        retrieval_queries: tuple[str, ...] = Field(min_length=1, max_length=4)
+        reason: str = Field(min_length=1, max_length=500)
+        facts: tuple[SemanticFact, ...] = Field(min_length=1, max_length=2)
+        source_evidence_ids: tuple[bounded_item, ...] = Field(min_length=1, max_length=6)
+        professor_policy_basis: tuple[bounded_item, ...] = Field(default=(), max_length=4)
+        retrieval_queries: tuple[bounded_item, ...] = Field(min_length=1, max_length=4)
 
         @field_validator("canonical_statement", "primary_entity", "reason", mode="before")
         @classmethod
@@ -520,7 +521,7 @@ def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
     class SemanticScope(BaseModel):
         model_config = ConfigDict(extra="forbid", frozen=True)
 
-        concepts: tuple[SemanticConcept, ...] = Field(min_length=1, max_length=24)
+        concepts: tuple[SemanticConcept, ...] = Field(min_length=1, max_length=20)
 
         @model_validator(mode="after")
         def normalized_statements_are_unique(self) -> SemanticScope:
