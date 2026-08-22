@@ -51,12 +51,14 @@ def test_r3_provider_schema_has_bounded_output_cardinality() -> None:
     concept = schema["$defs"]["SemanticConcept"]
     fact = schema["$defs"]["SemanticFact"]
 
-    assert schema["properties"]["concepts"]["maxItems"] == 20
+    assert schema["properties"]["concepts"]["maxItems"] == 14
     assert concept["properties"]["facts"]["maxItems"] == 2
-    assert concept["properties"]["retrieval_queries"]["maxItems"] == 4
-    assert concept["properties"]["aliases"]["items"]["maxLength"] == 500
-    assert concept["properties"]["canonical_statement"]["maxLength"] == 500
-    assert fact["properties"]["evidence_ids"]["maxItems"] == 6
+    assert concept["properties"]["retrieval_queries"]["maxItems"] == 2
+    assert concept["properties"]["retrieval_queries"]["items"]["maxLength"] == 120
+    assert concept["properties"]["aliases"]["maxItems"] == 2
+    assert concept["properties"]["aliases"]["items"]["maxLength"] == 60
+    assert concept["properties"]["canonical_statement"]["maxLength"] == 140
+    assert fact["properties"]["evidence_ids"]["maxItems"] == 1
     assert fact["properties"]["evidence_ids"]["items"]["enum"] == [
         "evidence-a",
         "evidence-b",
@@ -65,7 +67,50 @@ def test_r3_provider_schema_has_bounded_output_cardinality() -> None:
         "evidence-a",
         "evidence-b",
     ]
-    assert fact["properties"]["statement"]["maxLength"] == 1_000
+    assert fact["properties"]["statement"]["maxLength"] == 200
+
+
+def test_r3_maximal_response_stays_below_live_output_ceiling() -> None:
+    evidence_ids = ("0" * 64, "1" * 64)
+
+    def padded(prefix: str, length: int) -> str:
+        return prefix + ("x" * (length - len(prefix)))
+
+    concepts = []
+    for concept_index in range(14):
+        facts = [
+            {
+                "statement": padded(f"fact-{concept_index:02}-{fact_index}-", 200),
+                "evidence_ids": [evidence_ids[fact_index]],
+                "generation_allowed": False,
+                "forbidden_cloze_targets": [
+                    padded(f"target-{fact_index}-0-", 60),
+                    padded(f"target-{fact_index}-1-", 60),
+                ],
+            }
+            for fact_index in range(2)
+        ]
+        concepts.append(
+            {
+                "canonical_statement": padded(f"concept-{concept_index:02}-", 140),
+                "primary_entity": padded(f"entity-{concept_index:02}-", 60),
+                "aliases": [padded("alias-0-", 60), padded("alias-1-", 60)],
+                "exact_terms": [padded("exact-0-", 60), padded("exact-1-", 60)],
+                "depth_tier": 20,
+                "priority": 100,
+                "facts": facts,
+                "source_evidence_ids": list(evidence_ids),
+                "retrieval_queries": [
+                    padded("query-0-", 120),
+                    padded("query-1-", 120),
+                ],
+            }
+        )
+
+    maximal = _scope_output_model(set(evidence_ids)).model_validate({"concepts": concepts})
+    estimated_tokens = (len(maximal.model_dump_json().encode("utf-8")) + 3) // 4
+
+    assert estimated_tokens <= 7_000
 
 
 def _add_r0_costs(r0: dict[str, object], *models: str) -> None:
@@ -194,7 +239,6 @@ def _response(input_text: str) -> dict[str, object]:
                 "exact_terms": ["IDA"],
                 "depth_tier": 1,
                 "priority": 90,
-                "reason": "  Policy emphasis.  ",
                 "facts": [
                     {
                         "statement": "  Iron deficiency can cause microcytosis.  ",
@@ -204,7 +248,6 @@ def _response(input_text: str) -> dict[str, object]:
                     }
                 ],
                 "source_evidence_ids": [evidence_id],
-                "professor_policy_basis": ["colored text"],
                 "retrieval_queries": ["iron deficiency anemia"],
             }
         ]
@@ -380,6 +423,8 @@ def test_scope_selects_only_policy_authorized_evidence(
         assert ids == {passages[4].passage_id}
     else:
         assert ids == {emphasis[0].evidence_id}
+    assert result.scope.concepts[0].reason == result.scope.concepts[0].canonical_statement
+    assert result.scope.concepts[0].professor_policy_basis == ()
 
 
 def test_degraded_scope_excludes_colored_evidence() -> None:

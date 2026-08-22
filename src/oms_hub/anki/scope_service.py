@@ -450,16 +450,17 @@ def _validate_fidelity_inputs(
 
 def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
     allowed = frozenset(allowed_evidence_ids)
-    bounded_item = Annotated[str, Field(min_length=1, max_length=500)]
+    short_item = Annotated[str, Field(min_length=1, max_length=60)]
+    query_item = Annotated[str, Field(min_length=1, max_length=120)]
     evidence_id = Annotated[str, Field(json_schema_extra={"enum": sorted(allowed)})]
 
     class SemanticFact(BaseModel):
         model_config = ConfigDict(extra="forbid", frozen=True)
 
-        statement: str = Field(min_length=1, max_length=1_000)
-        evidence_ids: tuple[evidence_id, ...] = Field(min_length=1, max_length=6)
+        statement: str = Field(min_length=1, max_length=200)
+        evidence_ids: tuple[evidence_id, ...] = Field(min_length=1, max_length=1)
         generation_allowed: bool
-        forbidden_cloze_targets: tuple[bounded_item, ...] = Field(default=(), max_length=6)
+        forbidden_cloze_targets: tuple[short_item, ...] = Field(default=(), max_length=2)
 
         @field_validator("statement", mode="before")
         @classmethod
@@ -480,19 +481,17 @@ def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
     class SemanticConcept(BaseModel):
         model_config = ConfigDict(extra="forbid", frozen=True)
 
-        canonical_statement: str = Field(min_length=1, max_length=500)
-        primary_entity: str = Field(min_length=1, max_length=300)
-        aliases: tuple[bounded_item, ...] = Field(default=(), max_length=6)
-        exact_terms: tuple[bounded_item, ...] = Field(default=(), max_length=6)
+        canonical_statement: str = Field(min_length=1, max_length=140)
+        primary_entity: str = Field(min_length=1, max_length=60)
+        aliases: tuple[short_item, ...] = Field(default=(), max_length=2)
+        exact_terms: tuple[short_item, ...] = Field(default=(), max_length=2)
         depth_tier: int = Field(ge=0, le=20)
         priority: int = Field(ge=0, le=100)
-        reason: str = Field(min_length=1, max_length=500)
         facts: tuple[SemanticFact, ...] = Field(min_length=1, max_length=2)
-        source_evidence_ids: tuple[evidence_id, ...] = Field(min_length=1, max_length=6)
-        professor_policy_basis: tuple[bounded_item, ...] = Field(default=(), max_length=4)
-        retrieval_queries: tuple[bounded_item, ...] = Field(min_length=1, max_length=4)
+        source_evidence_ids: tuple[evidence_id, ...] = Field(min_length=1, max_length=2)
+        retrieval_queries: tuple[query_item, ...] = Field(min_length=1, max_length=2)
 
-        @field_validator("canonical_statement", "primary_entity", "reason", mode="before")
+        @field_validator("canonical_statement", "primary_entity", mode="before")
         @classmethod
         def trim_text(cls, value: object) -> str:
             return _trim(value)
@@ -501,7 +500,6 @@ def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
             "aliases",
             "exact_terms",
             "source_evidence_ids",
-            "professor_policy_basis",
             "retrieval_queries",
             mode="before",
         )
@@ -522,7 +520,7 @@ def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
     class SemanticScope(BaseModel):
         model_config = ConfigDict(extra="forbid", frozen=True)
 
-        concepts: tuple[SemanticConcept, ...] = Field(min_length=1, max_length=20)
+        concepts: tuple[SemanticConcept, ...] = Field(min_length=1, max_length=14)
 
         @model_validator(mode="after")
         def normalized_statements_are_unique(self) -> SemanticScope:
@@ -573,10 +571,10 @@ def _lecture_scope(
                 exact_terms=semantic_concept.exact_terms,
                 depth_tier=semantic_concept.depth_tier,
                 priority=semantic_concept.priority,
-                reason=semantic_concept.reason,
+                reason=semantic_concept.canonical_statement,
                 facts=facts,
                 source_evidence_ids=semantic_concept.source_evidence_ids,
-                professor_policy_basis=semantic_concept.professor_policy_basis,
+                professor_policy_basis=(),
                 retrieval_queries=semantic_concept.retrieval_queries,
             )
         )
