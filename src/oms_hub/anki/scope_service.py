@@ -451,12 +451,13 @@ def _validate_fidelity_inputs(
 def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
     allowed = frozenset(allowed_evidence_ids)
     bounded_item = Annotated[str, Field(min_length=1, max_length=500)]
+    evidence_id = Annotated[str, Field(json_schema_extra={"enum": sorted(allowed)})]
 
     class SemanticFact(BaseModel):
         model_config = ConfigDict(extra="forbid", frozen=True)
 
         statement: str = Field(min_length=1, max_length=1_000)
-        evidence_ids: tuple[bounded_item, ...] = Field(min_length=1, max_length=6)
+        evidence_ids: tuple[evidence_id, ...] = Field(min_length=1, max_length=6)
         generation_allowed: bool
         forbidden_cloze_targets: tuple[bounded_item, ...] = Field(default=(), max_length=6)
 
@@ -487,7 +488,7 @@ def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
         priority: int = Field(ge=0, le=100)
         reason: str = Field(min_length=1, max_length=500)
         facts: tuple[SemanticFact, ...] = Field(min_length=1, max_length=2)
-        source_evidence_ids: tuple[bounded_item, ...] = Field(min_length=1, max_length=6)
+        source_evidence_ids: tuple[evidence_id, ...] = Field(min_length=1, max_length=6)
         professor_policy_basis: tuple[bounded_item, ...] = Field(default=(), max_length=4)
         retrieval_queries: tuple[bounded_item, ...] = Field(min_length=1, max_length=4)
 

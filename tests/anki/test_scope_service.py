@@ -45,7 +45,9 @@ _ROUTE = ResolvedStageModel("openai", "scope-fixture", "disabled")
 
 
 def test_r3_provider_schema_has_bounded_output_cardinality() -> None:
-    schema = openai_output_schema(_scope_output_model({"evidence"}).model_json_schema())
+    schema = openai_output_schema(
+        _scope_output_model({"evidence-b", "evidence-a"}).model_json_schema()
+    )
     concept = schema["$defs"]["SemanticConcept"]
     fact = schema["$defs"]["SemanticFact"]
 
@@ -55,6 +57,14 @@ def test_r3_provider_schema_has_bounded_output_cardinality() -> None:
     assert concept["properties"]["aliases"]["items"]["maxLength"] == 500
     assert concept["properties"]["canonical_statement"]["maxLength"] == 500
     assert fact["properties"]["evidence_ids"]["maxItems"] == 6
+    assert fact["properties"]["evidence_ids"]["items"]["enum"] == [
+        "evidence-a",
+        "evidence-b",
+    ]
+    assert concept["properties"]["source_evidence_ids"]["items"]["enum"] == [
+        "evidence-a",
+        "evidence-b",
+    ]
     assert fact["properties"]["statement"]["maxLength"] == 1_000
 
 
