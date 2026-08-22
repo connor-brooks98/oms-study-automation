@@ -26,6 +26,9 @@ class FeatureFlag(StrEnum):
 class FeatureFlags:
     values: Mapping[FeatureFlag, bool]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
+
     @classmethod
     def from_mapping(cls, values: Mapping[str, bool]) -> FeatureFlags:
         unknown = sorted(set(values).difference(flag.value for flag in FeatureFlag))
@@ -35,7 +38,7 @@ class FeatureFlags:
         if invalid:
             raise ValueError(f"feature flags must be bool values: {invalid}")
         mapped = {flag: values.get(flag.value, False) for flag in FeatureFlag}
-        return cls(values=MappingProxyType(mapped))
+        return cls(values=mapped)
 
     def is_enabled(self, flag: FeatureFlag) -> bool:
         return self.values.get(flag, False)

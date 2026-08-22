@@ -98,6 +98,16 @@ def test_exposed_state_is_immutable() -> None:
         flags.values[FeatureFlag.SOURCE_TRUST_V1] = True
 
 
+def test_direct_construction_copies_and_freezes_values() -> None:
+    values = {FeatureFlag.SOURCE_TRUST_V1: True}
+    flags = FeatureFlags(values)
+    values[FeatureFlag.SOURCE_TRUST_V1] = False
+
+    assert flags.is_enabled(FeatureFlag.SOURCE_TRUST_V1)
+    with pytest.raises(TypeError):
+        flags.values[FeatureFlag.SOURCE_TRUST_V1] = False
+
+
 def test_features_package_exports_the_public_contract() -> None:
     assert ExportedFeatureFlag is FeatureFlag
     assert ExportedFeatureFlags is FeatureFlags
