@@ -285,6 +285,23 @@ def test_r8_dispatches_residual_bundle_without_initial_r6_representative(
     assert product.usage == usage
     scores = calls[0]["bundles"][0].retrieval_scores
     assert {score.identity for score in scores}.isdisjoint({"boost_total", "calibrated_score"})
+    calls.clear()
+    candidate["tags"] = ["tag:a", "Tag:z"]
+    r6["records"][0].update(
+        all_candidates=[candidate],
+        per_fact_cap_excluded_note_ids=[10],
+        clusters=[
+            {
+                "representative_note_id": 9,
+                "sibling_note_ids": [9],
+                "missing_vector_note_ids": [],
+            }
+        ],
+    )
+    product = asyncio.run(runner.run(context))
+    assert product.payload["records"][0]["state"] == "covered_residual" and len(calls) == 1
+    assert calls[0]["bundles"][0].candidate.tags == ("tag:a", "Tag:z")
+    r6["records"][0].update(all_candidates=[], per_fact_cap_excluded_note_ids=[], clusters=[])
     monkeypatch.setattr(
         stages.R7ClassificationService,
         "classify",

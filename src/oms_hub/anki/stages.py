@@ -1362,12 +1362,16 @@ class CurationServicesRunner:
             )
         initial_rows = _v3_r7_rows(r7)
         initial_by_fact: dict[str, list[Mapping[str, Any]]] = {}
+        initial_ids_by_fact: dict[str, set[int]] = {}
         for row in initial_rows:
             bundle_id = row.get("bundle_id")
             if not isinstance(bundle_id, str):
                 raise PinnedInputChanged("Pinned R7 final partition is malformed")
             fact_id = _v3_bundle_fact_id(r7, bundle_id)
             initial_by_fact.setdefault(fact_id, []).append(row)
+            initial_ids_by_fact.setdefault(fact_id, set()).add(
+                _v3_bundle_candidate_note_id(r7, bundle_id)
+            )
         r5_by_fact = _v3_records_by_fact(r5, "facts")
         r6_by_fact = _v3_records_by_fact(r6, "records")
         source_evidence = _v3_scope_evidence(scope, _payload(context, CurationStage.V3_R3_SCOPE))
@@ -1383,36 +1387,52 @@ class CurationServicesRunner:
         raw_limit = int(r5["config"]["raw_limit"])
         records: list[dict[str, Any]] = []
         residual_bundles: list[CandidateEvidenceBundle] = []
+        diagnostics_by_fact: dict[str, list[str]] = {}
         for concept in scope.concepts:
             for fact in concept.facts:
                 r5_fact, r6_fact = r5_by_fact[fact.fact_id], r6_by_fact[fact.fact_id]
                 diagnostics = _v3_r8_raw_safety(
                     r5_fact, r6_fact, expected_ids, semantic_ids, threshold, raw_limit
                 )
+                diagnostics_by_fact[fact.fact_id] = diagnostics
                 initial = initial_by_fact.get(fact.fact_id, [])
+                initial_ids = initial_ids_by_fact.get(fact.fact_id, set())
                 if _v3_positive_initial(initial):
                     state, reason = "covered_initial", "terminal initial support"
-                elif diagnostics:
-                    state, reason = "unresolved", "; ".join(diagnostics)
                 else:
-                    initial_ids = {
-                        int(candidate["note_id"]) for candidate in r6_fact["all_candidates"]
+                    candidates_by_id = {
+                        int(candidate["note_id"]): candidate
+                        for candidate in r6_fact["all_candidates"]
                     }
-                    for candidate in r5_fact["candidates"]:
-                        note_id = int(candidate["note_id"])
-                        if note_id not in initial_ids and _v3_residual_qualifies(
-                            candidate, threshold
+                    remaining_representatives: list[Mapping[str, Any]] = []
+                    for cluster in r6_fact["clusters"]:
+                        representative = cluster.get("representative_note_id")
+                        if (
+                            type(representative) is not int
+                            or representative not in candidates_by_id
                         ):
-                            residual_bundles.append(
-                                _v3_residual_bundle_from_fact(
-                                    concept,
-                                    fact,
-                                    source_evidence,
-                                    policy.policy_sha256,
-                                    scope.scope_sha256,
-                                    candidate,
-                                )
+                            raise PinnedInputChanged("Pinned R6 residual cluster is malformed")
+                        if representative not in initial_ids:
+                            remaining_representatives.append(candidates_by_id[representative])
+                    candidates = remaining_representatives
+                    if not candidates and not diagnostics:
+                        candidates = [
+                            candidate
+                            for candidate in r5_fact["candidates"]
+                            if int(candidate["note_id"]) not in candidates_by_id
+                            and _v3_residual_qualifies(candidate, threshold)
+                        ]
+                    for candidate in candidates:
+                        residual_bundles.append(
+                            _v3_residual_bundle_from_fact(
+                                concept,
+                                fact,
+                                source_evidence,
+                                policy.policy_sha256,
+                                scope.scope_sha256,
+                                candidate,
                             )
+                        )
                     state, reason = "pending_residual", "no terminal initial coverage"
                 records.append(
                     {
@@ -1421,9 +1441,7 @@ class CurationServicesRunner:
                         "generation_allowed": fact.generation_allowed,
                         "state": state,
                         "reason": reason,
-                        "initial_note_ids": sorted(
-                            int(item["note_id"]) for item in r6_fact["all_candidates"]
-                        ),
+                        "initial_note_ids": sorted(initial_ids),
                         "residual_candidate_note_ids": [],
                     }
                 )
@@ -1487,6 +1505,8 @@ class CurationServicesRunner:
                     "unresolved",
                     "residual classification unresolved",
                 )
+            elif diagnostics := diagnostics_by_fact[cast(str, record["fact_id"])]:
+                record["state"], record["reason"] = "unresolved", "; ".join(diagnostics)
             elif semantic_coverage_incomplete:
                 record["state"], record["reason"] = (
                     "unresolved",
@@ -5928,6 +5948,16 @@ def _v3_bundle_fact_id(r7: Mapping[str, Any], bundle_id: str) -> str:
     raise PinnedInputChanged("Pinned R7 bundle is unavailable")
 
 
+def _v3_bundle_candidate_note_id(r7: Mapping[str, Any], bundle_id: str) -> int:
+    for bundle in cast(list[Mapping[str, Any]], r7["bundles"]):
+        candidate = bundle.get("candidate")
+        if bundle.get("bundle_id") == bundle_id and isinstance(candidate, Mapping):
+            note_id = candidate.get("note_id")
+            if type(note_id) is int and note_id > 0:
+                return note_id
+    raise PinnedInputChanged("Pinned R7 bundle candidate is unavailable")
+
+
 def _v3_records_by_fact(payload: Mapping[str, Any], name: str) -> dict[str, Mapping[str, Any]]:
     raw = payload.get(name)
     if not isinstance(raw, list):
@@ -6050,7 +6080,7 @@ def _v3_residual_bundle_from_fact(
             note_id=note_id,
             text=str(candidate["text"]),
             extra=str(candidate["extra"]),
-            tags=tuple(sorted(candidate["tags"])),
+            tags=tuple(sorted(candidate["tags"], key=str.casefold)),
             deck="\n".join(sorted(candidate["decks"])),
         ),
         # R8 intentionally discards R5's tag boost and boosted calibrated score.
