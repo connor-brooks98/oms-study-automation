@@ -4,7 +4,6 @@
   "state": "open",
   "integration": {
     "branch": "integration/studyhub-grounded-learning-v1",
-    "integration_ref": "integration/studyhub-grounded-learning-v1",
     "integration_sha": "SELF",
     "integration_tree_sha": "SELF_TREE",
     "self_reference_resolution": "Resolve SELF and SELF_TREE from the commit containing this record."
@@ -47,7 +46,7 @@
     "design": "37c06f8f177afc44cb7a2a4159aad206b241c4122113d4842e9c0fc24c2835f9",
     "plan": "d934cc15b175256676d576e07b67dcbc3759252846bfcddf049217e57f51d563",
     "manifest": "7c50a9bd62a07389c474fb54a22be63697bc372bf021e6ecbd99a9b90486130e",
-    "route_snapshot": "adc19095bf156ee66a1c51c1299e1888a64835ead64abcec4cd5bff0956fd738"
+    "route_snapshot": "767d30545b770f75434efd1dbf4baf65a8df0ebf6a1cf3f9ba1dd2c8c11da41d"
   },
   "schemas": {
     "knowledge-v1.json": "03c45a28a4eecb75f56abe51aed893659177aeabcd30572544815c0194604d61",
@@ -66,49 +65,49 @@
   "verification": [
     {
       "name": "environment_fingerprint",
-      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -c 'import importlib.metadata as md, platform, sys; print(sys.executable); print(sys.version); print(platform.platform()); print(platform.machine()); print(platform.processor()); print(md.version(\"PyMuPDF\"))'",
+      "command": "python -c 'import importlib.metadata as md, platform, sys; print(sys.version); print(platform.platform()); print(platform.machine()); print(platform.processor()); print(md.version(\"PyMuPDF\"))'",
       "result": "pass",
       "evidence": "docs/implementation/handoffs/0.6.md"
     },
     {
       "name": "route_snapshot",
-      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest tests/contracts/test_gate1_route_snapshot.py -q",
+      "command": "python -m pytest tests/contracts/test_gate1_route_snapshot.py -q",
       "result": "pass",
       "evidence": "docs/implementation/handoffs/0.6.md"
     },
     {
       "name": "contracts_providers_features",
-      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest tests/contracts tests/providers tests/features -q",
+      "command": "python -m pytest tests/contracts tests/providers tests/features -q",
       "result": "pass",
       "evidence": "docs/implementation/handoffs/0.6.md"
     },
     {
       "name": "settings_generation",
-      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest tests/anki/test_settings.py tests/v2/test_runtime_settings.py tests/v2/test_notebook_settings_routes.py tests/v2/test_generation_settings.py -q",
+      "command": "python -m pytest tests/anki/test_settings.py tests/v2/test_runtime_settings.py tests/v2/test_notebook_settings_routes.py tests/v2/test_generation_settings.py -q",
       "result": "pass",
       "evidence": "docs/implementation/handoffs/0.6.md"
     },
     {
       "name": "schema_reproducibility",
-      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python scripts/export_grounded_contract_schemas.py --output-dir \"$SCHEMA_TMP\" && diff -ru schemas \"$SCHEMA_TMP\"",
+      "command": "python scripts/export_grounded_contract_schemas.py --output-dir schema-export-task-0-6 && diff -ru schemas schema-export-task-0-6",
       "result": "pass",
       "evidence": "docs/implementation/handoffs/0.6.md"
     },
     {
       "name": "ruff",
-      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH ruff check src tests scripts",
+      "command": "ruff check src tests scripts",
       "result": "pass",
       "evidence": "docs/implementation/handoffs/0.6.md"
     },
     {
       "name": "mypy_source",
-      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH mypy src",
+      "command": "mypy src",
       "result": "pass",
       "evidence": "docs/implementation/handoffs/0.6.md"
     },
     {
       "name": "mypy_phase0_tests",
-      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH MYPYPATH=$PWD/src mypy tests/builders/knowledge.py tests/builders/questions.py tests/contracts/test_fixture_integrity.py tests/contracts/test_provider_contracts.py tests/contracts/test_schema_exports.py tests/contracts/test_gate1_route_snapshot.py tests/providers/test_fake_provider.py tests/features/test_flags.py",
+      "command": "mypy src/oms_hub src/oms_anki_agent tests/builders/knowledge.py tests/builders/questions.py tests/contracts/test_fixture_integrity.py tests/contracts/test_provider_contracts.py tests/contracts/test_schema_exports.py tests/contracts/test_gate1_route_snapshot.py tests/providers/test_fake_provider.py tests/features/test_flags.py",
       "result": "baseline_exception",
       "evidence": "docs/implementation/handoffs/0.6.md"
     },
@@ -120,7 +119,7 @@
     },
     {
       "name": "broad_python",
-      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring python -m pytest -q -m \"not windows_office\" --deselect tests/document_processing/test_pdf_adapter.py",
+      "command": "python -m pytest -q -m \"not windows_office\" --deselect tests/document_processing/test_pdf_adapter.py",
       "result": "baseline_exception",
       "evidence": "docs/implementation/handoffs/0.6.md"
     },
@@ -132,13 +131,13 @@
     },
     {
       "name": "manifest_validation",
-      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest tests/contracts/test_gate1_route_snapshot.py::test_manifest_is_exactly_the_gate1_state_transition -q",
+      "command": "python -m pytest tests/contracts/test_gate1_route_snapshot.py::test_manifest_is_exactly_the_gate1_state_transition -q",
       "result": "pass",
       "evidence": "docs/implementation/handoffs/0.6.md"
     },
     {
       "name": "gate_json_validation",
-      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest tests/contracts/test_gate1_route_snapshot.py::test_gate_record_matches_manifest_and_all_accepted_hashes -q",
+      "command": "python -m pytest tests/contracts/test_gate1_route_snapshot.py::test_gate_record_matches_manifest_and_all_accepted_hashes -q",
       "result": "pass",
       "evidence": "docs/implementation/handoffs/0.6.md"
     }
@@ -149,16 +148,16 @@
       "status": "outstanding",
       "detail": "No native Windows pass is claimed."
     },
-        {
-          "id": "pymupdf_macos_cpython312",
-          "status": "inherited",
-          "detail": "CPython 3.12.13 and PyMuPDF 1.28.2 reproduce signal 11 in the recorded baseline path."
-        },
-        {
-          "id": "phase0_test_typing",
-          "status": "inherited",
-          "detail": "The frozen tests/features/test_flags.py has 13 strict-mypy errors; Task 0.6 does not edit or suppress that file."
-        }
+    {
+      "id": "pymupdf_macos_cpython312",
+      "status": "inherited",
+      "detail": "CPython 3.12.13 and PyMuPDF 1.28.2 reproduce signal 11 in the recorded baseline path."
+    },
+    {
+      "id": "phase0_test_typing",
+      "status": "inherited",
+      "detail": "The frozen tests/features/test_flags.py has 13 strict-mypy errors; Task 0.6 does not edit or suppress that file."
+    }
   ],
   "workstreams": [
     {

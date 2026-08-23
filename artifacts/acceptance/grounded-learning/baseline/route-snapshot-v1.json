@@ -1,903 +1,909 @@
-[
-  {
-    "name": "dashboard",
-    "path": "/",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "next_command",
-    "path": "/agent/v1/commands/next",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "upload_media",
-    "path": "/agent/v1/commands/{command_id}/media",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "upload_receipt",
-    "path": "/agent/v1/commands/{command_id}/receipt",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "upload_snapshot",
-    "path": "/agent/v1/commands/{command_id}/snapshot",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "agent_health",
-    "path": "/agent/v1/health",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "heartbeat",
-    "path": "/agent/v1/heartbeat",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "anki_page",
-    "path": "/anki",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "anki_review_page",
-    "path": "/anki/jobs/{job_id}",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "anki_bootstrap",
-    "path": "/api/anki/bootstrap",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "run_card_centric_fixture",
-    "path": "/api/anki/fixture-validation",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "create_anki_job",
-    "path": "/api/anki/jobs",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "list_anki_jobs",
-    "path": "/api/anki/jobs",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "read_anki_job",
-    "path": "/api/anki/jobs/{job_id}",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "apply_anki_envelope",
-    "path": "/api/anki/jobs/{job_id}/apply",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "cancel_anki_job",
-    "path": "/api/anki/jobs/{job_id}/cancel",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "read_anki_candidate",
-    "path": "/api/anki/jobs/{job_id}/candidates/{note_id}",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "build_anki_envelope",
-    "path": "/api/anki/jobs/{job_id}/envelope",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "read_anki_evidence",
-    "path": "/api/anki/jobs/{job_id}/evidence/{evidence_id}",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "issue_anki_overflow_acknowledgement",
-    "path": "/api/anki/jobs/{job_id}/overflow-acknowledgement",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "remove_failed_anki_job",
-    "path": "/api/anki/jobs/{job_id}/remove",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "retry_anki_job",
-    "path": "/api/anki/jobs/{job_id}/retry",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "retry_anki_sync",
-    "path": "/api/anki/jobs/{job_id}/retry-sync",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "read_anki_review",
-    "path": "/api/anki/jobs/{job_id}/review",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "save_anki_review",
-    "path": "/api/anki/jobs/{job_id}/review",
-    "methods": [
-      "PUT"
-    ]
-  },
-  {
-    "name": "lecture_api",
-    "path": "/api/lectures",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "unpublish_quiz",
-    "path": "/api/published-quizzes/{token}",
-    "methods": [
-      "DELETE"
-    ]
-  },
-  {
-    "name": "move_quiz_to_library",
-    "path": "/api/published-quizzes/{token}/library",
-    "methods": [
-      "PATCH"
-    ]
-  },
-  {
-    "name": "reorder_quiz",
-    "path": "/api/published-quizzes/{token}/order",
-    "methods": [
-      "PATCH"
-    ]
-  },
-  {
-    "name": "rename_quiz",
-    "path": "/api/published-quizzes/{token}/title",
-    "methods": [
-      "PATCH"
-    ]
-  },
-  {
-    "name": "list_provider_models",
-    "path": "/api/settings/providers/{provider}/models",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "update_task_assignment",
-    "path": "/api/settings/task-assignments/{task}",
-    "methods": [
-      "PUT"
-    ]
-  },
-  {
-    "name": "batch_status",
-    "path": "/api/upload-batches/{batch_id}",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "create_chunk_session",
-    "path": "/api/upload-chunks",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "append_chunk",
-    "path": "/api/upload-chunks/{session_id}",
-    "methods": [
-      "PUT"
-    ]
-  },
-  {
-    "name": "finalize_chunks",
-    "path": "/api/upload-chunks/{session_id}/finalize",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "confirm_transcript",
-    "path": "/api/upload-items/{item_id}/confirm",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "discard_transcript",
-    "path": "/api/upload-items/{item_id}/discard",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "create_manifest",
-    "path": "/api/upload-manifests",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "cancel_manifest",
-    "path": "/api/upload-manifests/{manifest_id}",
-    "methods": [
-      "DELETE"
-    ]
-  },
-  {
-    "name": "finalize_manifest",
-    "path": "/api/upload-manifests/{manifest_id}/finalize",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "outline_artifact",
-    "path": "/artifacts/outlines/{outline_id}",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "download_cleaned_transcript",
-    "path": "/artifacts/{revision_id}/cleaned/download",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "artifact",
-    "path": "/artifacts/{revision_id}/{role}",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "health",
-    "path": "/health",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "health_live",
-    "path": "/health/live",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "health_ready",
-    "path": "/health/ready",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "lecture_library",
-    "path": "/lectures",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "lecture_detail",
-    "path": "/lectures/{lecture_id}",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "lecture_generation_status",
-    "path": "/lectures/{lecture_id}/generation-status",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "update_lecture_metadata",
-    "path": "/lectures/{lecture_id}/metadata",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "queue_outline",
-    "path": "/lectures/{lecture_id}/outline",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "queue_quiz",
-    "path": "/lectures/{lecture_id}/quiz",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "practice_question_library",
-    "path": "/public/practice-questions",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "quiz_library",
-    "path": "/public/quizzes",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "library_styles",
-    "path": "/public/quizzes/assets/library.css",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "library_javascript",
-    "path": "/public/quizzes/assets/library.js",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "player_styles",
-    "path": "/public/quizzes/assets/player.css",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "player_javascript",
-    "path": "/public/quizzes/assets/player.js",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "reset_styles",
-    "path": "/public/quizzes/assets/reset.css",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "study_hub_styles",
-    "path": "/public/quizzes/assets/study-hub.css",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "design_tokens",
-    "path": "/public/quizzes/assets/tokens.css",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "quiz_page",
-    "path": "/public/quizzes/{token}",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "answer_question",
-    "path": "/public/quizzes/{token}/answer",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "quiz_content",
-    "path": "/public/quizzes/{token}/content",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "public_quiz_media",
-    "path": "/public/quizzes/{token}/media/{image_key}",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "public_outline",
-    "path": "/public/quizzes/{token}/outline",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "quarantine_page",
-    "path": "/quarantine",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "assign_item",
-    "path": "/quarantine/{item_id}/assign",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "review",
-    "path": "/review",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "resolve_import_issue",
-    "path": "/review/import-issues/{issue_id}/resolve",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "approve_replacement",
-    "path": "/review/replacements/{revision_id}/approve",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "keep_replacement",
-    "path": "/review/replacements/{revision_id}/keep",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "settings_page",
-    "path": "/settings",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "save_accuracy_gate",
-    "path": "/settings/accuracy-gate",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "save_ai_credential",
-    "path": "/settings/ai/{provider}/credential",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "save_ai_model",
-    "path": "/settings/ai/{provider}/model",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "test_ai_connection",
-    "path": "/settings/ai/{provider}/test",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "save_anki_prompt_directory",
-    "path": "/settings/anki/prompts/directory",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "select_anki_prompt_directory",
-    "path": "/settings/anki/prompts/directory/select",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "test_anki_prompt_directory",
-    "path": "/settings/anki/prompts/directory/test",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "save_voyage_credential",
-    "path": "/settings/anki/voyage/credential",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "save_prompt_path",
-    "path": "/settings/generation/prompts/{kind}",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "select_prompt_path",
-    "path": "/settings/generation/prompts/{kind}/select",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "test_prompt_path",
-    "path": "/settings/generation/prompts/{kind}/test",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "connect_notebook",
-    "path": "/settings/notebook/connect",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "notebook_status",
-    "path": "/settings/notebook/status",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "test_notebook",
-    "path": "/settings/notebook/test",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "clear_anki_connect_port",
-    "path": "/settings/runtime/anki-connect-port",
-    "methods": [
-      "DELETE"
-    ]
-  },
-  {
-    "name": "stage_anki_connect_port",
-    "path": "/settings/runtime/anki-connect-port",
-    "methods": [
-      "PUT"
-    ]
-  },
-  {
-    "name": "apply_tracker",
-    "path": "/settings/tracker/apply",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "preview_tracker",
-    "path": "/settings/tracker/preview",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "static",
-    "path": "/static",
-    "methods": []
-  },
-  {
-    "name": "studio_page",
-    "path": "/studio",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "queue_import_run",
-    "path": "/studio/import/runs",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "add_import_file",
-    "path": "/studio/import/sources/file",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "add_import_text",
-    "path": "/studio/import/sources/text",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "add_import_url",
-    "path": "/studio/import/sources/url",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "managed_practice_question_library",
-    "path": "/studio/library/practice-questions",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "managed_quiz_library",
-    "path": "/studio/library/quizzes",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "queue_run",
-    "path": "/studio/runs",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "runs",
-    "path": "/studio/runs",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "remove_run_from_history",
-    "path": "/studio/runs/{run_id}",
-    "methods": [
-      "DELETE"
-    ]
-  },
-  {
-    "name": "image_review_status",
-    "path": "/studio/runs/{run_id}/image-review",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "image_review_page",
-    "path": "/studio/runs/{run_id}/images",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "upload_quiz_image",
-    "path": "/studio/runs/{run_id}/images/{image_key}",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "preview_quiz_page",
-    "path": "/studio/runs/{run_id}/preview",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "preview_quiz_answer",
-    "path": "/studio/runs/{run_id}/preview/answer",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "preview_quiz_content",
-    "path": "/studio/runs/{run_id}/preview/content",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "preview_quiz_media",
-    "path": "/studio/runs/{run_id}/preview/media/{image_key}",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "publish_reviewed_quiz",
-    "path": "/studio/runs/{run_id}/publication",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "unpublish",
-    "path": "/studio/runs/{run_id}/publication",
-    "methods": [
-      "DELETE"
-    ]
-  },
-  {
-    "name": "update_practice_question",
-    "path": "/studio/runs/{run_id}/questions/{question_id}",
-    "methods": [
-      "PATCH"
-    ]
-  },
-  {
-    "name": "preview_practice_image_candidate",
-    "path": "/studio/runs/{run_id}/questions/{question_id}/candidates/{candidate_id}/preview",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "clear_image_override",
-    "path": "/studio/runs/{run_id}/questions/{question_id}/image-override",
-    "methods": [
-      "DELETE"
-    ]
-  },
-  {
-    "name": "set_image_override",
-    "path": "/studio/runs/{run_id}/questions/{question_id}/image-override",
-    "methods": [
-      "PUT"
-    ]
-  },
-  {
-    "name": "select_practice_image_candidate",
-    "path": "/studio/runs/{run_id}/questions/{question_id}/image-selection",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "verify_practice_answer",
-    "path": "/studio/runs/{run_id}/questions/{question_id}/verify-answer",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "rerun",
-    "path": "/studio/runs/{run_id}/rerun",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "practice_review_page",
-    "path": "/studio/runs/{run_id}/review",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "practice_review_data",
-    "path": "/studio/runs/{run_id}/review/data",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "sources",
-    "path": "/studio/sources",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "name": "add_file",
-    "path": "/studio/sources/file",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "add_image_url",
-    "path": "/studio/sources/image-url",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "add_text",
-    "path": "/studio/sources/text",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "add_url",
-    "path": "/studio/sources/url",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "delete_source",
-    "path": "/studio/sources/{source_id}",
-    "methods": [
-      "DELETE"
-    ]
-  },
-  {
-    "name": "upload_files",
-    "path": "/uploads/{kind}",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
-    "name": "upload_page",
-    "path": "/uploads/{kind}",
-    "methods": [
-      "GET"
-    ]
-  }
-]
+{
+  "schema_version": 1,
+  "source_commit": "749d729010aa75bf160f996d39e11edccb883a58",
+  "source_tree": "c20af8e2df4991852014ec9f1f66462e5363d71d",
+  "normalization_version": "top-level-app-routes-v1",
+  "routes": [
+    {
+      "name": "dashboard",
+      "path": "/",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "next_command",
+      "path": "/agent/v1/commands/next",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "upload_media",
+      "path": "/agent/v1/commands/{command_id}/media",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "upload_receipt",
+      "path": "/agent/v1/commands/{command_id}/receipt",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "upload_snapshot",
+      "path": "/agent/v1/commands/{command_id}/snapshot",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "agent_health",
+      "path": "/agent/v1/health",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "heartbeat",
+      "path": "/agent/v1/heartbeat",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "anki_page",
+      "path": "/anki",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "anki_review_page",
+      "path": "/anki/jobs/{job_id}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "anki_bootstrap",
+      "path": "/api/anki/bootstrap",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "run_card_centric_fixture",
+      "path": "/api/anki/fixture-validation",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "create_anki_job",
+      "path": "/api/anki/jobs",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "list_anki_jobs",
+      "path": "/api/anki/jobs",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "read_anki_job",
+      "path": "/api/anki/jobs/{job_id}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "apply_anki_envelope",
+      "path": "/api/anki/jobs/{job_id}/apply",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "cancel_anki_job",
+      "path": "/api/anki/jobs/{job_id}/cancel",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "read_anki_candidate",
+      "path": "/api/anki/jobs/{job_id}/candidates/{note_id}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "build_anki_envelope",
+      "path": "/api/anki/jobs/{job_id}/envelope",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "read_anki_evidence",
+      "path": "/api/anki/jobs/{job_id}/evidence/{evidence_id}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "issue_anki_overflow_acknowledgement",
+      "path": "/api/anki/jobs/{job_id}/overflow-acknowledgement",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "remove_failed_anki_job",
+      "path": "/api/anki/jobs/{job_id}/remove",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "retry_anki_job",
+      "path": "/api/anki/jobs/{job_id}/retry",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "retry_anki_sync",
+      "path": "/api/anki/jobs/{job_id}/retry-sync",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "read_anki_review",
+      "path": "/api/anki/jobs/{job_id}/review",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "save_anki_review",
+      "path": "/api/anki/jobs/{job_id}/review",
+      "methods": [
+        "PUT"
+      ]
+    },
+    {
+      "name": "lecture_api",
+      "path": "/api/lectures",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "unpublish_quiz",
+      "path": "/api/published-quizzes/{token}",
+      "methods": [
+        "DELETE"
+      ]
+    },
+    {
+      "name": "move_quiz_to_library",
+      "path": "/api/published-quizzes/{token}/library",
+      "methods": [
+        "PATCH"
+      ]
+    },
+    {
+      "name": "reorder_quiz",
+      "path": "/api/published-quizzes/{token}/order",
+      "methods": [
+        "PATCH"
+      ]
+    },
+    {
+      "name": "rename_quiz",
+      "path": "/api/published-quizzes/{token}/title",
+      "methods": [
+        "PATCH"
+      ]
+    },
+    {
+      "name": "list_provider_models",
+      "path": "/api/settings/providers/{provider}/models",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "update_task_assignment",
+      "path": "/api/settings/task-assignments/{task}",
+      "methods": [
+        "PUT"
+      ]
+    },
+    {
+      "name": "batch_status",
+      "path": "/api/upload-batches/{batch_id}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "create_chunk_session",
+      "path": "/api/upload-chunks",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "append_chunk",
+      "path": "/api/upload-chunks/{session_id}",
+      "methods": [
+        "PUT"
+      ]
+    },
+    {
+      "name": "finalize_chunks",
+      "path": "/api/upload-chunks/{session_id}/finalize",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "confirm_transcript",
+      "path": "/api/upload-items/{item_id}/confirm",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "discard_transcript",
+      "path": "/api/upload-items/{item_id}/discard",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "create_manifest",
+      "path": "/api/upload-manifests",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "cancel_manifest",
+      "path": "/api/upload-manifests/{manifest_id}",
+      "methods": [
+        "DELETE"
+      ]
+    },
+    {
+      "name": "finalize_manifest",
+      "path": "/api/upload-manifests/{manifest_id}/finalize",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "outline_artifact",
+      "path": "/artifacts/outlines/{outline_id}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "download_cleaned_transcript",
+      "path": "/artifacts/{revision_id}/cleaned/download",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "artifact",
+      "path": "/artifacts/{revision_id}/{role}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "health",
+      "path": "/health",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "health_live",
+      "path": "/health/live",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "health_ready",
+      "path": "/health/ready",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "lecture_library",
+      "path": "/lectures",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "lecture_detail",
+      "path": "/lectures/{lecture_id}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "lecture_generation_status",
+      "path": "/lectures/{lecture_id}/generation-status",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "update_lecture_metadata",
+      "path": "/lectures/{lecture_id}/metadata",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "queue_outline",
+      "path": "/lectures/{lecture_id}/outline",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "queue_quiz",
+      "path": "/lectures/{lecture_id}/quiz",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "practice_question_library",
+      "path": "/public/practice-questions",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "quiz_library",
+      "path": "/public/quizzes",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "library_styles",
+      "path": "/public/quizzes/assets/library.css",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "library_javascript",
+      "path": "/public/quizzes/assets/library.js",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "player_styles",
+      "path": "/public/quizzes/assets/player.css",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "player_javascript",
+      "path": "/public/quizzes/assets/player.js",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "reset_styles",
+      "path": "/public/quizzes/assets/reset.css",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "study_hub_styles",
+      "path": "/public/quizzes/assets/study-hub.css",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "design_tokens",
+      "path": "/public/quizzes/assets/tokens.css",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "quiz_page",
+      "path": "/public/quizzes/{token}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "answer_question",
+      "path": "/public/quizzes/{token}/answer",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "quiz_content",
+      "path": "/public/quizzes/{token}/content",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "public_quiz_media",
+      "path": "/public/quizzes/{token}/media/{image_key}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "public_outline",
+      "path": "/public/quizzes/{token}/outline",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "quarantine_page",
+      "path": "/quarantine",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "assign_item",
+      "path": "/quarantine/{item_id}/assign",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "review",
+      "path": "/review",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "resolve_import_issue",
+      "path": "/review/import-issues/{issue_id}/resolve",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "approve_replacement",
+      "path": "/review/replacements/{revision_id}/approve",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "keep_replacement",
+      "path": "/review/replacements/{revision_id}/keep",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "settings_page",
+      "path": "/settings",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "save_accuracy_gate",
+      "path": "/settings/accuracy-gate",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "save_ai_credential",
+      "path": "/settings/ai/{provider}/credential",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "save_ai_model",
+      "path": "/settings/ai/{provider}/model",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "test_ai_connection",
+      "path": "/settings/ai/{provider}/test",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "save_anki_prompt_directory",
+      "path": "/settings/anki/prompts/directory",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "select_anki_prompt_directory",
+      "path": "/settings/anki/prompts/directory/select",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "test_anki_prompt_directory",
+      "path": "/settings/anki/prompts/directory/test",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "save_voyage_credential",
+      "path": "/settings/anki/voyage/credential",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "save_prompt_path",
+      "path": "/settings/generation/prompts/{kind}",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "select_prompt_path",
+      "path": "/settings/generation/prompts/{kind}/select",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "test_prompt_path",
+      "path": "/settings/generation/prompts/{kind}/test",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "connect_notebook",
+      "path": "/settings/notebook/connect",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "notebook_status",
+      "path": "/settings/notebook/status",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "test_notebook",
+      "path": "/settings/notebook/test",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "clear_anki_connect_port",
+      "path": "/settings/runtime/anki-connect-port",
+      "methods": [
+        "DELETE"
+      ]
+    },
+    {
+      "name": "stage_anki_connect_port",
+      "path": "/settings/runtime/anki-connect-port",
+      "methods": [
+        "PUT"
+      ]
+    },
+    {
+      "name": "apply_tracker",
+      "path": "/settings/tracker/apply",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "preview_tracker",
+      "path": "/settings/tracker/preview",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "static",
+      "path": "/static",
+      "methods": []
+    },
+    {
+      "name": "studio_page",
+      "path": "/studio",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "queue_import_run",
+      "path": "/studio/import/runs",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "add_import_file",
+      "path": "/studio/import/sources/file",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "add_import_text",
+      "path": "/studio/import/sources/text",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "add_import_url",
+      "path": "/studio/import/sources/url",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "managed_practice_question_library",
+      "path": "/studio/library/practice-questions",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "managed_quiz_library",
+      "path": "/studio/library/quizzes",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "queue_run",
+      "path": "/studio/runs",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "runs",
+      "path": "/studio/runs",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "remove_run_from_history",
+      "path": "/studio/runs/{run_id}",
+      "methods": [
+        "DELETE"
+      ]
+    },
+    {
+      "name": "image_review_status",
+      "path": "/studio/runs/{run_id}/image-review",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "image_review_page",
+      "path": "/studio/runs/{run_id}/images",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "upload_quiz_image",
+      "path": "/studio/runs/{run_id}/images/{image_key}",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "preview_quiz_page",
+      "path": "/studio/runs/{run_id}/preview",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "preview_quiz_answer",
+      "path": "/studio/runs/{run_id}/preview/answer",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "preview_quiz_content",
+      "path": "/studio/runs/{run_id}/preview/content",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "preview_quiz_media",
+      "path": "/studio/runs/{run_id}/preview/media/{image_key}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "publish_reviewed_quiz",
+      "path": "/studio/runs/{run_id}/publication",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "unpublish",
+      "path": "/studio/runs/{run_id}/publication",
+      "methods": [
+        "DELETE"
+      ]
+    },
+    {
+      "name": "update_practice_question",
+      "path": "/studio/runs/{run_id}/questions/{question_id}",
+      "methods": [
+        "PATCH"
+      ]
+    },
+    {
+      "name": "preview_practice_image_candidate",
+      "path": "/studio/runs/{run_id}/questions/{question_id}/candidates/{candidate_id}/preview",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "clear_image_override",
+      "path": "/studio/runs/{run_id}/questions/{question_id}/image-override",
+      "methods": [
+        "DELETE"
+      ]
+    },
+    {
+      "name": "set_image_override",
+      "path": "/studio/runs/{run_id}/questions/{question_id}/image-override",
+      "methods": [
+        "PUT"
+      ]
+    },
+    {
+      "name": "select_practice_image_candidate",
+      "path": "/studio/runs/{run_id}/questions/{question_id}/image-selection",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "verify_practice_answer",
+      "path": "/studio/runs/{run_id}/questions/{question_id}/verify-answer",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "rerun",
+      "path": "/studio/runs/{run_id}/rerun",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "practice_review_page",
+      "path": "/studio/runs/{run_id}/review",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "practice_review_data",
+      "path": "/studio/runs/{run_id}/review/data",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "sources",
+      "path": "/studio/sources",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "name": "add_file",
+      "path": "/studio/sources/file",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "add_image_url",
+      "path": "/studio/sources/image-url",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "add_text",
+      "path": "/studio/sources/text",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "add_url",
+      "path": "/studio/sources/url",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "delete_source",
+      "path": "/studio/sources/{source_id}",
+      "methods": [
+        "DELETE"
+      ]
+    },
+    {
+      "name": "upload_files",
+      "path": "/uploads/{kind}",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "name": "upload_page",
+      "path": "/uploads/{kind}",
+      "methods": [
+        "GET"
+      ]
+    }
+  ]
+}

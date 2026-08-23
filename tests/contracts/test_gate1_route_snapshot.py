@@ -15,7 +15,11 @@ from oms_hub.config import Settings
 from oms_hub.features import FeatureFlag
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BASELINE_COMMIT = "86bf2a7de75c5496955f978d97d3bbae075c9fef"
+MANIFEST_BASE_COMMIT = "86bf2a7de75c5496955f978d97d3bbae075c9fef"
+ROUTE_BASELINE_COMMIT = "749d729010aa75bf160f996d39e11edccb883a58"
+ROUTE_BASELINE_TREE = "c20af8e2df4991852014ec9f1f66462e5363d71d"
+ROUTE_SNAPSHOT_SCHEMA_VERSION = 1
+ROUTE_NORMALIZATION_VERSION = "top-level-app-routes-v1"
 BASELINE_ROUTE_SNAPSHOT = (
     REPO_ROOT / "artifacts/acceptance/grounded-learning/baseline/route-snapshot-v1.json"
 )
@@ -29,9 +33,20 @@ REPO_MAP = REPO_ROOT / "artifacts/implementation/repo-map-v1.json"
 SCHEMAS = REPO_ROOT / "schemas"
 FIXTURES = REPO_ROOT / "tests/fixtures/grounded_learning"
 
-NEW_FLAGS = tuple(
-    flag for flag in FeatureFlag if flag is not FeatureFlag.LEGACY_NOTEBOOKLM_GENERATION
-)
+APPROVED_GROUNDED_FLAGS = {
+    "source_trust_v1": False,
+    "gemini_file_search_v1": False,
+    "ask_studyhub_v1": False,
+    "ask_quiz_context_v1": False,
+    "board_question_v1": False,
+    "adaptive_practice_v1": False,
+    "practice_modes_v1": False,
+    "error_notebook_v1": False,
+    "timed_blocks_v1": False,
+    "anki_learning_loop_v1": False,
+    "board_runway_v1": False,
+    "journal_evidence_v1": False,
+}
 EXPECTED_COMPLETED = ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6")
 EXPECTED_READY = (
     "1.1",
@@ -78,11 +93,89 @@ EXPECTED_VERIFICATION_RESULTS = {
     "manifest_validation": "pass",
     "gate_json_validation": "pass",
 }
+EXPECTED_VERIFICATION_COMMANDS = {
+    "environment_fingerprint": (
+        "python -c 'import importlib.metadata as md, platform, sys; "
+        "print(sys.version); print(platform.platform()); print(platform.machine()); "
+        "print(platform.processor()); print(md.version(\"PyMuPDF\"))'"
+    ),
+    "route_snapshot": "python -m pytest tests/contracts/test_gate1_route_snapshot.py -q",
+    "contracts_providers_features": (
+        "python -m pytest tests/contracts tests/providers tests/features -q"
+    ),
+    "settings_generation": (
+        "python -m pytest tests/anki/test_settings.py tests/v2/test_runtime_settings.py "
+        "tests/v2/test_notebook_settings_routes.py tests/v2/test_generation_settings.py -q"
+    ),
+    "schema_reproducibility": (
+        "python scripts/export_grounded_contract_schemas.py "
+        "--output-dir schema-export-task-0-6 && diff -ru schemas schema-export-task-0-6"
+    ),
+    "ruff": "ruff check src tests scripts",
+    "mypy_source": "mypy src",
+    "mypy_phase0_tests": (
+        "mypy src/oms_hub src/oms_anki_agent tests/builders/knowledge.py "
+        "tests/builders/questions.py tests/contracts/test_fixture_integrity.py "
+        "tests/contracts/test_provider_contracts.py tests/contracts/test_schema_exports.py "
+        "tests/contracts/test_gate1_route_snapshot.py tests/providers/test_fake_provider.py "
+        "tests/features/test_flags.py"
+    ),
+    "javascript": "node --test \"tests/js/*.test.js\"",
+    "broad_python": (
+        "python -m pytest -q -m \"not windows_office\" "
+        "--deselect tests/document_processing/test_pdf_adapter.py"
+    ),
+    "native_windows": (
+        "gh api 'repos/connor-brooks98/oms-study-automation/actions/runs/32603722284/"
+        "jobs?per_page=100' "
+        "&& gh run view 32603722284 --repo connor-brooks98/oms-study-automation --log-failed"
+    ),
+    "manifest_validation": (
+        "python -m pytest tests/contracts/test_gate1_route_snapshot.py::"
+        "test_manifest_is_exactly_the_gate1_state_transition -q"
+    ),
+    "gate_json_validation": (
+        "python -m pytest tests/contracts/test_gate1_route_snapshot.py::"
+        "test_gate_record_matches_manifest_and_all_accepted_hashes -q"
+    ),
+}
+EXPECTED_GATE_TOP_LEVEL_KEYS = {
+    "schema_version",
+    "gate",
+    "state",
+    "integration",
+    "tasks",
+    "contract_tag",
+    "checksums",
+    "schemas",
+    "fixtures",
+    "verification",
+    "known_baseline_exceptions",
+    "workstreams",
+}
+EXPECTED_INTEGRATION_KEYS = {
+    "branch",
+    "integration_sha",
+    "integration_tree_sha",
+    "self_reference_resolution",
+}
+EXPECTED_VERIFICATION_ENTRY_KEYS = {"name", "command", "result", "evidence"}
 SHA256_RE = r"^[0-9a-f]{64}$"
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _walk_strings(value: Any, path: tuple[str, ...] = ()) -> Iterable[tuple[tuple[str, ...], str]]:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from _walk_strings(child, (*path, str(key)))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from _walk_strings(child, (*path, str(index)))
+    elif isinstance(value, str):
+        yield path, value
 
 
 def _iter_route_objects(routes: Iterable[Any]) -> Iterable[Any]:
@@ -144,9 +237,12 @@ def test_feature_flags_off_keep_baseline_routes(tmp_path: Path) -> None:
         data_dir=tmp_path,
         database_url=f"sqlite:///{tmp_path / 'hub.db'}",
         allow_local_access=True,
-        feature_flags=cast(Any, {flag.value: False for flag in NEW_FLAGS}),
+        feature_flags=cast(Any, APPROVED_GROUNDED_FLAGS.copy()),
     )
-    assert all(not settings.feature_flags.is_enabled(flag) for flag in NEW_FLAGS)
+    assert {
+        flag_name: settings.feature_flags.is_enabled(FeatureFlag(flag_name))
+        for flag_name in APPROVED_GROUNDED_FLAGS
+    } == APPROVED_GROUNDED_FLAGS
     assert settings.feature_flags.is_enabled(FeatureFlag.LEGACY_NOTEBOOKLM_GENERATION)
 
     app = create_app(settings)
@@ -155,7 +251,20 @@ def test_feature_flags_off_keep_baseline_routes(tmp_path: Path) -> None:
     finally:
         app.state.database.close()
 
-    expected = json.loads(BASELINE_ROUTE_SNAPSHOT.read_text(encoding="utf-8"))
+    snapshot = json.loads(BASELINE_ROUTE_SNAPSHOT.read_text(encoding="utf-8"))
+    assert isinstance(snapshot, dict)
+    assert set(snapshot) == {
+        "schema_version",
+        "source_commit",
+        "source_tree",
+        "normalization_version",
+        "routes",
+    }
+    assert snapshot["schema_version"] == ROUTE_SNAPSHOT_SCHEMA_VERSION
+    assert snapshot["source_commit"] == ROUTE_BASELINE_COMMIT
+    assert snapshot["source_tree"] == ROUTE_BASELINE_TREE
+    assert snapshot["normalization_version"] == ROUTE_NORMALIZATION_VERSION
+    expected = snapshot["routes"]
     assert actual == expected, _route_diff(expected, actual)
 
 
@@ -168,7 +277,7 @@ def _load_base_manifest() -> dict[str, Any]:
         [
             "git",
             "show",
-            f"{BASELINE_COMMIT}:docs/superpowers/plans/study-hub-parallel-workstream-manifest.yaml",
+            f"{MANIFEST_BASE_COMMIT}:docs/superpowers/plans/study-hub-parallel-workstream-manifest.yaml",
         ],
         cwd=REPO_ROOT,
         text=True,
@@ -238,12 +347,13 @@ def test_manifest_is_exactly_the_gate1_state_transition() -> None:
 
 def test_gate_record_matches_manifest_and_all_accepted_hashes() -> None:
     gate = cast(dict[str, Any], json.loads(GATE_RECORD.read_text(encoding="utf-8")))
+    assert set(gate) == EXPECTED_GATE_TOP_LEVEL_KEYS
     assert gate["schema_version"] == 1
     assert gate["gate"] == "gate_1_shared_contracts"
     assert gate["state"] == "open"
+    assert set(gate["integration"]) == EXPECTED_INTEGRATION_KEYS
     assert gate["integration"] == {
         "branch": "integration/studyhub-grounded-learning-v1",
-        "integration_ref": "integration/studyhub-grounded-learning-v1",
         "integration_sha": "SELF",
         "integration_tree_sha": "SELF_TREE",
         "self_reference_resolution": (
@@ -289,7 +399,11 @@ def test_gate_record_matches_manifest_and_all_accepted_hashes() -> None:
     assert gate["fixtures"] == {name: _sha256(path) for name, path in fixture_paths.items()}
 
     verification = gate["verification"]
-    assert {entry["name"] for entry in verification} == set(EXPECTED_VERIFICATION_RESULTS)
+    assert all(set(entry) == EXPECTED_VERIFICATION_ENTRY_KEYS for entry in verification)
+    assert [entry["name"] for entry in verification] == list(EXPECTED_VERIFICATION_RESULTS)
+    assert {
+        entry["name"]: entry["command"] for entry in verification
+    } == EXPECTED_VERIFICATION_COMMANDS
     assert {
         entry["name"]: entry["result"] for entry in verification
     } == EXPECTED_VERIFICATION_RESULTS
@@ -333,9 +447,17 @@ def test_gate_record_matches_manifest_and_all_accepted_hashes() -> None:
             "ready_tasks": list(branch_and_tasks[1:]),
         }
 
-    allowed_absolute_paths = {
-        entry["worktree"] for entry in workstreams
+    allowed_absolute_paths = {entry["worktree"] for entry in workstreams}
+    self_reference_fields = {
+        "integration_sha",
+        "integration_tree_sha",
+        "self_reference_resolution",
     }
-    for value in gate.values():
-        if isinstance(value, str) and value.startswith("/"):
+    for path, value in _walk_strings(gate):
+        if value.startswith("/"):
+            assert path[-1] == "worktree"
             assert value in allowed_absolute_paths
+        assert not re.search(r"\$(?:\{)?[A-Za-z_][A-Za-z0-9_]*", value)
+        assert not re.search(r"(?:^|\s)[A-Za-z_][A-Za-z0-9_]*=", value)
+        if "SELF" in value or "SELF_TREE" in value:
+            assert path[-1] in self_reference_fields
