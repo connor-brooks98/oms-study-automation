@@ -112,11 +112,10 @@ EXPECTED_VERIFICATION_COMMANDS = {
         "tests/v2/test_notebook_settings_routes.py tests/v2/test_generation_settings.py -q"
     ),
     "schema_reproducibility": (
-        "python -c 'import subprocess,tempfile; exec(\"with tempfile.TemporaryDirectory() "
-        "as output:\\\\n "
-        "subprocess.run([\\\"python\\\",\\\"scripts/export_grounded_contract_schemas.py\\\","
-        "\\\"--output-dir\\\",output],check=True)\\\\n "
-        "subprocess.run([\\\"diff\\\",\\\"-ru\\\",\\\"schemas\\\",output],check=True)\")'"
+        "python -c 'import subprocess,tempfile; output=tempfile.TemporaryDirectory(); "
+        "subprocess.run([\"python\",\"scripts/export_grounded_contract_schemas.py\","
+        "\"--output-dir\",output.name],check=True); "
+        "subprocess.run([\"diff\",\"-ru\",\"schemas\",output.name],check=True)'"
     ),
     "ruff": "ruff check src tests scripts",
     "mypy_source": "mypy src",
@@ -381,6 +380,18 @@ def test_gate_string_policy_rejects_embedded_absolute_paths(embedded_path: str) 
     with pytest.raises(AssertionError):
         _assert_gate_string_policy({"verification": [{"command": embedded_path}]})
     _assert_gate_string_policy({"verification": [{"command": "https://example.com/a"}]})
+
+
+def test_gate_schema_command_executes_twice_from_repo_root() -> None:
+    gate = cast(dict[str, Any], json.loads(GATE_RECORD.read_text(encoding="utf-8")))
+    command = next(
+        entry["command"]
+        for entry in gate["verification"]
+        if entry["name"] == "schema_reproducibility"
+    )
+    assert command == EXPECTED_VERIFICATION_COMMANDS["schema_reproducibility"]
+    for _ in range(2):
+        subprocess.run(command, shell=True, cwd=REPO_ROOT, check=True)
 
 
 def test_gate_record_matches_manifest_and_all_accepted_hashes() -> None:

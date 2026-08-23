@@ -90,7 +90,7 @@
     },
     {
       "name": "schema_reproducibility",
-      "command": "python -c 'import subprocess,tempfile; exec(\"with tempfile.TemporaryDirectory() as output:\\\\n subprocess.run([\\\"python\\\",\\\"scripts/export_grounded_contract_schemas.py\\\",\\\"--output-dir\\\",output],check=True)\\\\n subprocess.run([\\\"diff\\\",\\\"-ru\\\",\\\"schemas\\\",output],check=True)\")'",
+      "command": "python -c 'import subprocess,tempfile; output=tempfile.TemporaryDirectory(); subprocess.run([\"python\",\"scripts/export_grounded_contract_schemas.py\",\"--output-dir\",output.name],check=True); subprocess.run([\"diff\",\"-ru\",\"schemas\",output.name],check=True)'",
       "result": "pass",
       "evidence": "docs/implementation/handoffs/0.6.md"
     },
