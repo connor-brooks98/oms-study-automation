@@ -34,7 +34,7 @@ roles:
 gates:
   gate_1_shared_contracts:
     task: '0.6'
-    state: blocked
+    state: open
   gate_2a_source_trust:
     task: '1.8'
     state: blocked
@@ -309,7 +309,7 @@ tasks:
   branch: sol0/contracts-and-integration
   depends_on: []
   wave: 0
-  initial_state: ready
+  initial_state: complete
   handoff: docs/implementation/handoffs/0.1.md
   reviewers:
   - terra_spec
@@ -322,7 +322,7 @@ tasks:
   depends_on:
   - '0.1'
   wave: 0
-  initial_state: blocked
+  initial_state: complete
   handoff: docs/implementation/handoffs/0.2.md
   reviewers:
   - terra_spec
@@ -335,7 +335,7 @@ tasks:
   depends_on:
   - '0.2'
   wave: 0
-  initial_state: blocked
+  initial_state: complete
   handoff: docs/implementation/handoffs/0.3.md
   reviewers:
   - terra_spec
@@ -348,7 +348,7 @@ tasks:
   depends_on:
   - '0.2'
   wave: 0
-  initial_state: blocked
+  initial_state: complete
   handoff: docs/implementation/handoffs/0.4.md
   reviewers:
   - terra_spec
@@ -361,7 +361,7 @@ tasks:
   depends_on:
   - '0.4'
   wave: 0
-  initial_state: blocked
+  initial_state: complete
   handoff: docs/implementation/handoffs/0.5.md
   reviewers:
   - terra_spec
@@ -376,7 +376,7 @@ tasks:
   - '0.4'
   - '0.5'
   wave: 0
-  initial_state: blocked
+  initial_state: complete
   handoff: docs/implementation/handoffs/0.6.md
   reviewers:
   - terra_spec
@@ -390,7 +390,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 1
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/1.1.md
   reviewers:
   - terra_spec
@@ -496,7 +496,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 2
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/2.1.md
   reviewers:
   - terra_spec
@@ -602,7 +602,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 2
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/3.1.md
   reviewers:
   - terra_spec
@@ -712,7 +712,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 2
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/4.1.md
   reviewers:
   - terra_spec
@@ -810,7 +810,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 2
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/5.1.md
   reviewers:
   - terra_spec
@@ -837,7 +837,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 2
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/5.3.md
   reviewers:
   - terra_spec
@@ -972,7 +972,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 2
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/6.3.md
   reviewers:
   - terra_spec
@@ -1066,7 +1066,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 2
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/6.10.md
   reviewers:
   - terra_spec
@@ -1107,7 +1107,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 2
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/6.13.md
   reviewers:
   - terra_spec
@@ -1165,7 +1165,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 2
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/7.1.md
   reviewers:
   - terra_spec
@@ -1219,7 +1219,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 2
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/7.5.md
   reviewers:
   - terra_spec
@@ -1275,7 +1275,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 2
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/8.1.md
   reviewers:
   - terra_spec
@@ -1288,7 +1288,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 2
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/8.2.md
   reviewers:
   - terra_spec
@@ -1387,7 +1387,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 2
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/9.1.md
   reviewers:
   - terra_spec
@@ -1400,7 +1400,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 2
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/9.2.md
   reviewers:
   - terra_spec
@@ -1440,7 +1440,7 @@ tasks:
   depends_on:
   - '0.6'
   wave: 2
-  initial_state: blocked
+  initial_state: ready
   handoff: docs/implementation/handoffs/9.5.md
   reviewers:
   - terra_spec

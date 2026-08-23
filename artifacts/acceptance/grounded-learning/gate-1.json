@@ -1,0 +1,225 @@
+{
+  "schema_version": 1,
+  "gate": "gate_1_shared_contracts",
+  "state": "open",
+  "integration": {
+    "branch": "integration/studyhub-grounded-learning-v1",
+    "integration_ref": "integration/studyhub-grounded-learning-v1",
+    "integration_sha": "SELF",
+    "integration_tree_sha": "SELF_TREE",
+    "self_reference_resolution": "Resolve SELF and SELF_TREE from the commit containing this record."
+  },
+  "tasks": {
+    "completed": [
+      "0.1",
+      "0.2",
+      "0.3",
+      "0.4",
+      "0.5",
+      "0.6"
+    ],
+    "ready": [
+      "1.1",
+      "2.1",
+      "3.1",
+      "4.1",
+      "5.1",
+      "5.3",
+      "6.3",
+      "6.10",
+      "6.13",
+      "7.1",
+      "7.5",
+      "8.1",
+      "8.2",
+      "9.1",
+      "9.2",
+      "9.5"
+    ]
+  },
+  "contract_tag": {
+    "name": "studyhub-grounded-contracts-v1",
+    "annotated_tag_object": "a2636bbeb84d2143685c3555e9a3f74ccb8380d0",
+    "peeled_target": "60a5f3ec873f982bca14d3507d719eb9927a8f1a"
+  },
+  "checksums": {
+    "repo_map": "ef4a3ed3d1691abef6cda31e596047e65ed1b8fa56dd1bb8776e514eb6fe234e",
+    "design": "37c06f8f177afc44cb7a2a4159aad206b241c4122113d4842e9c0fc24c2835f9",
+    "plan": "d934cc15b175256676d576e07b67dcbc3759252846bfcddf049217e57f51d563",
+    "manifest": "7c50a9bd62a07389c474fb54a22be63697bc372bf021e6ecbd99a9b90486130e",
+    "route_snapshot": "adc19095bf156ee66a1c51c1299e1888a64835ead64abcec4cd5bff0956fd738"
+  },
+  "schemas": {
+    "knowledge-v1.json": "03c45a28a4eecb75f56abe51aed893659177aeabcd30572544815c0194604d61",
+    "ask-v1.json": "f7517bd19572724401e0b9c56adb03ce217d768d2a94092296497c59dcb2153c",
+    "question-v1.json": "968449d9dca8da71a28658360fe6a2d8e61cf35e49c5d8a9ab6e7a4564e7eb9d",
+    "mastery-v1.json": "f52186549a239bc0b4acef515fb9cfecbdd4a5fb7b568ea7310627cc44356a2c",
+    "practice-v1.json": "0a50b8cd976f26101b3b48c7cded172aa7432f43736aceacaf173340014b978f",
+    "journal-v1.json": "aea137fab3c6c5cf4005e0699b112ef614c68b5aaabd5e408999e826574cee94"
+  },
+  "fixtures": {
+    "lecture-13-normalized.md": "712ab602dd9ad8b92639e087304d05ceeceb50d4eaf7d732c4526e68070d27cb",
+    "lecture-13-pages.json": "e8d0fea3a62089d1042d887367b2a8a0ab2dd5526591c56d0117a0ca11cb7905",
+    "article-1-normalized.md": "eaf0f7377c5341c8badcbab45751268e244a0c9189ba8ca14fe41ba413c98ba0",
+    "README.md": "fdd5f75623ee2e5061f0fa535ea2a59bba4b020b0d935c16b6809c2c5c1c2477"
+  },
+  "verification": [
+    {
+      "name": "environment_fingerprint",
+      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -c 'import importlib.metadata as md, platform, sys; print(sys.executable); print(sys.version); print(platform.platform()); print(platform.machine()); print(platform.processor()); print(md.version(\"PyMuPDF\"))'",
+      "result": "pass",
+      "evidence": "docs/implementation/handoffs/0.6.md"
+    },
+    {
+      "name": "route_snapshot",
+      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest tests/contracts/test_gate1_route_snapshot.py -q",
+      "result": "pass",
+      "evidence": "docs/implementation/handoffs/0.6.md"
+    },
+    {
+      "name": "contracts_providers_features",
+      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest tests/contracts tests/providers tests/features -q",
+      "result": "pass",
+      "evidence": "docs/implementation/handoffs/0.6.md"
+    },
+    {
+      "name": "settings_generation",
+      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest tests/anki/test_settings.py tests/v2/test_runtime_settings.py tests/v2/test_notebook_settings_routes.py tests/v2/test_generation_settings.py -q",
+      "result": "pass",
+      "evidence": "docs/implementation/handoffs/0.6.md"
+    },
+    {
+      "name": "schema_reproducibility",
+      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python scripts/export_grounded_contract_schemas.py --output-dir \"$SCHEMA_TMP\" && diff -ru schemas \"$SCHEMA_TMP\"",
+      "result": "pass",
+      "evidence": "docs/implementation/handoffs/0.6.md"
+    },
+    {
+      "name": "ruff",
+      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH ruff check src tests scripts",
+      "result": "pass",
+      "evidence": "docs/implementation/handoffs/0.6.md"
+    },
+    {
+      "name": "mypy_source",
+      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH mypy src",
+      "result": "pass",
+      "evidence": "docs/implementation/handoffs/0.6.md"
+    },
+    {
+      "name": "mypy_phase0_tests",
+      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH MYPYPATH=$PWD/src mypy tests/builders/knowledge.py tests/builders/questions.py tests/contracts/test_fixture_integrity.py tests/contracts/test_provider_contracts.py tests/contracts/test_schema_exports.py tests/contracts/test_gate1_route_snapshot.py tests/providers/test_fake_provider.py tests/features/test_flags.py",
+      "result": "baseline_exception",
+      "evidence": "docs/implementation/handoffs/0.6.md"
+    },
+    {
+      "name": "javascript",
+      "command": "node --test \"tests/js/*.test.js\"",
+      "result": "pass",
+      "evidence": "docs/implementation/handoffs/0.6.md"
+    },
+    {
+      "name": "broad_python",
+      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring python -m pytest -q -m \"not windows_office\" --deselect tests/document_processing/test_pdf_adapter.py",
+      "result": "baseline_exception",
+      "evidence": "docs/implementation/handoffs/0.6.md"
+    },
+    {
+      "name": "native_windows",
+      "command": "gh api 'repos/connor-brooks98/oms-study-automation/actions/runs/32603722284/jobs?per_page=100' && gh run view 32603722284 --repo connor-brooks98/oms-study-automation --log-failed",
+      "result": "baseline_exception",
+      "evidence": "docs/implementation/handoffs/0.6.md"
+    },
+    {
+      "name": "manifest_validation",
+      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest tests/contracts/test_gate1_route_snapshot.py::test_manifest_is_exactly_the_gate1_state_transition -q",
+      "result": "pass",
+      "evidence": "docs/implementation/handoffs/0.6.md"
+    },
+    {
+      "name": "gate_json_validation",
+      "command": "PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest tests/contracts/test_gate1_route_snapshot.py::test_gate_record_matches_manifest_and_all_accepted_hashes -q",
+      "result": "pass",
+      "evidence": "docs/implementation/handoffs/0.6.md"
+    }
+  ],
+  "known_baseline_exceptions": [
+    {
+      "id": "windows_native_acceptance",
+      "status": "outstanding",
+      "detail": "No native Windows pass is claimed."
+    },
+        {
+          "id": "pymupdf_macos_cpython312",
+          "status": "inherited",
+          "detail": "CPython 3.12.13 and PyMuPDF 1.28.2 reproduce signal 11 in the recorded baseline path."
+        },
+        {
+          "id": "phase0_test_typing",
+          "status": "inherited",
+          "detail": "The frozen tests/features/test_flags.py has 13 strict-mypy errors; Task 0.6 does not edit or suppress that file."
+        }
+  ],
+  "workstreams": [
+    {
+      "id": "sol1",
+      "branch": "sol1/source-trust",
+      "worktree": "/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol1",
+      "ready_tasks": ["1.1"]
+    },
+    {
+      "id": "sol2",
+      "branch": "sol2/gemini-indexing",
+      "worktree": "/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol2",
+      "ready_tasks": ["2.1"]
+    },
+    {
+      "id": "sol3",
+      "branch": "sol3/ask-backend",
+      "worktree": "/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol3",
+      "ready_tasks": ["3.1"]
+    },
+    {
+      "id": "sol4",
+      "branch": "sol4/ask-frontend",
+      "worktree": "/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol4",
+      "ready_tasks": ["4.1"]
+    },
+    {
+      "id": "sol5",
+      "branch": "sol5/board-questions",
+      "worktree": "/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol5",
+      "ready_tasks": ["5.1", "5.3"]
+    },
+    {
+      "id": "sol6",
+      "branch": "sol6/adaptive-mastery",
+      "worktree": "/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol6",
+      "ready_tasks": ["6.3"]
+    },
+    {
+      "id": "sol7",
+      "branch": "sol7/anki-runway",
+      "worktree": "/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol7",
+      "ready_tasks": ["7.1", "7.5"]
+    },
+    {
+      "id": "sol8",
+      "branch": "sol8/journal-evidence",
+      "worktree": "/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol8",
+      "ready_tasks": ["8.1", "8.2"]
+    },
+    {
+      "id": "sol9",
+      "branch": "sol9/evals-observability-release",
+      "worktree": "/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol9",
+      "ready_tasks": ["9.1", "9.2", "9.5"]
+    },
+    {
+      "id": "sol10",
+      "branch": "sol10/practice-modes",
+      "worktree": "/Users/connor/Developer/worktrees/oms-study-automation-grounded-learning/sol10",
+      "ready_tasks": ["6.10", "6.13"]
+    }
+  ]
+}
