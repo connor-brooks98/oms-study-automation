@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 import yaml  # type: ignore[import-untyped]
 
 from oms_hub.app import create_app
@@ -46,6 +47,9 @@ APPROVED_GROUNDED_FLAGS = {
     "anki_learning_loop_v1": False,
     "board_runway_v1": False,
     "journal_evidence_v1": False,
+}
+EXPECTED_FEATURE_FLAG_NAMES = set(APPROVED_GROUNDED_FLAGS) | {
+    "legacy_notebooklm_generation"
 }
 EXPECTED_COMPLETED = ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6")
 EXPECTED_READY = (
@@ -108,8 +112,11 @@ EXPECTED_VERIFICATION_COMMANDS = {
         "tests/v2/test_notebook_settings_routes.py tests/v2/test_generation_settings.py -q"
     ),
     "schema_reproducibility": (
-        "python scripts/export_grounded_contract_schemas.py "
-        "--output-dir schema-export-task-0-6 && diff -ru schemas schema-export-task-0-6"
+        "python -c 'import subprocess,tempfile; exec(\"with tempfile.TemporaryDirectory() "
+        "as output:\\\\n "
+        "subprocess.run([\\\"python\\\",\\\"scripts/export_grounded_contract_schemas.py\\\","
+        "\\\"--output-dir\\\",output],check=True)\\\\n "
+        "subprocess.run([\\\"diff\\\",\\\"-ru\\\",\\\"schemas\\\",output],check=True)\")'"
     ),
     "ruff": "ruff check src tests scripts",
     "mypy_source": "mypy src",
@@ -155,6 +162,7 @@ EXPECTED_GATE_TOP_LEVEL_KEYS = {
 }
 EXPECTED_INTEGRATION_KEYS = {
     "branch",
+    "integration_ref",
     "integration_sha",
     "integration_tree_sha",
     "self_reference_resolution",
@@ -176,6 +184,28 @@ def _walk_strings(value: Any, path: tuple[str, ...] = ()) -> Iterable[tuple[tupl
             yield from _walk_strings(child, (*path, str(index)))
     elif isinstance(value, str):
         yield path, value
+
+
+def _assert_gate_string_policy(gate: dict[str, Any]) -> None:
+    worktree_values = {
+        entry["worktree"] for entry in gate.get("workstreams", [])
+    }
+    absolute_path = re.compile(r"(?<![A-Za-z0-9_:/])/[^\s,;)}\]]+")
+    env_reference = re.compile(r"\$(?:\{)?[A-Za-z_][A-Za-z0-9_]*")
+    env_assignment = re.compile(r"(?:^|\s)[A-Z][A-Z0-9_]*=")
+    for path, value in _walk_strings(gate):
+        if path[-1] == "worktree":
+            assert value in worktree_values
+        else:
+            assert not absolute_path.search(value), (path, value)
+        assert not env_reference.search(value), (path, value)
+        assert not env_assignment.search(value), (path, value)
+        if "SELF" in value or "SELF_TREE" in value:
+            assert path[-1] in {
+                "integration_sha",
+                "integration_tree_sha",
+                "self_reference_resolution",
+            }
 
 
 def _iter_route_objects(routes: Iterable[Any]) -> Iterable[Any]:
@@ -232,6 +262,7 @@ def _route_diff(
 
 
 def test_feature_flags_off_keep_baseline_routes(tmp_path: Path) -> None:
+    assert {flag.value for flag in FeatureFlag} == EXPECTED_FEATURE_FLAG_NAMES
     settings = Settings(
         _env_file=None,  # type: ignore[call-arg]
         data_dir=tmp_path,
@@ -345,6 +376,13 @@ def test_manifest_is_exactly_the_gate1_state_transition() -> None:
     )
 
 
+@pytest.mark.parametrize("embedded_path", ("python /tmp/tool.py", "note=/Users/connor/x"))
+def test_gate_string_policy_rejects_embedded_absolute_paths(embedded_path: str) -> None:
+    with pytest.raises(AssertionError):
+        _assert_gate_string_policy({"verification": [{"command": embedded_path}]})
+    _assert_gate_string_policy({"verification": [{"command": "https://example.com/a"}]})
+
+
 def test_gate_record_matches_manifest_and_all_accepted_hashes() -> None:
     gate = cast(dict[str, Any], json.loads(GATE_RECORD.read_text(encoding="utf-8")))
     assert set(gate) == EXPECTED_GATE_TOP_LEVEL_KEYS
@@ -354,6 +392,7 @@ def test_gate_record_matches_manifest_and_all_accepted_hashes() -> None:
     assert set(gate["integration"]) == EXPECTED_INTEGRATION_KEYS
     assert gate["integration"] == {
         "branch": "integration/studyhub-grounded-learning-v1",
+        "integration_ref": "integration/studyhub-grounded-learning-v1",
         "integration_sha": "SELF",
         "integration_tree_sha": "SELF_TREE",
         "self_reference_resolution": (
@@ -447,17 +486,4 @@ def test_gate_record_matches_manifest_and_all_accepted_hashes() -> None:
             "ready_tasks": list(branch_and_tasks[1:]),
         }
 
-    allowed_absolute_paths = {entry["worktree"] for entry in workstreams}
-    self_reference_fields = {
-        "integration_sha",
-        "integration_tree_sha",
-        "self_reference_resolution",
-    }
-    for path, value in _walk_strings(gate):
-        if value.startswith("/"):
-            assert path[-1] == "worktree"
-            assert value in allowed_absolute_paths
-        assert not re.search(r"\$(?:\{)?[A-Za-z_][A-Za-z0-9_]*", value)
-        assert not re.search(r"(?:^|\s)[A-Za-z_][A-Za-z0-9_]*=", value)
-        if "SELF" in value or "SELF_TREE" in value:
-            assert path[-1] in self_reference_fields
+    _assert_gate_string_policy(gate)
