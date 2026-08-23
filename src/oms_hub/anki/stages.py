@@ -1404,7 +1404,7 @@ class CurationServicesRunner:
                         int(candidate["note_id"]): candidate
                         for candidate in r6_fact["all_candidates"]
                     }
-                    remaining_representatives: list[Mapping[str, Any]] = []
+                    remaining_candidates: list[Mapping[str, Any]] = []
                     for cluster in r6_fact["clusters"]:
                         representative = cluster.get("representative_note_id")
                         if (
@@ -1413,8 +1413,20 @@ class CurationServicesRunner:
                         ):
                             raise PinnedInputChanged("Pinned R6 residual cluster is malformed")
                         if representative not in initial_ids:
-                            remaining_representatives.append(candidates_by_id[representative])
-                    candidates = remaining_representatives
+                            remaining_candidates.append(candidates_by_id[representative])
+                        representative_hash = candidates_by_id[representative]["content_sha256"]
+                        for sibling in cluster["sibling_note_ids"]:
+                            if type(sibling) is not int or sibling not in candidates_by_id:
+                                raise PinnedInputChanged("Pinned R6 residual sibling is malformed")
+                            if sibling == representative:
+                                continue
+                            if (
+                                sibling not in initial_ids
+                                and candidates_by_id[sibling]["content_sha256"]
+                                != representative_hash
+                            ):
+                                remaining_candidates.append(candidates_by_id[sibling])
+                    candidates = remaining_candidates
                     if not candidates and not diagnostics:
                         candidates = [
                             candidate

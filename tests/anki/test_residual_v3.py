@@ -301,6 +301,33 @@ def test_r8_dispatches_residual_bundle_without_initial_r6_representative(
     product = asyncio.run(runner.run(context))
     assert product.payload["records"][0]["state"] == "covered_residual" and len(calls) == 1
     assert calls[0]["bundles"][0].candidate.tags == ("tag:a", "Tag:z")
+    sibling = {
+        **candidate,
+        "note_id": 10,
+        "content_sha256": "e" * 64,
+        "text": "direct non-identical sibling",
+    }
+    r5["facts"][0]["candidates"] = [candidate, sibling]
+    r6["records"][0].update(
+        all_candidates=[candidate, sibling],
+        clusters=[
+            {
+                "representative_note_id": 9,
+                "sibling_note_ids": [9, 10],
+                "missing_vector_note_ids": [],
+            }
+        ],
+    )
+    r4["card_identities"].append({"note_id": 10, "content_sha256": "e" * 64})
+    r7["bundles"] = [{"bundle_id": "initial:9", "fact_id": "fact", "candidate": {"note_id": 9}}]
+    r7["final_partition"] = [{"bundle_id": "initial:9", "disposition": "exclude"}]
+    r7["bundles_sha256"] = canonical_payload_sha256(r7["bundles"])
+    calls.clear()
+    product = asyncio.run(runner.run(context))
+    assert product.payload["records"][0]["initial_note_ids"] == [9]
+    assert [bundle.candidate.note_id for bundle in calls[0]["bundles"]] == [10]
+    r7.update(bundles=[], final_partition=[], bundles_sha256=canonical_payload_sha256([]))
+    r5["facts"][0]["candidates"] = [candidate]
     r6["records"][0].update(all_candidates=[], per_fact_cap_excluded_note_ids=[], clusters=[])
     monkeypatch.setattr(
         stages.R7ClassificationService,
