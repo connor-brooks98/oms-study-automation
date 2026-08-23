@@ -26,6 +26,7 @@ BASELINE_ROUTE_SNAPSHOT = (
 )
 MANIFEST = REPO_ROOT / "docs/superpowers/plans/study-hub-parallel-workstream-manifest.yaml"
 GATE_RECORD = REPO_ROOT / "artifacts/acceptance/grounded-learning/gate-1.json"
+HANDOFF = REPO_ROOT / "docs/implementation/handoffs/0.6.md"
 DESIGN = REPO_ROOT / (
     "docs/superpowers/specs/2026-08-20-study-hub-grounded-adaptive-learning-design.md"
 )
@@ -392,6 +393,14 @@ def test_gate_schema_command_executes_twice_from_repo_root() -> None:
     assert command == EXPECTED_VERIFICATION_COMMANDS["schema_reproducibility"]
     for _ in range(2):
         subprocess.run(command, shell=True, cwd=REPO_ROOT, check=True)
+
+
+def test_handoff_records_current_gate_checksum() -> None:
+    text = HANDOFF.read_text(encoding="utf-8")
+    gate_section = text.split("## Gate record", 1)[1].split("## Checksums", 1)[0]
+    match = re.search(r"(?m)^- SHA-256: `([0-9a-f]{64})`$", gate_section)
+    assert match is not None
+    assert match.group(1) == _sha256(GATE_RECORD)
 
 
 def test_gate_record_matches_manifest_and_all_accepted_hashes() -> None:
