@@ -8,7 +8,7 @@ import pytest
 from pydantic import SecretStr
 
 from oms_hub.db import Database
-from oms_hub.indexing.models import IndexState, StoreKey
+from oms_hub.indexing.models import IndexState, ProviderStore, StoreKey
 from oms_hub.indexing.repository import IndexRepository
 from oms_hub.providers.gemini.client import GeminiClientFactory
 from oms_hub.providers.gemini.errors import (
@@ -46,6 +46,8 @@ class FakeStores:
         self.get_error: BaseException | None = None
         self.create_error: BaseException | None = None
         self.next_name = "fileSearchStores/provider-1"
+        self.create_started: asyncio.Event | None = None
+        self.allow_create: asyncio.Event | None = None
 
     async def get(self, **kwargs: object) -> object:
         self.get_calls.append(kwargs)
@@ -60,6 +62,10 @@ class FakeStores:
         self.create_calls.append(kwargs)
         if self.create_error is not None:
             raise self.create_error
+        if self.create_started is not None:
+            self.create_started.set()
+        if self.allow_create is not None:
+            await self.allow_create.wait()
         name = self.next_name
         self.next_name = "fileSearchStores/provider-2"
         created = SimpleNamespace(name=name)
@@ -170,6 +176,28 @@ def test_remote_present_ensure_is_idempotent_and_uses_one_client_context(
     assert len(stores.get_calls) == 1
     assert len(sdk.calls) == 1
     assert client.close_calls == 1
+
+
+def test_concurrent_ensure_store_creates_once_and_returns_same_identity(
+    admin_bundle: tuple[GeminiFileSearchAdmin, FakeStores, FakeAioClient, FakeSdkFactory],
+) -> None:
+    admin, stores, _, _ = admin_bundle
+    key = StoreKey.course("heme-lymph", "exam-2")
+
+    async def exercise() -> tuple[ProviderStore, ProviderStore]:
+        stores.create_started = asyncio.Event()
+        stores.allow_create = asyncio.Event()
+        first_task = asyncio.create_task(admin.ensure_store(key))
+        await stores.create_started.wait()
+        second_task = asyncio.create_task(admin.ensure_store(key))
+        await asyncio.sleep(0)
+        stores.allow_create.set()
+        return await asyncio.gather(first_task, second_task)
+
+    first, second = run(exercise())
+
+    assert first.provider_store_name == second.provider_store_name
+    assert len(stores.create_calls) == 1
 
 
 def test_remote_404_commits_orphan_stale_before_replacement_and_changes_identity(
@@ -413,3 +441,25 @@ def test_failed_remote_delete_never_claims_deleted(
     current = IndexRepository(database).get_document(listed[0].id)
     assert current is not None
     assert current.state is IndexState.DELETING
+
+
+def test_translated_404_delete_converges_deleting_document_to_deleted(
+    admin_bundle: tuple[GeminiFileSearchAdmin, FakeStores, FakeAioClient, FakeSdkFactory],
+    database: Database,
+) -> None:
+    admin, stores, _, _ = admin_bundle
+    stored = run(admin.ensure_store(StoreKey.course("heme-lymph", "exam-2")))
+    stores.documents.items = [
+        SimpleNamespace(
+            name="fileSearchStores/provider-1/documents/a",
+            custom_metadata={"source_revision_id": "revision"},
+        )
+    ]
+    listed = run(admin.list_documents(stored))
+    stores.documents.delete_error = RawProviderFailure("raw already absent", 404)
+
+    run(admin.delete_document(listed[0].provider_document_id))
+
+    current = IndexRepository(database).get_document(listed[0].id)
+    assert current is not None
+    assert current.state is IndexState.DELETED

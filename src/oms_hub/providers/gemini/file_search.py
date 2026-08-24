@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterable, Iterable, Mapping
 from typing import Any, cast
+from weakref import WeakKeyDictionary
 
 from oms_hub.db import Database
 from oms_hub.indexing.models import (
@@ -33,9 +35,16 @@ class GeminiFileSearchAdmin:
         else:
             self.repository = IndexRepository(database)
         self.client_factory = client_factory
+        self._ensure_locks: WeakKeyDictionary[
+            asyncio.AbstractEventLoop, asyncio.Lock
+        ] = WeakKeyDictionary()
 
     async def ensure_store(self, key: StoreKey) -> ProviderStore:
         key = _require_store_key(key)
+        async with self._ensure_lock():
+            return await self._ensure_store_locked(key)
+
+    async def _ensure_store_locked(self, key: StoreKey) -> ProviderStore:
         current = self.repository.get_current_store(key)
         async with self.client_factory.client() as client:
             stores = _stores_api(client)
@@ -104,10 +113,28 @@ class GeminiFileSearchAdmin:
             return
         if document.state is not IndexState.DELETING:
             document = self.repository.mark_document_deleting(provider_document_id)
-        async with self.client_factory.client() as client:
-            documents_api = _documents_api(client)
-            await _call_provider(documents_api.delete, name=document.provider_document_id)
+        try:
+            async with self.client_factory.client() as client:
+                documents_api = _documents_api(client)
+                await _call_provider(documents_api.delete, name=document.provider_document_id)
+        except Exception as error:
+            translated = _translate(error)
+            if translated.provider_status_code == 404:
+                self.repository.mark_document_deleted(provider_document_id)
+                return
+            raise translated from None
         self.repository.mark_document_deleted(provider_document_id)
+
+    def _ensure_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        lock = self._ensure_locks.get(loop)
+        if lock is None:
+            # ponytail: one per-admin lock serializes all store keys; upgrade to
+            # per-key/distributed coordination only if throughput or multi-process
+            # activation requires it.
+            lock = asyncio.Lock()
+            self._ensure_locks[loop] = lock
+        return lock
 
 
 def _require_store_key(key: StoreKey) -> StoreKey:
