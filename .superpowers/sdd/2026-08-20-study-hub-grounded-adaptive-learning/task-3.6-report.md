@@ -487,6 +487,9 @@ status `HELD / unapplied`, originating Sol-3/Task 3.6, exact proposal base
 `4f30e28228ae3550215ddd39da5beea9c9ab1cc6`, and exact proposed files
 `src/oms_hub/models.py`, `src/oms_hub/migrations.py`, `src/oms_hub/app.py`,
 `src/oms_hub/ask/repository.py`, and new `tests/ask/test_repository_integration.py`.
+The frozen `schemas/ask-v1.json` remains byte-identical at SHA-256
+`f7517bd19572724401e0b9c56adb03ce217d768d2a94092296497c59dcb2153c`; Ask v2 remains
+proposal-only.
 The handoff record embeds the complete directly applicable unified patch, exact current-ref
 conflict audit, schema-23 composition order, rollback, and mechanical verification result.
 In brief,
@@ -520,3 +523,27 @@ production schema. The `KeyError` equivalence for missing and unauthorized IDs i
 deliberate ownership-oracle defense. Ask v2 remains proposal-only; Tasks 3.2, 3.4, 3.5,
 3.7, and 3.8, integration, merge, push, deploy, and production/Anki work were not
 started.
+
+## Documentation correction verification
+
+The embedded patch was regenerated from the exact proposal base with normal `-U4`
+unified context for all five targets. It was extracted from the fenced `diff` block
+without editing this worktree's proposed target files and checked in a disposable exact
+base checkout with the ordinary command below; no `--unidiff-zero` or other special
+parser option was used:
+
+```text
+git worktree add --detach /tmp/task3.6-proposal-final-check \
+  9bf7bfaedb8f8f19c527ebc0c98a03f2f9b4b3f8
+sed -n '/^```diff$/,/^```$/p' docs/implementation/handoffs/3.6.md \
+  | sed '1d;$d' \
+  | git -C /tmp/task3.6-proposal-final-check apply --check -
+```
+
+Result: **passed** (`git apply --check` exit `0`) against tree
+`4f30e28228ae3550215ddd39da5beea9c9ab1cc6`. The disposable proposed application
+also ran `43 passed` across the existing repository tests plus
+`tests/ask/test_repository_integration.py`; Ruff and mypy passed for all five proposed
+targets. The split Sol-7 P7.2/P7.5 rows and exact proposal-record identities are now
+included in the handoff conflict matrix. These remain authoring/proposal checks only:
+the application patch is still held and unapplied here.
