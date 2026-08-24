@@ -218,14 +218,14 @@ typing, `git diff --check`, and the repository's owned-scope and safety scans.
 ## Review and approval fields
 
 The completed verdicts and evidence are recorded below. Remaining `PENDING`
-fields are intentionally limited to Sol-0 contract-owner and final Workstream
-Sol review; no approval is inferred from the focused GREEN result.
+fields are intentionally limited to Sol-0 contract-owner review; no approval is
+inferred from the focused GREEN result.
 
 | Required review | Reviewer | Result | Evidence commit/tree | Status |
 | --- | --- | --- | --- | --- |
 | Terra specification review | `/root/task_5_3_governance_terra_spec` | APPROVED | `9605b08fe60455a32a32d5b66e2e737d07af3adc` / `38c1aec10f459514d4d52f55566f7bb79aab6c49` | APPROVED |
 | Terra quality review | `/root/task_5_3_governance_terra_quality` | APPROVED after scoped re-review; initial CHANGES REQUIRED for non-independent generation | `02797a90c2665cf85480abe667ccfa9c3a57e166` / `2eaf22a3b835aaead6f1082a256620c85985fa25`; focused direct test 1 passed | APPROVED |
-| Workstream Sol review | PENDING | PENDING | PENDING | PENDING |
+| Workstream Sol review | `/root` | `OWNED_CORRECTION_PASS / BLOCKED_ON_CONSUMING_OWNER_APPROVAL` | `302fae99b304ee0249a853eba2e0349d16d9acd8` / `441040a16d9b14602aa4dc5db7c18bf16c74bfa8` | PASS; disposition blocked |
 | Sol-0 contract-owner review | PENDING | PENDING | PENDING | PENDING |
 
 ### Consuming-owner approval (required)
@@ -249,6 +249,14 @@ Sol review; no approval is inferred from the focused GREEN result.
   resolver remains a separate condition.
 - Scope confirmed: no approval exists for candidate activation, Task 5.2/5.4,
   runtime routes, provider calls, or production changes.
+- Final Workstream Sol review: `/root` returned
+  `OWNED_CORRECTION_PASS / BLOCKED_ON_CONSUMING_OWNER_APPROVAL` on candidate
+  `302fae99b304ee0249a853eba2e0349d16d9acd8` / tree
+  `441040a16d9b14602aa4dc5db7c18bf16c74bfa8`. The owned governance correction
+  passed: frozen v1, independent v2 candidate, untouched exporter/central/
+  model/shared/product surfaces, proposal/handoff scope, Terra evidence, and
+  clean worktree were all confirmed. The final disposition remains blocked by
+  the consuming-owner conflicts above.
 
 ## Conflict analysis
 
@@ -274,8 +282,11 @@ Sol review; no approval is inferred from the focused GREEN result.
   preferences, and cannot be fixed inside this lane without unauthorized
   model/resolver/product changes.
 - Therefore the candidate is not activation-ready and the required consuming
-  owner approval is absent. Sol-0 and final Workstream Sol review remain
-  `PENDING`.
+  owner approval is absent. Sol-0 contract-owner review remains `PENDING`.
+- Any later final-review evidence commit containing only governance bookkeeping
+  is external evidence and does not change the reviewed candidate identity
+  `302fae99b304ee0249a853eba2e0349d16d9acd8` / tree
+  `441040a16d9b14602aa4dc5db7c18bf16c74bfa8`.
 
 ## Rollback
 
