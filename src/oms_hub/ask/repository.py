@@ -144,6 +144,9 @@ class AskThreadView:
 
 AskPageContextValue = AskPageContext | QuizPageContext
 _OPAQUE_ID = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._:-]*)\Z")
+_VALIDATION_OUTCOMES = frozenset(
+    {"valid", "invalid", "rejected", "insufficient", "error"}
+)
 
 
 class AskRepository:
@@ -282,11 +285,11 @@ class AskRepository:
             "retrieval_run_id",
         )
         provider_id = (
-            _require_bounded_text(provider_request_id, "provider_request_id", 500)
+            _require_provider_request_id(provider_request_id)
             if provider_request_id is not None
             else None
         )
-        outcome = _require_bounded_text(validation_outcome, "validation_outcome", 200)
+        outcome = _require_validation_outcome(validation_outcome)
         now = _utc_now()
         with self.database.session() as session:
             thread_row = self._require_thread(session, thread_id, actor)
@@ -586,16 +589,14 @@ def _retrieval_run(
         row.source_snapshot_hash, "source_snapshot_hash", 128
     )
     provider_request_id = (
-        _require_bounded_text(row.provider_request_id, "provider_request_id", 500)
+        _require_provider_request_id(row.provider_request_id)
         if row.provider_request_id is not None
         else None
     )
     prompt_version = _require_bounded_text(row.prompt_version, "prompt_version", 200)
     schema_version = _require_bounded_text(row.schema_version, "schema_version", 200)
     model = _require_bounded_text(row.model, "model", 300)
-    validation_outcome = _require_bounded_text(
-        row.validation_outcome, "validation_outcome", 200
-    )
+    validation_outcome = _require_validation_outcome(row.validation_outcome)
     expected_count = _require_evidence_count(row.expected_evidence_count)
     created_at = _canonical_utc_timestamp(row.created_at, "created_at")
     links = session.scalars(
@@ -801,6 +802,16 @@ def _require_opaque_id(value: object, field_name: str, max_length: int = 200) ->
         or _OPAQUE_ID.fullmatch(value) is None
     ):
         raise ValueError(f"{field_name} must be a bounded opaque ID")
+    return value
+
+
+def _require_provider_request_id(value: object) -> str:
+    return _require_opaque_id(value, "provider_request_id", 500)
+
+
+def _require_validation_outcome(value: object) -> str:
+    if not isinstance(value, str) or value not in _VALIDATION_OUTCOMES:
+        raise ValueError("validation_outcome must be a defined status code")
     return value
 
 
