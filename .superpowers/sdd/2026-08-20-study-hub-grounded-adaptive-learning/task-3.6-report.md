@@ -13,11 +13,13 @@ unapplied as required by the Task 3.6 boundary.
 - Branch: `sol3/ask-backend`
 - Exact base: `1c9f12117bae791086732f198a5fc7268fa566d0`
 - Base tree: `170b1f7e042cd1bab00d24108c3dbe1d066d8f15`
-- Code/test commit: `c1090db59d1f6e8760e3b509617ec1bf8a7c280b`
-- Code/test tree: `d04ed9c1116dc3ddaf8b7da471c43f7a7edbc811`
+- Original code/test commit: `c1090db59d1f6e8760e3b509617ec1bf8a7c280b` / tree
+  `d04ed9c1116dc3ddaf8b7da471c43f7a7edbc811`.
+- Quality fix code/test commit: `99b07d6552b28ead09a3bc9f8227c34918d28854` / tree
+  `efbe8bff461ed54be7c50f3e8dcfb0aef20131e6`.
 - Required code subject: `feat: persist scoped Ask conversations and retrieval traces`
-- Prior documentation commit: `a7978df8477865eee3d0498f1988bd47ae4dd47a` / tree
-  `c277a425bab24819139c19428d1e6c5952c99c83`.
+- Prior documentation commit: `5c8a35d99679fcc4242ad6e49e6c137142d4dd45` / tree
+  `334edd81e55a34f622c4b6cdbb66d9ce297c8b09`.
 - Terra fix-round documentation commit: `SELF`; tree: `SELF_TREE`.
 - Resolve `SELF` and `SELF_TREE` from the containing commit after creation with
   `git rev-parse HEAD` and `git rev-parse 'HEAD^{tree}'`; the placeholders are
@@ -39,13 +41,13 @@ metadata is intentionally local because central model registration and migration
 held for Sol-0. Constructing the repository idempotently creates these logical tables in
 isolated tests:
 
-- `ask_threads`: actor owner, accepted mode, canonical JSON scope/context, and timestamps.
+- `ask_threads`: actor owner, accepted mode, canonical JSON scope/context, timestamps,
+  and a database-side message sequence counter.
 - `ask_messages`: actor owner, role/content, per-thread sequence, and creation time.
-- `retrieval_runs`: immutable source snapshot hash, evidence/source-revision ID arrays,
-  provider request ID, prompt/schema/model versions, required non-empty string validation
-  outcome, and timestamp.
-- `retrieval_evidence`: retrieval-run links containing ordinal, evidence ID, and source
-  revision ID only.
+- `retrieval_runs`: immutable source snapshot hash, provider request ID, prompt/schema/model
+  versions, required bounded non-empty string validation outcome, and timestamp.
+- `retrieval_evidence`: the single canonical retrieval-run representation of paired ordinal,
+  opaque evidence ID, and source revision ID links.
 
 The repository consumes the accepted Task 3.1 `AskMode`, `AskThread`, `AskMessage`,
 `AskPageContext`, `QuizPageContext`, and frozen `RetrievalScope` without changing them.
@@ -53,15 +55,16 @@ It returns immutable `AskThreadView` and `RetrievalRun` dataclasses for the repo
 surface. Thread reads and writes require the actor; missing and unauthorized IDs both
 raise `KeyError`. Exact actor-plus-scope listing prevents implicit cross-scope selection.
 Quiz context is fixed at thread creation; every append to a quiz thread must provide an
-explicit equal `QuizPageContext`. Message sequence and retrieval creation time plus
-stable ID provide deterministic ordering.
+explicit equal `QuizPageContext`. Message sequence is allocated by atomic database-side
+counter update; retrieval creation time plus stable ID provides deterministic ordering.
 
-The only retention surface is `delete_threads_before(actor_id, before)`. Deletion removes
-owned messages, retrieval runs, and retrieval links explicitly. It never queries or
-deletes canonical evidence/source tables, and no scheduler or retention policy was added.
-Retrieval runs have no update method, and no raw evidence field exists in either local
-retrieval table. The source snapshot, evidence IDs, source revision IDs, provider request
-ID, prompt/schema/model versions, and validation outcome are round-tripped unchanged.
+The only retention surface is `delete_threads_before(actor_id, before)`. It accepts only
+strict timezone-aware `datetime`/ISO values and normalizes the cutoff to UTC. Deletion
+removes owned messages, retrieval runs, and retrieval links explicitly. It never queries
+or deletes canonical evidence/source tables, and no scheduler or retention policy was
+added. Retrieval runs have no update method, and link rows are the sole persisted evidence
+and source-revision representation. Opaque IDs, one-to-one pairing, thread source scope,
+bounded provenance fields, and decoded persisted values are validated fail closed.
 
 ## TDD evidence
 
@@ -115,25 +118,52 @@ addressed in the code/test fix; this new docs-only correction replaces the pendi
 identity with `SELF`/`SELF_TREE` and addresses that Minor. A fresh Terra re-review remains
 pending; no approval is claimed here.
 
+## Terra quality fix round 1
+
+Terra quality/reliability/security review at `5c8a35d99679fcc4242ad6e49e6c137142d4dd45`
+/ tree `334edd81e55a34f622c4b6cdbb66d9ce297c8b09` returned **CHANGES REQUIRED** for four
+Important findings:
+
+1. Concurrent appends raced on `MAX(sequence)` and could fail on the unique sequence
+   constraint.
+2. Retention accepted arbitrary strings such as `zzzz`, allowing lexical over-deletion;
+   cutoffs needed strict timezone-aware ISO parsing and UTC normalization.
+3. Retrieval provenance accepted unbounded/private IDs, unpaired evidence/revision lists,
+   out-of-scope revisions, and insufficiently bounded provenance fields.
+4. Duplicated evidence/revision JSON could diverge from link rows, and corrupted persisted
+   values were not validated before return.
+
+RED coverage was added before the correction:
+
+```text
+PYTHONPATH=$PWD/src:$PWD .venv/bin/pytest tests/ask/test_repository.py -q
+```
+
+Result: `5 failed, 8 passed`, covering all four findings. The quality fix is
+`99b07d6552b28ead09a3bc9f8227c34918d28854` / tree
+`efbe8bff461ed54be7c50f3e8dcfb0aef20131e6` (`fix: harden Ask persistence concurrency and provenance`).
+It uses an atomic `UPDATE ... RETURNING` thread counter, strict aware cutoff parsing,
+bounded opaque provenance IDs with one-to-one scope-checked links, and link-only
+retrieval reconstruction with fail-closed persisted-value validation. A Terra quality
+re-review remains pending; no approval is claimed here.
+
 ## Required verification evidence
 
 Focused repository, affected Ask, and contracts:
 
 ```text
-PYTHONPATH=$PWD/src:$PWD uv run --extra dev --extra document-processing --extra pdf-inspection \
-  python -m pytest tests/ask/test_repository.py tests/ask/test_models.py \
+PATH=$PWD/.venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD \
+  .venv/bin/pytest tests/ask/test_repository.py tests/ask/test_models.py \
   tests/ask/test_intent.py tests/ask/test_leakage.py tests/contracts -q
 ```
 
-Result: `142 passed` (`9` repository, `16` models, `60` intent, `16` leakage, `41`
-contracts). The first rerun without the repository environment on `PATH` hit the
-pre-existing contract subprocess command's `python: command not found`; rerunning with
-`PATH=$PWD/.venv/bin:$PATH` passed.
+Result: `146 passed` (`13` repository, `16` models, `60` intent, `16` leakage, `41`
+contracts).
 
 Ruff:
 
 ```text
-uv run --with ruff --no-project ruff check \
+.venv/bin/ruff check \
   src/oms_hub/ask/repository.py tests/ask/test_repository.py
 ```
 
@@ -142,7 +172,7 @@ Result: passed.
 Source mypy:
 
 ```text
-PYTHONPATH=$PWD/src:$PWD uv run --extra dev --extra document-processing --extra pdf-inspection mypy src
+.venv/bin/mypy src
 ```
 
 Result: passed, `181` source files. The first dev-only attempt reported two missing
@@ -152,14 +182,13 @@ optional parser modules; rerunning with the declared `document-processing` and
 Task-test mypy:
 
 ```text
-MYPYPATH=$PWD/src PYTHONPATH=$PWD/src:$PWD \
-  uv run --extra dev --extra document-processing --extra pdf-inspection \
-  mypy tests/ask/test_repository.py
+MYPYPATH=$PWD/src PYTHONPATH=$PWD/src:$PWD .venv/bin/mypy tests/ask/test_repository.py
 ```
 
 Result: passed, one file.
 
-Isolation/deletion/immutability/adversarial checks are executable in the focused tests:
+Isolation, deletion, immutability, concurrency, strict-retention, provenance-scope,
+corruption, and adversarial checks are executable in the focused tests:
 actor-filtered thread listing/read/write/delete, different quiz-question rejection,
 ordered append-only messages, complete provenance round-trip, absent raw evidence
 columns, canonical-evidence survival after deletion, actor-only retention, and missing
@@ -178,9 +207,12 @@ add the next additive migration/version in `src/oms_hub/migrations.py` (current 
 22; proposed 23), register `AskRepository(database)` in the existing repository-state
 block of `src/oms_hub/app.py`, and switch the repository to the central mappings in a
 separate integration patch. The proposal now uses a non-null plain-text
-`validation_outcome` column rather than a JSON/object payload. It includes
-migration/idempotence, central-table,
-app-state, and no-route/no-v2 integration tests. None of those edits were applied here.
+`validation_outcome` column rather than a JSON/object payload; it also adds the
+`ask_threads.message_sequence` counter, removes duplicated retrieval evidence/revision
+JSON columns, and makes `retrieval_evidence.source_revision_id` non-null. It includes
+migration/idempotence, central-table, app-state, atomic-concurrency, strict-retention,
+provenance-scope, corruption, and no-route/no-v2 integration tests. None of those edits
+were applied here.
 
 The local mappings are therefore a deliberate testable boundary adapter, not a second
 production schema. The `KeyError` equivalence for missing and unauthorized IDs is a
