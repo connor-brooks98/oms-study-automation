@@ -18,7 +18,10 @@ unapplied as required by the Task 3.6 boundary.
 - Required code subject: `feat: persist scoped Ask conversations and retrieval traces`
 - Prior documentation commit: `a7978df8477865eee3d0498f1988bd47ae4dd47a` / tree
   `c277a425bab24819139c19428d1e6c5952c99c83`.
-- Terra fix-round documentation commit: pending; resolved after the separate docs commit.
+- Terra fix-round documentation commit: `SELF`; tree: `SELF_TREE`.
+- Resolve `SELF` and `SELF_TREE` from the containing commit after creation with
+  `git rev-parse HEAD` and `git rev-parse 'HEAD^{tree}'`; the placeholders are
+  intentionally self-referential and cannot contain their own final identities.
 
 Only these runtime/test files were changed:
 
@@ -104,6 +107,10 @@ The minimum code/test correction is commit
 `d04ed9c1116dc3ddaf8b7da471c43f7a7edbc811` (`fix: harden scoped Ask persistence`). It
 uses one shared append guard for user and assistant messages, stores a plain
 `validation_outcome` text column, and rejects non-string/empty outcomes at the boundary.
+
+Terra scoped specification re-review: **APPROVED**. Both Important findings are
+addressed; no additional runtime or test correction was required. This docs-only commit
+records the re-review and resolves the containing-commit identity placeholders above.
 
 ## Required verification evidence
 
