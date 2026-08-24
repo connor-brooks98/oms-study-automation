@@ -60,8 +60,10 @@ The candidate is exactly:
 
 - UTF-8 byte count: `7,379`.
 - SHA-256: `0f535c43fc1de3eadc61970f615370d3b23bc1046c7bef5f7bdeb01419a8294d`.
-- Determinism evidence: two serializations of the same in-memory schema are
-  byte-equal; the focused test asserts the byte count and SHA-256.
+- Determinism evidence: two independent `_candidate_v2_schema_bytes()` calls
+  each run `json_schema()`, apply `$schema`/`$id`, and sort-serialize a fresh
+  candidate; their bytes are equal, and the focused test asserts the byte count
+  and SHA-256.
 - Model source: `src/oms_hub/questions/models.py`, using the existing
   `BoardQuestionDraft`, `QuestionValidationResult`, and `QuestionVersion`.
 - Candidate test: `tests/questions/test_models.py::test_question_schema_candidate_v2_is_deterministic_and_v1_snapshot_is_frozen`.

@@ -45,6 +45,15 @@ def _schema_bytes() -> bytes:
     return (json.dumps(schema, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
+def _candidate_v2_schema_bytes() -> bytes:
+    schema = TypeAdapter(
+        BoardQuestionDraft | QuestionValidationResult | QuestionVersion
+    ).json_schema()
+    schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+    schema["$id"] = "question-v2.json"
+    return (json.dumps(schema, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
 def _schema_payload() -> dict[str, Any]:
     schema = TypeAdapter(
         BoardQuestionDraft | QuestionValidationResult | QuestionVersion
@@ -304,14 +313,9 @@ def test_validation_result_is_immutable_and_defaults_to_valid_without_codes() ->
 
 
 def test_question_schema_candidate_v2_is_deterministic_and_v1_snapshot_is_frozen() -> None:
-    candidate_schema = _schema_payload()
-    candidate_schema["$id"] = "question-v2.json"
-    candidate = (json.dumps(candidate_schema, indent=2, sort_keys=True) + "\n").encode(
-        "utf-8"
-    )
-    assert candidate == (
-        json.dumps(candidate_schema, indent=2, sort_keys=True) + "\n"
-    ).encode("utf-8")
+    candidate = _candidate_v2_schema_bytes()
+    independently_generated = _candidate_v2_schema_bytes()
+    assert candidate == independently_generated
     assert len(candidate) == 7_379
     assert hashlib.sha256(candidate).hexdigest() == (
         "0f535c43fc1de3eadc61970f615370d3b23bc1046c7bef5f7bdeb01419a8294d"
