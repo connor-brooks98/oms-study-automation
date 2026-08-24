@@ -20,12 +20,13 @@ unapplied as required by the Task 3.6 boundary.
 - Duplicate-revision fix code/test commit: `2f401796a9bb3cc2dd1c84273cb0ea65dd4fac35`
   / tree `2507ce27be864c0f96a1eaebb7110f5e8bffe6c9`.
 - Required code subject: `feat: persist scoped Ask conversations and retrieval traces`
-- Prior documentation commit: `5ebd1cd4b4091c32ffb38e217d17093f388e0481` / tree
-  `5dd7dbe47ef4a66417766d1e1c9f061707550543`.
+- Prior documentation commit: `8b24c7e93ac83b6eec70418ea011decef3618221` / tree
+  `57dabe1e4f7e3e2e8817885c3fdfe2740e79c2ac`.
 - Terra fix-round documentation commit: `SELF`; tree: `SELF_TREE`.
 - Resolve `SELF` and `SELF_TREE` from the containing commit after creation with
   `git rev-parse HEAD` and `git rev-parse 'HEAD^{tree}'`; the placeholders are
   intentionally self-referential and cannot contain their own final identities.
+- Review-record documentation commit: `SELF`; tree: `SELF_TREE`.
 
 Only these runtime/test files were changed:
 
@@ -176,6 +177,18 @@ provenance, including the empty revision-scope case. The correction is
 It allows repeated source-revision IDs while preserving unique evidence IDs, positional
 pairing, opaque validation, and pinned-scope membership checks. Fresh quality re-review
 is pending; no approval is claimed.
+
+## Final Terra review record
+
+- Terra specification review: **APPROVED** at `5c8a35d99679fcc4242ad6e49e6c137142d4dd45` /
+  tree `334edd81e55a34f622c4b6cdbb66d9ce297c8b09`. The historical specification
+  **CHANGES REQUIRED** rounds above remain preserved.
+- Terra quality/reliability/security review: **APPROVED** at
+  `8b24c7e93ac83b6eec70418ea011decef3618221` / tree
+  `57dabe1e4f7e3e2e8817885c3fdfe2740e79c2ac`, with the accepted ruling that an empty
+  revision tuple requires held Task 3.2/3.7 effective Source Trust validation.
+- Fresh Workstream Sol final review remains **PENDING**; this record does not claim
+  Task 3.6 completion.
 
 ## Required verification evidence
 
