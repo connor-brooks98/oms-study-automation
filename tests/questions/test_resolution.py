@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from typing import Any, cast
 
 import pytest
 
@@ -10,7 +11,6 @@ from oms_hub.questions import (
     QuestionResolution,
     QuestionResolutionError,
     QuestionResolutionFailure,
-    QuestionResolutionProvider,
     resolve_question_version,
 )
 
@@ -39,7 +39,7 @@ def _approved_resolution() -> QuestionResolution:
 
 
 def test_approved_resolution_is_returned_for_the_exact_canonical_id() -> None:
-    provider: QuestionResolutionProvider = StaticResolutionProvider(_approved_resolution())
+    provider = StaticResolutionProvider(_approved_resolution())
 
     resolved = resolve_question_version(QUESTION_VERSION_ID, provider)
 
@@ -51,7 +51,7 @@ def test_resolution_record_is_immutable() -> None:
     resolution = _approved_resolution()
 
     with pytest.raises(FrozenInstanceError):
-        resolution.question_version_id = "other-question-v2"
+        cast(Any, resolution).question_version_id = "other-question-v2"
 
 
 @pytest.mark.parametrize(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -171,6 +171,7 @@ class QuestionValidationResult(_QuestionModel):
 
 
 class QuestionVersion(_QuestionModel):
+    question_version_id: _NonblankString
     question_id: _NonblankString
     version: int = Field(ge=1)
     mode: QuestionMode
@@ -179,7 +180,7 @@ class QuestionVersion(_QuestionModel):
     source_revision_ids: tuple[_NonblankString, ...] = Field(min_length=1)
     evidence_ids: tuple[_NonblankString, ...] = ()
     prompt_version: _NonblankString
-    schema_version: _NonblankString
+    schema_version: Literal["question-v2"]
     model_version: _NonblankString
     input_hash: _NonblankString
     output_hash: _NonblankString
@@ -209,6 +210,7 @@ class QuestionVersion(_QuestionModel):
 
     @field_validator(
         "question_id",
+        "question_version_id",
         "prompt_version",
         "schema_version",
         "model_version",

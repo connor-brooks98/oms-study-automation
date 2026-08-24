@@ -324,9 +324,9 @@ def test_question_schema_candidate_v2_is_deterministic_and_v1_snapshot_is_frozen
     candidate = _candidate_v2_schema_bytes()
     independently_generated = _candidate_v2_schema_bytes()
     assert candidate == independently_generated
-    assert len(candidate) == 7_379
+    assert len(candidate) == 7_557
     assert hashlib.sha256(candidate).hexdigest() == (
-        "0f535c43fc1de3eadc61970f615370d3b23bc1046c7bef5f7bdeb01419a8294d"
+        "a3de074e74d19066078cb4eb857a5b29a5d78db19edced24310ad6637b1778d6"
     )
 
     frozen_v1 = (ROOT / "schemas" / "question-v1.json").read_bytes()

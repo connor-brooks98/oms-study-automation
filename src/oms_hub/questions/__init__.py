@@ -10,6 +10,13 @@ from oms_hub.questions.models import (
     QuestionValidationResult,
     QuestionVersion,
 )
+from oms_hub.questions.resolution import (
+    QuestionResolution,
+    QuestionResolutionError,
+    QuestionResolutionFailure,
+    QuestionResolutionProvider,
+    resolve_question_version,
+)
 
 __all__ = (
     "BoardQuestionDraft",
@@ -20,4 +27,9 @@ __all__ = (
     "QuestionStatus",
     "QuestionValidationResult",
     "QuestionVersion",
+    "QuestionResolution",
+    "QuestionResolutionError",
+    "QuestionResolutionFailure",
+    "QuestionResolutionProvider",
+    "resolve_question_version",
 )
