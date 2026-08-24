@@ -479,8 +479,17 @@ Windows acceptance, or broad PyMuPDF lane was run.
 
 ## Held integration and concerns
 
-The exact held central proposal is recorded in
-[`docs/implementation/handoffs/3.6.md`](../../../docs/implementation/handoffs/3.6.md). In brief,
+The exact held central proposal is the named record
+`P3.6-SOL0-PERSISTENCE-v1` in
+[`docs/implementation/handoffs/3.6.md`](../../../docs/implementation/handoffs/3.6.md):
+status `HELD / unapplied`, originating Sol-3/Task 3.6, exact proposal base
+`9bf7bfaedb8f8f19c527ebc0c98a03f2f9b4b3f8` / tree
+`4f30e28228ae3550215ddd39da5beea9c9ab1cc6`, and exact proposed files
+`src/oms_hub/models.py`, `src/oms_hub/migrations.py`, `src/oms_hub/app.py`,
+`src/oms_hub/ask/repository.py`, and new `tests/ask/test_repository_integration.py`.
+The handoff record embeds the complete directly applicable unified patch, exact current-ref
+conflict audit, schema-23 composition order, rollback, and mechanical verification result.
+In brief,
 Sol-0 must add central equivalents of the four local mappings in `src/oms_hub/models.py`,
 add the next additive migration/version in `src/oms_hub/migrations.py` (current version
 22; proposed 23), register `AskRepository(database)` in the existing repository-state
