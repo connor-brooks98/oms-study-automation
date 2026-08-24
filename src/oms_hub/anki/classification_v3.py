@@ -49,7 +49,7 @@ SET_COVERAGE_FACTS_PER_BATCH = 4
 SET_COVERAGE_OUTPUT_MAX_TOKENS = 2_048
 ESTIMATOR_VERSION = "utf8-byte-upper-bound-v1"
 CLASSIFICATION_CONFIG = {
-    "version": "classification-r7-v2",
+    "version": "classification-r7-v3",
     "bundle_max_input_bytes": MAX_BUNDLE_BYTES,
     "bundle_max_input_tokens": MAX_BUNDLE_TOKENS,
     "output_max_tokens": CLASSIFICATION_OUTPUT_MAX_TOKENS,
@@ -316,7 +316,7 @@ def r7_pin_document(
     config = r7_config_document()
     set_options = options_document(_set_coverage_options(cheap_route))
     return {
-        "serialization_version": "classification-r7-pin-v2",
+        "serialization_version": "classification-r7-pin-v3",
         "instruction_sha256": {
             "cheap": instruction_sha256(CHEAP_INSTRUCTION),
             "thorough": instruction_sha256(THOROUGH_INSTRUCTION),
@@ -460,7 +460,17 @@ class R7ClassificationService:
                 tier="cheap", bundles=batch, route=cheap_route, ordinal=ordinal
             )
             calls.extend(evidence)
-            if error is not None and repairable:
+            if error is not None and repairable and defer_partial:
+                result = {}
+                for bundle in batch:
+                    diagnostic = f"deferred_to_set_coverage: {error}"
+                    escalations.append(
+                        _escalation(bundle, "contract_invalid", None, diagnostic)
+                    )
+                    forced_unresolved[bundle.bundle_id] = _unresolved(
+                        bundle, None, diagnostic
+                    )
+            elif error is not None and repairable:
                 repair = self._repair_if_authorized(
                     original_tier="cheap",
                     bundles=batch,

@@ -887,6 +887,24 @@ def test_r7_can_defer_partial_cards_without_a_thorough_call() -> None:
     assert result.payload["final_partition"][0]["diagnostic"] == "deferred_to_set_coverage"
 
 
+def test_r7_defers_a_repairable_cheap_contract_failure_to_set_coverage() -> None:
+    bundle = _bundle(1, "fact-1")
+    fake = FakeGenerator([{"rows": []}])
+    cheap, thorough = _routes()
+    result = R7ClassificationService(StructuredTextService(fake)).classify(
+        bundles=(bundle,),
+        strictness="strict",
+        cheap_route=cheap,
+        thorough_route=thorough,
+        defer_partial=True,
+    )
+    assert len(fake.calls) == 1 and result.blocking_error is None
+    assert result.payload["blocking"] is False
+    assert result.payload["final_partition"][0]["diagnostic"].startswith(
+        "deferred_to_set_coverage:"
+    )
+
+
 def test_r8_set_coverage_selects_multiple_cards_from_one_compact_fact_request() -> None:
     first, second = _bundle(1, "fact-1"), _bundle(2, "fact-1")
     response = {
@@ -1076,6 +1094,7 @@ def test_r7_pins_and_repair_authorization_reject_stale_or_noninteger_costs() -> 
     assert pin["cheap_options"]["max_tokens"] == 3072
     assert pin["thorough_options"]["max_tokens"] == 3072
     assert pin["classification_config"]["output_max_tokens"] == 3072
+    assert pin["classification_config"]["version"] == "classification-r7-v3"
     assert pin["cheap_options_sha256"] == canonical_payload_sha256(pin["cheap_options"])
     request = "d" * 64
     authorization = {
