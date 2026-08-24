@@ -223,6 +223,12 @@ class ProviderStore:
         )
         object.__setattr__(self, "store_key", key)
         object.__setattr__(self, "provider", _require_text(self.provider, "provider", 50))
+        if self.course_id != key.course_id:
+            raise ValueError("course id does not match store key")
+        if self.exam_id != key.exam_id:
+            raise ValueError("exam id does not match store key")
+        if self.authority_namespace != key.authority_namespace:
+            raise ValueError("authority namespace does not match store key")
         object.__setattr__(
             self,
             "provider_store_name",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterable, Iterable, Mapping
 from typing import Any, cast
 
@@ -15,6 +16,8 @@ from oms_hub.indexing.models import (
 from oms_hub.indexing.repository import IndexRepository
 from oms_hub.providers.gemini.client import GeminiClientFactory, translate_gemini_error
 from oms_hub.providers.gemini.errors import GeminiContractError, GeminiProviderError
+
+_SOURCE_REVISION_ID = re.compile(r"^sr_[A-Za-z0-9][A-Za-z0-9._-]{0,196}$")
 
 
 class GeminiFileSearchAdmin:
@@ -180,9 +183,7 @@ async def _collect_documents(value: object) -> list[object]:
 def _document_from_provider(value: object, store: ProviderStore) -> ProviderDocument:
     provider_document_id = _provider_identity(value, "document")
     metadata = _json_metadata(_value(value, "custom_metadata", "customMetadata", "metadata"))
-    source_revision_id = _metadata_value(metadata, "source_revision_id")
-    if not source_revision_id:
-        source_revision_id = f"provider:{provider_document_id}"
+    source_revision_id = _require_source_revision_id(metadata)
     provider_file_name = _optional_text(_value(value, "file_name", "fileName", "file"))
     provider_document_name = _optional_text(
         _value(value, "display_name", "displayName", "document_name", "documentName")
@@ -204,6 +205,15 @@ def _document_from_provider(value: object, store: ProviderStore) -> ProviderDocu
         metadata=metadata,
         state=IndexState.READY,
     )
+
+
+def _require_source_revision_id(metadata: object) -> str:
+    source_revision_id = _metadata_value(metadata, "source_revision_id")
+    if source_revision_id is None or not _SOURCE_REVISION_ID.fullmatch(source_revision_id):
+        raise GeminiContractError(
+            "Gemini document metadata omitted a valid source revision identity."
+        )
+    return source_revision_id
 
 
 def _json_metadata(value: object) -> object:

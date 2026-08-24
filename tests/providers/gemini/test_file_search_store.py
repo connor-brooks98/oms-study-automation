@@ -11,7 +11,11 @@ from oms_hub.db import Database
 from oms_hub.indexing.models import IndexState, StoreKey
 from oms_hub.indexing.repository import IndexRepository
 from oms_hub.providers.gemini.client import GeminiClientFactory
-from oms_hub.providers.gemini.errors import GeminiProviderError, GeminiTransientError
+from oms_hub.providers.gemini.errors import (
+    GeminiContractError,
+    GeminiProviderError,
+    GeminiTransientError,
+)
 from oms_hub.providers.gemini.file_search import GeminiFileSearchAdmin
 from oms_hub.providers.gemini.models import GeminiConfig
 
@@ -259,7 +263,7 @@ def test_list_documents_maps_and_persists_deterministically(
             display_name="B",
             file_name="files/b",
             operation_name="operations/b",
-            custom_metadata={"source_revision_id": "sr-b", "lecture_id": "l2"},
+            custom_metadata={"source_revision_id": "sr_b", "lecture_id": "l2"},
             size_bytes=20,
         ),
         SimpleNamespace(
@@ -267,7 +271,7 @@ def test_list_documents_maps_and_persists_deterministically(
             display_name="A",
             file_name="files/a",
             operation_name="operations/a",
-            custom_metadata={"source_revision_id": "sr-a", "lecture_id": "l1"},
+            custom_metadata={"source_revision_id": "sr_a", "lecture_id": "l1"},
             size_bytes=10,
         ),
     ]
@@ -280,7 +284,62 @@ def test_list_documents_maps_and_persists_deterministically(
     )
     assert stores.documents.list_calls == [{"parent": stored.provider_store_name}]
     assert IndexRepository(database).get_document(listed[0].id) == listed[0]
-    assert listed[0].metadata["source_revision_id"] == "sr-a"
+    assert listed[0].metadata["source_revision_id"] == "sr_a"
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    (
+        {},
+        {"source_revision_id": None},
+        {"source_revision_id": " "},
+        {"source_revision_id": "provider-doc"},
+        {"source_revision_id": "sr_\ninvalid"},
+        {"source_revision_id": "sr_" + ("x" * 198)},
+    ),
+)
+def test_list_documents_requires_explicit_bounded_source_revision_id(
+    admin_bundle: tuple[GeminiFileSearchAdmin, FakeStores, FakeAioClient, FakeSdkFactory],
+    database: Database,
+    metadata: dict[str, object],
+) -> None:
+    admin, stores, _, _ = admin_bundle
+    stored = run(admin.ensure_store(StoreKey.course("heme-lymph", "exam-2")))
+    stores.documents.items = [
+        SimpleNamespace(
+            name="fileSearchStores/provider-1/documents/private-provider-id",
+            custom_metadata=metadata,
+        )
+    ]
+
+    with pytest.raises(GeminiContractError) as raised:
+        run(admin.list_documents(stored))
+
+    assert "private-provider-id" not in str(raised.value)
+    assert IndexRepository(database).list_documents(stored) == []
+
+
+def test_invalid_document_metadata_cannot_partially_persist_a_mixed_list(
+    admin_bundle: tuple[GeminiFileSearchAdmin, FakeStores, FakeAioClient, FakeSdkFactory],
+    database: Database,
+) -> None:
+    admin, stores, _, _ = admin_bundle
+    stored = run(admin.ensure_store(StoreKey.course("heme-lymph", "exam-2")))
+    stores.documents.items = [
+        SimpleNamespace(
+            name="fileSearchStores/provider-1/documents/a",
+            custom_metadata={"source_revision_id": "sr-valid"},
+        ),
+        SimpleNamespace(
+            name="fileSearchStores/provider-1/documents/b",
+            custom_metadata={"source_revision_id": "not-a-source-revision"},
+        ),
+    ]
+
+    with pytest.raises(GeminiContractError):
+        run(admin.list_documents(stored))
+
+    assert IndexRepository(database).list_documents(stored) == []
 
 
 def test_delete_document_marks_deleting_then_deleted_only_after_remote_success(
@@ -294,7 +353,7 @@ def test_delete_document_marks_deleting_then_deleted_only_after_remote_success(
             name="fileSearchStores/provider-1/documents/a",
             display_name="A",
             file_name="files/a",
-            custom_metadata={"source_revision_id": "sr-a"},
+            custom_metadata={"source_revision_id": "sr_a"},
             size_bytes=10,
         )
     ]
@@ -323,7 +382,7 @@ def test_failed_remote_delete_never_claims_deleted(
             name="fileSearchStores/provider-1/documents/a",
             display_name="A",
             file_name="files/a",
-            custom_metadata={"source_revision_id": "sr-a"},
+            custom_metadata={"source_revision_id": "sr_a"},
             size_bytes=10,
         )
     ]

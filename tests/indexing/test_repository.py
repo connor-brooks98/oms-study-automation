@@ -3,6 +3,7 @@ from __future__ import annotations
 import itertools
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy import select
@@ -160,6 +161,34 @@ def test_store_key_rejects_malformed_namespace() -> None:
         StoreKey.parse("course:heme-lymph")
     with pytest.raises(ValueError):
         StoreKey.parse("course:heme-lymph:exam:exam-2:extra")
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("course_id", "different-course"),
+        ("exam_id", "exam-9"),
+        ("authority_namespace", "published_journal"),
+    ),
+)
+def test_provider_store_rejects_scope_fields_mismatched_to_store_key(
+    field_name: str,
+    value: str,
+) -> None:
+    key = course_key()
+    values: dict[str, Any] = {
+        "store_key": key,
+        "provider": "gemini",
+        "provider_store_name": "fileSearchStores/opaque-1",
+        "embedding_model": "models/gemini-embedding-2",
+        "authority_namespace": key.authority_namespace,
+        "course_id": key.course_id,
+        "exam_id": key.exam_id,
+    }
+    values[field_name] = value
+
+    with pytest.raises(ValueError, match=field_name.replace("_", " ")):
+        ProviderStore(**values)
 
 
 def test_repository_round_trips_store_document_and_job(database: Database) -> None:
