@@ -1,5 +1,5 @@
 from dataclasses import fields
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
@@ -100,3 +100,53 @@ def test_models_reject_invalid_target_window_and_metric_values() -> None:
 
     with pytest.raises(ValueError, match="recall_retention"):
         BoardRunwaySnapshot(recall_retention=1.1)
+
+
+def test_date_fields_reject_datetime_values() -> None:
+    with pytest.raises(TypeError, match="earliest_date must be a date"):
+        BoardTarget(earliest_date=datetime(2027, 5, 1, tzinfo=UTC))
+    with pytest.raises(TypeError, match="date must be a date"):
+        StudyPlanDay(date=datetime(2027, 5, 1, tzinfo=UTC))
+    with pytest.raises(TypeError, match="date must be a date"):
+        ExternalAssessment(
+            assessment_name="COMSAE Phase 1",
+            date=datetime(2026, 8, 20, tzinfo=UTC),
+            score_result="510",
+            scale="200-800",
+        )
+
+
+def test_timestamps_reject_naive_values_and_normalize_aware_values_to_utc() -> None:
+    naive = datetime(2026, 8, 23, 12)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        BoardRunwaySnapshot(captured_at=naive)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        StudyPlanDay(date=date(2026, 8, 23), created_at=naive)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        ExternalAssessment(
+            assessment_name="COMSAE Phase 1",
+            date=date(2026, 8, 20),
+            score_result="510",
+            scale="200-800",
+            recorded_at=naive,
+        )
+
+    offset = timezone(timedelta(hours=-4))
+    local = datetime(2026, 8, 23, 12, tzinfo=offset)
+    snapshot = BoardRunwaySnapshot(captured_at=local, data_freshness=local)
+    plan = StudyPlanDay(date=date(2026, 8, 23), created_at=local)
+    assessment = ExternalAssessment(
+        assessment_name="COMSAE Phase 1",
+        date=date(2026, 8, 20),
+        score_result="510",
+        scale="200-800",
+        recorded_at=local,
+        retired_at=local,
+    )
+
+    expected = local.astimezone(UTC)
+    assert snapshot.captured_at == expected
+    assert snapshot.data_freshness == expected
+    assert plan.created_at == expected
+    assert assessment.recorded_at == expected
+    assert assessment.retired_at == expected

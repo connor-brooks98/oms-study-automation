@@ -96,6 +96,11 @@ class PlanningRepository:
         )
 
     def save_snapshot(self, snapshot: BoardRunwaySnapshot) -> BoardRunwaySnapshot:
+        existing = self._snapshots.get(snapshot.snapshot_id)
+        if existing is not None:
+            if existing == snapshot:
+                return existing
+            raise ValueError("snapshot_id already exists with different content")
         self._snapshots[snapshot.snapshot_id] = snapshot
         return snapshot
 

@@ -27,13 +27,25 @@ def _text(value: str, field_name: str) -> str:
 
 
 def _date(value: Date, field_name: str) -> None:
-    if not isinstance(value, Date):
+    if isinstance(value, datetime) or not isinstance(value, Date):
         raise TypeError(f"{field_name} must be a date")
 
 
-def _timestamp(value: datetime | None, field_name: str) -> None:
-    if value is not None and not isinstance(value, datetime):
+def _timestamp(value: datetime | None, field_name: str) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
         raise TypeError(f"{field_name} must be a datetime")
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+    return value.astimezone(UTC)
+
+
+def _required_timestamp(value: datetime, field_name: str) -> datetime:
+    normalized = _timestamp(value, field_name)
+    if normalized is None:
+        raise TypeError(f"{field_name} must be a datetime")
+    return normalized
 
 
 def _ratio(value: float | None, field_name: str) -> None:
@@ -126,7 +138,11 @@ class StudyPlanDay:
             raise ValueError("allocations must have unique IDs")
         object.__setattr__(self, "allocations", allocations)
         _text(self.plan_id, "plan_id")
-        _timestamp(self.created_at, "created_at")
+        object.__setattr__(
+            self,
+            "created_at",
+            _required_timestamp(self.created_at, "created_at"),
+        )
         object.__setattr__(
             self,
             "input_snapshot_ids",
@@ -170,8 +186,12 @@ class ExternalAssessment:
             raise TypeError("notes must be a string")
         _text(self.source, "source")
         _text(self.assessment_id, "assessment_id")
-        _timestamp(self.recorded_at, "recorded_at")
-        _timestamp(self.retired_at, "retired_at")
+        object.__setattr__(
+            self,
+            "recorded_at",
+            _required_timestamp(self.recorded_at, "recorded_at"),
+        )
+        object.__setattr__(self, "retired_at", _timestamp(self.retired_at, "retired_at"))
         for value, field_name in (
             (self.replacement_id, "replacement_id"),
             (self.replaces_assessment_id, "replaces_assessment_id"),
@@ -220,7 +240,11 @@ class BoardRunwaySnapshot:
     snapshot_id: str = field(default_factory=lambda: _identifier("snapshot"))
 
     def __post_init__(self) -> None:
-        _timestamp(self.captured_at, "captured_at")
+        object.__setattr__(
+            self,
+            "captured_at",
+            _required_timestamp(self.captured_at, "captured_at"),
+        )
         for value, field_name in (
             (self.recall_retention, "recall_retention"),
             (self.application_mastery, "application_mastery"),
@@ -239,7 +263,11 @@ class BoardRunwaySnapshot:
         if len(assessment_ids) != len(set(assessment_ids)):
             raise ValueError("external_assessment_history must have unique IDs")
         object.__setattr__(self, "external_assessment_history", history)
-        _timestamp(self.data_freshness, "data_freshness")
+        object.__setattr__(
+            self,
+            "data_freshness",
+            _required_timestamp(self.data_freshness, "data_freshness"),
+        )
         _text(self.snapshot_id, "snapshot_id")
 
     @property

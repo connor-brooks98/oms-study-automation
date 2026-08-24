@@ -84,6 +84,18 @@ def test_repository_round_trips_plan_days_and_latest_snapshots() -> None:
     assert repository.latest_snapshot() == newer
 
 
+def test_snapshot_id_is_idempotent_but_conflicting_duplicate_is_rejected() -> None:
+    repository = PlanningRepository()
+    first = BoardRunwaySnapshot(snapshot_id="snapshot-fixed")
+    changed = replace(first, question_volume=1)
+
+    assert repository.save_snapshot(first) == first
+    assert repository.save_snapshot(first) == first
+    with pytest.raises(ValueError, match="snapshot_id"):
+        repository.save_snapshot(changed)
+    assert repository.get_snapshot(first.snapshot_id) == first
+
+
 def test_repository_retains_plan_day_revisions_and_current_day() -> None:
     repository = PlanningRepository()
     first = StudyPlanDay(
