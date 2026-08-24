@@ -13,10 +13,12 @@ unapplied as required by the Task 3.6 boundary.
 - Branch: `sol3/ask-backend`
 - Exact base: `1c9f12117bae791086732f198a5fc7268fa566d0`
 - Base tree: `170b1f7e042cd1bab00d24108c3dbe1d066d8f15`
-- Code/test commit: `25e6f8cd60c0221dd8fd136f3ab277230655652b`
-- Code/test tree: `a4fe57ffe96f54f7e20793b1129c92b406ba9a25`
+- Code/test commit: `c1090db59d1f6e8760e3b509617ec1bf8a7c280b`
+- Code/test tree: `d04ed9c1116dc3ddaf8b7da471c43f7a7edbc811`
 - Required code subject: `feat: persist scoped Ask conversations and retrieval traces`
-- Documentation commit: pending; resolved after the separate docs commit.
+- Prior documentation commit: `a7978df8477865eee3d0498f1988bd47ae4dd47a` / tree
+  `c277a425bab24819139c19428d1e6c5952c99c83`.
+- Terra fix-round documentation commit: pending; resolved after the separate docs commit.
 
 Only these runtime/test files were changed:
 
@@ -37,7 +39,8 @@ isolated tests:
 - `ask_threads`: actor owner, accepted mode, canonical JSON scope/context, and timestamps.
 - `ask_messages`: actor owner, role/content, per-thread sequence, and creation time.
 - `retrieval_runs`: immutable source snapshot hash, evidence/source-revision ID arrays,
-  provider request ID, prompt/schema/model versions, validation outcome, and timestamp.
+  provider request ID, prompt/schema/model versions, required non-empty string validation
+  outcome, and timestamp.
 - `retrieval_evidence`: retrieval-run links containing ordinal, evidence ID, and source
   revision ID only.
 
@@ -46,9 +49,9 @@ The repository consumes the accepted Task 3.1 `AskMode`, `AskThread`, `AskMessag
 It returns immutable `AskThreadView` and `RetrievalRun` dataclasses for the repository
 surface. Thread reads and writes require the actor; missing and unauthorized IDs both
 raise `KeyError`. Exact actor-plus-scope listing prevents implicit cross-scope selection.
-Quiz context is fixed at thread creation and an explicitly supplied append context must
-match it. Message sequence and retrieval creation time plus stable ID provide
-deterministic ordering.
+Quiz context is fixed at thread creation; every append to a quiz thread must provide an
+explicit equal `QuizPageContext`. Message sequence and retrieval creation time plus
+stable ID provide deterministic ordering.
 
 The only retention surface is `delete_threads_before(actor_id, before)`. Deletion removes
 owned messages, retrieval runs, and retrieval links explicitly. It never queries or
@@ -75,6 +78,33 @@ answer-bearing `null` fields and was rejected by the accepted Task 3.1 validator
 minimal correction serialized pre-submit context with `exclude_none=True`; the final
 focused suite remained `7 passed`.
 
+## Terra specification fix round 1
+
+Terra reviewed candidate `a7978df8477865eee3d0498f1988bd47ae4dd47a` / tree
+`c277a425bab24819139c19428d1e6c5952c99c83` and required two corrections:
+
+1. A stored `QuizPageContext` could be appended to without a page context, so both
+   append methods must require an explicit equal `QuizPageContext` on every quiz-thread
+   append; a different question context must remain rejected.
+2. `validation_outcome: object` allowed raw evidence dictionaries to be serialized;
+   the repository must require and persist only a non-empty string outcome.
+
+The RED correction tests were added before the runtime fix:
+
+```text
+PYTHONPATH=$PWD/src:$PWD uv run --extra dev --extra document-processing --extra pdf-inspection \
+  python -m pytest tests/ask/test_repository.py -q
+```
+
+Result: `2 failed, 7 passed`; failures were omitted quiz context and unconstrained
+mapping/empty validation outcome.
+
+The minimum code/test correction is commit
+`c1090db59d1f6e8760e3b509617ec1bf8a7c280b` / tree
+`d04ed9c1116dc3ddaf8b7da471c43f7a7edbc811` (`fix: harden scoped Ask persistence`). It
+uses one shared append guard for user and assistant messages, stores a plain
+`validation_outcome` text column, and rejects non-string/empty outcomes at the boundary.
+
 ## Required verification evidence
 
 Focused repository, affected Ask, and contracts:
@@ -85,8 +115,10 @@ PYTHONPATH=$PWD/src:$PWD uv run --extra dev --extra document-processing --extra 
   tests/ask/test_intent.py tests/ask/test_leakage.py tests/contracts -q
 ```
 
-Result: `140 passed` (`7` repository, `16` models, `60` intent, `16` leakage, `41`
-contracts).
+Result: `142 passed` (`9` repository, `16` models, `60` intent, `16` leakage, `41`
+contracts). The first rerun without the repository environment on `PATH` hit the
+pre-existing contract subprocess command's `python: command not found`; rerunning with
+`PATH=$PWD/.venv/bin:$PATH` passed.
 
 Ruff:
 
@@ -135,7 +167,9 @@ Sol-0 must add central equivalents of the four local mappings in `src/oms_hub/mo
 add the next additive migration/version in `src/oms_hub/migrations.py` (current version
 22; proposed 23), register `AskRepository(database)` in the existing repository-state
 block of `src/oms_hub/app.py`, and switch the repository to the central mappings in a
-separate integration patch. The proposal includes migration/idempotence, central-table,
+separate integration patch. The proposal now uses a non-null plain-text
+`validation_outcome` column rather than a JSON/object payload. It includes
+migration/idempotence, central-table,
 app-state, and no-route/no-v2 integration tests. None of those edits were applied here.
 
 The local mappings are therefore a deliberate testable boundary adapter, not a second
