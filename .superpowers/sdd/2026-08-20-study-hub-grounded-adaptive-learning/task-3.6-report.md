@@ -2,8 +2,11 @@
 
 ## Status
 
-`DONE_WITH_CONCERNS`: the repository and focused tests are implemented and green within
-the four owned files. Central ORM models, migration/version bump, app registration,
+`LOCALLY_COMPLETE_PENDING_DOCS_REVIEW`: the repository and focused tests are implemented
+and green within the four owned runtime/test files. The terminal Workstream Sol **SHIP**
+verdict for the exact prior candidate is recorded below; this containing docs closeout
+remains subject only to a docs-only scoped re-review. Central ORM models, migration/version
+bump, app registration,
 routes, dependencies, flags, schemas, shared contracts, and Ask v2 remain held and
 unapplied as required by the Task 3.6 boundary.
 
@@ -44,8 +47,8 @@ unapplied as required by the Task 3.6 boundary.
 - Final message-history/page-context type-check fix code commit: `fdbb6c2aa3ba99afeec8dd50c221dc373d63dc5d`
   / tree `f53d17d98fd4ee660bda770c780f47237f602d2f`.
 - Required code subject: `feat: persist scoped Ask conversations and retrieval traces`
-- Prior documentation commit: `02f5259f3319bbfa1f9355d34c992be0cee513ac` / tree
-  `2298ab13abb1c28152f5eb6816c23d47238d43ff`.
+- Prior documentation commit: `6cfff7cc09fee575426baabc47850cb1324436dd` / tree
+  `5f1bb3d362e83e42eab130248d67316ad260fe69`.
 - Historical Terra fix-round docs commit identity: `SELF`; tree: `SELF_TREE`.
   Resolve this pair only from the containing historical Terra-fix docs commit with
   `git rev-parse HEAD` and `git rev-parse 'HEAD^{tree}'`; it does not identify later
@@ -73,6 +76,9 @@ unapplied as required by the Task 3.6 boundary.
   does not identify the code/test or review commits.
 - Final Terra re-review docs commit: `SELF`; tree: `SELF_TREE`.
   Resolve this pair only from the containing final Terra re-review docs commit after
+  creation; it does not identify any historical code or review commit.
+- Terminal closeout docs commit: `SELF`; tree: `SELF_TREE`.
+  Resolve this pair only from the containing terminal closeout docs commit after
   creation; it does not identify any historical code or review commit.
 
 Only these runtime/test files were changed:
@@ -394,6 +400,26 @@ claimed.
   candidate-only and unapplied.
 - Final Workstream Sol review remains **PENDING**; this record does not claim Task 3.6
   completion.
+
+## Terminal Task 3.6 closeout
+
+- Fresh Workstream Sol terminal review: **SHIP** for exact candidate
+  `6cfff7cc09fee575426baabc47850cb1324436dd` / tree
+  `5f1bb3d362e83e42eab130248d67316ad260fe69`; no findings.
+- The exact Task 3.6 change scope is these four files only:
+  `src/oms_hub/ask/repository.py`, `tests/ask/test_repository.py`,
+  `docs/implementation/handoffs/3.6.md`, and
+  `.superpowers/sdd/2026-08-20-study-hub-grounded-adaptive-learning/task-3.6-report.md`.
+- Evidence is `171 passed` (`38` repository, `16` models, `60` intent, `16` leakage,
+  `41` contracts), targeted Ruff passed, source mypy passed for `181` files, and
+  task-test mypy passed. The base-to-candidate diff is exactly the four files above and
+  `git diff --check` passed.
+- Central model/migration/app-registration/shared-contract/schema/route/flag/dependency
+  work and the broader Source Trust/context integration remain held, candidate-only, and
+  unapplied. This closeout grants no integration authorization.
+- Task 3.6 is **LOCALLY COMPLETE** subject only to a docs-only scoped re-review of this
+  containing closeout commit; that re-review does not authorize integration or runtime
+  changes.
 
 ## Required verification evidence
 
