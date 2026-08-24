@@ -17,10 +17,10 @@
 Question-v2 activation is proposed only. This correction does not activate a
 new shared contract, change routes or flags, or make any provider call.
 
-Activation status: `PENDING_FINAL_WORKSTREAM_AND_SOL0_REVIEW`. The owned
-boundary correction, Terra reviews, and both consuming-owner reviews are
-approved; the candidate remains unapplied while Workstream Sol and Sol-0
-reviews remain pending.
+Activation status: `READY_FOR_SOL0_CONTRACT_REVIEW`. The owned boundary
+correction, Terra reviews, both consuming-owner reviews, and final Workstream
+Sol review are approved; the candidate remains unapplied while Sol-0 review
+remains pending.
 
 ## Current frozen contract
 
@@ -245,7 +245,7 @@ context and are not substituted for current evidence.
 | --- | --- | --- | --- | --- |
 | Terra specification review | `/root/task_5_3_v2_terra_spec` | APPROVED after fix round 1 | fix `e2aae8d1f2e40ccdd2aea21d665452a0a9789967` / tree `13e03dcd373cdb8d9ded506b00b12440b20efb80`; resolver focused 11/11 | APPROVED |
 | Terra quality review | `/root/task_5_3_v2_terra_quality` | APPROVED after fix round 2 | candidate `a64ee2845ebf83b85292dea7ad2af1a63e85afdd` / tree `c07502a963b5459556ebd788dd5d663db33815a0`; malformed containers rejected | APPROVED |
-| Workstream Sol review | PENDING | PENDING | PENDING | PENDING |
+| Workstream Sol review | `/root` | APPROVED / OWNED_CORRECTION_PASS / READY_FOR_SOL0_CONTRACT_REVIEW | full range `4f5c687edffbabb08321515c3e505e41d3ee3888..f87e1ed761f0dc75cd172068948901162a56fb59`; head tree `b4c371e1dd4545d65a5e56245813861e797712f0`; candidate `a64ee2845ebf83b85292dea7ad2af1a63e85afdd` / `c07502a963b5459556ebd788dd5d663db33815a0` | APPROVED |
 | Sol-6 consuming-owner review | `/root/sol6_question_v2_renewed_review` | APPROVED | candidate `a64ee2845ebf83b85292dea7ad2af1a63e85afdd` / tree `c07502a963b5459556ebd788dd5d663db33815a0`; review `27001a44` / tree `6f187221` | APPROVED |
 | Sol-10 consuming-owner review | `/root/sol10_question_v2_renewed_review` | APPROVED | candidate `a64ee2845ebf83b85292dea7ad2af1a63e85afdd` / tree `c07502a963b5459556ebd788dd5d663db33815a0`; review `9570c80a08938def01bdbab5c2a1159fcae81479` / tree `bf172c73caf8894f62ddf50732f8e11b60f22e72` | APPROVED |
 | Sol-0 contract-owner review | PENDING | PENDING | PENDING | PENDING |
@@ -272,8 +272,9 @@ context and are not substituted for current evidence.
   accept only question-v2, resolve before events, and append no event on
   failure; Sol-10 will bind approved inventory/resolver at practice/session/
   blueprint boundaries and retain strict shortfall/timed/historical rollback
-  tests. Workstream Sol and Sol-0 remain pending. Candidate activation, Task
-  5.2/5.4, routes, provider calls, production, and Anki remain unauthorized.
+  tests. Workstream Sol is now approved and Sol-0 remains pending. Candidate
+  activation, Task 5.2/5.4, routes, provider calls, production, and Anki remain
+  unauthorized.
 
 ## Conflict analysis
 
@@ -300,14 +301,15 @@ context and are not substituted for current evidence.
   lane: Sol-6 requires v2-only event resolution with no event on failure; Sol-10
   requires approved inventory/resolver binding plus strict shortfall, timed, and
   historical rollback tests.
-- Therefore the candidate is not activation-ready only because Workstream Sol
-  and Sol-0 contract-owner review remain `PENDING`; the candidate stays
-  unapplied.
+- Therefore the candidate is ready for Sol-0 contract-owner review but remains
+  unapplied; Sol-0 approval is the only remaining review gate.
 - The pre-fix expanded candidate was
   `2826d49000c79d22fab5823f8c7ff5ee7699f32c` / tree
   `0c8b1b85fef38ec76c0918e17b7b7160cbb70450`. It is correction history, not
-  the renewed review identity. Renewed reviews evaluate the post-fix head
-  recorded in the final handoff/report after this correction commit.
+  the renewed review identity. Renewed reviews and final Workstream Sol
+  evidence evaluate candidate `a64ee2845ebf83b85292dea7ad2af1a63e85afdd` /
+  tree `c07502a963b5459556ebd788dd5d663db33815a0` and the full correction
+  range recorded above.
 
 ## Rollback
 
