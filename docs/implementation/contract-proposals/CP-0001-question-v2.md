@@ -184,8 +184,10 @@ may proceed until all of the following are satisfied by authorized owners:
 - The approved, nonstale inventory authority must be explicit for Sol-10
   consumers; the Sol-6 mastery resolver remains a separate required condition.
 
-These prerequisites require authorized model/resolver/product work outside this
-governance-only correction. Until they are implemented and reviewed, the
+The model and abstract resolver boundary are implemented by this correction;
+consumer adoption, inventory authority, historical-session behavior, and the
+remaining product tests require authorized Sol-6/Sol-10 work outside this lane.
+Until those consumers and the shared exporter activation are reviewed, the
 candidate remains isolated and unapplied.
 
 ## Exact verification
