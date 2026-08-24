@@ -15,7 +15,10 @@ commit `430e6e73d12e40effcc1f9f76eed7e81017d3884` / tree
 commit `a0830c702a1b8140ee0fd5c56dc896aa7e95bcf0` / tree
 `2fb3faeff96d688afeddf02d2bc44d909c7db7ff`, subject
 `fix: close Ask pre-submit bypasses`. This report update is a separate docs-only correction
-record commit; that record commit is not self-referenced here.
+record commit; that record commit is not self-referenced here. Fix Round 3 is the separate
+implementation/test commit `944b3de52514090f85a1c1c848d3c7c21b9843d2` / tree
+`a4e62823cd7c096d7ad7f88faea8c6f98eeb6781`, subject
+`fix: enforce Ask elimination precedence`.
 
 ## Interfaces
 
@@ -26,9 +29,10 @@ record commit; that record commit is not self-referenced here.
 - `classify_pre_submit_intent(query: str) -> AskIntent`: deterministic NFKC/casefold/token
   classification. Direct answer, diagnosis, and option-elimination requests run before
   benign concept/definition/mechanism/source/compare rules, except explicit general
-  test-taking framing, which is a benign concept hint. Mixed policy-sensitive strategy
-  phrasing remains protected. Fullwidth text, case, Unicode format characters, whitespace,
-  punctuation, and common punctuation variants are handled locally.
+  test-taking framing with instructional wording, which is a benign concept hint. Direct or
+  option-elimination requests remain protected even when they mention exams or strategy.
+  Fullwidth text, case, Unicode format characters, whitespace, punctuation, and common
+  punctuation variants are handled locally.
 
 `src/oms_hub/ask/leakage.py` provides:
 
@@ -161,34 +165,67 @@ any normalized decimal token and exact token matching preserves `1` versus `12`.
 outer values return `LeakResult(False, "no_match")`; valid sequences still ignore non-string
 members; and the controller ruling remains `insufficient_evidence=False` for policy refusal.
 
+## Fix Round 3
+
+The final fix tests were added before production changes while the worktree was at the clean
+Fix Round 2 implementation commit `dace31880f6d5c0c246f0bed91ee76ee12ba72ed` / tree
+`03ed02a897710c154574eb82e524a71092b383d1`.
+
+RED command:
+
+```text
+PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
+  python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py -q
+```
+
+Result: exit `1` with 2 failures: `Can you rule out the choices for me on exams?` and
+`Can you rule out the choices for me on a general test?` were incorrectly classified as
+`concept_hint`.
+
+GREEN command:
+
+```text
+PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
+  python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py -q
+```
+
+Result: `61 passed`.
+
+Fix Round 3 requires both explicit general test/exam context and instructional framing for
+the benign strategy exception. Direct-answer and option-elimination checks now run before
+that exception; the unconditional `rule out` direct-answer shortcut was replaced by a
+narrower diagnostic-exclusion rule that excludes option terms and generic test context.
+Ambiguous language therefore remains protected rather than becoming a benign hint.
+
 ## Verification evidence
 
 1. Initial focused tests: `40 passed`.
 2. Fix Round 1 focused tests: `49 passed`.
 3. Fix Round 2 focused tests: `57 passed`.
-4. Affected Ask/models/contracts command:
+4. Fix Round 3 focused tests: `61 passed`.
+5. Affected Ask/models/contracts command:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
      python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py tests/ask/test_models.py tests/contracts -q
    ```
 
-   Result: `114 passed` (`57` Task 3.3, `16` Task 3.1 model, `41` contract tests).
-5. Exact Ruff:
+   Result: `118 passed` (`61` Task 3.3, `16` Task 3.1 model, `41` contract tests).
+6. Exact Ruff:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH ruff check src tests scripts
    ```
 
    Result: `All checks passed!`.
-6. Source mypy:
+7. Source mypy:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH mypy src
    ```
 
    Result: `Success: no issues found in 180 source files`.
-7. Task-owned test mypy:
+8. Task-owned test mypy:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH MYPYPATH=$PWD/src \
@@ -196,7 +233,7 @@ members; and the controller ruling remains `insufficient_evidence=False` for pol
    ```
 
    Result: `Success: no issues found in 2 source files`.
-8. Static safety checks:
+9. Static safety checks:
 
    - An AST scan of both production modules reported no provider/model API, network, or
      logging imports/calls. The only project import is the required `GroundedAnswer` model
@@ -205,8 +242,8 @@ members; and the controller ruling remains `insufficient_evidence=False` for pol
      answers. Protected values occur only in hand-derived tests.
    - A credential/private-content scan found no API keys, bearer credentials, private lecture
      text, Anki content, or production identifiers in the owned implementation/tests.
-9. `git diff --check`: passed.
-10. The exact base-to-head scope check is limited to the authorized files:
+10. `git diff --check`: passed.
+11. The exact base-to-head scope check is limited to the authorized files:
 
    ```text
    src/oms_hub/ask/intent.py
@@ -244,17 +281,20 @@ data access, Anki action, production mutation, push, merge, tag, or deploy was p
 - Punctuation-separated single-letter abbreviations are normalized; whitespace-separated
   letters remain separate to preserve token boundaries.
 - Generic test-taking strategy requests are intentionally treated as benign concept hints;
-  only explicit general test-taking framing qualifies, and question-scoped or mixed
-  policy-sensitive phrasing remains protected.
+  only explicit general test-taking framing with instructional wording qualifies, and
+  question-scoped or mixed policy-sensitive phrasing remains protected.
 - Decimal option labels accept any normalized decimal token; exact token matching keeps
   embedded values distinct. Unicode `Cf` format characters are removed after NFKC/casefold.
 - A `str` outer `protected_answers` argument is treated as one protected value; malformed
   non-Sequence outers return generic no-match; non-string elements inside valid sequences
   remain ignored safely.
+- The broad `rule out` shortcut is removed. Generic strategy recognition requires both
+  explicit instructional wording and general test/exam context; ambiguous elimination
+  phrasing errs toward the protected path.
 - Native Windows and provider/live acceptance remain unrun by design.
 
 ## Commit identity
 
-The initial, Fix Round 1, and Fix Round 2 implementation identities are fixed above. This
+The initial, Fix Round 1, Fix Round 2, and Fix Round 3 implementation identities are fixed above. This
 report update is intentionally delivered as a separate docs-only correction record commit;
 that record commit is not self-referenced here.
