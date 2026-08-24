@@ -59,7 +59,7 @@ def _schema_payload() -> dict[str, Any]:
         BoardQuestionDraft | QuestionValidationResult | QuestionVersion
     ).json_schema()
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "question-v1.json"
+    schema["$id"] = "question-v2.json"
     return schema
 
 
@@ -81,6 +81,8 @@ def _schema_matches(instance: object, schema: Mapping[str, Any], root: Mapping[s
             and _schema_matches(instance, alternative, root)
             for alternative in alternatives
         )
+    if "const" in schema and instance != schema["const"]:
+        return False
     if "enum" in schema and instance not in schema["enum"]:
         return False
     schema_type = schema.get("type")
@@ -139,6 +141,7 @@ def _schema_matches(instance: object, schema: Mapping[str, Any], root: Mapping[s
 
 def _version_payload(draft: BoardQuestionDraft) -> dict[str, Any]:
     return {
+        "question_version_id": "question-1-v1",
         "question_id": "question-1",
         "version": 1,
         "mode": QuestionMode.BOARD_STYLE,
@@ -146,7 +149,7 @@ def _version_payload(draft: BoardQuestionDraft) -> dict[str, Any]:
         "source_revision_ids": ("revision-1",),
         "evidence_ids": ("evidence-1",),
         "prompt_version": "prompt-v1",
-        "schema_version": "question-v1",
+        "schema_version": "question-v2",
         "model_version": "model-v1",
         "input_hash": "input-hash",
         "output_hash": "output-hash",
@@ -155,6 +158,7 @@ def _version_payload(draft: BoardQuestionDraft) -> dict[str, Any]:
 
 def _version_wire_payload(**changes: object) -> dict[str, Any]:
     payload: dict[str, Any] = {
+        "question_version_id": "question-1-v1",
         "question_id": "question-1",
         "version": 1,
         "mode": "board_style",
@@ -162,7 +166,7 @@ def _version_wire_payload(**changes: object) -> dict[str, Any]:
         "source_revision_ids": ["revision-1"],
         "evidence_ids": ["evidence-1"],
         "prompt_version": "prompt-v1",
-        "schema_version": "question-v1",
+        "schema_version": "question-v2",
         "model_version": "model-v1",
         "input_hash": "input-hash",
         "output_hash": "output-hash",
@@ -264,6 +268,7 @@ def test_at_least_one_objective_id_is_required() -> None:
 @pytest.mark.parametrize(
     "field",
     (
+        "question_version_id",
         "source_revision_ids",
         "prompt_version",
         "schema_version",
@@ -282,6 +287,8 @@ def test_question_version_requires_provenance_fields(field: str) -> None:
 @pytest.mark.parametrize(
     "field, value",
     (
+        ("question_version_id", ""),
+        ("question_version_id", " \t"),
         ("source_revision_ids", ()),
         ("source_revision_ids", ("",)),
         ("prompt_version", ""),
@@ -302,7 +309,8 @@ def test_question_models_are_immutable_and_versioned() -> None:
     draft = BoardQuestionDraft.model_validate(build_board_question_draft())
     version = QuestionVersion.model_validate(_version_payload(draft))
     assert version.status is QuestionStatus.DRAFT
-    assert version.schema_version == "question-v1"
+    assert version.question_version_id == "question-1-v1"
+    assert version.schema_version == "question-v2"
     with pytest.raises(ValidationError):
         version.status = QuestionStatus.APPROVED
 
@@ -327,6 +335,38 @@ def test_question_schema_candidate_v2_is_deterministic_and_v1_snapshot_is_frozen
         "968449d9dca8da71a28658360fe6a2d8e61cf35e49c5d8a9ab6e7a4564e7eb9d"
     )
     assert frozen_v1 != candidate
+
+
+def test_question_v2_schema_requires_canonical_id_and_const_version() -> None:
+    schema = _schema_payload()
+    assert schema["$id"] == "question-v2.json"
+    definitions = schema["$defs"]
+    assert isinstance(definitions, Mapping)
+    version_schema = definitions["QuestionVersion"]
+    assert isinstance(version_schema, Mapping)
+    properties = version_schema["properties"]
+    assert isinstance(properties, Mapping)
+    assert properties["question_version_id"] == {
+        "minLength": 1,
+        "pattern": r"\S",
+        "title": "Question Version Id",
+        "type": "string",
+    }
+    schema_version = properties["schema_version"]
+    assert isinstance(schema_version, Mapping)
+    assert schema_version["const"] == "question-v2"
+    required = version_schema["required"]
+    assert isinstance(required, list)
+    assert "question_version_id" in required
+    assert "schema_version" in required
+
+
+@pytest.mark.parametrize("schema_version", ("question-v1", "question-v3", "unknown"))
+def test_question_version_rejects_v1_and_unknown_schema_versions(
+    schema_version: str,
+) -> None:
+    with pytest.raises(ValidationError, match="schema_version"):
+        QuestionVersion.model_validate(_version_wire_payload(schema_version=schema_version))
 
 
 @pytest.mark.parametrize(
