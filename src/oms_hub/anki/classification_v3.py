@@ -22,7 +22,6 @@ from pydantic import (
     WithJsonSchema,
     create_model,
     field_validator,
-    model_validator,
 )
 
 from oms_hub.anki.contracts import canonical_payload_sha256
@@ -49,7 +48,7 @@ SET_COVERAGE_FACTS_PER_BATCH = 4
 SET_COVERAGE_OUTPUT_MAX_TOKENS = 2_048
 ESTIMATOR_VERSION = "utf8-byte-upper-bound-v1"
 CLASSIFICATION_CONFIG = {
-    "version": "classification-r7-v5",
+    "version": "classification-r7-v6",
     "bundle_max_input_bytes": MAX_BUNDLE_BYTES,
     "bundle_max_input_tokens": MAX_BUNDLE_TOKENS,
     "output_max_tokens": CLASSIFICATION_OUTPUT_MAX_TOKENS,
@@ -170,15 +169,6 @@ class ProviderSetCoverageRow(BaseModel):
         if any(type(item) is not str or not item.strip() for item in values):
             raise ValueError("uncovered material claims must be nonblank strings")
         return tuple(sorted({item.strip() for item in values}))
-
-    @model_validator(mode="after")
-    def disposition_closure(self) -> ProviderSetCoverageRow:
-        if self.status == "covered" and not self.selected_candidate_ids:
-            raise ValueError("covered facts require at least one selected candidate")
-        if self.status == "missing" and self.selected_candidate_ids:
-            raise ValueError("missing facts cannot select candidates")
-        return self
-
 
 class ProviderSetCoverageBatch(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -324,7 +314,7 @@ def r7_pin_document(
     config = r7_config_document()
     set_options = options_document(_set_coverage_options(cheap_route))
     return {
-        "serialization_version": "classification-r7-pin-v5",
+        "serialization_version": "classification-r7-pin-v6",
         "instruction_sha256": {
             "cheap": instruction_sha256(CHEAP_INSTRUCTION),
             "thorough": instruction_sha256(THOROUGH_INSTRUCTION),
@@ -889,10 +879,18 @@ def classify_set_coverage(
         for row in generated.value.rows:
             document_row = row.model_dump(mode="json")
             uncovered = row.uncovered_material_claims
-            if row.status == "covered" and uncovered:
+            if row.status == "covered" and not row.selected_candidate_ids:
+                document_row["provider_status"] = row.status
+                document_row["status"] = "unresolved"
+                document_row["diagnostic"] = "covered result omitted selected candidates"
+            elif row.status == "covered" and uncovered:
                 document_row["provider_status"] = row.status
                 document_row["status"] = "unresolved"
                 document_row["diagnostic"] = "provider reported uncovered material claims"
+            elif row.status == "missing" and row.selected_candidate_ids:
+                document_row["provider_status"] = row.status
+                document_row["status"] = "unresolved"
+                document_row["diagnostic"] = "missing result selected partial candidates"
             elif row.status == "missing" and not uncovered:
                 document_row["provider_status"] = row.status
                 document_row["status"] = "unresolved"

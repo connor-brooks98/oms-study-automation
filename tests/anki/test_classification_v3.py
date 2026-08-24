@@ -1008,6 +1008,83 @@ def test_r8_set_coverage_downgrades_claimed_coverage_with_uncovered_claims() -> 
     assert result.payload["final_partition"][0]["disposition"] == "unresolved"
 
 
+@pytest.mark.parametrize(
+    ("status", "selected", "uncovered", "diagnostic"),
+    (
+        ("covered", [], [], "covered result omitted selected candidates"),
+        (
+            "missing",
+            ["note:1"],
+            ["partial claim"],
+            "missing result selected partial candidates",
+        ),
+        ("missing", [], [], "missing result omitted uncovered material claims"),
+    ),
+)
+def test_r8_set_coverage_normalizes_semantic_contradictions_per_fact(
+    status: str,
+    selected: list[str],
+    uncovered: list[str],
+    diagnostic: str,
+) -> None:
+    bundle = _bundle(1, "fact-1")
+    fake = FakeGenerator(
+        [
+            {
+                "rows": [
+                    {
+                        "fact_id": "fact-1",
+                        "status": status,
+                        "selected_candidate_ids": selected,
+                        "confidence_bps": 9900,
+                        "uncovered_material_claims": uncovered,
+                    }
+                ]
+            }
+        ]
+    )
+    cheap, _thorough = _routes()
+    result = classify_set_coverage(
+        StructuredTextService(fake),
+        bundles=(bundle,),
+        strictness="strict",
+        route=cheap,
+    )
+    assert result.blocking_error is None
+    assert result.payload["rows"][0]["status"] == "unresolved"
+    assert result.payload["rows"][0]["diagnostic"] == diagnostic
+    assert result.payload["final_partition"][0]["disposition"] == "unresolved"
+
+
+def test_r8_set_coverage_keeps_a_well_formed_missing_result_terminal() -> None:
+    bundle = _bundle(1, "fact-1")
+    fake = FakeGenerator(
+        [
+            {
+                "rows": [
+                    {
+                        "fact_id": "fact-1",
+                        "status": "missing",
+                        "selected_candidate_ids": [],
+                        "confidence_bps": 9900,
+                        "uncovered_material_claims": ["the target claim"],
+                    }
+                ]
+            }
+        ]
+    )
+    cheap, _thorough = _routes()
+    result = classify_set_coverage(
+        StructuredTextService(fake),
+        bundles=(bundle,),
+        strictness="strict",
+        route=cheap,
+    )
+    assert result.blocking_error is None
+    assert result.payload["rows"][0]["status"] == "missing"
+    assert result.payload["final_partition"][0]["disposition"] == "exclude"
+
+
 def test_r7_invalid_batch_is_unresolved_when_repair_is_not_authorized() -> None:
     bundle = _bundle(1, "fact-1")
     fake = FakeGenerator([{"rows": []}])
@@ -1130,7 +1207,7 @@ def test_r7_pins_and_repair_authorization_reject_stale_or_noninteger_costs() -> 
     assert pin["cheap_options"]["max_tokens"] == 3072
     assert pin["thorough_options"]["max_tokens"] == 3072
     assert pin["classification_config"]["output_max_tokens"] == 3072
-    assert pin["classification_config"]["version"] == "classification-r7-v5"
+    assert pin["classification_config"]["version"] == "classification-r7-v6"
     assert pin["cheap_options_sha256"] == canonical_payload_sha256(pin["cheap_options"])
     request = "d" * 64
     authorization = {
