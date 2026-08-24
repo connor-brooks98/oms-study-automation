@@ -381,6 +381,38 @@ def test_r3_colored_runs_bind_exact_source_locator_and_reject_ambiguous_provenan
         assert blocked.calls == []
 
 
+def test_r3_generation_allowed_is_projected_from_policy_not_provider() -> None:
+    policy = _policy()
+
+    def provider_false(input_text: str) -> dict[str, object]:
+        response = _response(input_text)
+        response["concepts"][0]["facts"][0]["generation_allowed"] = False  # type: ignore[index]
+        return response
+
+    _, enabled = _generate(
+        policy,
+        _fidelity(policy, "continue"),
+        (),
+        (_emphasis(policy),),
+        provider_false,
+    )
+    assert enabled.scope.concepts[0].facts[0].generation_allowed is True
+
+    disabled = CourseCurationPolicy.model_validate(
+        {
+            **policy.model_dump(mode="json", exclude={"policy_sha256"}),
+            "generation_style_profile": "disabled",
+        }
+    )
+    _, blocked = _generate(
+        disabled,
+        _fidelity(disabled, "continue"),
+        (),
+        (_emphasis(disabled),),
+    )
+    assert blocked.scope.concepts[0].facts[0].generation_allowed is False
+
+
 @pytest.mark.parametrize(
     ("mode", "status", "expected_types"),
     [

@@ -59,6 +59,7 @@ from oms_hub.anki.classification_v3 import (
     MAX_BUNDLE_TOKENS,
     ClassificationInputError,
     R7ClassificationService,
+    classify_set_coverage,
     r7_audit_envelope,
     r7_pin_document,
 )
@@ -1330,6 +1331,7 @@ class CurationServicesRunner:
             rate_table_sha256=rate_table_sha256,
             ordinary_limit_microusd=policy.ordinary_cost_limit_microusd,
             hard_limit_microusd=policy.hard_stop_cost_limit_microusd,
+            defer_partial=True,
         )
         payload = {
             "policy_sha256": policy.policy_sha256,
@@ -1405,6 +1407,7 @@ class CurationServicesRunner:
                         for candidate in r6_fact["all_candidates"]
                     }
                     remaining_candidates: list[Mapping[str, Any]] = []
+                    seen_content: set[str] = set()
                     for cluster in r6_fact["clusters"]:
                         representative = cluster.get("representative_note_id")
                         if (
@@ -1412,20 +1415,19 @@ class CurationServicesRunner:
                             or representative not in candidates_by_id
                         ):
                             raise PinnedInputChanged("Pinned R6 residual cluster is malformed")
-                        if representative not in initial_ids:
-                            remaining_candidates.append(candidates_by_id[representative])
-                        representative_hash = candidates_by_id[representative]["content_sha256"]
-                        for sibling in cluster["sibling_note_ids"]:
+                        for sibling in (representative, *cluster["sibling_note_ids"]):
                             if type(sibling) is not int or sibling not in candidates_by_id:
                                 raise PinnedInputChanged("Pinned R6 residual sibling is malformed")
-                            if sibling == representative:
-                                continue
+                            content_sha256 = candidates_by_id[sibling].get("content_sha256")
                             if (
-                                sibling not in initial_ids
-                                and candidates_by_id[sibling]["content_sha256"]
-                                != representative_hash
+                                not isinstance(content_sha256, str)
+                                or expected_ids.get(sibling) != content_sha256
                             ):
-                                remaining_candidates.append(candidates_by_id[sibling])
+                                raise PinnedInputChanged("Pinned R6 residual identity is malformed")
+                            if content_sha256 in seen_content:
+                                continue
+                            seen_content.add(content_sha256)
+                            remaining_candidates.append(candidates_by_id[sibling])
                     candidates = remaining_candidates
                     if not candidates and not diagnostics:
                         candidates = [
@@ -1458,17 +1460,17 @@ class CurationServicesRunner:
                     }
                 )
         residual_rows: list[dict[str, object]] = []
+        set_coverage: dict[str, object] = {}
         residual_error: str | None = None
         residual_usage: StageUsage | None = None
         if residual_bundles:
-            cheap, thorough, rate_table_sha256 = _r7_routes(context, r0)
+            cheap, _thorough, _rate_table_sha256 = _r7_routes(context, r0)
             result = await asyncio.to_thread(
-                R7ClassificationService(
-                    cast(
-                        StructuredTextService,
-                        _GuardedStructuredService(self.structured, costs, "R8"),
-                    )
-                ).classify,
+                classify_set_coverage,
+                cast(
+                    StructuredTextService,
+                    _GuardedStructuredService(self.structured, costs, "R8"),
+                ),
                 bundles=tuple(
                     sorted(
                         residual_bundles,
@@ -1480,16 +1482,12 @@ class CurationServicesRunner:
                     )
                 ),
                 strictness=policy.classification_strictness,
-                cheap_route=cheap,
-                thorough_route=thorough,
-                repair_authorization=r0.get("r7_repair_authorization"),
-                rate_table_sha256=rate_table_sha256,
-                ordinary_limit_microusd=policy.ordinary_cost_limit_microusd,
-                hard_limit_microusd=policy.hard_stop_cost_limit_microusd,
+                route=cheap,
             )
             residual_rows = list(cast(list[dict[str, object]], result.payload["final_partition"]))
+            set_coverage = dict(result.payload)
             residual_error = result.blocking_error or (
-                "R8 residual R7 classification is blocking" if result.payload["blocking"] else None
+                "R8 set coverage is blocking" if result.payload["blocking"] else None
             )
             residual_usage = result.usage
         by_fact_residual: dict[str, list[dict[str, object]]] = {}
@@ -1540,6 +1538,7 @@ class CurationServicesRunner:
             "residual_r7": {
                 "bundles": [item.model_dump(mode="json") for item in residual_bundles],
                 "final_partition": residual_rows,
+                "set_coverage": set_coverage,
             },
         }
         _seal_v3_costs(costs, payload)
@@ -1847,8 +1846,7 @@ class CurationServicesRunner:
             *_v3_r7_rows(r7),
             *cast(list[dict[str, Any]], residual.get("final_partition", [])),
         ]
-        existing_rows: list[dict[str, Any]] = []
-        existing_keys: set[tuple[int, str]] = set()
+        existing_by_key: dict[tuple[int, str], dict[str, Any]] = {}
         for row in final_rows:
             bundle_id = row.get("bundle_id")
             candidate = bundle_candidates.get(cast(str, bundle_id))
@@ -1857,16 +1855,15 @@ class CurationServicesRunner:
             fact_id = candidate["fact_id"]
             if not isinstance(fact_id, str):
                 raise PinnedInputChanged("R11 R7 selection lacks pinned fact identity")
-            existing_keys.add((candidate["note_id"], fact_id))
-            existing_rows.append(
-                dict(
-                    row,
-                    note_id=candidate["note_id"],
-                    fact_id=fact_id,
-                    content_sha256=candidate.get("content_sha256"),
-                    selected=(row.get("disposition") == "keep"),
-                )
+            existing_by_key[(candidate["note_id"], fact_id)] = dict(
+                row,
+                note_id=candidate["note_id"],
+                fact_id=fact_id,
+                content_sha256=candidate.get("content_sha256"),
+                selected=(row.get("disposition") == "keep"),
             )
+        existing_rows = list(existing_by_key.values())
+        existing_keys = set(existing_by_key)
         for record in cast(list[Mapping[str, Any]], r6.get("records", [])):
             fact_id = record.get("fact_id")
             if not isinstance(fact_id, str):
@@ -6030,18 +6027,6 @@ def _v3_r8_raw_safety(
         problems.append("semantic raw cap ends above threshold")
     if r6.get("per_fact_cap_excluded_note_ids") or r6.get("global_cap_excluded_note_ids"):
         problems.append("R6 candidate cap excluded a possible card")
-    candidates_by_id = {int(item["note_id"]): item for item in r6.get("all_candidates", [])}
-    for cluster in r6.get("clusters", []):
-        if not isinstance(cluster, Mapping):
-            raise PinnedInputChanged("Pinned R6 cluster is malformed")
-        representative = int(cluster.get("representative_note_id", 0))
-        for sibling in cluster.get("sibling_note_ids", []):
-            sibling_id = int(sibling)
-            if sibling_id != representative and candidates_by_id.get(sibling_id, {}).get(
-                "content_sha256"
-            ) != candidates_by_id.get(representative, {}).get("content_sha256"):
-                problems.append("non-identical R6 sibling remains unclassified")
-                break
     return problems
 
 

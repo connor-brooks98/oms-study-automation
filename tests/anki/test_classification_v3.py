@@ -17,6 +17,7 @@ from oms_hub.anki.classification_v3 import (
     R7ClassificationService,
     _provider_input,
     _valid_repair_authorization,
+    classify_set_coverage,
     r7_pin_document,
 )
 from oms_hub.anki.contracts import canonical_payload_sha256
@@ -869,6 +870,88 @@ def test_r7_keeps_terminal_cheap_rows_out_of_thorough_batches() -> None:
     assert [call["input"]["tier"] for call in fake.calls] == ["cheap", "thorough"]
     assert [item["candidate"]["note_id"] for item in fake.calls[1]["input"]["bundles"]] == [2]
     assert [row["disposition"] for row in result.payload["final_partition"]] == ["keep", "keep"]
+
+
+def test_r7_can_defer_partial_cards_without_a_thorough_call() -> None:
+    bundle = _bundle(1, "fact-1")
+    fake = FakeGenerator([{"rows": [_row(bundle, "needs_review", 0)]}])
+    cheap, thorough = _routes()
+    result = R7ClassificationService(StructuredTextService(fake)).classify(
+        bundles=(bundle,),
+        strictness="strict",
+        cheap_route=cheap,
+        thorough_route=thorough,
+        defer_partial=True,
+    )
+    assert len(fake.calls) == 1
+    assert result.payload["final_partition"][0]["diagnostic"] == "deferred_to_set_coverage"
+
+
+def test_r8_set_coverage_selects_multiple_cards_from_one_compact_fact_request() -> None:
+    first, second = _bundle(1, "fact-1"), _bundle(2, "fact-1")
+    response = {
+        "rows": [
+            {
+                "fact_id": "fact-1",
+                "status": "covered",
+                "selected_candidate_ids": ["note:1", "note:2"],
+                "confidence_bps": 9000,
+                "supporting_passage_ids": ["passage-1"],
+                "reason": "cards cover the fact together",
+            }
+        ]
+    }
+    fake = FakeGenerator([response])
+    cheap, _thorough = _routes()
+    result = classify_set_coverage(
+        StructuredTextService(fake),
+        bundles=(first, second),
+        strictness="strict",
+        route=cheap,
+    )
+    assert [row["disposition"] for row in result.payload["final_partition"]] == ["keep", "keep"]
+    assert len(fake.calls) == 1 and len(fake.calls[0]["input"]["facts"]) == 1
+    assert "tags" not in fake.calls[0]["input"]["facts"][0]["candidates"][0]
+
+
+def test_r8_set_coverage_fails_closed_when_a_candidate_escapes_its_fact() -> None:
+    first, second = _bundle(1, "fact-1"), _bundle(2, "fact-2")
+    fake = FakeGenerator(
+        [
+            {
+                "rows": [
+                    {
+                        "fact_id": "fact-1",
+                        "status": "covered",
+                        "selected_candidate_ids": ["note:2"],
+                        "confidence_bps": 9000,
+                        "supporting_passage_ids": ["passage-1"],
+                        "reason": "escaped candidate",
+                    },
+                    {
+                        "fact_id": "fact-2",
+                        "status": "missing",
+                        "selected_candidate_ids": [],
+                        "confidence_bps": 9000,
+                        "supporting_passage_ids": ["passage-1"],
+                        "reason": "missing",
+                    },
+                ]
+            }
+        ]
+    )
+    cheap, _thorough = _routes()
+    result = classify_set_coverage(
+        StructuredTextService(fake),
+        bundles=(first, second),
+        strictness="strict",
+        route=cheap,
+    )
+    assert (
+        result.blocking_error
+        == "R8 set-coverage response escapes requested candidates or passages"
+    )
+    assert {row["disposition"] for row in result.payload["final_partition"]} == {"unresolved"}
 
 
 def test_r7_invalid_batch_is_unresolved_when_repair_is_not_authorized() -> None:

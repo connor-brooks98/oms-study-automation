@@ -1,4 +1,4 @@
-"""Frozen, bundle-only R7 classification for ``card_centric_v3``.
+"""Frozen, bundle-only R7 classification and R8 set coverage for ``card_centric_v3``.
 
 This module deliberately owns the provider boundary.  It accepts only already
 constructed :class:`CandidateEvidenceBundle` documents, never a source index
@@ -15,7 +15,15 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema, create_model, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    WithJsonSchema,
+    create_model,
+    field_validator,
+    model_validator,
+)
 
 from oms_hub.anki.contracts import canonical_payload_sha256
 from oms_hub.anki.domain import ResolvedStageModel, StageUsage
@@ -37,9 +45,11 @@ THOROUGH_BATCH_MAX = 8
 CLASSIFICATION_CANDIDATES_PER_FACT = 3
 SERIAL_CONCURRENCY = 1
 MAX_REPAIRS_TOTAL = 1
+SET_COVERAGE_FACTS_PER_BATCH = 4
+SET_COVERAGE_OUTPUT_MAX_TOKENS = 2_048
 ESTIMATOR_VERSION = "utf8-byte-upper-bound-v1"
 CLASSIFICATION_CONFIG = {
-    "version": "classification-r7-v1",
+    "version": "classification-r7-v2",
     "bundle_max_input_bytes": MAX_BUNDLE_BYTES,
     "bundle_max_input_tokens": MAX_BUNDLE_TOKENS,
     "output_max_tokens": CLASSIFICATION_OUTPUT_MAX_TOKENS,
@@ -50,6 +60,7 @@ CLASSIFICATION_CONFIG = {
     "provider_schema_strategy": "batch-derived-enums-v1",
     "serial_concurrency": SERIAL_CONCURRENCY,
     "max_repairs_total": MAX_REPAIRS_TOTAL,
+    "defer_partial_to_set_coverage": True,
     "estimator_version": ESTIMATOR_VERSION,
     "thresholds_bps": {
         "strict": {"keep": 9000, "exclude": 7500, "redundant": 9500},
@@ -76,6 +87,12 @@ THOROUGH_INSTRUCTION = (
 )
 REPAIR_INSTRUCTION = (
     "Return a contract-valid replacement for the same supplied bundles." + _CANDIDATE_COVERAGE_RULE
+)
+SET_COVERAGE_INSTRUCTION = (
+    "Decide whether each exact target fact is fully covered by the supplied candidate cards "
+    "acting together. Select the smallest sufficient set; candidate text and extra are the only "
+    "card support, while passages establish lecture truth. Tags are not support. Return missing "
+    "only when no supplied set covers the fact, and unresolved when the evidence is ambiguous."
 )
 
 
@@ -119,6 +136,46 @@ class ProviderClassificationBatch(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     rows: tuple[ProviderClassificationRow, ...]
+
+
+class ProviderSetCoverageRow(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    fact_id: str = Field(min_length=1, max_length=300)
+    status: Literal["covered", "missing", "unresolved"]
+    selected_candidate_ids: tuple[str, ...] = ()
+    confidence_bps: int = Field(ge=0, le=10_000)
+    supporting_passage_ids: tuple[str, ...] = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=1_000)
+
+    @field_validator("selected_candidate_ids", "supporting_passage_ids")
+    @classmethod
+    def ordered_ids(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if values != tuple(sorted(values)) or len(values) != len(set(values)):
+            raise ValueError("set-coverage IDs must be sorted and unique")
+        return values
+
+    @field_validator("reason")
+    @classmethod
+    def one_line_reason(cls, value: str) -> str:
+        value = value.strip()
+        if not value or "\n" in value or "\r" in value:
+            raise ValueError("reason must be one line")
+        return value
+
+    @model_validator(mode="after")
+    def disposition_closure(self) -> ProviderSetCoverageRow:
+        if self.status == "covered" and not self.selected_candidate_ids:
+            raise ValueError("covered facts require at least one selected candidate")
+        if self.status == "missing" and self.selected_candidate_ids:
+            raise ValueError("missing facts cannot select candidates")
+        return self
+
+
+class ProviderSetCoverageBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    rows: tuple[ProviderSetCoverageRow, ...]
 
 
 def _provider_output_model(
@@ -212,6 +269,13 @@ class R7Result:
     blocking_error: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class SetCoverageResult:
+    payload: dict[str, object]
+    usage: StageUsage | None
+    blocking_error: str | None
+
+
 def instruction_sha256(instruction: str) -> str:
     return hashlib.sha256(instruction.encode("utf-8")).hexdigest()
 
@@ -250,8 +314,9 @@ def r7_pin_document(
     cheap_options = options_document(_options(cheap_route, cheap=True))
     thorough_options = options_document(_options(thorough_route, cheap=False))
     config = r7_config_document()
+    set_options = options_document(_set_coverage_options(cheap_route))
     return {
-        "serialization_version": "classification-r7-pin-v1",
+        "serialization_version": "classification-r7-pin-v2",
         "instruction_sha256": {
             "cheap": instruction_sha256(CHEAP_INSTRUCTION),
             "thorough": instruction_sha256(THOROUGH_INSTRUCTION),
@@ -266,6 +331,18 @@ def r7_pin_document(
         "thorough_options_sha256": canonical_payload_sha256(thorough_options),
         "classification_config": config,
         "classification_config_sha256": canonical_payload_sha256(config),
+        "set_coverage": {
+            "instruction_sha256": instruction_sha256(SET_COVERAGE_INSTRUCTION),
+            "provider_output_schema_sha256": canonical_payload_sha256(
+                ProviderSetCoverageBatch.model_json_schema()
+            ),
+            "options": set_options,
+            "options_sha256": canonical_payload_sha256(set_options),
+            "facts_per_batch": SET_COVERAGE_FACTS_PER_BATCH,
+            "max_provider_input_bytes": MAX_PROVIDER_INPUT_BYTES,
+            "provider_schema_strategy": "batch-derived-enums-v1",
+            "route": route_document(cheap_route),
+        },
         "estimator_version": ESTIMATOR_VERSION,
         "rate_table_sha256": rate_table_sha256,
         "cheap_route": route_document(cheap_route),
@@ -364,6 +441,7 @@ class R7ClassificationService:
         rate_table_sha256: str | None = None,
         ordinary_limit_microusd: int | None = None,
         hard_limit_microusd: int | None = None,
+        defer_partial: bool = False,
     ) -> R7Result:
         ordered = tuple(bundles)
         _validate_bundles(ordered)
@@ -439,6 +517,12 @@ class R7ClassificationService:
             if item["bundle_id"] not in forced_unresolved
         )
         escalation_by_bundle = {cast(str, item["bundle_id"]): item for item in escalations}
+        if defer_partial:
+            thorough_rows.extend(
+                _unresolved(bundle, None, "deferred_to_set_coverage")
+                for bundle in to_escalate
+            )
+            to_escalate = ()
         for batch in _pack_thorough(to_escalate, escalation_by_bundle):
             result, evidence, error, repairable, invalid_response, diagnostics = self._call_batch(
                 tier="thorough",
@@ -524,6 +608,7 @@ class R7ClassificationService:
             blocking=bool(blocking),
             partial_diagnostics=blocking,
         )
+        payload["defer_partial_to_set_coverage"] = defer_partial
         payload["artifact_sha256"] = canonical_payload_sha256(payload)
         return R7Result(payload, usage, "; ".join(blocking) if blocking else None)
 
@@ -716,6 +801,294 @@ class R7ClassificationService:
             invalid_response=invalid_response,
         )
         return rows, calls, True, repair_error, diagnostics
+
+
+def classify_set_coverage(
+    structured: StructuredTextService,
+    *,
+    bundles: Sequence[CandidateEvidenceBundle],
+    strictness: Literal["strict", "balanced", "permissive"],
+    route: ResolvedStageModel,
+) -> SetCoverageResult:
+    """Make one bounded, fail-closed multi-card decision for each requested fact."""
+    ordered = tuple(bundles)
+    _validate_bundles(ordered)
+    _set_coverage_options(route)
+    groups = _set_coverage_groups(ordered)
+    calls: list[dict[str, object]] = []
+    requests: list[dict[str, object]] = []
+    rows: dict[str, dict[str, object]] = {}
+    blocking: str | None = None
+    try:
+        batches = _pack_set_coverage(groups)
+    except ClassificationInputError as exc:
+        batches, blocking = (), str(exc)
+    for ordinal, batch in enumerate(batches):
+        document = _set_coverage_input(batch)
+        requests.append(
+            {
+                "batch_index": ordinal,
+                "input_sha256": canonical_payload_sha256(document),
+                "input_bytes": provider_input_bytes(document),
+                "fact_ids": [fact_id for fact_id, _items in batch],
+            }
+        )
+        batch_bundles = tuple(item for _fact_id, items in batch for item in items)
+        try:
+            with provider_call_scope(
+                batch_index=ordinal,
+                batch_note_ids=tuple(
+                    sorted({item.candidate.note_id for item in batch_bundles})
+                ),
+                kind="primary",
+                defer_acceptance=True,
+            ):
+                generated = structured.generate_json(
+                    SET_COVERAGE_INSTRUCTION,
+                    _canonical_json(document),
+                    output_model=_set_coverage_output_model(batch),
+                    provider=ProviderName(route.provider),
+                    model=route.model,
+                    options=_set_coverage_options(route),
+                )
+        except StructuredOutputError as exc:
+            calls.append(_failed_call("set_coverage", ordinal, "primary", exc))
+            blocking = str(exc)
+            break
+        except Exception as exc:
+            blocking = f"R8 set-coverage provider transport failure: {exc}"
+            break
+        error = _validate_set_coverage_rows(generated.value.rows, batch)
+        if error is not None:
+            emit_provider_event(generated.attempt_handle, "contract_failed", error=error)
+            calls.append(
+                _generated_call("set_coverage", ordinal, "primary", generated, accepted=False)
+            )
+            blocking = error
+            break
+        finalize_provider_call(generated.attempt_handle)
+        calls.append(_generated_call("set_coverage", ordinal, "primary", generated, accepted=True))
+        for row in generated.value.rows:
+            document_row = row.model_dump(mode="json")
+            threshold_key = "keep" if row.status == "covered" else "exclude"
+            threshold = cast(
+                Mapping[str, int],
+                CLASSIFICATION_CONFIG["thresholds_bps"][strictness],  # type: ignore[index]
+            ).get(threshold_key, 10_001)
+            if row.status != "unresolved" and row.confidence_bps < threshold:
+                document_row["provider_status"] = row.status
+                document_row["status"] = "unresolved"
+                document_row["diagnostic"] = "set-coverage confidence is below policy threshold"
+            rows[row.fact_id] = document_row
+    final = _set_coverage_partition(ordered, rows)
+    payload: dict[str, object] = {
+        "instruction_sha256": instruction_sha256(SET_COVERAGE_INSTRUCTION),
+        "schema_sha256": canonical_payload_sha256(ProviderSetCoverageBatch.model_json_schema()),
+        "options": options_document(_set_coverage_options(route)),
+        "route": route_document(route),
+        "facts_per_batch": SET_COVERAGE_FACTS_PER_BATCH,
+        "max_provider_input_bytes": MAX_PROVIDER_INPUT_BYTES,
+        "requests": requests,
+        "rows": [rows[fact_id] for fact_id, _items in groups if fact_id in rows],
+        "final_partition": final,
+        "calls": calls,
+        "blocking": blocking is not None,
+        "partial_diagnostics": [] if blocking is None else [blocking],
+    }
+    payload["artifact_sha256"] = canonical_payload_sha256(payload)
+    return SetCoverageResult(payload, _usage(calls), blocking)
+
+
+def _set_coverage_options(route: ResolvedStageModel) -> GenerationOptions:
+    if route.thinking_mode != "disabled":
+        raise ClassificationInputError("R8 set coverage requires disabled thinking")
+    return GenerationOptions(
+        cacheable_source_prefix=None,
+        thinking=ThinkingMode.DISABLED,
+        temperature=0.0,
+        max_tokens=SET_COVERAGE_OUTPUT_MAX_TOKENS,
+    )
+
+
+def _set_coverage_groups(
+    bundles: Sequence[CandidateEvidenceBundle],
+) -> tuple[tuple[str, tuple[CandidateEvidenceBundle, ...]], ...]:
+    grouped: dict[str, list[CandidateEvidenceBundle]] = {}
+    for bundle in bundles:
+        grouped.setdefault(bundle.fact_id, []).append(bundle)
+    result = tuple((fact_id, tuple(items)) for fact_id, items in grouped.items())
+    for fact_id, items in result:
+        first = items[0]
+        fact = next(item for item in first.concept.facts if item.fact_id == fact_id)
+        passages = tuple(item.model_dump(mode="json") for item in first.selected_passages)
+        if any(
+            next(value for value in bundle.concept.facts if value.fact_id == fact_id) != fact
+            or tuple(item.model_dump(mode="json") for item in bundle.selected_passages) != passages
+            for bundle in items[1:]
+        ):
+            raise ClassificationInputError("set-coverage bundles disagree on fact evidence")
+    return result
+
+
+def _set_coverage_input(
+    groups: Sequence[tuple[str, Sequence[CandidateEvidenceBundle]]],
+) -> dict[str, object]:
+    facts: list[dict[str, object]] = []
+    for fact_id, bundles in groups:
+        first = bundles[0]
+        fact = next(item for item in first.concept.facts if item.fact_id == fact_id)
+        facts.append(
+            {
+                "fact_id": fact_id,
+                "statement": fact.statement,
+                "passages": [
+                    {"passage_id": item.passage_id, "text": item.text}
+                    for item in first.selected_passages
+                ],
+                "candidates": [
+                    {
+                        "candidate_id": item.candidate.candidate_id,
+                        "note_id": item.candidate.note_id,
+                        "text": item.candidate.text,
+                        "extra": item.candidate.extra,
+                        "deck": item.candidate.deck,
+                    }
+                    for item in bundles
+                ],
+            }
+        )
+    return {"serialization_version": "set-coverage-provider-input-v1", "facts": facts}
+
+
+def _pack_set_coverage(
+    groups: Sequence[tuple[str, tuple[CandidateEvidenceBundle, ...]]],
+) -> tuple[tuple[tuple[str, tuple[CandidateEvidenceBundle, ...]], ...], ...]:
+    packed: list[tuple[tuple[str, tuple[CandidateEvidenceBundle, ...]], ...]] = []
+    current: list[tuple[str, tuple[CandidateEvidenceBundle, ...]]] = []
+    for group in groups:
+        trial = (*current, group)
+        if (
+            len(trial) > SET_COVERAGE_FACTS_PER_BATCH
+            or provider_input_bytes(_set_coverage_input(trial)) > MAX_PROVIDER_INPUT_BYTES
+        ):
+            if not current:
+                raise ClassificationInputError("one R8 set-coverage fact exceeds 65536 bytes")
+            packed.append(tuple(current))
+            current = [group]
+        else:
+            current = list(trial)
+    if current:
+        packed.append(tuple(current))
+    return tuple(packed)
+
+
+def _set_coverage_output_model(
+    groups: Sequence[tuple[str, Sequence[CandidateEvidenceBundle]]],
+) -> type[BaseModel]:
+    fact_ids = tuple(fact_id for fact_id, _items in groups)
+    candidate_ids = tuple(
+        sorted({item.candidate.candidate_id for _fact_id, items in groups for item in items})
+    )
+    passage_ids = tuple(
+        sorted(
+            {
+                passage.passage_id
+                for _fact_id, items in groups
+                for passage in items[0].selected_passages
+            }
+        )
+    )
+    row = create_model(
+        "ProviderSetCoverageRow",
+        __base__=ProviderSetCoverageRow,
+        fact_id=(Annotated[str, WithJsonSchema({"type": "string", "enum": list(fact_ids)})], ...),
+        selected_candidate_ids=(
+            Annotated[
+                tuple[str, ...],
+                WithJsonSchema(
+                    {
+                        "type": "array",
+                        "items": {"type": "string", "enum": list(candidate_ids)},
+                        "maxItems": len(candidate_ids),
+                    }
+                ),
+            ],
+            (),
+        ),
+        supporting_passage_ids=(
+            Annotated[
+                tuple[str, ...],
+                WithJsonSchema(
+                    {
+                        "type": "array",
+                        "items": {"type": "string", "enum": list(passage_ids)},
+                        "minItems": 1,
+                        "maxItems": len(passage_ids),
+                    }
+                ),
+            ],
+            ...,
+        ),
+    )
+    return create_model(
+        "ProviderSetCoverageBatch",
+        __base__=ProviderSetCoverageBatch,
+        rows=(
+            tuple[row, ...],
+            Field(json_schema_extra={"minItems": len(groups), "maxItems": len(groups)}),
+        ),
+    )
+
+
+def _validate_set_coverage_rows(
+    rows: Sequence[ProviderSetCoverageRow],
+    groups: Sequence[tuple[str, Sequence[CandidateEvidenceBundle]]],
+) -> str | None:
+    expected = {fact_id for fact_id, _items in groups}
+    actual = [row.fact_id for row in rows]
+    if set(actual) != expected or len(actual) != len(set(actual)) or len(actual) != len(expected):
+        return "R8 set-coverage response does not partition requested facts"
+    by_fact = {fact_id: items for fact_id, items in groups}
+    for row in rows:
+        bundles = by_fact[row.fact_id]
+        if not set(row.selected_candidate_ids) <= {
+            item.candidate.candidate_id for item in bundles
+        } or not set(row.supporting_passage_ids) <= set(bundles[0].allowed_passage_ids):
+            return "R8 set-coverage response escapes requested candidates or passages"
+    return None
+
+
+def _set_coverage_partition(
+    bundles: Sequence[CandidateEvidenceBundle], rows: Mapping[str, Mapping[str, object]]
+) -> list[dict[str, object]]:
+    partition: list[dict[str, object]] = []
+    for bundle in bundles:
+        row = rows.get(bundle.fact_id)
+        selected = set(cast(Sequence[str], row.get("selected_candidate_ids", ()))) if row else set()
+        status = row.get("status") if row else "unresolved"
+        disposition = (
+            "keep"
+            if status == "covered" and bundle.candidate.candidate_id in selected
+            else "exclude"
+            if status in {"covered", "missing"}
+            else "unresolved"
+        )
+        partition.append(
+            {
+                "bundle_id": bundle.bundle_id,
+                "candidate_id": bundle.candidate.candidate_id,
+                "disposition": disposition,
+                "confidence_bps": 0 if row is None else row["confidence_bps"],
+                "supporting_passage_ids": (
+                    [] if row is None else list(cast(Sequence[str], row["supporting_passage_ids"]))
+                ),
+                "conflicting_passage_ids": [],
+                "redundant_with_candidate_id": None,
+                "reason": "set coverage unavailable" if row is None else str(row["reason"]),
+                "diagnostic": None if row is not None else "caller-authored unresolved",
+            }
+        )
+    return partition
 
 
 def _options(route: ResolvedStageModel, *, cheap: bool) -> GenerationOptions:

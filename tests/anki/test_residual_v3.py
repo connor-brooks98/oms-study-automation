@@ -78,7 +78,7 @@ def _r6() -> dict[str, object]:
     }
 
 
-def test_r8_raw_reuse_is_closed_and_caps_or_nonidentical_siblings_are_unresolved() -> None:
+def test_r8_raw_reuse_is_closed_and_caps_remain_unresolved() -> None:
     expected = {1: "a" * 64}
     semantic = {1: "x" * 64}
     assert _v3_r8_raw_safety(_r5(), _r6(), expected, semantic, 0.5, 50) == []
@@ -97,8 +97,9 @@ def test_r8_raw_reuse_is_closed_and_caps_or_nonidentical_siblings_are_unresolved
     sibling["clusters"] = [
         {"representative_note_id": 1, "sibling_note_ids": [1, 2], "missing_vector_note_ids": []}
     ]
-    problems = _v3_r8_raw_safety(_r5(), sibling, {**expected, 2: "b" * 64}, semantic, 0.5, 50)
-    assert "non-identical R6 sibling remains unclassified" in problems
+    assert _v3_r8_raw_safety(
+        _r5(), sibling, {**expected, 2: "b" * 64}, semantic, 0.5, 50
+    ) == []
 
 
 def test_r8_never_retrieves_and_v3_pipeline_exposes_r8() -> None:
@@ -256,9 +257,9 @@ def test_r8_dispatches_residual_bundle_without_initial_r6_representative(
     calls: list[object] = []
     usage = StageUsage("residual", 1, 2, 3)
 
-    def classify(_self: object, **kwargs: object) -> SimpleNamespace:
+    def classify(_structured: object, **kwargs: object) -> SimpleNamespace:
         calls.append(kwargs)
-        bundle = kwargs["bundles"][0]
+        bundles = kwargs["bundles"]
         return SimpleNamespace(
             payload={
                 "final_partition": [
@@ -268,6 +269,7 @@ def test_r8_dispatches_residual_bundle_without_initial_r6_representative(
                         "supporting_passage_ids": ["e"],
                         "redundant_with_candidate_id": None,
                     }
+                    for bundle in bundles
                 ],
                 "blocking": False,
             },
@@ -275,7 +277,7 @@ def test_r8_dispatches_residual_bundle_without_initial_r6_representative(
             usage=usage,
         )
 
-    monkeypatch.setattr(stages.R7ClassificationService, "classify", classify)
+    monkeypatch.setattr(stages, "classify_set_coverage", classify)
     runner = object.__new__(CurationServicesRunner)
     runner.structured = SimpleNamespace(generator=SimpleNamespace(offline_replay_only=True))
     runner.embedder = SimpleNamespace(offline_replay_only=True)
@@ -325,14 +327,14 @@ def test_r8_dispatches_residual_bundle_without_initial_r6_representative(
     calls.clear()
     product = asyncio.run(runner.run(context))
     assert product.payload["records"][0]["initial_note_ids"] == [9]
-    assert [bundle.candidate.note_id for bundle in calls[0]["bundles"]] == [10]
+    assert [bundle.candidate.note_id for bundle in calls[0]["bundles"]] == [9, 10]
     r7.update(bundles=[], final_partition=[], bundles_sha256=canonical_payload_sha256([]))
     r5["facts"][0]["candidates"] = [candidate]
     r6["records"][0].update(all_candidates=[], per_fact_cap_excluded_note_ids=[], clusters=[])
     monkeypatch.setattr(
-        stages.R7ClassificationService,
-        "classify",
-        lambda _self, **_kwargs: SimpleNamespace(
+        stages,
+        "classify_set_coverage",
+        lambda _structured, **_kwargs: SimpleNamespace(
             payload={"final_partition": [], "blocking": True},
             blocking_error="residual blocked",
             usage=None,

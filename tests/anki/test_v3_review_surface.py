@@ -580,6 +580,39 @@ def test_r11_runner_projects_visible_candidates_and_exact_frozen_evidence() -> N
     }
 
 
+def test_r11_residual_set_coverage_overrides_the_same_initial_candidate_once() -> None:
+    context = _phase_g_context()
+    r7 = context.prior_payloads[CurationStage.V3_R7_CLASSIFICATION]
+    r7["final_partition"] = [{"bundle_id": "initial:1", "disposition": "unresolved"}]
+    context.prior_payloads[CurationStage.V3_R7_CLASSIFICATION] = _seal(
+        {key: value for key, value in r7.items() if key != "artifact_sha256"}
+    )
+    r8 = context.prior_payloads[CurationStage.V3_R8_GAP_CONFIRMATION]
+    r8["records"][0]["state"] = "covered_residual"
+    r8["residual_r7"]["bundles"].extend(
+        [
+            {"bundle_id": "set:1", "fact_id": "initial", "candidate": {"note_id": 1}},
+            {"bundle_id": "set:2", "fact_id": "initial", "candidate": {"note_id": 2}},
+        ]
+    )
+    r8["residual_r7"]["final_partition"].extend(
+        [
+            {"bundle_id": "set:1", "disposition": "keep"},
+            {"bundle_id": "set:2", "disposition": "keep"},
+        ]
+    )
+    context.prior_payloads[CurationStage.V3_R8_GAP_CONFIRMATION] = _seal(
+        {key: value for key, value in r8.items() if key != "artifact_sha256"}
+    )
+
+    snapshot = asyncio.run(_offline_runner().run(context)).payload["snapshot"]
+    initial = [item for item in snapshot["existing_candidates"] if item["fact_id"] == "initial"]
+    assert [(item["note_id"], item["disposition"]) for item in initial] == [
+        (1, "keep"),
+        (2, "keep"),
+    ]
+
+
 @pytest.mark.parametrize("field", ("revision_id", "source_kind"))
 def test_r11_runner_rejects_scope_evidence_without_pinned_provenance(field: str) -> None:
     control = asyncio.run(_offline_runner().run(_phase_g_context()))

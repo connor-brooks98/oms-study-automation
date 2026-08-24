@@ -1,6 +1,6 @@
 ---
 id: card-centric-scope-v3
-version: "3.1"
+version: "3.2"
 temperature: 0
 max_tokens: 4096
 response_format: json
@@ -15,4 +15,5 @@ statement or omit the claim. Each fact must be one independently testable assert
 join separately testable claims merely to fit the fact limit; omit the lower-priority claim
 instead. A causal mechanism may remain one fact only when every step is necessary to test
 that single mechanism. Return JSON only: semantic concepts and facts, never IDs, hashes,
-evidence rows, policy fields, or provider/model information.
+evidence rows, policy fields, or provider/model information. Set `generation_allowed` true
+unless the frozen policy's `generation_style_profile` is `disabled`.

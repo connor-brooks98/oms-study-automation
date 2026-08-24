@@ -190,6 +190,7 @@ class ScopeService:
             policy_sha256=policy.policy_sha256,
             source_bundle_sha256=source_bundle_sha256,
             degraded_mode=degraded_mode,
+            generation_allowed=policy.generation_style_profile != "disabled",
         )
         if reused is not None:
             return ScopeGenerationResult(
@@ -223,6 +224,7 @@ class ScopeService:
             source_bundle_sha256=source_bundle_sha256,
             scope_request_sha256=scope_request_sha256,
             degraded_mode=degraded_mode,
+            generation_allowed=policy.generation_style_profile != "disabled",
         )
         return ScopeGenerationResult(
             scope=scope,
@@ -547,6 +549,7 @@ def _lecture_scope(
     source_bundle_sha256: str,
     scope_request_sha256: str,
     degraded_mode: Literal["none", "transcript_outline"],
+    generation_allowed: bool,
 ) -> LectureScope:
     """Mechanically project the already request-bound, validated semantic model."""
     concepts: list[ScopedConcept] = []
@@ -557,7 +560,7 @@ def _lecture_scope(
                 fact_id=f"{concept_id}-fact-{fact_index:08d}",
                 statement=fact.statement,
                 evidence_ids=fact.evidence_ids,
-                generation_allowed=fact.generation_allowed,
+                generation_allowed=generation_allowed,
                 forbidden_cloze_targets=fact.forbidden_cloze_targets,
             )
             for fact_index, fact in enumerate(semantic_concept.facts, start=1)
@@ -606,6 +609,7 @@ def _valid_reuse(
     policy_sha256: str,
     source_bundle_sha256: str,
     degraded_mode: Literal["none", "transcript_outline"],
+    generation_allowed: bool,
 ) -> LectureScope | None:
     if existing is None or existing.scope_request_sha256 != scope_request_sha256:
         return None
@@ -618,6 +622,11 @@ def _valid_reuse(
         or scope.source_bundle_sha256 != source_bundle_sha256
         or scope.degraded_mode != degraded_mode
         or scope.scope_id != f"scope-{scope_request_sha256}"
+        or any(
+            fact.generation_allowed is not generation_allowed
+            for concept in scope.concepts
+            for fact in concept.facts
+        )
     ):
         return None
     return scope
