@@ -9,7 +9,13 @@ Implemented the isolated pre-submit Ask intent and answer-leak protection surfac
 `68c1fd6a3d4a1ccdbb9441d44943515f136343c0` (tree
 `640ef6da61ccab24c69ac878266101bc5cbb4969`), subject
 `feat: prevent pre-submit Ask answer leakage`. Fix Round 1 is the separate non-amended
-commit `SELF` / tree `SELF_TREE`, subject `fix: harden Ask pre-submit protection`.
+commit `430e6e73d12e40effcc1f9f76eed7e81017d3884` / tree
+`bdefdcd6d661c0e590aa694420292c79cf087374`, subject
+`fix: harden Ask pre-submit protection`. Fix Round 2 is the separate implementation/test
+commit `a0830c702a1b8140ee0fd5c56dc896aa7e95bcf0` / tree
+`2fb3faeff96d688afeddf02d2bc44d909c7db7ff`, subject
+`fix: close Ask pre-submit bypasses`. This report update is a separate docs-only correction
+record commit; that record commit is not self-referenced here.
 
 ## Interfaces
 
@@ -19,21 +25,24 @@ commit `SELF` / tree `SELF_TREE`, subject `fix: harden Ask pre-submit protection
   `compare_concepts`, `request_answer`, `request_option_elimination`, and `other`.
 - `classify_pre_submit_intent(query: str) -> AskIntent`: deterministic NFKC/casefold/token
   classification. Direct answer, diagnosis, and option-elimination requests run before
-  benign concept/definition/mechanism/source/compare rules, except generic test-taking
-  strategy language, which is a benign concept hint. Fullwidth text, case, Unicode format
-  characters, whitespace, punctuation, and common punctuation variants are handled locally.
+  benign concept/definition/mechanism/source/compare rules, except explicit general
+  test-taking framing, which is a benign concept hint. Mixed policy-sensitive strategy
+  phrasing remains protected. Fullwidth text, case, Unicode format characters, whitespace,
+  punctuation, and common punctuation variants are handled locally.
 
 `src/oms_hub/ask/leakage.py` provides:
 
 - Frozen-slots `LeakResult` containing only `leaked` and a generic reason.
 - `detect_answer_leak(text, protected_answers)`: ignores blank values; applies NFKC,
   casefolding, Unicode `Cf` removal, tokenization, whitespace/punctuation/hyphen
-  normalization, letter/decimal option-label normalization, and punctuation-separated
-  abbreviation handling. A string outer `protected_answers` value is treated as one
-  protected answer. Matching is contiguous token matching, so `war` does not match `warm`,
-  `heparin` does not match `heparinase`, whitespace-separated `w a r` does not become
-  `war`, and `1` does not match `12`. Supplied variants are matched exactly after
-  normalization; no synonym table or fuzzy edit distance exists.
+  normalization, letter/decimal option-label normalization (including multi-digit decimal
+  labels), and punctuation-separated abbreviation handling. A string outer
+  `protected_answers` value is treated as one protected answer; malformed non-Sequence
+  outers return generic no-match safely. Matching is contiguous token matching, so `war`
+  does not match `warm`, `heparin` does not match `heparinase`, whitespace-separated `w a r`
+  does not become `war`, and exact token matching keeps `1` distinct from `12`. Supplied
+  variants are matched exactly after normalization; no synonym table or fuzzy edit distance
+  exists.
 - `safe_pre_submit_refusal() -> GroundedAnswer`: returns exactly:
 
   `Submit the question first. I can still explain the underlying concept or point you to the relevant source.`
@@ -116,33 +125,70 @@ value, classifies generic test-taking strategy as `concept_hint` while keeping
 question-scoped elimination protected, and marks policy refusal as
 `insufficient_evidence=False`.
 
+## Fix Round 2
+
+The requested Fix Round 2 tests were added before production changes while the worktree was
+at the clean Fix Round 1 implementation commit `430e6e73d12e40effcc1f9f76eed7e81017d3884` /
+tree `bdefdcd6d661c0e590aa694420292c79cf087374`. A transient missing-`pytest` test import
+was corrected before the recorded RED run.
+
+RED command:
+
+```text
+PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
+  python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py -q
+```
+
+Result: exit `1` with 8 failures:
+
+- generic `strategy` wording bypassed policy-sensitive mixed answer/option requests;
+- multi-digit decimal option labels were not recognized;
+- malformed non-Sequence outer protected-answer values raised instead of returning generic
+  no-match.
+
+GREEN command:
+
+```text
+PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
+  python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py -q
+```
+
+Result: `57 passed`.
+
+Fix Round 2 now recognizes benign strategy language only with explicit general test-taking
+context, while policy checks remain first for mixed phrasing. Decimal option labels accept
+any normalized decimal token and exact token matching preserves `1` versus `12`. Malformed
+outer values return `LeakResult(False, "no_match")`; valid sequences still ignore non-string
+members; and the controller ruling remains `insufficient_evidence=False` for policy refusal.
+
 ## Verification evidence
 
 1. Initial focused tests: `40 passed`.
 2. Fix Round 1 focused tests: `49 passed`.
-3. Affected Ask/models/contracts command:
+3. Fix Round 2 focused tests: `57 passed`.
+4. Affected Ask/models/contracts command:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
      python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py tests/ask/test_models.py tests/contracts -q
    ```
 
-   Result: `106 passed` (`49` Task 3.3, `16` Task 3.1 model, `41` contract tests).
-4. Exact Ruff:
+   Result: `114 passed` (`57` Task 3.3, `16` Task 3.1 model, `41` contract tests).
+5. Exact Ruff:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH ruff check src tests scripts
    ```
 
    Result: `All checks passed!`.
-5. Source mypy:
+6. Source mypy:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH mypy src
    ```
 
    Result: `Success: no issues found in 180 source files`.
-6. Task-owned test mypy:
+7. Task-owned test mypy:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH MYPYPATH=$PWD/src \
@@ -150,7 +196,7 @@ question-scoped elimination protected, and marks policy refusal as
    ```
 
    Result: `Success: no issues found in 2 source files`.
-7. Static safety checks:
+8. Static safety checks:
 
    - An AST scan of both production modules reported no provider/model API, network, or
      logging imports/calls. The only project import is the required `GroundedAnswer` model
@@ -159,8 +205,8 @@ question-scoped elimination protected, and marks policy refusal as
      answers. Protected values occur only in hand-derived tests.
    - A credential/private-content scan found no API keys, bearer credentials, private lecture
      text, Anki content, or production identifiers in the owned implementation/tests.
-8. `git diff --check`: passed.
-9. The exact base-to-head scope check is limited to the authorized files:
+9. `git diff --check`: passed.
+10. The exact base-to-head scope check is limited to the authorized files:
 
    ```text
    src/oms_hub/ask/intent.py
@@ -198,15 +244,17 @@ data access, Anki action, production mutation, push, merge, tag, or deploy was p
 - Punctuation-separated single-letter abbreviations are normalized; whitespace-separated
   letters remain separate to preserve token boundaries.
 - Generic test-taking strategy requests are intentionally treated as benign concept hints;
-  question-scoped option elimination remains protected.
-- Decimal option labels are supported only as one-token labels; embedded multi-digit tokens
-  remain distinct. Unicode `Cf` format characters are removed after NFKC/casefold.
-- A `str` outer `protected_answers` argument is treated as one protected value; non-string
-  elements inside a sequence remain ignored safely.
+  only explicit general test-taking framing qualifies, and question-scoped or mixed
+  policy-sensitive phrasing remains protected.
+- Decimal option labels accept any normalized decimal token; exact token matching keeps
+  embedded values distinct. Unicode `Cf` format characters are removed after NFKC/casefold.
+- A `str` outer `protected_answers` argument is treated as one protected value; malformed
+  non-Sequence outers return generic no-match; non-string elements inside valid sequences
+  remain ignored safely.
 - Native Windows and provider/live acceptance remain unrun by design.
 
 ## Commit identity
 
-The initial implementation identity is fixed above. `SELF`/`SELF_TREE` intentionally refer
-to the separate non-amended Fix Round 1 commit that contains this report update; the final
-commit and tree are reported in the completion handoff.
+The initial, Fix Round 1, and Fix Round 2 implementation identities are fixed above. This
+report update is intentionally delivered as a separate docs-only correction record commit;
+that record commit is not self-referenced here.
