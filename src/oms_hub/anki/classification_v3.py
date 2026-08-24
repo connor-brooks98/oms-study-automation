@@ -31,6 +31,7 @@ from oms_hub.llm.structured import StructuredOutputError, StructuredTextService
 MAX_PROVIDER_INPUT_BYTES = 65_536
 MAX_BUNDLE_BYTES = 16_384
 MAX_BUNDLE_TOKENS = 16_384
+CLASSIFICATION_OUTPUT_MAX_TOKENS = 3_072
 CHEAP_BATCH_MAX = 16
 THOROUGH_BATCH_MAX = 8
 CLASSIFICATION_CANDIDATES_PER_FACT = 3
@@ -41,6 +42,7 @@ CLASSIFICATION_CONFIG = {
     "version": "classification-r7-v1",
     "bundle_max_input_bytes": MAX_BUNDLE_BYTES,
     "bundle_max_input_tokens": MAX_BUNDLE_TOKENS,
+    "output_max_tokens": CLASSIFICATION_OUTPUT_MAX_TOKENS,
     "cheap_batch_size": CHEAP_BATCH_MAX,
     "thorough_batch_size": THOROUGH_BATCH_MAX,
     "candidates_per_fact": CLASSIFICATION_CANDIDATES_PER_FACT,
@@ -727,7 +729,7 @@ def _options(route: ResolvedStageModel, *, cheap: bool) -> GenerationOptions:
         if route.thinking_mode == "enabled"
         else ThinkingMode.DISABLED,
         temperature=0.0,
-        max_tokens=4096,
+        max_tokens=CLASSIFICATION_OUTPUT_MAX_TOKENS,
     )
 
 

@@ -990,6 +990,9 @@ def test_r7_pins_and_repair_authorization_reject_stale_or_noninteger_costs() -> 
     cheap, thorough = _routes()
     pin = r7_pin_document(cheap, thorough, "c" * 64)
     assert pin["cheap_options"]["cacheable_source_prefix_sha256"] is None
+    assert pin["cheap_options"]["max_tokens"] == 3072
+    assert pin["thorough_options"]["max_tokens"] == 3072
+    assert pin["classification_config"]["output_max_tokens"] == 3072
     assert pin["cheap_options_sha256"] == canonical_payload_sha256(pin["cheap_options"])
     request = "d" * 64
     authorization = {
