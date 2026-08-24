@@ -33,9 +33,13 @@ unapplied as required by the Task 3.6 boundary.
   `d21fb32f49ca955355fed8af8d9fe7b372bbabd6`.
 - Privacy provenance fix code commit: `03b04a560239367b5c5a2b1bb594678d11caa4bc`
   / tree `82476512461a673fd0315885ac24bfcf7911fc62`.
+- Canonicalization RED test checkpoint: `ca23b4341c8be32e13c491971a325b4d62797db0`
+  / tree `5bd8026f4a571cd5bcb736cf23ad09ae37656ee2`.
+- Canonicalization fix code commit: `03f89122d73a22139f32ae21b1685c1ad82d2f99`
+  / tree `0284cdd384cb5aa165e97c3fc3f12a5e876f5598`.
 - Required code subject: `feat: persist scoped Ask conversations and retrieval traces`
-- Prior documentation commit: `0c0f2b0b3013cad18a8f8b708f6df442d8dbb0e6` / tree
-  `b4fbad9076080d611ed377f87d45f5b0c32fd546`.
+- Prior documentation commit: `414d5e8bb59a999d2e60727680d34acb4144aad1` / tree
+  `9c11b6510b7eb2c090d01ec87bfa1d340e61a6fd`.
 - Historical Terra fix-round docs commit identity: `SELF`; tree: `SELF_TREE`.
   Resolve this pair only from the containing historical Terra-fix docs commit with
   `git rev-parse HEAD` and `git rev-parse 'HEAD^{tree}'`; it does not identify later
@@ -49,6 +53,9 @@ unapplied as required by the Task 3.6 boundary.
 - Privacy-fix docs commit: `SELF`; tree: `SELF_TREE`.
   Resolve this pair only from the containing privacy-fix docs commit after creation;
   do not substitute any historical `SELF` identity here.
+- Canonicalization-fix docs commit: `SELF`; tree: `SELF_TREE`.
+  Resolve this pair only from the containing canonicalization-fix docs commit after
+  creation; do not substitute any historical `SELF` identity here.
 
 Only these runtime/test files were changed:
 
@@ -70,10 +77,11 @@ isolated tests:
   a database-side message sequence counter, and unique `(thread_id, actor_id)` parent key.
 - `ask_messages`: actor owner, role/content, per-thread sequence, creation time, and
   composite `(thread_id, actor_id)` foreign key to the parent thread.
-- `retrieval_runs`: immutable source snapshot hash, provider request ID, prompt/schema/model
-  versions, a required validation status code, expected evidence-link cardinality,
-  timestamp, and the same composite parent foreign key. Provider request IDs are bounded
-  opaque IDs; validation outcomes are limited to `valid`, `invalid`, `rejected`,
+- `retrieval_runs`: immutable source snapshot hash, a deterministic
+  `sha256:<64 lowercase hex>` provider reference derived from caller input, prompt/schema/
+  model versions, a required validation status code, expected evidence-link cardinality,
+  timestamp, and the same composite parent foreign key. Caller provider text is never
+  persisted; validation outcomes are limited to `valid`, `invalid`, `rejected`,
   `insufficient`, or `error`.
 - `retrieval_evidence`: the single canonical retrieval-run representation of paired ordinal,
   opaque evidence ID, and source revision ID links.
@@ -103,6 +111,9 @@ representation, and reads require stored expected cardinality plus contiguous or
 Opaque IDs, one-to-one pairing, pinned thread source scope, bounded provenance fields, and
 decoded persisted values are validated fail closed. A default empty thread revision tuple
 represents a broad scope and does not itself reject bounded provenance.
+Persisted `RetrievalScope` JSON must contain exactly its five canonical keys and equal the
+repository's deterministic serialization on read; injected `raw_evidence` or other keys
+fail closed. Persisted page context continues through Pydantic `extra="forbid"` validation.
 
 ## TDD evidence
 
@@ -291,6 +302,29 @@ accepts only the defined validation statuses `valid`, `invalid`, `rejected`,
 `insufficient`, and `error`, including persisted reconstruction. Both Terra exact-revision
 re-reviews remain **PENDING**; no prospective approval is claimed.
 
+## Final privacy/canonicalization fix wave
+
+Fresh Terra specification and quality reviews of `414d5e8bb59a999d2e60727680d34acb4144aad1`
+/ tree `9c11b6510b7eb2c090d01ec87bfa1d340e61a6fd` both returned **CHANGES REQUIRED** for
+two Important canonicalization gaps:
+
+1. A delimiter-form provider value such as `patient.has.chest.pain` satisfied the opaque
+   grammar and round-tripped unchanged. Provider values are now transformed to a
+   deterministic `sha256:<64 lowercase hex>` reference before persistence; reads reject
+   any value that is not exactly that derived grammar, preserving correlation without
+   storing caller content.
+2. Persisted `scope_json` ignored unknown keys such as `raw_evidence`. Reads now require
+   the exact five-key canonical `RetrievalScope` shape and a byte-for-byte canonical
+   serialization round-trip. Page context retains Pydantic `extra="forbid"` behavior.
+
+RED coverage was added first in `ca23b4341c8be32e13c491971a325b4d62797db0` / tree
+`5bd8026f4a571cd5bcb736cf23ad09ae37656ee2`: `5 failed, 27 passed`, covering provider
+hashing/readback grammar, scope extra-key corruption, and page-context extra-key handling.
+The GREEN correction is `03f89122d73a22139f32ae21b1685c1ad82d2f99` / tree
+`0284cdd384cb5aa165e97c3fc3f12a5e876f5598` (`fix: canonicalize Ask provenance and
+scope`). Both Terra exact-revision re-reviews remain **PENDING**; no prospective approval
+is claimed.
+
 ## Required verification evidence
 
 Focused repository, affected Ask, and contracts:
@@ -301,9 +335,9 @@ PATH=$PWD/.venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD \
   tests/ask/test_intent.py tests/ask/test_leakage.py tests/contracts -q
 ```
 
-Result: `163 passed` (`30` repository, `16` models, `60` intent, `16` leakage, `41`
+Result: `165 passed` (`32` repository, `16` models, `60` intent, `16` leakage, `41`
 contracts), including the final Sol corruption, rollback, link-cardinality, actor,
-ID-boundary, and privacy/status tests.
+ID-boundary, privacy/status, and canonicalization tests.
 
 Ruff:
 
@@ -338,7 +372,8 @@ focused tests: actor-filtered thread listing/read/write/delete, all-child owners
 validation, composite-FK rejection, bounded opaque ID/provider-column checks, and
 persisted-ID corruption are covered alongside:
 different quiz-question rejection,
-ordered append-only messages, complete provenance round-trip, absent raw evidence
+ordered append-only messages, complete provenance reconstruction with hashed provider
+references, absent raw evidence
 columns, canonical-evidence survival after deletion, actor-only retention, and missing
 thread fail-closed behavior. `git diff --cached --check` passed before the code/test
 commit. The staged code/test scope was exactly the two owned files. A source-only secret
@@ -365,9 +400,11 @@ central-table, app-state, atomic-concurrency, strict-retention rollback on malfo
 stored timestamps, terminal-link loss, persisted-timestamp/ID corruption, provider and
 actor-column boundary, opaque provider-ID, validation-status, privacy, provenance-scope,
 and no-route/no-v2 integration tests. `validation_outcome` remains non-null `TEXT` but is
-limited to `{valid, invalid, rejected, insufficient, error}`; `provider_request_id` is
-opaque within `String(500)`. None of those edits were applied here. The service/context
-integration proposal must additionally test that,
+limited to `{valid, invalid, rejected, insufficient, error}`; `provider_request_id` stores
+only `sha256:<64 lowercase hex>` derived references from caller input, never raw provider
+text. Scope persistence requires the exact five canonical keys and deterministic
+serialization; page context remains `extra="forbid"`. None of those edits were applied
+here. The service/context integration proposal must additionally test that,
 when a thread's revision tuple is empty, each resolved `EvidenceRef` revision is checked
 against the effective Source Trust course/exam/lecture scope before
 `record_retrieval_run`; Task 3.6 cannot claim this blocked index membership check.
