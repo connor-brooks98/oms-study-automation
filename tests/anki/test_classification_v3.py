@@ -950,6 +950,60 @@ def test_r8_set_coverage_selects_multiple_cards_from_one_compact_fact_request() 
     )
 
 
+@pytest.mark.parametrize(
+    ("statement", "expected"),
+    (
+        (
+            "Uroporphyrinogen decarboxylase converts uroporphyrinogen III to "
+            "coproporphyrinogen III, and coproporphyrinogen oxidase converts it to "
+            "protoporphyrinogen IX.",
+            (
+                "Uroporphyrinogen decarboxylase converts uroporphyrinogen III to "
+                "coproporphyrinogen III",
+                "and coproporphyrinogen oxidase converts it to protoporphyrinogen IX.",
+            ),
+        ),
+        (
+            "Protoporphyrinogen oxidase converts protoporphyrinogen IX to protoporphyrin IX, "
+            "after which ferrochelatase adds ferrous iron to form heme.",
+            (
+                "Protoporphyrinogen oxidase converts protoporphyrinogen IX to protoporphyrin IX",
+                "after which ferrochelatase adds ferrous iron to form heme.",
+            ),
+        ),
+        (
+            "Hydroxymethylbilane spontaneously cyclizes mainly to uroporphyrinogen I, while "
+            "uroporphyrinogen III cosynthase produces uroporphyrinogen III, the isomer that "
+            "proceeds toward heme.",
+            (
+                "Hydroxymethylbilane spontaneously cyclizes mainly to uroporphyrinogen I",
+                "while uroporphyrinogen III cosynthase produces uroporphyrinogen III",
+                "the isomer that proceeds toward heme.",
+            ),
+        ),
+        (
+            "Decreased temperature, acidity, partial pressure of carbon dioxide, and 2,3-BPG "
+            "promote the R form.",
+            (
+                "Decreased temperature, acidity, partial pressure of carbon dioxide, and "
+                "2,3-BPG promote the R form.",
+            ),
+        ),
+    ),
+)
+def test_r8_material_claim_inventory_splits_observed_compound_mechanisms(
+    statement: str, expected: tuple[str, ...]
+) -> None:
+    bundle = _bundle(1, "fact-1", statement)
+
+    assert tuple(
+        claim
+        for _claim_id, claim in classification_v3._material_claim_inventory(
+            (("fact-1", (bundle,)),), "fact-1"
+        )
+    ) == expected
+
+
 def test_r8_set_coverage_fails_closed_when_a_candidate_escapes_its_fact() -> None:
     bundle = _bundle(1, "fact-1")
     fake = FakeGenerator(

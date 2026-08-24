@@ -467,7 +467,12 @@ def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
         @field_validator("statement", mode="before")
         @classmethod
         def trim_statement(cls, value: object) -> str:
-            return _trim(value)
+            statement = _trim(value)
+            # ponytail: catches observed cap clipping; add evidence-aware validation if a
+            # provider starts masking clipped facts with terminal punctuation.
+            if len(statement) == 200 and not statement.endswith((".", "?", "!")):
+                raise ValueError("fact statement appears truncated at 200-character boundary")
+            return statement
 
         @field_validator("evidence_ids", "forbidden_cloze_targets", mode="before")
         @classmethod

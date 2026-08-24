@@ -99,6 +99,8 @@ SET_COVERAGE_INSTRUCTION = (
 
 _MATERIAL_CLAIM_BOUNDARY = re.compile(
     r";\s*|\s+(?=(?:but|whereas)\b)|,\s+(?=(?:the|which|whereas)\b)|"
+    r",\s+(?=(?:and|while|after which)\s+(?:[\w+-]+\s+){1,4}"
+    r"(?:converts?|adds?|produces?|cyclizes?|condenses?)\b)|"
     r",\s+(?=(?:and\s+)?(?:is|are|has|have|can|cannot|may|causes?|results?|produces?|"
     r"forms?|inhibits?|increases?|decreases?|accelerates?|shifts?|binds?|occurs?|requires?)\b)|"
     r"\s+(?=and\s+(?:is|are|has|have|can|cannot|may|causes?|results?|produces?|forms?|"

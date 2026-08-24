@@ -80,7 +80,7 @@ def test_r3_maximal_response_stays_below_live_output_ceiling() -> None:
     for concept_index in range(14):
         facts = [
             {
-                "statement": padded(f"fact-{concept_index:02}-{fact_index}-", 200),
+                "statement": padded(f"fact-{concept_index:02}-{fact_index}-", 199) + ".",
                 "evidence_ids": [evidence_ids[fact_index]],
                 "generation_allowed": False,
                 "forbidden_cloze_targets": [
@@ -111,6 +111,29 @@ def test_r3_maximal_response_stays_below_live_output_ceiling() -> None:
     estimated_tokens = (len(maximal.model_dump_json().encode("utf-8")) + 3) // 4
 
     assert estimated_tokens <= 7_000
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "Each alpha chain contains 141 amino acids and each beta chain contains approximately "
+        "146 amino acids; the complete hemoglobin molecule contains approximately 574 amino "
+        "acids and has a molecular weight",
+        "Excess delta-ALA is associated with abdominal and neuropsychiatric or neuropathic "
+        "symptoms, excess porphobilinogen can produce purple urine after light exposure, and "
+        "excess tetrapyrroles can cause cut",
+    ),
+)
+def test_r3_rejects_live_boundary_clipped_fact_statements(statement: str) -> None:
+    assert len(statement) == 200
+    evidence_id = "evidence"
+    payload = _response(
+        json.dumps({"source_bundle": {"evidence": [{"evidence_id": evidence_id}]}})
+    )
+    payload["concepts"][0]["facts"][0]["statement"] = statement  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="appears truncated"):
+        _scope_output_model({evidence_id}).model_validate(payload)
 
 
 def _add_r0_costs(r0: dict[str, object], *models: str) -> None:
