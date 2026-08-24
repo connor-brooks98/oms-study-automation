@@ -112,7 +112,8 @@ def _validate_identifier_sequence(values: object, field_name: str) -> None:
 
 
 def _validate_evidence_scope(scope: RetrievalScope, unit: EvidenceUnit) -> None:
-    if unit.authority_class is AuthorityClass.COURSE_MATERIAL:
+    is_course_material = unit.authority_class is AuthorityClass.COURSE_MATERIAL
+    if is_course_material:
         if unit.course_id != scope.course_id:
             raise SourceScopeError("course material does not match course scope")
     elif unit.course_id is not None and unit.course_id != scope.course_id:
@@ -120,14 +121,20 @@ def _validate_evidence_scope(scope: RetrievalScope, unit: EvidenceUnit) -> None:
 
     if (
         scope.exam_id is not None
-        and unit.exam_id is not None
-        and unit.exam_id != scope.exam_id
+        and (
+            unit.exam_id != scope.exam_id
+            if is_course_material
+            else unit.exam_id is not None and unit.exam_id != scope.exam_id
+        )
     ):
         raise SourceScopeError("evidence exam_id does not match exam scope")
     if (
         scope.lecture_ids
-        and unit.lecture_id is not None
-        and unit.lecture_id not in scope.lecture_ids
+        and (
+            unit.lecture_id not in scope.lecture_ids
+            if is_course_material
+            else unit.lecture_id is not None and unit.lecture_id not in scope.lecture_ids
+        )
     ):
         raise SourceScopeError("evidence lecture_id does not match lecture scope")
     if (

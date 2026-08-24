@@ -137,6 +137,16 @@ def test_course_material_must_match_requested_course() -> None:
         filter_allowed_evidence(_scope(course_id="cardio"), (_unit(),))
 
 
+def test_course_material_missing_exam_metadata_is_rejected_in_exam_scope() -> None:
+    with pytest.raises(SourceScopeError, match="exam"):
+        filter_allowed_evidence(_scope(exam_id="e2"), (_unit(exam_id=None),))
+
+
+def test_course_material_missing_lecture_metadata_is_rejected_in_lecture_scope() -> None:
+    with pytest.raises(SourceScopeError, match="lecture"):
+        filter_allowed_evidence(_scope(lecture_ids=("l13",)), (_unit(lecture_id=None),))
+
+
 @pytest.mark.parametrize(
     "authority_class",
     [
