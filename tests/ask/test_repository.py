@@ -400,6 +400,67 @@ def test_retrieval_history_keeps_provenance_and_no_raw_evidence(
         ) == 2
 
 
+def test_private_prose_is_rejected_for_provider_request_id(
+    repository: AskRepository,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-private-prose"
+    )
+    private_prose = "Patient has chest pain and elevated troponin; review the diagnosis."
+    with pytest.raises(ValueError, match="provider_request_id"):
+        repository.record_retrieval_run(
+            thread.thread_id,
+            "actor-alice",
+            source_snapshot_hash="snapshot-sha",
+            provider_request_id=private_prose,
+            prompt_version="ask-grounded-v1",
+            schema_version="ask-v1",
+            model="model-1",
+            validation_outcome="valid",
+        )
+
+
+def test_private_prose_is_rejected_for_validation_outcome(
+    repository: AskRepository,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-private-outcome"
+    )
+    private_prose = "Patient has chest pain and elevated troponin; review the diagnosis."
+    with pytest.raises(ValueError, match="validation_outcome"):
+        repository.record_retrieval_run(
+            thread.thread_id,
+            "actor-alice",
+            source_snapshot_hash="snapshot-sha",
+            provider_request_id="provider-request-1",
+            prompt_version="ask-grounded-v1",
+            schema_version="ask-v1",
+            model="model-1",
+            validation_outcome=private_prose,
+        )
+
+
+def test_validation_outcome_accepts_defined_status_codes(
+    repository: AskRepository,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-validation-statuses"
+    )
+    statuses = ("valid", "invalid", "rejected", "insufficient", "error")
+    for index, status in enumerate(statuses):
+        run = repository.record_retrieval_run(
+            thread.thread_id,
+            "actor-alice",
+            source_snapshot_hash="snapshot-sha",
+            prompt_version="ask-grounded-v1",
+            schema_version="ask-v1",
+            model="model-1",
+            validation_outcome=status,
+            retrieval_run_id=f"retrieval-status-{index}",
+        )
+        assert run.validation_outcome == status
+
+
 def test_provenance_ids_follow_storage_column_limits(
     repository: AskRepository,
 ) -> None:
@@ -632,6 +693,66 @@ def test_corrupt_persisted_retrieval_timestamp_fails_closed(
         repository.get_thread(thread.thread_id, "actor-alice")
 
 
+def test_corrupt_persisted_privacy_fields_fail_closed(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-corrupt-privacy"
+    )
+    repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        provider_request_id="provider-request-1",
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+        retrieval_run_id="retrieval-corrupt-privacy",
+    )
+    private_prose = "Patient has chest pain and elevated troponin."
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE retrieval_runs SET provider_request_id = "
+                f"'{private_prose}' WHERE retrieval_run_id = 'retrieval-corrupt-privacy'"
+            )
+        )
+    with pytest.raises(ValueError, match="provider_request_id"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+def test_corrupt_persisted_validation_outcome_fails_closed(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-corrupt-outcome"
+    )
+    repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        provider_request_id="provider-request-1",
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+        retrieval_run_id="retrieval-corrupt-outcome",
+    )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE retrieval_runs SET validation_outcome = "
+                "'Patient has chest pain and elevated troponin.' "
+                "WHERE retrieval_run_id = 'retrieval-corrupt-outcome'"
+            )
+        )
+    with pytest.raises(ValueError, match="validation_outcome"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
 def test_delete_thread_removes_owned_derivatives_but_not_canonical_evidence(
     repository: AskRepository,
     database: Database,
@@ -742,7 +863,7 @@ def test_missing_or_unauthorized_writes_fail_closed(repository: AskRepository) -
         repository.delete_thread("missing", "actor-alice")
 
 
-def test_validation_outcome_is_a_required_non_empty_string(
+def test_validation_outcome_rejects_empty_or_unstructured_values(
     repository: AskRepository,
 ) -> None:
     thread = repository.create_thread(
