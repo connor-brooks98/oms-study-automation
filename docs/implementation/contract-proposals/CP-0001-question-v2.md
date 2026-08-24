@@ -217,9 +217,9 @@ typing, `git diff --check`, and the repository's owned-scope and safety scans.
 
 ## Review and approval fields
 
-The controller must replace each `PENDING` value with the exact verdict and
-evidence after independent review. No approval is inferred from the focused
-GREEN result.
+The completed verdicts and evidence are recorded below. Remaining `PENDING`
+fields are intentionally limited to Sol-0 contract-owner and final Workstream
+Sol review; no approval is inferred from the focused GREEN result.
 
 | Required review | Reviewer | Result | Evidence commit/tree | Status |
 | --- | --- | --- | --- | --- |
