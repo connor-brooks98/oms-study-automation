@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import sys
+import traceback
 from collections.abc import Coroutine
 from typing import Any
 
@@ -56,6 +57,11 @@ class FakeSdkFactory:
         client = FakeSdkClient()
         self.clients.append(client)
         return client
+
+
+class FalseySdkFactory(FakeSdkFactory):
+    def __bool__(self) -> bool:
+        return False
 
 
 class SdkError(Exception):
@@ -134,12 +140,35 @@ class UnawaitableCloseAio:
         return object()
 
 
+class TrackingIdentifier(str):
+    strip_called = False
+
+    def strip(self, chars: str | None = None) -> str:
+        type(self).strip_called = True
+        return super().strip(chars)
+
+
+class TrackingOversizedHeaderKey(str):
+    casefold_called = False
+
+    def casefold(self) -> str:
+        type(self).casefold_called = True
+        return super().casefold()
+
+
 def gemini_config() -> GeminiConfig:
     return GeminiConfig(api_key=SecretStr("raw-secret"))
 
 
 def run(coroutine: Coroutine[Any, Any, Any]) -> Any:
     return asyncio.run(coroutine)
+
+
+def assert_suppressed_traceback(error: GeminiProviderError, raw_text: str) -> None:
+    formatted = "".join(traceback.format_exception(error))
+    assert raw_text not in formatted
+    assert error.__cause__ is None
+    assert error.__suppress_context__
 
 
 def test_importing_client_does_not_import_google_genai() -> None:
@@ -206,6 +235,18 @@ def test_async_client_is_closed_when_context_body_raises() -> None:
     assert sdk.clients[0].aio.close_calls == 1
 
 
+def test_falsey_injected_sdk_factory_is_used() -> None:
+    sdk = FalseySdkFactory()
+    factory = GeminiClientFactory(config=gemini_config(), sdk_factory=sdk)
+
+    async def exercise() -> None:
+        async with factory.client() as client:
+            assert client is sdk.clients[0].aio
+
+    run(exercise())
+    assert len(sdk.clients) == 1
+
+
 def test_factory_construction_failure_is_translated_and_redacted() -> None:
     def failing_factory(**kwargs: object) -> object:
         raise SdkError(
@@ -224,6 +265,7 @@ def test_factory_construction_failure_is_translated_and_redacted() -> None:
         assert raised.value.provider_request_id == "construction-request"
         assert "raw-secret" not in str(raised.value)
         assert "construction payload" not in str(raised.value)
+        assert_suppressed_traceback(raised.value, "raw-secret construction payload")
 
     run(exercise())
 
@@ -263,6 +305,7 @@ def test_aio_access_failure_is_translated_and_redacted() -> None:
         assert raised.value.provider_request_id == "aio-request"
         assert "raw-secret" not in str(raised.value)
         assert "aio payload" not in str(raised.value)
+        assert_suppressed_traceback(raised.value, "raw-secret aio payload")
 
     run(exercise())
 
@@ -296,21 +339,33 @@ def test_close_method_lookup_failure_is_translated_and_redacted() -> None:
         assert raised.value.provider_request_id == "close-lookup-request"
         assert "raw-secret" not in str(raised.value)
         assert "close lookup payload" not in str(raised.value)
+        assert_suppressed_traceback(raised.value, "raw-secret close lookup payload")
 
     run(exercise())
 
 
 @pytest.mark.parametrize(
-    ("aio", "error_type", "request_id"),
+    ("aio", "error_type", "request_id", "raw_payload"),
     (
-        (SyncCloseFailureAio(), GeminiTransientError, "sync-close-request"),
-        (AsyncCloseFailureAio(), GeminiTransientError, "async-close-request"),
+        (
+            SyncCloseFailureAio(),
+            GeminiTransientError,
+            "sync-close-request",
+            "raw-secret synchronous close payload",
+        ),
+        (
+            AsyncCloseFailureAio(),
+            GeminiTransientError,
+            "async-close-request",
+            "raw-secret asynchronous close payload",
+        ),
     ),
 )
 def test_close_invocation_and_await_failures_are_translated(
     aio: object,
     error_type: type[GeminiProviderError],
     request_id: str,
+    raw_payload: str,
 ) -> None:
     factory = GeminiClientFactory(config=gemini_config(), sdk_factory=FixedSdkFactory(aio))
 
@@ -321,6 +376,7 @@ def test_close_invocation_and_await_failures_are_translated(
         assert raised.value.provider_status_code == 503
         assert raised.value.provider_request_id == request_id
         assert "raw-secret" not in str(raised.value)
+        assert_suppressed_traceback(raised.value, raw_payload)
 
     run(exercise())
     assert isinstance(aio, (SyncCloseFailureAio, AsyncCloseFailureAio))
@@ -339,6 +395,7 @@ def test_unawaitable_close_is_a_redacted_contract_error() -> None:
             "Gemini SDK response did not match the expected contract."
         )
         assert "raw-secret" not in str(raised.value)
+        assert_suppressed_traceback(raised.value, "raw-secret")
 
     run(exercise())
     assert aio.close_calls == 1
@@ -363,6 +420,43 @@ def test_context_body_provider_failure_is_unchanged_when_close_succeeds() -> Non
     assert sdk.clients[0].aio.close_calls == 1
 
 
+def test_context_body_exception_is_preserved_when_close_fails() -> None:
+    aio = AsyncCloseFailureAio()
+    factory = GeminiClientFactory(config=gemini_config(), sdk_factory=FixedSdkFactory(aio))
+    original = RuntimeError("body failure")
+
+    async def exercise() -> None:
+        with pytest.raises(RuntimeError) as raised:
+            async with factory.client():
+                raise original
+        assert raised.value is original
+        assert "raw-secret asynchronous close payload" not in "".join(
+            traceback.format_exception(raised.value)
+        )
+
+    run(exercise())
+    assert aio.close_calls == 1
+
+
+def test_task_cancellation_is_preserved_when_close_fails() -> None:
+    aio = AsyncCloseFailureAio()
+    factory = GeminiClientFactory(config=gemini_config(), sdk_factory=FixedSdkFactory(aio))
+
+    async def exercise() -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        async with factory.client():
+            task.cancel()
+            await asyncio.sleep(0)
+
+    with pytest.raises(asyncio.CancelledError) as raised:
+        run(exercise())
+    assert "raw-secret asynchronous close payload" not in "".join(
+        traceback.format_exception(raised.value)
+    )
+    assert aio.close_calls == 1
+
+
 def test_broken_lazy_import_non_import_error_is_translated(monkeypatch: pytest.MonkeyPatch) -> None:
     client_module = importlib.import_module("oms_hub.providers.gemini.client")
 
@@ -384,8 +478,44 @@ def test_broken_lazy_import_non_import_error_is_translated(monkeypatch: pytest.M
         assert raised.value.provider_request_id == "import-request"
         assert "raw-secret" not in str(raised.value)
         assert "import payload" not in str(raised.value)
+        assert_suppressed_traceback(raised.value, "raw-secret import payload")
 
     run(exercise())
+
+
+def test_request_ids_are_bounded_before_normalization() -> None:
+    TrackingIdentifier.strip_called = False
+    value = TrackingIdentifier("request-" + "x" * 10_000)
+    translated = translate_gemini_error(
+        SdkError("raw-secret", status_code=503, headers={"x-request-id": value})
+    )
+
+    assert translated.provider_request_id == ("request-" + "x" * 192)
+    assert len(translated.provider_request_id or "") == 200
+    assert not TrackingIdentifier.strip_called
+
+
+@pytest.mark.parametrize("value", ("request\nid", "request\rid", "request\x00id"))
+def test_request_ids_with_control_characters_are_rejected(value: str) -> None:
+    translated = translate_gemini_error(
+        SdkError("raw-secret", status_code=503, headers={"x-request-id": value})
+    )
+
+    assert translated.provider_request_id is None
+    assert "raw-secret" not in str(translated)
+
+
+def test_oversized_header_keys_are_rejected_before_casefold() -> None:
+    TrackingOversizedHeaderKey.casefold_called = False
+    key = TrackingOversizedHeaderKey("x-request-id" + "k" * 10_000)
+    translated = translate_gemini_error(
+        SdkError("raw-secret", status_code=503, headers={key: "private-header"})
+    )
+
+    assert translated.provider_request_id is None
+    assert not TrackingOversizedHeaderKey.casefold_called
+    assert "raw-secret" not in str(translated)
+    assert "private-header" not in str(translated)
 
 
 @pytest.mark.parametrize(

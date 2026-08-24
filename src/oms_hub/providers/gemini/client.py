@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, NoReturn
 
 from oms_hub.providers.gemini.errors import (
     GeminiAuthenticationError,
@@ -37,18 +37,16 @@ def _official_sdk_factory(
 
     try:
         genai = importlib.import_module("google.genai")
-    except (ImportError, ModuleNotFoundError) as error:
+    except (ImportError, ModuleNotFoundError):
         raise GeminiContractError(
             "Gemini SDK is unavailable; install the approved provider dependency."
-        ) from error
+        ) from None
     except Exception as error:
-        translated = translate_gemini_error(error)
-        raise translated from error
+        _raise_translated(error)
     try:
         return genai.Client(api_key=api_key, http_options=http_options)
     except Exception as error:
-        translated = translate_gemini_error(error)
-        raise translated from error
+        _raise_translated(error)
 
 
 class GeminiClientFactory:
@@ -60,7 +58,7 @@ class GeminiClientFactory:
         sdk_factory: SdkFactory | None = None,
     ) -> None:
         self.config = config
-        self.sdk_factory = sdk_factory or _official_sdk_factory
+        self.sdk_factory = sdk_factory if sdk_factory is not None else _official_sdk_factory
 
     def _build_sdk_client(self) -> Any:
         try:
@@ -68,11 +66,10 @@ class GeminiClientFactory:
                 api_key=self.config.api_key.get_secret_value(),
                 http_options={"api_version": self.config.api_version},
             )
-        except GeminiProviderError:
-            raise
+        except GeminiProviderError as error:
+            raise error from None
         except Exception as error:
-            translated = translate_gemini_error(error)
-            raise translated from error
+            _raise_translated(error)
 
     @asynccontextmanager
     async def client(self) -> AsyncIterator[Any]:
@@ -82,25 +79,32 @@ class GeminiClientFactory:
         try:
             aio = sdk_client.aio
         except Exception as error:
-            translated = translate_gemini_error(error)
-            raise translated from error
+            _raise_translated(error)
         try:
             close = getattr(aio, "aclose", None)
         except Exception as error:
-            translated = translate_gemini_error(error)
-            raise translated from error
+            _raise_translated(error)
         if not callable(close):
             raise GeminiContractError(
                 "Gemini SDK async client does not expose the required close method."
             )
+        body_failed = False
         try:
-            yield aio
+            try:
+                yield aio
+            except BaseException:
+                body_failed = True
+                raise
         finally:
             try:
                 await close()
-            except Exception as error:
-                translated = translate_gemini_error(error)
-                raise translated from error
+            except BaseException as error:
+                if body_failed:
+                    pass
+                elif isinstance(error, Exception):
+                    _raise_translated(error)
+                else:
+                    raise
 
 
 def translate_gemini_error(exc: Exception) -> GeminiProviderError:
@@ -149,6 +153,10 @@ def translate_gemini_error(exc: Exception) -> GeminiProviderError:
     )
 
 
+def _raise_translated(error: Exception) -> NoReturn:
+    raise translate_gemini_error(error) from None
+
+
 def _safe_status_code(exc: Exception) -> int | None:
     for source in (exc, _safe_attr(exc, "response")):
         if source is None:
@@ -191,8 +199,11 @@ def _safe_attr(value: object, name: str) -> object | None:
 def _safe_identifier(value: object) -> str | None:
     if not isinstance(value, str):
         return None
+    value = value[:200]
+    if not value.isprintable():
+        return None
     value = value.strip()
-    return value[:200] or None
+    return value or None
 
 
 def _safe_header_request_id(headers: object) -> str | None:
@@ -202,7 +213,11 @@ def _safe_header_request_id(headers: object) -> str | None:
         for index, (key, value) in enumerate(headers.items()):
             if index >= 32:
                 break
-            if isinstance(key, str) and key.casefold() in _REQUEST_ID_HEADERS:
+            if (
+                isinstance(key, str)
+                and len(key) <= 64
+                and key.casefold() in _REQUEST_ID_HEADERS
+            ):
                 request_id = _safe_identifier(value)
                 if request_id is not None:
                     return request_id
