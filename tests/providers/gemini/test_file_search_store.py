@@ -287,13 +287,30 @@ def test_list_documents_maps_and_persists_deterministically(
     assert listed[0].metadata["source_revision_id"] == "sr_a"
 
 
+def test_list_documents_accepts_arbitrary_explicit_source_revision_id(
+    admin_bundle: tuple[GeminiFileSearchAdmin, FakeStores, FakeAioClient, FakeSdkFactory],
+) -> None:
+    admin, stores, _, _ = admin_bundle
+    stored = run(admin.ensure_store(StoreKey.course("heme-lymph", "exam-2")))
+    stores.documents.items = [
+        SimpleNamespace(
+            name="fileSearchStores/provider-1/documents/revision",
+            custom_metadata={"source_revision_id": "revision"},
+        )
+    ]
+
+    listed = run(admin.list_documents(stored))
+
+    assert listed[0].source_revision_id == "revision"
+
+
 @pytest.mark.parametrize(
     "metadata",
     (
         {},
         {"source_revision_id": None},
         {"source_revision_id": " "},
-        {"source_revision_id": "provider-doc"},
+        {"source_revision_id": "revision\x00"},
         {"source_revision_id": "sr_\ninvalid"},
         {"source_revision_id": "sr_" + ("x" * 198)},
     ),
@@ -332,7 +349,7 @@ def test_invalid_document_metadata_cannot_partially_persist_a_mixed_list(
         ),
         SimpleNamespace(
             name="fileSearchStores/provider-1/documents/b",
-            custom_metadata={"source_revision_id": "not-a-source-revision"},
+            custom_metadata={"source_revision_id": "revision\x00"},
         ),
     ]
 

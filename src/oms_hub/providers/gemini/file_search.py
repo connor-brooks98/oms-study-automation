@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import AsyncIterable, Iterable, Mapping
 from typing import Any, cast
 
@@ -16,8 +15,6 @@ from oms_hub.indexing.models import (
 from oms_hub.indexing.repository import IndexRepository
 from oms_hub.providers.gemini.client import GeminiClientFactory, translate_gemini_error
 from oms_hub.providers.gemini.errors import GeminiContractError, GeminiProviderError
-
-_SOURCE_REVISION_ID = re.compile(r"^sr_[A-Za-z0-9][A-Za-z0-9._-]{0,196}$")
 
 
 class GeminiFileSearchAdmin:
@@ -209,7 +206,12 @@ def _document_from_provider(value: object, store: ProviderStore) -> ProviderDocu
 
 def _require_source_revision_id(metadata: object) -> str:
     source_revision_id = _metadata_value(metadata, "source_revision_id")
-    if source_revision_id is None or not _SOURCE_REVISION_ID.fullmatch(source_revision_id):
+    if (
+        source_revision_id is None
+        or not source_revision_id
+        or len(source_revision_id) > 200
+        or not source_revision_id.isprintable()
+    ):
         raise GeminiContractError(
             "Gemini document metadata omitted a valid source revision identity."
         )
