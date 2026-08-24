@@ -105,6 +105,16 @@ def test_narrow_instructional_strategy_forms_remain_benign(query: str) -> None:
             "How can I rule out choice Ｂ on exams?",
             AskIntent.REQUEST_OPTION_ELIMINATION,
         ),
+        (
+            "What is the answer? What strategy can I use to rule out distractors on exams?",
+            AskIntent.REQUEST_ANSWER,
+        ),
+        (
+            "Ｗｈａｔ　ｉｓ　ｔｈｅ　ａｎｓｗｅｒ？　"
+            "Ｗｈａｔ　ｓｔｒａｔｅｇｙ　ｃａｎ　Ｉ　ｕｓｅ　ｔｏ　"
+            "ｒｕｌｅ　ｏｕｔ　ｄｉｓｔｒａｃｔｏｒｓ　ｏｎ　ｅｘａｍｓ？",
+            AskIntent.REQUEST_ANSWER,
+        ),
     ],
 )
 def test_policy_sensitive_mixed_strategy_phrasing_remains_protected(

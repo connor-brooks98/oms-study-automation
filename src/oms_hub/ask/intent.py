@@ -304,9 +304,8 @@ def classify_pre_submit_intent(query: str) -> AskIntent:
 
     generic_strategy = _is_generic_strategy_query(tokens)
     if generic_strategy:
-        # Generic framing is benign only after direct-answer checks. The generic rule-out
-        # form is the one exception: it is a study strategy, not a request about this item.
-        if _requests_direct_answer(tokens) and not _contains(tokens, ("rule", "out")):
+        # Generic framing is benign only after direct-answer checks.
+        if _requests_direct_answer(tokens):
             return AskIntent.REQUEST_ANSWER
         return AskIntent.CONCEPT_HINT
 
