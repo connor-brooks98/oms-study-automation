@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -48,7 +49,7 @@ SET_COVERAGE_FACTS_PER_BATCH = 1
 SET_COVERAGE_OUTPUT_MAX_TOKENS = 2_048
 ESTIMATOR_VERSION = "utf8-byte-upper-bound-v1"
 CLASSIFICATION_CONFIG = {
-    "version": "classification-r7-v7",
+    "version": "classification-r7-v8",
     "bundle_max_input_bytes": MAX_BUNDLE_BYTES,
     "bundle_max_input_tokens": MAX_BUNDLE_TOKENS,
     "output_max_tokens": CLASSIFICATION_OUTPUT_MAX_TOKENS,
@@ -56,7 +57,8 @@ CLASSIFICATION_CONFIG = {
     "thorough_batch_size": THOROUGH_BATCH_MAX,
     "candidates_per_fact": CLASSIFICATION_CANDIDATES_PER_FACT,
     "max_provider_input_bytes": MAX_PROVIDER_INPUT_BYTES,
-    "provider_schema_strategy": "batch-derived-enums-v1",
+    "provider_schema_strategy": "batch-derived-claim-enums-v2",
+    "material_claim_inventory": "bounded-clause-v1",
     "serial_concurrency": SERIAL_CONCURRENCY,
     "max_repairs_total": MAX_REPAIRS_TOTAL,
     "defer_partial_to_set_coverage": True,
@@ -89,13 +91,23 @@ REPAIR_INSTRUCTION = (
 )
 SET_COVERAGE_INSTRUCTION = (
     "Decide whether each exact target fact is fully covered by the supplied candidate cards "
-    "acting together. Select the smallest sufficient set. Every material claim in the fact must "
-    "appear in the selected candidates' text or extra; do not infer missing content. The target "
-    "fact is comparison-only and is never support. For every selected card, return one "
-    "candidate_contributions entry naming only target claims explicitly stated in that card's "
-    "text or extra; cards without a contribution are not selected. List every absent target "
-    "clause in uncovered_material_claims. Status covered is allowed only when that list is "
-    "empty. No lecture passages, tags, or deck hints are supplied."
+    "acting together. The supplied material-claim inventory is caller-authored and closed: "
+    "classify every claim ID exactly once as supported or uncovered; never rewrite or omit a "
+    "claim. Select the smallest sufficient card set. For every selected card, return one "
+    "candidate_contributions entry containing only claim IDs explicitly stated in that card's "
+    "text or extra; cards without a contribution are not selected. Put every unsupported claim "
+    "ID in uncovered_claim_ids. Status covered is allowed only when every claim is supported. "
+    "The target claims are comparison-only and are never support. No lecture passages, tags, or "
+    "deck hints are supplied."
+)
+
+_MATERIAL_CLAIM_BOUNDARY = re.compile(
+    r";\s*|\s+(?=(?:but|whereas)\b)|,\s+(?=(?:the|which|whereas)\b)|"
+    r",\s+(?=(?:and\s+)?(?:is|are|has|have|can|cannot|may|causes?|results?|produces?|"
+    r"forms?|inhibits?|increases?|decreases?|accelerates?|shifts?|binds?|occurs?|requires?)\b)|"
+    r"\s+(?=and\s+(?:is|are|has|have|can|cannot|may|causes?|results?|produces?|forms?|"
+    r"inhibits?|increases?|decreases?|accelerates?|shifts?|binds?|occurs?|requires?)\b)",
+    re.IGNORECASE,
 )
 
 
@@ -145,18 +157,18 @@ class ProviderCandidateContribution(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     candidate_id: str = Field(min_length=1, max_length=300)
-    target_material_claims: tuple[
-        Annotated[str, Field(min_length=1, max_length=200)], ...
-    ] = Field(min_length=1, max_length=8)
+    target_claim_ids: tuple[Annotated[str, Field(min_length=1, max_length=400)], ...] = Field(
+        min_length=1, max_length=8
+    )
 
-    @field_validator("target_material_claims", mode="before")
+    @field_validator("target_claim_ids", mode="before")
     @classmethod
-    def canonical_claims(cls, value: object) -> tuple[str, ...]:
+    def canonical_claim_ids(cls, value: object) -> tuple[str, ...]:
         if not isinstance(value, (list, tuple)):
-            raise TypeError("target material claims must be an array")
+            raise TypeError("target claim IDs must be an array")
         values = tuple(value)
         if any(type(item) is not str or not item.strip() for item in values):
-            raise ValueError("target material claims must be nonblank strings")
+            raise ValueError("target claim IDs must be nonblank strings")
         return tuple(sorted({item.strip() for item in values}))
 
 
@@ -167,19 +179,20 @@ class ProviderSetCoverageRow(BaseModel):
     status: Literal["covered", "missing", "unresolved"]
     candidate_contributions: tuple[ProviderCandidateContribution, ...] = ()
     confidence_bps: int = Field(ge=0, le=10_000)
-    uncovered_material_claims: tuple[
-        Annotated[str, Field(min_length=1, max_length=200)], ...
-    ] = Field(default=(), max_length=8)
+    uncovered_claim_ids: tuple[Annotated[str, Field(min_length=1, max_length=400)], ...] = Field(
+        default=(), max_length=8
+    )
 
-    @field_validator("uncovered_material_claims", mode="before")
+    @field_validator("uncovered_claim_ids", mode="before")
     @classmethod
-    def canonical_claims(cls, value: object) -> tuple[str, ...]:
+    def canonical_claim_ids(cls, value: object) -> tuple[str, ...]:
         if not isinstance(value, (list, tuple)):
-            raise TypeError("uncovered material claims must be an array")
+            raise TypeError("uncovered claim IDs must be an array")
         values = tuple(value)
         if any(type(item) is not str or not item.strip() for item in values):
-            raise ValueError("uncovered material claims must be nonblank strings")
+            raise ValueError("uncovered claim IDs must be nonblank strings")
         return tuple(sorted({item.strip() for item in values}))
+
 
 class ProviderSetCoverageBatch(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -325,7 +338,7 @@ def r7_pin_document(
     config = r7_config_document()
     set_options = options_document(_set_coverage_options(cheap_route))
     return {
-        "serialization_version": "classification-r7-pin-v7",
+        "serialization_version": "classification-r7-pin-v8",
         "instruction_sha256": {
             "cheap": instruction_sha256(CHEAP_INSTRUCTION),
             "thorough": instruction_sha256(THOROUGH_INSTRUCTION),
@@ -349,7 +362,7 @@ def r7_pin_document(
             "options_sha256": canonical_payload_sha256(set_options),
             "facts_per_batch": SET_COVERAGE_FACTS_PER_BATCH,
             "max_provider_input_bytes": MAX_PROVIDER_INPUT_BYTES,
-            "provider_schema_strategy": "batch-derived-enums-v1",
+            "provider_schema_strategy": "batch-derived-claim-enums-v2",
             "route": route_document(cheap_route),
         },
         "estimator_version": ESTIMATOR_VERSION,
@@ -473,12 +486,8 @@ class R7ClassificationService:
                 result = {}
                 for bundle in batch:
                     diagnostic = f"deferred_to_set_coverage: {error}"
-                    escalations.append(
-                        _escalation(bundle, "contract_invalid", None, diagnostic)
-                    )
-                    forced_unresolved[bundle.bundle_id] = _unresolved(
-                        bundle, None, diagnostic
-                    )
+                    escalations.append(_escalation(bundle, "contract_invalid", None, diagnostic))
+                    forced_unresolved[bundle.bundle_id] = _unresolved(bundle, None, diagnostic)
             elif error is not None and repairable:
                 repair = self._repair_if_authorized(
                     original_tier="cheap",
@@ -538,8 +547,7 @@ class R7ClassificationService:
         escalation_by_bundle = {cast(str, item["bundle_id"]): item for item in escalations}
         if defer_partial:
             thorough_rows.extend(
-                _unresolved(bundle, None, "deferred_to_set_coverage")
-                for bundle in to_escalate
+                _unresolved(bundle, None, "deferred_to_set_coverage") for bundle in to_escalate
             )
             to_escalate = ()
         for batch in _pack_thorough(to_escalate, escalation_by_bundle):
@@ -856,9 +864,7 @@ def classify_set_coverage(
         try:
             with provider_call_scope(
                 batch_index=ordinal,
-                batch_note_ids=tuple(
-                    sorted({item.candidate.note_id for item in batch_bundles})
-                ),
+                batch_note_ids=tuple(sorted({item.candidate.note_id for item in batch_bundles})),
                 kind="primary",
                 defer_acceptance=True,
             ):
@@ -889,12 +895,28 @@ def classify_set_coverage(
         calls.append(_generated_call("set_coverage", ordinal, "primary", generated, accepted=True))
         for row in generated.value.rows:
             document_row = row.model_dump(mode="json")
-            contribution_ids = tuple(
-                item.candidate_id for item in row.candidate_contributions
-            )
+            claim_inventory = dict(_material_claim_inventory(batch, row.fact_id))
+            contribution_ids = tuple(item.candidate_id for item in row.candidate_contributions)
             selected_ids = tuple(sorted(set(contribution_ids)))
+            contributed_claim_ids = {
+                claim_id
+                for contribution in row.candidate_contributions
+                for claim_id in contribution.target_claim_ids
+            }
+            uncovered_claim_ids = set(row.uncovered_claim_ids)
             document_row["selected_candidate_ids"] = list(selected_ids)
-            uncovered = row.uncovered_material_claims
+            document_row["material_claims"] = list(claim_inventory.values())
+            document_row["candidate_contributions"] = [
+                {
+                    **contribution.model_dump(mode="json"),
+                    "target_material_claims": [
+                        claim_inventory[claim_id] for claim_id in contribution.target_claim_ids
+                    ],
+                }
+                for contribution in row.candidate_contributions
+            ]
+            uncovered = tuple(claim_inventory[claim_id] for claim_id in row.uncovered_claim_ids)
+            document_row["uncovered_material_claims"] = list(uncovered)
             if len(contribution_ids) != len(selected_ids):
                 document_row["provider_status"] = row.status
                 document_row["status"] = "unresolved"
@@ -915,6 +937,15 @@ def classify_set_coverage(
                 document_row["provider_status"] = row.status
                 document_row["status"] = "unresolved"
                 document_row["diagnostic"] = "missing result omitted uncovered material claims"
+            elif (
+                contributed_claim_ids | uncovered_claim_ids != set(claim_inventory)
+                or contributed_claim_ids & uncovered_claim_ids
+            ):
+                document_row["provider_status"] = row.status
+                document_row["status"] = "unresolved"
+                document_row["diagnostic"] = (
+                    "provider did not partition caller-authored material claims"
+                )
             threshold_key = "keep" if row.status == "covered" else "exclude"
             threshold = cast(
                 Mapping[str, int],
@@ -980,12 +1011,13 @@ def _set_coverage_input(
 ) -> dict[str, object]:
     facts: list[dict[str, object]] = []
     for fact_id, bundles in groups:
-        first = bundles[0]
-        fact = next(item for item in first.concept.facts if item.fact_id == fact_id)
         facts.append(
             {
                 "fact_id": fact_id,
-                "statement": fact.statement,
+                "material_claims": [
+                    {"claim_id": claim_id, "statement": statement}
+                    for claim_id, statement in _material_claim_inventory(groups, fact_id)
+                ],
                 "candidates": [
                     {
                         "candidate_id": item.candidate.candidate_id,
@@ -997,7 +1029,22 @@ def _set_coverage_input(
                 ],
             }
         )
-    return {"serialization_version": "set-coverage-provider-input-v2", "facts": facts}
+    return {"serialization_version": "set-coverage-provider-input-v3", "facts": facts}
+
+
+def _material_claim_inventory(
+    groups: Sequence[tuple[str, Sequence[CandidateEvidenceBundle]]], fact_id: str
+) -> tuple[tuple[str, str], ...]:
+    bundles = next(items for key, items in groups if key == fact_id)
+    fact = next(item for item in bundles[0].concept.facts if item.fact_id == fact_id)
+    claims = tuple(
+        part.strip(" \t\r\n,;")
+        for part in _MATERIAL_CLAIM_BOUNDARY.split(fact.statement, maxsplit=7)
+        if part.strip(" \t\r\n,;")
+    )
+    if not claims:
+        raise ClassificationInputError("R8 target fact has no material claims")
+    return tuple((f"{fact_id}:claim:{index:02d}", claim) for index, claim in enumerate(claims, 1))
 
 
 def _pack_set_coverage(
@@ -1029,6 +1076,11 @@ def _set_coverage_output_model(
     candidate_ids = tuple(
         sorted({item.candidate.candidate_id for _fact_id, items in groups for item in items})
     )
+    claim_ids = tuple(
+        claim_id
+        for fact_id, _items in groups
+        for claim_id, _statement in _material_claim_inventory(groups, fact_id)
+    )
     contribution = create_model(
         "ProviderCandidateContribution",
         __base__=ProviderCandidateContribution,
@@ -1039,21 +1091,48 @@ def _set_coverage_output_model(
             ],
             ...,
         ),
+        target_claim_ids=(
+            Annotated[
+                tuple[str, ...],
+                WithJsonSchema(
+                    {
+                        "type": "array",
+                        "items": {"type": "string", "enum": list(claim_ids)},
+                        "minItems": 1,
+                        "maxItems": len(claim_ids),
+                    }
+                ),
+            ],
+            ...,
+        ),
     )
     row = create_model(
         "ProviderSetCoverageRow",
         __base__=ProviderSetCoverageRow,
         fact_id=(Annotated[str, WithJsonSchema({"type": "string", "enum": list(fact_ids)})], ...),
         candidate_contributions=(
-            tuple[contribution, ...],
+            tuple[contribution, ...],  # type: ignore[valid-type]
             Field(default=(), max_length=len(candidate_ids)),
+        ),
+        uncovered_claim_ids=(
+            Annotated[
+                tuple[str, ...],
+                WithJsonSchema(
+                    {
+                        "type": "array",
+                        "items": {"type": "string", "enum": list(claim_ids)},
+                        "maxItems": len(claim_ids),
+                    }
+                ),
+            ],
+            (),
         ),
     )
     return create_model(
         "ProviderSetCoverageBatch",
         __base__=ProviderSetCoverageBatch,
         rows=(
-            tuple[row, ...],
+            tuple[row, ...],  # type: ignore[valid-type]
             Field(json_schema_extra={"minItems": len(groups), "maxItems": len(groups)}),
         ),
     )
@@ -1074,6 +1153,19 @@ def _validate_set_coverage_rows(
             item.candidate.candidate_id for item in bundles
         }:
             return "R8 set-coverage response escapes requested candidates"
+        allowed_claims = {
+            claim_id for claim_id, _statement in _material_claim_inventory(groups, row.fact_id)
+        }
+        if (
+            not {
+                claim_id
+                for contribution in row.candidate_contributions
+                for claim_id in contribution.target_claim_ids
+            }
+            <= allowed_claims
+            or not set(row.uncovered_claim_ids) <= allowed_claims
+        ):
+            return "R8 set-coverage response escapes requested material claims"
     return None
 
 
@@ -1086,9 +1178,7 @@ def _set_coverage_partition(
         selected = set(cast(Sequence[str], row.get("selected_candidate_ids", ()))) if row else set()
         status = row.get("status") if row else "unresolved"
         uncovered = (
-            tuple(cast(Sequence[str], row.get("uncovered_material_claims", ())))
-            if row
-            else ()
+            tuple(cast(Sequence[str], row.get("uncovered_material_claims", ()))) if row else ()
         )
         disposition = (
             "keep"

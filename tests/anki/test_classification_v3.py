@@ -81,10 +81,10 @@ class FakeGenerator:
         )
 
 
-def _bundle(note_id: int, fact_id: str) -> CandidateEvidenceBundle:
+def _bundle(note_id: int, fact_id: str, statement: str = "Fact") -> CandidateEvidenceBundle:
     fact = ScopedFact(
         fact_id=fact_id,
-        statement="Fact",
+        statement=statement,
         evidence_ids=("passage-1",),
         generation_allowed=True,
     )
@@ -906,18 +906,19 @@ def test_r7_defers_a_repairable_cheap_contract_failure_to_set_coverage() -> None
 
 
 def test_r8_set_coverage_selects_multiple_cards_from_one_compact_fact_request() -> None:
-    first, second = _bundle(1, "fact-1"), _bundle(2, "fact-1")
+    statement = "First claim but second claim"
+    first, second = _bundle(1, "fact-1", statement), _bundle(2, "fact-1", statement)
     response = {
         "rows": [
             {
                 "fact_id": "fact-1",
                 "status": "covered",
                 "candidate_contributions": [
-                    {"candidate_id": "note:2", "target_material_claims": ["second claim"]},
-                    {"candidate_id": "note:1", "target_material_claims": ["first claim"]},
+                    {"candidate_id": "note:2", "target_claim_ids": ["fact-1:claim:02"]},
+                    {"candidate_id": "note:1", "target_claim_ids": ["fact-1:claim:01"]},
                 ],
                 "confidence_bps": 9000,
-                "uncovered_material_claims": [],
+                "uncovered_claim_ids": [],
             }
         ]
     }
@@ -933,11 +934,19 @@ def test_r8_set_coverage_selects_multiple_cards_from_one_compact_fact_request() 
     assert result.payload["rows"][0]["selected_candidate_ids"] == ["note:1", "note:2"]
     assert len(fake.calls) == 1 and len(fake.calls[0]["input"]["facts"]) == 1
     fact_input = fake.calls[0]["input"]["facts"][0]
-    assert set(fact_input) == {"fact_id", "statement", "candidates"}
+    assert set(fact_input) == {"fact_id", "material_claims", "candidates"}
+    assert fact_input["material_claims"] == [
+        {"claim_id": "fact-1:claim:01", "statement": "First claim"},
+        {"claim_id": "fact-1:claim:02", "statement": "but second claim"},
+    ]
+    contribution_schema = fake.calls[0]["output_schema"]["$defs"]["ProviderCandidateContribution"]
+    assert contribution_schema["properties"]["target_claim_ids"]["items"]["enum"] == [
+        "fact-1:claim:01",
+        "fact-1:claim:02",
+    ]
     assert set(fact_input["candidates"][0]) == {"candidate_id", "note_id", "text", "extra"}
     assert all(
-        row["supporting_passage_ids"] == ["passage-1"]
-        for row in result.payload["final_partition"]
+        row["supporting_passage_ids"] == ["passage-1"] for row in result.payload["final_partition"]
     )
 
 
@@ -953,11 +962,11 @@ def test_r8_set_coverage_fails_closed_when_a_candidate_escapes_its_fact() -> Non
                         "candidate_contributions": [
                             {
                                 "candidate_id": "note:999",
-                                "target_material_claims": ["target claim"],
+                                "target_claim_ids": ["fact-1:claim:01"],
                             }
                         ],
                         "confidence_bps": 9000,
-                        "uncovered_material_claims": [],
+                        "uncovered_claim_ids": [],
                     },
                 ]
             }
@@ -970,9 +979,7 @@ def test_r8_set_coverage_fails_closed_when_a_candidate_escapes_its_fact() -> Non
         strictness="strict",
         route=cheap,
     )
-    assert (
-        result.blocking_error == "R8 set-coverage response escapes requested candidates"
-    )
+    assert result.blocking_error == "R8 set-coverage response escapes requested candidates"
     assert {row["disposition"] for row in result.payload["final_partition"]} == {"unresolved"}
 
 
@@ -986,7 +993,7 @@ def test_r8_set_coverage_sends_exactly_one_fact_per_call() -> None:
                     "status": "missing",
                     "candidate_contributions": [],
                     "confidence_bps": 9900,
-                    "uncovered_material_claims": ["the target claim"],
+                    "uncovered_claim_ids": [f"{fact_id}:claim:01"],
                 }
             ]
         }
@@ -1006,7 +1013,7 @@ def test_r8_set_coverage_sends_exactly_one_fact_per_call() -> None:
 
 
 def test_r8_set_coverage_downgrades_claimed_coverage_with_uncovered_claims() -> None:
-    bundle = _bundle(1, "fact-1")
+    bundle = _bundle(1, "fact-1", "First clause but second clause")
     fake = FakeGenerator(
         [
             {
@@ -1017,11 +1024,11 @@ def test_r8_set_coverage_downgrades_claimed_coverage_with_uncovered_claims() -> 
                         "candidate_contributions": [
                             {
                                 "candidate_id": "note:1",
-                                "target_material_claims": ["supported clause"],
+                                "target_claim_ids": ["fact-1:claim:01"],
                             }
                         ],
                         "confidence_bps": 9900,
-                        "uncovered_material_claims": ["second clause", "first clause"],
+                        "uncovered_claim_ids": ["fact-1:claim:02"],
                     }
                 ]
             }
@@ -1037,9 +1044,56 @@ def test_r8_set_coverage_downgrades_claimed_coverage_with_uncovered_claims() -> 
     assert result.blocking_error is None
     assert result.payload["rows"][0]["status"] == "unresolved"
     assert result.payload["rows"][0]["uncovered_material_claims"] == [
-        "first clause",
-        "second clause",
+        "but second clause",
     ]
+    assert result.payload["final_partition"][0]["disposition"] == "unresolved"
+
+
+def test_r8_set_coverage_downgrades_a_covered_response_that_omits_a_target_clause() -> None:
+    statement = (
+        "AIP causes abdominal and neuropsychiatric symptoms with purple urine but is the only "
+        "genetic porphyria described as lacking cutaneous photosensitivity."
+    )
+    bundle = _bundle(1, "fact-1", statement)
+    fake = FakeGenerator(
+        [
+            {
+                "rows": [
+                    {
+                        "fact_id": "fact-1",
+                        "status": "covered",
+                        "candidate_contributions": [
+                            {
+                                "candidate_id": "note:1",
+                                "target_claim_ids": ["fact-1:claim:01"],
+                            }
+                        ],
+                        "confidence_bps": 9900,
+                        "uncovered_claim_ids": [],
+                    }
+                ]
+            }
+        ]
+    )
+    cheap, _thorough = _routes()
+    result = classify_set_coverage(
+        StructuredTextService(fake), bundles=(bundle,), strictness="strict", route=cheap
+    )
+    assert fake.calls[0]["input"]["facts"][0]["material_claims"] == [
+        {
+            "claim_id": "fact-1:claim:01",
+            "statement": "AIP causes abdominal and neuropsychiatric symptoms with purple urine",
+        },
+        {
+            "claim_id": "fact-1:claim:02",
+            "statement": (
+                "but is the only genetic porphyria described as lacking cutaneous photosensitivity."
+            ),
+        },
+    ]
+    assert result.payload["rows"][0]["diagnostic"] == (
+        "provider did not partition caller-authored material claims"
+    )
     assert result.payload["final_partition"][0]["disposition"] == "unresolved"
 
 
@@ -1073,12 +1127,12 @@ def test_r8_set_coverage_normalizes_semantic_contradictions_per_fact(
                         "candidate_contributions": [
                             {
                                 "candidate_id": candidate_id,
-                                "target_material_claims": ["target claim"],
+                                "target_claim_ids": ["fact-1:claim:01"],
                             }
                             for candidate_id in selected
                         ],
                         "confidence_bps": 9900,
-                        "uncovered_material_claims": uncovered,
+                        "uncovered_claim_ids": (["fact-1:claim:01"] if uncovered else []),
                     }
                 ]
             }
@@ -1109,15 +1163,15 @@ def test_r8_set_coverage_downgrades_duplicate_candidate_contributions() -> None:
                         "candidate_contributions": [
                             {
                                 "candidate_id": "note:1",
-                                "target_material_claims": ["target claim"],
+                                "target_claim_ids": ["fact-1:claim:01"],
                             },
                             {
                                 "candidate_id": "note:1",
-                                "target_material_claims": ["target claim"],
+                                "target_claim_ids": ["fact-1:claim:01"],
                             },
                         ],
                         "confidence_bps": 9900,
-                        "uncovered_material_claims": [],
+                        "uncovered_claim_ids": [],
                     }
                 ]
             }
@@ -1148,7 +1202,7 @@ def test_r8_set_coverage_keeps_a_well_formed_missing_result_terminal() -> None:
                         "status": "missing",
                         "candidate_contributions": [],
                         "confidence_bps": 9900,
-                        "uncovered_material_claims": ["the target claim"],
+                        "uncovered_claim_ids": ["fact-1:claim:01"],
                     }
                 ]
             }
@@ -1288,7 +1342,9 @@ def test_r7_pins_and_repair_authorization_reject_stale_or_noninteger_costs() -> 
     assert pin["cheap_options"]["max_tokens"] == 3072
     assert pin["thorough_options"]["max_tokens"] == 3072
     assert pin["classification_config"]["output_max_tokens"] == 3072
-    assert pin["classification_config"]["version"] == "classification-r7-v7"
+    assert pin["classification_config"]["version"] == "classification-r7-v8"
+    assert pin["classification_config"]["material_claim_inventory"] == "bounded-clause-v1"
+    assert pin["set_coverage"]["provider_schema_strategy"] == ("batch-derived-claim-enums-v2")
     assert pin["cheap_options_sha256"] == canonical_payload_sha256(pin["cheap_options"])
     request = "d" * 64
     authorization = {
