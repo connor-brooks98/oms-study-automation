@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+import oms_hub.anki.learning_repository as learning_repository
 from oms_hub.anki.learning_contracts import (
     AnkiLearningSnapshot,
     AnkiNoteLearningState,
@@ -152,6 +153,36 @@ def test_mixed_case_tag_order_is_canonical_and_idempotent() -> None:
     assert first.content_hash == retry.content_hash
     assert retry.no_change is True
     assert len(repository.note_state_history()) == 1
+
+
+def test_digest_collision_fails_closed_without_mutating_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = AnkiLearningRepository(now=lambda: BASE_TIME)
+    snapshot_a = _snapshot(_state(lapse_count=3))
+    snapshot_b = _snapshot(_state(lapse_count=4))
+    snapshot_c = _snapshot(_state(lapse_count=5))
+    digest_a = learning_repository.snapshot_content_hash(snapshot_a)
+    digest_b = learning_repository.snapshot_content_hash(snapshot_b)
+    assert digest_a != digest_b
+
+    repository.record_sync(snapshot_a)
+    repository.record_sync(snapshot_b)
+    history_before = repository.sync_history()
+    states_before = repository.latest_note_states()
+    rows_before = repository.note_state_history()
+
+    monkeypatch.setattr(
+        learning_repository,
+        "snapshot_content_hash",
+        lambda snapshot: digest_a if snapshot is snapshot_c else digest_b,
+    )
+    with pytest.raises(ValueError, match="content hash collision"):
+        repository.record_sync(snapshot_c)
+
+    assert repository.sync_history() == history_before
+    assert repository.latest_note_states() == states_before
+    assert repository.note_state_history() == rows_before
 
 
 def test_changed_content_creates_a_new_note_state_history_row() -> None:

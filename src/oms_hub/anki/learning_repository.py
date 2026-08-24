@@ -125,6 +125,7 @@ class AnkiLearningRepository:
         self._current_notes: dict[int, AnkiNoteLearningState] = {}
         self._note_state_rows: list[AnkiNoteStateRecord] = []
         self._states_by_hash: dict[str, tuple[AnkiNoteLearningState, ...]] = {}
+        self._canonical_by_hash: dict[str, str] = {}
 
     @property
     def thresholds(self) -> AnkiStalenessThresholds:
@@ -133,7 +134,11 @@ class AnkiLearningRepository:
     def record_sync(self, snapshot: AnkiLearningSnapshot | Mapping[str, Any]) -> AnkiSyncRun:
         normalized = normalize_snapshot(snapshot)
         recorded_at = _aware_datetime(self._now(), "recorded_at")
+        canonical_content = canonical_snapshot_content_json(normalized)
         content_hash = snapshot_content_hash(normalized)
+        prior_canonical = self._canonical_by_hash.get(content_hash)
+        if prior_canonical is not None and prior_canonical != canonical_content:
+            raise ValueError("content hash collision")
         previous_hash = self._current_content_hash
         changed = previous_hash != content_hash
         sync_id = f"anki_sync_{uuid4()}"
@@ -153,6 +158,7 @@ class AnkiLearningRepository:
             states = self._states_by_hash.get(content_hash)
             if states is None:
                 states = normalized.notes
+                self._canonical_by_hash[content_hash] = canonical_content
                 self._states_by_hash[content_hash] = states
                 self._note_state_rows.extend(
                     AnkiNoteStateRecord(sync_id, content_hash, state)
@@ -312,18 +318,22 @@ def canonical_snapshot_json(snapshot: AnkiLearningSnapshot) -> str:
     )
 
 
-def snapshot_content_hash(snapshot: AnkiLearningSnapshot) -> str:
+def canonical_snapshot_content_json(snapshot: AnkiLearningSnapshot) -> str:
     normalized = normalize_snapshot(snapshot)
     content = {
         "notes": [_note_payload(note, include_snapshot_at=False) for note in normalized.notes],
         "health": _health_payload(normalized.health),
     }
-    encoded = json.dumps(
+    return json.dumps(
         content,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
-    ).encode("utf-8")
+    )
+
+
+def snapshot_content_hash(snapshot: AnkiLearningSnapshot) -> str:
+    encoded = canonical_snapshot_content_json(snapshot).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -549,6 +559,7 @@ __all__ = [
     "AnkiSyncRun",
     "StalenessThresholds",
     "canonical_snapshot_json",
+    "canonical_snapshot_content_json",
     "normalize_snapshot",
     "snapshot_content_hash",
     "snapshot_to_payload",
