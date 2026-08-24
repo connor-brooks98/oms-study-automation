@@ -41,6 +41,9 @@ def _official_sdk_factory(
         raise GeminiContractError(
             "Gemini SDK is unavailable; install the approved provider dependency."
         ) from error
+    except Exception as error:
+        translated = translate_gemini_error(error)
+        raise translated from error
     try:
         return genai.Client(api_key=api_key, http_options=http_options)
     except Exception as error:
@@ -78,17 +81,26 @@ class GeminiClientFactory:
         sdk_client = self._build_sdk_client()
         try:
             aio = sdk_client.aio
-        except (AttributeError, TypeError) as error:
+        except Exception as error:
             translated = translate_gemini_error(error)
             raise translated from error
-        if not callable(getattr(aio, "aclose", None)):
+        try:
+            close = getattr(aio, "aclose", None)
+        except Exception as error:
+            translated = translate_gemini_error(error)
+            raise translated from error
+        if not callable(close):
             raise GeminiContractError(
                 "Gemini SDK async client does not expose the required close method."
             )
         try:
             yield aio
         finally:
-            await aio.aclose()
+            try:
+                await close()
+            except Exception as error:
+                translated = translate_gemini_error(error)
+                raise translated from error
 
 
 def translate_gemini_error(exc: Exception) -> GeminiProviderError:

@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import sys
 from collections.abc import Coroutine
 from typing import Any
@@ -32,6 +33,19 @@ class FakeSdkClient:
         self.aio = FakeAioClient()
 
 
+class FixedSdkClient:
+    def __init__(self, aio: object) -> None:
+        self.aio = aio
+
+
+class FixedSdkFactory:
+    def __init__(self, aio: object) -> None:
+        self.aio = aio
+
+    def __call__(self, **kwargs: object) -> FixedSdkClient:
+        return FixedSdkClient(self.aio)
+
+
 class FakeSdkFactory:
     def __init__(self) -> None:
         self.clients: list[FakeSdkClient] = []
@@ -55,6 +69,69 @@ class SdkError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.headers = headers or {}
+
+
+class AioAccessFailureSdkClient:
+    @property
+    def aio(self) -> FakeAioClient:
+        raise SdkError(
+            "raw-secret aio payload",
+            status_code=503,
+            headers={"x-request-id": "aio-request"},
+        )
+
+
+class CloseLookupFailureAio:
+    @property
+    def aclose(self) -> Any:
+        raise SdkError(
+            "raw-secret close lookup payload",
+            status_code=429,
+            headers={"x-request-id": "close-lookup-request"},
+        )
+
+
+class MissingCloseAio:
+    pass
+
+
+class NonCallableCloseAio:
+    aclose = "not callable"
+
+
+class SyncCloseFailureAio:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def aclose(self) -> None:
+        self.close_calls += 1
+        raise SdkError(
+            "raw-secret synchronous close payload",
+            status_code=503,
+            headers={"x-request-id": "sync-close-request"},
+        )
+
+
+class AsyncCloseFailureAio:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+        raise SdkError(
+            "raw-secret asynchronous close payload",
+            status_code=503,
+            headers={"x-request-id": "async-close-request"},
+        )
+
+
+class UnawaitableCloseAio:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def aclose(self) -> object:
+        self.close_calls += 1
+        return object()
 
 
 def gemini_config() -> GeminiConfig:
@@ -127,6 +204,188 @@ def test_async_client_is_closed_when_context_body_raises() -> None:
 
     assert sdk.clients[0].aio.closed
     assert sdk.clients[0].aio.close_calls == 1
+
+
+def test_factory_construction_failure_is_translated_and_redacted() -> None:
+    def failing_factory(**kwargs: object) -> object:
+        raise SdkError(
+            "raw-secret construction payload",
+            status_code=503,
+            headers={"x-request-id": "construction-request"},
+        )
+
+    factory = GeminiClientFactory(config=gemini_config(), sdk_factory=failing_factory)
+
+    async def exercise() -> None:
+        with pytest.raises(GeminiTransientError) as raised:
+            async with factory.client():
+                pass
+        assert raised.value.provider_status_code == 503
+        assert raised.value.provider_request_id == "construction-request"
+        assert "raw-secret" not in str(raised.value)
+        assert "construction payload" not in str(raised.value)
+
+    run(exercise())
+
+
+def test_existing_factory_provider_error_is_preserved() -> None:
+    original = GeminiQuotaError(
+        "safe construction failure",
+        provider_status_code=429,
+        provider_request_id="construction-request",
+    )
+
+    def failing_factory(**kwargs: object) -> object:
+        raise original
+
+    factory = GeminiClientFactory(config=gemini_config(), sdk_factory=failing_factory)
+
+    async def exercise() -> None:
+        with pytest.raises(GeminiQuotaError) as raised:
+            async with factory.client():
+                pass
+        assert raised.value is original
+
+    run(exercise())
+
+
+def test_aio_access_failure_is_translated_and_redacted() -> None:
+    factory = GeminiClientFactory(
+        config=gemini_config(),
+        sdk_factory=lambda **kwargs: AioAccessFailureSdkClient(),
+    )
+
+    async def exercise() -> None:
+        with pytest.raises(GeminiTransientError) as raised:
+            async with factory.client():
+                pass
+        assert raised.value.provider_status_code == 503
+        assert raised.value.provider_request_id == "aio-request"
+        assert "raw-secret" not in str(raised.value)
+        assert "aio payload" not in str(raised.value)
+
+    run(exercise())
+
+
+@pytest.mark.parametrize("aio", (MissingCloseAio(), NonCallableCloseAio()))
+def test_missing_or_noncallable_close_is_a_contract_error(aio: object) -> None:
+    factory = GeminiClientFactory(config=gemini_config(), sdk_factory=FixedSdkFactory(aio))
+
+    async def exercise() -> None:
+        with pytest.raises(GeminiContractError) as raised:
+            async with factory.client():
+                pass
+        assert raised.value.redacted_message == (
+            "Gemini SDK async client does not expose the required close method."
+        )
+
+    run(exercise())
+
+
+def test_close_method_lookup_failure_is_translated_and_redacted() -> None:
+    factory = GeminiClientFactory(
+        config=gemini_config(),
+        sdk_factory=FixedSdkFactory(CloseLookupFailureAio()),
+    )
+
+    async def exercise() -> None:
+        with pytest.raises(GeminiQuotaError) as raised:
+            async with factory.client():
+                pass
+        assert raised.value.provider_status_code == 429
+        assert raised.value.provider_request_id == "close-lookup-request"
+        assert "raw-secret" not in str(raised.value)
+        assert "close lookup payload" not in str(raised.value)
+
+    run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("aio", "error_type", "request_id"),
+    (
+        (SyncCloseFailureAio(), GeminiTransientError, "sync-close-request"),
+        (AsyncCloseFailureAio(), GeminiTransientError, "async-close-request"),
+    ),
+)
+def test_close_invocation_and_await_failures_are_translated(
+    aio: object,
+    error_type: type[GeminiProviderError],
+    request_id: str,
+) -> None:
+    factory = GeminiClientFactory(config=gemini_config(), sdk_factory=FixedSdkFactory(aio))
+
+    async def exercise() -> None:
+        with pytest.raises(error_type) as raised:
+            async with factory.client():
+                pass
+        assert raised.value.provider_status_code == 503
+        assert raised.value.provider_request_id == request_id
+        assert "raw-secret" not in str(raised.value)
+
+    run(exercise())
+    assert isinstance(aio, (SyncCloseFailureAio, AsyncCloseFailureAio))
+    assert aio.close_calls == 1
+
+
+def test_unawaitable_close_is_a_redacted_contract_error() -> None:
+    aio = UnawaitableCloseAio()
+    factory = GeminiClientFactory(config=gemini_config(), sdk_factory=FixedSdkFactory(aio))
+
+    async def exercise() -> None:
+        with pytest.raises(GeminiContractError) as raised:
+            async with factory.client():
+                pass
+        assert raised.value.redacted_message == (
+            "Gemini SDK response did not match the expected contract."
+        )
+        assert "raw-secret" not in str(raised.value)
+
+    run(exercise())
+    assert aio.close_calls == 1
+
+
+def test_context_body_provider_failure_is_unchanged_when_close_succeeds() -> None:
+    original = SdkError(
+        "raw-secret body payload",
+        status_code=503,
+        headers={"x-request-id": "body-request"},
+    )
+    sdk = FakeSdkFactory()
+    factory = GeminiClientFactory(config=gemini_config(), sdk_factory=sdk)
+
+    async def exercise() -> None:
+        with pytest.raises(SdkError) as raised:
+            async with factory.client():
+                raise original
+        assert raised.value is original
+
+    run(exercise())
+    assert sdk.clients[0].aio.close_calls == 1
+
+
+def test_broken_lazy_import_non_import_error_is_translated(monkeypatch: pytest.MonkeyPatch) -> None:
+    client_module = importlib.import_module("oms_hub.providers.gemini.client")
+
+    def broken_import(name: str) -> Any:
+        raise SdkError(
+            "raw-secret import payload",
+            status_code=503,
+            headers={"x-request-id": "import-request"},
+        )
+
+    monkeypatch.setattr(client_module.importlib, "import_module", broken_import)
+    factory = GeminiClientFactory(config=gemini_config())
+
+    async def exercise() -> None:
+        with pytest.raises(GeminiTransientError) as raised:
+            async with factory.client():
+                pass
+        assert raised.value.provider_status_code == 503
+        assert raised.value.provider_request_id == "import-request"
+        assert "raw-secret" not in str(raised.value)
+        assert "import payload" not in str(raised.value)
+
+    run(exercise())
 
 
 @pytest.mark.parametrize(
