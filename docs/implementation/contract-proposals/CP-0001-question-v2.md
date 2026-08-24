@@ -17,10 +17,11 @@
 Question-v2 activation is proposed only. This correction does not activate a
 new shared contract, change routes or flags, or make any provider call.
 
-Activation status: `READY_FOR_SOL0_CONTRACT_REVIEW`. The owned boundary
-correction, Terra reviews, both consuming-owner reviews, and final Workstream
-Sol review are approved; the candidate remains unapplied while Sol-0 review
-remains pending.
+Activation status: `ACTIVATION_HELD`.
+Proposal status: `APPROVED FOR PROPOSAL SEMANTICS ONLY`. The owned boundary
+correction, Terra reviews, both consuming-owner reviews, final Workstream Sol
+review, and Sol-0 proposal ruling are recorded; the candidate remains
+unapplied.
 
 ## Current frozen contract
 
@@ -80,9 +81,10 @@ The candidate is exactly:
   fail closed as `INVALID_RECORD` without normalization.
 - Candidate test: `tests/questions/test_models.py::test_question_schema_candidate_v2_is_deterministic_and_v1_snapshot_is_frozen`.
 
-No candidate bytes are treated as an active wire contract until the remaining
-Workstream Sol/Sol-0 approvals and shared exporter/test/snapshot changes land
-together.
+No candidate bytes are treated as an active wire contract. Any future
+application must be one narrow Sol-0-owned composition on the then-current
+approved integration base; the exporter/test/snapshot targets overlap other
+pending versioned contract proposals, so no stale patch may be applied.
 
 ## Why a local adapter is not activation
 
@@ -145,8 +147,10 @@ artifact changes.
 
 ## Exact future targets
 
-These are targets for a later approved Sol-0 integration change, not files
-modified by this correction:
+These are targets for one later, narrow Sol-0-owned composition on the
+then-current approved integration base, not files modified by this correction.
+The targets overlap other pending versioned contract proposals; no stale patch
+may be applied.
 
 1. `scripts/export_grounded_contract_schemas.py`
    - Import the three existing question models.
@@ -172,7 +176,8 @@ No exporter, central test, or future snapshot target is changed in this lane.
 ## Activation prerequisites from consuming reviews
 
 No question-v2 activation, exporter registration, or snapshot materialization
-may proceed until all of the following are satisfied by authorized owners:
+may proceed until all of the following are satisfied by authorized owners,
+regardless of the proposal-semantics approvals recorded below:
 
 - Introduce and use one canonical immutable `question_version_id` and resolver
   across question, mastery, practice, session, blueprint, and historical
@@ -193,7 +198,8 @@ may proceed until all of the following are satisfied by authorized owners:
 The model and abstract resolver boundary are implemented by this correction;
 consumer adoption, inventory authority, historical-session behavior, and the
 remaining product tests require authorized Sol-6/Sol-10 work outside this lane.
-Until those consumers and the shared exporter activation are reviewed, the
+Tasks 5.2 and 5.4 remain blocked on Source Trust Gate 2A / Task 1.8. Until all
+named gates and the narrow Sol-0 composition are separately authorized, the
 candidate remains isolated and unapplied.
 
 ## Exact verification
@@ -245,10 +251,10 @@ context and are not substituted for current evidence.
 | --- | --- | --- | --- | --- |
 | Terra specification review | `/root/task_5_3_v2_terra_spec` | APPROVED after fix round 1 | fix `e2aae8d1f2e40ccdd2aea21d665452a0a9789967` / tree `13e03dcd373cdb8d9ded506b00b12440b20efb80`; resolver focused 11/11 | APPROVED |
 | Terra quality review | `/root/task_5_3_v2_terra_quality` | APPROVED after fix round 2 | candidate `a64ee2845ebf83b85292dea7ad2af1a63e85afdd` / tree `c07502a963b5459556ebd788dd5d663db33815a0`; malformed containers rejected | APPROVED |
-| Workstream Sol review | `/root` | APPROVED / OWNED_CORRECTION_PASS / READY_FOR_SOL0_CONTRACT_REVIEW | full range `4f5c687edffbabb08321515c3e505e41d3ee3888..f87e1ed761f0dc75cd172068948901162a56fb59`; head tree `b4c371e1dd4545d65a5e56245813861e797712f0`; candidate `a64ee2845ebf83b85292dea7ad2af1a63e85afdd` / `c07502a963b5459556ebd788dd5d663db33815a0` | APPROVED |
+| Workstream Sol review | `/root` | APPROVED / OWNED_CORRECTION_PASS | full range `4f5c687edffbabb08321515c3e505e41d3ee3888..f87e1ed761f0dc75cd172068948901162a56fb59`; head tree `b4c371e1dd4545d65a5e56245813861e797712f0`; candidate `a64ee2845ebf83b85292dea7ad2af1a63e85afdd` / `c07502a963b5459556ebd788dd5d663db33815a0` | APPROVED |
 | Sol-6 consuming-owner review | `/root/sol6_question_v2_renewed_review` | APPROVED | candidate `a64ee2845ebf83b85292dea7ad2af1a63e85afdd` / tree `c07502a963b5459556ebd788dd5d663db33815a0`; review `27001a44` / tree `6f187221` | APPROVED |
 | Sol-10 consuming-owner review | `/root/sol10_question_v2_renewed_review` | APPROVED | candidate `a64ee2845ebf83b85292dea7ad2af1a63e85afdd` / tree `c07502a963b5459556ebd788dd5d663db33815a0`; review `9570c80a08938def01bdbab5c2a1159fcae81479` / tree `bf172c73caf8894f62ddf50732f8e11b60f22e72` | APPROVED |
-| Sol-0 contract-owner review | PENDING | PENDING | PENDING | PENDING |
+| Sol-0 contract-owner review | Program Sol-0 | APPROVED FOR PROPOSAL SEMANTICS ONLY; ACTIVATION HELD | independent regeneration: 7,557 bytes / SHA-256 `a3de074e74d19066078cb4eb857a5b29a5d78db19edced24310ad6637b1778d6`; frozen v1 exact | APPROVED FOR PROPOSAL SEMANTICS ONLY / ACTIVATION HELD |
 
 ### Historical findings retained as resolved-target context
 
@@ -272,9 +278,9 @@ context and are not substituted for current evidence.
   accept only question-v2, resolve before events, and append no event on
   failure; Sol-10 will bind approved inventory/resolver at practice/session/
   blueprint boundaries and retain strict shortfall/timed/historical rollback
-  tests. Workstream Sol is now approved and Sol-0 remains pending. Candidate
-  activation, Task 5.2/5.4, routes, provider calls, production, and Anki remain
-  unauthorized.
+  tests. Workstream Sol and Sol-0 have approved proposal semantics only;
+  activation remains held. Candidate activation, Task 5.2/5.4, routes, provider
+  calls, production, and Anki remain unauthorized.
 
 ## Conflict analysis
 
@@ -301,8 +307,10 @@ context and are not substituted for current evidence.
   lane: Sol-6 requires v2-only event resolution with no event on failure; Sol-10
   requires approved inventory/resolver binding plus strict shortfall, timed, and
   historical rollback tests.
-- Therefore the candidate is ready for Sol-0 contract-owner review but remains
-  unapplied; Sol-0 approval is the only remaining review gate.
+- Sol-0 has ruled the proposal semantics approved only. Activation remains held
+  pending one narrow composition on the then-current approved integration base,
+  the named consumer/gate prerequisites, and an explicit activation decision.
+  The candidate remains unapplied.
 - The pre-fix expanded candidate was
   `2826d49000c79d22fab5823f8c7ff5ee7699f32c` / tree
   `0c8b1b85fef38ec76c0918e17b7b7160cbb70450`. It is correction history, not
@@ -313,9 +321,9 @@ context and are not substituted for current evidence.
 
 ## Rollback
 
-- Before activation: reject or defer this proposal and keep the Gate-1 v1
-  snapshot plus the isolated models; delete only any disposable v2 candidate
-  output if a later lane created one.
+- Before activation: retain the reserved Gate-1 v1 snapshot and omit v2; reject
+  or defer this proposal and keep the isolated models. No
+  `schemas/question-v2.json` is created or removed in this lane.
 - After activation: revert the single reviewed exporter/test/v2-snapshot
   activation change as a unit, retaining the v1 snapshot unchanged. Do not
   rewrite v1 to the generated candidate.
