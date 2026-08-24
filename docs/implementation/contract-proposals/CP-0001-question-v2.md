@@ -17,9 +17,10 @@
 Question-v2 activation is proposed only. This correction does not activate a
 new shared contract, change routes or flags, or make any provider call.
 
-Activation status: `PENDING_RENEWED_REVIEWS`. The owned boundary correction is
-implemented and the candidate remains unapplied; renewed Terra, Sol-6, Sol-10,
-and Sol-0 review fields are reset to `PENDING`.
+Activation status: `PENDING_FINAL_WORKSTREAM_AND_SOL0_REVIEW`. The owned
+boundary correction, Terra reviews, and both consuming-owner reviews are
+approved; the candidate remains unapplied while Workstream Sol and Sol-0
+reviews remain pending.
 
 ## Current frozen contract
 
@@ -79,9 +80,9 @@ The candidate is exactly:
   fail closed as `INVALID_RECORD` without normalization.
 - Candidate test: `tests/questions/test_models.py::test_question_schema_candidate_v2_is_deterministic_and_v1_snapshot_is_frozen`.
 
-No candidate bytes are treated as an active wire contract until this proposal
-has the required owner approvals and the shared exporter/test/snapshot changes
-land together.
+No candidate bytes are treated as an active wire contract until the remaining
+Workstream Sol/Sol-0 approvals and shared exporter/test/snapshot changes land
+together.
 
 ## Why a local adapter is not activation
 
@@ -121,8 +122,9 @@ artifact changes.
   would record `schema_version=question-v2` when emitting that version.
 - Consumers: central schema checks and any approved downstream question
   producer/consumer must validate the v2 artifact by its `$id` and exact bytes.
-  A consuming Sol must confirm it can handle the version before activation;
-  neither reviewed consuming Sol has approved the candidate.
+  Sol-6 and Sol-10 have confirmed their consuming-boundary adoption targets;
+  their approvals do not activate the shared artifact or authorize runtime
+  changes.
 - No existing consumer is silently re-pointed from v1 to v2. The inactive
   reserved v1 snapshot remains available as historical Gate-1 evidence.
 
@@ -234,17 +236,18 @@ typing, `git diff --check`, and the repository's owned-scope and safety scans.
 
 ## Review and approval fields
 
-This correction changes the reviewed candidate. Renewed review fields are reset
-to `PENDING`; historical findings below remain context and are not approvals for
-this candidate. No approval is inferred from the focused GREEN result.
+Renewed review evidence is recorded against the current corrected candidate
+`a64ee2845ebf83b85292dea7ad2af1a63e85afdd` / tree
+`c07502a963b5459556ebd788dd5d663db33815a0`. Historical findings below remain
+context and are not substituted for current evidence.
 
 | Required review | Reviewer | Result | Evidence commit/tree | Status |
 | --- | --- | --- | --- | --- |
-| Terra specification review | PENDING | PENDING | PENDING | PENDING |
-| Terra quality review | PENDING | PENDING | PENDING | PENDING |
+| Terra specification review | `/root/task_5_3_v2_terra_spec` | APPROVED after fix round 1 | fix `e2aae8d1f2e40ccdd2aea21d665452a0a9789967` / tree `13e03dcd373cdb8d9ded506b00b12440b20efb80`; resolver focused 11/11 | APPROVED |
+| Terra quality review | `/root/task_5_3_v2_terra_quality` | APPROVED after fix round 2 | candidate `a64ee2845ebf83b85292dea7ad2af1a63e85afdd` / tree `c07502a963b5459556ebd788dd5d663db33815a0`; malformed containers rejected | APPROVED |
 | Workstream Sol review | PENDING | PENDING | PENDING | PENDING |
-| Sol-6 consuming-owner review | PENDING | PENDING | PENDING | PENDING |
-| Sol-10 consuming-owner review | PENDING | PENDING | PENDING | PENDING |
+| Sol-6 consuming-owner review | `/root/sol6_question_v2_renewed_review` | APPROVED | candidate `a64ee2845ebf83b85292dea7ad2af1a63e85afdd` / tree `c07502a963b5459556ebd788dd5d663db33815a0`; review `27001a44` / tree `6f187221` | APPROVED |
+| Sol-10 consuming-owner review | `/root/sol10_question_v2_renewed_review` | APPROVED | candidate `a64ee2845ebf83b85292dea7ad2af1a63e85afdd` / tree `c07502a963b5459556ebd788dd5d663db33815a0`; review `9570c80a08938def01bdbab5c2a1159fcae81479` / tree `bf172c73caf8894f62ddf50732f8e11b60f22e72` | APPROVED |
 | Sol-0 contract-owner review | PENDING | PENDING | PENDING | PENDING |
 
 ### Historical findings retained as resolved-target context
@@ -255,19 +258,22 @@ this candidate. No approval is inferred from the focused GREEN result.
 - Prior Terra quality review: APPROVED after the independent-generation fix on
   `02797a90c2665cf85480abe667ccfa9c3a57e166` / tree
   `2eaf22a3b835aaead6f1082a256620c85985fa25`.
-- Prior Sol-6 and Sol-10 findings were CHANGES REQUIRED on that prior candidate:
-  canonical immutable identity, strict v2/no-v1 fallback, authoritative
-  approved/nonstale/verifiable objective/source resolution, and consumer tests.
-  This correction addresses the owned model and abstract resolver target; the
-  renewed consuming reviews must confirm their own adoption and remaining
-  product boundaries.
+- Prior Sol-6 and Sol-10 findings were CHANGES REQUIRED on the historical
+  candidate: canonical immutable identity, strict v2/no-v1 fallback,
+  authoritative approved/nonstale/verifiable objective/source resolution, and
+  consumer tests. The owned model and abstract resolver target is now approved
+  by both renewed consuming owners on the current corrected candidate.
 - Prior Workstream Sol disposition was
   `OWNED_CORRECTION_PASS / BLOCKED_ON_CONSUMING_OWNER_APPROVAL` on
   `302fae99b304ee0249a853eba2e0349d16d9acd8` / tree
   `441040a16d9b14602aa4dc5db7c18bf16c74bfa8`; it is historical only.
-- Consuming-owner approval for this candidate is **NONE** until renewed Sol-6,
-  Sol-10, and Sol-0 reviews complete. Candidate activation, Task 5.2/5.4,
-  routes, provider calls, production, and Anki remain unauthorized.
+- Consuming-owner approval for this candidate is **APPROVED** by both Sol-6 and
+  Sol-10. Their approvals are nonblocking adoption evidence only: Sol-6 will
+  accept only question-v2, resolve before events, and append no event on
+  failure; Sol-10 will bind approved inventory/resolver at practice/session/
+  blueprint boundaries and retain strict shortfall/timed/historical rollback
+  tests. Workstream Sol and Sol-0 remain pending. Candidate activation, Task
+  5.2/5.4, routes, provider calls, production, and Anki remain unauthorized.
 
 ## Conflict analysis
 
@@ -289,13 +295,14 @@ this candidate. No approval is inferred from the focused GREEN result.
   proposal's approvals and a later integration commit.
 - No conflict exists with Task 5.1's recipe adapter, but no Task 5.1 files are
   changed. Task 5.2 and Task 5.4 remain outside scope and blocked by Gate 2A.
-- Renewed consuming-owner review remains required: Sol-6 and Sol-10 must confirm
-  canonical identity/resolver use at their own boundaries, approved/nonstale
-  inventory behavior, fail-closed consumer tests, and historical-session
-  rollback guarantees. Sol-10 additionally owns strict practice shortfall and
-  timed behavior. Those consumer/product behaviors remain outside this lane.
-- Therefore the candidate is not activation-ready and all renewed approvals are
-  `PENDING`; Sol-0 contract-owner review remains `PENDING`.
+- Renewed Sol-6 and Sol-10 consuming-owner reviews are APPROVED on the current
+  corrected candidate. Their nonblocking adoption findings remain outside this
+  lane: Sol-6 requires v2-only event resolution with no event on failure; Sol-10
+  requires approved inventory/resolver binding plus strict shortfall, timed, and
+  historical rollback tests.
+- Therefore the candidate is not activation-ready only because Workstream Sol
+  and Sol-0 contract-owner review remain `PENDING`; the candidate stays
+  unapplied.
 - The pre-fix expanded candidate was
   `2826d49000c79d22fab5823f8c7ff5ee7699f32c` / tree
   `0c8b1b85fef38ec76c0918e17b7b7160cbb70450`. It is correction history, not
