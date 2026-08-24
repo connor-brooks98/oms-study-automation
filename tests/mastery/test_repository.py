@@ -84,6 +84,13 @@ def test_append_event_is_durable_and_objective_queries_preserve_event_order(
     assert repository.events_for_objective("missing") == []
 
 
+def test_events_for_objective_normalizes_query_identifier(database: Database) -> None:
+    repository = MasteryRepository(database)
+    event = repository.append_event(_event("client-whitespace"))
+
+    assert repository.events_for_objective("  objective-1  ") == [event]
+
+
 def test_duplicate_client_event_id_returns_one_immutable_event(database: Database) -> None:
     repository = MasteryRepository(database)
     first = repository.append_event(_event("client-duplicate"))

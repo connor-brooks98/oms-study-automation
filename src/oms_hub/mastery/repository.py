@@ -61,6 +61,7 @@ class MasteryRepository:
     def events_for_objective(self, objective_id: str) -> list[LearnerEvent]:
         if not isinstance(objective_id, str) or not objective_id.strip():
             raise ValueError("objective_id must be a non-empty string")
+        objective_id = objective_id.strip()
         with self.database.session() as session:
             # ponytail: JSON scan is simple for the personal deployment ceiling; add a
             # normalized event-objective link table if event volume needs indexed lookup.
