@@ -59,6 +59,17 @@ def test_generic_test_taking_strategy_is_a_benign_concept_hint(query: str) -> No
 
 
 @pytest.mark.parametrize(
+    "query",
+    [
+        "How can I eliminate wrong answer choices on a general test?",
+        "What strategies help me rule out distractors on exams?",
+    ],
+)
+def test_narrow_instructional_strategy_forms_remain_benign(query: str) -> None:
+    assert classify_pre_submit_intent(query) is AskIntent.CONCEPT_HINT
+
+
+@pytest.mark.parametrize(
     ("query", "expected"),
     [
         (
@@ -68,6 +79,14 @@ def test_generic_test_taking_strategy_is_a_benign_concept_hint(query: str) -> No
         ("What is the answer? Explain the strategy.", AskIntent.REQUEST_ANSWER),
         (
             "Can you rule out choices using a strategy on this exam?",
+            AskIntent.REQUEST_OPTION_ELIMINATION,
+        ),
+        (
+            "Can you rule out the choices for me on exams?",
+            AskIntent.REQUEST_OPTION_ELIMINATION,
+        ),
+        (
+            "Can you rule out the choices for me on a general test?",
             AskIntent.REQUEST_OPTION_ELIMINATION,
         ),
         (

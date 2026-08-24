@@ -61,6 +61,12 @@ _GENERIC_CONTEXT_PHRASES = (
     ("exam", "strategy"),
     ("test", "strategy"),
 )
+_GENERIC_INSTRUCTIONAL_FRAMING = (
+    ("how", "can", "i"),
+    ("how", "do", "i"),
+    ("what", "strategies"),
+    ("what", "strategy"),
+)
 _GENERIC_ELIMINATION_WORDS = {
     "choices",
     "choice",
@@ -194,6 +200,8 @@ def _is_option_label(value: str) -> bool:
 def _is_generic_strategy_query(tokens: tuple[str, ...]) -> bool:
     if _QUESTION_SCOPE_WORDS.intersection(tokens):
         return False
+    if not _contains_any(tokens, _GENERIC_INSTRUCTIONAL_FRAMING):
+        return False
     has_strategy_term = bool(_GENERIC_STRATEGY_WORDS.intersection(tokens))
     has_generic_test_context = _contains_any(tokens, _GENERIC_CONTEXT_PHRASES)
     has_elimination_term = bool(_GENERIC_ELIMINATION_WORDS.intersection(tokens))
@@ -217,9 +225,17 @@ def _requests_direct_answer(tokens: tuple[str, ...]) -> bool:
                 if suffix and suffix[0] in _ANSWER_SUFFIXES_THAT_ARE_NOT_REVEALS:
                     continue
             return True
-    if _contains(tokens, ("rule", "out")):
+    if _requests_diagnostic_exclusion(tokens):
         return True
     return _requests_an_option_label(tokens)
+
+
+def _requests_diagnostic_exclusion(tokens: tuple[str, ...]) -> bool:
+    return (
+        _contains(tokens, ("rule", "out"))
+        and not _OPTION_WORDS.intersection(tokens)
+        and not _contains_any(tokens, _GENERIC_CONTEXT_PHRASES)
+    )
 
 
 _DEFINITION_PHRASES = (
