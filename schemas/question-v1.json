@@ -211,55 +211,23 @@
           "type": "array"
         },
         "input_hash": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Input Hash"
+          "title": "Input Hash",
+          "type": "string"
         },
         "mode": {
           "$ref": "#/$defs/QuestionMode"
         },
         "model_version": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Model Version"
+          "title": "Model Version",
+          "type": "string"
         },
         "output_hash": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Output Hash"
+          "title": "Output Hash",
+          "type": "string"
         },
         "prompt_version": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Prompt Version"
+          "title": "Prompt Version",
+          "type": "string"
         },
         "question_id": {
           "minLength": 1,
@@ -267,15 +235,14 @@
           "type": "string"
         },
         "schema_version": {
-          "default": "question-v1",
           "title": "Schema Version",
           "type": "string"
         },
         "source_revision_ids": {
-          "default": [],
           "items": {
             "type": "string"
           },
+          "minItems": 1,
           "title": "Source Revision Ids",
           "type": "array"
         },
@@ -293,7 +260,13 @@
         "question_id",
         "version",
         "mode",
-        "draft"
+        "draft",
+        "source_revision_ids",
+        "prompt_version",
+        "schema_version",
+        "model_version",
+        "input_hash",
+        "output_hash"
       ],
       "title": "QuestionVersion",
       "type": "object"

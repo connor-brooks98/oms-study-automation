@@ -172,13 +172,13 @@ class QuestionVersion(_QuestionModel):
     mode: QuestionMode
     status: QuestionStatus = QuestionStatus.DRAFT
     draft: BoardQuestionDraft
-    source_revision_ids: tuple[str, ...] = ()
+    source_revision_ids: tuple[str, ...] = Field(min_length=1)
     evidence_ids: tuple[str, ...] = ()
-    prompt_version: str | None = None
-    schema_version: str = "question-v1"
-    model_version: str | None = None
-    input_hash: str | None = None
-    output_hash: str | None = None
+    prompt_version: str
+    schema_version: str
+    model_version: str
+    input_hash: str
+    output_hash: str
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -203,16 +203,15 @@ class QuestionVersion(_QuestionModel):
         label = getattr(info, "field_name", "value")
         return _nonblank_ids(values, label)
 
-    @field_validator("question_id", "schema_version")
+    @field_validator(
+        "question_id",
+        "prompt_version",
+        "schema_version",
+        "model_version",
+        "input_hash",
+        "output_hash",
+    )
     @classmethod
     def versions_are_nonblank(cls, value: str, info: object) -> str:
-        label = getattr(info, "field_name", "value")
-        return _nonblank(value, label)
-
-    @field_validator("prompt_version", "model_version", "input_hash", "output_hash")
-    @classmethod
-    def optional_versions_are_nonblank(cls, value: str | None, info: object) -> str | None:
-        if value is None:
-            return None
         label = getattr(info, "field_name", "value")
         return _nonblank(value, label)

@@ -46,6 +46,22 @@ def _schema_bytes() -> bytes:
     return (json.dumps(schema, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
+def _version_payload(draft: BoardQuestionDraft) -> dict[str, Any]:
+    return {
+        "question_id": "question-1",
+        "version": 1,
+        "mode": QuestionMode.BOARD_STYLE,
+        "draft": draft,
+        "source_revision_ids": ("revision-1",),
+        "evidence_ids": ("evidence-1",),
+        "prompt_version": "prompt-v1",
+        "schema_version": "question-v1",
+        "model_version": "model-v1",
+        "input_hash": "input-hash",
+        "output_hash": "output-hash",
+    }
+
+
 def test_required_enum_values_are_exact() -> None:
     assert [member.value for member in QuestionMode] == [
         "lecture_recall",
@@ -136,14 +152,46 @@ def test_at_least_one_objective_id_is_required() -> None:
         BoardQuestionDraft.model_validate(_payload(objective_ids=[]))
 
 
+@pytest.mark.parametrize(
+    "field",
+    (
+        "source_revision_ids",
+        "prompt_version",
+        "schema_version",
+        "model_version",
+        "input_hash",
+        "output_hash",
+    ),
+)
+def test_question_version_requires_provenance_fields(field: str) -> None:
+    payload = _version_payload(BoardQuestionDraft.model_validate(build_board_question_draft()))
+    del payload[field]
+    with pytest.raises(ValueError, match=field):
+        QuestionVersion.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    (
+        ("source_revision_ids", ()),
+        ("source_revision_ids", ("",)),
+        ("prompt_version", ""),
+        ("schema_version", ""),
+        ("model_version", ""),
+        ("input_hash", ""),
+        ("output_hash", ""),
+    ),
+)
+def test_question_version_rejects_blank_provenance_fields(field: str, value: object) -> None:
+    payload = _version_payload(BoardQuestionDraft.model_validate(build_board_question_draft()))
+    payload[field] = value
+    with pytest.raises(ValueError, match=field):
+        QuestionVersion.model_validate(payload)
+
+
 def test_question_models_are_immutable_and_versioned() -> None:
     draft = BoardQuestionDraft.model_validate(build_board_question_draft())
-    version = QuestionVersion(
-        question_id="question-1",
-        version=1,
-        mode=QuestionMode.BOARD_STYLE,
-        draft=draft,
-    )
+    version = QuestionVersion.model_validate(_version_payload(draft))
     assert version.status is QuestionStatus.DRAFT
     assert version.schema_version == "question-v1"
     with pytest.raises(ValidationError):
