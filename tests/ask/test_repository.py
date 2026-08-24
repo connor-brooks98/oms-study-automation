@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier
 from typing import cast
 
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
 
 from oms_hub.ask.models import AskMode, QuizPageContext
 from oms_hub.ask.repository import AskRepository
@@ -20,7 +22,7 @@ def _scope(*, lecture_ids: tuple[str, ...] = ("lecture-13",)) -> RetrievalScope:
         exam_id="exam-2",
         lecture_ids=lecture_ids,
         truth_mode=TruthMode.COURSE_ONLY,
-        source_revision_ids=("sr-1",),
+        source_revision_ids=("sr-1", "sr-2"),
     )
 
 
@@ -147,6 +149,50 @@ def test_messages_are_append_only_and_deterministically_ordered(
     ]
 
 
+def test_concurrent_appends_allocate_unique_sequences(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.GLOBAL, _scope(), thread_id="thread-concurrent"
+    )
+    workers = 4
+    barrier = Barrier(workers)
+
+    def pause_before_legacy_max(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if "max(ask_messages.sequence)" in statement.lower():
+            barrier.wait(timeout=10)
+
+    event.listen(database.engine, "before_cursor_execute", pause_before_legacy_max)
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [
+                executor.submit(
+                    repository.append_user_message,
+                    thread.thread_id,
+                    "actor-alice",
+                    f"Question {index}",
+                    message_id=f"message-{index}",
+                )
+                for index in range(workers)
+            ]
+            messages = [future.result() for future in futures]
+    finally:
+        event.remove(database.engine, "before_cursor_execute", pause_before_legacy_max)
+
+    assert {message.message_id for message in messages} == {
+        f"message-{index}" for index in range(workers)
+    }
+    assert len(repository.get_thread(thread.thread_id, "actor-alice").messages) == workers
+
+
 def test_retrieval_history_keeps_provenance_and_no_raw_evidence(
     repository: AskRepository,
     database: Database,
@@ -186,6 +232,70 @@ def test_retrieval_history_keeps_provenance_and_no_raw_evidence(
     assert "source_revision_id" in columns
     assert "raw_evidence" not in columns
     assert "excerpt" not in columns
+    run_columns = {
+        column["name"] for column in inspect(database.engine).get_columns("retrieval_runs")
+    }
+    assert "evidence_ids_json" not in run_columns
+    assert "source_revision_ids_json" not in run_columns
+
+
+def test_provenance_requires_bounded_paired_and_scoped_ids(
+    repository: AskRepository,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-provenance"
+    )
+    cases = (
+        (("ev-1", "ev-2"), ("sr-1",), "model-1"),
+        (("private evidence prose",), ("sr-1",), "model-1"),
+        (("ev-1",), ("revision with spaces",), "model-1"),
+        (("ev-1",), ("sr-out-of-scope",), "model-1"),
+        (("ev-1",), ("sr-1",), "m" * 301),
+    )
+    for evidence_ids, source_revision_ids, model in cases:
+        with pytest.raises(ValueError):
+            repository.record_retrieval_run(
+                thread.thread_id,
+                "actor-alice",
+                source_snapshot_hash="a" * 64,
+                evidence_ids=evidence_ids,
+                source_revision_ids=source_revision_ids,
+                prompt_version="ask-grounded-v1",
+                schema_version="ask-v1",
+                model=model,
+                validation_outcome="valid",
+            )
+
+
+def test_corrupt_persisted_retrieval_link_fails_closed(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-corrupt"
+    )
+    repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        evidence_ids=("ev-1",),
+        source_revision_ids=("sr-1",),
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+        retrieval_run_id="retrieval-corrupt",
+    )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE retrieval_evidence SET evidence_id = 'private evidence prose' "
+                "WHERE retrieval_run_id = 'retrieval-corrupt'"
+            )
+        )
+
+    with pytest.raises(ValueError, match="evidence_id"):
+        repository.get_thread(thread.thread_id, "actor-alice")
 
 
 def test_delete_thread_removes_owned_derivatives_but_not_canonical_evidence(
@@ -234,6 +344,21 @@ def test_retention_deletion_is_actor_scoped_and_explicit(
     with pytest.raises(KeyError):
         repository.get_thread("thread-a", "actor-alice")
     assert repository.get_thread("thread-b", "actor-bob").thread.thread_id == "thread-b"
+
+
+def test_retention_requires_timezone_aware_iso_cutoff(
+    repository: AskRepository,
+) -> None:
+    repository.create_thread("actor-alice", AskMode.GLOBAL, _scope(), thread_id="thread-a")
+    invalid_cutoffs: tuple[str | datetime, ...] = (
+        "zzzz",
+        "2026-08-24T00:00:00",
+        datetime(2026, 8, 24),
+    )
+    for cutoff in invalid_cutoffs:
+        with pytest.raises(ValueError):
+            repository.delete_threads_before("actor-alice", cutoff)
+    assert repository.get_thread("thread-a", "actor-alice").thread.thread_id == "thread-a"
 
 
 def test_missing_or_unauthorized_writes_fail_closed(repository: AskRepository) -> None:
