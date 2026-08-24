@@ -33,25 +33,41 @@ def build_recipe_registry(
                 "lecture-outline-current",
                 ArtifactKind.LECTURE_OUTLINE,
                 "current-v1",
-                outline_generator or _unconfigured("lecture-outline-current"),
+                (
+                    outline_generator
+                    if outline_generator is not None
+                    else _unconfigured("lecture-outline-current")
+                ),
             ),
             ArtifactRecipe(
                 "lecture-quiz-current",
                 ArtifactKind.LECTURE_QUIZ,
                 "current-v1",
-                lecture_quiz_generator or _unconfigured("lecture-quiz-current"),
+                (
+                    lecture_quiz_generator
+                    if lecture_quiz_generator is not None
+                    else _unconfigured("lecture-quiz-current")
+                ),
             ),
             ArtifactRecipe(
                 "custom-quiz-current",
                 ArtifactKind.CUSTOM_QUIZ,
                 "current-v1",
-                custom_quiz_generator or _unconfigured("custom-quiz-current"),
+                (
+                    custom_quiz_generator
+                    if custom_quiz_generator is not None
+                    else _unconfigured("custom-quiz-current")
+                ),
             ),
             ArtifactRecipe(
                 "board-question-v1",
                 ArtifactKind.BOARD_QUESTION,
                 "v1",
-                board_question_generator or _unconfigured("board-question-v1"),
+                (
+                    board_question_generator
+                    if board_question_generator is not None
+                    else _unconfigured("board-question-v1")
+                ),
             ),
         ]
     )

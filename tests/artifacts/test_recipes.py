@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, assert_type
 
 import pytest
 
@@ -7,6 +8,7 @@ from oms_hub.artifacts import (
     ArtifactGenerationContext,
     ArtifactKind,
     ArtifactRecipeRegistry,
+    ArtifactRole,
 )
 from oms_hub.artifacts.recipes import build_recipe_registry
 from oms_hub.providers import AuthorityClass
@@ -26,6 +28,11 @@ class RecordingGenerator:
     def __call__(self, request: object) -> object:
         self.calls.append(request)
         return self.result
+
+
+class FalsyRecordingGenerator(RecordingGenerator):
+    def __bool__(self) -> bool:
+        return False
 
 
 def build_context() -> ArtifactGenerationContext:
@@ -67,6 +74,35 @@ def test_current_lecture_quiz_recipe_delegates_without_prompt_change() -> None:
     assert result.schema_version == "legacy-output-v1"
     assert result.storage_path == Path("data/artifacts/synthetic/quiz.json")
     assert result.route == "/lectures/42/quiz"
+
+
+def test_recipe_passes_the_exact_context_request_object() -> None:
+    request = object()
+    fake_current_generator = RecordingGenerator({"request": "preserved"})
+    context = ArtifactGenerationContext(request=request)
+
+    build_recipe_registry(
+        lecture_quiz_generator=fake_current_generator,
+    ).get("lecture-quiz-current").generate(context)
+
+    assert fake_current_generator.calls[0] is request
+
+
+def test_recipe_accepts_a_valid_falsy_generator() -> None:
+    generated = {"title": "Falsy callable output"}
+    fake_current_generator = FalsyRecordingGenerator(generated)
+    context = build_context()
+
+    result = build_recipe_registry(
+        lecture_quiz_generator=fake_current_generator,
+    ).get("lecture-quiz-current").generate(context)
+
+    assert fake_current_generator.calls[0] is context.request
+    assert result.payload == generated
+
+
+def test_legacy_artifact_exports_retain_static_types() -> None:
+    assert_type(ArtifactRole.PDF, Literal[ArtifactRole.PDF])
 
 
 @pytest.mark.parametrize(

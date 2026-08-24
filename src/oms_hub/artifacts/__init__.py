@@ -24,21 +24,135 @@ from oms_hub.artifacts.models import (
 from oms_hub.artifacts.recipes import build_default_registry, build_recipe_registry
 
 if TYPE_CHECKING:
-    from typing import Any
+    from collections.abc import Callable
+    from dataclasses import dataclass
+    from enum import StrEnum
+    from pathlib import Path
 
-    ArtifactCleanupError: Any
-    ArtifactConflict: Any
-    ArtifactError: Any
-    ArtifactNotFound: Any
-    ArtifactOperatorDiagnostic: Any
-    ArtifactPromotionError: Any
-    ArtifactRecoveryError: Any
-    ArtifactRecoveryState: Any
-    ArtifactRole: Any
-    ArtifactService: Any
-    ResolvedArtifact: Any
+    from oms_hub.config import Settings
+    from oms_hub.db import Database
+    from oms_hub.ingestion.domain import StudyRevision
+    from oms_hub.ingestion.repository import IngestionRepository
+    from oms_hub.repositories import CatalogRepository
 
-    def artifact_operator_diagnostic(error: Any) -> Any: ...
+    class ArtifactRole(StrEnum):
+        PPTX = "pptx"
+        PDF = "pdf"
+        RAW = "raw"
+        CLEANED = "cleaned"
+
+    class ArtifactError(RuntimeError):
+        pass
+
+    class ArtifactNotFound(ArtifactError):
+        pass
+
+    class ArtifactConflict(ArtifactError):
+        pass
+
+    class ArtifactRecoveryState(StrEnum):
+        COMMITTED_CLEANUP_REQUIRED = "committed_cleanup_required"
+        ROLLED_BACK_CLEANUP_REQUIRED = "rolled_back_cleanup_required"
+        ROLLBACK_INCOMPLETE = "rollback_incomplete"
+
+    class ArtifactPromotionError(ArtifactError):
+        original_error: BaseException
+
+        def __init__(self, message: str, *, original_error: BaseException) -> None: ...
+
+    class ArtifactCleanupError(ArtifactError):
+        backup_paths: tuple[Path, ...]
+        recovery_journal_path: Path | None
+        original_error: BaseException
+        recovery_state: ArtifactRecoveryState
+
+        def __init__(
+            self,
+            message: str,
+            *,
+            backup_paths: tuple[Path, ...],
+            recovery_journal_path: Path | None,
+            original_error: BaseException,
+            recovery_state: ArtifactRecoveryState,
+        ) -> None: ...
+
+    class ArtifactRecoveryError(ArtifactError):
+        backup_paths: tuple[Path, ...]
+        recovery_journal_path: Path | None
+        original_error: BaseException
+        restore_error: BaseException
+        journal_error: BaseException | None
+        recovery_state: ArtifactRecoveryState
+
+        def __init__(
+            self,
+            message: str,
+            *,
+            backup_paths: tuple[Path, ...],
+            recovery_journal_path: Path | None,
+            original_error: BaseException,
+            restore_error: BaseException,
+            journal_error: BaseException | None = None,
+            recovery_state: ArtifactRecoveryState,
+        ) -> None: ...
+
+    @dataclass(frozen=True, slots=True)
+    class ArtifactOperatorDiagnostic:
+        code: str
+        message: str
+        recovery_state: str
+        backup_paths: tuple[str, ...]
+        recovery_journal_path: str | None
+
+        def as_detail(self) -> dict[str, object]: ...
+
+    def artifact_operator_diagnostic(
+        error: ArtifactCleanupError | ArtifactRecoveryError,
+    ) -> ArtifactOperatorDiagnostic: ...
+
+    @dataclass(frozen=True, slots=True)
+    class ResolvedArtifact:
+        revision_id: int
+        role: ArtifactRole
+        path: Path
+        media_type: str
+        disposition: str
+        text: bool
+
+    class ArtifactService:
+        repository: IngestionRepository
+        catalog: CatalogRepository
+
+        def __init__(self, database: Database, settings: Settings) -> None: ...
+
+        def resolve(self, revision_id: int, role: ArtifactRole) -> ResolvedArtifact: ...
+
+        def approve(self, revision_id: int) -> StudyRevision: ...
+
+        def keep_current(self, revision_id: int) -> StudyRevision: ...
+
+        @staticmethod
+        def _backup_path(destination: Path, revision_id: int) -> Path: ...
+
+        @staticmethod
+        def _write_recovery_journal(
+            pairs: list[tuple[Path, Path]],
+            backups: dict[Path, Path | None],
+            revision_id: int,
+        ) -> Path: ...
+
+        @staticmethod
+        def _promote_with_rollback(
+            pairs: list[tuple[Path, Path]],
+            revision_id: int,
+            commit: Callable[[], StudyRevision],
+        ) -> None: ...
+
+        def _recover_promotion(
+            self,
+            revision: StudyRevision,
+            pairs: list[tuple[Path, Path]],
+        ) -> bool: ...
 
 __all__ = (
     "ArtifactGenerationContext",
