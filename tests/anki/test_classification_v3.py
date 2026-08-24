@@ -912,9 +912,8 @@ def test_r8_set_coverage_selects_multiple_cards_from_one_compact_fact_request() 
             {
                 "fact_id": "fact-1",
                 "status": "covered",
-                "selected_candidate_ids": ["note:1", "note:2"],
+                "selected_candidate_ids": ["note:2", "note:1", "note:2"],
                 "confidence_bps": 9000,
-                "supporting_passage_ids": ["passage-1"],
                 "reason": "cards cover the fact together",
             }
         ]
@@ -928,8 +927,15 @@ def test_r8_set_coverage_selects_multiple_cards_from_one_compact_fact_request() 
         route=cheap,
     )
     assert [row["disposition"] for row in result.payload["final_partition"]] == ["keep", "keep"]
+    assert result.payload["rows"][0]["selected_candidate_ids"] == ["note:1", "note:2"]
     assert len(fake.calls) == 1 and len(fake.calls[0]["input"]["facts"]) == 1
-    assert "tags" not in fake.calls[0]["input"]["facts"][0]["candidates"][0]
+    fact_input = fake.calls[0]["input"]["facts"][0]
+    assert set(fact_input) == {"fact_id", "statement", "candidates"}
+    assert set(fact_input["candidates"][0]) == {"candidate_id", "note_id", "text", "extra"}
+    assert all(
+        row["supporting_passage_ids"] == ["passage-1"]
+        for row in result.payload["final_partition"]
+    )
 
 
 def test_r8_set_coverage_fails_closed_when_a_candidate_escapes_its_fact() -> None:
@@ -943,7 +949,6 @@ def test_r8_set_coverage_fails_closed_when_a_candidate_escapes_its_fact() -> Non
                         "status": "covered",
                         "selected_candidate_ids": ["note:2"],
                         "confidence_bps": 9000,
-                        "supporting_passage_ids": ["passage-1"],
                         "reason": "escaped candidate",
                     },
                     {
@@ -951,7 +956,6 @@ def test_r8_set_coverage_fails_closed_when_a_candidate_escapes_its_fact() -> Non
                         "status": "missing",
                         "selected_candidate_ids": [],
                         "confidence_bps": 9000,
-                        "supporting_passage_ids": ["passage-1"],
                         "reason": "missing",
                     },
                 ]
@@ -966,8 +970,7 @@ def test_r8_set_coverage_fails_closed_when_a_candidate_escapes_its_fact() -> Non
         route=cheap,
     )
     assert (
-        result.blocking_error
-        == "R8 set-coverage response escapes requested candidates or passages"
+        result.blocking_error == "R8 set-coverage response escapes requested candidates"
     )
     assert {row["disposition"] for row in result.payload["final_partition"]} == {"unresolved"}
 
@@ -1094,7 +1097,7 @@ def test_r7_pins_and_repair_authorization_reject_stale_or_noninteger_costs() -> 
     assert pin["cheap_options"]["max_tokens"] == 3072
     assert pin["thorough_options"]["max_tokens"] == 3072
     assert pin["classification_config"]["output_max_tokens"] == 3072
-    assert pin["classification_config"]["version"] == "classification-r7-v3"
+    assert pin["classification_config"]["version"] == "classification-r7-v4"
     assert pin["cheap_options_sha256"] == canonical_payload_sha256(pin["cheap_options"])
     request = "d" * 64
     authorization = {

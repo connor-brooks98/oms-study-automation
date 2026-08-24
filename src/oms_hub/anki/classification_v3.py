@@ -49,7 +49,7 @@ SET_COVERAGE_FACTS_PER_BATCH = 4
 SET_COVERAGE_OUTPUT_MAX_TOKENS = 2_048
 ESTIMATOR_VERSION = "utf8-byte-upper-bound-v1"
 CLASSIFICATION_CONFIG = {
-    "version": "classification-r7-v3",
+    "version": "classification-r7-v4",
     "bundle_max_input_bytes": MAX_BUNDLE_BYTES,
     "bundle_max_input_tokens": MAX_BUNDLE_TOKENS,
     "output_max_tokens": CLASSIFICATION_OUTPUT_MAX_TOKENS,
@@ -90,9 +90,10 @@ REPAIR_INSTRUCTION = (
 )
 SET_COVERAGE_INSTRUCTION = (
     "Decide whether each exact target fact is fully covered by the supplied candidate cards "
-    "acting together. Select the smallest sufficient set; candidate text and extra are the only "
-    "card support, while passages establish lecture truth. Tags are not support. Return missing "
-    "only when no supplied set covers the fact, and unresolved when the evidence is ambiguous."
+    "acting together. Select the smallest sufficient set. Every material claim in the fact must "
+    "appear in the selected candidates' text or extra; do not infer missing content. No lecture "
+    "passages, tags, or deck hints are supplied. Return missing only when no supplied set covers "
+    "the fact, and unresolved when candidate content is ambiguous."
 )
 
 
@@ -145,15 +146,17 @@ class ProviderSetCoverageRow(BaseModel):
     status: Literal["covered", "missing", "unresolved"]
     selected_candidate_ids: tuple[str, ...] = ()
     confidence_bps: int = Field(ge=0, le=10_000)
-    supporting_passage_ids: tuple[str, ...] = Field(min_length=1)
     reason: str = Field(min_length=1, max_length=1_000)
 
-    @field_validator("selected_candidate_ids", "supporting_passage_ids")
+    @field_validator("selected_candidate_ids", mode="before")
     @classmethod
-    def ordered_ids(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        if values != tuple(sorted(values)) or len(values) != len(set(values)):
-            raise ValueError("set-coverage IDs must be sorted and unique")
-        return values
+    def canonical_ids(cls, value: object) -> tuple[str, ...]:
+        if not isinstance(value, (list, tuple)):
+            raise TypeError("set-coverage IDs must be an array")
+        values = tuple(value)
+        if any(type(item) is not str or not item or item.strip() != item for item in values):
+            raise ValueError("set-coverage IDs must be nonblank strings")
+        return tuple(sorted(set(values)))
 
     @field_validator("reason")
     @classmethod
@@ -316,7 +319,7 @@ def r7_pin_document(
     config = r7_config_document()
     set_options = options_document(_set_coverage_options(cheap_route))
     return {
-        "serialization_version": "classification-r7-pin-v3",
+        "serialization_version": "classification-r7-pin-v4",
         "instruction_sha256": {
             "cheap": instruction_sha256(CHEAP_INSTRUCTION),
             "thorough": instruction_sha256(THOROUGH_INSTRUCTION),
@@ -951,23 +954,18 @@ def _set_coverage_input(
             {
                 "fact_id": fact_id,
                 "statement": fact.statement,
-                "passages": [
-                    {"passage_id": item.passage_id, "text": item.text}
-                    for item in first.selected_passages
-                ],
                 "candidates": [
                     {
                         "candidate_id": item.candidate.candidate_id,
                         "note_id": item.candidate.note_id,
                         "text": item.candidate.text,
                         "extra": item.candidate.extra,
-                        "deck": item.candidate.deck,
                     }
                     for item in bundles
                 ],
             }
         )
-    return {"serialization_version": "set-coverage-provider-input-v1", "facts": facts}
+    return {"serialization_version": "set-coverage-provider-input-v2", "facts": facts}
 
 
 def _pack_set_coverage(
@@ -999,15 +997,6 @@ def _set_coverage_output_model(
     candidate_ids = tuple(
         sorted({item.candidate.candidate_id for _fact_id, items in groups for item in items})
     )
-    passage_ids = tuple(
-        sorted(
-            {
-                passage.passage_id
-                for _fact_id, items in groups
-                for passage in items[0].selected_passages
-            }
-        )
-    )
     row = create_model(
         "ProviderSetCoverageRow",
         __base__=ProviderSetCoverageRow,
@@ -1024,20 +1013,6 @@ def _set_coverage_output_model(
                 ),
             ],
             (),
-        ),
-        supporting_passage_ids=(
-            Annotated[
-                tuple[str, ...],
-                WithJsonSchema(
-                    {
-                        "type": "array",
-                        "items": {"type": "string", "enum": list(passage_ids)},
-                        "minItems": 1,
-                        "maxItems": len(passage_ids),
-                    }
-                ),
-            ],
-            ...,
         ),
     )
     return create_model(
@@ -1063,8 +1038,8 @@ def _validate_set_coverage_rows(
         bundles = by_fact[row.fact_id]
         if not set(row.selected_candidate_ids) <= {
             item.candidate.candidate_id for item in bundles
-        } or not set(row.supporting_passage_ids) <= set(bundles[0].allowed_passage_ids):
-            return "R8 set-coverage response escapes requested candidates or passages"
+        }:
+            return "R8 set-coverage response escapes requested candidates"
     return None
 
 
@@ -1089,9 +1064,7 @@ def _set_coverage_partition(
                 "candidate_id": bundle.candidate.candidate_id,
                 "disposition": disposition,
                 "confidence_bps": 0 if row is None else row["confidence_bps"],
-                "supporting_passage_ids": (
-                    [] if row is None else list(cast(Sequence[str], row["supporting_passage_ids"]))
-                ),
+                "supporting_passage_ids": [] if row is None else list(bundle.allowed_passage_ids),
                 "conflicting_passage_ids": [],
                 "redundant_with_candidate_id": None,
                 "reason": "set coverage unavailable" if row is None else str(row["reason"]),
