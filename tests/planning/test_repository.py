@@ -1,4 +1,5 @@
-from datetime import UTC, date, datetime
+from dataclasses import replace
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -39,6 +40,19 @@ def test_repository_starts_with_default_target_and_allows_user_edits() -> None:
     assert repository.get_target() == edited
 
 
+def test_repository_retains_target_revisions_and_current_target() -> None:
+    repository = PlanningRepository()
+    initial = repository.get_target()
+    edited = replace(initial, earliest_date=date(2027, 4, 1))
+
+    saved = repository.save_target(edited)
+
+    assert saved.target_id != initial.target_id
+    assert repository.get_target() == saved
+    assert repository.get_target_revision(initial.target_id) == initial
+    assert repository.list_target_revisions() == (initial, saved)
+
+
 def test_repository_round_trips_plan_days_and_latest_snapshots() -> None:
     repository = PlanningRepository()
     day = StudyPlanDay(
@@ -68,6 +82,28 @@ def test_repository_round_trips_plan_days_and_latest_snapshots() -> None:
     repository.save_snapshot(newer)
 
     assert repository.latest_snapshot() == newer
+
+
+def test_repository_retains_plan_day_revisions_and_current_day() -> None:
+    repository = PlanningRepository()
+    first = StudyPlanDay(
+        date=date(2026, 8, 24),
+        allocations=(StudyAllocation(category="cumulative_board_questions", planned_count=10),),
+    )
+    edited = replace(
+        first,
+        allocations=(StudyAllocation(category="current_course_weak_objectives", planned_count=20),),
+        created_at=first.created_at + timedelta(seconds=1),
+    )
+
+    repository.save_plan_day(first)
+    saved = repository.save_plan_day(edited)
+
+    assert saved.plan_id != first.plan_id
+    assert repository.get_plan_day(first.date) == saved
+    assert repository.get_plan_day_revision(first.plan_id) == first
+    assert repository.list_plan_day_revisions(first.date) == (first, saved)
+    assert repository.list_plan_days() == (saved,)
 
 
 def test_correcting_external_assessment_creates_replacement_and_retires_old() -> None:

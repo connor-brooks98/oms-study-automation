@@ -22,21 +22,36 @@ class PlanningRepository:
     """
 
     def __init__(self, target: BoardTarget | None = None) -> None:
-        self._target = target or BoardTarget.default()
-        self._plan_days: dict[date, StudyPlanDay] = {}
+        initial_target = target or BoardTarget.default()
+        self._targets: dict[str, BoardTarget] = {initial_target.target_id: initial_target}
+        self._current_target_id = initial_target.target_id
+        self._plan_days: dict[str, StudyPlanDay] = {}
         self._snapshots: dict[str, BoardRunwaySnapshot] = {}
         self._assessments: dict[str, ExternalAssessment] = {}
 
     def get_target(self) -> BoardTarget:
-        return self._target
+        return self._targets[self._current_target_id]
 
     @property
     def target(self) -> BoardTarget:
         return self.get_target()
 
     def save_target(self, target: BoardTarget) -> BoardTarget:
-        self._target = target
+        existing = self._targets.get(target.target_id)
+        if existing is not None:
+            if existing == target:
+                self._current_target_id = target.target_id
+                return existing
+            target = replace(target, target_id=f"target_{uuid4()}")
+        self._targets[target.target_id] = target
+        self._current_target_id = target.target_id
         return target
+
+    def get_target_revision(self, target_id: str) -> BoardTarget | None:
+        return self._targets.get(target_id)
+
+    def list_target_revisions(self) -> tuple[BoardTarget, ...]:
+        return tuple(self._targets.values())
 
     def get_board_target(self) -> BoardTarget:
         return self.get_target()
@@ -45,11 +60,23 @@ class PlanningRepository:
         return self.save_target(target)
 
     def save_plan_day(self, plan: StudyPlanDay) -> StudyPlanDay:
-        self._plan_days[plan.date] = plan
+        existing = self._plan_days.get(plan.plan_id)
+        if existing is not None:
+            if existing == plan:
+                return existing
+            plan = replace(plan, plan_id=f"plan_{uuid4()}")
+        self._plan_days[plan.plan_id] = plan
         return plan
 
     def get_plan_day(self, plan_date: date) -> StudyPlanDay | None:
-        return self._plan_days.get(plan_date)
+        revisions = self.list_plan_day_revisions(plan_date)
+        return revisions[-1] if revisions else None
+
+    def get_plan_day_revision(self, plan_id: str) -> StudyPlanDay | None:
+        return self._plan_days.get(plan_id)
+
+    def list_plan_day_revisions(self, plan_date: date) -> tuple[StudyPlanDay, ...]:
+        return tuple(plan for plan in self._plan_days.values() if plan.date == plan_date)
 
     def list_plan_days(
         self,
@@ -59,9 +86,12 @@ class PlanningRepository:
     ) -> tuple[StudyPlanDay, ...]:
         if start is not None and end is not None and start > end:
             raise ValueError("start must not be after end")
+        latest_by_date: dict[date, StudyPlanDay] = {}
+        for plan in self._plan_days.values():
+            latest_by_date[plan.date] = plan
         return tuple(
             plan
-            for plan in sorted(self._plan_days.values(), key=lambda item: item.date)
+            for plan in sorted(latest_by_date.values(), key=lambda item: item.date)
             if (start is None or plan.date >= start) and (end is None or plan.date <= end)
         )
 
