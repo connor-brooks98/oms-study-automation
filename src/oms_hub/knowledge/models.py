@@ -77,7 +77,12 @@ class EvidenceLocator:
 def _validate_utc_timestamp(value: object, field_name: str) -> None:
     if not isinstance(value, str):
         raise ValueError(f"{field_name} must be a timezone-aware UTC ISO-8601 timestamp")
-    candidate = f"{value[:-1]}+00:00" if value.endswith("Z") else value
+    if value.endswith("Z"):
+        candidate = f"{value[:-1]}+00:00"
+    elif value.endswith("+00:00"):
+        candidate = value
+    else:
+        raise ValueError(f"{field_name} must be a timezone-aware UTC ISO-8601 timestamp")
     try:
         parsed = datetime.fromisoformat(candidate)
     except ValueError as error:

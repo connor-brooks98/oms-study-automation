@@ -78,6 +78,185 @@ indexing and citation mapping, Ask retrieval/citation validation, board
 question evidence packets, and approved literature registration. No existing
 v1 producer or consumer needs to change for this proposal.
 
+## Repository/import invariants
+
+Repository/import activation must resolve every `EvidenceUnit.source_revision_id`
+to its `SourceRevision`, then resolve that revision's
+`source_document_id` to its `KnowledgeSource`. It must reject an evidence unit
+whose `authority_class` differs from the referenced knowledge source's
+`authority_class`; it must not silently rewrite either authority. A differing
+authority requires a separate logical `source_document_id` and source revision.
+The exact proposed activation rejection test is:
+
+```python
+from oms_hub.knowledge.ids import sha256_text
+from oms_hub.knowledge.models import (
+    EvidenceLocator,
+    EvidenceLocatorKind,
+    EvidenceUnit,
+    KnowledgeSource,
+    SourceRevision,
+    SourceRevisionState,
+)
+from oms_hub.providers.contracts import AuthorityClass
+
+
+def test_import_rejects_evidence_authority_mismatch(repository) -> None:
+    source = KnowledgeSource("source_1", AuthorityClass.COURSE_MATERIAL)
+    revision = SourceRevision("source_1", "sr_1", "a" * 64, SourceRevisionState.READY)
+    unit = EvidenceUnit(
+        evidence_id="ev_1",
+        source_revision_id="sr_1",
+        authority_class=AuthorityClass.PUBLISHED_JOURNAL,
+        course_id="heme",
+        exam_id=None,
+        lecture_id=None,
+        locator=EvidenceLocator(EvidenceLocatorKind.SECTION, "abstract"),
+        normalized_text="text",
+        content_sha256=sha256_text("text"),
+    )
+    repository.create_source(source)
+    repository.create_revision(revision)
+    with pytest.raises(ValueError, match="authority_class"):
+        repository.put_evidence_units("sr_1", (unit,))
+```
+
+## Revision-state lifecycle and consumer eligibility
+
+The proposed state transitions are deliberately bounded:
+
+```text
+staged      -> normalizing | failed
+normalizing -> ready | failed
+ready       -> stale | retired
+stale       -> retired
+failed      -> normalizing | retired
+retired     -> (none)
+```
+
+Only `ready` may enter new indexing, retrieval, citation, or question-evidence
+packets. `staged`, `normalizing`, `failed`, `stale`, and `retired` are excluded
+from all new trusted flows. Stale and retired revisions remain immutable and
+available for audit/reference preservation; exclusion is not deletion.
+
+The exact proposed lifecycle and consumer tests are:
+
+```python
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        (SourceRevisionState.STAGED, SourceRevisionState.NORMALIZING),
+        (SourceRevisionState.STAGED, SourceRevisionState.FAILED),
+        (SourceRevisionState.NORMALIZING, SourceRevisionState.READY),
+        (SourceRevisionState.NORMALIZING, SourceRevisionState.FAILED),
+        (SourceRevisionState.READY, SourceRevisionState.STALE),
+        (SourceRevisionState.READY, SourceRevisionState.RETIRED),
+        (SourceRevisionState.STALE, SourceRevisionState.RETIRED),
+        (SourceRevisionState.FAILED, SourceRevisionState.NORMALIZING),
+        (SourceRevisionState.FAILED, SourceRevisionState.RETIRED),
+    ],
+)
+def test_source_revision_allows_only_proposed_transitions(before, after) -> None:
+    assert can_transition_revision_state(before, after) is True
+
+
+def test_source_revision_rejects_every_omitted_transition() -> None:
+    allowed = {
+        SourceRevisionState.STAGED: {
+            SourceRevisionState.NORMALIZING,
+            SourceRevisionState.FAILED,
+        },
+        SourceRevisionState.NORMALIZING: {
+            SourceRevisionState.READY,
+            SourceRevisionState.FAILED,
+        },
+        SourceRevisionState.READY: {
+            SourceRevisionState.STALE,
+            SourceRevisionState.RETIRED,
+        },
+        SourceRevisionState.STALE: {SourceRevisionState.RETIRED},
+        SourceRevisionState.FAILED: {
+            SourceRevisionState.NORMALIZING,
+            SourceRevisionState.RETIRED,
+        },
+        SourceRevisionState.RETIRED: set(),
+    }
+    for before in SourceRevisionState:
+        for after in SourceRevisionState:
+            assert can_transition_revision_state(before, after) is (after in allowed[before])
+
+
+@pytest.mark.parametrize("state", tuple(SourceRevisionState))
+@pytest.mark.parametrize("consumer", ("indexing", "retrieval", "citation", "question_packet"))
+def test_only_ready_revision_enters_each_new_trusted_flow(state, consumer) -> None:
+    assert can_consume_new_trusted_revision(state, consumer) is (
+        state is SourceRevisionState.READY
+    )
+```
+
+The activation suite must also assert every omitted transition is rejected and
+that stale/retired records can still be fetched by audit/reference queries.
+
+## Evidence hash and provider/Ask mapping
+
+`EvidenceUnit.content_sha256` is exactly the 64-character lowercase hexadecimal
+result of Task 1.1's `sha256_text(normalized_text)`. The proposed v2 schema
+must use `^[0-9a-f]{64}$`; the repository/import boundary must compare it with
+the normalized-text digest rather than trusting a caller-supplied checksum.
+The direct `EvidenceUnit` to existing `EvidenceRef` mapping is exact:
+
+```text
+evidence_id        -> evidence_id
+source_revision_id -> source_revision_id
+authority_class    -> authority_class
+locator.kind.value -> locator_kind
+locator.value      -> locator_value
+normalized_text    -> excerpt
+"sha256:" + content_sha256 -> checksum
+```
+
+The exact proposed provider/Ask mapping round-trip test is:
+
+```python
+def test_evidence_unit_maps_to_evidence_ref_and_round_trips() -> None:
+    from pydantic import TypeAdapter
+    from oms_hub.providers.contracts import EvidenceRef
+
+    text = "Hemophilia A is factor VIII deficiency."
+    digest = sha256_text(text)
+    unit = EvidenceUnit(
+        evidence_id="ev_1",
+        source_revision_id="sr_1",
+        authority_class=AuthorityClass.COURSE_MATERIAL,
+        course_id="heme",
+        exam_id="e2",
+        lecture_id="l13",
+        locator=EvidenceLocator(EvidenceLocatorKind.SLIDE, "5"),
+        normalized_text=text,
+        content_sha256=digest,
+    )
+    reference = EvidenceRef(
+        evidence_id=unit.evidence_id,
+        source_revision_id=unit.source_revision_id,
+        authority_class=unit.authority_class,
+        locator_kind=unit.locator.kind.value,
+        locator_value=unit.locator.value,
+        excerpt=unit.normalized_text,
+        checksum="sha256:" + unit.content_sha256,
+    )
+    assert reference.excerpt == unit.normalized_text
+    assert reference.checksum == "sha256:" + digest
+    assert reference.authority_class is unit.authority_class
+    restored = TypeAdapter(EvidenceRef).validate_json(
+        TypeAdapter(EvidenceRef).dump_json(reference)
+    )
+    assert restored == reference
+```
+
+A future bounded excerpt is a different integrity object: it needs its own
+excerpt-integrity rule and field, not reuse of `content_sha256` for a truncated
+or transformed excerpt.
+
 ## Compatibility and migration
 
 The v1 snapshot remains byte-for-byte stable and continues to serve existing
@@ -105,9 +284,16 @@ proposal makes no claim that those reviews or activation have occurred.
    data.
 3. Assert every enum value above, the exact EvidenceUnit required and
    defaulted/omittable field sets, the literal conditional schema above,
-   UTC date-time constraints, ordinary default emission, and exclusion of the
-   two derived properties.
+   UTC date-time constraints, ordinary default emission, authority matching,
+   the complete revision-state transition/eligibility matrix, the lowercase
+   content-hash rule, provider/Ask mapping, and exclusion of the two derived
+   properties.
 4. Round-trip one hand-derived instance of every v2 model through its
    `TypeAdapter` and assert that enum values serialize as their strings.
 5. Run the provider contract, knowledge, and safe broad Python lanes before
    activation; require Sol-0 and all consuming-owner reviews listed above.
+
+Non-blocking activation recommendations: use a real JSON-Schema instance
+validator if one is already available at activation, and have Sol-2 explicitly
+review the numeric `source_priority` ranking direction before enabling provider
+ranking. Neither recommendation adds a dependency in this proposal.

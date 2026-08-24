@@ -259,6 +259,32 @@ def test_type_adapter_accepts_utc_timestamp_forms(timestamp: str) -> None:
     assert unit.retired_at == timestamp
 
 
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "2026-08-23T12:00:00+00",
+        "2026-08-23T12:00:00+0000",
+        "2026-08-23T12:00:00-00:00",
+    ],
+)
+def test_direct_construction_rejects_noncanonical_utc_suffixes(timestamp: str) -> None:
+    with pytest.raises(ValueError, match="created_at"):
+        _evidence_unit(created_at=timestamp)
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "2026-08-23T12:00:00+00",
+        "2026-08-23T12:00:00+0000",
+        "2026-08-23T12:00:00-00:00",
+    ],
+)
+def test_type_adapter_rejects_noncanonical_utc_suffixes(timestamp: str) -> None:
+    with pytest.raises(ValidationError):
+        TypeAdapter(EvidenceUnit).validate_python(_evidence_payload(created_at=timestamp))
+
+
 def test_source_revision_exposes_read_only_consumer_compatibility_property() -> None:
     revision = SourceRevision("source_1", "sr_1", "a" * 64, SourceRevisionState.READY)
     assert revision.revision_id == revision.source_revision_id
