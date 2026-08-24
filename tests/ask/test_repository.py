@@ -245,7 +245,7 @@ def test_message_history_requires_nonnegative_contiguous_sequences(
     with database.engine.begin() as connection:
         connection.execute(text(mutation))
 
-    with pytest.raises(ValueError, match="message sequence"):
+    with pytest.raises(ValueError, match="message[_ ]sequence"):
         repository.get_thread(thread.thread_id, "actor-alice")
 
 

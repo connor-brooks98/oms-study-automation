@@ -337,13 +337,14 @@ class AskRepository:
         with self.database.session() as session:
             row = self._require_thread(session, thread_id, actor)
             thread = _thread(row)
+            message_rows = session.scalars(
+                select(_AskMessageRow)
+                .where(_AskMessageRow.thread_id == thread.thread_id)
+                .order_by(_AskMessageRow.sequence, _AskMessageRow.message_id)
+            ).all()
+            _validate_message_history(row, message_rows, actor)
             messages = tuple(
-                _message(message, actor)
-                for message in session.scalars(
-                    select(_AskMessageRow)
-                    .where(_AskMessageRow.thread_id == thread.thread_id)
-                    .order_by(_AskMessageRow.sequence, _AskMessageRow.message_id)
-                ).all()
+                _message(message, actor) for message in message_rows
             )
             retrieval_runs = tuple(
                 sorted(
@@ -493,6 +494,7 @@ class AskRepository:
             raise KeyError(identifier)
         _require_opaque_id(row.thread_id, "thread_id")
         _require_actor_id(row.actor_id)
+        _require_message_sequence(row.message_sequence, "message_sequence")
         _validate_thread_timestamps(row)
         return row
 
@@ -551,6 +553,22 @@ def _validate_message_identity(row: _AskMessageRow, actor_id: str) -> None:
     _validate_child_actor(row.actor_id, actor_id, "message")
 
 
+def _validate_message_history(
+    thread_row: _AskThreadRow,
+    message_rows: list[_AskMessageRow],
+    actor_id: str,
+) -> None:
+    expected_count = _require_message_sequence(thread_row.message_sequence, "message_sequence")
+    if len(message_rows) != expected_count:
+        raise ValueError("stored message sequence count is malformed")
+    actual_sequences: list[int] = []
+    for message_row in message_rows:
+        _validate_message_identity(message_row, actor_id)
+        actual_sequences.append(_require_message_sequence(message_row.sequence, "sequence"))
+    if tuple(actual_sequences) != tuple(range(1, expected_count + 1)):
+        raise ValueError("stored message sequence is not contiguous")
+
+
 def _validate_retrieval_run_identity(row: _RetrievalRunRow, actor_id: str) -> None:
     _require_opaque_id(row.retrieval_run_id, "retrieval_run_id")
     _require_opaque_id(row.thread_id, "thread_id")
@@ -560,6 +578,7 @@ def _validate_retrieval_run_identity(row: _RetrievalRunRow, actor_id: str) -> No
 def _thread(row: _AskThreadRow) -> AskThread:
     thread_id = _require_opaque_id(row.thread_id, "thread_id")
     _require_actor_id(row.actor_id)
+    _require_message_sequence(row.message_sequence, "message_sequence")
     _validate_thread_timestamps(row)
     page_context = _page_context_from_json(row.page_context_json)
     return AskThread(
@@ -714,8 +733,12 @@ def _page_context_from_json(value: str | None) -> AskPageContextValue | None:
     if not isinstance(payload, dict):
         raise ValueError("stored Ask page context is malformed")
     if payload.get("kind") == "quiz_question":
-        return QuizPageContext.model_validate(payload)
-    return AskPageContext.model_validate(payload)
+        parsed = QuizPageContext.model_validate(payload)
+    else:
+        parsed = AskPageContext.model_validate(payload)
+    if _page_context_json(parsed) != value:
+        raise ValueError("stored Ask page context is not canonical")
+    return parsed
 
 
 def _assert_context_matches(
@@ -776,6 +799,12 @@ def _validate_thread_timestamps(row: _AskThreadRow) -> None:
 def _require_evidence_count(value: object) -> int:
     if type(value) is not int or value < 0:
         raise ValueError("stored retrieval evidence link count is malformed")
+    return value
+
+
+def _require_message_sequence(value: object, field_name: str) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"stored {field_name} must be a nonnegative integer")
     return value
 
 
