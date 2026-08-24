@@ -17,9 +17,11 @@ unapplied as required by the Task 3.6 boundary.
   `d04ed9c1116dc3ddaf8b7da471c43f7a7edbc811`.
 - Quality fix code/test commit: `99b07d6552b28ead09a3bc9f8227c34918d28854` / tree
   `efbe8bff461ed54be7c50f3e8dcfb0aef20131e6`.
+- Duplicate-revision fix code/test commit: `2f401796a9bb3cc2dd1c84273cb0ea65dd4fac35`
+  / tree `2507ce27be864c0f96a1eaebb7110f5e8bffe6c9`.
 - Required code subject: `feat: persist scoped Ask conversations and retrieval traces`
-- Prior documentation commit: `5c8a35d99679fcc4242ad6e49e6c137142d4dd45` / tree
-  `334edd81e55a34f622c4b6cdbb66d9ce297c8b09`.
+- Prior documentation commit: `5ebd1cd4b4091c32ffb38e217d17093f388e0481` / tree
+  `5dd7dbe47ef4a66417766d1e1c9f061707550543`.
 - Terra fix-round documentation commit: `SELF`; tree: `SELF_TREE`.
 - Resolve `SELF` and `SELF_TREE` from the containing commit after creation with
   `git rev-parse HEAD` and `git rev-parse 'HEAD^{tree}'`; the placeholders are
@@ -63,8 +65,10 @@ strict timezone-aware `datetime`/ISO values and normalizes the cutoff to UTC. De
 removes owned messages, retrieval runs, and retrieval links explicitly. It never queries
 or deletes canonical evidence/source tables, and no scheduler or retention policy was
 added. Retrieval runs have no update method, and link rows are the sole persisted evidence
-and source-revision representation. Opaque IDs, one-to-one pairing, thread source scope,
-bounded provenance fields, and decoded persisted values are validated fail closed.
+and source-revision representation. Opaque IDs, one-to-one pairing, pinned thread source
+scope, bounded provenance fields, and decoded persisted values are validated fail closed.
+A default empty thread revision tuple represents a broad scope and does not itself reject
+bounded provenance.
 
 ## TDD evidence
 
@@ -147,6 +151,32 @@ bounded opaque provenance IDs with one-to-one scope-checked links, and link-only
 retrieval reconstruction with fail-closed persisted-value validation. A Terra quality
 re-review remains pending; no approval is claimed here.
 
+## Terra quality fix round 2
+
+Quality re-review of `99b07d6552b28ead09a3bc9f8227c34918d28854` / tree
+`efbe8bff461ed54be7c50f3e8dcfb0aef20131e6` returned **CHANGES REQUIRED** for the
+duplicate-revision Important. EvidenceRef semantics permit distinct evidence IDs to
+share one source revision, so rejecting duplicate `source_revision_ids` was too strict.
+The controller ruling is also explicit: Task 3.6 lacks the blocked Source Trust/context
+index needed to prove that a revision belongs to a broader course/exam/lecture scope.
+When `thread.scope.source_revision_ids` is empty, this repository accepts bounded paired
+provenance but cannot claim source-trust membership; that validation remains a held
+Task 3.2/3.7 integration prerequisite.
+
+RED coverage was added before the correction:
+
+```text
+PYTHONPATH=$PWD/src:$PWD .venv/bin/pytest tests/ask/test_repository.py -q
+```
+
+Result: `2 failed, 13 passed`; both failures were duplicate source revisions in paired
+provenance, including the empty revision-scope case. The correction is
+`2f401796a9bb3cc2dd1c84273cb0ea65dd4fac35` / tree
+`2507ce27be864c0f96a1eaebb7110f5e8bffe6c9` (`fix: allow shared source revisions in Ask traces`).
+It allows repeated source-revision IDs while preserving unique evidence IDs, positional
+pairing, opaque validation, and pinned-scope membership checks. Fresh quality re-review
+is pending; no approval is claimed.
+
 ## Required verification evidence
 
 Focused repository, affected Ask, and contracts:
@@ -157,7 +187,7 @@ PATH=$PWD/.venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD \
   tests/ask/test_intent.py tests/ask/test_leakage.py tests/contracts -q
 ```
 
-Result: `146 passed` (`13` repository, `16` models, `60` intent, `16` leakage, `41`
+Result: `148 passed` (`15` repository, `16` models, `60` intent, `16` leakage, `41`
 contracts).
 
 Ruff:
@@ -212,7 +242,10 @@ separate integration patch. The proposal now uses a non-null plain-text
 JSON columns, and makes `retrieval_evidence.source_revision_id` non-null. It includes
 migration/idempotence, central-table, app-state, atomic-concurrency, strict-retention,
 provenance-scope, corruption, and no-route/no-v2 integration tests. None of those edits
-were applied here.
+were applied here. The service/context integration proposal must additionally test that,
+when a thread's revision tuple is empty, each resolved `EvidenceRef` revision is checked
+against the effective Source Trust course/exam/lecture scope before
+`record_retrieval_run`; Task 3.6 cannot claim this blocked index membership check.
 
 The local mappings are therefore a deliberate testable boundary adapter, not a second
 production schema. The `KeyError` equivalence for missing and unauthorized IDs is a
