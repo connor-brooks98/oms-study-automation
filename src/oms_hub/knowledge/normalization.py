@@ -187,7 +187,7 @@ def _parsed_locator(segment: ParsedSegment) -> tuple[EvidenceLocatorKind, str]:
         kind = EvidenceLocatorKind.SECTION
     return kind, _locator_value(
         segment.locator,
-        preserve_detail=segment.kind is not SegmentKind.NOTE,
+        preserve_detail=True,
     )
 
 

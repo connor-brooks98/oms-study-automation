@@ -136,7 +136,7 @@ def test_parsed_segments_map_in_upstream_order_without_merging_kinds() -> None:
     assert [(unit.locator.kind, unit.locator.value) for unit in units] == [
         (EvidenceLocatorKind.SLIDE, "2"),
         (EvidenceLocatorKind.PAGE, "3"),
-        (EvidenceLocatorKind.SPEAKER_NOTE, "2"),
+        (EvidenceLocatorKind.SPEAKER_NOTE, "slide 2 notes"),
         (EvidenceLocatorKind.TABLE, "slide 4 table"),
         (EvidenceLocatorKind.FIGURE, "slide 5 image"),
     ]
@@ -219,6 +219,46 @@ def test_markdown_rejects_non_course_evidence_before_rendering() -> None:
 
     with pytest.raises(ValueError, match="course_material"):
         render_index_markdown((unit,))
+
+
+def test_equal_text_parsed_notes_keep_detailed_locators_and_ids() -> None:
+    parsed = ParsedDocument(
+        source_id="source",
+        source_sha256="a" * 64,
+        source_format="pptx",
+        parser_name="fixture",
+        parser_version="1",
+        segments=(
+            ParsedSegment(
+                key="note-first",
+                kind=SegmentKind.NOTE,
+                text="Same note",
+                locator=DocumentLocator("slide 1 notes 1", slide_number=1),
+            ),
+            ParsedSegment(
+                key="note-second",
+                kind=SegmentKind.NOTE,
+                text="Same note",
+                locator=DocumentLocator("slide 1 notes 2", slide_number=1),
+            ),
+        ),
+        assets=(),
+        warnings=(),
+    )
+
+    units = normalize_course_revision(
+        CourseRevisionInput(
+            source_revision_id="sr_notes",
+            course_id="heme",
+            parsed_document=parsed,
+        )
+    )
+
+    assert [unit.locator.value for unit in units] == [
+        "slide 1 notes 1",
+        "slide 1 notes 2",
+    ]
+    assert units[0].evidence_id != units[1].evidence_id
 
 
 def test_transcript_segments_are_distinct_ordered_evidence() -> None:
