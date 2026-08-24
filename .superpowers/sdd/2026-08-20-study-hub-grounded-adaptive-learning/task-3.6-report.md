@@ -3,7 +3,7 @@
 ## Status
 
 `LOCALLY_COMPLETE_PENDING_DOCS_REVIEW`: the repository and focused tests are implemented
-and green within the four owned runtime/test files. The terminal Workstream Sol **SHIP**
+and green within the four owned files. The terminal Workstream Sol **SHIP**
 verdict for the exact prior candidate is recorded below; this containing docs closeout
 remains subject only to a docs-only scoped re-review. Central ORM models, migration/version
 bump, app registration,
