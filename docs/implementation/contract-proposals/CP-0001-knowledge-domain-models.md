@@ -31,8 +31,39 @@ Generate a new `knowledge-v2.json` from the frozen slotted dataclasses in
 `EvidenceUnit.supports_medical_claims` is a derived Python property and is not
 a wire field. `SourceRevision.revision_id` is a read-only Task 1.3 compatibility
 property and is also not a wire field. Runtime validation requires `course_id`
-for `course_material` evidence; JSON Schema generation should represent that
-conditional requirement at the proposed boundary.
+for `course_material` evidence; JSON Schema generation should represent the
+following exact conditional requirement at the proposed boundary:
+
+```json
+{
+  "if": {
+    "properties": {"authority_class": {"const": "course_material"}},
+    "required": ["authority_class"]
+  },
+  "then": {
+    "required": ["course_id"],
+    "properties": {"course_id": {"type": "string", "pattern": "\\S"}}
+  }
+}
+```
+
+The proposed `EvidenceUnit` input has exactly these required keys:
+`evidence_id`, `source_revision_id`, `authority_class`, `course_id`,
+`exam_id`, `lecture_id`, `locator`, `normalized_text`, and `content_sha256`.
+`course_id`, `exam_id`, and `lecture_id` remain nullable for non-course
+authority classes, while the conditional above requires a non-whitespace
+`course_id` string for course material. These keys are omittable/defaulted:
+`image_asset_id` defaults to `null`, `source_priority` defaults to `0`,
+`created_at` has a UTC-now default, and `retired_at` defaults to `null`.
+Ordinary serialization emits all four defaulted/nullable fields, including
+`created_at` and `retired_at`.
+
+`created_at` and non-null `retired_at` are UTC ISO-8601 date-times. The v2
+schema should use `format: "date-time"` plus
+`pattern: "(?:Z|\\+00:00)$"`; runtime construction accepts `Z` and `+00:00`,
+requires timezone-aware UTC, and preserves the supplied spelling. The schema
+must not expose `supports_medical_claims` or `revision_id` because both are
+derived properties.
 
 The exporter change, when authorized, should construct a deterministic
 `TypeAdapter` union containing the existing v1 wire models and these additive
@@ -72,8 +103,10 @@ proposal makes no claim that those reviews or activation have occurred.
 2. Add a v2 snapshot test that runs the exporter twice, compares both outputs
    with the committed v2 snapshot, and rejects workspace paths or private
    data.
-3. Assert every enum value above, the exact required/optional field sets,
-   conditional course scope, and exclusion of the two derived properties.
+3. Assert every enum value above, the exact EvidenceUnit required and
+   defaulted/omittable field sets, the literal conditional schema above,
+   UTC date-time constraints, ordinary default emission, and exclusion of the
+   two derived properties.
 4. Round-trip one hand-derived instance of every v2 model through its
    `TypeAdapter` and assert that enum values serialize as their strings.
 5. Run the provider contract, knowledge, and safe broad Python lanes before

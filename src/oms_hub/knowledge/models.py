@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from oms_hub.models import utc_now
@@ -43,6 +44,9 @@ class KnowledgeSource:
     source_document_id: str
     authority_class: AuthorityClass
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "authority_class", AuthorityClass(self.authority_class))
+
 
 @dataclass(frozen=True, slots=True)
 class SourceRevision:
@@ -50,6 +54,9 @@ class SourceRevision:
     source_revision_id: str
     file_sha256: str
     state: SourceRevisionState
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "state", SourceRevisionState(self.state))
 
     @property
     def revision_id(self) -> str:
@@ -62,6 +69,23 @@ class SourceRevision:
 class EvidenceLocator:
     kind: EvidenceLocatorKind
     value: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "kind", EvidenceLocatorKind(self.kind))
+
+
+def _validate_utc_timestamp(value: object, field_name: str) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a timezone-aware UTC ISO-8601 timestamp")
+    candidate = f"{value[:-1]}+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError as error:
+        raise ValueError(
+            f"{field_name} must be a timezone-aware UTC ISO-8601 timestamp"
+        ) from error
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError(f"{field_name} must be a timezone-aware UTC ISO-8601 timestamp")
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,11 +105,14 @@ class EvidenceUnit:
     retired_at: str | None = None
 
     def __post_init__(self) -> None:
-        if (
-            self.authority_class == AuthorityClass.COURSE_MATERIAL
-            and not self.course_id
+        object.__setattr__(self, "authority_class", AuthorityClass(self.authority_class))
+        if self.authority_class == AuthorityClass.COURSE_MATERIAL and (
+            not isinstance(self.course_id, str) or not self.course_id.strip()
         ):
             raise ValueError("course_id is required for course material evidence")
+        _validate_utc_timestamp(self.created_at, "created_at")
+        if self.retired_at is not None:
+            _validate_utc_timestamp(self.retired_at, "retired_at")
 
     @property
     def supports_medical_claims(self) -> bool:
