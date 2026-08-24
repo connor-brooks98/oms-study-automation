@@ -81,12 +81,23 @@ def resolve_question_version(
             QuestionResolutionFailure.UNVERIFIABLE,
             question_version_id,
         )
-    if not resolution.approved_objective_ids or any(
-        not isinstance(objective_id, str) or not objective_id.strip()
-        for objective_id in resolution.approved_objective_ids
-    ):
+    objective_ids = resolution.approved_objective_ids
+    if not isinstance(objective_ids, tuple):
+        raise QuestionResolutionError(
+            QuestionResolutionFailure.INVALID_RECORD,
+            question_version_id,
+        )
+    if not objective_ids:
         raise QuestionResolutionError(
             QuestionResolutionFailure.MISSING_OBJECTIVES,
+            question_version_id,
+        )
+    if any(
+        not isinstance(objective_id, str) or not objective_id.strip()
+        for objective_id in objective_ids
+    ):
+        raise QuestionResolutionError(
+            QuestionResolutionFailure.INVALID_RECORD,
             question_version_id,
         )
     if not isinstance(resolution.source_snapshot_hash, str) or not (

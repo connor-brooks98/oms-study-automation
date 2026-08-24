@@ -161,3 +161,31 @@ def test_resolution_fails_closed_for_malformed_provider_record() -> None:
         resolve_question_version(QUESTION_VERSION_ID, provider)
 
     assert caught.value.reason is QuestionResolutionFailure.INVALID_RECORD
+
+
+@pytest.mark.parametrize(
+    "malformed_objectives",
+    (
+        "objective-1",
+        ["objective-1"],
+        {"objective-1"},
+        {"objective-1": "approved"},
+    ),
+    ids=("string", "list", "set", "mapping"),
+)
+def test_resolution_rejects_non_tuple_objective_containers(
+    malformed_objectives: object,
+) -> None:
+    resolution = QuestionResolution(
+        question_version_id=QUESTION_VERSION_ID,
+        approved_objective_ids=cast(tuple[str, ...], malformed_objectives),
+        source_snapshot_hash="sha256:source-1",
+        approved=True,
+        nonstale=True,
+        verifiable=True,
+    )
+
+    with pytest.raises(QuestionResolutionError) as caught:
+        resolve_question_version(QUESTION_VERSION_ID, StaticResolutionProvider(resolution))
+
+    assert caught.value.reason is QuestionResolutionFailure.INVALID_RECORD
