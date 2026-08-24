@@ -24,7 +24,10 @@ commit `e7bdd642a448e9020057971bec66e9c775462500` / tree
 `fix: block labeled Ask strategy bypass`. The final-review fix is the separate
 implementation/test commit `a7c2ff18a36e535b783f74776ae87c4d34443c17` / tree
 `74d1ba817859777bf671e8092ffc8e36b0e49f29`, subject
-`fix: enforce direct Ask answer precedence`.
+`fix: enforce direct Ask answer precedence`. The fresh bare-label correction is the separate
+implementation/test commit `fd97f87077f7a82af996b53771357df77997c04a` / tree
+`f130f7e0c407b0dd37fdfc00e7a5be7db006dee1`, subject
+`fix: protect bare Ask option labels`.
 
 ## Final review record
 
@@ -50,6 +53,13 @@ implementation/test commit `a7c2ff18a36e535b783f74776ae87c4d34443c17` / tree
   was downgraded when a later generic rule-out strategy clause matched. The final-review fix
   removes only that exception; prior reviewer identities and their read-only verdicts remain
   unchanged.
+- Fresh Workstream Sol verdict: `FIX_FIRST` on baseline
+  `37903efa1724443b6c66b9f531e2260071a8f704` / tree
+  `8b77db4139c0e50b8c3a8e27f284d9528983bcd6`. Bare concrete option elimination in
+  `How can I eliminate B and C on exams?` and `What strategy helps me rule out B on exams?`
+  (including fullwidth forms) was incorrectly classified as `concept_hint`. The correction
+  is limited to the shared classifier and bounded regression tests; no reviewer or read-only
+  identity changed.
 
 ## Interfaces
 
@@ -236,29 +246,30 @@ Ambiguous language therefore remains protected rather than becoming a benign hin
 4. Fix Round 3 focused tests: `61 passed`.
 5. Fix Round 4 focused tests: `64 passed`.
 6. Final-review focused tests: `66 passed`.
-7. Affected Ask/models/contracts command:
+7. Fresh bare-label focused tests: `71 passed`.
+8. Affected Ask/models/contracts command:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
      python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py tests/ask/test_models.py tests/contracts -q
    ```
 
-   Result: `123 passed` (`66` Task 3.3, `16` Task 3.1 model, `41` contract tests).
-8. Exact Ruff:
+   Result: `128 passed` (`71` Task 3.3, `16` Task 3.1 model, `41` contract tests).
+9. Exact Ruff:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH ruff check src tests scripts
    ```
 
    Result: `All checks passed!`.
-9. Source mypy:
+10. Source mypy:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH mypy src
    ```
 
    Result: `Success: no issues found in 180 source files`.
-10. Task-owned test mypy:
+11. Task-owned test mypy:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH MYPYPATH=$PWD/src \
@@ -266,7 +277,7 @@ Ambiguous language therefore remains protected rather than becoming a benign hin
    ```
 
    Result: `Success: no issues found in 2 source files`.
-11. Static safety checks:
+12. Static safety checks:
 
    - An AST scan of both production modules reported no provider/model API, network, or
      logging imports/calls. The only project import is the required `GroundedAnswer` model
@@ -275,8 +286,8 @@ Ambiguous language therefore remains protected rather than becoming a benign hin
      answers. Protected values occur only in hand-derived tests.
    - A credential/private-content scan found no API keys, bearer credentials, private lecture
      text, Anki content, or production identifiers in the owned implementation/tests.
-12. `git diff --check`: passed.
-13. The exact base-to-head scope check is limited to the authorized files:
+13. `git diff --check`: passed.
+14. The exact base-to-head scope check is limited to the authorized files:
 
    ```text
    src/oms_hub/ask/intent.py
@@ -366,6 +377,44 @@ The generic-strategy branch now gives direct-answer detection unconditional prec
 Existing general rule-out strategies remain benign because diagnostic exclusion already
 rejects generic exam/test context.
 
+## Fresh bare-label correction
+
+Fresh Workstream Sol returned the exact verdict `FIX_FIRST` on clean baseline commit
+`37903efa1724443b6c66b9f531e2260071a8f704` / tree
+`8b77db4139c0e50b8c3a8e27f284d9528983bcd6`: the generic exam-strategy exception allowed
+bare concrete option elimination to return `concept_hint` for
+`How can I eliminate B and C on exams?` and
+`What strategy helps me rule out B on exams?`, including fullwidth forms.
+
+The regression tests were added before the production change.
+
+RED command:
+
+```text
+PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
+  python -m pytest tests/ask/test_intent.py -q
+```
+
+Result: exit `1`; the four new ASCII/fullwidth bare-label cases returned `concept_hint`
+instead of `request_option_elimination`. Existing intent cases and the bounded negative case
+for `B vitamins` passed.
+
+GREEN command:
+
+```text
+PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
+  python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py
+```
+
+Result: `71 passed`.
+
+The shared classifier now recognizes a label only when it immediately follows an explicit
+elimination phrase and has an option-list or boundary continuation. This closes the bare
+ASCII/fullwidth label bypass without broad single-letter false positives. The implementation
+and tests are committed separately from this documentation as
+`fd97f87077f7a82af996b53771357df77997c04a` / tree
+`f130f7e0c407b0dd37fdfc00e7a5be7db006dee1`.
+
 ## Known limitations
 
 - The intent classifier is intentionally bounded and deterministic. Unrecognized paraphrases
@@ -391,10 +440,14 @@ rejects generic exam/test context.
 - Final-review decision: direct-answer detection is unconditional inside the generic strategy
   branch. The removed `rule out` exception was the mixed-clause bypass; unlabeled generic
   strategy requests remain benign.
+- Fresh correction decision: bare option labels are protected only when immediately preceded
+  by an explicit elimination phrase and followed by an option-list or boundary continuation.
+  This closes the ASCII/fullwidth bare-label bypass without broad single-letter matches.
 - Native Windows and provider/live acceptance remain unrun by design.
 
 ## Commit identity
 
 The initial through Fix Round 4 implementation identities are fixed above. This report update
 is intentionally delivered as a separate docs-only correction record commit; that record
-commit is not self-referenced here.
+commit is not self-referenced here. The fresh bare-label implementation/test identity is fixed
+above; resolve the docs-only commit identity from the final branch tip.
