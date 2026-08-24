@@ -120,6 +120,7 @@ if TYPE_CHECKING:
         text: bool
 
     class ArtifactService:
+        settings: Settings
         repository: IngestionRepository
         catalog: CatalogRepository
 

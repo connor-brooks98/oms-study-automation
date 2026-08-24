@@ -9,8 +9,10 @@ from oms_hub.artifacts import (
     ArtifactKind,
     ArtifactRecipeRegistry,
     ArtifactRole,
+    ArtifactService,
 )
 from oms_hub.artifacts.recipes import build_recipe_registry
+from oms_hub.config import Settings
 from oms_hub.providers import AuthorityClass
 
 
@@ -103,6 +105,10 @@ def test_recipe_accepts_a_valid_falsy_generator() -> None:
 
 def test_legacy_artifact_exports_retain_static_types() -> None:
     assert_type(ArtifactRole.PDF, Literal[ArtifactRole.PDF])
+
+
+def _artifact_service_type_probe(service: ArtifactService) -> None:
+    assert_type(service.settings, Settings)
 
 
 @pytest.mark.parametrize(
