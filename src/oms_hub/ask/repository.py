@@ -87,6 +87,7 @@ class _RetrievalRunRow(_AskBase):
     schema_version: Mapped[str] = mapped_column(String(200), nullable=False)
     model: Mapped[str] = mapped_column(String(300), nullable=False)
     validation_outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    expected_evidence_count: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[str] = mapped_column(String(40), nullable=False)
 
 
@@ -285,6 +286,7 @@ class AskRepository:
                     schema_version=schema,
                     model=model_name,
                     validation_outcome=outcome,
+                    expected_evidence_count=len(evidence),
                     created_at=now,
                 )
             )
@@ -320,15 +322,18 @@ class AskRepository:
                 ).all()
             )
             retrieval_runs = tuple(
-                _retrieval_run(session, run, thread.scope)
-                for run in session.scalars(
-                    select(_RetrievalRunRow)
-                    .where(
-                        _RetrievalRunRow.thread_id == thread_id,
-                        _RetrievalRunRow.actor_id == actor,
-                    )
-                    .order_by(_RetrievalRunRow.created_at, _RetrievalRunRow.retrieval_run_id)
-                ).all()
+                sorted(
+                    (
+                        _retrieval_run(session, run, thread.scope)
+                        for run in session.scalars(
+                            select(_RetrievalRunRow).where(
+                                _RetrievalRunRow.thread_id == thread_id,
+                                _RetrievalRunRow.actor_id == actor,
+                            )
+                        ).all()
+                    ),
+                    key=lambda run: (run.created_at, run.retrieval_run_id),
+                )
             )
             return AskThreadView(
                 thread=thread,
@@ -345,16 +350,20 @@ class AskRepository:
         actor = _require_non_empty(actor_id, "actor_id")
         scope_json = _scope_json(scope)
         with self.database.session() as session:
-            return [
-                _thread(row)
+            ordered = [
+                (_thread(row), _parse_utc_instant(row.created_at, "created_at"))
                 for row in session.scalars(
-                    select(_AskThreadRow)
-                    .where(
+                    select(_AskThreadRow).where(
                         _AskThreadRow.actor_id == actor,
                         _AskThreadRow.scope_json == scope_json,
                     )
-                    .order_by(_AskThreadRow.created_at, _AskThreadRow.thread_id)
                 ).all()
+            ]
+            return [
+                thread
+                for thread, _created_at in sorted(
+                    ordered, key=lambda item: (item[1], item[0].thread_id)
+                )
             ]
 
     def delete_thread(self, thread_id: str, actor_id: str) -> bool:
@@ -368,16 +377,24 @@ class AskRepository:
         actor = _require_non_empty(actor_id, "actor_id")
         cutoff = _normalize_cutoff(before)
         with self.database.session() as session:
-            thread_ids = list(
-                session.scalars(
-                    select(_AskThreadRow.thread_id)
-                    .where(
-                        _AskThreadRow.actor_id == actor,
-                        _AskThreadRow.created_at < cutoff,
-                    )
-                    .order_by(_AskThreadRow.created_at, _AskThreadRow.thread_id)
-                ).all()
-            )
+            rows = session.scalars(
+                select(_AskThreadRow).where(_AskThreadRow.actor_id == actor)
+            ).all()
+            validated_rows = [
+                (
+                    row,
+                    _parse_utc_instant(row.created_at, "created_at"),
+                    _parse_utc_instant(row.updated_at, "updated_at"),
+                )
+                for row in rows
+            ]
+            thread_ids = [
+                row.thread_id
+                for row, created_at, _updated_at in sorted(
+                    validated_rows, key=lambda item: (item[1], item[0].thread_id)
+                )
+                if created_at < cutoff
+            ]
             for thread_id in thread_ids:
                 self._delete_thread_rows(session, thread_id, actor)
             return len(thread_ids)
@@ -448,6 +465,7 @@ class AskRepository:
         )
         if row is None:
             raise KeyError(identifier)
+        _validate_thread_timestamps(row)
         return row
 
     @staticmethod
@@ -484,6 +502,7 @@ class AskRepository:
 
 
 def _thread(row: _AskThreadRow) -> AskThread:
+    _validate_thread_timestamps(row)
     page_context = _page_context_from_json(row.page_context_json)
     return AskThread(
         thread_id=row.thread_id,
@@ -494,6 +513,7 @@ def _thread(row: _AskThreadRow) -> AskThread:
 
 
 def _message(row: _AskMessageRow) -> AskMessage:
+    _parse_utc_instant(row.created_at, "created_at")
     return AskMessage(
         message_id=row.message_id,
         thread_id=row.thread_id,
@@ -523,11 +543,15 @@ def _retrieval_run(
     validation_outcome = _require_bounded_text(
         row.validation_outcome, "validation_outcome", 200
     )
+    expected_count = _require_evidence_count(row.expected_evidence_count)
+    created_at = _canonical_utc_timestamp(row.created_at, "created_at")
     links = session.scalars(
         select(_RetrievalEvidenceRow)
         .where(_RetrievalEvidenceRow.retrieval_run_id == row.retrieval_run_id)
         .order_by(_RetrievalEvidenceRow.ordinal)
     ).all()
+    if len(links) != expected_count:
+        raise ValueError("stored retrieval evidence link count is malformed")
     evidence_ids: list[str] = []
     source_revision_ids: list[str] = []
     for ordinal, link in enumerate(links):
@@ -553,7 +577,7 @@ def _retrieval_run(
         schema_version=schema_version,
         model=model,
         validation_outcome=validation_outcome,
-        created_at=_require_bounded_text(row.created_at, "created_at", 40),
+        created_at=created_at,
     )
 
 
@@ -672,22 +696,43 @@ def _validate_revision_scope(
         raise ValueError("retrieval source revision is outside the thread scope")
 
 
-def _normalize_cutoff(value: str | datetime) -> str:
+def _normalize_cutoff(value: str | datetime) -> datetime:
+    return _parse_utc_instant(value, "before")
+
+
+def _validate_thread_timestamps(row: _AskThreadRow) -> None:
+    _parse_utc_instant(row.created_at, "created_at")
+    _parse_utc_instant(row.updated_at, "updated_at")
+
+
+def _require_evidence_count(value: object) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError("stored retrieval evidence link count is malformed")
+    return value
+
+
+def _parse_utc_instant(value: object, field_name: str) -> datetime:
+    if not isinstance(value, (str, datetime)):
+        raise ValueError(f"{field_name} must be a strict timezone-aware ISO timestamp")
     if isinstance(value, datetime):
         parsed = value
-    elif isinstance(value, str):
-        if value != value.strip():
-            raise ValueError("before must be a strict ISO timestamp")
+    else:
+        if not value or value != value.strip() or len(value) > 40:
+            raise ValueError(f"{field_name} must be a strict timezone-aware ISO timestamp")
         candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
         try:
             parsed = datetime.fromisoformat(candidate)
         except ValueError as error:
-            raise ValueError("before must be a strict ISO timestamp") from error
-    else:
-        raise ValueError("before must be a timezone-aware datetime or ISO timestamp")
+            raise ValueError(
+                f"{field_name} must be a strict timezone-aware ISO timestamp"
+            ) from error
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError("before must be timezone-aware")
-    return parsed.astimezone(UTC).isoformat(timespec="microseconds")
+        raise ValueError(f"{field_name} must be timezone-aware")
+    return parsed.astimezone(UTC)
+
+
+def _canonical_utc_timestamp(value: object, field_name: str) -> str:
+    return _parse_utc_instant(value, field_name).isoformat(timespec="microseconds")
 
 
 def _require_opaque_id(value: object, field_name: str, max_length: int = 200) -> str:

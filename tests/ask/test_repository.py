@@ -241,6 +241,14 @@ def test_retrieval_history_keeps_provenance_and_no_raw_evidence(
     }
     assert "evidence_ids_json" not in run_columns
     assert "source_revision_ids_json" not in run_columns
+    assert "expected_evidence_count" in run_columns
+    with database.engine.connect() as connection:
+        assert connection.scalar(
+            text(
+                "SELECT expected_evidence_count FROM retrieval_runs "
+                "WHERE retrieval_run_id = 'retrieval-1'"
+            )
+        ) == 2
 
 
 def test_provenance_requires_bounded_paired_and_scoped_ids(
