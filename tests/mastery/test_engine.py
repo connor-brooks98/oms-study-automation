@@ -137,6 +137,22 @@ def test_assistance_dependence_is_recency_weighted_and_separate() -> None:
     assert snapshot.assistance_dependence == pytest.approx(expected)
 
 
+def test_very_old_scored_event_with_zero_decay_has_no_assistance_division() -> None:
+    occurred_at = datetime(1, 1, 1, tzinfo=UTC)
+    as_of = datetime(2026, 1, 1, tzinfo=UTC)
+    event = _question("year-one", occurred_at=occurred_at, correct=True)
+
+    snapshot = MasteryEngine(now=lambda: as_of).compute(
+        "objective-1",
+        [event],
+        as_of=as_of,
+    )
+
+    assert snapshot.assistance_dependence is None
+    assert snapshot.status == "tested"
+    assert snapshot.last_tested_at == occurred_at
+
+
 def test_recall_retention_uses_validated_objective_scoped_adapter() -> None:
     engine = MasteryEngine(now=lambda: NOW)
 

@@ -148,7 +148,9 @@ class MasteryEngine:
         application_score = 100.0 * alpha / (alpha + beta)
         evidence_weight = weighted_correct + weighted_incorrect
         dependence = (
-            100.0 * assistance_dependence / assistance_total if scored_events else None
+            100.0 * assistance_dependence / assistance_total
+            if assistance_total > 0.0
+            else None
         )
         return MasterySnapshot(
             objective_id=objective_id,
