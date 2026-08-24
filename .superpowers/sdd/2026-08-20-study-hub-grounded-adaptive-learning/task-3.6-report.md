@@ -38,8 +38,8 @@ unapplied as required by the Task 3.6 boundary.
 - Canonicalization fix code commit: `03f89122d73a22139f32ae21b1685c1ad82d2f99`
   / tree `0284cdd384cb5aa165e97c3fc3f12a5e876f5598`.
 - Required code subject: `feat: persist scoped Ask conversations and retrieval traces`
-- Prior documentation commit: `e965dce0b953673bd46ae768a78801d8e46d38a5` / tree
-  `95e97d84f557d6ca64d11e11c87a1728e17a58f8`.
+- Prior documentation commit: `238e8371d8219ebdf32c95362b98a9313808a4e7` / tree
+  `43d6e3b7ce4bb2f02012c4825702899e9bc65133`.
 - Historical Terra fix-round docs commit identity: `SELF`; tree: `SELF_TREE`.
   Resolve this pair only from the containing historical Terra-fix docs commit with
   `git rev-parse HEAD` and `git rev-parse 'HEAD^{tree}'`; it does not identify later
@@ -59,6 +59,9 @@ unapplied as required by the Task 3.6 boundary.
 - Final review-record docs commit: `SELF`; tree: `SELF_TREE`.
   Resolve this pair only from the containing final review-record docs commit after
   creation; it is not the identity of any historical code or review commit.
+- Final message-history/page-context docs commit: `SELF`; tree: `SELF_TREE`.
+  Resolve this pair only from the containing message-history/page-context docs commit
+  after creation; it does not identify the code/test or review commits.
 
 Only these runtime/test files were changed:
 
@@ -340,6 +343,28 @@ is claimed.
 - Fresh Workstream Sol final review remains **PENDING**; this record does not claim
   Task 3.6 completion.
 
+## Final Sol message-history/page-context fix wave
+
+Workstream Sol final review of `238e8371d8219ebdf32c95362b98a9313808a4e7` / tree
+`43d6e3b7ce4bb2f02012c4825702899e9bc65133` returned **FIX_FIRST** for two fail-closed
+persistence gaps:
+
+1. `get_thread` did not validate the stored `ask_threads.message_sequence` counter
+   against all child rows. Reads now require a nonnegative integer counter, an exact
+   child count, and ordered child sequences exactly `1..message_sequence`; missing,
+   duplicate, noncontiguous, negative, or otherwise corrupt sequences fail closed.
+2. Page-context reads accepted duplicate JSON keys and noncanonical formatting after
+   strict Pydantic parsing. Reads now require the exact repository serializer byte-for-
+   byte, while retaining `extra="forbid"` for hidden content.
+
+RED coverage was added first in `0487e498bd5ae0507f9cd55ce42e3c6797bc2413` / tree
+`2adc6a6c472a39c75a20c075237676753f2b3b9f`: six focused regressions failed, covering
+missing/noncontiguous/corrupt message history and duplicate-key/noncanonical page
+context JSON. The GREEN correction is `40da1eba3f0dea3c0acee0611288a25bd55d775a` /
+tree `987ffa2ab2510aabe6ddd214157db96d2a42e761` (`fix: validate Ask message history
+and page context`). Fresh exact-revision Terra specification and quality reviews, and
+fresh Workstream Sol re-review, remain **PENDING**; no prospective approval is claimed.
+
 ## Required verification evidence
 
 Focused repository, affected Ask, and contracts:
@@ -350,9 +375,9 @@ PATH=$PWD/.venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD \
   tests/ask/test_intent.py tests/ask/test_leakage.py tests/contracts -q
 ```
 
-Result: `165 passed` (`32` repository, `16` models, `60` intent, `16` leakage, `41`
+Result: `171 passed` (`38` repository, `16` models, `60` intent, `16` leakage, `41`
 contracts), including the final Sol corruption, rollback, link-cardinality, actor,
-ID-boundary, privacy/status, and canonicalization tests.
+ID-boundary, privacy/status, canonicalization, message-history, and page-context tests.
 
 Ruff:
 
@@ -412,7 +437,8 @@ JSON columns, makes `retrieval_evidence.source_revision_id` non-null, and persis
 child `thread_id` and `actor_id` through composite parent uniqueness/FKs and requires
 all-child reads to fail closed on actor mismatch. It includes migration/idempotence,
 central-table, app-state, atomic-concurrency, strict-retention rollback on malformed
-stored timestamps, terminal-link loss, persisted-timestamp/ID corruption, provider and
+stored timestamps, terminal-link loss, persisted-timestamp/ID corruption, message-history
+counter/count/sequence validation, canonical page-context serialization, provider and
 actor-column boundary, opaque provider-ID, validation-status, privacy, provenance-scope,
 and no-route/no-v2 integration tests. `validation_outcome` remains non-null `TEXT` but is
 limited to `{valid, invalid, rejected, insufficient, error}`; `provider_request_id` stores
