@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -555,7 +555,7 @@ def _validate_message_identity(row: _AskMessageRow, actor_id: str) -> None:
 
 def _validate_message_history(
     thread_row: _AskThreadRow,
-    message_rows: list[_AskMessageRow],
+    message_rows: Sequence[_AskMessageRow],
     actor_id: str,
 ) -> None:
     expected_count = _require_message_sequence(thread_row.message_sequence, "message_sequence")
@@ -732,6 +732,7 @@ def _page_context_from_json(value: str | None) -> AskPageContextValue | None:
     payload = json.loads(value)
     if not isinstance(payload, dict):
         raise ValueError("stored Ask page context is malformed")
+    parsed: AskPageContextValue
     if payload.get("kind") == "quiz_question":
         parsed = QuizPageContext.model_validate(payload)
     else:
