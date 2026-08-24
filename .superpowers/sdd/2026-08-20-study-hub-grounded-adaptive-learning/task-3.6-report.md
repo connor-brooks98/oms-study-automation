@@ -19,6 +19,10 @@ unapplied as required by the Task 3.6 boundary.
   `efbe8bff461ed54be7c50f3e8dcfb0aef20131e6`.
 - Duplicate-revision fix code/test commit: `2f401796a9bb3cc2dd1c84273cb0ea65dd4fac35`
   / tree `2507ce27be864c0f96a1eaebb7110f5e8bffe6c9`.
+- Final Sol RED test checkpoint: `d33f936355848fb19ab683249095818e96647163` / tree
+  `bcdd98c234ff18daf261dbc3684cce047007fb8f`.
+- Final Sol corruption/rollback fix code/test commit: `1c01665a4d34616bf38e0286caacb9a9db4f1efc`
+  / tree `1243beb7beea13a7506de7cbf99cef2c5646a1c1`.
 - Required code subject: `feat: persist scoped Ask conversations and retrieval traces`
 - Prior documentation commit: `8b24c7e93ac83b6eec70418ea011decef3618221` / tree
   `57dabe1e4f7e3e2e8817885c3fdfe2740e79c2ac`.
@@ -48,7 +52,8 @@ isolated tests:
   and a database-side message sequence counter.
 - `ask_messages`: actor owner, role/content, per-thread sequence, and creation time.
 - `retrieval_runs`: immutable source snapshot hash, provider request ID, prompt/schema/model
-  versions, required bounded non-empty string validation outcome, and timestamp.
+  versions, required bounded non-empty string validation outcome, expected evidence-link
+  cardinality, and timestamp.
 - `retrieval_evidence`: the single canonical retrieval-run representation of paired ordinal,
   opaque evidence ID, and source revision ID links.
 
@@ -62,14 +67,16 @@ explicit equal `QuizPageContext`. Message sequence is allocated by atomic databa
 counter update; retrieval creation time plus stable ID provides deterministic ordering.
 
 The only retention surface is `delete_threads_before(actor_id, before)`. It accepts only
-strict timezone-aware `datetime`/ISO values and normalizes the cutoff to UTC. Deletion
-removes owned messages, retrieval runs, and retrieval links explicitly. It never queries
-or deletes canonical evidence/source tables, and no scheduler or retention policy was
-added. Retrieval runs have no update method, and link rows are the sole persisted evidence
-and source-revision representation. Opaque IDs, one-to-one pairing, pinned thread source
-scope, bounded provenance fields, and decoded persisted values are validated fail closed.
-A default empty thread revision tuple represents a broad scope and does not itself reject
-bounded provenance.
+strict timezone-aware `datetime`/ISO values and normalizes the cutoff to UTC. It validates
+every owned thread timestamp as a strict UTC instant before selecting or deleting, so a
+malformed persisted value rolls back the whole operation. Deletion removes owned messages,
+retrieval runs, and retrieval links explicitly. It never queries or deletes canonical
+evidence/source tables, and no scheduler or retention policy was added. Retrieval runs
+have no update method, link rows are the sole persisted evidence/source-revision
+representation, and reads require stored expected cardinality plus contiguous ordinals.
+Opaque IDs, one-to-one pairing, pinned thread source scope, bounded provenance fields, and
+decoded persisted values are validated fail closed. A default empty thread revision tuple
+represents a broad scope and does not itself reject bounded provenance.
 
 ## TDD evidence
 
@@ -190,6 +197,30 @@ is pending; no approval is claimed.
 - Fresh Workstream Sol final review remains **PENDING**; this record does not claim
   Task 3.6 completion.
 
+## Final Sol fix wave
+
+Workstream Sol final review of `cb4c49a3118f825fb23bc58caefd322718bd1c35` / tree
+`7bacfe5c19a7f3322e7f98e8a8b60097ff4fd8a3` returned **FIX_FIRST** for two final
+fail-closed persistence gaps:
+
+1. Retention compared raw `ask_threads.created_at` strings in SQL, so a malformed
+   persisted timestamp could bypass validation or allow partial deletion. All owned
+   thread timestamps must be parsed as strict timezone-aware UTC instants before any
+   retention decision; malformed data must roll back the entire operation.
+2. Reads inferred retrieval-link cardinality from surviving rows, so terminal link loss
+   could silently truncate provenance. `retrieval_runs.expected_evidence_count` must be
+   persisted and reads must require exact count plus contiguous zero-based ordinals;
+   persisted retrieval-run and other used/returned timestamps must fail closed too.
+
+RED coverage was added first in `d33f936355848fb19ab683249095818e96647163` / tree
+`bcdd98c234ff18daf261dbc3684cce047007fb8f`: `3 failed, 15 passed`, covering malformed
+retention rollback, terminal link loss, and corrupted retrieval-run timestamps. The
+GREEN correction is `1c01665a4d34616bf38e0286caacb9a9db4f1efc` / tree
+`1243beb7beea13a7506de7cbf99cef2c5646a1c1` (`fix: fail closed on Ask persistence
+corruption`). Both Terra exact-revision re-reviews of this final candidate—specification
+and quality/reliability/security—remain **PENDING**; no prospective approval is claimed.
+The earlier Terra approvals above apply only to their named prior revisions.
+
 ## Required verification evidence
 
 Focused repository, affected Ask, and contracts:
@@ -200,8 +231,8 @@ PATH=$PWD/.venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD \
   tests/ask/test_intent.py tests/ask/test_leakage.py tests/contracts -q
 ```
 
-Result: `148 passed` (`15` repository, `16` models, `60` intent, `16` leakage, `41`
-contracts).
+Result: `151 passed` (`18` repository, `16` models, `60` intent, `16` leakage, `41`
+contracts), including the final Sol corruption, rollback, and link-cardinality tests.
 
 Ruff:
 
@@ -231,7 +262,8 @@ MYPYPATH=$PWD/src PYTHONPATH=$PWD/src:$PWD .venv/bin/mypy tests/ask/test_reposit
 Result: passed, one file.
 
 Isolation, deletion, immutability, concurrency, strict-retention, provenance-scope,
-corruption, and adversarial checks are executable in the focused tests:
+corruption, rollback, link-cardinality, and adversarial checks are executable in the
+focused tests:
 actor-filtered thread listing/read/write/delete, different quiz-question rejection,
 ordered append-only messages, complete provenance round-trip, absent raw evidence
 columns, canonical-evidence survival after deletion, actor-only retention, and missing
@@ -252,9 +284,11 @@ block of `src/oms_hub/app.py`, and switch the repository to the central mappings
 separate integration patch. The proposal now uses a non-null plain-text
 `validation_outcome` column rather than a JSON/object payload; it also adds the
 `ask_threads.message_sequence` counter, removes duplicated retrieval evidence/revision
-JSON columns, and makes `retrieval_evidence.source_revision_id` non-null. It includes
-migration/idempotence, central-table, app-state, atomic-concurrency, strict-retention,
-provenance-scope, corruption, and no-route/no-v2 integration tests. None of those edits
+JSON columns, makes `retrieval_evidence.source_revision_id` non-null, and persists
+`retrieval_runs.expected_evidence_count` for exact contiguous-link validation. It includes
+migration/idempotence, central-table, app-state, atomic-concurrency, strict-retention
+rollback on malformed stored timestamps, terminal-link loss, persisted-timestamp
+corruption, provenance-scope, and no-route/no-v2 integration tests. None of those edits
 were applied here. The service/context integration proposal must additionally test that,
 when a thread's revision tuple is empty, each resolved `EvidenceRef` revision is checked
 against the effective Source Trust course/exam/lecture scope before
