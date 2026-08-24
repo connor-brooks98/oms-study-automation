@@ -29,9 +29,13 @@ unapplied as required by the Task 3.6 boundary.
   `1ec711a79a45a47d067df6b52c918292e323f842`.
 - Final-quality actor/ID fix code commit: `6e655590f077c4889988fda5c6e027cd00e74cc3`
   / tree `8b6eb3f8e83343d62f1d599e45d304755bccb425`.
+- Privacy RED test checkpoint: `cf0fbb18f38f932b22879efb0b38d03010a8ecdb` / tree
+  `d21fb32f49ca955355fed8af8d9fe7b372bbabd6`.
+- Privacy provenance fix code commit: `03b04a560239367b5c5a2b1bb594678d11caa4bc`
+  / tree `82476512461a673fd0315885ac24bfcf7911fc62`.
 - Required code subject: `feat: persist scoped Ask conversations and retrieval traces`
-- Prior documentation commit: `2661427a81ee5f5ae340aabad10527928fc62a2b` / tree
-  `580e1fe3f1445c56126adc37ecb309c511377d3e`.
+- Prior documentation commit: `0c0f2b0b3013cad18a8f8b708f6df442d8dbb0e6` / tree
+  `b4fbad9076080d611ed377f87d45f5b0c32fd546`.
 - Historical Terra fix-round docs commit identity: `SELF`; tree: `SELF_TREE`.
   Resolve this pair only from the containing historical Terra-fix docs commit with
   `git rev-parse HEAD` and `git rev-parse 'HEAD^{tree}'`; it does not identify later
@@ -41,6 +45,9 @@ unapplied as required by the Task 3.6 boundary.
   it does not identify this or later documentation commits.
 - Final-quality docs commit: `SELF`; tree: `SELF_TREE`.
   Resolve this pair only from the containing final-quality docs commit after creation;
+  do not substitute any historical `SELF` identity here.
+- Privacy-fix docs commit: `SELF`; tree: `SELF_TREE`.
+  Resolve this pair only from the containing privacy-fix docs commit after creation;
   do not substitute any historical `SELF` identity here.
 
 Only these runtime/test files were changed:
@@ -64,8 +71,10 @@ isolated tests:
 - `ask_messages`: actor owner, role/content, per-thread sequence, creation time, and
   composite `(thread_id, actor_id)` foreign key to the parent thread.
 - `retrieval_runs`: immutable source snapshot hash, provider request ID, prompt/schema/model
-  versions, required bounded non-empty string validation outcome, expected evidence-link
-  cardinality, timestamp, and the same composite parent foreign key.
+  versions, a required validation status code, expected evidence-link cardinality,
+  timestamp, and the same composite parent foreign key. Provider request IDs are bounded
+  opaque IDs; validation outcomes are limited to `valid`, `invalid`, `rejected`,
+  `insufficient`, or `error`.
 - `retrieval_evidence`: the single canonical retrieval-run representation of paired ordinal,
   opaque evidence ID, and source revision ID links.
 
@@ -265,6 +274,23 @@ corrupted message IDs. The GREEN code correction is
 boundaries`). Both Terra exact-revision re-reviews remain **PENDING**; no approval is
 claimed for this candidate.
 
+## Privacy fix wave
+
+Fresh Terra specification and quality reviews of `0c0f2b0b3013cad18a8f8b708f6df442d8dbb0e6`
+/ tree `b4fbad9076080d611ed377f87d45f5b0c32fd546` both returned **CHANGES REQUIRED** for
+the same Important privacy finding: bounded `provider_request_id` and `validation_outcome`
+fields still accepted arbitrary prose/private medical excerpts.
+
+RED coverage was added first in `cf0fbb18f38f932b22879efb0b38d03010a8ecdb` / tree
+`d21fb32f49ca955355fed8af8d9fe7b372bbabd6`: `4 failed, 26 passed`, covering private
+medical prose on both write paths and persisted readback. The GREEN correction is
+`03b04a560239367b5c5a2b1bb594678d11caa4bc` / tree
+`82476512461a673fd0315885ac24bfcf7911fc62` (`fix: constrain Ask provenance privacy
+fields`). It applies the 500-character opaque-ID validator to provider request IDs and
+accepts only the defined validation statuses `valid`, `invalid`, `rejected`,
+`insufficient`, and `error`, including persisted reconstruction. Both Terra exact-revision
+re-reviews remain **PENDING**; no prospective approval is claimed.
+
 ## Required verification evidence
 
 Focused repository, affected Ask, and contracts:
@@ -275,9 +301,9 @@ PATH=$PWD/.venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD \
   tests/ask/test_intent.py tests/ask/test_leakage.py tests/contracts -q
 ```
 
-Result: `158 passed` (`25` repository, `16` models, `60` intent, `16` leakage, `41`
-contracts), including the final Sol corruption, rollback, link-cardinality, actor, and
-ID-boundary tests.
+Result: `163 passed` (`30` repository, `16` models, `60` intent, `16` leakage, `41`
+contracts), including the final Sol corruption, rollback, link-cardinality, actor,
+ID-boundary, and privacy/status tests.
 
 Ruff:
 
@@ -337,9 +363,11 @@ child `thread_id` and `actor_id` through composite parent uniqueness/FKs and req
 all-child reads to fail closed on actor mismatch. It includes migration/idempotence,
 central-table, app-state, atomic-concurrency, strict-retention rollback on malformed
 stored timestamps, terminal-link loss, persisted-timestamp/ID corruption, provider and
-actor-column boundary, provenance-scope, and no-route/no-v2 integration tests. None of
-those edits were applied here. The service/context integration proposal must additionally
-test that,
+actor-column boundary, opaque provider-ID, validation-status, privacy, provenance-scope,
+and no-route/no-v2 integration tests. `validation_outcome` remains non-null `TEXT` but is
+limited to `{valid, invalid, rejected, insufficient, error}`; `provider_request_id` is
+opaque within `String(500)`. None of those edits were applied here. The service/context
+integration proposal must additionally test that,
 when a thread's revision tuple is empty, each resolved `EvidenceRef` revision is checked
 against the effective Source Trust course/exam/lecture scope before
 `record_retrieval_run`; Task 3.6 cannot claim this blocked index membership check.
