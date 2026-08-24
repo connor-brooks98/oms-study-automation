@@ -13,7 +13,9 @@ unapplied as required by the Task 3.6 boundary.
 - Branch: `sol3/ask-backend`
 - Exact base: `1c9f12117bae791086732f198a5fc7268fa566d0`
 - Base tree: `170b1f7e042cd1bab00d24108c3dbe1d066d8f15`
-- Original code/test commit: `c1090db59d1f6e8760e3b509617ec1bf8a7c280b` / tree
+- Initial implementation code/test commit: `25e6f8cd60c0221dd8fd136f3ab277230655652b` / tree
+  `a4fe57ffe96f54f7e20793b1129c92b406ba9a25`.
+- Specification correction code/test commit: `c1090db59d1f6e8760e3b509617ec1bf8a7c280b` / tree
   `d04ed9c1116dc3ddaf8b7da471c43f7a7edbc811`.
 - Quality fix code/test commit: `99b07d6552b28ead09a3bc9f8227c34918d28854` / tree
   `efbe8bff461ed54be7c50f3e8dcfb0aef20131e6`.
@@ -23,14 +25,23 @@ unapplied as required by the Task 3.6 boundary.
   `bcdd98c234ff18daf261dbc3684cce047007fb8f`.
 - Final Sol corruption/rollback fix code/test commit: `1c01665a4d34616bf38e0286caacb9a9db4f1efc`
   / tree `1243beb7beea13a7506de7cbf99cef2c5646a1c1`.
+- Final-quality RED test checkpoint: `bab30253970e17cc8522c245387dcea7f77f3064` / tree
+  `1ec711a79a45a47d067df6b52c918292e323f842`.
+- Final-quality actor/ID fix code commit: `6e655590f077c4889988fda5c6e027cd00e74cc3`
+  / tree `8b6eb3f8e83343d62f1d599e45d304755bccb425`.
 - Required code subject: `feat: persist scoped Ask conversations and retrieval traces`
-- Prior documentation commit: `8b24c7e93ac83b6eec70418ea011decef3618221` / tree
-  `57dabe1e4f7e3e2e8817885c3fdfe2740e79c2ac`.
-- Terra fix-round documentation commit: `SELF`; tree: `SELF_TREE`.
-- Resolve `SELF` and `SELF_TREE` from the containing commit after creation with
-  `git rev-parse HEAD` and `git rev-parse 'HEAD^{tree}'`; the placeholders are
-  intentionally self-referential and cannot contain their own final identities.
-- Review-record documentation commit: `SELF`; tree: `SELF_TREE`.
+- Prior documentation commit: `2661427a81ee5f5ae340aabad10527928fc62a2b` / tree
+  `580e1fe3f1445c56126adc37ecb309c511377d3e`.
+- Historical Terra fix-round docs commit identity: `SELF`; tree: `SELF_TREE`.
+  Resolve this pair only from the containing historical Terra-fix docs commit with
+  `git rev-parse HEAD` and `git rev-parse 'HEAD^{tree}'`; it does not identify later
+  documentation commits.
+- Historical review-record docs commit identity: `SELF`; tree: `SELF_TREE`.
+  Resolve this pair only from the containing historical review-record docs commit;
+  it does not identify this or later documentation commits.
+- Final-quality docs commit: `SELF`; tree: `SELF_TREE`.
+  Resolve this pair only from the containing final-quality docs commit after creation;
+  do not substitute any historical `SELF` identity here.
 
 Only these runtime/test files were changed:
 
@@ -49,22 +60,28 @@ held for Sol-0. Constructing the repository idempotently creates these logical t
 isolated tests:
 
 - `ask_threads`: actor owner, accepted mode, canonical JSON scope/context, timestamps,
-  and a database-side message sequence counter.
-- `ask_messages`: actor owner, role/content, per-thread sequence, and creation time.
+  a database-side message sequence counter, and unique `(thread_id, actor_id)` parent key.
+- `ask_messages`: actor owner, role/content, per-thread sequence, creation time, and
+  composite `(thread_id, actor_id)` foreign key to the parent thread.
 - `retrieval_runs`: immutable source snapshot hash, provider request ID, prompt/schema/model
   versions, required bounded non-empty string validation outcome, expected evidence-link
-  cardinality, and timestamp.
+  cardinality, timestamp, and the same composite parent foreign key.
 - `retrieval_evidence`: the single canonical retrieval-run representation of paired ordinal,
   opaque evidence ID, and source revision ID links.
 
 The repository consumes the accepted Task 3.1 `AskMode`, `AskThread`, `AskMessage`,
 `AskPageContext`, `QuizPageContext`, and frozen `RetrievalScope` without changing them.
 It returns immutable `AskThreadView` and `RetrievalRun` dataclasses for the repository
-surface. Thread reads and writes require the actor; missing and unauthorized IDs both
-raise `KeyError`. Exact actor-plus-scope listing prevents implicit cross-scope selection.
-Quiz context is fixed at thread creation; every append to a quiz thread must provide an
-explicit equal `QuizPageContext`. Message sequence is allocated by atomic database-side
-counter update; retrieval creation time plus stable ID provides deterministic ordering.
+surface. Thread reads and writes require the actor; after parent authorization, reads load
+all child rows and fail closed if any persisted child actor differs from the owner. Missing
+and unauthorized IDs both raise `KeyError`. Exact actor-plus-scope listing prevents
+implicit cross-scope selection. Quiz context is fixed at thread creation; every append to
+a quiz thread must provide an explicit equal `QuizPageContext`. Message sequence is
+allocated by atomic database-side counter update; retrieval creation time plus stable ID
+provides deterministic ordering. Thread/message/retrieval IDs are bounded opaque values
+matching `String(200)`, actor IDs are bounded to `String(320)` without rejecting
+email-like identities, evidence/revision IDs honor `String(300)`, and provider request IDs
+honor `String(500)`; persisted identities are revalidated on reconstruction.
 
 The only retention surface is `delete_threads_before(actor_id, before)`. It accepts only
 strict timezone-aware `datetime`/ISO values and normalizes the cutoff to UTC. It validates
@@ -221,6 +238,33 @@ corruption`). Both Terra exact-revision re-reviews of this final candidate—spe
 and quality/reliability/security—remain **PENDING**; no prospective approval is claimed.
 The earlier Terra approvals above apply only to their named prior revisions.
 
+## Final quality fix wave
+
+Workstream Sol quality review of `2661427a81ee5f5ae340aabad10527928fc62a2b` / tree
+`580e1fe3f1445c56126adc37ecb309c511377d3e` returned **CHANGES REQUIRED** for three
+final-quality findings:
+
+1. Reads filtered child rows by both `thread_id` and actor, so a corrupted or multiwriter
+   child with a different actor could be silently omitted. Reads now load all children
+   after parent authorization and fail closed; local and held central schemas bind
+   `(thread_id, actor_id)` through a parent uniqueness constraint and composite FKs.
+2. Thread/message IDs were not consistently bounded at every persistence boundary, actor
+   IDs used the wrong bound, and evidence/revision IDs were capped below their `String(300)`
+   columns. The fix validates opaque IDs at 200, actors at 320, evidence/revisions at 300,
+   provider requests at 500, and persisted identities on reconstruction while allowing
+   email-like actor IDs.
+3. Documentation lineage conflated the initial implementation with the specification
+   correction and left historical `SELF` placeholders ambiguously scoped.
+
+RED coverage was added first in `bab30253970e17cc8522c245387dcea7f77f3064` / tree
+`1ec711a79a45a47d067df6b52c918292e323f842`: `7 failed, 18 passed`, covering child-actor
+omission, composite-FK rejection, actor/ID boundaries, provider-column limits, and
+corrupted message IDs. The GREEN code correction is
+`6e655590f077c4889988fda5c6e027cd00e74cc3` / tree
+`8b6eb3f8e83343d62f1d599e45d304755bccb425` (`fix: enforce Ask child ownership and ID
+boundaries`). Both Terra exact-revision re-reviews remain **PENDING**; no approval is
+claimed for this candidate.
+
 ## Required verification evidence
 
 Focused repository, affected Ask, and contracts:
@@ -231,8 +275,9 @@ PATH=$PWD/.venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD \
   tests/ask/test_intent.py tests/ask/test_leakage.py tests/contracts -q
 ```
 
-Result: `151 passed` (`18` repository, `16` models, `60` intent, `16` leakage, `41`
-contracts), including the final Sol corruption, rollback, and link-cardinality tests.
+Result: `158 passed` (`25` repository, `16` models, `60` intent, `16` leakage, `41`
+contracts), including the final Sol corruption, rollback, link-cardinality, actor, and
+ID-boundary tests.
 
 Ruff:
 
@@ -263,8 +308,10 @@ Result: passed, one file.
 
 Isolation, deletion, immutability, concurrency, strict-retention, provenance-scope,
 corruption, rollback, link-cardinality, and adversarial checks are executable in the
-focused tests:
-actor-filtered thread listing/read/write/delete, different quiz-question rejection,
+focused tests: actor-filtered thread listing/read/write/delete, all-child ownership
+validation, composite-FK rejection, bounded opaque ID/provider-column checks, and
+persisted-ID corruption are covered alongside:
+different quiz-question rejection,
 ordered append-only messages, complete provenance round-trip, absent raw evidence
 columns, canonical-evidence survival after deletion, actor-only retention, and missing
 thread fail-closed behavior. `git diff --cached --check` passed before the code/test
@@ -285,11 +332,14 @@ separate integration patch. The proposal now uses a non-null plain-text
 `validation_outcome` column rather than a JSON/object payload; it also adds the
 `ask_threads.message_sequence` counter, removes duplicated retrieval evidence/revision
 JSON columns, makes `retrieval_evidence.source_revision_id` non-null, and persists
-`retrieval_runs.expected_evidence_count` for exact contiguous-link validation. It includes
-migration/idempotence, central-table, app-state, atomic-concurrency, strict-retention
-rollback on malformed stored timestamps, terminal-link loss, persisted-timestamp
-corruption, provenance-scope, and no-route/no-v2 integration tests. None of those edits
-were applied here. The service/context integration proposal must additionally test that,
+`retrieval_runs.expected_evidence_count` for exact contiguous-link validation. It binds
+child `thread_id` and `actor_id` through composite parent uniqueness/FKs and requires
+all-child reads to fail closed on actor mismatch. It includes migration/idempotence,
+central-table, app-state, atomic-concurrency, strict-retention rollback on malformed
+stored timestamps, terminal-link loss, persisted-timestamp/ID corruption, provider and
+actor-column boundary, provenance-scope, and no-route/no-v2 integration tests. None of
+those edits were applied here. The service/context integration proposal must additionally
+test that,
 when a thread's revision tuple is empty, each resolved `EvidenceRef` revision is checked
 against the effective Source Trust course/exam/lecture scope before
 `record_retrieval_run`; Task 3.6 cannot claim this blocked index membership check.
