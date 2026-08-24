@@ -2,9 +2,10 @@
 
 ## Requesting task
 
-- Requesting task: Task 5.3 governance correction, fresh Luna implementation.
-- Authorized base: `fa0ca5c0d9fce5366d1e724e5c9017069ea0dccc` (tree
-  `554bcfb450c8666116ea9b340c81f559987b9e68`).
+- Requesting task: Task 5.3 bounded question-v2 boundary correction, fresh Luna
+  implementation.
+- Authorized base: `4f5c687edffbabb08321515c3e505e41d3ee3888` (tree
+  `cd12cb0896a66986dd4d7bcd9bb7902836128079`).
 - Contract owner: Sol-0, under the post-Gate-1 contract-change protocol.
 - Producing workstream: Sol-5 board-question models.
 - Gate-1 record: `artifacts/acceptance/grounded-learning/gate-1.json`, state
@@ -16,10 +17,9 @@
 Question-v2 activation is proposed only. This correction does not activate a
 new shared contract, change routes or flags, or make any provider call.
 
-Activation status: `BLOCKED_ON_CONSUMING_OWNER_APPROVAL`. The frozen-v1
-restoration and isolated governance correction are complete, but the candidate
-is not activation-ready because both reviewed consuming owners returned
-`CHANGES REQUIRED` and no consuming-owner approval exists.
+Activation status: `PENDING_RENEWED_REVIEWS`. The owned boundary correction is
+implemented and the candidate remains unapplied; renewed Terra, Sol-6, Sol-10,
+and Sol-0 review fields are reset to `PENDING`.
 
 ## Current frozen contract
 
@@ -56,43 +56,52 @@ schema["$id"] = "question-v2.json"
 json.dumps(schema, indent=2, sort_keys=True) + "\n"
 ```
 
-The candidate keeps the already reviewed model union and its validation rules;
-the versioned `$id` is the boundary identity. It is generated in memory in
-`tests/questions/test_models.py` and is not written to `schemas/question-v2.json`
-by this correction.
+The candidate keeps the reviewed model union, adds the required immutable
+`question_version_id`, and enforces `schema_version` as the literal
+`question-v2`; the versioned `$id` is the boundary identity. It is generated
+in memory in `tests/questions/test_models.py` and is not written to
+`schemas/question-v2.json` by this correction.
 
 The candidate is exactly:
 
-- UTF-8 byte count: `7,379`.
-- SHA-256: `0f535c43fc1de3eadc61970f615370d3b23bc1046c7bef5f7bdeb01419a8294d`.
+- UTF-8 byte count: `7,557`.
+- SHA-256: `a3de074e74d19066078cb4eb857a5b29a5d78db19edced24310ad6637b1778d6`.
 - Determinism evidence: two independent `_candidate_v2_schema_bytes()` calls
   each run `json_schema()`, apply `$schema`/`$id`, and sort-serialize a fresh
   candidate; their bytes are equal, and the focused test asserts the byte count
   and SHA-256.
 - Model source: `src/oms_hub/questions/models.py`, using the existing
   `BoardQuestionDraft`, `QuestionValidationResult`, and `QuestionVersion`.
+- Authority boundary source: `src/oms_hub/questions/resolution.py`, exposing
+  one frozen `QuestionResolution`, `QuestionResolutionProvider` protocol, and
+  fail-closed `resolve_question_version` adapter.
 - Candidate test: `tests/questions/test_models.py::test_question_schema_candidate_v2_is_deterministic_and_v1_snapshot_is_frozen`.
 
 No candidate bytes are treated as an active wire contract until this proposal
 has the required owner approvals and the shared exporter/test/snapshot changes
 land together.
 
-## Why a local adapter is insufficient
+## Why a local adapter is not activation
 
-A local adapter or test-only schema wrapper can prove that the isolated Pydantic
-models serialize deterministically, but cannot establish the shared contract's
-identity for producers and consumers. It would leave the central exporter,
-schema snapshot set, and consumer-facing version registry on the reserved v1
-namespace while a separate local copy claims v2. That is duplicate authority
-and would permit producer/consumer drift. The post-Gate-1 protocol therefore
-requires a versioned proposal, Sol-0 approval, and one affected consuming-Sol
-approval before a canonical shared artifact changes.
+The owned `resolve_question_version` adapter proves the narrow local boundary:
+one canonical ID must receive an exact, approved, nonstale, verifiable
+resolution with approved objectives and a source snapshot hash. It intentionally
+does not establish the shared contract's producer/consumer registration. The
+central exporter, schema snapshot set, and consumer-facing version registry
+remain on the reserved v1 namespace while this candidate is local. The
+post-Gate-1 protocol therefore still requires a versioned proposal, Sol-0
+approval, and one affected consuming-Sol approval before a canonical shared
+artifact changes.
 
 ## Producer and consumer impact
 
 ### Current correction
 
-- Producer: existing Sol-5 question models remain isolated and unchanged.
+- Producer: Sol-5 question models now require an immutable canonical
+  `question_version_id` and literal `schema_version=question-v2`.
+- Authority boundary: the abstract `QuestionResolutionProvider` and adapter
+  validate exact ID, approved objectives, source hash, approved/nonstale/
+  verifiable state; no runtime provider or repository is introduced.
 - Consumers: no runtime consumer, route, feature flag, provider, persistence,
   or integration path consumes question-v2.
 - Schema exporter: unchanged and continues to emit the reserved question-v1
@@ -147,9 +156,10 @@ modified by this correction:
    - Assert the exact candidate bytes/hash, repeated-export byte equality, and
      fail-closed v1 payload.
 3. `schemas/question-v2.json`
-   - Materialize the exact 7,379-byte candidate only after approval and the
+   - Materialize the exact 7,557-byte candidate only after approval and the
      exporter/test changes are ready.
-   - Verify SHA-256 `0f535c43fc1de3eadc61970f615370d3b23bc1046c7bef5f7bdeb01419a8294d`.
+   - Verify SHA-256
+     `a3de074e74d19066078cb4eb857a5b29a5d78db19edced24310ad6637b1778d6`.
 
 No exporter, central test, or future snapshot target is changed in this lane.
 
@@ -184,8 +194,9 @@ Correction evidence required and recorded in the handoff/report:
 
 ```text
 PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD \
-  python -m pytest tests/questions/test_models.py --override-ini addopts= -q
-34 passed
+  python -m pytest tests/questions/test_models.py tests/questions/test_resolution.py \
+  --override-ini addopts= -q
+51 passed
 
 PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD \
   python -m pytest tests/contracts/test_schema_exports.py --override-ini addopts= -q
@@ -199,11 +210,11 @@ PATH=/tmp/studyhub-task01-venv/bin:$PATH ruff check src tests scripts
 All checks passed!
 
 PATH=/tmp/studyhub-task01-venv/bin:$PATH mypy src
-Success: no issues found in 180 source files
+Success: no issues found in 181 source files
 
 PATH=/tmp/studyhub-task01-venv/bin:$PATH MYPYPATH=$PWD/src \
-  mypy tests/questions/test_models.py
-Success: no issues found in 1 source file
+  mypy tests/questions/test_models.py tests/questions/test_resolution.py
+Success: no issues found in 2 source files
 
 git diff --exit-code 82e22d7:schemas/question-v1.json schemas/question-v1.json
 exit 0; no output
@@ -217,46 +228,40 @@ typing, `git diff --check`, and the repository's owned-scope and safety scans.
 
 ## Review and approval fields
 
-The completed verdicts and evidence are recorded below. Remaining `PENDING`
-fields are intentionally limited to Sol-0 contract-owner review; no approval is
-inferred from the focused GREEN result.
+This correction changes the reviewed candidate. Renewed review fields are reset
+to `PENDING`; historical findings below remain context and are not approvals for
+this candidate. No approval is inferred from the focused GREEN result.
 
 | Required review | Reviewer | Result | Evidence commit/tree | Status |
 | --- | --- | --- | --- | --- |
-| Terra specification review | `/root/task_5_3_governance_terra_spec` | APPROVED | `9605b08fe60455a32a32d5b66e2e737d07af3adc` / `38c1aec10f459514d4d52f55566f7bb79aab6c49` | APPROVED |
-| Terra quality review | `/root/task_5_3_governance_terra_quality` | APPROVED after scoped re-review; initial CHANGES REQUIRED for non-independent generation | `02797a90c2665cf85480abe667ccfa9c3a57e166` / `2eaf22a3b835aaead6f1082a256620c85985fa25`; focused direct test 1 passed | APPROVED |
-| Workstream Sol review | `/root` | `OWNED_CORRECTION_PASS / BLOCKED_ON_CONSUMING_OWNER_APPROVAL` | `302fae99b304ee0249a853eba2e0349d16d9acd8` / `441040a16d9b14602aa4dc5db7c18bf16c74bfa8` | PASS; disposition blocked |
+| Terra specification review | PENDING | PENDING | PENDING | PENDING |
+| Terra quality review | PENDING | PENDING | PENDING | PENDING |
+| Workstream Sol review | PENDING | PENDING | PENDING | PENDING |
+| Sol-6 consuming-owner review | PENDING | PENDING | PENDING | PENDING |
+| Sol-10 consuming-owner review | PENDING | PENDING | PENDING | PENDING |
 | Sol-0 contract-owner review | PENDING | PENDING | PENDING | PENDING |
 
-### Consuming-owner approval (required)
+### Historical findings retained as resolved-target context
 
-- Consuming-owner approval: **NONE**. The required approval outcome is blocked.
-- Sol-6 reviewer: CHANGES REQUIRED on `02797a90c2665cf85480abe667ccfa9c3a57e166`
-  / tree `2eaf22a3b835aaead6f1082a256620c85985fa25`; Sol-5 and Sol-6 worktrees
-  were clean and unchanged during review.
-- Sol-6 blockers: canonical immutable `question_version_id`; enforce
-  `schema_version=question-v2`; authoritative approved objective and
-  `source_snapshot_hash` resolver; fail-closed tests for absent, stale,
-  unapproved, or unverifiable resolution; no v1 fallback.
-- Sol-10 reviewer: CHANGES REQUIRED on `02797a90c2665cf85480abe667ccfa9c3a57e166`
-  / tree `2eaf22a3b835aaead6f1082a256620c85985fa25`; Sol-10 inspected
-  practice/session/blueprint interfaces, and its pre-existing dirty Error
-  Notebook files/tests were unchanged by review.
-- Sol-10 blockers: canonical `question_version_id`/resolver; enforce v2 and
-  reject v1/unknown; approved and nonstale inventory authority; consumer tests
-  for strict shortfall, timed behavior, immutable historical IDs; rollback must
-  preserve persisted historical session/mapping readability. Sol-6's mastery
-  resolver remains a separate condition.
-- Scope confirmed: no approval exists for candidate activation, Task 5.2/5.4,
-  runtime routes, provider calls, or production changes.
-- Final Workstream Sol review: `/root` returned
-  `OWNED_CORRECTION_PASS / BLOCKED_ON_CONSUMING_OWNER_APPROVAL` on candidate
+- Prior Terra specification review: APPROVED on
+  `9605b08fe60455a32a32d5b66e2e737d07af3adc` / tree
+  `38c1aec10f459514d4d52f55566f7bb79aab6c49`.
+- Prior Terra quality review: APPROVED after the independent-generation fix on
+  `02797a90c2665cf85480abe667ccfa9c3a57e166` / tree
+  `2eaf22a3b835aaead6f1082a256620c85985fa25`.
+- Prior Sol-6 and Sol-10 findings were CHANGES REQUIRED on that prior candidate:
+  canonical immutable identity, strict v2/no-v1 fallback, authoritative
+  approved/nonstale/verifiable objective/source resolution, and consumer tests.
+  This correction addresses the owned model and abstract resolver target; the
+  renewed consuming reviews must confirm their own adoption and remaining
+  product boundaries.
+- Prior Workstream Sol disposition was
+  `OWNED_CORRECTION_PASS / BLOCKED_ON_CONSUMING_OWNER_APPROVAL` on
   `302fae99b304ee0249a853eba2e0349d16d9acd8` / tree
-  `441040a16d9b14602aa4dc5db7c18bf16c74bfa8`. The owned governance correction
-  passed: frozen v1, independent v2 candidate, untouched exporter/central/
-  model/shared/product surfaces, proposal/handoff scope, Terra evidence, and
-  clean worktree were all confirmed. The final disposition remains blocked by
-  the consuming-owner conflicts above.
+  `441040a16d9b14602aa4dc5db7c18bf16c74bfa8`; it is historical only.
+- Consuming-owner approval for this candidate is **NONE** until renewed Sol-6,
+  Sol-10, and Sol-0 reviews complete. Candidate activation, Task 5.2/5.4,
+  routes, provider calls, production, and Anki remain unauthorized.
 
 ## Conflict analysis
 
@@ -267,22 +272,24 @@ inferred from the focused GREEN result.
   accepted shared state**. It is not a migration source and must not be
   reintroduced through the exporter.
 - The isolated models and their direct validation tests remain complete. The
-  direct test now proves a candidate v2 in memory while independently asserting
-  the frozen v1 hash; it does not treat the tracked v1 snapshot as active.
+  direct test now proves a candidate v2 in memory, including the canonical
+  immutable ID and literal version, while independently asserting the frozen
+  v1 hash; it does not treat the tracked v1 snapshot as active.
+- The owned resolver is deliberately abstract: it validates one provider
+  result and has no source-trust repository, persistence, route, mastery,
+  practice, provider, retry, or consumer implementation.
 - The Sol-0-owned exporter and central schema tests are intentionally untouched.
   Restoring v1 removes their prior mismatch; v2 activation waits for this
   proposal's approvals and a later integration commit.
 - No conflict exists with Task 5.1's recipe adapter, but no Task 5.1 files are
   changed. Task 5.2 and Task 5.4 remain outside scope and blocked by Gate 2A.
-- Consuming-owner conflict: both Sol-6 and Sol-10 require canonical immutable
-  question identity, strict v2 enforcement, approved/nonstale authority
-  resolution, fail-closed consumer tests, and no v1 fallback. Sol-10 additionally
-  requires historical-session readability across rollback and strict practice
-  shortfall/timed tests. These are real contract conflicts, not documentation
-  preferences, and cannot be fixed inside this lane without unauthorized
-  model/resolver/product changes.
-- Therefore the candidate is not activation-ready and the required consuming
-  owner approval is absent. Sol-0 contract-owner review remains `PENDING`.
+- Renewed consuming-owner review remains required: Sol-6 and Sol-10 must confirm
+  canonical identity/resolver use at their own boundaries, approved/nonstale
+  inventory behavior, fail-closed consumer tests, and historical-session
+  rollback guarantees. Sol-10 additionally owns strict practice shortfall and
+  timed behavior. Those consumer/product behaviors remain outside this lane.
+- Therefore the candidate is not activation-ready and all renewed approvals are
+  `PENDING`; Sol-0 contract-owner review remains `PENDING`.
 - Any later final-review evidence commit containing only governance bookkeeping
   is external evidence and does not change the reviewed candidate identity
   `302fae99b304ee0249a853eba2e0349d16d9acd8` / tree
