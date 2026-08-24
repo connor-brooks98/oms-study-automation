@@ -16,13 +16,17 @@ from oms_hub.db import Database
 from oms_hub.providers.contracts import RetrievalScope, TruthMode
 
 
-def _scope(*, lecture_ids: tuple[str, ...] = ("lecture-13",)) -> RetrievalScope:
+def _scope(
+    *,
+    lecture_ids: tuple[str, ...] = ("lecture-13",),
+    source_revision_ids: tuple[str, ...] = ("sr-1", "sr-2"),
+) -> RetrievalScope:
     return RetrievalScope(
         course_id="heme",
         exam_id="exam-2",
         lecture_ids=lecture_ids,
         truth_mode=TruthMode.COURSE_ONLY,
-        source_revision_ids=("sr-1", "sr-2"),
+        source_revision_ids=source_revision_ids,
     )
 
 
@@ -265,6 +269,64 @@ def test_provenance_requires_bounded_paired_and_scoped_ids(
                 model=model,
                 validation_outcome="valid",
             )
+
+
+def test_unique_evidence_ids_may_pair_to_one_source_revision(
+    repository: AskRepository,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-shared-revision"
+    )
+    run = repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        evidence_ids=("ev-1", "ev-2"),
+        source_revision_ids=("sr-1", "sr-1"),
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+    )
+
+    assert run.evidence_ids == ("ev-1", "ev-2")
+    assert run.source_revision_ids == ("sr-1", "sr-1")
+
+
+def test_empty_revision_scope_allows_bounded_pairs_but_not_raw_prose(
+    repository: AskRepository,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice",
+        AskMode.LECTURE,
+        _scope(source_revision_ids=()),
+        thread_id="thread-broad-scope",
+    )
+    run = repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        evidence_ids=("ev-broad-1", "ev-broad-2"),
+        source_revision_ids=("sr-broad", "sr-broad"),
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+    )
+    assert run.source_revision_ids == ("sr-broad", "sr-broad")
+
+    with pytest.raises(ValueError):
+        repository.record_retrieval_run(
+            thread.thread_id,
+            "actor-alice",
+            source_snapshot_hash="a" * 64,
+            evidence_ids=("private evidence prose",),
+            source_revision_ids=("sr-broad",),
+            prompt_version="ask-grounded-v1",
+            schema_version="ask-v1",
+            model="model-1",
+            validation_outcome="valid",
+        )
 
 
 def test_corrupt_persisted_retrieval_link_fails_closed(

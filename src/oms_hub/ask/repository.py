@@ -252,7 +252,9 @@ class AskRepository:
         actor = _require_non_empty(actor_id, "actor_id")
         source_hash = _require_opaque_id(source_snapshot_hash, "source_snapshot_hash", 128)
         evidence = _normalized_ids(evidence_ids, "evidence_ids")
-        revisions = _normalized_ids(source_revision_ids, "source_revision_ids")
+        revisions = _normalized_ids(
+            source_revision_ids, "source_revision_ids", allow_duplicates=True
+        )
         if len(evidence) != len(revisions):
             raise ValueError("evidence_ids and source_revision_ids must pair one-to-one")
         prompt = _require_bounded_text(prompt_version, "prompt_version", 200)
@@ -536,7 +538,9 @@ def _retrieval_run(
             _require_opaque_id(link.source_revision_id, "source_revision_id")
         )
     evidence = _normalized_ids(evidence_ids, "evidence_ids")
-    revisions = _normalized_ids(source_revision_ids, "source_revision_ids")
+    revisions = _normalized_ids(
+        source_revision_ids, "source_revision_ids", allow_duplicates=True
+    )
     _validate_revision_scope(scope, revisions)
     return RetrievalRun(
         retrieval_run_id=retrieval_run_id,
@@ -645,11 +649,16 @@ def _assert_context_matches(
         raise ValueError("page context cannot change within a thread")
 
 
-def _normalized_ids(values: Iterable[str], field_name: str) -> tuple[str, ...]:
+def _normalized_ids(
+    values: Iterable[str],
+    field_name: str,
+    *,
+    allow_duplicates: bool = False,
+) -> tuple[str, ...]:
     if isinstance(values, (str, bytes)):
         raise TypeError(f"{field_name} must be a sequence of IDs")
     result = tuple(_require_opaque_id(value, field_name) for value in values)
-    if len(set(result)) != len(result):
+    if not allow_duplicates and len(set(result)) != len(result):
         raise ValueError(f"{field_name} cannot contain duplicates")
     return result
 
