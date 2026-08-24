@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 from sqlalchemy import inspect, text
@@ -80,6 +81,45 @@ def test_quiz_thread_rejects_a_different_question_context(
             "Explain the other question.",
             page_context=second_context,
         )
+    with pytest.raises(ValueError, match="question context"):
+        repository.append_assistant_message(
+            thread.thread_id,
+            "actor-alice",
+            "Answer for the other question.",
+            page_context=second_context,
+        )
+
+
+def test_quiz_thread_requires_explicit_context_on_every_append(
+    repository: AskRepository,
+) -> None:
+    context = QuizPageContext(
+        quiz_id="quiz-1", question_id="question-1", submitted=False
+    )
+    thread = repository.create_thread(
+        "actor-alice",
+        AskMode.QUIZ_PRE_SUBMIT,
+        _scope(),
+        page_context=context,
+        thread_id="thread-question-1",
+    )
+
+    with pytest.raises(ValueError, match="explicit.*QuizPageContext"):
+        repository.append_user_message(thread.thread_id, "actor-alice", "Question")
+    repository.append_user_message(
+        thread.thread_id,
+        "actor-alice",
+        "Question",
+        page_context=context,
+    )
+    with pytest.raises(ValueError, match="explicit.*QuizPageContext"):
+        repository.append_assistant_message(thread.thread_id, "actor-alice", "Answer")
+    repository.append_assistant_message(
+        thread.thread_id,
+        "actor-alice",
+        "Answer",
+        page_context=context,
+    )
 
 
 def test_messages_are_append_only_and_deterministically_ordered(
@@ -124,7 +164,7 @@ def test_retrieval_history_keeps_provenance_and_no_raw_evidence(
         prompt_version="ask-grounded-v1",
         schema_version="ask-v1",
         model="model-1",
-        validation_outcome={"state": "valid", "attempt": 1},
+        validation_outcome="valid",
         retrieval_run_id="retrieval-1",
     )
 
@@ -137,7 +177,7 @@ def test_retrieval_history_keeps_provenance_and_no_raw_evidence(
     assert run.prompt_version == "ask-grounded-v1"
     assert run.schema_version == "ask-v1"
     assert run.model == "model-1"
-    assert run.validation_outcome == {"state": "valid", "attempt": 1}
+    assert run.validation_outcome == "valid"
 
     columns = {
         column["name"] for column in inspect(database.engine).get_columns("retrieval_evidence")
@@ -211,3 +251,22 @@ def test_missing_or_unauthorized_writes_fail_closed(repository: AskRepository) -
         )
     with pytest.raises(KeyError):
         repository.delete_thread("missing", "actor-alice")
+
+
+def test_validation_outcome_is_a_required_non_empty_string(
+    repository: AskRepository,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-1"
+    )
+    for invalid in ({"state": "valid"}, {"raw_evidence": "private"}, ""):
+        with pytest.raises(ValueError, match="validation_outcome"):
+            repository.record_retrieval_run(
+                thread.thread_id,
+                "actor-alice",
+                source_snapshot_hash="snapshot-sha",
+                prompt_version="ask-grounded-v1",
+                schema_version="ask-v1",
+                model="model-1",
+                validation_outcome=cast(str, invalid),
+            )

@@ -85,7 +85,7 @@ class _RetrievalRunRow(_AskBase):
     prompt_version: Mapped[str] = mapped_column(String(200), nullable=False)
     schema_version: Mapped[str] = mapped_column(String(200), nullable=False)
     model: Mapped[str] = mapped_column(String(300), nullable=False)
-    validation_outcome_json: Mapped[str] = mapped_column(Text, nullable=False)
+    validation_outcome: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(String(40), nullable=False)
 
 
@@ -112,7 +112,7 @@ class RetrievalRun:
     prompt_version: str
     schema_version: str
     model: str
-    validation_outcome: object
+    validation_outcome: str
     created_at: str
 
 
@@ -242,7 +242,7 @@ class AskRepository:
         prompt_version: str = "",
         schema_version: str = "",
         model: str = "",
-        validation_outcome: object = None,
+        validation_outcome: str = "",
         *,
         retrieval_run_id: str | None = None,
     ) -> RetrievalRun:
@@ -259,7 +259,7 @@ class AskRepository:
             if provider_request_id is not None
             else None
         )
-        outcome_json = _json_dump(validation_outcome)
+        outcome = _require_non_empty(validation_outcome, "validation_outcome")
         now = utc_now()
         with self.database.session() as session:
             self._require_thread(session, thread_id, actor)
@@ -277,7 +277,7 @@ class AskRepository:
                     prompt_version=prompt,
                     schema_version=schema,
                     model=model_name,
-                    validation_outcome_json=outcome_json,
+                    validation_outcome=outcome,
                     created_at=now,
                 )
             )
@@ -506,7 +506,7 @@ def _retrieval_run(row: _RetrievalRunRow) -> RetrievalRun:
         prompt_version=row.prompt_version,
         schema_version=row.schema_version,
         model=row.model,
-        validation_outcome=json.loads(row.validation_outcome_json),
+        validation_outcome=row.validation_outcome,
         created_at=row.created_at,
     )
 
@@ -557,6 +557,14 @@ def _assert_context_matches(
     stored: AskPageContextValue | None,
     supplied: AskPageContextValue | None,
 ) -> None:
+    if isinstance(stored, QuizPageContext):
+        if not isinstance(supplied, QuizPageContext):
+            raise ValueError(
+                "quiz thread append requires explicit matching QuizPageContext"
+            )
+        if stored != supplied:
+            raise ValueError("question context cannot change within a thread")
+        return
     if supplied is None:
         return
     if stored != supplied:
