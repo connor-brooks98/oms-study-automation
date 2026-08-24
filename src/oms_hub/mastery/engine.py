@@ -107,9 +107,11 @@ class MasteryEngine:
         objective_id: str,
         events: Iterable[LearnerEvent],
         anki_snapshot: ObjectiveRecallRetention | None = None,
+        *,
+        as_of: datetime | None = None,
     ) -> MasterySnapshot:
         objective_id = _objective_id(objective_id)
-        now = self._current_now()
+        now = self._as_of(as_of)
         scored_events: list[tuple[LearnerEvent, float, float]] = []
         for event in events:
             if not isinstance(event, LearnerEvent):
@@ -159,7 +161,9 @@ class MasteryEngine:
             status="tested" if scored_events else "untested",
         )
 
-    def _current_now(self) -> datetime:
+    def _as_of(self, as_of: datetime | None) -> datetime:
+        if as_of is not None:
+            return _utc_datetime(as_of, "as_of")
         raw_now = self._now() if callable(self._now) else self._now
         return _utc_datetime(raw_now, "now")
 

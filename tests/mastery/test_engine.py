@@ -177,6 +177,16 @@ def test_engine_rejects_non_utc_now() -> None:
         MasteryEngine(now=lambda: datetime(2026, 8, 23, 12)).compute("objective-1", [], None)
 
 
+def test_engine_rejects_non_utc_as_of() -> None:
+    with pytest.raises(ValueError, match="as_of"):
+        MasteryEngine(now=lambda: NOW).compute(
+            "objective-1",
+            [],
+            None,
+            as_of=datetime(2026, 8, 23, 12),
+        )
+
+
 def test_task_modules_do_not_import_anki_or_copy_sol7_types() -> None:
     root = Path(__file__).parents[2] / "src" / "oms_hub" / "mastery"
     source = "\n".join(path.read_text() for path in root.glob("*.py"))

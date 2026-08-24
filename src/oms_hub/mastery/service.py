@@ -26,6 +26,8 @@ class MasteryService:
         prior_events: Iterable[LearnerEvent],
         new_event: LearnerEvent,
         anki_snapshot: ObjectiveRecallRetention | None = None,
+        *,
+        as_of: datetime,
     ) -> MasterySnapshot:
         if not isinstance(new_event, LearnerEvent):
             raise TypeError("new_event must be a LearnerEvent")
@@ -33,6 +35,7 @@ class MasteryService:
             objective_id,
             (*prior_events, new_event),
             anki_snapshot,
+            as_of=as_of,
         )
 
     def rebuild(
@@ -40,5 +43,7 @@ class MasteryService:
         objective_id: str,
         events: Iterable[LearnerEvent],
         anki_snapshot: ObjectiveRecallRetention | None = None,
+        *,
+        as_of: datetime,
     ) -> MasterySnapshot:
-        return self.engine.compute(objective_id, events, anki_snapshot)
+        return self.engine.compute(objective_id, events, anki_snapshot, as_of=as_of)
