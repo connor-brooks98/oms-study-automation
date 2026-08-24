@@ -16,6 +16,11 @@
 Question-v2 activation is proposed only. This correction does not activate a
 new shared contract, change routes or flags, or make any provider call.
 
+Activation status: `BLOCKED_ON_CONSUMING_OWNER_APPROVAL`. The frozen-v1
+restoration and isolated governance correction are complete, but the candidate
+is not activation-ready because both reviewed consuming owners returned
+`CHANGES REQUIRED` and no consuming-owner approval exists.
+
 ## Current frozen contract
 
 The current tracked `schemas/question-v1.json` is the Gate-1 reserved snapshot.
@@ -103,7 +108,8 @@ approval before a canonical shared artifact changes.
   would record `schema_version=question-v2` when emitting that version.
 - Consumers: central schema checks and any approved downstream question
   producer/consumer must validate the v2 artifact by its `$id` and exact bytes.
-  A consuming Sol must confirm it can handle the version before activation.
+  A consuming Sol must confirm it can handle the version before activation;
+  neither reviewed consuming Sol has approved the candidate.
 - No existing consumer is silently re-pointed from v1 to v2. The inactive
   reserved v1 snapshot remains available as historical Gate-1 evidence.
 
@@ -146,6 +152,31 @@ modified by this correction:
    - Verify SHA-256 `0f535c43fc1de3eadc61970f615370d3b23bc1046c7bef5f7bdeb01419a8294d`.
 
 No exporter, central test, or future snapshot target is changed in this lane.
+
+## Activation prerequisites from consuming reviews
+
+No question-v2 activation, exporter registration, or snapshot materialization
+may proceed until all of the following are satisfied by authorized owners:
+
+- Introduce and use one canonical immutable `question_version_id` and resolver
+  across question, mastery, practice, session, blueprint, and historical
+  mappings; no consumer may reconstruct identity from mutable fields.
+- Enforce `schema_version=question-v2` at every v2 consumer boundary and reject
+  v1 or unknown versions; there is no v1 fallback.
+- Resolve objectives and source authority through an authoritative resolver that
+  proves the objective is approved and the `source_snapshot_hash` is approved,
+  current, and verifiable.
+- Fail closed for absent, stale, unapproved, or unverifiable objective/source
+  resolution, with consumer tests proving those failures.
+- Sol-10 practice/session/blueprint consumers must add tests for strict
+  shortfall behavior, timed behavior, immutable historical question IDs, and
+  rollback that preserves persisted historical session/mapping readability.
+- The approved, nonstale inventory authority must be explicit for Sol-10
+  consumers; the Sol-6 mastery resolver remains a separate required condition.
+
+These prerequisites require authorized model/resolver/product work outside this
+governance-only correction. Until they are implemented and reviewed, the
+candidate remains isolated and unapplied.
 
 ## Exact verification
 
@@ -192,21 +223,32 @@ GREEN result.
 
 | Required review | Reviewer | Result | Evidence commit/tree | Status |
 | --- | --- | --- | --- | --- |
-| Terra specification review | PENDING | PENDING | PENDING | PENDING |
-| Terra quality review | PENDING | PENDING | PENDING | PENDING |
+| Terra specification review | `/root/task_5_3_governance_terra_spec` | APPROVED | `9605b08fe60455a32a32d5b66e2e737d07af3adc` / `38c1aec10f459514d4d52f55566f7bb79aab6c49` | APPROVED |
+| Terra quality review | `/root/task_5_3_governance_terra_quality` | APPROVED after scoped re-review; initial CHANGES REQUIRED for non-independent generation | `02797a90c2665cf85480abe667ccfa9c3a57e166` / `2eaf22a3b835aaead6f1082a256620c85985fa25`; focused direct test 1 passed | APPROVED |
 | Workstream Sol review | PENDING | PENDING | PENDING | PENDING |
 | Sol-0 contract-owner review | PENDING | PENDING | PENDING | PENDING |
 
 ### Consuming-owner approval (required)
 
-- Consuming owner: `PENDING` (one affected Sol-6 or Sol-10 owner selected by
-  the controller).
-- Approval result: `PENDING`.
-- Reviewer identity: `PENDING`.
-- Evidence commit/tree: `PENDING`.
-- Scope confirmed: candidate question-v2 activation and compatibility only;
-  no approval for Task 5.2/5.4, runtime routes, provider calls, or production
-  changes is implied.
+- Consuming-owner approval: **NONE**. The required approval outcome is blocked.
+- Sol-6 reviewer: CHANGES REQUIRED on `02797a90c2665cf85480abe667ccfa9c3a57e166`
+  / tree `2eaf22a3b835aaead6f1082a256620c85985fa25`; Sol-5 and Sol-6 worktrees
+  were clean and unchanged during review.
+- Sol-6 blockers: canonical immutable `question_version_id`; enforce
+  `schema_version=question-v2`; authoritative approved objective and
+  `source_snapshot_hash` resolver; fail-closed tests for absent, stale,
+  unapproved, or unverifiable resolution; no v1 fallback.
+- Sol-10 reviewer: CHANGES REQUIRED on `02797a90c2665cf85480abe667ccfa9c3a57e166`
+  / tree `2eaf22a3b835aaead6f1082a256620c85985fa25`; Sol-10 inspected
+  practice/session/blueprint interfaces, and its pre-existing dirty Error
+  Notebook files/tests were unchanged by review.
+- Sol-10 blockers: canonical `question_version_id`/resolver; enforce v2 and
+  reject v1/unknown; approved and nonstale inventory authority; consumer tests
+  for strict shortfall, timed behavior, immutable historical IDs; rollback must
+  preserve persisted historical session/mapping readability. Sol-6's mastery
+  resolver remains a separate condition.
+- Scope confirmed: no approval exists for candidate activation, Task 5.2/5.4,
+  runtime routes, provider calls, or production changes.
 
 ## Conflict analysis
 
@@ -224,6 +266,16 @@ GREEN result.
   proposal's approvals and a later integration commit.
 - No conflict exists with Task 5.1's recipe adapter, but no Task 5.1 files are
   changed. Task 5.2 and Task 5.4 remain outside scope and blocked by Gate 2A.
+- Consuming-owner conflict: both Sol-6 and Sol-10 require canonical immutable
+  question identity, strict v2 enforcement, approved/nonstale authority
+  resolution, fail-closed consumer tests, and no v1 fallback. Sol-10 additionally
+  requires historical-session readability across rollback and strict practice
+  shortfall/timed tests. These are real contract conflicts, not documentation
+  preferences, and cannot be fixed inside this lane without unauthorized
+  model/resolver/product changes.
+- Therefore the candidate is not activation-ready and the required consuming
+  owner approval is absent. Sol-0 and final Workstream Sol review remain
+  `PENDING`.
 
 ## Rollback
 
