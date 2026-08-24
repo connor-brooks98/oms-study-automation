@@ -113,16 +113,20 @@ class GeminiFileSearchAdmin:
             return
         if document.state is not IndexState.DELETING:
             document = self.repository.mark_document_deleting(provider_document_id)
-        try:
-            async with self.client_factory.client() as client:
-                documents_api = _documents_api(client)
-                await _call_provider(documents_api.delete, name=document.provider_document_id)
-        except Exception as error:
-            translated = _translate(error)
-            if translated.provider_status_code == 404:
-                self.repository.mark_document_deleted(provider_document_id)
-                return
-            raise translated from None
+        async with self.client_factory.client() as client:
+            documents_api = _documents_api(client)
+            try:
+                delete_method = documents_api.delete
+            except Exception as error:
+                raise _translate(error) from None
+            try:
+                await _call_provider(delete_method, name=document.provider_document_id)
+            except Exception as error:
+                translated = _translate(error)
+                if translated.provider_status_code == 404:
+                    self.repository.mark_document_deleted(provider_document_id)
+                    return
+                raise translated from None
         self.repository.mark_document_deleted(provider_document_id)
 
     def _ensure_lock(self) -> asyncio.Lock:

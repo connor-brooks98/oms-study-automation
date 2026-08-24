@@ -91,9 +91,12 @@ class FakeSdkFactory:
     def __init__(self, client: FakeAioClient) -> None:
         self.client = client
         self.calls: list[dict[str, object]] = []
+        self.error: BaseException | None = None
 
     def __call__(self, **kwargs: object) -> FakeSdkClient:
         self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
         return FakeSdkClient(self.client)
 
 
@@ -463,3 +466,29 @@ def test_translated_404_delete_converges_deleting_document_to_deleted(
     current = IndexRepository(database).get_document(listed[0].id)
     assert current is not None
     assert current.state is IndexState.DELETED
+
+
+def test_client_acquisition_404_does_not_claim_deleted(
+    admin_bundle: tuple[GeminiFileSearchAdmin, FakeStores, FakeAioClient, FakeSdkFactory],
+    database: Database,
+) -> None:
+    admin, stores, _, sdk = admin_bundle
+    stored = run(admin.ensure_store(StoreKey.course("heme-lymph", "exam-2")))
+    stores.documents.items = [
+        SimpleNamespace(
+            name="fileSearchStores/provider-1/documents/a",
+            custom_metadata={"source_revision_id": "revision"},
+        )
+    ]
+    listed = run(admin.list_documents(stored))
+    sdk.error = RawProviderFailure("raw client acquisition secret", 404)
+
+    with pytest.raises(GeminiProviderError) as raised:
+        run(admin.delete_document(listed[0].provider_document_id))
+
+    assert raised.value.provider_status_code == 404
+    assert "raw client acquisition secret" not in str(raised.value)
+    assert stores.documents.delete_calls == []
+    current = IndexRepository(database).get_document(listed[0].id)
+    assert current is not None
+    assert current.state is IndexState.DELETING
