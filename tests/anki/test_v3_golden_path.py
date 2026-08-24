@@ -84,7 +84,6 @@ class _OfflineStructuredGenerator:
                         "exact_terms": ["Ferritin"],
                         "depth_tier": 1,
                         "priority": 100,
-                        "reason": "Transcript emphasis",
                         "facts": [
                             {
                                 "statement": "Ferritin is low in iron deficiency anemia.",
@@ -94,7 +93,6 @@ class _OfflineStructuredGenerator:
                             }
                         ],
                         "source_evidence_ids": [evidence_id],
-                        "professor_policy_basis": ["transcript emphasis"],
                         "retrieval_queries": ["Ferritin low"],
                     }
                 ]

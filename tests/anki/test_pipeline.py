@@ -25,6 +25,7 @@ from oms_hub.anki.pipeline import (
     StageContext,
     StageProduct,
     UnsupportedPipelineContract,
+    _provider_transport_for_stage,
     _stage_input_hash,
     _v3_provider_replay_stage_digest,
     pipeline_stages,
@@ -73,6 +74,19 @@ def test_v3_graph_is_loadable_and_retains_approval_only_r12() -> None:
     assert CARD_CENTRIC_V3_STAGES[-1].stage.value == "v3_r12_apply"
     assert pipeline_stages(PipelineContractVersion.CARD_CENTRIC_V3) is CARD_CENTRIC_V3_STAGES
     assert CARD_CENTRIC_V3_STAGES[-2].next_state == CurationState.READY_FOR_REVIEW
+
+
+def test_v3_r8_uses_the_pinned_thorough_classifier_route() -> None:
+    thorough = object()
+    job = SimpleNamespace(
+        resolved_model_config=SimpleNamespace(
+            scope_r3=None,
+            cheap_classify_r7=object(),
+            thorough_classify_r7=thorough,
+            generation_r9=None,
+        )
+    )
+    assert _provider_transport_for_stage(job, CurationStage.V3_R8_GAP_CONFIRMATION) is thorough
 
 
 def test_v3_live_pipeline_is_reachable_only_through_capture_repository(tmp_path: Path) -> None:

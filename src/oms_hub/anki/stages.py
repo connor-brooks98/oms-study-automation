@@ -1464,7 +1464,7 @@ class CurationServicesRunner:
         residual_error: str | None = None
         residual_usage: StageUsage | None = None
         if residual_bundles:
-            cheap, _thorough, _rate_table_sha256 = _r7_routes(context, r0)
+            _cheap, thorough, _rate_table_sha256 = _r7_routes(context, r0)
             result = await asyncio.to_thread(
                 classify_set_coverage,
                 cast(
@@ -1482,7 +1482,7 @@ class CurationServicesRunner:
                     )
                 ),
                 strictness=policy.classification_strictness,
-                route=cheap,
+                route=thorough,
             )
             residual_rows = list(cast(list[dict[str, object]], result.payload["final_partition"]))
             set_coverage = dict(result.payload)

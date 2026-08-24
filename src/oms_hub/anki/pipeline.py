@@ -932,7 +932,7 @@ def _provider_transport_for_stage(job: CurationJob, stage: CurationStage) -> Res
     v3_routes = {
         CurationStage.V3_R3_SCOPE: resolved.scope_r3,
         CurationStage.V3_R7_CLASSIFICATION: resolved.cheap_classify_r7,
-        CurationStage.V3_R8_GAP_CONFIRMATION: resolved.cheap_classify_r7,
+        CurationStage.V3_R8_GAP_CONFIRMATION: resolved.thorough_classify_r7,
         CurationStage.V3_R9_GENERATION: resolved.generation_r9,
     }
     if stage in v3_routes:

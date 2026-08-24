@@ -1342,9 +1342,10 @@ def test_r7_pins_and_repair_authorization_reject_stale_or_noninteger_costs() -> 
     assert pin["cheap_options"]["max_tokens"] == 3072
     assert pin["thorough_options"]["max_tokens"] == 3072
     assert pin["classification_config"]["output_max_tokens"] == 3072
-    assert pin["classification_config"]["version"] == "classification-r7-v8"
+    assert pin["classification_config"]["version"] == "classification-r7-v9"
     assert pin["classification_config"]["material_claim_inventory"] == "bounded-clause-v1"
     assert pin["set_coverage"]["provider_schema_strategy"] == ("batch-derived-claim-enums-v2")
+    assert pin["set_coverage"]["route"] == classification_v3.route_document(thorough)
     assert pin["cheap_options_sha256"] == canonical_payload_sha256(pin["cheap_options"])
     request = "d" * 64
     authorization = {

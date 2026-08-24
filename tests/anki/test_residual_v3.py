@@ -97,9 +97,7 @@ def test_r8_raw_reuse_is_closed_and_caps_remain_unresolved() -> None:
     sibling["clusters"] = [
         {"representative_note_id": 1, "sibling_note_ids": [1, 2], "missing_vector_note_ids": []}
     ]
-    assert _v3_r8_raw_safety(
-        _r5(), sibling, {**expected, 2: "b" * 64}, semantic, 0.5, 50
-    ) == []
+    assert _v3_r8_raw_safety(_r5(), sibling, {**expected, 2: "b" * 64}, semantic, 0.5, 50) == []
 
 
 def test_r8_never_retrieves_and_v3_pipeline_exposes_r8() -> None:
@@ -163,6 +161,7 @@ def test_r8_dispatches_residual_bundle_without_initial_r6_representative(
         ),
     )
     route = ResolvedStageModel("openai", "fake", thinking_mode="disabled")
+    thorough_route = ResolvedStageModel("openai", "thorough", thinking_mode="disabled")
     model_config = ResolvedModelConfiguration(
         "v3",
         route,
@@ -171,7 +170,7 @@ def test_r8_dispatches_residual_bundle_without_initial_r6_representative(
         route,
         scope_r3=route,
         cheap_classify_r7=route,
-        thorough_classify_r7=route,
+        thorough_classify_r7=thorough_route,
         generation_r9=route,
     )
     r0 = {
@@ -182,11 +181,11 @@ def test_r8_dispatches_residual_bundle_without_initial_r6_representative(
     }
     r0.update(
         cheap_classify_r7=route_document(route),
-        thorough_classify_r7=route_document(route),
+        thorough_classify_r7=route_document(thorough_route),
         generation_r9=route_document(route),
     )
-    _add_r0_costs(r0, route.model)
-    r0["r7_classification"] = r7_pin_document(route, route, str(r0["rate_table_sha256"]))
+    _add_r0_costs(r0, route.model, thorough_route.model)
+    r0["r7_classification"] = r7_pin_document(route, thorough_route, str(r0["rate_table_sha256"]))
     candidate = {
         "note_id": 9,
         "content_sha256": "d" * 64,
@@ -284,6 +283,7 @@ def test_r8_dispatches_residual_bundle_without_initial_r6_representative(
     runner.semantic = SimpleNamespace(embedder=SimpleNamespace(offline_replay_only=True))
     product = asyncio.run(runner.run(context))
     assert product.payload["records"][0]["state"] == "covered_residual" and len(calls) == 1
+    assert calls[0]["route"] == thorough_route
     assert product.usage == usage
     scores = calls[0]["bundles"][0].retrieval_scores
     assert {score.identity for score in scores}.isdisjoint({"boost_total", "calibrated_score"})

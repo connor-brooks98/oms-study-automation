@@ -43,13 +43,11 @@ CLASSIFICATION_OUTPUT_MAX_TOKENS = 3_072
 CHEAP_BATCH_MAX = 16
 THOROUGH_BATCH_MAX = 8
 CLASSIFICATION_CANDIDATES_PER_FACT = 3
-SERIAL_CONCURRENCY = 1
-MAX_REPAIRS_TOTAL = 1
 SET_COVERAGE_FACTS_PER_BATCH = 1
 SET_COVERAGE_OUTPUT_MAX_TOKENS = 2_048
 ESTIMATOR_VERSION = "utf8-byte-upper-bound-v1"
 CLASSIFICATION_CONFIG = {
-    "version": "classification-r7-v8",
+    "version": "classification-r7-v9",
     "bundle_max_input_bytes": MAX_BUNDLE_BYTES,
     "bundle_max_input_tokens": MAX_BUNDLE_TOKENS,
     "output_max_tokens": CLASSIFICATION_OUTPUT_MAX_TOKENS,
@@ -59,8 +57,6 @@ CLASSIFICATION_CONFIG = {
     "max_provider_input_bytes": MAX_PROVIDER_INPUT_BYTES,
     "provider_schema_strategy": "batch-derived-claim-enums-v2",
     "material_claim_inventory": "bounded-clause-v1",
-    "serial_concurrency": SERIAL_CONCURRENCY,
-    "max_repairs_total": MAX_REPAIRS_TOTAL,
     "defer_partial_to_set_coverage": True,
     "estimator_version": ESTIMATOR_VERSION,
     "thresholds_bps": {
@@ -336,9 +332,9 @@ def r7_pin_document(
     cheap_options = options_document(_options(cheap_route, cheap=True))
     thorough_options = options_document(_options(thorough_route, cheap=False))
     config = r7_config_document()
-    set_options = options_document(_set_coverage_options(cheap_route))
+    set_options = options_document(_set_coverage_options(thorough_route))
     return {
-        "serialization_version": "classification-r7-pin-v8",
+        "serialization_version": "classification-r7-pin-v9",
         "instruction_sha256": {
             "cheap": instruction_sha256(CHEAP_INSTRUCTION),
             "thorough": instruction_sha256(THOROUGH_INSTRUCTION),
@@ -363,7 +359,7 @@ def r7_pin_document(
             "facts_per_batch": SET_COVERAGE_FACTS_PER_BATCH,
             "max_provider_input_bytes": MAX_PROVIDER_INPUT_BYTES,
             "provider_schema_strategy": "batch-derived-claim-enums-v2",
-            "route": route_document(cheap_route),
+            "route": route_document(thorough_route),
         },
         "estimator_version": ESTIMATOR_VERSION,
         "rate_table_sha256": rate_table_sha256,
@@ -467,8 +463,8 @@ class R7ClassificationService:
     ) -> R7Result:
         ordered = tuple(bundles)
         _validate_bundles(ordered)
-        _validate_route(cheap_route, cheap=True)
-        _validate_route(thorough_route, cheap=False)
+        _options(cheap_route, cheap=True)
+        _options(thorough_route, cheap=False)
         cheap_rows: list[dict[str, object]] = []
         thorough_rows: list[dict[str, object]] = []
         escalations: list[dict[str, object]] = []
@@ -1227,10 +1223,6 @@ def _options(route: ResolvedStageModel, *, cheap: bool) -> GenerationOptions:
         temperature=0.0,
         max_tokens=CLASSIFICATION_OUTPUT_MAX_TOKENS,
     )
-
-
-def _validate_route(route: ResolvedStageModel, *, cheap: bool) -> None:
-    _options(route, cheap=cheap)
 
 
 def _validate_bundles(bundles: Sequence[CandidateEvidenceBundle]) -> None:
