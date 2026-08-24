@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Iterable
@@ -144,6 +145,10 @@ class AskThreadView:
 
 AskPageContextValue = AskPageContext | QuizPageContext
 _OPAQUE_ID = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._:-]*)\Z")
+_PROVIDER_REFERENCE = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_SCOPE_KEYS = frozenset(
+    {"course_id", "exam_id", "lecture_ids", "truth_mode", "source_revision_ids"}
+)
 _VALIDATION_OUTCOMES = frozenset(
     {"valid", "invalid", "rejected", "insufficient", "error"}
 )
@@ -285,7 +290,7 @@ class AskRepository:
             "retrieval_run_id",
         )
         provider_id = (
-            _require_provider_request_id(provider_request_id)
+            _hash_provider_request_id(provider_request_id)
             if provider_request_id is not None
             else None
         )
@@ -589,7 +594,7 @@ def _retrieval_run(
         row.source_snapshot_hash, "source_snapshot_hash", 128
     )
     provider_request_id = (
-        _require_provider_request_id(row.provider_request_id)
+        _require_provider_request_reference(row.provider_request_id)
         if row.provider_request_id is not None
         else None
     )
@@ -666,6 +671,8 @@ def _scope_from_json(value: str) -> RetrievalScope:
     payload = json.loads(value)
     if not isinstance(payload, dict):
         raise ValueError("stored Ask scope is malformed")
+    if set(payload) != _SCOPE_KEYS:
+        raise ValueError("stored Ask scope has unexpected keys")
     lecture_ids = payload.get("lecture_ids")
     source_revision_ids = payload.get("source_revision_ids")
     if not isinstance(lecture_ids, list) or not isinstance(source_revision_ids, list):
@@ -689,7 +696,8 @@ def _scope_from_json(value: str) -> RetrievalScope:
         )
     except (TypeError, ValueError) as error:
         raise ValueError("stored Ask scope is malformed") from error
-    _scope_json(parsed)
+    if _scope_json(parsed) != value:
+        raise ValueError("stored Ask scope is not canonical")
     return parsed
 
 
@@ -805,8 +813,16 @@ def _require_opaque_id(value: object, field_name: str, max_length: int = 200) ->
     return value
 
 
-def _require_provider_request_id(value: object) -> str:
-    return _require_opaque_id(value, "provider_request_id", 500)
+def _hash_provider_request_id(value: object) -> str:
+    raw_value = _require_bounded_text(value, "provider_request_id", 500)
+    digest = hashlib.sha256(raw_value.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
+def _require_provider_request_reference(value: object) -> str:
+    if not isinstance(value, str) or _PROVIDER_REFERENCE.fullmatch(value) is None:
+        raise ValueError("provider_request_id must be a derived SHA-256 reference")
+    return value
 
 
 def _require_validation_outcome(value: object) -> str:
