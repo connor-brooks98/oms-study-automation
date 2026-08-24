@@ -360,6 +360,68 @@ def test_corrupt_persisted_retrieval_link_fails_closed(
         repository.get_thread(thread.thread_id, "actor-alice")
 
 
+def test_missing_terminal_retrieval_link_fails_closed(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-missing-link"
+    )
+    repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        evidence_ids=("ev-1", "ev-2"),
+        source_revision_ids=("sr-1", "sr-2"),
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+        retrieval_run_id="retrieval-missing-link",
+    )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "DELETE FROM retrieval_evidence "
+                "WHERE retrieval_run_id = 'retrieval-missing-link' AND ordinal = 1"
+            )
+        )
+
+    with pytest.raises(ValueError, match="evidence link count"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+def test_corrupt_persisted_retrieval_timestamp_fails_closed(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-corrupt-time"
+    )
+    repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="a" * 64,
+        evidence_ids=("ev-1",),
+        source_revision_ids=("sr-1",),
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+        retrieval_run_id="retrieval-corrupt-time",
+    )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE retrieval_runs SET created_at = '0000-bad' "
+                "WHERE retrieval_run_id = 'retrieval-corrupt-time'"
+            )
+        )
+
+    with pytest.raises(ValueError, match="created_at"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
 def test_delete_thread_removes_owned_derivatives_but_not_canonical_evidence(
     repository: AskRepository,
     database: Database,
@@ -421,6 +483,36 @@ def test_retention_requires_timezone_aware_iso_cutoff(
         with pytest.raises(ValueError):
             repository.delete_threads_before("actor-alice", cutoff)
     assert repository.get_thread("thread-a", "actor-alice").thread.thread_id == "thread-a"
+
+
+def test_retention_fails_closed_and_rolls_back_on_corrupt_thread_timestamp(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    old_thread = repository.create_thread(
+        "actor-alice", AskMode.GLOBAL, _scope(), thread_id="thread-corrupt-created"
+    )
+    repository.append_user_message(old_thread.thread_id, "actor-alice", "Question")
+    repository.create_thread("actor-alice", AskMode.GLOBAL, _scope(), thread_id="thread-valid")
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE ask_threads SET created_at = '0000-bad' "
+                "WHERE thread_id = 'thread-corrupt-created'"
+            )
+        )
+
+    cutoff = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    with pytest.raises(ValueError, match="created_at"):
+        repository.delete_threads_before("actor-alice", cutoff)
+
+    with database.engine.connect() as connection:
+        assert connection.scalar(
+            text("SELECT COUNT(*) FROM ask_threads WHERE actor_id = 'actor-alice'")
+        ) == 2
+        assert connection.scalar(
+            text("SELECT COUNT(*) FROM ask_messages WHERE thread_id = 'thread-corrupt-created'")
+        ) == 1
 
 
 def test_missing_or_unauthorized_writes_fail_closed(repository: AskRepository) -> None:
