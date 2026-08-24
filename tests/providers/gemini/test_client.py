@@ -131,6 +131,15 @@ class AsyncCloseFailureAio:
         )
 
 
+class CancelledCloseAio:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+        raise asyncio.CancelledError()
+
+
 class UnawaitableCloseAio:
     def __init__(self) -> None:
         self.close_calls = 0
@@ -433,6 +442,20 @@ def test_context_body_exception_is_preserved_when_close_fails() -> None:
         assert "raw-secret asynchronous close payload" not in "".join(
             traceback.format_exception(raised.value)
         )
+
+    run(exercise())
+    assert aio.close_calls == 1
+
+
+def test_cleanup_cancellation_is_not_swallowed_after_body_failure() -> None:
+    aio = CancelledCloseAio()
+    factory = GeminiClientFactory(config=gemini_config(), sdk_factory=FixedSdkFactory(aio))
+    original = RuntimeError("body failure")
+
+    async def exercise() -> None:
+        with pytest.raises(asyncio.CancelledError):
+            async with factory.client():
+                raise original
 
     run(exercise())
     assert aio.close_calls == 1

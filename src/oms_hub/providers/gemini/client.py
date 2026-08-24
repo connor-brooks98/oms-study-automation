@@ -99,12 +99,12 @@ class GeminiClientFactory:
             try:
                 await close()
             except BaseException as error:
+                if not isinstance(error, Exception):
+                    raise
                 if body_failed:
                     pass
-                elif isinstance(error, Exception):
-                    _raise_translated(error)
                 else:
-                    raise
+                    _raise_translated(error)
 
 
 def translate_gemini_error(exc: Exception) -> GeminiProviderError:
