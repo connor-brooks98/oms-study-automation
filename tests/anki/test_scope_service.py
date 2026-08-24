@@ -68,6 +68,9 @@ def test_r3_provider_schema_has_bounded_output_cardinality() -> None:
         "evidence-b",
     ]
     assert fact["properties"]["statement"]["maxLength"] == 200
+    assert "complete independently testable sentence of at most 160 characters" in fact[
+        "properties"
+    ]["statement"]["description"]
 
 
 def test_r3_maximal_response_stays_below_live_output_ceiling() -> None:

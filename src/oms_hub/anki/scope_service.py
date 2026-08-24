@@ -459,7 +459,14 @@ def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
     class SemanticFact(BaseModel):
         model_config = ConfigDict(extra="forbid", frozen=True)
 
-        statement: str = Field(min_length=1, max_length=200)
+        statement: str = Field(
+            min_length=1,
+            max_length=200,
+            description=(
+                "One complete independently testable sentence of at most 160 characters, "
+                "ending with '.', '?', or '!'."
+            ),
+        )
         evidence_ids: tuple[evidence_id, ...] = Field(min_length=1, max_length=1)
         generation_allowed: bool
         forbidden_cloze_targets: tuple[short_item, ...] = Field(default=(), max_length=2)
