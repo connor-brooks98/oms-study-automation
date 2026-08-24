@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -11,7 +13,7 @@ import pytest
 from sqlalchemy import event, inspect, text
 from sqlalchemy.exc import IntegrityError
 
-from oms_hub.ask.models import AskMode, AskThread, QuizPageContext
+from oms_hub.ask.models import AskMode, AskPageContext, AskThread, QuizPageContext
 from oms_hub.ask.repository import AskRepository
 from oms_hub.db import Database
 from oms_hub.providers.contracts import RetrievalScope, TruthMode
@@ -29,6 +31,10 @@ def _scope(
         truth_mode=TruthMode.COURSE_ONLY,
         source_revision_ids=source_revision_ids,
     )
+
+
+def _provider_reference(value: str) -> str:
+    return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
 
 
 @pytest.fixture
@@ -372,7 +378,7 @@ def test_retrieval_history_keeps_provenance_and_no_raw_evidence(
     assert run.source_snapshot_hash == "snapshot-sha"
     assert run.evidence_ids == ("ev-1", "ev-2")
     assert run.source_revision_ids == ("sr-1", "sr-2")
-    assert run.provider_request_id == "provider-request-1"
+    assert run.provider_request_id == _provider_reference("provider-request-1")
     assert run.prompt_version == "ask-grounded-v1"
     assert run.schema_version == "ask-v1"
     assert run.model == "model-1"
@@ -398,26 +404,33 @@ def test_retrieval_history_keeps_provenance_and_no_raw_evidence(
                 "WHERE retrieval_run_id = 'retrieval-1'"
             )
         ) == 2
+        assert connection.scalar(
+            text(
+                "SELECT provider_request_id FROM retrieval_runs "
+                "WHERE retrieval_run_id = 'retrieval-1'"
+            )
+        ) == _provider_reference("provider-request-1")
 
 
-def test_private_prose_is_rejected_for_provider_request_id(
+def test_provider_request_id_is_hashed_without_raw_content(
     repository: AskRepository,
 ) -> None:
     thread = repository.create_thread(
         "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-private-prose"
     )
     private_prose = "Patient has chest pain and elevated troponin; review the diagnosis."
-    with pytest.raises(ValueError, match="provider_request_id"):
-        repository.record_retrieval_run(
-            thread.thread_id,
-            "actor-alice",
-            source_snapshot_hash="snapshot-sha",
-            provider_request_id=private_prose,
-            prompt_version="ask-grounded-v1",
-            schema_version="ask-v1",
-            model="model-1",
-            validation_outcome="valid",
-        )
+    run = repository.record_retrieval_run(
+        thread.thread_id,
+        "actor-alice",
+        source_snapshot_hash="snapshot-sha",
+        provider_request_id=private_prose,
+        prompt_version="ask-grounded-v1",
+        schema_version="ask-v1",
+        model="model-1",
+        validation_outcome="valid",
+    )
+    assert run.provider_request_id == _provider_reference(private_prose)
+    assert private_prose not in run.provider_request_id
 
 
 def test_private_prose_is_rejected_for_validation_outcome(
@@ -484,7 +497,7 @@ def test_provenance_ids_follow_storage_column_limits(
         validation_outcome="valid",
         retrieval_run_id="retrieval-provider-limits",
     )
-    assert run.provider_request_id == "p" * 500
+    assert run.provider_request_id == _provider_reference("p" * 500)
     assert run.evidence_ids == ("e" * 250,)
     assert run.source_revision_ids == (source_revision_id,)
 
@@ -606,6 +619,70 @@ def test_corrupt_persisted_retrieval_link_fails_closed(
         repository.get_thread(thread.thread_id, "actor-alice")
 
 
+def test_corrupt_persisted_scope_extra_key_fails_closed(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.LECTURE, _scope(), thread_id="thread-corrupt-scope"
+    )
+    with database.engine.begin() as connection:
+        scope_json = connection.scalar(
+            text("SELECT scope_json FROM ask_threads WHERE thread_id = 'thread-corrupt-scope'")
+        )
+        assert isinstance(scope_json, str)
+        payload = json.loads(scope_json)
+        payload["raw_evidence"] = "Patient has chest pain."
+        connection.execute(
+            text("UPDATE ask_threads SET scope_json = :scope_json WHERE thread_id = :thread_id"),
+            {
+                "scope_json": json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                "thread_id": thread.thread_id,
+            },
+        )
+
+    with pytest.raises(ValueError, match="scope"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+def test_corrupt_persisted_page_context_extra_key_fails_closed(
+    repository: AskRepository,
+    database: Database,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice",
+        AskMode.LECTURE,
+        _scope(),
+        page_context=AskPageContext(kind="lecture"),
+        thread_id="thread-corrupt-page-context",
+    )
+    with database.engine.begin() as connection:
+        page_context_json = connection.scalar(
+            text(
+                "SELECT page_context_json FROM ask_threads "
+                "WHERE thread_id = 'thread-corrupt-page-context'"
+            )
+        )
+        assert isinstance(page_context_json, str)
+        payload = json.loads(page_context_json)
+        payload["raw_evidence"] = "Patient has chest pain."
+        connection.execute(
+            text(
+                "UPDATE ask_threads SET page_context_json = :page_context_json "
+                "WHERE thread_id = :thread_id"
+            ),
+            {
+                "page_context_json": json.dumps(
+                    payload, sort_keys=True, separators=(",", ":")
+                ),
+                "thread_id": thread.thread_id,
+            },
+        )
+
+    with pytest.raises(ValueError):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
 def test_corrupt_persisted_message_id_fails_closed(
     repository: AskRepository,
     database: Database,
@@ -711,12 +788,11 @@ def test_corrupt_persisted_privacy_fields_fail_closed(
         validation_outcome="valid",
         retrieval_run_id="retrieval-corrupt-privacy",
     )
-    private_prose = "Patient has chest pain and elevated troponin."
     with database.engine.begin() as connection:
         connection.execute(
             text(
-                "UPDATE retrieval_runs SET provider_request_id = "
-                f"'{private_prose}' WHERE retrieval_run_id = 'retrieval-corrupt-privacy'"
+                "UPDATE retrieval_runs SET provider_request_id = 'provider-request-1' "
+                "WHERE retrieval_run_id = 'retrieval-corrupt-privacy'"
             )
         )
     with pytest.raises(ValueError, match="provider_request_id"):
