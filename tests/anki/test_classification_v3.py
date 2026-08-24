@@ -12,6 +12,8 @@ import pytest
 from oms_hub.anki import classification_v3
 from oms_hub.anki.classification_v3 import (
     CHEAP_INSTRUCTION,
+    REPAIR_INSTRUCTION,
+    THOROUGH_INSTRUCTION,
     R7ClassificationService,
     _provider_input,
     _valid_repair_authorization,
@@ -154,6 +156,17 @@ def _routes() -> tuple[ResolvedStageModel, ResolvedStageModel]:
         ResolvedStageModel("openai", "cheap", thinking_mode="disabled"),
         ResolvedStageModel("openai", "thorough", thinking_mode="disabled"),
     )
+
+
+@pytest.mark.parametrize(
+    "instruction", (CHEAP_INSTRUCTION, THOROUGH_INSTRUCTION, REPAIR_INSTRUCTION)
+)
+def test_r7_instructions_require_full_candidate_fact_coverage(instruction: str) -> None:
+    assert "exact target fact, not the broader concept" in instruction
+    assert (
+        "Candidate text and extra must themselves fully state every material claim" in instruction
+    )
+    assert "cannot fill content missing from the candidate" in instruction
 
 
 def _add_r0_costs(r0: dict[str, object], *models: str) -> None:
@@ -938,7 +951,7 @@ def test_r7_one_request_bound_repair_aggregates_primary_and_repair_usage() -> No
     )
     assert [call["instruction"] for call in fake.calls] == [
         CHEAP_INSTRUCTION,
-        "Return a contract-valid replacement for the same supplied bundles.",
+        REPAIR_INSTRUCTION,
     ]
     assert fake.calls[1]["input"]["invalid_response"] == []
     assert (

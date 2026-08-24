@@ -1,6 +1,6 @@
 ---
 id: card-centric-scope-v3
-version: "3.0"
+version: "3.1"
 temperature: 0
 max_tokens: 4096
 response_format: json
@@ -11,5 +11,8 @@ Use `scope_instruction` from the frozen course policy and apply its authority/mo
 `colored_text` is explicit formatting evidence; `transcript` is primary lecturer evidence;
 `outline` is derived/index evidence and never professor emphasis. Use only allowed evidence
 IDs, and ground every concept and fact in them. Reconcile conflicts into one supported
-statement or omit the claim. Return JSON only: semantic concepts and facts, never IDs,
-hashes, evidence rows, policy fields, or provider/model information.
+statement or omit the claim. Each fact must be one independently testable assertion. Never
+join separately testable claims merely to fit the fact limit; omit the lower-priority claim
+instead. A causal mechanism may remain one fact only when every step is necessary to test
+that single mechanism. Return JSON only: semantic concepts and facts, never IDs, hashes,
+evidence rows, policy fields, or provider/model information.

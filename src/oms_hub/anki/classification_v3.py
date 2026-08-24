@@ -57,9 +57,24 @@ CLASSIFICATION_CONFIG = {
 }
 
 # These are deliberately local frozen constants: R0 pins their content hashes.
-CHEAP_INSTRUCTION = "Classify each requested candidate only from its attached evidence bundle."
-THOROUGH_INSTRUCTION = "Resolve only the supplied candidate bundle and its cheap result."
-REPAIR_INSTRUCTION = "Return a contract-valid replacement for the same supplied bundles."
+_CANDIDATE_COVERAGE_RULE = (
+    " Judge the exact target fact, not the broader concept. Candidate text and extra must "
+    "themselves fully state every material claim in the fact; tags are context, not fact "
+    "support. Attached passages establish lecture truth only and cannot fill content missing "
+    "from the candidate. Treat partial coverage as needs_review in cheap classification or "
+    "unresolved in thorough classification, never keep. Cite a passage as conflicting only "
+    "when it contradicts candidate content."
+)
+CHEAP_INSTRUCTION = (
+    "Classify each requested candidate only from its attached evidence bundle."
+    + _CANDIDATE_COVERAGE_RULE
+)
+THOROUGH_INSTRUCTION = (
+    "Resolve only the supplied candidate bundle and its cheap result." + _CANDIDATE_COVERAGE_RULE
+)
+REPAIR_INSTRUCTION = (
+    "Return a contract-valid replacement for the same supplied bundles." + _CANDIDATE_COVERAGE_RULE
+)
 
 
 class ClassificationInputError(ValueError):

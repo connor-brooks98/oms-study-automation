@@ -97,9 +97,7 @@ def test_v2_snapshot_resolves_all_executed_internal_prompt_content() -> None:
         "card-centric-gap-v2",
     ]
     for prompt in snapshot.prompts:
-        assert prompt.content_sha256 == hashlib.sha256(
-            prompt.content.encode("utf-8")
-        ).hexdigest()
+        assert prompt.content_sha256 == hashlib.sha256(prompt.content.encode("utf-8")).hexdigest()
         assert prompt.prompt_hash == prompt.content_sha256[:12]
 
 
@@ -107,12 +105,14 @@ def test_v3_scope_prompt_is_internal_and_has_a_dedicated_snapshot() -> None:
     service = AnkiPromptCatalogService(bundled_directory=_bundled_root())
 
     assert not any(
-        issue.path.name == "card-centric-scope-v3.md"
-        for issue in service.catalog().issues
+        issue.path.name == "card-centric-scope-v3.md" for issue in service.catalog().issues
     )
     snapshot = service.load_card_centric_v3_scope_snapshot()
     prompt = snapshot.require("card-centric-scope-v3")
     assert [item.metadata.id for item in snapshot.prompts] == ["card-centric-scope-v3"]
+    assert prompt.metadata.version == "3.1"
     assert prompt.metadata.response_format == "json"
     assert prompt.metadata.schema_name == "scope_v3"
+    assert "Each fact must be one independently testable assertion" in prompt.content
+    assert "join separately testable claims" in prompt.content
     assert prompt.content_sha256 == hashlib.sha256(prompt.content.encode("utf-8")).hexdigest()
