@@ -27,6 +27,12 @@ class StaticResolutionProvider:
         return self.resolution
 
 
+class MalformedResolutionProvider:
+    def resolve(self, question_version_id: str) -> QuestionResolution | None:
+        del question_version_id
+        return cast(QuestionResolution, {"question_version_id": QUESTION_VERSION_ID})
+
+
 def _approved_resolution() -> QuestionResolution:
     return QuestionResolution(
         question_version_id=QUESTION_VERSION_ID,
@@ -146,3 +152,12 @@ def test_resolution_rejects_blank_requested_id_before_provider_lookup() -> None:
 
     assert caught.value.reason is QuestionResolutionFailure.INVALID_QUESTION_VERSION_ID
     assert provider.requested_ids == []
+
+
+def test_resolution_fails_closed_for_malformed_provider_record() -> None:
+    provider = MalformedResolutionProvider()
+
+    with pytest.raises(QuestionResolutionError) as caught:
+        resolve_question_version(QUESTION_VERSION_ID, provider)
+
+    assert caught.value.reason is QuestionResolutionFailure.INVALID_RECORD

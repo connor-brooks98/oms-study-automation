@@ -292,10 +292,11 @@ this candidate. No approval is inferred from the focused GREEN result.
   timed behavior. Those consumer/product behaviors remain outside this lane.
 - Therefore the candidate is not activation-ready and all renewed approvals are
   `PENDING`; Sol-0 contract-owner review remains `PENDING`.
-- Any later final-review evidence commit containing only governance bookkeeping
-  is external evidence and does not change the reviewed candidate identity
-  `302fae99b304ee0249a853eba2e0349d16d9acd8` / tree
-  `441040a16d9b14602aa4dc5db7c18bf16c74bfa8`.
+- The pre-fix expanded candidate was
+  `2826d49000c79d22fab5823f8c7ff5ee7699f32c` / tree
+  `0c8b1b85fef38ec76c0918e17b7b7160cbb70450`. It is correction history, not
+  the renewed review identity. Renewed reviews evaluate the post-fix head
+  recorded in the final handoff/report after this correction commit.
 
 ## Rollback
 
