@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from oms_hub.document_processing.domain import (
     DocumentLocator,
     ParsedAsset,
@@ -8,7 +10,7 @@ from oms_hub.document_processing.domain import (
     SegmentKind,
 )
 from oms_hub.knowledge.ids import evidence_id, sha256_text
-from oms_hub.knowledge.models import EvidenceLocatorKind
+from oms_hub.knowledge.models import EvidenceLocator, EvidenceLocatorKind, EvidenceUnit
 from oms_hub.knowledge.normalization import (
     CourseRevisionInput,
     SlideInput,
@@ -135,8 +137,8 @@ def test_parsed_segments_map_in_upstream_order_without_merging_kinds() -> None:
         (EvidenceLocatorKind.SLIDE, "2"),
         (EvidenceLocatorKind.PAGE, "3"),
         (EvidenceLocatorKind.SPEAKER_NOTE, "2"),
-        (EvidenceLocatorKind.TABLE, "4"),
-        (EvidenceLocatorKind.FIGURE, "5"),
+        (EvidenceLocatorKind.TABLE, "slide 4 table"),
+        (EvidenceLocatorKind.FIGURE, "slide 5 image"),
     ]
     assert [unit.normalized_text for unit in units] == [
         "Slide text",
@@ -146,6 +148,77 @@ def test_parsed_segments_map_in_upstream_order_without_merging_kinds() -> None:
         "Figure caption",
     ]
     assert units[-1].image_asset_id == "asset-1"
+
+
+def test_equal_text_parsed_blocks_keep_detailed_locators_and_ids() -> None:
+    parsed = ParsedDocument(
+        source_id="source",
+        source_sha256="a" * 64,
+        source_format="pptx",
+        parser_name="fixture",
+        parser_version="1",
+        segments=(
+            ParsedSegment(
+                key="first",
+                kind=SegmentKind.PARAGRAPH,
+                text="Same text",
+                locator=DocumentLocator("slide 1 content 1", slide_number=1),
+            ),
+            ParsedSegment(
+                key="second",
+                kind=SegmentKind.PARAGRAPH,
+                text="Same text",
+                locator=DocumentLocator("slide 1 content 2", slide_number=1),
+            ),
+            ParsedSegment(
+                key="indexed-first",
+                kind=SegmentKind.PARAGRAPH,
+                text="Same text",
+                locator=DocumentLocator("slide 2", slide_number=2, block_index=1),
+            ),
+            ParsedSegment(
+                key="indexed-second",
+                kind=SegmentKind.PARAGRAPH,
+                text="Same text",
+                locator=DocumentLocator("slide 2", slide_number=2, block_index=2),
+            ),
+        ),
+        assets=(),
+        warnings=(),
+    )
+
+    units = normalize_course_revision(
+        CourseRevisionInput(
+            source_revision_id="sr_blocks",
+            course_id="heme",
+            parsed_document=parsed,
+        )
+    )
+
+    assert [unit.locator.value for unit in units] == [
+        "slide 1 content 1",
+        "slide 1 content 2",
+        "2:1",
+        "2:2",
+    ]
+    assert len({unit.evidence_id for unit in units}) == len(units)
+
+
+def test_markdown_rejects_non_course_evidence_before_rendering() -> None:
+    unit = EvidenceUnit(
+        evidence_id="ev_journal",
+        source_revision_id="sr_journal",
+        authority_class=AuthorityClass.PUBLISHED_JOURNAL,
+        course_id=None,
+        exam_id=None,
+        lecture_id=None,
+        locator=EvidenceLocator(EvidenceLocatorKind.ARTICLE_PAGE, "1"),
+        normalized_text="Journal text",
+        content_sha256=sha256_text("Journal text"),
+    )
+
+    with pytest.raises(ValueError, match="course_material"):
+        render_index_markdown((unit,))
 
 
 def test_transcript_segments_are_distinct_ordered_evidence() -> None:

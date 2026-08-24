@@ -144,6 +144,8 @@ def normalize_course_revision(input: CourseRevisionInput) -> tuple[EvidenceUnit,
 
 def render_index_markdown(units: Sequence[EvidenceUnit]) -> str:
     """Render full evidence text with deterministic provider markers."""
+    if any(unit.authority_class is not AuthorityClass.COURSE_MATERIAL for unit in units):
+        raise ValueError("render_index_markdown accepts course_material evidence only")
     blocks = [
         "\n".join(
             (
@@ -183,17 +185,46 @@ def _parsed_locator(segment: ParsedSegment) -> tuple[EvidenceLocatorKind, str]:
         kind = EvidenceLocatorKind.PAGE
     else:
         kind = EvidenceLocatorKind.SECTION
-    return kind, _locator_value(segment.locator)
+    return kind, _locator_value(
+        segment.locator,
+        preserve_detail=segment.kind is not SegmentKind.NOTE,
+    )
 
 
-def _locator_value(locator: DocumentLocator) -> str:
+def _locator_value(locator: DocumentLocator, *, preserve_detail: bool = False) -> str:
     if locator.slide_number is not None:
-        return str(locator.slide_number)
+        return _numbered_locator_value(
+            locator,
+            prefix="slide",
+            number=locator.slide_number,
+            preserve_detail=preserve_detail,
+        )
     if locator.page_number is not None:
-        return str(locator.page_number)
+        return _numbered_locator_value(
+            locator,
+            prefix="page",
+            number=locator.page_number,
+            preserve_detail=preserve_detail,
+        )
     if locator.block_index is not None:
         return str(locator.block_index)
     return locator.label
+
+
+def _numbered_locator_value(
+    locator: DocumentLocator,
+    *,
+    prefix: str,
+    number: int,
+    preserve_detail: bool,
+) -> str:
+    if preserve_detail and locator.label != f"{prefix} {number}":
+        if locator.block_index is not None:
+            return f"{locator.label}:{locator.block_index}"
+        return locator.label
+    if locator.block_index is not None:
+        return f"{number}:{locator.block_index}"
+    return str(number)
 
 
 def _build_unit(
