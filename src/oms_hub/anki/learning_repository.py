@@ -422,7 +422,9 @@ def _note_payload(note: AnkiNoteLearningState, *, include_snapshot_at: bool) -> 
         "note_id": note.note_id,
         "card_ids": list(sorted(note.card_ids)),
         "deck_name": note.deck_name,
-        "selected_tags": list(sorted(note.selected_tags, key=str.casefold)),
+        "selected_tags": list(
+            sorted(note.selected_tags, key=lambda tag: (tag.casefold(), tag))
+        ),
         "due": note.due,
         "overdue": note.overdue,
         "lapse_count": note.lapse_count,
@@ -480,7 +482,7 @@ def _text_sequence(values: Sequence[object], field_name: str) -> tuple[str, ...]
         raise ValueError(f"{field_name} must contain text")
     if len(result) != len(set(result)):
         raise ValueError(f"{field_name} must be unique")
-    return tuple(sorted(result, key=str.casefold))
+    return tuple(sorted(result, key=lambda tag: (tag.casefold(), tag)))
 
 
 def _optional_bool(value: object, field_name: str) -> bool | None:

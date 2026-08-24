@@ -140,6 +140,20 @@ def test_content_hash_and_order_are_deterministic() -> None:
     assert [state.note_id for state in repository.latest_note_states()] == [1, 2]
 
 
+def test_mixed_case_tag_order_is_canonical_and_idempotent() -> None:
+    repository = AnkiLearningRepository(now=lambda: BASE_TIME)
+    first_snapshot = _snapshot(_state(selected_tags=("a", "A")))
+    retry_snapshot = _snapshot(_state(selected_tags=("A", "a")))
+
+    assert snapshot_to_payload(first_snapshot) == snapshot_to_payload(retry_snapshot)
+    first = repository.record_sync(first_snapshot)
+    retry = repository.record_sync(retry_snapshot)
+
+    assert first.content_hash == retry.content_hash
+    assert retry.no_change is True
+    assert len(repository.note_state_history()) == 1
+
+
 def test_changed_content_creates_a_new_note_state_history_row() -> None:
     repository = AnkiLearningRepository(now=lambda: BASE_TIME)
     repository.record_sync(_snapshot(_state()))
