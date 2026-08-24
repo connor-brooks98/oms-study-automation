@@ -200,6 +200,11 @@ def _is_option_label(value: str) -> bool:
 def _is_generic_strategy_query(tokens: tuple[str, ...]) -> bool:
     if _QUESTION_SCOPE_WORDS.intersection(tokens):
         return False
+    if any(
+        token in _OPTION_WORDS and _is_option_label(tokens[index + 1])
+        for index, token in enumerate(tokens[:-1])
+    ):
+        return False
     if not _contains_any(tokens, _GENERIC_INSTRUCTIONAL_FRAMING):
         return False
     has_strategy_term = bool(_GENERIC_STRATEGY_WORDS.intersection(tokens))

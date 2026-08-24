@@ -93,6 +93,18 @@ def test_narrow_instructional_strategy_forms_remain_benign(query: str) -> None:
             "Which option is correct as a test-taking strategy?",
             AskIntent.REQUEST_ANSWER,
         ),
+        (
+            "How can I rule out choice B on exams?",
+            AskIntent.REQUEST_OPTION_ELIMINATION,
+        ),
+        (
+            "What strategies help eliminate option 12 on tests?",
+            AskIntent.REQUEST_OPTION_ELIMINATION,
+        ),
+        (
+            "How can I rule out choice Ｂ on exams?",
+            AskIntent.REQUEST_OPTION_ELIMINATION,
+        ),
     ],
 )
 def test_policy_sensitive_mixed_strategy_phrasing_remains_protected(
