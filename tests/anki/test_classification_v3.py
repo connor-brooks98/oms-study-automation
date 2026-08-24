@@ -912,7 +912,10 @@ def test_r8_set_coverage_selects_multiple_cards_from_one_compact_fact_request() 
             {
                 "fact_id": "fact-1",
                 "status": "covered",
-                "selected_candidate_ids": ["note:2", "note:1", "note:2"],
+                "candidate_contributions": [
+                    {"candidate_id": "note:2", "target_material_claims": ["second claim"]},
+                    {"candidate_id": "note:1", "target_material_claims": ["first claim"]},
+                ],
                 "confidence_bps": 9000,
                 "uncovered_material_claims": [],
             }
@@ -939,7 +942,7 @@ def test_r8_set_coverage_selects_multiple_cards_from_one_compact_fact_request() 
 
 
 def test_r8_set_coverage_fails_closed_when_a_candidate_escapes_its_fact() -> None:
-    first, second = _bundle(1, "fact-1"), _bundle(2, "fact-2")
+    bundle = _bundle(1, "fact-1")
     fake = FakeGenerator(
         [
             {
@@ -947,16 +950,14 @@ def test_r8_set_coverage_fails_closed_when_a_candidate_escapes_its_fact() -> Non
                     {
                         "fact_id": "fact-1",
                         "status": "covered",
-                        "selected_candidate_ids": ["note:2"],
+                        "candidate_contributions": [
+                            {
+                                "candidate_id": "note:999",
+                                "target_material_claims": ["target claim"],
+                            }
+                        ],
                         "confidence_bps": 9000,
                         "uncovered_material_claims": [],
-                    },
-                    {
-                        "fact_id": "fact-2",
-                        "status": "missing",
-                        "selected_candidate_ids": [],
-                        "confidence_bps": 9000,
-                        "uncovered_material_claims": ["the target fact"],
                     },
                 ]
             }
@@ -965,7 +966,7 @@ def test_r8_set_coverage_fails_closed_when_a_candidate_escapes_its_fact() -> Non
     cheap, _thorough = _routes()
     result = classify_set_coverage(
         StructuredTextService(fake),
-        bundles=(first, second),
+        bundles=(bundle,),
         strictness="strict",
         route=cheap,
     )
@@ -973,6 +974,35 @@ def test_r8_set_coverage_fails_closed_when_a_candidate_escapes_its_fact() -> Non
         result.blocking_error == "R8 set-coverage response escapes requested candidates"
     )
     assert {row["disposition"] for row in result.payload["final_partition"]} == {"unresolved"}
+
+
+def test_r8_set_coverage_sends_exactly_one_fact_per_call() -> None:
+    first, second = _bundle(1, "fact-1"), _bundle(2, "fact-2")
+    responses = [
+        {
+            "rows": [
+                {
+                    "fact_id": fact_id,
+                    "status": "missing",
+                    "candidate_contributions": [],
+                    "confidence_bps": 9900,
+                    "uncovered_material_claims": ["the target claim"],
+                }
+            ]
+        }
+        for fact_id in ("fact-1", "fact-2")
+    ]
+    fake = FakeGenerator(responses)
+    cheap, _thorough = _routes()
+    result = classify_set_coverage(
+        StructuredTextService(fake),
+        bundles=(first, second),
+        strictness="strict",
+        route=cheap,
+    )
+    assert len(fake.calls) == 2
+    assert all(len(call["input"]["facts"]) == 1 for call in fake.calls)
+    assert result.payload["facts_per_batch"] == 1
 
 
 def test_r8_set_coverage_downgrades_claimed_coverage_with_uncovered_claims() -> None:
@@ -984,7 +1014,12 @@ def test_r8_set_coverage_downgrades_claimed_coverage_with_uncovered_claims() -> 
                     {
                         "fact_id": "fact-1",
                         "status": "covered",
-                        "selected_candidate_ids": ["note:1"],
+                        "candidate_contributions": [
+                            {
+                                "candidate_id": "note:1",
+                                "target_material_claims": ["supported clause"],
+                            }
+                        ],
                         "confidence_bps": 9900,
                         "uncovered_material_claims": ["second clause", "first clause"],
                     }
@@ -1035,7 +1070,13 @@ def test_r8_set_coverage_normalizes_semantic_contradictions_per_fact(
                     {
                         "fact_id": "fact-1",
                         "status": status,
-                        "selected_candidate_ids": selected,
+                        "candidate_contributions": [
+                            {
+                                "candidate_id": candidate_id,
+                                "target_material_claims": ["target claim"],
+                            }
+                            for candidate_id in selected
+                        ],
                         "confidence_bps": 9900,
                         "uncovered_material_claims": uncovered,
                     }
@@ -1056,6 +1097,46 @@ def test_r8_set_coverage_normalizes_semantic_contradictions_per_fact(
     assert result.payload["final_partition"][0]["disposition"] == "unresolved"
 
 
+def test_r8_set_coverage_downgrades_duplicate_candidate_contributions() -> None:
+    first, second = _bundle(1, "fact-1"), _bundle(2, "fact-1")
+    fake = FakeGenerator(
+        [
+            {
+                "rows": [
+                    {
+                        "fact_id": "fact-1",
+                        "status": "covered",
+                        "candidate_contributions": [
+                            {
+                                "candidate_id": "note:1",
+                                "target_material_claims": ["target claim"],
+                            },
+                            {
+                                "candidate_id": "note:1",
+                                "target_material_claims": ["target claim"],
+                            },
+                        ],
+                        "confidence_bps": 9900,
+                        "uncovered_material_claims": [],
+                    }
+                ]
+            }
+        ]
+    )
+    cheap, _thorough = _routes()
+    result = classify_set_coverage(
+        StructuredTextService(fake),
+        bundles=(first, second),
+        strictness="strict",
+        route=cheap,
+    )
+    assert result.blocking_error is None
+    assert result.payload["rows"][0]["diagnostic"] == (
+        "provider duplicated candidate contributions"
+    )
+    assert {row["disposition"] for row in result.payload["final_partition"]} == {"unresolved"}
+
+
 def test_r8_set_coverage_keeps_a_well_formed_missing_result_terminal() -> None:
     bundle = _bundle(1, "fact-1")
     fake = FakeGenerator(
@@ -1065,7 +1146,7 @@ def test_r8_set_coverage_keeps_a_well_formed_missing_result_terminal() -> None:
                     {
                         "fact_id": "fact-1",
                         "status": "missing",
-                        "selected_candidate_ids": [],
+                        "candidate_contributions": [],
                         "confidence_bps": 9900,
                         "uncovered_material_claims": ["the target claim"],
                     }
@@ -1207,7 +1288,7 @@ def test_r7_pins_and_repair_authorization_reject_stale_or_noninteger_costs() -> 
     assert pin["cheap_options"]["max_tokens"] == 3072
     assert pin["thorough_options"]["max_tokens"] == 3072
     assert pin["classification_config"]["output_max_tokens"] == 3072
-    assert pin["classification_config"]["version"] == "classification-r7-v6"
+    assert pin["classification_config"]["version"] == "classification-r7-v7"
     assert pin["cheap_options_sha256"] == canonical_payload_sha256(pin["cheap_options"])
     request = "d" * 64
     authorization = {

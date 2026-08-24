@@ -44,11 +44,11 @@ THOROUGH_BATCH_MAX = 8
 CLASSIFICATION_CANDIDATES_PER_FACT = 3
 SERIAL_CONCURRENCY = 1
 MAX_REPAIRS_TOTAL = 1
-SET_COVERAGE_FACTS_PER_BATCH = 4
+SET_COVERAGE_FACTS_PER_BATCH = 1
 SET_COVERAGE_OUTPUT_MAX_TOKENS = 2_048
 ESTIMATOR_VERSION = "utf8-byte-upper-bound-v1"
 CLASSIFICATION_CONFIG = {
-    "version": "classification-r7-v6",
+    "version": "classification-r7-v7",
     "bundle_max_input_bytes": MAX_BUNDLE_BYTES,
     "bundle_max_input_tokens": MAX_BUNDLE_TOKENS,
     "output_max_tokens": CLASSIFICATION_OUTPUT_MAX_TOKENS,
@@ -91,9 +91,11 @@ SET_COVERAGE_INSTRUCTION = (
     "Decide whether each exact target fact is fully covered by the supplied candidate cards "
     "acting together. Select the smallest sufficient set. Every material claim in the fact must "
     "appear in the selected candidates' text or extra; do not infer missing content. The target "
-    "fact is comparison-only and is never support. List every absent target clause in "
-    "uncovered_material_claims. Status covered is allowed only when that list is empty. No "
-    "lecture passages, tags, or deck hints are supplied."
+    "fact is comparison-only and is never support. For every selected card, return one "
+    "candidate_contributions entry naming only target claims explicitly stated in that card's "
+    "text or extra; cards without a contribution are not selected. List every absent target "
+    "clause in uncovered_material_claims. Status covered is allowed only when that list is "
+    "empty. No lecture passages, tags, or deck hints are supplied."
 )
 
 
@@ -139,26 +141,35 @@ class ProviderClassificationBatch(BaseModel):
     rows: tuple[ProviderClassificationRow, ...]
 
 
+class ProviderCandidateContribution(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    candidate_id: str = Field(min_length=1, max_length=300)
+    target_material_claims: tuple[
+        Annotated[str, Field(min_length=1, max_length=200)], ...
+    ] = Field(min_length=1, max_length=8)
+
+    @field_validator("target_material_claims", mode="before")
+    @classmethod
+    def canonical_claims(cls, value: object) -> tuple[str, ...]:
+        if not isinstance(value, (list, tuple)):
+            raise TypeError("target material claims must be an array")
+        values = tuple(value)
+        if any(type(item) is not str or not item.strip() for item in values):
+            raise ValueError("target material claims must be nonblank strings")
+        return tuple(sorted({item.strip() for item in values}))
+
+
 class ProviderSetCoverageRow(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     fact_id: str = Field(min_length=1, max_length=300)
     status: Literal["covered", "missing", "unresolved"]
-    selected_candidate_ids: tuple[str, ...] = ()
+    candidate_contributions: tuple[ProviderCandidateContribution, ...] = ()
     confidence_bps: int = Field(ge=0, le=10_000)
     uncovered_material_claims: tuple[
         Annotated[str, Field(min_length=1, max_length=200)], ...
     ] = Field(default=(), max_length=8)
-
-    @field_validator("selected_candidate_ids", mode="before")
-    @classmethod
-    def canonical_ids(cls, value: object) -> tuple[str, ...]:
-        if not isinstance(value, (list, tuple)):
-            raise TypeError("set-coverage IDs must be an array")
-        values = tuple(value)
-        if any(type(item) is not str or not item or item.strip() != item for item in values):
-            raise ValueError("set-coverage IDs must be nonblank strings")
-        return tuple(sorted(set(values)))
 
     @field_validator("uncovered_material_claims", mode="before")
     @classmethod
@@ -314,7 +325,7 @@ def r7_pin_document(
     config = r7_config_document()
     set_options = options_document(_set_coverage_options(cheap_route))
     return {
-        "serialization_version": "classification-r7-pin-v6",
+        "serialization_version": "classification-r7-pin-v7",
         "instruction_sha256": {
             "cheap": instruction_sha256(CHEAP_INSTRUCTION),
             "thorough": instruction_sha256(THOROUGH_INSTRUCTION),
@@ -878,8 +889,17 @@ def classify_set_coverage(
         calls.append(_generated_call("set_coverage", ordinal, "primary", generated, accepted=True))
         for row in generated.value.rows:
             document_row = row.model_dump(mode="json")
+            contribution_ids = tuple(
+                item.candidate_id for item in row.candidate_contributions
+            )
+            selected_ids = tuple(sorted(set(contribution_ids)))
+            document_row["selected_candidate_ids"] = list(selected_ids)
             uncovered = row.uncovered_material_claims
-            if row.status == "covered" and not row.selected_candidate_ids:
+            if len(contribution_ids) != len(selected_ids):
+                document_row["provider_status"] = row.status
+                document_row["status"] = "unresolved"
+                document_row["diagnostic"] = "provider duplicated candidate contributions"
+            elif row.status == "covered" and not selected_ids:
                 document_row["provider_status"] = row.status
                 document_row["status"] = "unresolved"
                 document_row["diagnostic"] = "covered result omitted selected candidates"
@@ -887,7 +907,7 @@ def classify_set_coverage(
                 document_row["provider_status"] = row.status
                 document_row["status"] = "unresolved"
                 document_row["diagnostic"] = "provider reported uncovered material claims"
-            elif row.status == "missing" and row.selected_candidate_ids:
+            elif row.status == "missing" and selected_ids:
                 document_row["provider_status"] = row.status
                 document_row["status"] = "unresolved"
                 document_row["diagnostic"] = "missing result selected partial candidates"
@@ -1009,22 +1029,24 @@ def _set_coverage_output_model(
     candidate_ids = tuple(
         sorted({item.candidate.candidate_id for _fact_id, items in groups for item in items})
     )
+    contribution = create_model(
+        "ProviderCandidateContribution",
+        __base__=ProviderCandidateContribution,
+        candidate_id=(
+            Annotated[
+                str,
+                WithJsonSchema({"type": "string", "enum": list(candidate_ids)}),
+            ],
+            ...,
+        ),
+    )
     row = create_model(
         "ProviderSetCoverageRow",
         __base__=ProviderSetCoverageRow,
         fact_id=(Annotated[str, WithJsonSchema({"type": "string", "enum": list(fact_ids)})], ...),
-        selected_candidate_ids=(
-            Annotated[
-                tuple[str, ...],
-                WithJsonSchema(
-                    {
-                        "type": "array",
-                        "items": {"type": "string", "enum": list(candidate_ids)},
-                        "maxItems": len(candidate_ids),
-                    }
-                ),
-            ],
-            (),
+        candidate_contributions=(
+            tuple[contribution, ...],
+            Field(default=(), max_length=len(candidate_ids)),
         ),
     )
     return create_model(
@@ -1048,7 +1070,7 @@ def _validate_set_coverage_rows(
     by_fact = {fact_id: items for fact_id, items in groups}
     for row in rows:
         bundles = by_fact[row.fact_id]
-        if not set(row.selected_candidate_ids) <= {
+        if not {item.candidate_id for item in row.candidate_contributions} <= {
             item.candidate.candidate_id for item in bundles
         }:
             return "R8 set-coverage response escapes requested candidates"
