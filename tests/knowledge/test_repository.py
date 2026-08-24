@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier, Lock
+from threading import Barrier, Event, Lock
 from typing import Any
 
 import pytest
@@ -495,3 +495,119 @@ def test_concurrent_evidence_retry_keeps_the_whole_batch(
 
     assert results == [None, None]
     assert repository.list_evidence(revision.revision_id) == units
+
+
+def test_retirement_winning_interleaving_rejects_evidence(
+    repository: KnowledgeRepository,
+) -> None:
+    revision = repository.create_revision(_revision(state=SourceRevisionState.READY))
+    unit = _unit(evidence_id="ev-retirement-wins")
+    read_complete = Event()
+    allow_put = Event()
+    first_read = Lock()
+    read_blocked = False
+
+    def pause_after_revision_read(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        nonlocal read_blocked
+        if "JOIN knowledge_sources" not in statement:
+            return
+        with first_read:
+            if read_blocked:
+                return
+            read_blocked = True
+        read_complete.set()
+        if not allow_put.wait(timeout=5):
+            raise TimeoutError("put was not released")
+
+    event.listen(repository.database.engine, "after_cursor_execute", pause_after_revision_read)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            put_future = executor.submit(
+                repository.put_evidence_units,
+                revision.revision_id,
+                (unit,),
+            )
+            assert read_complete.wait(timeout=5)
+            repository.retire_revision(revision.revision_id)
+            allow_put.set()
+            with pytest.raises(ValueError, match="retired"):
+                put_future.result(timeout=5)
+    finally:
+        event.remove(repository.database.engine, "after_cursor_execute", pause_after_revision_read)
+
+    assert repository.list_evidence(revision.revision_id) == ()
+
+
+def test_evidence_winning_interleaving_is_stamped_by_retirement(
+    repository: KnowledgeRepository,
+) -> None:
+    revision = repository.create_revision(_revision(state=SourceRevisionState.READY))
+    unit = _unit(evidence_id="ev-evidence-wins")
+    claim_complete = Event()
+    allow_insert = Event()
+    retirement_update_started = Event()
+
+    def pause_after_claim(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        if "SET state = state" not in statement:
+            return
+        claim_complete.set()
+        if not allow_insert.wait(timeout=5):
+            raise TimeoutError("insert was not released")
+
+    def observe_retirement_update(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        if (
+            "UPDATE source_revisions SET state =" in statement
+            and "SET state = state" not in statement
+        ):
+            retirement_update_started.set()
+
+    event.listen(repository.database.engine, "after_cursor_execute", pause_after_claim)
+    event.listen(repository.database.engine, "before_cursor_execute", observe_retirement_update)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            put_future = executor.submit(
+                repository.put_evidence_units,
+                revision.revision_id,
+                (unit,),
+            )
+            assert claim_complete.wait(timeout=5)
+            retire_future = executor.submit(
+                repository.retire_revision,
+                revision.revision_id,
+            )
+            assert retirement_update_started.wait(timeout=5)
+            allow_insert.set()
+            assert put_future.result(timeout=5) is None
+            assert retire_future.result(timeout=5) is None
+    finally:
+        event.remove(repository.database.engine, "after_cursor_execute", pause_after_claim)
+        event.remove(
+            repository.database.engine,
+            "before_cursor_execute",
+            observe_retirement_update,
+        )
+
+    stored = repository.list_evidence(revision.revision_id)
+    assert len(stored) == 1
+    assert stored[0].retired_at is not None

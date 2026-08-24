@@ -303,6 +303,19 @@ class KnowledgeRepository:
                 raise KeyError(revision_id)
             source_authority = revision["authority_class"]
             revision_state = SourceRevisionState(revision["state"])
+            if revision_state is not SourceRevisionState.RETIRED:
+                claim = connection.execute(
+                    text(
+                        "UPDATE source_revisions SET state = state "
+                        "WHERE id = :revision_id AND state <> :retired_state"
+                    ),
+                    {
+                        "revision_id": revision_id,
+                        "retired_state": SourceRevisionState.RETIRED.value,
+                    },
+                )
+                if claim.rowcount != 1:
+                    raise ValueError("cannot add new evidence to a retired revision")
 
             for unit in evidence:
                 if unit.source_revision_id != revision_id:
@@ -403,18 +416,14 @@ class KnowledgeRepository:
     def retire_revision(self, revision_id: str) -> None:
         retired_at = utc_now()
         with self.database.engine.begin() as connection:
-            existing = connection.execute(
-                text("SELECT 1 FROM source_revisions WHERE id = :id"),
-                {"id": revision_id},
-            ).first()
-            if existing is None:
-                raise KeyError(revision_id)
-            connection.execute(
+            retired = connection.execute(
                 text(
                     "UPDATE source_revisions SET state = :state WHERE id = :id"
                 ),
                 {"state": SourceRevisionState.RETIRED.value, "id": revision_id},
             )
+            if retired.rowcount != 1:
+                raise KeyError(revision_id)
             connection.execute(
                 text(
                     "UPDATE evidence_units SET retired_at = COALESCE(retired_at, :retired_at) "
