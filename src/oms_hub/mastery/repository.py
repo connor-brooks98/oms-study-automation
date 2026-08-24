@@ -1,8 +1,7 @@
 import json
 from datetime import datetime
-from typing import cast
 
-from sqlalchemy import Table, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from oms_hub.db import Database
@@ -13,7 +12,6 @@ from oms_hub.mastery.models import (
     LearnerEventRecord,
     LearnerEventType,
 )
-from oms_hub.models import Base
 
 
 class MasteryRepository:
@@ -21,11 +19,6 @@ class MasteryRepository:
 
     def __init__(self, database: Database):
         self.database = database
-        Base.metadata.create_all(
-            database.engine,
-            tables=[cast(Table, LearnerEventRecord.__table__)],
-            checkfirst=True,
-        )
 
     def append_event(self, event: LearnerEvent) -> LearnerEvent:
         if not isinstance(event, LearnerEvent):

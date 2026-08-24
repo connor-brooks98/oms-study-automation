@@ -61,6 +61,44 @@ def test_learner_event_is_immutable_and_normalizes_collection_fields() -> None:
     assert event.occurred_at.isoformat() == "2026-08-23T12:30:00+00:00"
     with pytest.raises(FrozenInstanceError):
         event.correct = False  # type: ignore[misc]
+    assert not hasattr(event, "selected_option_id")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("question_version_id", None, "question_version_id"),
+        ("objective_ids", (), "objective_ids"),
+        ("source_snapshot_hash", None, "source_snapshot_hash"),
+    ],
+)
+def test_question_answered_requires_verified_provenance(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    values: dict[str, object] = {
+        "client_event_id": "client-question",
+        "event_type": LearnerEventType.QUESTION_ANSWERED,
+        "objective_ids": ("objective-1",),
+        "question_version_id": "question-version-1",
+        "source_snapshot_hash": "snapshot-hash",
+    }
+    values[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        LearnerEvent(**values)  # type: ignore[arg-type]
+
+
+def test_assistance_event_does_not_require_question_provenance() -> None:
+    event = LearnerEvent(
+        client_event_id="client-hint",
+        event_type=LearnerEventType.HINT_REQUESTED,
+    )
+
+    assert event.question_version_id is None
+    assert event.objective_ids == ()
+    assert event.source_snapshot_hash is None
 
 
 @pytest.mark.parametrize(
@@ -79,6 +117,9 @@ def test_event_rejects_invalid_boundary_values(
     values: dict[str, object] = {
         "client_event_id": "client-1",
         "event_type": LearnerEventType.QUESTION_ANSWERED,
+        "objective_ids": ("objective-1",),
+        "question_version_id": "question-version-1",
+        "source_snapshot_hash": "snapshot-hash",
         "difficulty": 3,
         "response_duration_ms": 100,
     }

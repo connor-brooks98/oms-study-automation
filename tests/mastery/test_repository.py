@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from sqlalchemy import inspect
 
 from oms_hub.db import Database
 from oms_hub.mastery.models import (
@@ -17,10 +18,21 @@ from oms_hub.mastery.repository import MasteryRepository
 @pytest.fixture
 def database(tmp_path: Path) -> Iterator[Database]:
     value = Database(f"sqlite:///{tmp_path / 'mastery.db'}")
+    value.create_schema()
     try:
         yield value
     finally:
         value.close()
+
+
+def test_repository_constructor_does_not_create_schema(tmp_path: Path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'uninitialized.db'}")
+    try:
+        assert not inspect(database.engine).has_table("learner_events")
+        MasteryRepository(database)
+        assert not inspect(database.engine).has_table("learner_events")
+    finally:
+        database.close()
 
 
 def _event(

@@ -131,6 +131,14 @@ class LearnerEvent:
                     _required_identifier(value, field_name),
                 )
 
+        if self.event_type is LearnerEventType.QUESTION_ANSWERED:
+            if self.question_version_id is None:
+                raise ValueError("question_answered requires question_version_id")
+            if not self.objective_ids:
+                raise ValueError("question_answered requires objective_ids")
+            if self.source_snapshot_hash is None:
+                raise ValueError("question_answered requires source_snapshot_hash")
+
         if self.correct is not None and not isinstance(self.correct, bool):
             raise ValueError("correct must be a boolean or None")
         if self.difficulty is not None and (
@@ -146,12 +154,6 @@ class LearnerEvent:
         ):
             raise ValueError("response_duration_ms must be a non-negative integer")
         object.__setattr__(self, "occurred_at", _occurred_at(self.occurred_at))
-
-    @property
-    def selected_option_id(self) -> str | None:
-        """Compatibility spelling for adapters that expose option IDs."""
-
-        return self.selected_option
 
 
 class LearnerEventRecord(Base):
