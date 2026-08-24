@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier, Lock
+from typing import Any
 
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
 
 from oms_hub.db import Database
 from oms_hub.knowledge.ids import sha256_text
+from oms_hub.knowledge.ids import source_revision_id as make_source_revision_id
 from oms_hub.knowledge.models import (
     EvidenceLocator,
     EvidenceLocatorKind,
@@ -41,7 +45,7 @@ def repository(database: Database) -> KnowledgeRepository:
 def _unit(
     *,
     evidence_id: str = "ev-1",
-    source_revision_id: str = "sr-source-1",
+    source_revision_id: str = make_source_revision_id("source-1", "a" * 64),
     authority_class: AuthorityClass = AuthorityClass.COURSE_MATERIAL,
     course_id: str | None = "heme",
     normalized_text: str = "Factor VIII deficiency.",
@@ -64,13 +68,14 @@ def _unit(
 def _revision(
     *,
     source_document_id: str = "source-1",
-    source_revision_id: str = "sr-source-1",
+    source_revision_id: str | None = None,
     file_sha256: str = "a" * 64,
     state: SourceRevisionState = SourceRevisionState.STAGED,
 ) -> SourceRevision:
     return SourceRevision(
         source_document_id=source_document_id,
-        source_revision_id=source_revision_id,
+        source_revision_id=source_revision_id
+        or make_source_revision_id(source_document_id, file_sha256),
         file_sha256=file_sha256,
         state=state,
     )
@@ -150,6 +155,35 @@ def test_create_revision_accepts_domain_object(repository: KnowledgeRepository) 
     assert repository.create_revision(revision) == revision
 
 
+def test_create_revision_derives_and_validates_deterministic_identity(
+    repository: KnowledgeRepository,
+) -> None:
+    file_sha256 = "c" * 64
+    expected_id = make_source_revision_id("source-1", file_sha256)
+
+    derived = repository.create_revision(
+        source_document_id="source-1",
+        file_sha256=file_sha256,
+        state=SourceRevisionState.STAGED,
+    )
+
+    assert derived.source_revision_id == expected_id
+    with pytest.raises(ValueError, match="deterministic"):
+        repository.create_revision(
+            source_document_id="source-1",
+            source_revision_id="sr-wrong",
+            file_sha256="d" * 64,
+            state=SourceRevisionState.STAGED,
+        )
+    with pytest.raises(ValueError, match="deterministic"):
+        repository.create_revision(
+            _revision(
+                source_revision_id="sr-wrong",
+                file_sha256="e" * 64,
+            )
+        )
+
+
 def test_create_revision_requires_existing_source(repository: KnowledgeRepository) -> None:
     with pytest.raises(KeyError, match="missing-source"):
         repository.create_revision(
@@ -219,11 +253,10 @@ def test_put_evidence_rejects_unit_for_different_revision(
     first = repository.create_revision(_revision())
     repository.create_revision(
         _revision(
-            source_revision_id="sr-source-1-v2",
             file_sha256="b" * 64,
         )
     )
-    unit = _unit(source_revision_id="sr-source-1-v2")
+    unit = _unit(source_revision_id=make_source_revision_id("source-1", "b" * 64))
 
     with pytest.raises(ValueError, match="source_revision_id"):
         repository.put_evidence_units(first.revision_id, (unit,))
@@ -255,6 +288,8 @@ def test_retire_revision_is_idempotent_and_marks_evidence_retired(
 
     repository.retire_revision(revision.revision_id)
     retired = repository.get_revision(revision.revision_id)
+    retired_unit = repository.list_evidence(revision.revision_id)[0]
+    repository.put_evidence_units(revision.revision_id, (retired_unit,))
     repository.retire_revision(revision.revision_id)
 
     assert retired is not None
@@ -263,6 +298,19 @@ def test_retire_revision_is_idempotent_and_marks_evidence_retired(
     assert len(retired_evidence) == 1
     assert retired_evidence[0].retired_at is not None
     assert repository.get_revision(revision.revision_id) == retired
+
+
+def test_retired_revision_rejects_new_evidence(repository: KnowledgeRepository) -> None:
+    revision = repository.create_revision(_revision(state=SourceRevisionState.READY))
+    repository.retire_revision(revision.revision_id)
+
+    with pytest.raises(ValueError, match="retired"):
+        repository.put_evidence_units(
+            revision.revision_id,
+            (_unit(evidence_id="ev-new"),),
+        )
+
+    assert repository.list_evidence(revision.revision_id) == ()
 
 
 def test_retire_missing_revision_raises_without_writes(
@@ -321,3 +369,129 @@ def test_dependency_foreign_key_failure_does_not_leave_partial_revision(
 
     with repository.database.engine.connect() as connection:
         assert connection.execute(text("SELECT COUNT(*) FROM source_revisions")).scalar_one() == 0
+
+
+def test_concurrent_source_creation_returns_one_matching_source(
+    repository: KnowledgeRepository,
+) -> None:
+    barrier = Barrier(2)
+    pause_lock = Lock()
+    pause_count = 0
+
+    def pause_source_lookup(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        nonlocal pause_count
+        if "FROM knowledge_sources" in statement and "WHERE id" in statement:
+            with pause_lock:
+                if pause_count >= 2:
+                    return
+                pause_count += 1
+            barrier.wait(timeout=5)
+
+    event.listen(repository.database.engine, "before_cursor_execute", pause_source_lookup)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(
+                executor.map(
+                    lambda _: repository.create_source(
+                        source_document_id="source-race",
+                        authority_class=AuthorityClass.COURSE_MATERIAL,
+                    ),
+                    range(2),
+                )
+            )
+    finally:
+        event.remove(repository.database.engine, "before_cursor_execute", pause_source_lookup)
+
+    assert results == [results[0], results[0]]
+
+
+def test_concurrent_revision_creation_returns_one_matching_revision(
+    repository: KnowledgeRepository,
+) -> None:
+    file_sha256 = "f" * 64
+    barrier = Barrier(2)
+    pause_lock = Lock()
+    pause_count = 0
+
+    def pause_revision_lookup(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        nonlocal pause_count
+        if "FROM source_revisions" in statement and "source_document_id" in statement:
+            with pause_lock:
+                if pause_count >= 2:
+                    return
+                pause_count += 1
+            barrier.wait(timeout=5)
+
+    event.listen(repository.database.engine, "before_cursor_execute", pause_revision_lookup)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(
+                executor.map(
+                    lambda _: repository.create_revision(
+                        source_document_id="source-1",
+                        file_sha256=file_sha256,
+                        state=SourceRevisionState.STAGED,
+                    ),
+                    range(2),
+                )
+            )
+    finally:
+        event.remove(repository.database.engine, "before_cursor_execute", pause_revision_lookup)
+
+    assert results == [results[0], results[0]]
+    assert results[0].source_revision_id == make_source_revision_id("source-1", file_sha256)
+
+
+def test_concurrent_evidence_retry_keeps_the_whole_batch(
+    repository: KnowledgeRepository,
+) -> None:
+    revision = repository.create_revision(_revision())
+    units = (_unit(evidence_id="ev-race-a"), _unit(evidence_id="ev-race-b"))
+    barrier = Barrier(2)
+    pause_lock = Lock()
+    pause_count = 0
+
+    def pause_evidence_lookup(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        nonlocal pause_count
+        if "JOIN knowledge_sources" in statement:
+            with pause_lock:
+                if pause_count >= 2:
+                    return
+                pause_count += 1
+            barrier.wait(timeout=5)
+
+    event.listen(repository.database.engine, "before_cursor_execute", pause_evidence_lookup)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(
+                executor.map(
+                    lambda _: repository.put_evidence_units(revision.revision_id, units),
+                    range(2),
+                )
+            )
+    finally:
+        event.remove(repository.database.engine, "before_cursor_execute", pause_evidence_lookup)
+
+    assert results == [None, None]
+    assert repository.list_evidence(revision.revision_id) == units

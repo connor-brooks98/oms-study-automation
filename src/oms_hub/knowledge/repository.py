@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.engine import Connection
+from sqlalchemy.exc import IntegrityError
 
 from oms_hub.db import Database
 from oms_hub.knowledge.ids import sha256_text
@@ -123,31 +126,37 @@ class KnowledgeRepository:
                 AuthorityClass(authority_class),
             )
 
-        with self.database.engine.begin() as connection:
-            existing = connection.execute(
-                text(
-                    "SELECT id, authority_class FROM knowledge_sources "
-                    "WHERE id = :id"
-                ),
-                {"id": candidate.source_document_id},
-            ).mappings().first()
-            if existing is not None:
-                stored = _source_from_row(existing)
-                if stored.authority_class is not candidate.authority_class:
-                    raise ValueError(
-                        "authority_class does not match the existing knowledge source"
-                    )
-                return stored
-            connection.execute(
-                text(
-                    "INSERT INTO knowledge_sources (id, authority_class) "
-                    "VALUES (:id, :authority_class)"
-                ),
-                {
-                    "id": candidate.source_document_id,
-                    "authority_class": candidate.authority_class.value,
-                },
-            )
+        try:
+            with self.database.engine.begin() as connection:
+                existing = _select_source(connection, candidate.source_document_id)
+                if existing is not None:
+                    if existing.authority_class is not candidate.authority_class:
+                        raise ValueError(
+                            "authority_class does not match the existing knowledge source"
+                        )
+                    return existing
+                connection.execute(
+                    text(
+                        "INSERT INTO knowledge_sources (id, authority_class) "
+                        "VALUES (:id, :authority_class)"
+                    ),
+                    {
+                        "id": candidate.source_document_id,
+                        "authority_class": candidate.authority_class.value,
+                    },
+                )
+        except IntegrityError as error:
+            if not _is_unique_violation(error):
+                raise
+            with self.database.engine.connect() as connection:
+                existing = _select_source(connection, candidate.source_document_id)
+            if existing is None:
+                raise
+            if existing.authority_class is not candidate.authority_class:
+                raise ValueError(
+                    "authority_class does not match the existing knowledge source"
+                ) from error
+            return existing
         return candidate
 
     def create_revision(
@@ -187,57 +196,74 @@ class KnowledgeRepository:
                 state=SourceRevisionState(state or SourceRevisionState.STAGED),
             )
 
-        with self.database.engine.begin() as connection:
-            source_exists = connection.execute(
-                text("SELECT 1 FROM knowledge_sources WHERE id = :id"),
-                {"id": candidate.source_document_id},
-            ).first()
-            if source_exists is None:
-                raise KeyError(candidate.source_document_id)
+        expected_id = make_revision_id(
+            candidate.source_document_id,
+            candidate.file_sha256,
+        )
+        if candidate.source_revision_id != expected_id:
+            raise ValueError(
+                "source_revision_id must match its deterministic source/content identity"
+            )
 
-            existing = connection.execute(
-                text(
-                    "SELECT id, source_document_id, file_sha256, state "
-                    "FROM source_revisions "
-                    "WHERE source_document_id = :source_document_id "
-                    "AND file_sha256 = :file_sha256"
-                ),
-                {
-                    "source_document_id": candidate.source_document_id,
-                    "file_sha256": candidate.file_sha256,
-                },
-            ).mappings().first()
-            if existing is not None:
-                return _revision_from_row(existing)
+        try:
+            with self.database.engine.begin() as connection:
+                source_exists = connection.execute(
+                    text("SELECT 1 FROM knowledge_sources WHERE id = :id"),
+                    {"id": candidate.source_document_id},
+                ).first()
+                if source_exists is None:
+                    raise KeyError(candidate.source_document_id)
 
-            existing_id = connection.execute(
-                text(
-                    "SELECT id, source_document_id, file_sha256, state "
-                    "FROM source_revisions WHERE id = :id"
-                ),
-                {"id": candidate.source_revision_id},
-            ).mappings().first()
-            if existing_id is not None:
-                stored = _revision_from_row(existing_id)
-                if stored != candidate:
+                existing = _select_revision_by_hash(
+                    connection,
+                    candidate.source_document_id,
+                    candidate.file_sha256,
+                )
+                if existing is not None:
+                    return existing
+
+                existing_id = _select_revision_by_id(
+                    connection,
+                    candidate.source_revision_id,
+                )
+                if existing_id is not None:
                     raise ValueError(
                         "source_revision_id already refers to a different revision"
                     )
-                return stored
 
-            connection.execute(
-                text(
-                    "INSERT INTO source_revisions "
-                    "(id, source_document_id, file_sha256, state) "
-                    "VALUES (:id, :source_document_id, :file_sha256, :state)"
-                ),
-                {
-                    "id": candidate.source_revision_id,
-                    "source_document_id": candidate.source_document_id,
-                    "file_sha256": candidate.file_sha256,
-                    "state": candidate.state.value,
-                },
-            )
+                connection.execute(
+                    text(
+                        "INSERT INTO source_revisions "
+                        "(id, source_document_id, file_sha256, state) "
+                        "VALUES (:id, :source_document_id, :file_sha256, :state)"
+                    ),
+                    {
+                        "id": candidate.source_revision_id,
+                        "source_document_id": candidate.source_document_id,
+                        "file_sha256": candidate.file_sha256,
+                        "state": candidate.state.value,
+                    },
+                )
+        except IntegrityError as error:
+            if not _is_unique_violation(error):
+                raise
+            with self.database.engine.connect() as connection:
+                existing = _select_revision_by_hash(
+                    connection,
+                    candidate.source_document_id,
+                    candidate.file_sha256,
+                )
+                existing_id = _select_revision_by_id(
+                    connection,
+                    candidate.source_revision_id,
+                )
+            if existing is not None:
+                return existing
+            if existing_id is not None:
+                raise ValueError(
+                    "source_revision_id already refers to a different revision"
+                ) from error
+            raise
         return candidate
 
     def put_evidence_units(
@@ -247,11 +273,24 @@ class KnowledgeRepository:
     ) -> None:
         """Insert immutable evidence after checking its source and content trust."""
         evidence = tuple(units)
+        for attempt in range(2):
+            try:
+                self._put_evidence_units_once(revision_id, evidence)
+                return
+            except IntegrityError as error:
+                if attempt or not _is_unique_violation(error):
+                    raise
+
+    def _put_evidence_units_once(
+        self,
+        revision_id: str,
+        evidence: tuple[EvidenceUnit, ...],
+    ) -> None:
         with self.database.engine.begin() as connection:
-            source_authority = connection.execute(
+            revision = connection.execute(
                 text(
                     """
-                    SELECT knowledge_sources.authority_class
+                    SELECT knowledge_sources.authority_class, source_revisions.state
                     FROM source_revisions
                     JOIN knowledge_sources
                       ON knowledge_sources.id = source_revisions.source_document_id
@@ -259,9 +298,11 @@ class KnowledgeRepository:
                     """
                 ),
                 {"revision_id": revision_id},
-            ).scalar_one_or_none()
-            if source_authority is None:
+            ).mappings().first()
+            if revision is None:
                 raise KeyError(revision_id)
+            source_authority = revision["authority_class"]
+            revision_state = SourceRevisionState(revision["state"])
 
             for unit in evidence:
                 if unit.source_revision_id != revision_id:
@@ -284,6 +325,7 @@ class KnowledgeRepository:
                     raise ValueError("duplicate evidence_id has different content")
                 pending[unit.evidence_id] = unit
 
+            existing_units: dict[str, EvidenceUnit] = {}
             for unit in pending.values():
                 existing = connection.execute(
                     text(
@@ -295,15 +337,20 @@ class KnowledgeRepository:
                     ),
                     {"id": unit.evidence_id},
                 ).mappings().first()
-                if existing is not None and _evidence_from_row(existing) != unit:
-                    raise ValueError("evidence_id already refers to different content")
+                if existing is not None:
+                    stored = _evidence_from_row(existing)
+                    if stored != unit:
+                        raise ValueError("evidence_id already refers to different content")
+                    existing_units[unit.evidence_id] = stored
+
+            if (
+                revision_state is SourceRevisionState.RETIRED
+                and len(existing_units) != len(pending)
+            ):
+                raise ValueError("cannot add new evidence to a retired revision")
 
             for unit in pending.values():
-                existing_row = connection.execute(
-                    text("SELECT 1 FROM evidence_units WHERE id = :id"),
-                    {"id": unit.evidence_id},
-                ).first()
-                if existing_row is not None:
+                if unit.evidence_id in existing_units:
                     continue
                 connection.execute(
                     text(
@@ -380,6 +427,68 @@ class KnowledgeRepository:
         """Return no dependencies until Task 5.2 owns artifact provenance."""
         del revision_id
         return ()
+
+
+def _select_source(
+    connection: Connection,
+    source_document_id: str,
+) -> KnowledgeSource | None:
+    row = connection.execute(
+        text(
+            "SELECT id, authority_class FROM knowledge_sources "
+            "WHERE id = :id"
+        ),
+        {"id": source_document_id},
+    ).mappings().first()
+    return None if row is None else _source_from_row(row)
+
+
+def _select_revision_by_hash(
+    connection: Connection,
+    source_document_id: str,
+    file_sha256: str,
+) -> SourceRevision | None:
+    row = connection.execute(
+        text(
+            "SELECT id, source_document_id, file_sha256, state "
+            "FROM source_revisions "
+            "WHERE source_document_id = :source_document_id "
+            "AND file_sha256 = :file_sha256"
+        ),
+        {
+            "source_document_id": source_document_id,
+            "file_sha256": file_sha256,
+        },
+    ).mappings().first()
+    return None if row is None else _revision_from_row(row)
+
+
+def _select_revision_by_id(
+    connection: Connection,
+    revision_id: str,
+) -> SourceRevision | None:
+    row = connection.execute(
+        text(
+            "SELECT id, source_document_id, file_sha256, state "
+            "FROM source_revisions WHERE id = :id"
+        ),
+        {"id": revision_id},
+    ).mappings().first()
+    return None if row is None else _revision_from_row(row)
+
+
+def _is_unique_violation(error: IntegrityError) -> bool:
+    original = error.orig
+    if getattr(original, "pgcode", None) == "23505":
+        return True
+    sqlite_code = getattr(original, "sqlite_errorcode", None)
+    if sqlite_code in {
+        sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY,
+        sqlite3.SQLITE_CONSTRAINT_UNIQUE,
+    }:
+        return True
+    message = str(original).lower()
+    return "unique constraint" in message or "duplicate key" in message
 
 
 def _source_from_row(row: Any) -> KnowledgeSource:
