@@ -25,7 +25,7 @@ class AskPageContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    kind: Literal["main_hub", "exam", "lecture", "quiz", "quiz_question"]
+    kind: Literal["main_hub", "exam", "lecture", "quiz"]
     objective_ids: tuple[str, ...] = Field(default=())
 
     @field_validator("objective_ids", mode="before")
@@ -34,10 +34,13 @@ class AskPageContext(BaseModel):
         return tuple(values) if isinstance(values, list) else values
 
 
-class QuizPageContext(AskPageContext):
+class QuizPageContext(BaseModel):
     """Quiz context whose answer-bearing fields are post-submit only."""
 
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
     kind: Literal["quiz_question"] = "quiz_question"
+    objective_ids: tuple[str, ...] = Field(default=())
     quiz_id: str = Field(min_length=1)
     question_id: str = Field(min_length=1)
     submitted: bool
@@ -46,6 +49,11 @@ class QuizPageContext(AskPageContext):
     correct_answer_text: str | None = None
     rationale: str | None = None
     is_correct: bool | None = None
+
+    @field_validator("objective_ids", mode="before")
+    @classmethod
+    def lists_become_immutable_tuples(cls, values: object) -> object:
+        return tuple(values) if isinstance(values, list) else values
 
     @model_validator(mode="before")
     @classmethod
@@ -67,6 +75,17 @@ class QuizPageContext(AskPageContext):
         return values
 
 
+def _validate_quiz_mode(
+    mode: AskMode, page_context: AskPageContext | QuizPageContext | None
+) -> None:
+    if mode is AskMode.QUIZ_PRE_SUBMIT:
+        if not isinstance(page_context, QuizPageContext) or page_context.submitted:
+            raise ValueError("quiz_pre_submit requires a pre-submit QuizPageContext")
+    elif mode is AskMode.QUIZ_POST_SUBMIT:
+        if not isinstance(page_context, QuizPageContext) or not page_context.submitted:
+            raise ValueError("quiz_post_submit requires a post-submit QuizPageContext")
+
+
 class AskRequest(BaseModel):
     """A scoped Ask query."""
 
@@ -78,6 +97,11 @@ class AskRequest(BaseModel):
     page_context: AskPageContext | QuizPageContext | None = None
     thread_id: str | None = Field(default=None, min_length=1)
 
+    @model_validator(mode="after")
+    def quiz_mode_matches_context(self) -> AskRequest:
+        _validate_quiz_mode(self.mode, self.page_context)
+        return self
+
 
 class AskThread(BaseModel):
     """The scope and mode that define an isolated Ask conversation."""
@@ -88,6 +112,11 @@ class AskThread(BaseModel):
     mode: AskMode
     scope: RetrievalScope
     page_context: AskPageContext | QuizPageContext | None = None
+
+    @model_validator(mode="after")
+    def quiz_mode_matches_context(self) -> AskThread:
+        _validate_quiz_mode(self.mode, self.page_context)
+        return self
 
 
 class AskMessage(BaseModel):

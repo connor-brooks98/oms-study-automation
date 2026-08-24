@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from oms_hub.ask.models import (
     AskMessage,
     AskMode,
+    AskPageContext,
     AskRequest,
     AskThread,
     CitationView,
@@ -71,6 +72,58 @@ def test_post_submit_context_can_include_grading_fields() -> None:
     assert context.kind == "quiz_question"
     assert context.correct_option_id == "D"
     assert context.is_correct is False
+
+
+def test_quiz_question_context_cannot_be_partial_base_context() -> None:
+    with pytest.raises(ValidationError):
+        AskPageContext.model_validate({"kind": "quiz_question"})
+
+
+def test_request_rejects_partial_quiz_context() -> None:
+    with pytest.raises(ValidationError):
+        AskRequest.model_validate(
+            {
+                "query": "Can you explain this?",
+                "mode": AskMode.QUIZ_PRE_SUBMIT,
+                "scope": _scope(),
+                "page_context": {"kind": "quiz_question", "quiz_id": "qz-1"},
+            }
+        )
+
+
+def test_pre_submit_mode_rejects_submitted_quiz_context() -> None:
+    context = QuizPageContext(
+        quiz_id="qz-1",
+        question_id="q-1",
+        submitted=True,
+        selected_option_id="B",
+        correct_option_id="D",
+        rationale="The platelet count falls after heparin exposure.",
+        is_correct=False,
+    )
+    with pytest.raises(ValueError, match="pre-submit"):
+        AskRequest(
+            query="Can you explain this?",
+            mode=AskMode.QUIZ_PRE_SUBMIT,
+            scope=_scope(),
+            page_context=context,
+        )
+
+
+def test_post_submit_mode_rejects_pre_submit_quiz_context() -> None:
+    context = QuizPageContext(
+        quiz_id="qz-1",
+        question_id="q-1",
+        submitted=False,
+        selected_option_id="B",
+    )
+    with pytest.raises(ValueError, match="post-submit"):
+        AskThread(
+            thread_id="thread-1",
+            mode=AskMode.QUIZ_POST_SUBMIT,
+            scope=_scope(),
+            page_context=context,
+        )
 
 
 def test_course_only_is_explicit_and_preserved() -> None:
@@ -142,5 +195,12 @@ def test_thread_and_message_are_strict_and_frozen() -> None:
     ],
 )
 def test_required_ask_modes(mode: AskMode) -> None:
-    request = AskRequest(query="Explain this.", mode=mode, scope=_scope())
+    page_context = None
+    if mode is AskMode.QUIZ_PRE_SUBMIT:
+        page_context = QuizPageContext(quiz_id="qz-1", question_id="q-1", submitted=False)
+    elif mode is AskMode.QUIZ_POST_SUBMIT:
+        page_context = QuizPageContext(quiz_id="qz-1", question_id="q-1", submitted=True)
+    request = AskRequest(
+        query="Explain this.", mode=mode, scope=_scope(), page_context=page_context
+    )
     assert request.mode is mode
