@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
-from pathlib import Path
+
+from oms_hub.files.atomic import sha256_file
+
+__all__ = ["evidence_id", "sha256_file", "sha256_text", "source_revision_id"]
 
 
 def _digest(value: str) -> str:
@@ -13,14 +16,6 @@ def _digest(value: str) -> str:
 def sha256_text(text: str) -> str:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def source_revision_id(source_document_id: str, file_sha256: str) -> str:
