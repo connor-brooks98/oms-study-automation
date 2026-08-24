@@ -74,7 +74,9 @@ The candidate is exactly:
   `BoardQuestionDraft`, `QuestionValidationResult`, and `QuestionVersion`.
 - Authority boundary source: `src/oms_hub/questions/resolution.py`, exposing
   one frozen `QuestionResolution`, `QuestionResolutionProvider` protocol, and
-  fail-closed `resolve_question_version` adapter.
+  fail-closed `resolve_question_version` adapter. Approved objective IDs are
+  accepted only as an actual tuple of nonblank strings; malformed containers
+  fail closed as `INVALID_RECORD` without normalization.
 - Candidate test: `tests/questions/test_models.py::test_question_schema_candidate_v2_is_deterministic_and_v1_snapshot_is_frozen`.
 
 No candidate bytes are treated as an active wire contract until this proposal
@@ -100,8 +102,10 @@ artifact changes.
 - Producer: Sol-5 question models now require an immutable canonical
   `question_version_id` and literal `schema_version=question-v2`.
 - Authority boundary: the abstract `QuestionResolutionProvider` and adapter
-  validate exact ID, approved objectives, source hash, approved/nonstale/
-  verifiable state; no runtime provider or repository is introduced.
+  validate exact ID, tuple-shaped approved objectives, source hash,
+  approved/nonstale/verifiable state; malformed objective containers fail
+  closed as `INVALID_RECORD`, and no runtime provider or repository is
+  introduced.
 - Consumers: no runtime consumer, route, feature flag, provider, persistence,
   or integration path consumes question-v2.
 - Schema exporter: unchanged and continues to emit the reserved question-v1
@@ -198,7 +202,7 @@ Correction evidence required and recorded in the handoff/report:
 PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD \
   python -m pytest tests/questions/test_models.py tests/questions/test_resolution.py \
   --override-ini addopts= -q
-51 passed
+56 passed
 
 PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD \
   python -m pytest tests/contracts/test_schema_exports.py --override-ini addopts= -q
