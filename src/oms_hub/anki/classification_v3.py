@@ -49,7 +49,7 @@ SET_COVERAGE_FACTS_PER_BATCH = 4
 SET_COVERAGE_OUTPUT_MAX_TOKENS = 2_048
 ESTIMATOR_VERSION = "utf8-byte-upper-bound-v1"
 CLASSIFICATION_CONFIG = {
-    "version": "classification-r7-v4",
+    "version": "classification-r7-v5",
     "bundle_max_input_bytes": MAX_BUNDLE_BYTES,
     "bundle_max_input_tokens": MAX_BUNDLE_TOKENS,
     "output_max_tokens": CLASSIFICATION_OUTPUT_MAX_TOKENS,
@@ -91,9 +91,10 @@ REPAIR_INSTRUCTION = (
 SET_COVERAGE_INSTRUCTION = (
     "Decide whether each exact target fact is fully covered by the supplied candidate cards "
     "acting together. Select the smallest sufficient set. Every material claim in the fact must "
-    "appear in the selected candidates' text or extra; do not infer missing content. No lecture "
-    "passages, tags, or deck hints are supplied. Return missing only when no supplied set covers "
-    "the fact, and unresolved when candidate content is ambiguous."
+    "appear in the selected candidates' text or extra; do not infer missing content. The target "
+    "fact is comparison-only and is never support. List every absent target clause in "
+    "uncovered_material_claims. Status covered is allowed only when that list is empty. No "
+    "lecture passages, tags, or deck hints are supplied."
 )
 
 
@@ -146,7 +147,9 @@ class ProviderSetCoverageRow(BaseModel):
     status: Literal["covered", "missing", "unresolved"]
     selected_candidate_ids: tuple[str, ...] = ()
     confidence_bps: int = Field(ge=0, le=10_000)
-    reason: str = Field(min_length=1, max_length=1_000)
+    uncovered_material_claims: tuple[
+        Annotated[str, Field(min_length=1, max_length=200)], ...
+    ] = Field(default=(), max_length=8)
 
     @field_validator("selected_candidate_ids", mode="before")
     @classmethod
@@ -158,13 +161,15 @@ class ProviderSetCoverageRow(BaseModel):
             raise ValueError("set-coverage IDs must be nonblank strings")
         return tuple(sorted(set(values)))
 
-    @field_validator("reason")
+    @field_validator("uncovered_material_claims", mode="before")
     @classmethod
-    def one_line_reason(cls, value: str) -> str:
-        value = value.strip()
-        if not value or "\n" in value or "\r" in value:
-            raise ValueError("reason must be one line")
-        return value
+    def canonical_claims(cls, value: object) -> tuple[str, ...]:
+        if not isinstance(value, (list, tuple)):
+            raise TypeError("uncovered material claims must be an array")
+        values = tuple(value)
+        if any(type(item) is not str or not item.strip() for item in values):
+            raise ValueError("uncovered material claims must be nonblank strings")
+        return tuple(sorted({item.strip() for item in values}))
 
     @model_validator(mode="after")
     def disposition_closure(self) -> ProviderSetCoverageRow:
@@ -319,7 +324,7 @@ def r7_pin_document(
     config = r7_config_document()
     set_options = options_document(_set_coverage_options(cheap_route))
     return {
-        "serialization_version": "classification-r7-pin-v4",
+        "serialization_version": "classification-r7-pin-v5",
         "instruction_sha256": {
             "cheap": instruction_sha256(CHEAP_INSTRUCTION),
             "thorough": instruction_sha256(THOROUGH_INSTRUCTION),
@@ -883,12 +888,21 @@ def classify_set_coverage(
         calls.append(_generated_call("set_coverage", ordinal, "primary", generated, accepted=True))
         for row in generated.value.rows:
             document_row = row.model_dump(mode="json")
+            uncovered = row.uncovered_material_claims
+            if row.status == "covered" and uncovered:
+                document_row["provider_status"] = row.status
+                document_row["status"] = "unresolved"
+                document_row["diagnostic"] = "provider reported uncovered material claims"
+            elif row.status == "missing" and not uncovered:
+                document_row["provider_status"] = row.status
+                document_row["status"] = "unresolved"
+                document_row["diagnostic"] = "missing result omitted uncovered material claims"
             threshold_key = "keep" if row.status == "covered" else "exclude"
             threshold = cast(
                 Mapping[str, int],
                 CLASSIFICATION_CONFIG["thresholds_bps"][strictness],  # type: ignore[index]
             ).get(threshold_key, 10_001)
-            if row.status != "unresolved" and row.confidence_bps < threshold:
+            if document_row["status"] != "unresolved" and row.confidence_bps < threshold:
                 document_row["provider_status"] = row.status
                 document_row["status"] = "unresolved"
                 document_row["diagnostic"] = "set-coverage confidence is below policy threshold"
@@ -1051,6 +1065,11 @@ def _set_coverage_partition(
         row = rows.get(bundle.fact_id)
         selected = set(cast(Sequence[str], row.get("selected_candidate_ids", ()))) if row else set()
         status = row.get("status") if row else "unresolved"
+        uncovered = (
+            tuple(cast(Sequence[str], row.get("uncovered_material_claims", ())))
+            if row
+            else ()
+        )
         disposition = (
             "keep"
             if status == "covered" and bundle.candidate.candidate_id in selected
@@ -1067,8 +1086,19 @@ def _set_coverage_partition(
                 "supporting_passage_ids": [] if row is None else list(bundle.allowed_passage_ids),
                 "conflicting_passage_ids": [],
                 "redundant_with_candidate_id": None,
-                "reason": "set coverage unavailable" if row is None else str(row["reason"]),
-                "diagnostic": None if row is not None else "caller-authored unresolved",
+                "reason": (
+                    "set coverage unavailable"
+                    if row is None
+                    else "provider reported complete candidate-set coverage"
+                    if status == "covered"
+                    else "uncovered material claims: " + "; ".join(uncovered)
+                    if uncovered
+                    else f"provider reported {status}"
+                ),
+                "uncovered_material_claims": list(uncovered),
+                "diagnostic": (
+                    "caller-authored unresolved" if row is None else row.get("diagnostic")
+                ),
             }
         )
     return partition

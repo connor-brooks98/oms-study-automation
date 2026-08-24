@@ -914,7 +914,7 @@ def test_r8_set_coverage_selects_multiple_cards_from_one_compact_fact_request() 
                 "status": "covered",
                 "selected_candidate_ids": ["note:2", "note:1", "note:2"],
                 "confidence_bps": 9000,
-                "reason": "cards cover the fact together",
+                "uncovered_material_claims": [],
             }
         ]
     }
@@ -949,14 +949,14 @@ def test_r8_set_coverage_fails_closed_when_a_candidate_escapes_its_fact() -> Non
                         "status": "covered",
                         "selected_candidate_ids": ["note:2"],
                         "confidence_bps": 9000,
-                        "reason": "escaped candidate",
+                        "uncovered_material_claims": [],
                     },
                     {
                         "fact_id": "fact-2",
                         "status": "missing",
                         "selected_candidate_ids": [],
                         "confidence_bps": 9000,
-                        "reason": "missing",
+                        "uncovered_material_claims": ["the target fact"],
                     },
                 ]
             }
@@ -973,6 +973,39 @@ def test_r8_set_coverage_fails_closed_when_a_candidate_escapes_its_fact() -> Non
         result.blocking_error == "R8 set-coverage response escapes requested candidates"
     )
     assert {row["disposition"] for row in result.payload["final_partition"]} == {"unresolved"}
+
+
+def test_r8_set_coverage_downgrades_claimed_coverage_with_uncovered_claims() -> None:
+    bundle = _bundle(1, "fact-1")
+    fake = FakeGenerator(
+        [
+            {
+                "rows": [
+                    {
+                        "fact_id": "fact-1",
+                        "status": "covered",
+                        "selected_candidate_ids": ["note:1"],
+                        "confidence_bps": 9900,
+                        "uncovered_material_claims": ["second clause", "first clause"],
+                    }
+                ]
+            }
+        ]
+    )
+    cheap, _thorough = _routes()
+    result = classify_set_coverage(
+        StructuredTextService(fake),
+        bundles=(bundle,),
+        strictness="strict",
+        route=cheap,
+    )
+    assert result.blocking_error is None
+    assert result.payload["rows"][0]["status"] == "unresolved"
+    assert result.payload["rows"][0]["uncovered_material_claims"] == [
+        "first clause",
+        "second clause",
+    ]
+    assert result.payload["final_partition"][0]["disposition"] == "unresolved"
 
 
 def test_r7_invalid_batch_is_unresolved_when_repair_is_not_authorized() -> None:
@@ -1097,7 +1130,7 @@ def test_r7_pins_and_repair_authorization_reject_stale_or_noninteger_costs() -> 
     assert pin["cheap_options"]["max_tokens"] == 3072
     assert pin["thorough_options"]["max_tokens"] == 3072
     assert pin["classification_config"]["output_max_tokens"] == 3072
-    assert pin["classification_config"]["version"] == "classification-r7-v4"
+    assert pin["classification_config"]["version"] == "classification-r7-v5"
     assert pin["cheap_options_sha256"] == canonical_payload_sha256(pin["cheap_options"])
     request = "d" * 64
     authorization = {
