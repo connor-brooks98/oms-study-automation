@@ -21,7 +21,10 @@ implementation/test commit `944b3de52514090f85a1c1c848d3c7c21b9843d2` / tree
 `fix: enforce Ask elimination precedence`. Fix Round 4 is the separate implementation/test
 commit `e7bdd642a448e9020057971bec66e9c775462500` / tree
 `e021f4e6061dd60794611f5e4de6963062fdd866`, subject
-`fix: block labeled Ask strategy bypass`.
+`fix: block labeled Ask strategy bypass`. The final-review fix is the separate
+implementation/test commit `a7c2ff18a36e535b783f74776ae87c4d34443c17` / tree
+`74d1ba817859777bf671e8092ffc8e36b0e49f29`, subject
+`fix: enforce direct Ask answer precedence`.
 
 ## Final review record
 
@@ -31,7 +34,7 @@ commit `e7bdd642a448e9020057971bec66e9c775462500` / tree
   identity findings; the general rule-out bypass remained.
 - Fix Round 3 code `944b3de`, docs `b283c35`: addressed direct general rule-out; the labeled
   strategy bypass remained.
-- Final candidate: Fix Round 4 code
+- Prior scoped-review candidate: Fix Round 4 code
   `e7bdd642a448e9020057971bec66e9c775462500` / tree
   `e021f4e6061dd60794611f5e4de6963062fdd866`, with docs candidate
   `10d3895bcd5678352ba0583b1d1a4d12527894ee` / tree
@@ -43,6 +46,10 @@ commit `e7bdd642a448e9020057971bec66e9c775462500` / tree
 - Controller ruling: the policy refusal retains `insufficient_evidence=False`, because the
   design separates a leak-policy refusal from missing evidence.
 - Ask v2 remains unapplied; no shared/schema impact; Tasks 3.2, 3.4, and 3.6 were untouched.
+- Final Sol review then found one Important mixed-clause bypass: direct `What is the answer?`
+  was downgraded when a later generic rule-out strategy clause matched. The final-review fix
+  removes only that exception; prior reviewer identities and their read-only verdicts remain
+  unchanged.
 
 ## Interfaces
 
@@ -228,29 +235,30 @@ Ambiguous language therefore remains protected rather than becoming a benign hin
 3. Fix Round 2 focused tests: `57 passed`.
 4. Fix Round 3 focused tests: `61 passed`.
 5. Fix Round 4 focused tests: `64 passed`.
-6. Affected Ask/models/contracts command:
+6. Final-review focused tests: `66 passed`.
+7. Affected Ask/models/contracts command:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
      python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py tests/ask/test_models.py tests/contracts -q
    ```
 
-   Result: `121 passed` (`64` Task 3.3, `16` Task 3.1 model, `41` contract tests).
-7. Exact Ruff:
+   Result: `123 passed` (`66` Task 3.3, `16` Task 3.1 model, `41` contract tests).
+8. Exact Ruff:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH ruff check src tests scripts
    ```
 
    Result: `All checks passed!`.
-8. Source mypy:
+9. Source mypy:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH mypy src
    ```
 
    Result: `Success: no issues found in 180 source files`.
-9. Task-owned test mypy:
+10. Task-owned test mypy:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH MYPYPATH=$PWD/src \
@@ -258,7 +266,7 @@ Ambiguous language therefore remains protected rather than becoming a benign hin
    ```
 
    Result: `Success: no issues found in 2 source files`.
-10. Static safety checks:
+11. Static safety checks:
 
    - An AST scan of both production modules reported no provider/model API, network, or
      logging imports/calls. The only project import is the required `GroundedAnswer` model
@@ -267,8 +275,8 @@ Ambiguous language therefore remains protected rather than becoming a benign hin
      answers. Protected values occur only in hand-derived tests.
    - A credential/private-content scan found no API keys, bearer credentials, private lecture
      text, Anki content, or production identifiers in the owned implementation/tests.
-11. `git diff --check`: passed.
-12. The exact base-to-head scope check is limited to the authorized files:
+12. `git diff --check`: passed.
+13. The exact base-to-head scope check is limited to the authorized files:
 
    ```text
    src/oms_hub/ask/intent.py
@@ -329,6 +337,35 @@ option label is present: `_is_generic_strategy_query()` now rejects an `answer`,
 letter-or-decimal `_is_option_label()` rule. The subsequent elimination check then protects
 the labeled request. This is intentionally safe for ambiguity and adds no parallel parser.
 
+## Final-review fix
+
+The regression was added first against clean review-record commit
+`160f32c222ecde362dca62a6bbc6aa457eb0a252` / tree
+`ff0e2df109bd9a2869275c2f443c8f47da006639`.
+
+RED command:
+
+```text
+PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
+  python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py -q
+```
+
+Result: exit `1`; the exact mixed-clause query and punctuation/fullwidth variant both
+returned `concept_hint` instead of `request_answer`.
+
+GREEN command:
+
+```text
+PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
+  python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py
+```
+
+Result: `66 passed`.
+
+The generic-strategy branch now gives direct-answer detection unconditional precedence.
+Existing general rule-out strategies remain benign because diagnostic exclusion already
+rejects generic exam/test context.
+
 ## Known limitations
 
 - The intent classifier is intentionally bounded and deterministic. Unrecognized paraphrases
@@ -351,6 +388,9 @@ the labeled request. This is intentionally safe for ambiguity and adds no parall
 - Fix Round 4 decision: an immediately labeled answer/choice/option term is never general
   strategy framing, including fullwidth letters and multi-digit decimal labels after NFKC.
   The existing option-label helper remains the single label grammar.
+- Final-review decision: direct-answer detection is unconditional inside the generic strategy
+  branch. The removed `rule out` exception was the mixed-clause bypass; unlabeled generic
+  strategy requests remain benign.
 - Native Windows and provider/live acceptance remain unrun by design.
 
 ## Commit identity
