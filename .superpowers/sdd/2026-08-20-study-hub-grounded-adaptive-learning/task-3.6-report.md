@@ -38,8 +38,8 @@ unapplied as required by the Task 3.6 boundary.
 - Canonicalization fix code commit: `03f89122d73a22139f32ae21b1685c1ad82d2f99`
   / tree `0284cdd384cb5aa165e97c3fc3f12a5e876f5598`.
 - Required code subject: `feat: persist scoped Ask conversations and retrieval traces`
-- Prior documentation commit: `414d5e8bb59a999d2e60727680d34acb4144aad1` / tree
-  `9c11b6510b7eb2c090d01ec87bfa1d340e61a6fd`.
+- Prior documentation commit: `e965dce0b953673bd46ae768a78801d8e46d38a5` / tree
+  `95e97d84f557d6ca64d11e11c87a1728e17a58f8`.
 - Historical Terra fix-round docs commit identity: `SELF`; tree: `SELF_TREE`.
   Resolve this pair only from the containing historical Terra-fix docs commit with
   `git rev-parse HEAD` and `git rev-parse 'HEAD^{tree}'`; it does not identify later
@@ -56,6 +56,9 @@ unapplied as required by the Task 3.6 boundary.
 - Canonicalization-fix docs commit: `SELF`; tree: `SELF_TREE`.
   Resolve this pair only from the containing canonicalization-fix docs commit after
   creation; do not substitute any historical `SELF` identity here.
+- Final review-record docs commit: `SELF`; tree: `SELF_TREE`.
+  Resolve this pair only from the containing final review-record docs commit after
+  creation; it is not the identity of any historical code or review commit.
 
 Only these runtime/test files were changed:
 
@@ -324,6 +327,18 @@ The GREEN correction is `03f89122d73a22139f32ae21b1685c1ad82d2f99` / tree
 `0284cdd384cb5aa165e97c3fc3f12a5e876f5598` (`fix: canonicalize Ask provenance and
 scope`). Both Terra exact-revision re-reviews remain **PENDING**; no prospective approval
 is claimed.
+
+## Final exact-revision Terra review record
+
+- Fresh Terra specification review: **APPROVED** for exact candidate
+  `e965dce0b953673bd46ae768a78801d8e46d38a5` / tree
+  `95e97d84f557d6ca64d11e11c87a1728e17a58f8`; no findings.
+- Fresh Terra quality/reliability/security review (a separate review): **APPROVED**
+  for the same exact candidate and tree; no findings.
+- The affected verification evidence records `165 passed`; the held central
+  integration proposal remains candidate-only and unapplied.
+- Fresh Workstream Sol final review remains **PENDING**; this record does not claim
+  Task 3.6 completion.
 
 ## Required verification evidence
 
