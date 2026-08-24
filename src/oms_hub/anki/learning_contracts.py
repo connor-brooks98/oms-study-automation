@@ -1,4 +1,4 @@
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
@@ -56,8 +56,8 @@ class AnkiNoteLearningState:
     card_ids: tuple[int, ...]
     deck_name: str
     selected_tags: tuple[str, ...]
-    due: bool
-    overdue: bool
+    due: bool | None
+    overdue: bool | None
     lapse_count: int
     interval: int | None
     retrievability: float | None
@@ -71,11 +71,11 @@ class AnkiNoteLearningState:
         return self.selected_tags
 
     @property
-    def is_due(self) -> bool:
+    def is_due(self) -> bool | None:
         return self.due
 
     @property
-    def is_overdue(self) -> bool:
+    def is_overdue(self) -> bool | None:
         return self.overdue
 
     @property
@@ -258,8 +258,10 @@ def _note_state(
     snapshot_at: datetime,
 ) -> AnkiNoteLearningState:
     note_cards = [cards[card_id] for card_id in card_ids if card_id in cards]
-    due = any(_card_due(card, snapshot_at) for card in note_cards)
-    overdue = any(_card_overdue(card, snapshot_at) for card in note_cards)
+    due = _aggregate_status(_explicit_status(card, "due") for card in note_cards)
+    overdue = _aggregate_status(
+        _explicit_status(card, "overdue") for card in note_cards
+    )
     lapses = [_nonnegative_int(card.get("lapses", 0), "lapses") for card in note_cards]
     intervals = [
         _nonnegative_int(card["interval"], "interval")
@@ -300,30 +302,36 @@ def _note_state(
     )
 
 
-def _card_due(card: dict[str, Any], now: datetime) -> bool:
-    queue = _queue(card)
-    if queue < 0:
-        return False
-    due = card.get("due")
-    if isinstance(due, bool):
-        return due
-    if due is None:
-        return queue in {0, 1, 2, 3}
-    if not isinstance(due, (int, float)):
-        raise ValueError("Anki returned invalid due value")
-    threshold = now.timestamp() if queue in {1, 3} else now.timestamp() / 86_400
-    return due <= threshold
+def _explicit_status(card: dict[str, Any], kind: str) -> bool | None:
+    keys = {
+        "due": ("isDue", "dueStatus", "due_status", "due"),
+        "overdue": (
+            "isOverdue",
+            "overdueStatus",
+            "overdue_status",
+            "overdue",
+        ),
+    }[kind]
+    for key in keys:
+        value = card.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            return value
+        # cardsInfo.due is normally a numeric scheduler position, not a status.
+        if key == "due":
+            continue
+        raise ValueError(f"Anki returned invalid {kind} status")
+    return None
 
 
-def _card_overdue(card: dict[str, Any], now: datetime) -> bool:
-    queue = _queue(card)
-    if queue not in {1, 2, 3} or card.get("due") is None:
+def _aggregate_status(statuses: Iterable[bool | None]) -> bool | None:
+    values = tuple(statuses)
+    if any(value is True for value in values):
+        return True
+    if values and all(value is False for value in values):
         return False
-    due = card["due"]
-    if isinstance(due, bool) or not isinstance(due, (int, float)):
-        raise ValueError("Anki returned invalid due value")
-    threshold = now.timestamp() if queue in {1, 3} else now.timestamp() / 86_400
-    return cast(int | float, due) < threshold
+    return None
 
 
 def _queue(card: dict[str, Any]) -> int:
@@ -334,7 +342,13 @@ def _queue(card: dict[str, Any]) -> int:
 
 
 def _reviewed_at(card: dict[str, Any]) -> datetime | None:
-    for key in ("lastReviewed", "last_reviewed_at", "last_reviewed", "mod"):
+    for key in (
+        "lastReviewed",
+        "last_reviewed_at",
+        "last_reviewed",
+        "reviewedAt",
+        "reviewed_at",
+    ):
         if key in card:
             return _timestamp(card[key])
     return None

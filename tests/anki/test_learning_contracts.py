@@ -110,19 +110,58 @@ def test_reader_maps_minimized_note_learning_state() -> None:
         assert note.card_ids == (4201, 4202)
         assert note.deck_name == "AnKing Step Deck::Heme"
         assert note.selected_tags == ("lecture::heme",)
-        assert note.due is True
-        assert note.overdue is True
+        assert note.due is None
+        assert note.overdue is None
         assert note.lapse_count == 3
         assert note.interval == 14
         assert note.suspended is False
         assert note.buried is True
+        assert note.last_reviewed_at is None
+        assert note.snapshot_at == SNAPSHOT_TIME
+        assert "full card HTML" not in repr(snapshot)
+        assert "private::unrelated" not in repr(snapshot)
+
+    asyncio.run(scenario())
+
+
+def test_explicit_card_status_is_preserved_without_inference() -> None:
+    class ExplicitStatusGateway(FakeGateway):
+        async def cards_info(self, card_ids: Sequence[int]) -> list[dict[str, Any]]:
+            records = await super().cards_info(card_ids)
+            records[0]["isDue"] = True
+            records[0]["isOverdue"] = True
+            records[0]["lastReviewed"] = 1_756_560_000
+            return records
+
+    async def scenario() -> None:
+        snapshot = await AnkiLearningReader(
+            ExplicitStatusGateway(),
+            runtime=FakeRuntime(),
+            selected_tags=("lecture::heme",),
+            now=lambda: SNAPSHOT_TIME,
+        ).snapshot('deck:"AnKing Step Deck"')
+
+        note = snapshot.notes[0]
+        assert note.due is True
+        assert note.overdue is True
         assert note.last_reviewed_at == datetime.fromtimestamp(
             1_756_560_000,
             tz=UTC,
         )
-        assert note.snapshot_at == SNAPSHOT_TIME
-        assert "full card HTML" not in repr(snapshot)
-        assert "private::unrelated" not in repr(snapshot)
+
+    asyncio.run(scenario())
+
+
+def test_card_modification_time_is_not_review_time() -> None:
+    async def scenario() -> None:
+        snapshot = await AnkiLearningReader(
+            FakeGateway(),
+            runtime=FakeRuntime(),
+            selected_tags=("lecture::heme",),
+            now=lambda: SNAPSHOT_TIME,
+        ).snapshot('deck:"AnKing Step Deck"')
+
+        assert snapshot.notes[0].last_reviewed_at is None
 
     asyncio.run(scenario())
 
