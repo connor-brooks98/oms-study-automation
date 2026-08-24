@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -40,7 +41,10 @@ class _AskBase(DeclarativeBase):
 
 class _AskThreadRow(_AskBase):
     __tablename__ = "ask_threads"
-    __table_args__ = (Index("ix_ask_threads_actor_scope", "actor_id", "scope_json"),)
+    __table_args__ = (
+        UniqueConstraint("thread_id", "actor_id", name="uq_ask_threads_thread_actor"),
+        Index("ix_ask_threads_actor_scope", "actor_id", "scope_json"),
+    )
 
     thread_id: Mapped[str] = mapped_column(String(200), primary_key=True)
     actor_id: Mapped[str] = mapped_column(String(320), nullable=False)
@@ -57,14 +61,17 @@ class _AskThreadRow(_AskBase):
 class _AskMessageRow(_AskBase):
     __tablename__ = "ask_messages"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ("thread_id", "actor_id"),
+            ("ask_threads.thread_id", "ask_threads.actor_id"),
+            ondelete="CASCADE",
+        ),
         UniqueConstraint("thread_id", "sequence", name="uq_ask_messages_thread_sequence"),
         Index("ix_ask_messages_thread_order", "thread_id", "sequence"),
     )
 
     message_id: Mapped[str] = mapped_column(String(200), primary_key=True)
-    thread_id: Mapped[str] = mapped_column(
-        ForeignKey("ask_threads.thread_id", ondelete="CASCADE"), nullable=False
-    )
+    thread_id: Mapped[str] = mapped_column(String(200), nullable=False)
     actor_id: Mapped[str] = mapped_column(String(320), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -74,12 +81,17 @@ class _AskMessageRow(_AskBase):
 
 class _RetrievalRunRow(_AskBase):
     __tablename__ = "retrieval_runs"
-    __table_args__ = (Index("ix_retrieval_runs_thread_order", "thread_id", "created_at"),)
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ("thread_id", "actor_id"),
+            ("ask_threads.thread_id", "ask_threads.actor_id"),
+            ondelete="CASCADE",
+        ),
+        Index("ix_retrieval_runs_thread_order", "thread_id", "created_at"),
+    )
 
     retrieval_run_id: Mapped[str] = mapped_column(String(200), primary_key=True)
-    thread_id: Mapped[str] = mapped_column(
-        ForeignKey("ask_threads.thread_id", ondelete="CASCADE"), nullable=False
-    )
+    thread_id: Mapped[str] = mapped_column(String(200), nullable=False)
     actor_id: Mapped[str] = mapped_column(String(320), nullable=False)
     source_snapshot_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     provider_request_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -131,7 +143,7 @@ class AskThreadView:
 
 
 AskPageContextValue = AskPageContext | QuizPageContext
-_OPAQUE_ID = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,199})\Z")
+_OPAQUE_ID = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._:-]*)\Z")
 
 
 class AskRepository:
@@ -150,7 +162,7 @@ class AskRepository:
         *,
         thread_id: str | None = None,
     ) -> AskThread:
-        actor = _require_non_empty(actor_id, "actor_id")
+        actor = _require_actor_id(actor_id)
         if isinstance(mode, AskThread):
             if scope is not None or page_context is not None:
                 raise ValueError("scope and page_context must be omitted when passing AskThread")
@@ -163,20 +175,21 @@ class AskRepository:
             if scope is None:
                 raise ValueError("scope is required")
             thread = AskThread(
-                thread_id=thread_id or str(uuid4()),
+                thread_id=thread_id if thread_id is not None else str(uuid4()),
                 mode=mode,
                 scope=scope,
                 page_context=page_context,
             )
 
+        thread_identifier = _require_opaque_id(thread.thread_id, "thread_id")
         scope_json = _scope_json(thread.scope)
         page_context_json = _page_context_json(thread.page_context)
         now = _utc_now()
         with self.database.session() as session:
-            existing = session.get(_AskThreadRow, thread.thread_id)
+            existing = session.get(_AskThreadRow, thread_identifier)
             if existing is not None:
                 if existing.actor_id != actor:
-                    raise KeyError(thread.thread_id)
+                    raise KeyError(thread_identifier)
                 if (
                     existing.mode == thread.mode.value
                     and existing.scope_json == scope_json
@@ -186,7 +199,7 @@ class AskRepository:
                 raise ValueError("thread_id already belongs to a different thread")
             session.add(
                 _AskThreadRow(
-                    thread_id=thread.thread_id,
+                    thread_id=thread_identifier,
                     actor_id=actor,
                     mode=thread.mode.value,
                     scope_json=scope_json,
@@ -250,18 +263,24 @@ class AskRepository:
         *,
         retrieval_run_id: str | None = None,
     ) -> RetrievalRun:
-        actor = _require_non_empty(actor_id, "actor_id")
+        actor = _require_actor_id(actor_id)
         source_hash = _require_opaque_id(source_snapshot_hash, "source_snapshot_hash", 128)
-        evidence = _normalized_ids(evidence_ids, "evidence_ids")
+        evidence = _normalized_ids(evidence_ids, "evidence_ids", max_length=300)
         revisions = _normalized_ids(
-            source_revision_ids, "source_revision_ids", allow_duplicates=True
+            source_revision_ids,
+            "source_revision_ids",
+            allow_duplicates=True,
+            max_length=300,
         )
         if len(evidence) != len(revisions):
             raise ValueError("evidence_ids and source_revision_ids must pair one-to-one")
         prompt = _require_bounded_text(prompt_version, "prompt_version", 200)
         schema = _require_bounded_text(schema_version, "schema_version", 200)
         model_name = _require_bounded_text(model, "model", 300)
-        run_id = _require_opaque_id(retrieval_run_id or str(uuid4()), "retrieval_run_id")
+        run_id = _require_opaque_id(
+            retrieval_run_id if retrieval_run_id is not None else str(uuid4()),
+            "retrieval_run_id",
+        )
         provider_id = (
             _require_bounded_text(provider_request_id, "provider_request_id", 500)
             if provider_request_id is not None
@@ -303,32 +322,28 @@ class AskRepository:
             session.flush()
             row = session.get(_RetrievalRunRow, run_id)
             assert row is not None
-            return _retrieval_run(session, row, thread.scope)
+            return _retrieval_run(session, row, thread.scope, actor)
 
     def get_thread(self, thread_id: str, actor_id: str) -> AskThreadView:
-        actor = _require_non_empty(actor_id, "actor_id")
+        actor = _require_actor_id(actor_id)
         with self.database.session() as session:
             row = self._require_thread(session, thread_id, actor)
             thread = _thread(row)
             messages = tuple(
-                _message(message)
+                _message(message, actor)
                 for message in session.scalars(
                     select(_AskMessageRow)
-                    .where(
-                        _AskMessageRow.thread_id == thread_id,
-                        _AskMessageRow.actor_id == actor,
-                    )
+                    .where(_AskMessageRow.thread_id == thread.thread_id)
                     .order_by(_AskMessageRow.sequence, _AskMessageRow.message_id)
                 ).all()
             )
             retrieval_runs = tuple(
                 sorted(
                     (
-                        _retrieval_run(session, run, thread.scope)
+                        _retrieval_run(session, run, thread.scope, actor)
                         for run in session.scalars(
                             select(_RetrievalRunRow).where(
-                                _RetrievalRunRow.thread_id == thread_id,
-                                _RetrievalRunRow.actor_id == actor,
+                                _RetrievalRunRow.thread_id == thread.thread_id
                             )
                         ).all()
                     ),
@@ -347,7 +362,7 @@ class AskRepository:
         scope: RetrievalScope,
         actor_id: str,
     ) -> list[AskThread]:
-        actor = _require_non_empty(actor_id, "actor_id")
+        actor = _require_actor_id(actor_id)
         scope_json = _scope_json(scope)
         with self.database.session() as session:
             ordered = [
@@ -367,14 +382,14 @@ class AskRepository:
             ]
 
     def delete_thread(self, thread_id: str, actor_id: str) -> bool:
-        actor = _require_non_empty(actor_id, "actor_id")
+        actor = _require_actor_id(actor_id)
         with self.database.session() as session:
             self._require_thread(session, thread_id, actor)
             self._delete_thread_rows(session, thread_id, actor)
         return True
 
     def delete_threads_before(self, actor_id: str, before: str | datetime) -> int:
-        actor = _require_non_empty(actor_id, "actor_id")
+        actor = _require_actor_id(actor_id)
         cutoff = _normalize_cutoff(before)
         with self.database.session() as session:
             rows = session.scalars(
@@ -409,10 +424,12 @@ class AskRepository:
         message_id: str | None,
         page_context: AskPageContextValue | None,
     ) -> AskMessage:
-        actor = _require_non_empty(actor_id, "actor_id")
+        actor = _require_actor_id(actor_id)
         if not isinstance(content, str) or not content.strip():
             raise ValueError("content cannot be empty")
-        identifier = _require_non_empty(message_id or str(uuid4()), "message_id")
+        identifier = _require_opaque_id(
+            message_id if message_id is not None else str(uuid4()), "message_id"
+        )
         with self.database.session() as session:
             thread_row = self._require_thread(session, thread_id, actor)
             stored_thread = _thread(thread_row)
@@ -456,28 +473,32 @@ class AskRepository:
 
     @staticmethod
     def _require_thread(session: Session, thread_id: str, actor_id: str) -> _AskThreadRow:
-        identifier = _require_non_empty(thread_id, "thread_id")
+        identifier = _require_opaque_id(thread_id, "thread_id")
+        actor = _require_actor_id(actor_id)
         row = session.scalar(
             select(_AskThreadRow).where(
                 _AskThreadRow.thread_id == identifier,
-                _AskThreadRow.actor_id == actor_id,
+                _AskThreadRow.actor_id == actor,
             )
         )
         if row is None:
             raise KeyError(identifier)
+        _require_opaque_id(row.thread_id, "thread_id")
+        _require_actor_id(row.actor_id)
         _validate_thread_timestamps(row)
         return row
 
     @staticmethod
     def _delete_thread_rows(session: Session, thread_id: str, actor_id: str) -> None:
-        run_ids = list(
+        run_rows = list(
             session.scalars(
-                select(_RetrievalRunRow.retrieval_run_id).where(
-                    _RetrievalRunRow.thread_id == thread_id,
-                    _RetrievalRunRow.actor_id == actor_id,
-                )
+                select(_RetrievalRunRow).where(_RetrievalRunRow.thread_id == thread_id)
             ).all()
         )
+        run_ids = []
+        for run_row in run_rows:
+            _validate_retrieval_run_identity(run_row, actor_id)
+            run_ids.append(run_row.retrieval_run_id)
         if run_ids:
             session.execute(
                 delete(_RetrievalEvidenceRow).where(
@@ -487,36 +508,66 @@ class AskRepository:
             session.execute(
                 delete(_RetrievalRunRow).where(_RetrievalRunRow.retrieval_run_id.in_(run_ids))
             )
+        message_rows = list(
+            session.scalars(
+                select(_AskMessageRow).where(_AskMessageRow.thread_id == thread_id)
+            ).all()
+        )
+        for message_row in message_rows:
+            _validate_message_identity(message_row, actor_id)
         session.execute(
-            delete(_AskMessageRow).where(
-                _AskMessageRow.thread_id == thread_id,
-                _AskMessageRow.actor_id == actor_id,
-            )
+            delete(_AskMessageRow).where(_AskMessageRow.thread_id == thread_id)
         )
         session.execute(
             delete(_AskThreadRow).where(
                 _AskThreadRow.thread_id == thread_id,
-                _AskThreadRow.actor_id == actor_id,
+                _AskThreadRow.actor_id == _require_actor_id(actor_id),
             )
         )
 
 
+def _validate_child_actor(
+    stored_actor_id: object,
+    expected_actor_id: str,
+    child_name: str,
+) -> None:
+    stored_actor = _require_actor_id(stored_actor_id)
+    expected_actor = _require_actor_id(expected_actor_id)
+    if stored_actor != expected_actor:
+        raise ValueError(f"stored {child_name} actor_id does not match thread owner")
+
+
+def _validate_message_identity(row: _AskMessageRow, actor_id: str) -> None:
+    _require_opaque_id(row.message_id, "message_id")
+    _require_opaque_id(row.thread_id, "thread_id")
+    _validate_child_actor(row.actor_id, actor_id, "message")
+
+
+def _validate_retrieval_run_identity(row: _RetrievalRunRow, actor_id: str) -> None:
+    _require_opaque_id(row.retrieval_run_id, "retrieval_run_id")
+    _require_opaque_id(row.thread_id, "thread_id")
+    _validate_child_actor(row.actor_id, actor_id, "retrieval run")
+
+
 def _thread(row: _AskThreadRow) -> AskThread:
+    thread_id = _require_opaque_id(row.thread_id, "thread_id")
+    _require_actor_id(row.actor_id)
     _validate_thread_timestamps(row)
     page_context = _page_context_from_json(row.page_context_json)
     return AskThread(
-        thread_id=row.thread_id,
+        thread_id=thread_id,
         mode=AskMode(row.mode),
         scope=_scope_from_json(row.scope_json),
         page_context=page_context,
     )
 
 
-def _message(row: _AskMessageRow) -> AskMessage:
+def _message(row: _AskMessageRow, actor_id: str) -> AskMessage:
+    _validate_message_identity(row, actor_id)
     _parse_utc_instant(row.created_at, "created_at")
     return AskMessage(
-        message_id=row.message_id,
-        thread_id=row.thread_id,
+        message_id=_require_opaque_id(row.message_id, "message_id"),
+        thread_id=_require_opaque_id(row.thread_id, "thread_id"),
         role=cast(Any, row.role),
         content=row.content,
     )
@@ -526,9 +577,11 @@ def _retrieval_run(
     session: Session,
     row: _RetrievalRunRow,
     scope: RetrievalScope,
+    actor_id: str,
 ) -> RetrievalRun:
+    _validate_retrieval_run_identity(row, actor_id)
     retrieval_run_id = _require_opaque_id(row.retrieval_run_id, "retrieval_run_id")
-    thread_id = _require_non_empty(row.thread_id, "thread_id")
+    thread_id = _require_opaque_id(row.thread_id, "thread_id")
     source_snapshot_hash = _require_opaque_id(
         row.source_snapshot_hash, "source_snapshot_hash", 128
     )
@@ -557,13 +610,16 @@ def _retrieval_run(
     for ordinal, link in enumerate(links):
         if link.ordinal != ordinal:
             raise ValueError("stored retrieval evidence ordering is malformed")
-        evidence_ids.append(_require_opaque_id(link.evidence_id, "evidence_id"))
+        evidence_ids.append(_require_opaque_id(link.evidence_id, "evidence_id", 300))
         source_revision_ids.append(
-            _require_opaque_id(link.source_revision_id, "source_revision_id")
+            _require_opaque_id(link.source_revision_id, "source_revision_id", 300)
         )
-    evidence = _normalized_ids(evidence_ids, "evidence_ids")
+    evidence = _normalized_ids(evidence_ids, "evidence_ids", max_length=300)
     revisions = _normalized_ids(
-        source_revision_ids, "source_revision_ids", allow_duplicates=True
+        source_revision_ids,
+        "source_revision_ids",
+        allow_duplicates=True,
+        max_length=300,
     )
     _validate_revision_scope(scope, revisions)
     return RetrievalRun(
@@ -592,7 +648,7 @@ def _scope_json(scope: RetrievalScope) -> str:
     )
     lecture_ids = _normalized_ids(scope.lecture_ids, "scope.lecture_ids")
     source_revision_ids = _normalized_ids(
-        scope.source_revision_ids, "scope.source_revision_ids"
+        scope.source_revision_ids, "scope.source_revision_ids", max_length=300
     )
     return _json_dump(
         {
@@ -678,10 +734,13 @@ def _normalized_ids(
     field_name: str,
     *,
     allow_duplicates: bool = False,
+    max_length: int = 200,
 ) -> tuple[str, ...]:
     if isinstance(values, (str, bytes)):
         raise TypeError(f"{field_name} must be a sequence of IDs")
-    result = tuple(_require_opaque_id(value, field_name) for value in values)
+    result = tuple(
+        _require_opaque_id(value, field_name, max_length) for value in values
+    )
     if not allow_duplicates and len(set(result)) != len(result):
         raise ValueError(f"{field_name} cannot contain duplicates")
     return result
@@ -736,7 +795,11 @@ def _canonical_utc_timestamp(value: object, field_name: str) -> str:
 
 
 def _require_opaque_id(value: object, field_name: str, max_length: int = 200) -> str:
-    if not isinstance(value, str) or len(value) > max_length or _OPAQUE_ID.fullmatch(value) is None:
+    if (
+        not isinstance(value, str)
+        or len(value) > max_length
+        or _OPAQUE_ID.fullmatch(value) is None
+    ):
         raise ValueError(f"{field_name} must be a bounded opaque ID")
     return value
 
@@ -749,6 +812,10 @@ def _require_bounded_text(value: object, field_name: str, max_length: int) -> st
 
 def _require_non_empty(value: object, field_name: str) -> str:
     return _require_bounded_text(value, field_name, 500)
+
+
+def _require_actor_id(value: object) -> str:
+    return _require_bounded_text(value, "actor_id", 320)
 
 
 def _utc_now() -> str:
