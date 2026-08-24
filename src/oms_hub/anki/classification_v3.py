@@ -85,6 +85,12 @@ THOROUGH_INSTRUCTION = (
 REPAIR_INSTRUCTION = (
     "Return a contract-valid replacement for the same supplied bundles." + _CANDIDATE_COVERAGE_RULE
 )
+_SET_COVERAGE_STATUS_RULE = (
+    " Use status missing when exhaustive review of all supplied cards leaves any target claim "
+    "unsupported with no ambiguity or conflict. Use unresolved only when ambiguity, conflict, "
+    "or insufficient input prevents a covered-or-missing decision; absence from all supplied "
+    "cards is missing, not unresolved."
+)
 SET_COVERAGE_INSTRUCTION = (
     "Decide whether each exact target fact is fully covered by the supplied candidate cards "
     "acting together. The supplied material-claim inventory is caller-authored and closed: "
@@ -95,6 +101,7 @@ SET_COVERAGE_INSTRUCTION = (
     "ID in uncovered_claim_ids. Status covered is allowed only when every claim is supported. "
     "The target claims are comparison-only and are never support. No lecture passages, tags, or "
     "deck hints are supplied."
+    + _SET_COVERAGE_STATUS_RULE
 )
 
 _MATERIAL_CLAIM_BOUNDARY = re.compile(
@@ -174,7 +181,9 @@ class ProviderSetCoverageRow(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     fact_id: str = Field(min_length=1, max_length=300)
-    status: Literal["covered", "missing", "unresolved"]
+    status: Literal["covered", "missing", "unresolved"] = Field(
+        description=_SET_COVERAGE_STATUS_RULE.strip()
+    )
     candidate_contributions: tuple[ProviderCandidateContribution, ...] = ()
     confidence_bps: int = Field(ge=0, le=10_000)
     uncovered_claim_ids: tuple[Annotated[str, Field(min_length=1, max_length=400)], ...] = Field(

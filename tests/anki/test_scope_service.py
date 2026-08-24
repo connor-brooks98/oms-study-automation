@@ -139,6 +139,19 @@ def test_r3_rejects_live_boundary_clipped_fact_statements(statement: str) -> Non
         _scope_output_model({evidence_id}).model_validate(payload)
 
 
+def test_r3_rejects_independent_claims_joined_with_while() -> None:
+    evidence_id = "evidence"
+    payload = _response(
+        json.dumps({"source_bundle": {"evidence": [{"evidence_id": evidence_id}]}})
+    )
+    payload["concepts"][0]["facts"][0]["statement"] = (
+        "Excess delta-ALA causes abdominal symptoms, while excess PBG turns urine purple."
+    )
+
+    with pytest.raises(ValueError, match="joins independently testable claims"):
+        _scope_output_model({evidence_id}).model_validate(payload)
+
+
 def _add_r0_costs(r0: dict[str, object], *models: str) -> None:
     table = FrozenRateTable(
         tuple(ModelRate(model, 1, 0, 0, 1, 1) for model in sorted(set(models))),

@@ -13,7 +13,9 @@ from oms_hub.anki import classification_v3
 from oms_hub.anki.classification_v3 import (
     CHEAP_INSTRUCTION,
     REPAIR_INSTRUCTION,
+    SET_COVERAGE_INSTRUCTION,
     THOROUGH_INSTRUCTION,
+    ProviderSetCoverageRow,
     R7ClassificationService,
     _provider_input,
     _valid_repair_authorization,
@@ -1272,6 +1274,15 @@ def test_r8_set_coverage_keeps_a_well_formed_missing_result_terminal() -> None:
     assert result.blocking_error is None
     assert result.payload["rows"][0]["status"] == "missing"
     assert result.payload["final_partition"][0]["disposition"] == "exclude"
+
+
+def test_r8_set_coverage_defines_missing_and_unresolved_statuses() -> None:
+    boundary = "absence from all supplied cards is missing, not unresolved"
+
+    assert boundary in SET_COVERAGE_INSTRUCTION
+    assert boundary in ProviderSetCoverageRow.model_json_schema()["properties"]["status"][
+        "description"
+    ]
 
 
 def test_r7_invalid_batch_is_unresolved_when_repair_is_not_authorized() -> None:

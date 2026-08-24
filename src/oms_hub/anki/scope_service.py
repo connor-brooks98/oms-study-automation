@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ from oms_hub.llm.structured import StructuredTextService
 
 _SOURCE_BUNDLE_VERSION = "scope-source-bundle-v1"
 _REQUEST_VERSION = "scope-request-v1"
+_INDEPENDENT_FACT_JOIN = re.compile(r",\s+while\s+", re.IGNORECASE)
 
 
 class ScopeInputError(ValueError):
@@ -479,6 +481,8 @@ def _scope_output_model(allowed_evidence_ids: set[str]) -> type[BaseModel]:
             # provider starts masking clipped facts with terminal punctuation.
             if len(statement) == 200 and not statement.endswith((".", "?", "!")):
                 raise ValueError("fact statement appears truncated at 200-character boundary")
+            if _INDEPENDENT_FACT_JOIN.search(statement):
+                raise ValueError("fact statement joins independently testable claims")
             return statement
 
         @field_validator("evidence_ids", "forbidden_cloze_targets", mode="before")
