@@ -3,6 +3,8 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
+
 from oms_hub.anki.learning_contracts import AnkiLearningReader, AnkiSyncHealth
 from oms_hub.anki.runtime import AnkiPreflight
 
@@ -162,6 +164,63 @@ def test_card_modification_time_is_not_review_time() -> None:
         ).snapshot('deck:"AnKing Step Deck"')
 
         assert snapshot.notes[0].last_reviewed_at is None
+
+    asyncio.run(scenario())
+
+
+def test_reader_rejects_a_card_owned_by_two_notes() -> None:
+    class DuplicateOwnershipGateway(FakeGateway):
+        async def find_notes(self, query: str) -> list[int]:
+            assert query == 'deck:"AnKing Step Deck"'
+            return [42, 43]
+
+        async def notes_info(self, note_ids: Sequence[int]) -> list[dict[str, Any]]:
+            assert tuple(note_ids) == (42, 43)
+            return [
+                {"noteId": 42, "tags": [], "cards": [4201]},
+                {"noteId": 43, "tags": [], "cards": [4201]},
+            ]
+
+        async def cards_info(self, card_ids: Sequence[int]) -> list[dict[str, Any]]:
+            assert tuple(card_ids) == (4201,)
+            return [
+                {
+                    "cardId": 4201,
+                    "note": 42,
+                    "deckName": "AnKing Step Deck::Heme",
+                    "queue": 2,
+                }
+            ]
+
+    async def scenario() -> None:
+        reader = AnkiLearningReader(
+            DuplicateOwnershipGateway(),
+            runtime=FakeRuntime(),
+            now=lambda: SNAPSHOT_TIME,
+        )
+        with pytest.raises(ValueError, match="owned by multiple notes"):
+            await reader.snapshot('deck:"AnKing Step Deck"')
+
+    asyncio.run(scenario())
+
+
+def test_reader_rejects_missing_card_queue() -> None:
+    class MissingQueueGateway(FakeGateway):
+        async def cards_info(self, card_ids: Sequence[int]) -> list[dict[str, Any]]:
+            records = await super().cards_info(card_ids)
+            for record in records:
+                record.pop("queue")
+            return records
+
+    async def scenario() -> None:
+        reader = AnkiLearningReader(
+            MissingQueueGateway(),
+            runtime=FakeRuntime(),
+            selected_tags=("lecture::heme",),
+            now=lambda: SNAPSHOT_TIME,
+        )
+        with pytest.raises(ValueError, match="queue"):
+            await reader.snapshot('deck:"AnKing Step Deck"')
 
     asyncio.run(scenario())
 

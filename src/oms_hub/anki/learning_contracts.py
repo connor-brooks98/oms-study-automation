@@ -182,6 +182,7 @@ class AnkiLearningReader:
 
         note_cards: dict[int, tuple[int, ...]] = {}
         note_tags: dict[int, tuple[str, ...]] = {}
+        card_owners: dict[int, int] = {}
         all_card_ids: list[int] = []
         for raw_note in raw_notes:
             note_id = _positive_int(raw_note.get("noteId"), "note ID")
@@ -196,6 +197,11 @@ class AnkiLearningReader:
             )
             if len(card_ids) != len(set(card_ids)):
                 raise ValueError("Anki returned duplicate card IDs for a note")
+            for card_id in card_ids:
+                previous_owner = card_owners.get(card_id)
+                if previous_owner is not None and previous_owner != note_id:
+                    raise ValueError("Anki card is owned by multiple notes")
+                card_owners[card_id] = note_id
             raw_tags = _string_values(raw_note.get("tags", ()), "tags")
             note_cards[note_id] = card_ids
             note_tags[note_id] = self._select_tags(raw_tags)
@@ -335,7 +341,9 @@ def _aggregate_status(statuses: Iterable[bool | None]) -> bool | None:
 
 
 def _queue(card: dict[str, Any]) -> int:
-    value = card.get("queue", 0)
+    if "queue" not in card:
+        raise ValueError("Anki card metadata is missing queue")
+    value = card["queue"]
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError("Anki returned invalid queue value")
     return cast(int, value)
