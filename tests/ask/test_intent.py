@@ -82,10 +82,29 @@ def test_bare_option_labels_keep_elimination_requests_protected(query: str) -> N
     assert classify_pre_submit_intent(query) is AskIntent.REQUEST_OPTION_ELIMINATION
 
 
-def test_bare_single_letter_words_without_option_boundary_remain_benign() -> None:
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How can I eliminate B, C, and D on exams?",
+        "How can I eliminate B & C on exams?",
+        "How can I eliminate B/C on exams?",
+    ],
+)
+def test_bare_option_lists_keep_elimination_requests_protected(query: str) -> None:
+    assert classify_pre_submit_intent(query) is AskIntent.REQUEST_OPTION_ELIMINATION
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How can I eliminate B vitamins on exams?",
+        "How can I eliminate A and bacteria on exams?",
+        "How can I eliminate B/C vitamins on exams?",
+    ],
+)
+def test_bare_single_letter_words_without_option_boundary_remain_benign(query: str) -> None:
     assert (
-        classify_pre_submit_intent("How can I eliminate B vitamins on exams?")
-        is AskIntent.CONCEPT_HINT
+        classify_pre_submit_intent(query) is AskIntent.CONCEPT_HINT
     )
 
 

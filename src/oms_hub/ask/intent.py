@@ -109,7 +109,7 @@ _BARE_OPTION_ELIMINATION_PHRASES = (
     ("rule", "out"),
     ("ruled", "out"),
 )
-_OPTION_LABEL_CONTINUATIONS = {"and", "at", "during", "for", "from", "in", "on", "or"}
+_OPTION_LABEL_CONTINUATIONS = {"at", "during", "for", "from", "in", "on"}
 _ANSWER_SUFFIXES_THAT_ARE_NOT_REVEALS = {
     "format",
     "length",
@@ -218,14 +218,15 @@ def _contains_bare_option_label_after_elimination(tokens: tuple[str, ...]) -> bo
             label_index = index + width
             if label_index >= len(tokens) or not _is_option_label(tokens[label_index]):
                 continue
-            if label_index + 1 >= len(tokens):
-                return True
-            continuation = tokens[label_index + 1]
-            if continuation in {"and", "or"}:
-                return label_index + 2 < len(tokens) and _is_option_label(
-                    tokens[label_index + 2]
-                )
-            if continuation in _OPTION_LABEL_CONTINUATIONS:
+            cursor = label_index
+            while cursor < len(tokens) and _is_option_label(tokens[cursor]):
+                cursor += 1
+                if cursor >= len(tokens) or tokens[cursor] not in {"and", "or"}:
+                    continue
+                if cursor + 1 >= len(tokens) or not _is_option_label(tokens[cursor + 1]):
+                    break
+                cursor += 1
+            if cursor >= len(tokens) or tokens[cursor] in _OPTION_LABEL_CONTINUATIONS:
                 return True
     return False
 
