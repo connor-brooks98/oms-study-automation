@@ -153,6 +153,20 @@ def test_openai_output_schema_makes_pydantic_optionals_strict_schema_compatible(
     assert_strict(schema)
 
 
+def test_openai_output_schema_converts_discriminated_unions() -> None:
+    schema = {
+        "type": "array",
+        "items": {
+            "discriminator": {"propertyName": "status"},
+            "oneOf": [{"type": "string"}, {"type": "integer"}],
+        },
+    }
+
+    assert openai_output_schema(schema)["items"] == {
+        "anyOf": [{"type": "string"}, {"type": "integer"}]
+    }
+
+
 @respx.mock
 def test_openai_generation_preserves_prefix_order_without_claiming_cache_hits() -> None:
     route = respx.post("https://api.openai.com/v1/responses").mock(

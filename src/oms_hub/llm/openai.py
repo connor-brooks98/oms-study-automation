@@ -42,9 +42,9 @@ def _normalize_schema_value(value: object) -> object:
         return value
     prefix_items = value.get("prefixItems")
     normalized = {
-        str(key): _normalize_schema_value(item)
+        "anyOf" if key == "oneOf" else str(key): _normalize_schema_value(item)
         for key, item in value.items()
-        if key not in {"prefixItems", "default"}
+        if key not in {"prefixItems", "default", "discriminator"}
     }
     if (
         "items" not in normalized
