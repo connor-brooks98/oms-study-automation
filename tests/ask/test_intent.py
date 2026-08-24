@@ -70,6 +70,26 @@ def test_narrow_instructional_strategy_forms_remain_benign(query: str) -> None:
 
 
 @pytest.mark.parametrize(
+    "query",
+    [
+        "How can I eliminate B and C on exams?",
+        "What strategy helps me rule out B on exams?",
+        "Ｈｏｗ　ｃａｎ　Ｉ　ｅｌｉｍｉｎａｔｅ　Ｂ　ａｎｄ　Ｃ　ｏｎ　ｅｘａｍｓ？",
+        "Ｗｈａｔ　ｓｔｒａｔｅｇｙ　ｈｅｌｐｓ　ｍｅ　ｒｕｌｅ　ｏｕｔ　Ｂ　ｏｎ　ｅｘａｍｓ？",
+    ],
+)
+def test_bare_option_labels_keep_elimination_requests_protected(query: str) -> None:
+    assert classify_pre_submit_intent(query) is AskIntent.REQUEST_OPTION_ELIMINATION
+
+
+def test_bare_single_letter_words_without_option_boundary_remain_benign() -> None:
+    assert (
+        classify_pre_submit_intent("How can I eliminate B vitamins on exams?")
+        is AskIntent.CONCEPT_HINT
+    )
+
+
+@pytest.mark.parametrize(
     ("query", "expected"),
     [
         (

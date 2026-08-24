@@ -98,6 +98,18 @@ _ELIMINATION_WORDS = {
     "ruled",
     "wrong",
 }
+_BARE_OPTION_ELIMINATION_PHRASES = (
+    ("cross", "out"),
+    ("discard",),
+    ("eliminate",),
+    ("eliminated",),
+    ("exclude",),
+    ("narrow",),
+    ("remove",),
+    ("rule", "out"),
+    ("ruled", "out"),
+)
+_OPTION_LABEL_CONTINUATIONS = {"and", "at", "during", "for", "from", "in", "on", "or"}
 _ANSWER_SUFFIXES_THAT_ARE_NOT_REVEALS = {
     "format",
     "length",
@@ -197,6 +209,27 @@ def _is_option_label(value: str) -> bool:
     return value.isdecimal() or (len(value) == 1 and value.isascii() and value.isalpha())
 
 
+def _contains_bare_option_label_after_elimination(tokens: tuple[str, ...]) -> bool:
+    for phrase in _BARE_OPTION_ELIMINATION_PHRASES:
+        width = len(phrase)
+        for index in range(len(tokens) - width + 1):
+            if tokens[index : index + width] != phrase:
+                continue
+            label_index = index + width
+            if label_index >= len(tokens) or not _is_option_label(tokens[label_index]):
+                continue
+            if label_index + 1 >= len(tokens):
+                return True
+            continuation = tokens[label_index + 1]
+            if continuation in {"and", "or"}:
+                return label_index + 2 < len(tokens) and _is_option_label(
+                    tokens[label_index + 2]
+                )
+            if continuation in _OPTION_LABEL_CONTINUATIONS:
+                return True
+    return False
+
+
 def _is_generic_strategy_query(tokens: tuple[str, ...]) -> bool:
     if _QUESTION_SCOPE_WORDS.intersection(tokens):
         return False
@@ -204,6 +237,8 @@ def _is_generic_strategy_query(tokens: tuple[str, ...]) -> bool:
         token in _OPTION_WORDS and _is_option_label(tokens[index + 1])
         for index, token in enumerate(tokens[:-1])
     ):
+        return False
+    if _contains_bare_option_label_after_elimination(tokens):
         return False
     if not _contains_any(tokens, _GENERIC_INSTRUCTIONAL_FRAMING):
         return False
@@ -214,6 +249,8 @@ def _is_generic_strategy_query(tokens: tuple[str, ...]) -> bool:
 
 
 def _requests_option_elimination(tokens: tuple[str, ...]) -> bool:
+    if _contains_bare_option_label_after_elimination(tokens):
+        return True
     if not _OPTION_WORDS.intersection(tokens):
         return False
     return bool(_ELIMINATION_WORDS.intersection(tokens))
