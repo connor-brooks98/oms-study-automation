@@ -6,6 +6,8 @@
         "blueprint_tags": {
           "default": [],
           "items": {
+            "minLength": 1,
+            "pattern": "\\S",
             "type": "string"
           },
           "title": "Blueprint Tags",
@@ -21,6 +23,7 @@
         },
         "correct_option_id": {
           "minLength": 1,
+          "pattern": "\\S",
           "title": "Correct Option Id",
           "type": "string"
         },
@@ -32,11 +35,14 @@
         },
         "lead_in": {
           "minLength": 1,
+          "pattern": "\\S",
           "title": "Lead In",
           "type": "string"
         },
         "objective_ids": {
           "items": {
+            "minLength": 1,
+            "pattern": "\\S",
             "type": "string"
           },
           "minItems": 1,
@@ -54,6 +60,7 @@
         },
         "stem": {
           "minLength": 1,
+          "pattern": "\\S",
           "title": "Stem",
           "type": "string"
         }
@@ -74,11 +81,14 @@
       "properties": {
         "claim_id": {
           "minLength": 1,
+          "pattern": "\\S",
           "title": "Claim Id",
           "type": "string"
         },
         "evidence_ids": {
           "items": {
+            "minLength": 1,
+            "pattern": "\\S",
             "type": "string"
           },
           "minItems": 1,
@@ -90,6 +100,7 @@
         },
         "text": {
           "minLength": 1,
+          "pattern": "\\S",
           "title": "Text",
           "type": "string"
         }
@@ -132,6 +143,8 @@
       "properties": {
         "evidence_ids": {
           "items": {
+            "minLength": 1,
+            "pattern": "\\S",
             "type": "string"
           },
           "minItems": 1,
@@ -140,16 +153,19 @@
         },
         "option_id": {
           "minLength": 1,
+          "pattern": "\\S",
           "title": "Option Id",
           "type": "string"
         },
         "rationale": {
           "minLength": 1,
+          "pattern": "\\S",
           "title": "Rationale",
           "type": "string"
         },
         "text": {
           "minLength": 1,
+          "pattern": "\\S",
           "title": "Text",
           "type": "string"
         }
@@ -180,6 +196,8 @@
         "codes": {
           "default": [],
           "items": {
+            "minLength": 1,
+            "pattern": "\\S",
             "type": "string"
           },
           "title": "Codes",
@@ -205,12 +223,16 @@
         "evidence_ids": {
           "default": [],
           "items": {
+            "minLength": 1,
+            "pattern": "\\S",
             "type": "string"
           },
           "title": "Evidence Ids",
           "type": "array"
         },
         "input_hash": {
+          "minLength": 1,
+          "pattern": "\\S",
           "title": "Input Hash",
           "type": "string"
         },
@@ -218,28 +240,39 @@
           "$ref": "#/$defs/QuestionMode"
         },
         "model_version": {
+          "minLength": 1,
+          "pattern": "\\S",
           "title": "Model Version",
           "type": "string"
         },
         "output_hash": {
+          "minLength": 1,
+          "pattern": "\\S",
           "title": "Output Hash",
           "type": "string"
         },
         "prompt_version": {
+          "minLength": 1,
+          "pattern": "\\S",
           "title": "Prompt Version",
           "type": "string"
         },
         "question_id": {
           "minLength": 1,
+          "pattern": "\\S",
           "title": "Question Id",
           "type": "string"
         },
         "schema_version": {
+          "minLength": 1,
+          "pattern": "\\S",
           "title": "Schema Version",
           "type": "string"
         },
         "source_revision_ids": {
           "items": {
+            "minLength": 1,
+            "pattern": "\\S",
             "type": "string"
           },
           "minItems": 1,

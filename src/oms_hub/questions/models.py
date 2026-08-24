@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import StrEnum
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -46,15 +47,18 @@ def _nonblank_ids(values: tuple[str, ...], label: str) -> tuple[str, ...]:
     return values
 
 
+_NonblankString = Annotated[str, Field(min_length=1, pattern=r"\S")]
+
+
 class _QuestionModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 class QuestionOption(_QuestionModel):
-    option_id: str = Field(min_length=1)
-    text: str = Field(min_length=1)
-    rationale: str = Field(min_length=1)
-    evidence_ids: tuple[str, ...] = Field(min_length=1)
+    option_id: _NonblankString
+    text: _NonblankString
+    rationale: _NonblankString
+    evidence_ids: tuple[_NonblankString, ...] = Field(min_length=1)
 
     @field_validator("evidence_ids", mode="before")
     @classmethod
@@ -74,10 +78,10 @@ class QuestionOption(_QuestionModel):
 
 
 class QuestionClaim(_QuestionModel):
-    claim_id: str = Field(min_length=1)
+    claim_id: _NonblankString
     role: QuestionClaimRole
-    text: str = Field(min_length=1)
-    evidence_ids: tuple[str, ...] = Field(min_length=1)
+    text: _NonblankString
+    evidence_ids: tuple[_NonblankString, ...] = Field(min_length=1)
 
     @field_validator("role", mode="before")
     @classmethod
@@ -102,13 +106,13 @@ class QuestionClaim(_QuestionModel):
 
 
 class BoardQuestionDraft(_QuestionModel):
-    stem: str = Field(min_length=1)
-    lead_in: str = Field(min_length=1)
+    stem: _NonblankString
+    lead_in: _NonblankString
     options: tuple[QuestionOption, ...] = Field(min_length=4, max_length=5)
-    correct_option_id: str = Field(min_length=1)
-    objective_ids: tuple[str, ...] = Field(min_length=1)
+    correct_option_id: _NonblankString
+    objective_ids: tuple[_NonblankString, ...] = Field(min_length=1)
     difficulty: int = Field(ge=1, le=5)
-    blueprint_tags: tuple[str, ...] = ()
+    blueprint_tags: tuple[_NonblankString, ...] = ()
     claims: tuple[QuestionClaim, ...] = ()
 
     @model_validator(mode="before")
@@ -153,7 +157,7 @@ class BoardQuestionDraft(_QuestionModel):
 
 class QuestionValidationResult(_QuestionModel):
     valid: bool
-    codes: tuple[str, ...] = ()
+    codes: tuple[_NonblankString, ...] = ()
 
     @field_validator("codes", mode="before")
     @classmethod
@@ -167,18 +171,18 @@ class QuestionValidationResult(_QuestionModel):
 
 
 class QuestionVersion(_QuestionModel):
-    question_id: str = Field(min_length=1)
+    question_id: _NonblankString
     version: int = Field(ge=1)
     mode: QuestionMode
     status: QuestionStatus = QuestionStatus.DRAFT
     draft: BoardQuestionDraft
-    source_revision_ids: tuple[str, ...] = Field(min_length=1)
-    evidence_ids: tuple[str, ...] = ()
-    prompt_version: str
-    schema_version: str
-    model_version: str
-    input_hash: str
-    output_hash: str
+    source_revision_ids: tuple[_NonblankString, ...] = Field(min_length=1)
+    evidence_ids: tuple[_NonblankString, ...] = ()
+    prompt_version: _NonblankString
+    schema_version: _NonblankString
+    model_version: _NonblankString
+    input_hash: _NonblankString
+    output_hash: _NonblankString
 
     @field_validator("mode", mode="before")
     @classmethod

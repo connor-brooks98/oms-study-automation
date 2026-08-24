@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -38,12 +40,91 @@ def _payload(**changes: object) -> dict[str, Any]:
 
 
 def _schema_bytes() -> bytes:
+    schema = _schema_payload()
+    return (json.dumps(schema, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _schema_payload() -> dict[str, Any]:
     schema = TypeAdapter(
         BoardQuestionDraft | QuestionValidationResult | QuestionVersion
     ).json_schema()
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
     schema["$id"] = "question-v1.json"
-    return (json.dumps(schema, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    return schema
+
+
+def _schema_matches(instance: object, schema: Mapping[str, Any], root: Mapping[str, Any]) -> bool:
+    if "$ref" in schema:
+        reference = schema["$ref"]
+        assert isinstance(reference, str)
+        definition = root
+        for part in reference.removeprefix("#/").split("/"):
+            value = definition.get(part)
+            assert isinstance(value, Mapping)
+            definition = value
+        return _schema_matches(instance, definition, root)
+    if "anyOf" in schema:
+        alternatives = schema["anyOf"]
+        assert isinstance(alternatives, list)
+        return any(
+            isinstance(alternative, Mapping)
+            and _schema_matches(instance, alternative, root)
+            for alternative in alternatives
+        )
+    if "enum" in schema and instance not in schema["enum"]:
+        return False
+    schema_type = schema.get("type")
+    if schema_type == "object":
+        if not isinstance(instance, Mapping):
+            return False
+        required = schema.get("required", [])
+        assert isinstance(required, list)
+        if any(field not in instance for field in required):
+            return False
+        properties = schema.get("properties", {})
+        assert isinstance(properties, Mapping)
+        if schema.get("additionalProperties") is False and any(
+            field not in properties for field in instance
+        ):
+            return False
+        return all(
+            field not in properties
+            or not isinstance(properties[field], Mapping)
+            or _schema_matches(value, properties[field], root)
+            for field, value in instance.items()
+        )
+    if schema_type == "array":
+        if not isinstance(instance, list):
+            return False
+        minimum = schema.get("minItems")
+        maximum = schema.get("maxItems")
+        if isinstance(minimum, int) and len(instance) < minimum:
+            return False
+        if isinstance(maximum, int) and len(instance) > maximum:
+            return False
+        items = schema.get("items")
+        return not isinstance(items, Mapping) or all(
+            _schema_matches(value, items, root) for value in instance
+        )
+    if schema_type == "string":
+        if not isinstance(instance, str):
+            return False
+        minimum = schema.get("minLength")
+        if isinstance(minimum, int) and len(instance) < minimum:
+            return False
+        pattern = schema.get("pattern")
+        return not isinstance(pattern, str) or re.search(pattern, instance) is not None
+    if schema_type == "integer":
+        if isinstance(instance, bool) or not isinstance(instance, int):
+            return False
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        return (not isinstance(minimum, int) or instance >= minimum) and (
+            not isinstance(maximum, int) or instance <= maximum
+        )
+    if schema_type == "boolean":
+        return isinstance(instance, bool)
+    return True
 
 
 def _version_payload(draft: BoardQuestionDraft) -> dict[str, Any]:
@@ -60,6 +141,24 @@ def _version_payload(draft: BoardQuestionDraft) -> dict[str, Any]:
         "input_hash": "input-hash",
         "output_hash": "output-hash",
     }
+
+
+def _version_wire_payload(**changes: object) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "question_id": "question-1",
+        "version": 1,
+        "mode": "board_style",
+        "draft": build_board_question_draft(),
+        "source_revision_ids": ["revision-1"],
+        "evidence_ids": ["evidence-1"],
+        "prompt_version": "prompt-v1",
+        "schema_version": "question-v1",
+        "model_version": "model-v1",
+        "input_hash": "input-hash",
+        "output_hash": "output-hash",
+    }
+    payload.update(changes)
+    return payload
 
 
 def test_required_enum_values_are_exact() -> None:
@@ -207,3 +306,29 @@ def test_question_schema_is_deterministic_and_matches_snapshot() -> None:
     expected = _schema_bytes()
     assert expected == _schema_bytes()
     assert (ROOT / "schemas" / "question-v1.json").read_bytes() == expected
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        _payload(stem=" \t"),
+        _payload(objective_ids=["\n"]),
+        _payload(
+            options=[
+                {
+                    **option,
+                    "evidence_ids": ["\t"],
+                }
+                for option in build_board_question_draft()["options"]
+            ]
+        ),
+        _version_wire_payload(source_revision_ids=[" \n"]),
+        _version_wire_payload(prompt_version="\t"),
+        {"valid": False, "codes": [" "]},
+    ),
+)
+def test_generated_schema_rejects_model_invalid_nonblank_values(
+    payload: dict[str, Any],
+) -> None:
+    schema = _schema_payload()
+    assert not _schema_matches(payload, schema, schema)
