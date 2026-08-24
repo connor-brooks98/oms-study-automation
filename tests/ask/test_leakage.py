@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
 
+import pytest
+
 from oms_hub.ask.leakage import LeakResult, detect_answer_leak, safe_pre_submit_refusal
 
 
@@ -36,12 +38,23 @@ def test_option_label_formatting_is_normalized() -> None:
 
 def test_decimal_option_label_formatting_is_normalized() -> None:
     assert detect_answer_leak("The answer is 1.", ["Option 1"]).leaked
+    assert detect_answer_leak("The answer is 12.", ["Option 12"]).leaked
     assert detect_answer_leak("Ｔｈｅ　ａｎｓｗｅｒ　ｉｓ　１．", ["Ｏｐｔｉｏｎ　１"]).leaked
+    assert detect_answer_leak("Ｔｈｅ　ａｎｓｗｅｒ　ｉｓ　１２．", ["Ｏｐｔｉｏｎ　１２"]).leaked
     assert not detect_answer_leak("The answer is 12.", ["Option 1"]).leaked
 
 
 def test_string_protected_answers_are_one_value_not_character_values() -> None:
     assert detect_answer_leak("The diagnosis is heparin.", "heparin").leaked
+
+
+@pytest.mark.parametrize("protected_answers", [None, 42, object()])
+def test_malformed_outer_protected_answers_are_safe(protected_answers: object) -> None:
+    assert not detect_answer_leak("The answer is 12.", protected_answers).leaked  # type: ignore[arg-type]
+
+
+def test_non_string_values_inside_a_sequence_are_ignored() -> None:
+    assert not detect_answer_leak("The answer is 12.", [None, 12]).leaked  # type: ignore[list-item]
 
 
 def test_dotted_abbreviation_is_matched_when_variant_is_supplied() -> None:

@@ -63,10 +63,13 @@ def _strip_option_prefixes(tokens: tuple[str, ...]) -> tuple[str, ...]:
         if (
             token in _OPTION_PREFIXES
             and index + 1 < len(tokens)
-            and len(tokens[index + 1]) == 1
             and (
-                (tokens[index + 1].isascii() and tokens[index + 1].isalpha())
-                or tokens[index + 1].isdecimal()
+                tokens[index + 1].isdecimal()
+                or (
+                    len(tokens[index + 1]) == 1
+                    and tokens[index + 1].isascii()
+                    and tokens[index + 1].isalpha()
+                )
             )
         ):
             index += 1
@@ -109,6 +112,8 @@ def detect_answer_leak(text: str, protected_answers: Sequence[str]) -> LeakResul
     protected_values: Sequence[str]
     if isinstance(protected_answers, str):
         protected_values = (protected_answers,)
+    elif not isinstance(protected_answers, Sequence):
+        return LeakResult(False, "no_match")
     else:
         protected_values = protected_answers
     for protected in protected_values:

@@ -48,7 +48,19 @@ _GENERIC_STRATEGY_WORDS = {
     "distractors",
     "strategy",
 }
-_GENERIC_TEST_WORDS = {"exam", "exams", "general", "test", "tests"}
+_GENERIC_CONTEXT_PHRASES = (
+    ("general", "exam"),
+    ("general", "exams"),
+    ("general", "test"),
+    ("general", "tests"),
+    ("test", "taking"),
+    ("on", "exams"),
+    ("on", "tests"),
+    ("for", "exams"),
+    ("for", "tests"),
+    ("exam", "strategy"),
+    ("test", "strategy"),
+)
 _GENERIC_ELIMINATION_WORDS = {
     "choices",
     "choice",
@@ -176,18 +188,16 @@ def _requests_an_option_label(tokens: tuple[str, ...]) -> bool:
 
 
 def _is_option_label(value: str) -> bool:
-    return len(value) == 1 and (
-        (value.isascii() and value.isalpha()) or value.isdecimal()
-    )
+    return value.isdecimal() or (len(value) == 1 and value.isascii() and value.isalpha())
 
 
 def _is_generic_strategy_query(tokens: tuple[str, ...]) -> bool:
     if _QUESTION_SCOPE_WORDS.intersection(tokens):
         return False
     has_strategy_term = bool(_GENERIC_STRATEGY_WORDS.intersection(tokens))
-    has_generic_test_context = bool(_GENERIC_TEST_WORDS.intersection(tokens))
+    has_generic_test_context = _contains_any(tokens, _GENERIC_CONTEXT_PHRASES)
     has_elimination_term = bool(_GENERIC_ELIMINATION_WORDS.intersection(tokens))
-    return has_strategy_term or (has_generic_test_context and has_elimination_term)
+    return has_generic_test_context and (has_strategy_term or has_elimination_term)
 
 
 def _requests_option_elimination(tokens: tuple[str, ...]) -> bool:
@@ -271,7 +281,12 @@ def classify_pre_submit_intent(query: str) -> AskIntent:
     if not tokens:
         return AskIntent.OTHER
 
-    if _is_generic_strategy_query(tokens):
+    generic_strategy = _is_generic_strategy_query(tokens)
+    if generic_strategy:
+        # Generic framing is benign only after direct-answer checks. The generic rule-out
+        # form is the one exception: it is a study strategy, not a request about this item.
+        if _requests_direct_answer(tokens) and not _contains(tokens, ("rule", "out")):
+            return AskIntent.REQUEST_ANSWER
         return AskIntent.CONCEPT_HINT
 
     # Policy-sensitive requests are checked before benign educational intents.

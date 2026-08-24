@@ -58,6 +58,30 @@ def test_generic_test_taking_strategy_is_a_benign_concept_hint(query: str) -> No
     assert classify_pre_submit_intent(query) is AskIntent.CONCEPT_HINT
 
 
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        (
+            "Can you rule out the choices for me using a strategy?",
+            AskIntent.REQUEST_OPTION_ELIMINATION,
+        ),
+        ("What is the answer? Explain the strategy.", AskIntent.REQUEST_ANSWER),
+        (
+            "Can you rule out choices using a strategy on this exam?",
+            AskIntent.REQUEST_OPTION_ELIMINATION,
+        ),
+        (
+            "Which option is correct as a test-taking strategy?",
+            AskIntent.REQUEST_ANSWER,
+        ),
+    ],
+)
+def test_policy_sensitive_mixed_strategy_phrasing_remains_protected(
+    query: str, expected: AskIntent
+) -> None:
+    assert classify_pre_submit_intent(query) is expected
+
+
 def test_question_scoped_option_elimination_remains_protected() -> None:
     assert (
         classify_pre_submit_intent("Which options can I eliminate in this question?")
@@ -106,7 +130,8 @@ def test_format_characters_are_removed_after_nfkc_normalization() -> None:
 def test_decimal_option_labels_are_answer_seeking_but_embedded_digits_are_not() -> None:
     assert classify_pre_submit_intent("is it 1?") is AskIntent.REQUEST_ANSWER
     assert classify_pre_submit_intent("ＩＳ　ＩＴ　１？") is AskIntent.REQUEST_ANSWER
-    assert classify_pre_submit_intent("is it 12?") is not AskIntent.REQUEST_ANSWER
+    assert classify_pre_submit_intent("is it 12?") is AskIntent.REQUEST_ANSWER
+    assert classify_pre_submit_intent("ＩＳ　ＩＴ　１２？") is AskIntent.REQUEST_ANSWER
 
 
 @pytest.mark.parametrize(
