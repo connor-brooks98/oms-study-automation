@@ -213,6 +213,42 @@ def test_messages_are_append_only_and_deterministically_ordered(
     ]
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "DELETE FROM ask_messages WHERE thread_id = 'thread-corrupt-sequence' "
+        "AND sequence = 2",
+        "UPDATE ask_messages SET sequence = 4 WHERE thread_id = 'thread-corrupt-sequence' "
+        "AND sequence = 2",
+        "UPDATE ask_threads SET message_sequence = -1 "
+        "WHERE thread_id = 'thread-corrupt-sequence'",
+        "UPDATE ask_threads SET message_sequence = 'not-an-int' "
+        "WHERE thread_id = 'thread-corrupt-sequence'",
+    ),
+)
+def test_message_history_requires_nonnegative_contiguous_sequences(
+    repository: AskRepository,
+    database: Database,
+    mutation: str,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice", AskMode.GLOBAL, _scope(), thread_id="thread-corrupt-sequence"
+    )
+    for index in range(1, 4):
+        repository.append_user_message(
+            thread.thread_id,
+            "actor-alice",
+            f"Question {index}",
+            message_id=f"message-sequence-{index}",
+        )
+
+    with database.engine.begin() as connection:
+        connection.execute(text(mutation))
+
+    with pytest.raises(ValueError, match="message sequence"):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
 def test_mismatched_message_actor_is_not_omitted_from_history(
     repository: AskRepository,
     database: Database,
@@ -680,6 +716,39 @@ def test_corrupt_persisted_page_context_extra_key_fails_closed(
         )
 
     with pytest.raises(ValueError):
+        repository.get_thread(thread.thread_id, "actor-alice")
+
+
+@pytest.mark.parametrize(
+    "page_context_json",
+    (
+        '{"kind":"lecture","objective_ids":["obj-1"],'
+        '"objective_ids":["obj-2"]}',
+        '{ "objective_ids": ["obj-1", "obj-2"], "kind": "lecture" }',
+    ),
+)
+def test_corrupt_persisted_page_context_noncanonical_fails_closed(
+    repository: AskRepository,
+    database: Database,
+    page_context_json: str,
+) -> None:
+    thread = repository.create_thread(
+        "actor-alice",
+        AskMode.LECTURE,
+        _scope(),
+        page_context=AskPageContext(kind="lecture", objective_ids=("obj-1", "obj-2")),
+        thread_id="thread-corrupt-page-context-canonical",
+    )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE ask_threads SET page_context_json = :page_context_json "
+                "WHERE thread_id = :thread_id"
+            ),
+            {"page_context_json": page_context_json, "thread_id": thread.thread_id},
+        )
+
+    with pytest.raises(ValueError, match="page context"):
         repository.get_thread(thread.thread_id, "actor-alice")
 
 
