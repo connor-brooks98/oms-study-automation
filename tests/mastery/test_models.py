@@ -70,6 +70,8 @@ def test_learner_event_is_immutable_and_normalizes_collection_fields() -> None:
         ("question_version_id", None, "question_version_id"),
         ("objective_ids", (), "objective_ids"),
         ("source_snapshot_hash", None, "source_snapshot_hash"),
+        ("correct", None, "correct"),
+        ("selected_option", None, "selected_option"),
     ],
 )
 def test_question_answered_requires_verified_provenance(
@@ -83,6 +85,8 @@ def test_question_answered_requires_verified_provenance(
         "objective_ids": ("objective-1",),
         "question_version_id": "question-version-1",
         "source_snapshot_hash": "snapshot-hash",
+        "correct": True,
+        "selected_option": "B",
     }
     values[field] = value
 
@@ -120,6 +124,8 @@ def test_event_rejects_invalid_boundary_values(
         "objective_ids": ("objective-1",),
         "question_version_id": "question-version-1",
         "source_snapshot_hash": "snapshot-hash",
+        "correct": True,
+        "selected_option": "B",
         "difficulty": 3,
         "response_duration_ms": 100,
     }

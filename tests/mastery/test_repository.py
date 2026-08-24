@@ -99,6 +99,25 @@ def test_duplicate_client_event_id_returns_one_immutable_event(database: Databas
     assert repository.events_for_objective("objective-1") == [first]
 
 
+def test_repository_does_not_persist_incomplete_question_event(
+    database: Database,
+) -> None:
+    repository = MasteryRepository(database)
+
+    with pytest.raises(ValueError, match="correct"):
+        repository.append_event(
+            LearnerEvent(
+                client_event_id="client-incomplete",
+                event_type=LearnerEventType.QUESTION_ANSWERED,
+                objective_ids=("objective-1",),
+                question_version_id="question-version-1",
+                source_snapshot_hash="snapshot-hash",
+            )
+        )
+
+    assert repository.events_for_objective("objective-1") == []
+
+
 def test_repository_exposes_append_and_query_only_for_event_writes(
     database: Database,
 ) -> None:

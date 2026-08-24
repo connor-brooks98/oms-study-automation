@@ -138,6 +138,10 @@ class LearnerEvent:
                 raise ValueError("question_answered requires objective_ids")
             if self.source_snapshot_hash is None:
                 raise ValueError("question_answered requires source_snapshot_hash")
+            if self.correct is None:
+                raise ValueError("question_answered requires correct")
+            if self.selected_option is None:
+                raise ValueError("question_answered requires selected_option")
 
         if self.correct is not None and not isinstance(self.correct, bool):
             raise ValueError("correct must be a boolean or None")
