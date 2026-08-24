@@ -31,7 +31,10 @@ _SAFE_REASON = "pre_submit_answer_protection"
 
 
 def _normalized(value: str) -> str:
-    return unicodedata.normalize("NFKC", value).casefold()
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return "".join(
+        character for character in normalized if unicodedata.category(character) != "Cf"
+    )
 
 
 def _tokens(value: str) -> tuple[str, ...]:
@@ -61,8 +64,10 @@ def _strip_option_prefixes(tokens: tuple[str, ...]) -> tuple[str, ...]:
             token in _OPTION_PREFIXES
             and index + 1 < len(tokens)
             and len(tokens[index + 1]) == 1
-            and tokens[index + 1].isascii()
-            and tokens[index + 1].isalpha()
+            and (
+                (tokens[index + 1].isascii() and tokens[index + 1].isalpha())
+                or tokens[index + 1].isdecimal()
+            )
         ):
             index += 1
             continue
@@ -101,7 +106,12 @@ def detect_answer_leak(text: str, protected_answers: Sequence[str]) -> LeakResul
     text_variants = _variants(text)
     if not text_variants:
         return LeakResult(False, "no_match")
-    for protected in protected_answers:
+    protected_values: Sequence[str]
+    if isinstance(protected_answers, str):
+        protected_values = (protected_answers,)
+    else:
+        protected_values = protected_answers
+    for protected in protected_values:
         if not isinstance(protected, str):
             continue
         for text_tokens in text_variants:
@@ -116,6 +126,6 @@ def safe_pre_submit_refusal() -> GroundedAnswer:
 
     return GroundedAnswer(
         answer_markdown=_SAFE_REFUSAL,
-        insufficient_evidence=True,
+        insufficient_evidence=False,
         safe_response_reason=_SAFE_REASON,
     )

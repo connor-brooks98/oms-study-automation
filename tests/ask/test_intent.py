@@ -48,6 +48,31 @@ def test_answer_seeking_and_option_elimination_take_precedence(
 
 
 @pytest.mark.parametrize(
+    "query",
+    [
+        "How do I eliminate wrong answer choices on a general test?",
+        "What strategy helps me rule out distractors on exams?",
+    ],
+)
+def test_generic_test_taking_strategy_is_a_benign_concept_hint(query: str) -> None:
+    assert classify_pre_submit_intent(query) is AskIntent.CONCEPT_HINT
+
+
+def test_question_scoped_option_elimination_remains_protected() -> None:
+    assert (
+        classify_pre_submit_intent("Which options can I eliminate in this question?")
+        is AskIntent.REQUEST_OPTION_ELIMINATION
+    )
+
+
+def test_exam_answer_request_remains_direct() -> None:
+    assert (
+        classify_pre_submit_intent("What is the answer to this exam?")
+        is AskIntent.REQUEST_ANSWER
+    )
+
+
+@pytest.mark.parametrize(
     ("query", "expected"),
     [
         ("Give me a hint about this concept.", AskIntent.CONCEPT_HINT),
@@ -69,6 +94,19 @@ def test_fullwidth_case_whitespace_and_punctuation_are_normalized() -> None:
         is AskIntent.REQUEST_ANSWER
     )
     assert classify_pre_submit_intent("ＩＳ　ＩＴ　Ｂ？") is AskIntent.REQUEST_ANSWER
+
+
+def test_format_characters_are_removed_after_nfkc_normalization() -> None:
+    assert (
+        classify_pre_submit_intent("ＷＨＡＴ　ＩＳ　ＴＨＥ　ＡＮＳ\u200bＷＥＲ？")
+        is AskIntent.REQUEST_ANSWER
+    )
+
+
+def test_decimal_option_labels_are_answer_seeking_but_embedded_digits_are_not() -> None:
+    assert classify_pre_submit_intent("is it 1?") is AskIntent.REQUEST_ANSWER
+    assert classify_pre_submit_intent("ＩＳ　ＩＴ　１？") is AskIntent.REQUEST_ANSWER
+    assert classify_pre_submit_intent("is it 12?") is not AskIntent.REQUEST_ANSWER
 
 
 @pytest.mark.parametrize(

@@ -21,9 +21,27 @@ def test_leak_detector_normalizes_unicode_case_whitespace_and_hyphens() -> None:
     assert result.leaked
 
 
+def test_leak_detector_removes_unicode_format_characters() -> None:
+    result = detect_answer_leak(
+        "Ｔｈｅ\u200b　ｄｉａｇｎｏｓｉｓ　ｉｓ　ｈｅｐａｒｉ\u2060ｎ–induced thrombocytopenia.",
+        ["Heparin-induced thrombocytopenia"],
+    )
+    assert result.leaked
+
+
 def test_option_label_formatting_is_normalized() -> None:
     assert detect_answer_leak("The answer is (Ｂ).", ["b"]).leaked
     assert detect_answer_leak("Choice: B is correct.", ["Option B"]).leaked
+
+
+def test_decimal_option_label_formatting_is_normalized() -> None:
+    assert detect_answer_leak("The answer is 1.", ["Option 1"]).leaked
+    assert detect_answer_leak("Ｔｈｅ　ａｎｓｗｅｒ　ｉｓ　１．", ["Ｏｐｔｉｏｎ　１"]).leaked
+    assert not detect_answer_leak("The answer is 12.", ["Option 1"]).leaked
+
+
+def test_string_protected_answers_are_one_value_not_character_values() -> None:
+    assert detect_answer_leak("The diagnosis is heparin.", "heparin").leaked
 
 
 def test_dotted_abbreviation_is_matched_when_variant_is_supplied() -> None:
@@ -71,6 +89,7 @@ def test_safe_refusal_has_exact_text_and_no_provenance() -> None:
     )
     assert answer.claims == ()
     assert answer.citations == ()
+    assert answer.insufficient_evidence is False
     assert answer.provider_request_id is None
     assert answer.retrieval_run_id is None
     assert answer.safe_response_reason == "pre_submit_answer_protection"

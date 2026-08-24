@@ -26,6 +26,9 @@ _CONTRACTION = re.compile(r"\bwhat['’]s\b", re.IGNORECASE)
 
 def _tokens(value: str) -> tuple[str, ...]:
     normalized = unicodedata.normalize("NFKC", value).casefold()
+    normalized = "".join(
+        character for character in normalized if unicodedata.category(character) != "Cf"
+    )
     normalized = _CONTRACTION.sub("what is", normalized)
     return tuple(_WORD.findall(normalized))
 
@@ -40,6 +43,31 @@ def _contains_any(tokens: tuple[str, ...], phrases: tuple[tuple[str, ...], ...])
 
 
 _OPTION_WORDS = {"answer", "choice", "choices", "option", "options"}
+_GENERIC_STRATEGY_WORDS = {
+    "distractor",
+    "distractors",
+    "strategy",
+}
+_GENERIC_TEST_WORDS = {"exam", "exams", "general", "test", "tests"}
+_GENERIC_ELIMINATION_WORDS = {
+    "choices",
+    "choice",
+    "eliminate",
+    "elimination",
+    "options",
+    "option",
+    "rule",
+    "wrong",
+}
+_QUESTION_SCOPE_WORDS = {
+    "case",
+    "patient",
+    "question",
+    "scenario",
+    "specific",
+    "stem",
+    "this",
+}
 _ELIMINATION_WORDS = {
     "cross",
     "discard",
@@ -129,10 +157,10 @@ def _requests_an_option_label(tokens: tuple[str, ...]) -> bool:
             if label_index >= len(tokens):
                 continue
             label = tokens[label_index]
-            if len(label) == 1 and label.isascii() and label.isalpha():
+            if _is_option_label(label):
                 return True
     for index, label in enumerate(tokens):
-        if len(label) != 1 or not label.isascii() or not label.isalpha():
+        if not _is_option_label(label):
             continue
         following = tokens[index + 1 : index + 3]
         preceding = tokens[max(0, index - 2) : index]
@@ -145,6 +173,21 @@ def _requests_an_option_label(tokens: tuple[str, ...]) -> bool:
         if following == ("is", "correct"):
             return True
     return False
+
+
+def _is_option_label(value: str) -> bool:
+    return len(value) == 1 and (
+        (value.isascii() and value.isalpha()) or value.isdecimal()
+    )
+
+
+def _is_generic_strategy_query(tokens: tuple[str, ...]) -> bool:
+    if _QUESTION_SCOPE_WORDS.intersection(tokens):
+        return False
+    has_strategy_term = bool(_GENERIC_STRATEGY_WORDS.intersection(tokens))
+    has_generic_test_context = bool(_GENERIC_TEST_WORDS.intersection(tokens))
+    has_elimination_term = bool(_GENERIC_ELIMINATION_WORDS.intersection(tokens))
+    return has_strategy_term or (has_generic_test_context and has_elimination_term)
 
 
 def _requests_option_elimination(tokens: tuple[str, ...]) -> bool:
@@ -227,6 +270,9 @@ def classify_pre_submit_intent(query: str) -> AskIntent:
     tokens = _tokens(query)
     if not tokens:
         return AskIntent.OTHER
+
+    if _is_generic_strategy_query(tokens):
+        return AskIntent.CONCEPT_HINT
 
     # Policy-sensitive requests are checked before benign educational intents.
     if _requests_option_elimination(tokens):
