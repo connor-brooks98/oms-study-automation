@@ -18,7 +18,10 @@ commit `a0830c702a1b8140ee0fd5c56dc896aa7e95bcf0` / tree
 record commit; that record commit is not self-referenced here. Fix Round 3 is the separate
 implementation/test commit `944b3de52514090f85a1c1c848d3c7c21b9843d2` / tree
 `a4e62823cd7c096d7ad7f88faea8c6f98eeb6781`, subject
-`fix: enforce Ask elimination precedence`.
+`fix: enforce Ask elimination precedence`. Fix Round 4 is the separate implementation/test
+commit `e7bdd642a448e9020057971bec66e9c775462500` / tree
+`e021f4e6061dd60794611f5e4de6963062fdd866`, subject
+`fix: block labeled Ask strategy bypass`.
 
 ## Interfaces
 
@@ -167,7 +170,7 @@ members; and the controller ruling remains `insufficient_evidence=False` for pol
 
 ## Fix Round 3
 
-The final fix tests were added before production changes while the worktree was at the clean
+The Fix Round 3 tests were added before production changes while the worktree was at the clean
 Fix Round 2 implementation commit `dace31880f6d5c0c246f0bed91ee76ee12ba72ed` / tree
 `03ed02a897710c154574eb82e524a71092b383d1`.
 
@@ -203,29 +206,30 @@ Ambiguous language therefore remains protected rather than becoming a benign hin
 2. Fix Round 1 focused tests: `49 passed`.
 3. Fix Round 2 focused tests: `57 passed`.
 4. Fix Round 3 focused tests: `61 passed`.
-5. Affected Ask/models/contracts command:
+5. Fix Round 4 focused tests: `64 passed`.
+6. Affected Ask/models/contracts command:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
      python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py tests/ask/test_models.py tests/contracts -q
    ```
 
-   Result: `118 passed` (`61` Task 3.3, `16` Task 3.1 model, `41` contract tests).
-6. Exact Ruff:
+   Result: `121 passed` (`64` Task 3.3, `16` Task 3.1 model, `41` contract tests).
+7. Exact Ruff:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH ruff check src tests scripts
    ```
 
    Result: `All checks passed!`.
-7. Source mypy:
+8. Source mypy:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH mypy src
    ```
 
    Result: `Success: no issues found in 180 source files`.
-8. Task-owned test mypy:
+9. Task-owned test mypy:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH MYPYPATH=$PWD/src \
@@ -233,7 +237,7 @@ Ambiguous language therefore remains protected rather than becoming a benign hin
    ```
 
    Result: `Success: no issues found in 2 source files`.
-9. Static safety checks:
+10. Static safety checks:
 
    - An AST scan of both production modules reported no provider/model API, network, or
      logging imports/calls. The only project import is the required `GroundedAnswer` model
@@ -242,8 +246,8 @@ Ambiguous language therefore remains protected rather than becoming a benign hin
      answers. Protected values occur only in hand-derived tests.
    - A credential/private-content scan found no API keys, bearer credentials, private lecture
      text, Anki content, or production identifiers in the owned implementation/tests.
-10. `git diff --check`: passed.
-11. The exact base-to-head scope check is limited to the authorized files:
+11. `git diff --check`: passed.
+12. The exact base-to-head scope check is limited to the authorized files:
 
    ```text
    src/oms_hub/ask/intent.py
@@ -272,6 +276,38 @@ data access, Anki action, production mutation, push, merge, tag, or deploy was p
 - No service, route, context, feature flag, dependency, persistence, or integration wiring
   was added. Task 3.7 owns future service-boundary use.
 
+## Fix Round 4
+
+The fix tests were added first against the clean Fix Round 3 documentation record commit
+`b283c35f7e730120d643ed74f3ae92a32240dc8c` / tree
+`5bb1125bba134d30c0eb6e937f54ed709e4b1de5`.
+
+RED command:
+
+```text
+PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
+  python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py -q
+```
+
+Result: exit `1` with 3 failures: `How can I rule out choice B on exams?`,
+`What strategies help eliminate option 12 on tests?`, and the fullwidth-label form all
+incorrectly returned `concept_hint`.
+
+GREEN command:
+
+```text
+PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
+  python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py -q
+```
+
+Result: `64 passed`.
+
+Fix Round 4 keeps general instructional strategy requests benign only when no concrete
+option label is present: `_is_generic_strategy_query()` now rejects an `answer`, `choice`,
+`choices`, `option`, or `options` token immediately followed by the existing normalized
+letter-or-decimal `_is_option_label()` rule. The subsequent elimination check then protects
+the labeled request. This is intentionally safe for ambiguity and adds no parallel parser.
+
 ## Known limitations
 
 - The intent classifier is intentionally bounded and deterministic. Unrecognized paraphrases
@@ -291,10 +327,13 @@ data access, Anki action, production mutation, push, merge, tag, or deploy was p
 - The broad `rule out` shortcut is removed. Generic strategy recognition requires both
   explicit instructional wording and general test/exam context; ambiguous elimination
   phrasing errs toward the protected path.
+- Fix Round 4 decision: an immediately labeled answer/choice/option term is never general
+  strategy framing, including fullwidth letters and multi-digit decimal labels after NFKC.
+  The existing option-label helper remains the single label grammar.
 - Native Windows and provider/live acceptance remain unrun by design.
 
 ## Commit identity
 
-The initial, Fix Round 1, Fix Round 2, and Fix Round 3 implementation identities are fixed above. This
-report update is intentionally delivered as a separate docs-only correction record commit;
-that record commit is not self-referenced here.
+The initial through Fix Round 4 implementation identities are fixed above. This report update
+is intentionally delivered as a separate docs-only correction record commit; that record
+commit is not self-referenced here.
