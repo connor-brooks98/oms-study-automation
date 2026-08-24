@@ -27,7 +27,10 @@ implementation/test commit `a7c2ff18a36e535b783f74776ae87c4d34443c17` / tree
 `fix: enforce direct Ask answer precedence`. The fresh bare-label correction is the separate
 implementation/test commit `fd97f87077f7a82af996b53771357df77997c04a` / tree
 `f130f7e0c407b0dd37fdfc00e7a5be7db006dee1`, subject
-`fix: protect bare Ask option labels`.
+`fix: protect bare Ask option labels`. The fresh option-list correction is the separate
+implementation/test commit `8c474d4bd68bdb3b201bb69f7e53871a37557f0b` / tree
+`cbda89a216349bb145cb91776ef64e7c7887f737`, subject
+`fix: protect Ask option lists`.
 
 ## Final review record
 
@@ -60,6 +63,12 @@ implementation/test commit `fd97f87077f7a82af996b53771357df77997c04a` / tree
   (including fullwidth forms) was incorrectly classified as `concept_hint`. The correction
   is limited to the shared classifier and bounded regression tests; no reviewer or read-only
   identity changed.
+- Second fresh Workstream Sol verdict: `FIX_FIRST` on baseline
+  `b7933b18ab23d831c96d78c97c301d64fea85178` / tree
+  `810e03db479c7d7d212eff686d1fc121429d2b16`. The bounded bare-label helper still classified
+  concrete lists (`eliminate B, C, and D`, `B & C`, and `B/C` on exams) as `concept_hint`.
+  The correction remains limited to the shared classifier and bounded regressions; no
+  reviewer/read-only identity, schema, wiring, or neighboring task changed.
 
 ## Interfaces
 
@@ -247,29 +256,30 @@ Ambiguous language therefore remains protected rather than becoming a benign hin
 5. Fix Round 4 focused tests: `64 passed`.
 6. Final-review focused tests: `66 passed`.
 7. Fresh bare-label focused tests: `71 passed`.
-8. Affected Ask/models/contracts command:
+8. Fresh option-list focused tests: `76 passed`.
+9. Affected Ask/models/contracts command:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
      python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py tests/ask/test_models.py tests/contracts -q
    ```
 
-   Result: `128 passed` (`71` Task 3.3, `16` Task 3.1 model, `41` contract tests).
-9. Exact Ruff:
+   Result: `133 passed` (`76` Task 3.3, `16` Task 3.1 model, `41` contract tests).
+10. Exact Ruff:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH ruff check src tests scripts
    ```
 
    Result: `All checks passed!`.
-10. Source mypy:
+11. Source mypy:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH mypy src
    ```
 
    Result: `Success: no issues found in 180 source files`.
-11. Task-owned test mypy:
+12. Task-owned test mypy:
 
    ```text
    PATH=/tmp/studyhub-task01-venv/bin:$PATH MYPYPATH=$PWD/src \
@@ -277,7 +287,7 @@ Ambiguous language therefore remains protected rather than becoming a benign hin
    ```
 
    Result: `Success: no issues found in 2 source files`.
-12. Static safety checks:
+13. Static safety checks:
 
    - An AST scan of both production modules reported no provider/model API, network, or
      logging imports/calls. The only project import is the required `GroundedAnswer` model
@@ -286,8 +296,8 @@ Ambiguous language therefore remains protected rather than becoming a benign hin
      answers. Protected values occur only in hand-derived tests.
    - A credential/private-content scan found no API keys, bearer credentials, private lecture
      text, Anki content, or production identifiers in the owned implementation/tests.
-13. `git diff --check`: passed.
-14. The exact base-to-head scope check is limited to the authorized files:
+14. `git diff --check`: passed.
+15. The exact base-to-head scope check is limited to the authorized files:
 
    ```text
    src/oms_hub/ask/intent.py
@@ -415,6 +425,43 @@ and tests are committed separately from this documentation as
 `fd97f87077f7a82af996b53771357df77997c04a` / tree
 `f130f7e0c407b0dd37fdfc00e7a5be7db006dee1`.
 
+## Fresh option-list correction
+
+Fresh Workstream Sol returned the exact verdict `FIX_FIRST` on clean baseline commit
+`b7933b18ab23d831c96d78c97c301d64fea85178` / tree
+`810e03db479c7d7d212eff686d1fc121429d2b16`: the bounded bare-label helper still allowed
+concrete lists (`How can I eliminate B, C, and D on exams?`, `How can I eliminate B & C on
+exams?`, and `How can I eliminate B/C on exams?`) to return `concept_hint`.
+
+The list-form regression tests were added before the production change.
+
+RED command:
+
+```text
+PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
+  python -m pytest tests/ask/test_intent.py -q
+```
+
+Result: exit `1`; the three new concrete-list cases returned `concept_hint` instead of
+`request_option_elimination`. Existing `B vitamins`, ordinary-word, and prior bare-label
+cases remained as expected.
+
+GREEN command:
+
+```text
+PATH=/tmp/studyhub-task01-venv/bin:$PATH PYTHONPATH=$PWD/src \
+  python -m pytest tests/ask/test_intent.py tests/ask/test_leakage.py
+```
+
+Result: `76 passed`.
+
+The shared helper now walks adjacent normalized labels and explicit `and`/`or` label joins,
+then requires end-of-query or a boundary continuation. This covers comma, ampersand, and
+slash list punctuation after tokenization while preserving `B vitamins` and ordinary-word
+negatives. The implementation and tests are committed separately as
+`8c474d4bd68bdb3b201bb69f7e53871a37557f0b` / tree
+`cbda89a216349bb145cb91776ef64e7c7887f737`.
+
 ## Known limitations
 
 - The intent classifier is intentionally bounded and deterministic. Unrecognized paraphrases
@@ -443,6 +490,9 @@ and tests are committed separately from this documentation as
 - Fresh correction decision: bare option labels are protected only when immediately preceded
   by an explicit elimination phrase and followed by an option-list or boundary continuation.
   This closes the ASCII/fullwidth bare-label bypass without broad single-letter matches.
+- Fresh option-list decision: the same helper walks adjacent labels and valid `and`/`or` joins
+  before accepting a boundary continuation, so comma/ampersand/slash lists are protected while
+  ordinary words following a single-letter token remain benign.
 - Native Windows and provider/live acceptance remain unrun by design.
 
 ## Commit identity
@@ -450,4 +500,5 @@ and tests are committed separately from this documentation as
 The initial through Fix Round 4 implementation identities are fixed above. This report update
 is intentionally delivered as a separate docs-only correction record commit; that record
 commit is not self-referenced here. The fresh bare-label implementation/test identity is fixed
-above; resolve the docs-only commit identity from the final branch tip.
+above, as is the fresh option-list implementation/test identity; resolve the docs-only commit
+identity from the final branch tip.
