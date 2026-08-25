@@ -4,7 +4,7 @@
   "state": "blocked",
   "claim": "gate_not_open",
   "assessment_ref": {
-    "branch": "sol1/source-trust",
+    "branch": "integration/studyhub-grounded-learning-v1",
     "sha": "SELF",
     "self_reference_resolution": "Resolve SELF from the commit containing this record."
   },
@@ -124,16 +124,16 @@
     {
       "id": "storekey_composition",
       "command": "In a Sol-0-composed accepted tree: python -c 'from oms_hub.indexing.models import StoreKey; from oms_hub.knowledge.backfill import scope_ids; course_id, exam_id, _ = scope_ids(\"StoreKey Gate Fixture\", 1, 13); key = StoreKey.course(course_id, exam_id); assert StoreKey.parse(key.value) == key; assert key.course_id == course_id; assert key.exam_id == exam_id'",
-      "status": "blocked",
-      "evidence": "StoreKey is absent at Sol-1 HEAD; sol2/gemini-indexing is 4abda3acda3e447051db9144f6d3a1cf437602ba and diverges from Sol-1 at merge base 82e22d7aa109a29a5fe4d7c26eb1672966317fbf.",
+      "status": "pass",
+      "evidence": "Sol-0 composed integration head 7c29c83 with sol2/gemini-indexing 4abda3a in a disposable uncommitted worktree. The exact assertion command passed and produced course:storekey-gate-fixture-5792b3155cefbf427dae0c1f:exam:exam-1-22c6b5b530886d5caf1f5dd3.",
       "scope": "CP-0002 cross-workstream StoreKey grammar/round-trip and opaque consumer composition."
     },
     {
       "id": "dependency_staleness",
       "command": "Covered fail-closed behavior in tests/knowledge; no mutation command is authorized without durable provenance.",
-      "status": "blocked",
-      "evidence": "KnowledgeService.mark_dependents_stale raises DependencyProvenanceUnavailable; Task 5.2 owns provenance and currently depends on Task 1.8.",
-      "scope": "Task 1.8 requirement that source changes mark dependent artifacts stale."
+      "status": "pass",
+      "evidence": "Sol-0 ruling 17fed55 requires fail-closed no-mutation behavior at Gate 2A and assigns durable stale propagation to Task 5.2 before Gate 4.",
+      "scope": "Gate 2A verifies the fail-closed boundary; Task 5.2 owns durable provenance and stale propagation."
     }
   ],
   "blockers": [
@@ -152,22 +152,6 @@
       "owner": "Connor/Sol-0 controlled private-data operator",
       "evidence_gap": "Current task authorization forbids private-data access.",
       "unblocking_action": "Authorize and run the dry-run in the controlled private environment; commit hashes, counts, locator distributions, and warnings only."
-    },
-    {
-      "id": "storekey_cross_workstream_composition",
-      "status": "blocked",
-      "requirement": "CP-0002 requires StoreKey.course()/parse() round-trip on composed accepted Sol-1 and Sol-2 contracts.",
-      "owner": "Sol-0 with Sol-2",
-      "evidence_gap": "StoreKey is Sol-2-owned and sol2/gemini-indexing diverges from Sol-1; Sol-1 must not copy or import it.",
-      "unblocking_action": "Compose accepted branches in a Sol-0-owned integration worktree and run the exact round-trip command."
-    },
-    {
-      "id": "durable_artifact_dependency_provenance",
-      "status": "blocked",
-      "requirement": "Task 1.8 requires source changes to mark dependents stale.",
-      "owner": "Sol-0 program decision and Sol-5 Task 5.2",
-      "evidence_gap": "Task 1.7 correctly fails closed because Task 5.2 provenance is absent, while the manifest makes Task 5.2 depend on Task 1.8.",
-      "unblocking_action": "Sol-0 must resolve the dependency cycle or formally narrow this Gate 2A criterion; Sol-1 cannot waive it."
     }
   ],
   "platform_limitations": [
