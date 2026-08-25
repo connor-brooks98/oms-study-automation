@@ -1276,10 +1276,13 @@ async def apply_anki_envelope(
             status_code=status.HTTP_409_CONFLICT,
             detail="Build and inspect the apply plan first",
         )
-    if job.state not in {
-        CurationState.ENVELOPE_PENDING,
-        CurationState.COMPLETE,
-    }:
+    resumable_partial = (
+        job.state is CurationState.APPLYING_LOCAL
+        and job.apply_state is ApplyState.APPLY_PARTIAL
+    )
+    if job.state not in {CurationState.ENVELOPE_PENDING, CurationState.COMPLETE} and not (
+        resumable_partial
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This apply is already in a recovery workflow",

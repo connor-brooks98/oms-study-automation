@@ -186,6 +186,8 @@ class FakeGateway:
         self.next_note_id = 100
         self.sync_calls = 0
         self.fail_sync_calls: set[int] = set()
+        self.add_notes_calls = 0
+        self.fail_add_notes_calls: set[int] = set()
         self.created_note_ids: list[int] = []
 
     async def sync(self) -> None:
@@ -230,6 +232,11 @@ class FakeGateway:
         self,
         notes: Sequence[dict[str, Any]],
     ) -> list[int]:
+        self.add_notes_calls += 1
+        if self.add_notes_calls in self.fail_add_notes_calls:
+            from oms_hub.anki.ankiconnect import AnkiConnectActionError
+
+            raise AnkiConnectActionError("simulated addNotes failure")
         created: list[int] = []
         for note in notes:
             note_id = self.next_note_id
@@ -2058,4 +2065,38 @@ def test_retry_sync_reuses_envelope_without_duplicate_generated_notes(
     assert first.json()["apply_state"] == "applied_local_sync_retryable"
     assert first.json()["recovery"]["kind"] == "retry_sync"
     assert retried.json()["apply_state"] == "complete"
+    assert len(gateway.created_note_ids) == 1
+
+
+def test_apply_partial_can_resume_the_journaled_envelope(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, lecture_id, revision_id, gateway = prepared_app
+    job_id = _ready_job(app, lecture_id, revision_id)
+    client.post(
+        f"/api/anki/jobs/{job_id}/envelope",
+        json={"contract_version": 1, "review_revision": 0},
+    )
+    gateway.fail_add_notes_calls.add(1)
+
+    first = client.post(
+        f"/api/anki/jobs/{job_id}/apply",
+        json={
+            "contract_version": 1,
+            "review_revision": 0,
+            "confirmation": "APPLY TO ANKI",
+        },
+    )
+    gateway.fail_add_notes_calls.clear()
+    resumed = client.post(
+        f"/api/anki/jobs/{job_id}/apply",
+        json={
+            "contract_version": 1,
+            "review_revision": 0,
+            "confirmation": "APPLY TO ANKI",
+        },
+    )
+
+    assert first.json()["apply_state"] == "apply_partial"
+    assert resumed.json()["apply_state"] == "complete"
     assert len(gateway.created_note_ids) == 1
