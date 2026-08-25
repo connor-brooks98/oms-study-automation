@@ -338,6 +338,11 @@ def test_scope_ids_are_bounded_and_digest_complete() -> None:
         value.replace("-", "").replace("_", "").replace(".", "").isalnum()
         for value in first
     )
+    assert scope_ids("a / b", 1, 2) == (
+        "a-b-d917a549d3f308d8cffd5d84",
+        "exam-1-3d6a7ba1ec25c8c6d02bfedb",
+        "lecture-2-58fd75ad073fd9e1058ad9ef",
+    )
     assert scope_ids("  A / B  ", 1, 2) == scope_ids("a / b", 1, 2)
     with pytest.raises(ValueError):
         scope_ids("", 1, 2)
