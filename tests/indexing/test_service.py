@@ -275,6 +275,10 @@ def test_ready_is_idempotent_and_cleanup_failure_is_only_a_warning(tmp_path: Pat
         len(admin.import_calls),
         len(admin.wait_calls),
     )
+    pending_cleanup = repository.get_document_by_source_revision(
+        admin.store.id, view.source_revision_id
+    )
+    admin.delete_error = None
     second = run(service.index_revision(view.source_revision_id))
     document = repository.get_document_by_source_revision(
         admin.store.id, view.source_revision_id
@@ -282,6 +286,8 @@ def test_ready_is_idempotent_and_cleanup_failure_is_only_a_warning(tmp_path: Pat
 
     assert first.state is IndexState.READY
     assert first.cleanup_warning == "transient"
+    assert pending_cleanup is not None
+    assert pending_cleanup.last_error_category == "cleanup:transient"
     assert second.state is IndexState.READY
     assert second.cleanup_warning is None
     assert calls == (
@@ -290,7 +296,9 @@ def test_ready_is_idempotent_and_cleanup_failure_is_only_a_warning(tmp_path: Pat
         len(admin.import_calls),
         len(admin.wait_calls),
     )
+    assert admin.delete_calls == ["files/provider-1", "files/provider-1"]
     assert document is not None and document.state is IndexState.READY
+    assert document.last_error_category is None
 
 
 def test_nonretryable_provider_failure_persists_terminal_state(tmp_path: Path) -> None:

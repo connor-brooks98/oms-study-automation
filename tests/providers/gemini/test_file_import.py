@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from time import monotonic
 from types import SimpleNamespace
 from typing import Any
 
@@ -49,9 +50,12 @@ class FakeOperations:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.results: list[object] = []
+        self.delay_seconds = 0.0
 
     async def get(self, operation: object) -> object:
         self.calls.append(str(getattr(operation, "name", None)))
+        if self.delay_seconds:
+            await asyncio.sleep(self.delay_seconds)
         return self.results.pop(0)
 
 
@@ -205,3 +209,14 @@ def test_wait_timeout_and_operation_failure_are_safe_and_retryable(
         run(failed_admin.wait_for_operation("operations/import-2"))
     assert "private provider payload" not in str(raised.value)
 
+
+def test_wait_bounds_an_inflight_poll_by_the_operation_deadline() -> None:
+    admin, client = admin_bundle(operation_timeout_seconds=1)
+    client.operations.delay_seconds = 2
+    client.operations.results = [SimpleNamespace(name="operations/import-1", done=False)]
+
+    started = monotonic()
+    with pytest.raises(GeminiTransientError, match="timed out"):
+        run(admin.wait_for_operation("operations/import-1"))
+
+    assert monotonic() - started < 1.5
