@@ -482,23 +482,28 @@ class ApplyCoordinator:
         self,
         notes: Sequence[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        model_fields: dict[str, set[str]] = {}
+        model_fields: dict[str, tuple[str, ...]] = {}
         prepared: list[dict[str, Any]] = []
         for note in notes:
             model = str(note.get("modelName", ""))
             if model not in model_fields:
-                model_fields[model] = set(await self.gateway.model_field_names(model))
+                model_fields[model] = tuple(await self.gateway.model_field_names(model))
             available = model_fields[model]
             fields = dict(cast(Mapping[str, str], note.get("fields", {})))
             if "Extra" in fields and "Extra" not in available and "Back Extra" in available:
                 fields["Back Extra"] = fields.pop("Extra")
-            unsupported = set(fields) - available
+            unsupported = set(fields) - set(available)
             if unsupported:
                 raise AnkiConnectError(
                     f"note type {model} does not support fields: "
                     + ", ".join(sorted(unsupported))
                 )
-            prepared.append({**note, "fields": fields})
+            prepared.append(
+                {
+                    **note,
+                    "fields": {name: fields.get(name, "") for name in available},
+                }
+            )
         return prepared
 
     async def _trailing_sync(
@@ -665,6 +670,17 @@ class ApplyCoordinator:
                     }
                 )
                 continue
+            expected_model = str(note.get("modelName", ""))
+            actual_model = raw.get("modelName")
+            if actual_model != expected_model:
+                differences.append(
+                    {
+                        "note_id": note_id,
+                        "kind": "model",
+                        "expected": expected_model,
+                        "actual": actual_model,
+                    }
+                )
             expected_fields = cast(
                 Mapping[str, str],
                 note.get("fields", {}),

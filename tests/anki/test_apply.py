@@ -56,6 +56,7 @@ class FakeGateway:
         self.ignore_mutation: set[str] = set()
         self.reject_generated_duplicates = False
         self.model_fields = ["Text", "Extra"]
+        self.created_model_name: str | None = None
 
     async def sync(self) -> None:
         self.sync_calls += 1
@@ -135,7 +136,7 @@ class FakeGateway:
             self.next_note_id += 1
             self.notes[note_id] = {
                 "noteId": note_id,
-                "modelName": note["modelName"],
+                "modelName": self.created_model_name or note["modelName"],
                 "fields": {
                     name: {
                         "value": note["fields"].get(name, ""),
@@ -542,6 +543,21 @@ def test_generated_extra_maps_to_back_extra_for_the_active_note_type() -> None:
         generated = gateway.notes[100]["fields"]
         assert generated["Back Extra"]["value"] == "Lecture slide 12."
         assert generated["Keywords"]["value"] == ""
+
+    asyncio.run(scenario())
+
+
+def test_generated_note_type_mismatch_fails_verification() -> None:
+    async def scenario() -> None:
+        gateway = FakeGateway()
+        gateway.created_model_name = "Basic"
+        envelope = _envelope(gateway, generated=True)
+        store = InMemoryApplyStore((envelope,))
+
+        result = await ApplyCoordinator(store, gateway).apply(envelope.envelope_id)
+
+        assert result.state is ApplyState.APPLY_PARTIAL
+        assert any(difference["kind"] == "model" for difference in result.differences)
 
     asyncio.run(scenario())
 

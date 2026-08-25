@@ -1961,6 +1961,9 @@ def test_apply_requires_confirmation_and_reports_counts(
     assert applied.json()["apply_state"] == "complete"
     assert applied.json()["recovery"]["kind"] == "complete"
     assert len(gateway.created_note_ids) == 1
+    assert gateway.notes[gateway.created_note_ids[0]]["modelName"] == (
+        "AnKingOverhaul (OMS_II_Extra/JCBrooks) (OMS II Fall 2026 / jcbrooks)"
+    )
 
 
 def test_failed_before_apply_tag_drift_can_rebind_and_apply_idempotently(

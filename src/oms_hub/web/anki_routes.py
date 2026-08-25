@@ -82,6 +82,9 @@ from oms_hub.study_generation.repository import GenerationRepository
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+GENERATED_NOTE_TYPE = (
+    "AnKingOverhaul (OMS_II_Extra/JCBrooks) (OMS II Fall 2026 / jcbrooks)"
+)
 
 
 def _same_unique_identity_set(
@@ -2602,7 +2605,7 @@ def _gap_proposal(
     model = str(card.provenance.get("model", job.model)).strip()
     prompt_version = str(card.provenance.get("prompt_version", job.gap_prompt_version)).strip()
     confidence = float(card.provenance.get("confidence", 0.0))
-    note_type = str(card.provenance.get("note_type", "Cloze"))
+    note_type = GENERATED_NOTE_TYPE
     fields = {"Text": card.text.strip(), "Extra": card.extra.strip()}
     content_hash = hashlib.sha256(
         json.dumps(
