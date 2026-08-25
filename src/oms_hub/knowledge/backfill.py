@@ -298,21 +298,14 @@ def main() -> int:
     database = Database(settings.database_url)
     try:
         knowledge = KnowledgeRepository(database)
-        from sqlalchemy import inspect
-
-        if not inspect(database.engine).has_table("source_revisions"):
-            report = BackfillReport(0, 0, 0, 0, ())
-            examined_ids: tuple[str, ...] = ()
-            warnings = ["knowledge_schema_uninitialized"]
-        else:
-            batch = SlideRevisionBackfill(
-                IngestionRepository(database),
-                CatalogRepository(database),
-                knowledge,
-            )._backfill_all_ready_course_revisions(args.limit, dry_run=True)
-            report = batch.report
-            examined_ids = batch.examined_ids
-            warnings = []
+        batch = SlideRevisionBackfill(
+            IngestionRepository(database),
+            CatalogRepository(database),
+            knowledge,
+        )._backfill_all_ready_course_revisions(args.limit, dry_run=True)
+        report = batch.report
+        examined_ids = batch.examined_ids
+        warnings: list[str] = []
         print(
             json.dumps(
                 {
