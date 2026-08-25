@@ -133,6 +133,7 @@ from oms_hub.web.settings_routes import api_router as settings_api_router
 from oms_hub.web.settings_routes import router as settings_router
 from oms_hub.web.studio_routes import router as studio_router
 from oms_hub.web.upload_routes import router as upload_router
+from oms_hub.workers import build_worker_registry
 
 logger = logging.getLogger(__name__)
 
@@ -651,11 +652,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.quiz_import_worker,
     )
     app.state.worker_supervisor = WorkerSupervisor(
-        {
-            "ingestion_worker": app.state.ingestion_worker,
-            "generation_worker": app.state.generation_worker,
-            "studio_worker": app.state.studio_worker,
-        },
+        build_worker_registry(
+            ingestion_worker=app.state.ingestion_worker,
+            generation_worker=app.state.generation_worker,
+            studio_worker=app.state.studio_worker,
+        ),
         maintenance_tasks={
             "ingestion_worker": app.state.ingestion_service.collect_staging,
         },

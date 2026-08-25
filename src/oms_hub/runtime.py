@@ -174,7 +174,7 @@ class WorkerSupervisor:
             }
             if expected_workers - set(self._workers):
                 return False, "worker_missing"
-            if set(self._workers) - expected_workers:
+            if set(self._workers) - (expected_workers | {"indexing_worker"}):
                 return False, "worker_configuration"
             for state in self._workers.values():
                 if state.start_count == 0:

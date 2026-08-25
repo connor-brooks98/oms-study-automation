@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import inspect, select, text
 
 import oms_hub.anki.models  # noqa: F401
+import oms_hub.indexing.models  # noqa: F401
 from oms_hub.domain import StepStatus, V2StepName
 from oms_hub.llm.catalog import FALLBACK_MODELS
 from oms_hub.llm.domain import LLMTask, ProviderName
@@ -23,7 +24,7 @@ from oms_hub.models import (
 if TYPE_CHECKING:
     from oms_hub.db import Database
 
-LATEST_SCHEMA_VERSION = 22
+LATEST_SCHEMA_VERSION = 23
 
 
 class StudioPublicationMigrationConflict(RuntimeError):
@@ -44,6 +45,11 @@ def _ensure_column(
         return
     with database.engine.begin() as connection:
         connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
+
+
+def _upgrade_index_job_leases_v23(database: "Database") -> None:
+    _ensure_column(database, "index_jobs", "lease_owner", "VARCHAR(100)")
+    _ensure_column(database, "index_jobs", "lease_expires_at", "VARCHAR(40)")
 
 
 def _upgrade_anki_v4_columns(database: "Database") -> None:
@@ -647,6 +653,7 @@ def migrate_database(database: "Database") -> None:
     _upgrade_studio_source_operation_claims_v20(database)
     _upgrade_studio_source_scope_fence_v21(database)
     _upgrade_notebook_scope_leases_v22(database)
+    _upgrade_index_job_leases_v23(database)
     _upgrade_anki_v4_columns(database)
     _upgrade_anki_contract_v13(database)
     _upgrade_gap_card_identity(database)

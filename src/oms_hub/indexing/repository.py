@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.engine import CursorResult
 
 from oms_hub.db import Database
 from oms_hub.indexing.models import (
@@ -250,6 +252,86 @@ class IndexRepository:
             row = session.get(IndexJobModel, job_id)
             return self._job_from_row(row) if row is not None else None
 
+    def claim_next_job(
+        self,
+        worker_id: str,
+        now: datetime,
+        *,
+        lease_seconds: int,
+    ) -> IndexJob | None:
+        if not worker_id.strip() or len(worker_id) > 100:
+            raise ValueError("worker id is blank or unbounded")
+        if lease_seconds <= 0:
+            raise ValueError("lease seconds must be positive")
+        now_value = now.isoformat()
+        expires = (now + timedelta(seconds=lease_seconds)).isoformat()
+        terminal = {
+            IndexState.READY.value,
+            IndexState.TERMINAL_FAILURE.value,
+            IndexState.DELETED.value,
+        }
+        with self.database.session() as session:
+            row = session.scalar(
+                select(IndexJobModel)
+                .where(
+                    IndexJobModel.state.not_in(terminal),
+                    or_(
+                        IndexJobModel.next_attempt_at.is_(None),
+                        IndexJobModel.next_attempt_at <= now_value,
+                    ),
+                    or_(
+                        IndexJobModel.lease_owner.is_(None),
+                        IndexJobModel.lease_expires_at.is_(None),
+                        IndexJobModel.lease_expires_at <= now_value,
+                    ),
+                )
+                .order_by(IndexJobModel.created_at, IndexJobModel.id)
+                .limit(1)
+            )
+            if row is None:
+                return None
+            claimed = session.execute(
+                update(IndexJobModel)
+                .where(
+                    IndexJobModel.id == row.id,
+                    or_(
+                        IndexJobModel.lease_owner.is_(None),
+                        IndexJobModel.lease_expires_at.is_(None),
+                        IndexJobModel.lease_expires_at <= now_value,
+                    ),
+                )
+                .values(lease_owner=worker_id, lease_expires_at=expires)
+            )
+            if cast(CursorResult[Any], claimed).rowcount != 1:
+                return None
+            session.flush()
+            session.refresh(row)
+            return self._job_from_row(row)
+
+    def release_job_lease(self, job_id: str, worker_id: str) -> bool:
+        with self.database.session() as session:
+            released = session.execute(
+                update(IndexJobModel)
+                .where(
+                    IndexJobModel.id == job_id,
+                    IndexJobModel.lease_owner == worker_id,
+                )
+                .values(lease_owner=None, lease_expires_at=None)
+            )
+            return cast(CursorResult[Any], released).rowcount == 1
+
+    def reclaim_expired_jobs(self, now: datetime) -> int:
+        with self.database.session() as session:
+            reclaimed = session.execute(
+                update(IndexJobModel)
+                .where(
+                    IndexJobModel.lease_owner.is_not(None),
+                    IndexJobModel.lease_expires_at <= now.isoformat(),
+                )
+                .values(lease_owner=None, lease_expires_at=None)
+            )
+            return cast(CursorResult[Any], reclaimed).rowcount
+
     @staticmethod
     def _store_row(store: ProviderStore) -> ProviderStoreModel:
         return ProviderStoreModel(
@@ -375,6 +457,8 @@ class IndexRepository:
             last_error_category=job.last_error_category,
             last_error_message=job.last_error_message,
             next_attempt_at=job.next_attempt_at,
+            lease_owner=job.lease_owner,
+            lease_expires_at=job.lease_expires_at,
             created_at=job.created_at,
             updated_at=job.updated_at,
         )
@@ -390,6 +474,8 @@ class IndexRepository:
         row.last_error_category = job.last_error_category
         row.last_error_message = job.last_error_message
         row.next_attempt_at = job.next_attempt_at
+        row.lease_owner = job.lease_owner
+        row.lease_expires_at = job.lease_expires_at
         row.created_at = job.created_at
         row.updated_at = job.updated_at
 
@@ -406,6 +492,8 @@ class IndexRepository:
             last_error_category=row.last_error_category,
             last_error_message=row.last_error_message,
             next_attempt_at=row.next_attempt_at,
+            lease_owner=row.lease_owner,
+            lease_expires_at=row.lease_expires_at,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )

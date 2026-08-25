@@ -330,6 +330,8 @@ class IndexJob:
     last_error_category: str | None = None
     last_error_message: str | None = None
     next_attempt_at: str | None = None
+    lease_owner: str | None = None
+    lease_expires_at: str | None = None
     id: str = field(default_factory=lambda: str(uuid4()))
     created_at: str = field(default_factory=_utc_now)
     updated_at: str = field(default_factory=_utc_now)
@@ -347,6 +349,8 @@ class IndexJob:
             "last_error_category",
             "last_error_message",
             "next_attempt_at",
+            "lease_owner",
+            "lease_expires_at",
         ):
             value = getattr(self, field_name)
             if value is not None:
@@ -437,6 +441,8 @@ class IndexJobModel(Base):
     last_error_category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     last_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     next_attempt_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    lease_expires_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), nullable=False)
     updated_at: Mapped[str] = mapped_column(String(40), nullable=False)
 
