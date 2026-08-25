@@ -591,8 +591,14 @@ def _is_semantic_dedupe_retry_hold(error: str | None) -> bool:
 
 
 class AnkiCurationRepository:
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self,
+        database: Database,
+        *,
+        supported_envelope_versions: frozenset[int] | None = None,
+    ) -> None:
         self.database = database
+        self.supported_envelope_versions = supported_envelope_versions
 
     def create_job(self, request: CreateCurationJob) -> CurationJob:
         if request.pipeline_contract_version is PipelineContractVersion.CARD_CENTRIC_V3:
@@ -3140,13 +3146,17 @@ class AnkiCurationRepository:
                     raise ValueError(
                         "action envelope job ID does not match caller job; no mutation performed"
                     )
-                agent = session.get(AnkiAgentStateModel, 1)
-                versions = (
-                    cast(dict[str, Any], json.loads(agent.versions_json))
-                    if agent is not None
-                    else {}
-                )
-                supported = versions.get("supported_envelope_contract_versions", [1])
+                supported = self.supported_envelope_versions
+                if supported is None:
+                    agent = session.get(AnkiAgentStateModel, 1)
+                    versions = (
+                        cast(dict[str, Any], json.loads(agent.versions_json))
+                        if agent is not None
+                        else {}
+                    )
+                    supported = frozenset(
+                        versions.get("supported_envelope_contract_versions", [1])
+                    )
                 if 2 not in supported:
                     raise ValueError(
                         "envelope contract v2 unsupported; upgrade required; no mutation performed"

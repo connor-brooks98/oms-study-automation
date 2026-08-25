@@ -3088,18 +3088,15 @@ def test_v2_envelope_creation_persists_when_agent_advertises_capability(
 
 def test_v2_envelope_persists_against_a_v2_job(tmp_path: Path) -> None:
     repository, lecture_id = _prepared_repository(tmp_path)
+    repository = AnkiCurationRepository(
+        repository.database,
+        supported_envelope_versions=frozenset({1, 2}),
+    )
     job = repository.create_job(
         replace(
             _job_request(lecture_id),
             pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V2,
         )
-    )
-    repository.record_agent_heartbeat(
-        agent_id="anki-agent",
-        heartbeat_at="2026-08-05T18:00:00+00:00",
-        versions={"supported_envelope_contract_versions": (1, 2)},
-        active_snapshot_id="snapshot-1",
-        health={"status": "ok"},
     )
     envelope = _v2_envelope(
         job_id=job.id,

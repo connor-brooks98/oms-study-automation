@@ -271,7 +271,10 @@ def _anki_curation_repository(
     return (
         CaptureAnkiCurationRepository(database)
         if capture_store is not None
-        else AnkiCurationRepository(database)
+        else AnkiCurationRepository(
+            database,
+            supported_envelope_versions=frozenset({1, 2}),
+        )
     )
 
 
@@ -1283,13 +1286,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app.state.anki_repository,
                 cast(ApplyGateway, runtime.gateway),
                 runtime=runtime,
-                supported_envelope_versions=lambda: frozenset(
-                    int(value)
-                    for value in app.state.anki_repository.agent_state().versions.get(
-                        "supported_envelope_contract_versions", [1]
-                    )
-                    if value in {1, 2}
-                ),
+                supported_envelope_versions=frozenset({1, 2}),
             )
         app.state.anki_curation_worker = AnkiCurationWorker(
             app.state.anki_repository,

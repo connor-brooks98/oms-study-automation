@@ -1819,9 +1819,17 @@ def test_capture_selects_hash_only_repository_without_changing_other_modes(
     monkeypatch.setattr(
         app_module, "CaptureAnkiCurationRepository", lambda value: ("capture", value)
     )
-    monkeypatch.setattr(app_module, "AnkiCurationRepository", lambda value: ("ordinary", value))
+    monkeypatch.setattr(
+        app_module,
+        "AnkiCurationRepository",
+        lambda value, **kwargs: ("ordinary", value, kwargs),
+    )
     assert app_module._anki_curation_repository(database, object()) == ("capture", database)  # type: ignore[arg-type]
-    assert app_module._anki_curation_repository(database, None) == ("ordinary", database)  # type: ignore[arg-type]
+    assert app_module._anki_curation_repository(database, None) == (  # type: ignore[arg-type]
+        "ordinary",
+        database,
+        {"supported_envelope_versions": frozenset({1, 2})},
+    )
 
 
 def test_capture_repository_persists_hash_only_response_evidence(
