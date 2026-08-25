@@ -131,6 +131,7 @@ from oms_hub.anki.gaps import (
     V2GapGenerationResult,
     V2GapGenerationService,
     source_evidence_id,
+    validate_gap_card_fields,
 )
 from oms_hub.anki.index import AnkiIndex, CompanionFilters
 from oms_hub.anki.judgment import (
@@ -5901,6 +5902,11 @@ def _validate_card_gap_batch_v2(
             continue
         if not generated:
             raise PinnedInputChanged(f"Fact {fact_id}: resolution is missing")
+        for card in generated:
+            try:
+                validate_gap_card_fields(card.text.strip(), card.extra.strip())
+            except GapValidationError as exc:
+                raise PinnedInputChanged(f"Fact {fact_id}: {exc}") from exc
         if len(generated) == 1:
             card = generated[0]
             if card.split or card.split_index is not None:
