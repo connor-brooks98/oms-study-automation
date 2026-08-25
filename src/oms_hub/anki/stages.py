@@ -3032,7 +3032,9 @@ class CurationServicesRunner:
                     result = await asyncio.to_thread(
                         self.structured.generate_json,
                         f"{instruction}\n\nRepair the invalid gap-card batch. "
-                        "Correct only the reported defect and return the complete batch.",
+                        "Correct only the reported defect and return the complete batch. "
+                        "Do not cloze any reported forbidden target; cloze a different "
+                        "element or return that fact as unresolved if no valid alternative exists.",
                         repair_input,
                         output_model=CardGapBatch,
                         provider=ProviderName(stage_model.provider),
@@ -5930,9 +5932,12 @@ def _validate_card_gap_batch_v2(
         (),
     )
     if violations:
+        details = "; ".join(
+            f"{fact_id}: {', '.join(forbidden_cloze_targets_by_fact.get(fact_id, ()))}"
+            for fact_id in sorted(set(violations))
+        )
         raise PinnedInputChanged(
-            "card-centric v2 gap output blanks forbidden targets for facts: "
-            + ", ".join(sorted(set(violations)))
+            "card-centric v2 gap output blanks forbidden targets for facts: " + details
         )
 
 

@@ -2152,7 +2152,9 @@ def test_card_gap_fill_v2_repairs_forbidden_cloze_targets(
     product = asyncio.run(runner._card_gap_fill(context))
 
     assert len(structured.inputs) == 2
-    assert "forbidden targets" in structured.inputs[1]["validation_error"]
+    assert "forbidden targets for facts: C01-M1: alpha" in structured.inputs[1][
+        "validation_error"
+    ]
     assert len(product.payload["resolutions"]) == 3
 
 
