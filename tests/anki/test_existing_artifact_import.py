@@ -1011,6 +1011,29 @@ def test_imported_outline_requires_explicit_replacement_and_rolls_back_copy(
     assert repository.current_outline(imported_bundle.lecture_id) == later
 
 
+def test_approved_outline_replacement_keeps_imported_slide_audit_ready(
+    imported_derived_bundle: ImportedBundle,
+) -> None:
+    repository = GenerationRepository(imported_derived_bundle.database)
+    answer = NotebookAnswer("# CORE CONCEPTS\n- Replacement")
+    job = _failed_imported_outline_job(imported_derived_bundle, repository, answer.text)
+    review = repository.approve_imported_outline_replacement(
+        imported_derived_bundle.lecture_id, job.id, "operator", "Reviewed replacement"
+    )
+    _mark_imported_outline_job_running(imported_derived_bundle, job.id)
+    OutlineService(imported_derived_bundle.settings, repository).file(
+        repository.get(job.id),
+        LectureKey("Neuro", 1, 24, "Synapse"),
+        answer,
+        replacement_review=review,
+    )
+    repository.complete(job.id)
+
+    revisions = _revisions(imported_derived_bundle)
+    slide = revisions.get_study_revision(imported_derived_bundle.slide_revision_id)
+    assert revisions.imported_derived_audit_matches(slide)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (

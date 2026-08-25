@@ -24,8 +24,10 @@ from oms_hub.ingestion.domain import (
 )
 from oms_hub.models import (
     ExistingArtifactImportModel,
+    GenerationJobModel,
     IngestionJobModel,
     OutlineOutputModel,
+    OutlineReplacementReviewModel,
     StudyRevisionModel,
     StudyUsageModel,
     UploadBatchModel,
@@ -117,6 +119,42 @@ class IngestionRepository:
                 if audit is not None and audit.outline_id is not None
                 else None
             )
+            current_outline = session.scalar(
+                select(OutlineOutputModel).where(
+                    OutlineOutputModel.lecture_id == revision.lecture_id,
+                    OutlineOutputModel.current.is_(True),
+                )
+            )
+            replacement_job = (
+                session.get(GenerationJobModel, current_outline.job_id)
+                if current_outline is not None and current_outline.job_id is not None
+                else None
+            )
+            replacement_review = (
+                session.get(OutlineReplacementReviewModel, current_outline.job_id)
+                if current_outline is not None and current_outline.job_id is not None
+                else None
+            )
+            approved_replacement = (
+                audit is not None
+                and outline is not None
+                and current_outline is not None
+                and current_outline.id != outline.id
+                and current_outline.provenance_kind == "notebooklm_generated"
+                and current_outline.path == audit.canonical_outline_path
+                and replacement_job is not None
+                and replacement_job.lecture_id == audit.lecture_id
+                and replacement_job.kind == "outline"
+                and replacement_job.state == "complete"
+                and replacement_job.stage == "complete"
+                and replacement_job.pdf_revision_id == revision.id
+                and replacement_job.transcript_revision_id == audit.transcript_revision_id
+                and replacement_review is not None
+                and replacement_review.lecture_id == audit.lecture_id
+                and replacement_review.import_id == audit.id
+                and bool(replacement_review.operator.strip())
+                and bool(replacement_review.reason.strip())
+            )
             valid = (
                 audit is not None
                 and model is not None
@@ -152,7 +190,7 @@ class IngestionRepository:
                 and transcript.canonical_source_path == audit.canonical_transcript_path
                 and transcript.canonical_derived_path == audit.canonical_transcript_path
                 and outline is not None
-                and outline.current
+                and (outline.current or approved_replacement)
                 and outline.provenance_kind == "imported_notebooklm"
                 and outline.import_id == audit.id
                 and outline.lecture_id == audit.lecture_id
@@ -196,6 +234,16 @@ class IngestionRepository:
             slide_icloud_pdf = revision.icloud_path
             transcript_canonical = Path(audit.canonical_transcript_path or "")
             outline_canonical = Path(audit.canonical_outline_path or "")
+            generated_outline = (
+                immutable_root.parent
+                / "generation"
+                / current_outline.job_id
+                / "outline.pdf"
+                if approved_replacement
+                and current_outline is not None
+                and current_outline.job_id is not None
+                else None
+            )
             if (
                 not audit.adoption_operator
                 or not audit.adoption_operator.strip()
@@ -233,6 +281,14 @@ class IngestionRepository:
                         outline_canonical,
                     )
                 )
+                or (
+                    generated_outline is not None
+                    and not trusted_managed_path(
+                        generated_outline,
+                        immutable_root.parent,
+                        require_regular_file=True,
+                    )
+                )
                 or not trusted_managed_path(
                     slide_canonical_pdf,
                     study_root,
@@ -256,7 +312,19 @@ class IngestionRepository:
                 and sha256_file(Path(audit.canonical_transcript_path or ""))
                 == audit.transcript_sha256
                 and sha256_file(Path(audit.immutable_outline_path or "")) == audit.outline_sha256
-                and sha256_file(Path(audit.canonical_outline_path or "")) == audit.outline_sha256
+                and sha256_file(Path(audit.canonical_outline_path or ""))
+                == (
+                    current_outline.sha256
+                    if approved_replacement and current_outline is not None
+                    else audit.outline_sha256
+                )
+                and (
+                    generated_outline is None
+                    or (
+                        current_outline is not None
+                        and sha256_file(generated_outline) == current_outline.sha256
+                    )
+                )
             )
             if not immutable_graph_matches:
                 return False
