@@ -302,14 +302,20 @@ def _selection_stage_context(
     return runner, context, passage_id
 
 
-def _set_dedupe_existing(context: SimpleNamespace, note_id: int, passage_id: str) -> None:
+def _set_dedupe_existing(
+    context: SimpleNamespace,
+    note_id: int,
+    passage_id: str,
+    *,
+    concept_id: str = "C01",
+) -> None:
     context.prior_payloads[CurationStage.CARD_CLASSIFY]["classifier"]["results"] = [
         CardClassification(
             note_id=note_id,
             verdict="YES",
             primary_subject="fixture",
             reason="eligible comparison",
-            covered_concept_ids=("C01",),
+            covered_concept_ids=(concept_id,),
             supporting_passage_ids=(passage_id,),
         ).model_dump(mode="json")
     ]
@@ -346,6 +352,32 @@ def test_card_dedupe_v2_preserves_existing_duplicate_identity() -> None:
     assert terminal.fact_id == "C01-M1"
     assert terminal.kind == "duplicate_of_existing"
     assert terminal.duplicate_of == DuplicateIdentity(existing_note_id=41)
+
+
+def test_card_dedupe_v2_does_not_cross_concept_boundaries() -> None:
+    note = CardRecord(
+        note_id=41,
+        content_sha256="1" * 64,
+        text="{{c1::Alpha}} beta",
+        extra="",
+        tags=(),
+        deck_names=("AnKing",),
+    )
+    runner, context, passage_id = _dedupe_stage_fixture(
+        _DedupeEmbedder([]),
+        cards=(note,),
+    )
+    _set_dedupe_existing(context, note.note_id, passage_id, concept_id="C02")
+
+    product = asyncio.run(
+        runner._card_dedupe_v2(
+            context,
+            {note.note_id: note},
+            (_generated_dedupe_row("G01", "C01-M1", "Alpha beta", passage_id),),
+        )
+    )
+
+    assert product.payload["resolutions"][0]["status"] == "generated"
 
 
 def test_card_dedupe_v2_uses_pinned_existing_vectors_without_uploading_notes() -> None:
@@ -1906,8 +1938,8 @@ def test_v2_internal_prompt_rejects_a_malformed_pinned_snapshot() -> None:
 
 
 class CardGapFillStructuredService:
-    def __init__(self, batch: CardGapBatch) -> None:
-        self.batch = batch
+    def __init__(self, batch: CardGapBatch | tuple[CardGapBatch, ...]) -> None:
+        self.batches = list(batch if isinstance(batch, tuple) else (batch,))
         self.instructions: list[str] = []
         self.inputs: list[dict[str, object]] = []
 
@@ -1924,9 +1956,10 @@ class CardGapFillStructuredService:
         assert output_model is CardGapBatch
         self.instructions.append(instruction)
         self.inputs.append(json.loads(input_text))
+        batch = self.batches[0] if len(self.batches) == 1 else self.batches.pop(0)
         return StructuredJSONResult(
-            value=self.batch,
-            raw_text=self.batch.model_dump_json(),
+            value=batch,
+            raw_text=batch.model_dump_json(),
             provider=provider,
             model=model,
             request_id="card-gap-fill-request",
@@ -1937,7 +1970,7 @@ class CardGapFillStructuredService:
 
 
 def _card_gap_fill_harness(
-    batch: CardGapBatch,
+    batch: CardGapBatch | tuple[CardGapBatch, ...],
 ) -> tuple[CurationServicesRunner, SimpleNamespace, CardGapFillStructuredService]:
     passage = SourcePassage.create(
         revision_id=7,
@@ -2079,6 +2112,48 @@ def test_card_gap_fill_v2_uses_pinned_metadata_per_fact_targets_and_split_indice
     assert sent["lecture_title"] == "Pinned anemia title"
     assert structured.instructions == ["Pinned card gap prompt"]
     assert [row["split_index"] for row in product.payload["resolutions"]] == [1, 2, None, None]
+
+
+def test_card_gap_fill_v2_repairs_forbidden_cloze_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalid = CardGapBatch(
+        resolutions=(
+            CardGapOutput(
+                fact_id="C01-M1",
+                status="generated",
+                text="{{c1::alpha}} is grounded.",
+                extra="Grounded explanation.",
+                note_type="AnKingOverhaul (AnKing Step Deck / AnKingMed)",
+                source_passage_ids=(_CARD_GAP_FILL_PASSAGE_ID,),
+            ),
+            _generated_card_gap("C01-M2", _CARD_GAP_FILL_PASSAGE_ID),
+            CardGapOutput(fact_id="C01-M3", status="unresolved", reason="No atomic card."),
+        )
+    )
+    repaired = invalid.model_copy(
+        update={
+            "resolutions": (
+                _generated_card_gap("C01-M1", _CARD_GAP_FILL_PASSAGE_ID),
+                _generated_card_gap("C01-M2", _CARD_GAP_FILL_PASSAGE_ID),
+                CardGapOutput(
+                    fact_id="C01-M3", status="unresolved", reason="No atomic card."
+                ),
+            )
+        }
+    )
+    runner, context, structured = _card_gap_fill_harness((invalid, repaired))
+    monkeypatch.setattr(
+        stages_module,
+        "_merged_card_coverage",
+        lambda _: {"C01": {"status": "uncovered", "evidence": []}},
+    )
+
+    product = asyncio.run(runner._card_gap_fill(context))
+
+    assert len(structured.inputs) == 2
+    assert "forbidden targets" in structured.inputs[1]["validation_error"]
+    assert len(product.payload["resolutions"]) == 3
 
 
 @pytest.mark.parametrize(

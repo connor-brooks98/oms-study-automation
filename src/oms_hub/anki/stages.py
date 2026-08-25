@@ -171,6 +171,7 @@ from oms_hub.anki.reconciliation import (
     GeneratedResolution,
     ReconciliationInput,
     ReconciliationReport,
+    _forbidden_cloze_rows,
     reconcile,
     reconcile_card_centric,
     selected_card_centric_coverage,
@@ -2994,10 +2995,15 @@ class CurationServicesRunner:
                     model=stage_model.model,
                     options=GenerationOptions(cacheable_source_prefix=source.prefix),
                 )
+            attempts = [result]
             expected = {fact["fact_id"] for fact in missing_facts}
             try:
                 if is_v2:
-                    _validate_card_gap_batch_v2(result.value, expected)
+                    _validate_card_gap_batch_v2(
+                        result.value,
+                        expected,
+                        forbidden_by_fact.targets_by_fact_id,
+                    )
                 else:
                     returned = {item.fact_id for item in result.value.resolutions}
                     if returned != expected:
@@ -3006,7 +3012,47 @@ class CurationServicesRunner:
                         )
             except PinnedInputChanged as exc:
                 emit_provider_event(result.attempt_handle, "contract_failed", error=str(exc))
-                raise
+                if not is_v2:
+                    raise
+                repair_input = json.dumps(
+                    {
+                        "generation_input": generation_input,
+                        "invalid_response": result.raw_text,
+                        "validation_error": str(exc),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                with provider_call_scope(
+                    batch_index=concept_index,
+                    kind="repair",
+                    defer_acceptance=True,
+                ):
+                    result = await asyncio.to_thread(
+                        self.structured.generate_json,
+                        f"{instruction}\n\nRepair the invalid gap-card batch. "
+                        "Correct only the reported defect and return the complete batch.",
+                        repair_input,
+                        output_model=CardGapBatch,
+                        provider=ProviderName(stage_model.provider),
+                        model=stage_model.model,
+                        options=GenerationOptions(cacheable_source_prefix=source.prefix),
+                    )
+                attempts.append(result)
+                try:
+                    _validate_card_gap_batch_v2(
+                        result.value,
+                        expected,
+                        forbidden_by_fact.targets_by_fact_id,
+                    )
+                except PinnedInputChanged as repair_error:
+                    emit_provider_event(
+                        result.attempt_handle,
+                        "contract_failed",
+                        error=str(repair_error),
+                    )
+                    raise
             try:
                 for item in result.value.resolutions:
                     if item.status == "generated" and (
@@ -3078,13 +3124,14 @@ class CurationServicesRunner:
                         reason=item.reason,
                     )
                 )
-            usages.append(
+            usages.extend(
                 StageUsage(
-                    result.request_id,
-                    result.input_tokens,
-                    result.output_tokens,
-                    result.cost_microusd,
+                    attempt.request_id,
+                    attempt.input_tokens,
+                    attempt.output_tokens,
+                    attempt.cost_microusd,
                 )
+                for attempt in attempts
             )
             finalize_provider_call(result.attempt_handle)
         return StageProduct(
@@ -3913,6 +3960,11 @@ class CurationServicesRunner:
             for item in _all_card_classifications(context)
             if selection_eligible_v2(item, source)
         }
+        existing_concepts = {
+            item.note_id: set(item.covered_concept_ids)
+            for item in _all_card_classifications(context)
+            if item.note_id in existing_ids
+        }
         # Only independently eligible thorough classifications can terminate a
         # recovery card as an existing-note duplicate.  Fast-pass LIKELY_YES
         # rows remain a below-floor T6 selection fallback; treating one as an
@@ -3944,6 +3996,22 @@ class CurationServicesRunner:
                 resolved.append(item)
                 continue
             proposal = _dedupe_gap_proposal(item, context)
+            concept_notes = tuple(
+                note
+                for note in existing_notes
+                if item.concept_id in existing_concepts.get(note.note_id, set())
+            )
+            concept_vectors = (
+                None
+                if existing_document_vectors is None
+                else {
+                    note.note_id: existing_document_vectors[note.note_id]
+                    for note in concept_notes
+                }
+            )
+            concept_accepted = tuple(
+                other for other in accepted if other.concept_id == item.concept_id
+            )
             with provider_call_scope(
                 batch_index=batch_index,
                 batch_note_ids=tuple(sorted(existing_ids)),
@@ -3951,9 +4019,9 @@ class CurationServicesRunner:
             ):
                 outcome = await deduper.classify(
                     proposal,
-                    existing_notes,
-                    accepted,
-                    existing_document_vectors=existing_document_vectors,
+                    concept_notes,
+                    concept_accepted,
+                    existing_document_vectors=concept_vectors,
                 )
             if outcome.disposition == "unique":
                 resolved.append(item)
@@ -5813,6 +5881,7 @@ def _card_v2_replay_input(context: StageContext, key: str) -> object:
 def _validate_card_gap_batch_v2(
     batch: CardGapBatch,
     expected_fact_ids: set[str],
+    forbidden_cloze_targets_by_fact: Mapping[str, tuple[str, ...]],
 ) -> None:
     """Enforce strict new S7 terminal structures before stage persistence."""
     returned_fact_ids = {item.fact_id for item in batch.resolutions}
@@ -5844,6 +5913,27 @@ def _validate_card_gap_batch_v2(
             raise PinnedInputChanged(
                 f"Fact {fact_id}: split output requires sequential split_index values"
             )
+    violations = _forbidden_cloze_rows(
+        tuple(
+            GeneratedResolution(
+                card_id=item.fact_id,
+                fact_id=item.fact_id,
+                text=item.text,
+                extra=item.extra,
+                split=item.split,
+                split_index=item.split_index,
+            )
+            for item in batch.resolutions
+            if item.status == "generated"
+        ),
+        dict(forbidden_cloze_targets_by_fact),
+        (),
+    )
+    if violations:
+        raise PinnedInputChanged(
+            "card-centric v2 gap output blanks forbidden targets for facts: "
+            + ", ".join(sorted(set(violations)))
+        )
 
 
 def _pinned_card_v2_prompt(context: StageContext, prompt_id: str) -> str:
