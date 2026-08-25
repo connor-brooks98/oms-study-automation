@@ -52,6 +52,8 @@ class ApplyGateway(Protocol):
 
     async def find_notes(self, query: str) -> list[int]: ...
 
+    async def model_field_names(self, model_name: str) -> list[str]: ...
+
     async def remove_tags(
         self,
         note_ids: Sequence[int],
@@ -454,7 +456,8 @@ class ApplyCoordinator:
                 missing_notes.append(note)
                 missing_positions.append(position)
         recovered_count = len(operation.notes) - len(missing_notes)
-        created = await self.gateway.add_notes(missing_notes) if missing_notes else []
+        prepared = await self._prepare_generated_notes(missing_notes)
+        created = await self.gateway.add_notes(prepared) if prepared else []
         if len(created) != len(missing_notes):
             raise AnkiConnectError("Anki did not return one ID per generated note")
         for position, note_id in zip(missing_positions, created, strict=True):
@@ -474,6 +477,29 @@ class ApplyCoordinator:
             recovered_count,
             rejected_duplicates,
         )
+
+    async def _prepare_generated_notes(
+        self,
+        notes: Sequence[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        model_fields: dict[str, set[str]] = {}
+        prepared: list[dict[str, Any]] = []
+        for note in notes:
+            model = str(note.get("modelName", ""))
+            if model not in model_fields:
+                model_fields[model] = set(await self.gateway.model_field_names(model))
+            available = model_fields[model]
+            fields = dict(cast(Mapping[str, str], note.get("fields", {})))
+            if "Extra" in fields and "Extra" not in available and "Back Extra" in available:
+                fields["Back Extra"] = fields.pop("Extra")
+            unsupported = set(fields) - available
+            if unsupported:
+                raise AnkiConnectError(
+                    f"note type {model} does not support fields: "
+                    + ", ".join(sorted(unsupported))
+                )
+            prepared.append({**note, "fields": fields})
+        return prepared
 
     async def _trailing_sync(
         self,
@@ -644,7 +670,7 @@ class ApplyCoordinator:
                 note.get("fields", {}),
             )
             actual_fields = _raw_fields(raw)
-            if dict(expected_fields) != actual_fields:
+            if not _generated_fields_match(expected_fields, actual_fields):
                 differences.append(
                     {
                         "note_id": note_id,
@@ -747,6 +773,23 @@ class ApplyCoordinator:
 
 def _safe_error(error: Exception) -> str:
     return (str(error).strip() or type(error).__name__)[:500]
+
+
+def _generated_fields_match(
+    expected: Mapping[str, str],
+    actual: Mapping[str, str],
+) -> bool:
+    matched: set[str] = set()
+    for name, value in expected.items():
+        resolved = (
+            "Back Extra"
+            if name == "Extra" and name not in actual and "Back Extra" in actual
+            else name
+        )
+        if actual.get(resolved) != value:
+            return False
+        matched.add(resolved)
+    return all(not value for name, value in actual.items() if name not in matched)
 
 
 def _raw_note_id(note: Mapping[str, Any]) -> int:

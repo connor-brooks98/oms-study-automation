@@ -207,6 +207,10 @@ class FakeGateway:
         marker = query.removeprefix("tag:")
         return [note_id for note_id, note in self.notes.items() if marker in note["tags"]]
 
+    async def model_field_names(self, model_name: str) -> list[str]:
+        del model_name
+        return ["Text", "Extra"]
+
     async def add_tags(
         self,
         note_ids: Sequence[int],

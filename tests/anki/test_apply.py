@@ -55,6 +55,7 @@ class FakeGateway:
         self.mutation_failures: dict[str, Exception] = {}
         self.ignore_mutation: set[str] = set()
         self.reject_generated_duplicates = False
+        self.model_fields = ["Text", "Extra"]
 
     async def sync(self) -> None:
         self.sync_calls += 1
@@ -74,6 +75,10 @@ class FakeGateway:
         assert query.startswith("tag:")
         marker = query.removeprefix("tag:")
         return [note_id for note_id, note in self.notes.items() if marker in note["tags"]]
+
+    async def model_field_names(self, model_name: str) -> list[str]:
+        del model_name
+        return list(self.model_fields)
 
     async def remove_tags(
         self,
@@ -132,8 +137,11 @@ class FakeGateway:
                 "noteId": note_id,
                 "modelName": note["modelName"],
                 "fields": {
-                    name: {"value": value, "order": order}
-                    for order, (name, value) in enumerate(note["fields"].items())
+                    name: {
+                        "value": note["fields"].get(name, ""),
+                        "order": order,
+                    }
+                    for order, name in enumerate(self.model_fields)
                 },
                 "tags": list(note["tags"]),
                 "cards": [note_id + 1_000],
@@ -517,6 +525,23 @@ def test_restart_after_every_durable_operation_is_idempotent() -> None:
         assert gateway.mutation_calls.count("add_notes") == 1
         assert gateway.mutation_calls.count("add_tags") == 2
         assert len(gateway.notes) == 2
+
+    asyncio.run(scenario())
+
+
+def test_generated_extra_maps_to_back_extra_for_the_active_note_type() -> None:
+    async def scenario() -> None:
+        gateway = FakeGateway()
+        gateway.model_fields = ["Text", "Back Extra", "Keywords"]
+        envelope = _envelope(gateway, generated=True)
+        store = InMemoryApplyStore((envelope,))
+
+        result = await ApplyCoordinator(store, gateway).apply(envelope.envelope_id)
+
+        assert result.state is ApplyState.COMPLETE
+        generated = gateway.notes[100]["fields"]
+        assert generated["Back Extra"]["value"] == "Lecture slide 12."
+        assert generated["Keywords"]["value"] == ""
 
     asyncio.run(scenario())
 
