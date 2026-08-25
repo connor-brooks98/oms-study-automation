@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "gate": "gate_2a_source_trust",
-  "state": "blocked",
-  "claim": "gate_not_open",
+  "state": "open",
+  "claim": "gate_open",
   "assessment_ref": {
     "branch": "integration/studyhub-grounded-learning-v1",
     "sha": "SELF",
@@ -146,8 +146,8 @@
     }
   ],
   "review": {
-    "terra_specification": "approved_to_record_blocked",
-    "terra_quality_release": "approved_to_commit_blocked",
-    "gate_open_approval": "pending_final_complete_evidence_review"
+    "terra_specification": "approved",
+    "terra_quality_release": "approved",
+    "gate_open_approval": "approved_at_b6a0576f1b99872867fbaacde7f23fefd3552d3d"
   }
 }
