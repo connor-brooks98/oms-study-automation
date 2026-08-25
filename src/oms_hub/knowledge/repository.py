@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Sequence
 from typing import Any
@@ -25,6 +26,8 @@ from oms_hub.models import utc_now
 from oms_hub.providers.contracts import AuthorityClass
 
 __all__ = ["KnowledgeRepository"]
+
+_LEGACY_SLIDE_SOURCE = re.compile(r"legacy-study-revision:([1-9][0-9]*)\Z")
 
 
 class KnowledgeRepository:
@@ -413,6 +416,164 @@ class KnowledgeRepository:
             ).mappings().all()
         return tuple(_evidence_from_row(row) for row in rows)
 
+    def activate_revision(
+        self,
+        revision_id: str,
+        *,
+        source_family: str,
+        authority_class: AuthorityClass,
+        course_id: str,
+        exam_id: str,
+        lecture_id: str,
+        units: Sequence[EvidenceUnit],
+    ) -> SourceRevision:
+        """Atomically activate a revision and supersede its source-family peers.
+
+        SQLite's ``BEGIN IMMEDIATE`` is intentionally used here: the scoped
+        ready read, predecessor update, and replacement-ready write must share
+        one serialized write transaction because the existing schema has no
+        source-family uniqueness constraint.
+        """
+        if source_family != "legacy_slides":
+            raise ValueError("unsupported source family")
+        if self.database.engine.dialect.name != "sqlite":
+            raise RuntimeError(
+                "atomic source-family supersession requires SQLite write serialization "
+                "or an approved uniqueness schema change"
+            )
+        evidence = tuple(units)
+        with self.database.engine.connect() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    text(
+                        """
+                        SELECT r.id, r.source_document_id, r.file_sha256, r.state,
+                               s.authority_class
+                        FROM source_revisions r
+                        JOIN knowledge_sources s ON s.id = r.source_document_id
+                        WHERE r.id = :revision_id
+                        """
+                    ),
+                    {"revision_id": revision_id},
+                ).mappings().first()
+                if row is None:
+                    raise KeyError(revision_id)
+                if _source_family(row["source_document_id"]) != source_family:
+                    raise ValueError("revision does not belong to the requested source family")
+                if row["authority_class"] != authority_class.value:
+                    raise ValueError("authority_class does not match its knowledge source")
+                if row["state"] == SourceRevisionState.RETIRED.value:
+                    raise ValueError("cannot activate a retired revision")
+                for unit in evidence:
+                    if (
+                        unit.source_revision_id != revision_id
+                        or unit.authority_class is not authority_class
+                        or unit.course_id != course_id
+                        or unit.exam_id != exam_id
+                        or unit.lecture_id != lecture_id
+                        or unit.content_sha256 != sha256_text(unit.normalized_text)
+                    ):
+                        raise ValueError("evidence does not match the requested revision scope")
+
+                existing_rows = connection.execute(
+                    text(
+                        """
+                        SELECT id, source_revision_id, authority_class, course_id,
+                               exam_id, lecture_id, locator_kind, locator_value,
+                               normalized_text, image_asset_id, content_sha256,
+                               source_priority, created_at, retired_at
+                        FROM evidence_units WHERE source_revision_id = :revision_id
+                        """
+                    ),
+                    {"revision_id": revision_id},
+                ).mappings().all()
+                existing = {
+                    stored.evidence_id: stored
+                    for stored in (_evidence_from_row(item) for item in existing_rows)
+                }
+                expected = {unit.evidence_id: unit for unit in evidence}
+                if set(existing) - set(expected):
+                    raise ValueError("stored evidence set is not deterministic")
+                for evidence_id, stored in existing.items():
+                    if _evidence_identity(stored) != _evidence_identity(
+                        expected[evidence_id]
+                    ):
+                        raise ValueError("evidence_id already refers to different content")
+                for unit in evidence:
+                    if unit.evidence_id in existing:
+                        continue
+                    connection.execute(
+                        text(
+                            """
+                            INSERT INTO evidence_units (
+                                id, source_revision_id, authority_class, course_id,
+                                exam_id, lecture_id, locator_kind, locator_value,
+                                normalized_text, image_asset_id, content_sha256,
+                                source_priority, created_at, retired_at
+                            ) VALUES (
+                                :id, :source_revision_id, :authority_class, :course_id,
+                                :exam_id, :lecture_id, :locator_kind, :locator_value,
+                                :normalized_text, :image_asset_id, :content_sha256,
+                                :source_priority, :created_at, :retired_at
+                            )
+                            """
+                        ),
+                        _evidence_parameters(unit),
+                    )
+
+                peers = connection.execute(
+                    text(
+                        """
+                        SELECT DISTINCT r.id, s.id AS source_document_id
+                        FROM source_revisions r
+                        JOIN knowledge_sources s ON s.id = r.source_document_id
+                        JOIN evidence_units e ON e.source_revision_id = r.id
+                        WHERE r.state = :ready
+                          AND e.authority_class = :authority_class
+                          AND e.course_id = :course_id
+                          AND e.exam_id = :exam_id
+                          AND e.lecture_id = :lecture_id
+                        """
+                    ),
+                    {
+                        "ready": SourceRevisionState.READY.value,
+                        "authority_class": authority_class.value,
+                        "course_id": course_id,
+                        "exam_id": exam_id,
+                        "lecture_id": lecture_id,
+                    },
+                ).mappings().all()
+                for peer in peers:
+                    if (
+                        peer["id"] != revision_id
+                        and _source_family(peer["source_document_id"]) == source_family
+                    ):
+                        connection.execute(
+                            text(
+                                "UPDATE source_revisions SET state = :state WHERE id = :id"
+                            ),
+                            {"state": SourceRevisionState.STALE.value, "id": peer["id"]},
+                        )
+                activated = connection.execute(
+                    text(
+                        "UPDATE source_revisions SET state = :state WHERE id = :id"
+                    ),
+                    {"state": SourceRevisionState.READY.value, "id": revision_id},
+                )
+                if activated.rowcount != 1:
+                    raise KeyError(revision_id)
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return SourceRevision(
+            source_document_id=row["source_document_id"],
+            source_revision_id=row["id"],
+            file_sha256=row["file_sha256"],
+            state=SourceRevisionState.READY,
+        )
+
     def retire_revision(self, revision_id: str) -> None:
         retired_at = utc_now()
         with self.database.engine.begin() as connection:
@@ -498,6 +659,26 @@ def _is_unique_violation(error: IntegrityError) -> bool:
         return True
     message = str(original).lower()
     return "unique constraint" in message or "duplicate key" in message
+
+
+def _source_family(source_document_id: str) -> str | None:
+    return "legacy_slides" if _LEGACY_SLIDE_SOURCE.fullmatch(source_document_id) else None
+
+
+def _evidence_identity(unit: EvidenceUnit) -> tuple[object, ...]:
+    return (
+        unit.evidence_id,
+        unit.source_revision_id,
+        unit.authority_class,
+        unit.course_id,
+        unit.exam_id,
+        unit.lecture_id,
+        unit.locator,
+        unit.normalized_text,
+        unit.content_sha256,
+        unit.image_asset_id,
+        unit.source_priority,
+    )
 
 
 def _source_from_row(row: Any) -> KnowledgeSource:

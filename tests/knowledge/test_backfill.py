@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Barrier
-from concurrent.futures import ThreadPoolExecutor
-from collections.abc import Iterator
 
 import pytest
+from sqlalchemy import text
 
+from oms_hub.db import Database
 from oms_hub.document_processing.domain import (
     DocumentLocator,
     ParsedDocument,
@@ -17,9 +19,7 @@ from oms_hub.document_processing.domain import (
 from oms_hub.files.atomic import sha256_file
 from oms_hub.ingestion.domain import StudyRevision, UploadKind
 from oms_hub.knowledge.backfill import (
-    BackfillReport,
     SlideRevisionBackfill,
-    backfill_all_ready_course_revisions,
     backfill_slide_revision,
     scope_ids,
 )
@@ -33,7 +33,6 @@ from oms_hub.knowledge.models import (
 )
 from oms_hub.knowledge.repository import KnowledgeRepository
 from oms_hub.providers.contracts import AuthorityClass
-from oms_hub.db import Database
 
 
 @pytest.fixture
@@ -131,7 +130,9 @@ def _fixture(tmp_path: Path, revision_id: int = 7) -> tuple[StudyRevision, FakeC
     return revision, FakeCatalog(Lecture(3, "Hematology / Core", 2, 4)), FakeParser(document)
 
 
-def test_backfill_maps_current_slide_without_mutating_legacy_revision(tmp_path: Path, database) -> None:
+def test_backfill_maps_current_slide_without_mutating_legacy_revision(
+    tmp_path: Path, database: Database
+) -> None:
     revision, catalog, parser = _fixture(tmp_path)
     ingestion = FakeIngestion({revision.id: revision})
     knowledge = KnowledgeRepository(database)
@@ -154,7 +155,9 @@ def test_backfill_maps_current_slide_without_mutating_legacy_revision(tmp_path: 
     assert knowledge.list_evidence(result.revision_id)[0].exam_id is not None
 
 
-def test_backfill_is_idempotent_and_repairs_incomplete_revision(tmp_path: Path, database) -> None:
+def test_backfill_is_idempotent_and_repairs_incomplete_revision(
+    tmp_path: Path, database: Database
+) -> None:
     revision, catalog, parser = _fixture(tmp_path)
     ingestion = FakeIngestion({revision.id: revision})
     knowledge = KnowledgeRepository(database)
@@ -168,7 +171,7 @@ def test_backfill_is_idempotent_and_repairs_incomplete_revision(tmp_path: Path, 
     database_row = knowledge.database.engine
     with database_row.begin() as connection:
         connection.execute(
-            __import__("sqlalchemy").text(
+            text(
                 "DELETE FROM evidence_units WHERE source_revision_id = :id"
             ),
             {"id": first.revision_id},
@@ -183,10 +186,15 @@ def test_scope_ids_are_bounded_and_digest_complete() -> None:
     second = scope_ids("A:B", 1, 2)
     assert first != second
     assert all(len(value) <= 99 for value in first)
-    assert all(value.replace("-", "").replace("_", "").replace(".", "").isalnum() for value in first)
+    assert all(
+        value.replace("-", "").replace("_", "").replace(".", "").isalnum()
+        for value in first
+    )
 
 
-def test_backfill_rejects_noncanonical_or_ineligible_revision(tmp_path: Path, database) -> None:
+def test_backfill_rejects_noncanonical_or_ineligible_revision(
+    tmp_path: Path, database: Database
+) -> None:
     revision, catalog, parser = _fixture(tmp_path)
     ingestion = FakeIngestion({revision.id: revision})
     knowledge = KnowledgeRepository(database)
@@ -222,9 +230,10 @@ def _ready_unit(revision_id: str, *, source: str, family_text: str) -> EvidenceU
     )
 
 
-def test_atomic_replacement_is_family_scoped_and_races_independent_engines(tmp_path: Path) -> None:
+def test_atomic_replacement_is_family_scoped_and_races_independent_engines(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "race.db"
-    from oms_hub.db import Database
 
     seed = Database(f"sqlite:///{path}")
     try:
@@ -240,11 +249,29 @@ def test_atomic_replacement_is_family_scoped_and_races_independent_engines(tmp_p
         predecessor = repository.create_revision(
             "legacy-study-revision:1", "1" * 64, SourceRevisionState.READY
         )
-        transcript = repository.create_revision("transcript:1", "4" * 64, SourceRevisionState.READY)
-        repository.create_revision("legacy-study-revision:2", "2" * 64, SourceRevisionState.NORMALIZING)
-        repository.create_revision("legacy-study-revision:3", "3" * 64, SourceRevisionState.NORMALIZING)
-        repository.put_evidence_units(predecessor.revision_id, (_ready_unit(predecessor.revision_id, source="old", family_text="old"),))
-        repository.put_evidence_units(transcript.revision_id, (_ready_unit(transcript.revision_id, source="transcript", family_text="transcript"),))
+        transcript = repository.create_revision(
+            "transcript:1", "4" * 64, SourceRevisionState.READY
+        )
+        repository.create_revision(
+            "legacy-study-revision:2", "2" * 64, SourceRevisionState.NORMALIZING
+        )
+        repository.create_revision(
+            "legacy-study-revision:3", "3" * 64, SourceRevisionState.NORMALIZING
+        )
+        repository.put_evidence_units(
+            predecessor.revision_id,
+            (_ready_unit(predecessor.revision_id, source="old", family_text="old"),),
+        )
+        repository.put_evidence_units(
+            transcript.revision_id,
+            (
+                _ready_unit(
+                    transcript.revision_id,
+                    source="transcript",
+                    family_text="transcript",
+                ),
+            ),
+        )
     finally:
         seed.close()
 
@@ -285,7 +312,7 @@ def test_atomic_replacement_is_family_scoped_and_races_independent_engines(tmp_p
         repository = KnowledgeRepository(check)
         with check.engine.connect() as connection:
             ready_legacy = connection.execute(
-                __import__("sqlalchemy").text(
+                text(
                     """
                     SELECT COUNT(*) FROM source_revisions r
                     JOIN knowledge_sources s ON s.id = r.source_document_id
@@ -298,7 +325,48 @@ def test_atomic_replacement_is_family_scoped_and_races_independent_engines(tmp_p
                 )
             ).scalar_one()
         assert ready_legacy == 1
-        assert repository.get_revision(transcript.revision_id).state is SourceRevisionState.READY
-        assert repository.get_revision(predecessor.revision_id).state is SourceRevisionState.STALE
+        transcript_state = repository.get_revision(transcript.revision_id)
+        predecessor_state = repository.get_revision(predecessor.revision_id)
+        assert transcript_state is not None
+        assert predecessor_state is not None
+        assert transcript_state.state is SourceRevisionState.READY
+        assert predecessor_state.state is SourceRevisionState.STALE
     finally:
         check.close()
+
+
+def test_atomic_activation_rolls_back_evidence_and_preserves_predecessor(tmp_path: Path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'rollback.db'}")
+    try:
+        repository = KnowledgeRepository(database)
+        repository.initialize()
+        repository.create_source("legacy-study-revision:10", AuthorityClass.COURSE_MATERIAL)
+        repository.create_source("legacy-study-revision:11", AuthorityClass.COURSE_MATERIAL)
+        predecessor = repository.create_revision(
+            "legacy-study-revision:10", "a" * 64, SourceRevisionState.READY
+        )
+        replacement = repository.create_revision(
+            "legacy-study-revision:11", "b" * 64, SourceRevisionState.NORMALIZING
+        )
+        previous = _ready_unit(predecessor.revision_id, source="old", family_text="old")
+        repository.put_evidence_units(predecessor.revision_id, (previous,))
+        invalid = _ready_unit(replacement.revision_id, source="new", family_text="new")
+        with pytest.raises(ValueError, match="requested revision scope"):
+            repository.activate_revision(
+                replacement.revision_id,
+                source_family="legacy_slides",
+                authority_class=AuthorityClass.COURSE_MATERIAL,
+                course_id="different-course",
+                exam_id="exam",
+                lecture_id="lecture",
+                units=(invalid,),
+            )
+        predecessor_state = repository.get_revision(predecessor.revision_id)
+        replacement_state = repository.get_revision(replacement.revision_id)
+        assert predecessor_state is not None
+        assert replacement_state is not None
+        assert predecessor_state.state is SourceRevisionState.READY
+        assert replacement_state.state is SourceRevisionState.NORMALIZING
+        assert repository.list_evidence(replacement.revision_id) == ()
+    finally:
+        database.close()
