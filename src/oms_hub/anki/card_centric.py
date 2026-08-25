@@ -900,12 +900,23 @@ class CardCentricClassifier:
                 if isinstance(first_error, StructuredOutputError)
                 else first.raw_text
             )
+            repair_payload = {
+                "classification_input": json.loads(request),
+                "invalid_response": raw,
+                "validation_error": str(first_error),
+            }
+            if isinstance(first_error, CardCentricValidationError):
+                expected = {card.note_id for card in cards}
+                observed = [item.note_id for item in first.value.results]
+                repair_payload["partition_diagnostics"] = {
+                    "missing_note_ids": sorted(expected - set(observed)),
+                    "extra_note_ids": sorted(set(observed) - expected),
+                    "duplicate_note_ids": sorted(
+                        {note_id for note_id in observed if observed.count(note_id) > 1}
+                    ),
+                }
             repair_input = json.dumps(
-                {
-                    "classification_input": json.loads(request),
-                    "invalid_response": raw,
-                    "validation_error": str(first_error),
-                },
+                repair_payload,
                 sort_keys=True,
                 separators=(",", ":"),
                 ensure_ascii=False,

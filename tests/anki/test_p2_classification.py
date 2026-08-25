@@ -290,10 +290,12 @@ class _ThoroughGenerator:
     def __init__(self, outputs: list[str]):
         self.outputs = outputs
         self.instructions: list[str] = []
+        self.inputs: list[str] = []
         self.options = []
 
-    def generate_text(self, instruction, _input_text, *, provider, model, **kwargs):
+    def generate_text(self, instruction, input_text, *, provider, model, **kwargs):
         self.instructions.append(instruction)
+        self.inputs.append(input_text)
         self.options.append(kwargs["options"])
         return GeneratedText(
             text=self.outputs.pop(0),
@@ -495,7 +497,12 @@ def test_v2_classifier_uses_frozen_execution_and_pinned_quality_prompt() -> None
 def test_p2_s4c_s6_retry_once_then_accepts_a_repaired_batch() -> None:
     invalid = CardClassificationBatchOutput(
         results=(
-            CardClassification(note_id=1, verdict="YES", primary_subject="factor", reason="taught"),
+            CardClassification(
+                note_id=1,
+                verdict="NO",
+                primary_subject="factor",
+                reason="not taught",
+            ),
         )
     ).model_dump_json()
     valid = CardClassificationBatchOutput(
@@ -506,13 +513,19 @@ def test_p2_s4c_s6_retry_once_then_accepts_a_repaired_batch() -> None:
                 primary_subject="factor",
                 reason="not taught",
             ),
+            CardClassification(
+                note_id=2,
+                verdict="NO",
+                primary_subject="factor",
+                reason="not taught",
+            ),
         )
     ).model_dump_json()
     generator = _ThoroughGenerator([invalid, valid])
 
     result = asyncio.run(
         _classifier(generator).classify(
-            (_card(1),),
+            (_card(1), _card(2)),
             source_index=_source(),
             concept_ids=(),
             provider=ProviderName.OPENAI,
@@ -523,6 +536,11 @@ def test_p2_s4c_s6_retry_once_then_accepts_a_repaired_batch() -> None:
     assert result.results[0].verdict == "NO"
     assert len(generator.instructions) == 2
     assert "repair" in generator.instructions[1].casefold()
+    assert json.loads(generator.inputs[1])["partition_diagnostics"] == {
+        "missing_note_ids": [2],
+        "extra_note_ids": [],
+        "duplicate_note_ids": [],
+    }
 
 
 def test_p2_s4c_s6_retries_once_then_blocks_invalid_output() -> None:
