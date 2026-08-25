@@ -878,11 +878,15 @@ class CardCentricClassifier:
             separators=(",", ":"),
         )
         attempts: list[StructuredJSONResult[CardClassificationBatchOutput]] = []
+        note_ids = tuple(card.note_id for card in cards)
+        partition_instruction = (
+            "Return exactly one result for each of these note IDs and no other note IDs: "
+            f"{json.dumps(note_ids, separators=(',', ':'))}. Copy every ID exactly."
+        )
         try:
-            note_ids = tuple(card.note_id for card in cards)
             with provider_call_scope(batch_index=batch_index, batch_note_ids=note_ids):
                 first = self._request(
-                    self.instruction,
+                    f"{self.instruction}\n\n{partition_instruction}",
                     request,
                     provider=provider,
                     model=model,
@@ -928,7 +932,8 @@ class CardCentricClassifier:
             ):
                 repaired = self._request(
                     f"{self.instruction}\n\nRepair the invalid classifier batch. "
-                    "Correct only the reported defect and return the complete batch.",
+                    "Correct only the reported defect and return the complete batch.\n\n"
+                    f"{partition_instruction}",
                     repair_input,
                     provider=provider,
                     model=model,

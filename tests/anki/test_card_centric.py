@@ -740,6 +740,11 @@ def test_classifier_uses_cached_prefix_and_restores_parallel_batch_order() -> No
     )
 
     assert [item.note_id for item in result.results] == [1, 2, 3]
+    assert all(
+        "Return exactly one result for each of these note IDs and no other note IDs:"
+        in instruction
+        for instruction in generator.instructions
+    )
     assert all(options.cacheable_source_prefix == source.prefix for options in generator.options)
     assert result.telemetry.batch_count == 3
     assert [batch.note_ids for batch in result.telemetry.batches] == [(3,), (1,), (2,)]
@@ -1309,9 +1314,11 @@ class _Generator:
     def __init__(self, outputs: list[CardClassificationBatchOutput]) -> None:
         self.outputs = list(outputs)
         self.options = []
+        self.instructions = []
 
     def generate_text(self, instruction, input_text, *, output_schema, provider, model, options):
-        del instruction, output_schema, provider, model
+        del output_schema, provider, model
+        self.instructions.append(instruction)
         self.options.append(options)
         output = (
             self.outputs.pop(0)
