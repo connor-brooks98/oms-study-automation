@@ -37,6 +37,7 @@ from oms_hub.knowledge.models import (
 )
 from oms_hub.knowledge.normalization import CourseRevisionInput, normalize_course_revision
 from oms_hub.knowledge.repository import KnowledgeRepository
+from oms_hub.models import StudyRevisionModel, UploadBatchModel, UploadItemModel
 from oms_hub.providers.contracts import AuthorityClass
 
 _pptx_factory: Any = import_module("tests.document_processing.pptx_factory")
@@ -337,7 +338,7 @@ def test_batch_is_numeric_limited_continues_after_failure_and_dry_run_writes_not
     )
 
     dry = service.backfill_all_ready_course_revisions(2, dry_run=True)
-    assert dry == BackfillReport(2, 1, 0, 1, ("20",))
+    assert dry == BackfillReport(2, 1, 0, 1, ("20",), ("3", "20"))
     assert capsys.readouterr().out == ""
     assert knowledge.get_revision("sr_missing") is None
 
@@ -353,6 +354,122 @@ def test_batch_is_numeric_limited_continues_after_failure_and_dry_run_writes_not
         sha256_file(valid.immutable_source_path),
         sha256_file(valid.canonical_derived_path),
     )
+
+
+def test_invalid_lower_id_does_not_consume_numeric_limit(tmp_path: Path, database: Database) -> None:
+    valid_dir = tmp_path / "valid"
+    invalid_dir = tmp_path / "invalid"
+    valid_dir.mkdir()
+    invalid_dir.mkdir()
+    valid, catalog, parser = _fixture(valid_dir, revision_id=8)
+    invalid, _, _ = _fixture(invalid_dir, revision_id=3)
+    invalid = replace(invalid, immutable_source_path=invalid_dir / "missing.pptx")
+    knowledge = KnowledgeRepository(database)
+    knowledge.initialize()
+    report = SlideRevisionBackfill(
+        FakeIngestion({3: invalid, 8: valid}), catalog, knowledge, parser=parser
+    ).backfill_all_ready_course_revisions(1)
+    assert report.examined_ids == ("3", "8")
+    assert report.failure_ids == ("3",)
+    assert report.created == 1
+    assert knowledge.get_revision("sr_missing") is None
+
+
+def test_new_activation_rolls_back_source_revision_and_evidence_on_failure(
+    database: Database,
+) -> None:
+    repository = KnowledgeRepository(database)
+    repository.initialize()
+    revision_id = make_revision_id("legacy-study-revision:90", "a" * 64)
+    unit = _ready_unit(revision_id, source="new", family_text="new")
+    with pytest.raises(ValueError, match="requested revision scope"):
+        repository.activate_revision(
+            revision_id,
+            source_document_id="legacy-study-revision:90",
+            file_sha256="a" * 64,
+            source_family="legacy_slides",
+            authority_class=AuthorityClass.COURSE_MATERIAL,
+            course_id="different-course",
+            exam_id="exam",
+            lecture_id="lecture",
+            units=(unit,),
+        )
+    assert repository.get_revision(revision_id) is None
+    assert repository.create_source("legacy-study-revision:90", AuthorityClass.COURSE_MATERIAL)
+    assert repository.list_evidence(revision_id) == ()
+
+
+def test_cli_dry_run_is_read_only_and_emits_safe_json(tmp_path: Path) -> None:
+    import json
+    import os
+    import subprocess
+    import sys
+
+    source = build_pptx(
+        tmp_path / "cli.pptx",
+        slides=(SlideFixture("CLI title", "CLI private source text"),),
+    )
+    pdf = tmp_path / "cli.pdf"
+    pdf.write_bytes(b"pdf")
+    database = Database(f"sqlite:///{tmp_path / 'cli.db'}")
+    database.migrate()
+    lecture_id = __import__("oms_hub.repositories", fromlist=["CatalogRepository"]).CatalogRepository(
+        database
+    ).upsert_lecture(
+        __import__("oms_hub.repositories", fromlist=["LectureInput"]).LectureInput(
+            "CLI Course", 1, 1, "CLI", "", None
+        )
+    )
+    with database.session() as session:
+        session.add(UploadBatchModel(id="cli-batch", kind="slides", state="complete"))
+        session.add(
+            UploadItemModel(
+                id="cli-item",
+                batch_id="cli-batch",
+                kind="slides",
+                original_filename="cli.pptx",
+                staged_path=str(source),
+                sha256=sha256_file(source),
+                size_bytes=source.stat().st_size,
+                state="complete",
+                lecture_id=lecture_id,
+            )
+        )
+        session.flush()
+        session.add(
+            StudyRevisionModel(
+                upload_item_id="cli-item",
+                lecture_id=lecture_id,
+                kind="slides",
+                source_sha256=sha256_file(source),
+                immutable_source_path=str(source),
+                derived_sha256=sha256_file(pdf),
+                canonical_derived_path=str(pdf),
+                canonical_source_path=str(source),
+                state="current",
+                current=True,
+            )
+        )
+    KnowledgeRepository(database).initialize()
+    before = (sha256_file(source), sha256_file(pdf))
+    env = {**os.environ, "OMS_HUB_DATABASE_URL": f"sqlite:///{tmp_path / 'cli.db'}"}
+    result = subprocess.run(
+        [sys.executable, "-m", "oms_hub.knowledge.backfill", "--dry-run", "--limit", "1"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["examined_revision_ids"] == ["1"]
+    assert payload["warnings"] == ["dry_run"]
+    assert "CLI private source text" not in result.stdout
+    assert str(tmp_path) not in result.stdout
+    assert (sha256_file(source), sha256_file(pdf)) == before
+    with database.engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM source_revisions")).scalar_one() == 0
+    database.close()
 
 
 
