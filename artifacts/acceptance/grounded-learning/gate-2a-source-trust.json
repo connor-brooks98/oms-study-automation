@@ -117,8 +117,8 @@
     {
       "id": "lecture13_private_dry_run",
       "command": "python -m oms_hub.knowledge.backfill --dry-run --limit 1 in the approved private Lecture 13 environment only",
-      "status": "blocked",
-      "evidence": "Not run: current delegation forbids production/private-data access; the checked-in synthetic fixture is not represented as private Lecture 13 evidence.",
+      "status": "pass",
+      "evidence": "Authorized controlled NUC dry run used an integrity-checked SQLite online backup and selected the unique Lecture 13 Coagulopathy current slide revision without emitting private text, paths, or IDs. Result: examined 1, created 1, already_present 0, failed 0, evidence_count 180, locator_distribution slide=180. Source SHA-256 de14c3131badbb834e94cfbda7c433c2facead5db46dae970094bab5bf70e6e5; derived PDF SHA-256 3e25615cf3f19121c247165b9a2b64dded0644e92eea3ce22448dab401c5bcaf; database backup SHA-256 4a031f9c0a2dd9f1ea59ae11fa602e7fab9a93d3bd05a7d8c2c0e6650578d4ba. Temporary backup and script were deleted; live database was not mutated.",
       "scope": "Task 1.8 Step 4 private dry-run report."
     },
     {
@@ -136,16 +136,7 @@
       "scope": "Gate 2A verifies the fail-closed boundary; Task 5.2 owns durable provenance and stale propagation."
     }
   ],
-  "blockers": [
-    {
-      "id": "lecture13_private_dry_run",
-      "status": "blocked",
-      "requirement": "Task 1.8 Step 4 requires one private Lecture 13 dry-run report.",
-      "owner": "Connor/Sol-0 controlled private-data operator",
-      "evidence_gap": "Current task authorization forbids private-data access.",
-      "unblocking_action": "Authorize and run the dry-run in the controlled private environment; commit hashes, counts, locator distributions, and warnings only."
-    }
-  ],
+  "blockers": [],
   "platform_limitations": [
     {
       "id": "pymupdf_macos_pdf_adapter",
@@ -157,6 +148,6 @@
   "review": {
     "terra_specification": "approved_to_record_blocked",
     "terra_quality_release": "approved_to_commit_blocked",
-    "gate_open_approval": "not_granted"
+    "gate_open_approval": "pending_final_complete_evidence_review"
   }
 }
