@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 from oms_hub.app import create_app
 from oms_hub.config import Settings
@@ -119,3 +120,26 @@ def test_test_only_router_uses_application_auth_and_csrf(tmp_path: Path) -> None
             },
         )
         assert with_csrf.status_code == 409
+
+
+@pytest.mark.parametrize("failure", ["lookup", "pdf"])
+def test_legacy_integrity_failures_map_to_404_or_409(
+    tmp_path: Path, failure: str
+) -> None:
+    from oms_hub.knowledge.routes import build_knowledge_router
+    from .test_service import _service
+
+    service, _, evidence, _ = _service(tmp_path)
+    if failure == "lookup":
+        def missing(_: int) -> object:
+            raise KeyError(7)
+
+        service.artifacts.repository.get_study_revision = missing
+    else:
+        service.artifacts.fail_pdf = True
+    app = FastAPI()
+    app.include_router(build_knowledge_router(service))
+    response = TestClient(app).get(
+        f"/api/v1/knowledge/evidence/{evidence[0].evidence_id}"
+    )
+    assert response.status_code == (404 if failure == "lookup" else 409)
