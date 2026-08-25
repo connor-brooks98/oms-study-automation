@@ -4005,7 +4005,7 @@ class CurationServicesRunner:
             )
             concept_vectors = (
                 None
-                if existing_document_vectors is None
+                if not concept_notes
                 else {
                     note.note_id: existing_document_vectors[note.note_id]
                     for note in concept_notes

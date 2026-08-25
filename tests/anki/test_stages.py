@@ -364,7 +364,7 @@ def test_card_dedupe_v2_does_not_cross_concept_boundaries() -> None:
         deck_names=("AnKing",),
     )
     runner, context, passage_id = _dedupe_stage_fixture(
-        _DedupeEmbedder([]),
+        _OrthogonalDedupeEmbedder(),
         cards=(note,),
     )
     _set_dedupe_existing(context, note.note_id, passage_id, concept_id="C02")
@@ -373,11 +373,17 @@ def test_card_dedupe_v2_does_not_cross_concept_boundaries() -> None:
         runner._card_dedupe_v2(
             context,
             {note.note_id: note},
-            (_generated_dedupe_row("G01", "C01-M1", "Alpha beta", passage_id),),
+            (
+                _generated_dedupe_row("G01", "C01-M1", "Alpha beta", passage_id),
+                _generated_dedupe_row("G02", "C01-M2", "Gamma delta", passage_id),
+            ),
         )
     )
 
-    assert product.payload["resolutions"][0]["status"] == "generated"
+    assert [item["status"] for item in product.payload["resolutions"]] == [
+        "generated",
+        "generated",
+    ]
 
 
 def test_card_dedupe_v2_uses_pinned_existing_vectors_without_uploading_notes() -> None:
