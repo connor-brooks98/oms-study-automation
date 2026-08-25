@@ -116,9 +116,9 @@
     },
     {
       "id": "lecture13_private_dry_run",
-      "command": "python -m oms_hub.knowledge.backfill --dry-run --limit 1 in the approved private Lecture 13 environment only",
+      "command": "python -m oms_hub.knowledge.backfill --dry-run --limit 1",
       "status": "pass",
-      "evidence": "Authorized controlled NUC dry run used an integrity-checked SQLite online backup and selected the unique Lecture 13 Coagulopathy current slide revision without emitting private text, paths, or IDs. Result: examined 1, created 1, already_present 0, failed 0, evidence_count 180, locator_distribution slide=180. Source SHA-256 de14c3131badbb834e94cfbda7c433c2facead5db46dae970094bab5bf70e6e5; derived PDF SHA-256 3e25615cf3f19121c247165b9a2b64dded0644e92eea3ce22448dab401c5bcaf; database backup SHA-256 4a031f9c0a2dd9f1ea59ae11fa602e7fab9a93d3bd05a7d8c2c0e6650578d4ba. Temporary backup and script were deleted; live database was not mutated.",
+      "evidence": "examined=1; created=1; already_present=0; failed=0; evidence_count=180; locator_distribution={slide:180}; source_sha256=de14c3131badbb834e94cfbda7c433c2facead5db46dae970094bab5bf70e6e5; derived_pdf_sha256=3e25615cf3f19121c247165b9a2b64dded0644e92eea3ce22448dab401c5bcaf; database_backup_sha256=4a031f9c0a2dd9f1ea59ae11fa602e7fab9a93d3bd05a7d8c2c0e6650578d4ba; warnings=[dry_run,private_text_not_emitted,live_database_not_mutated]",
       "scope": "Task 1.8 Step 4 private dry-run report."
     },
     {
