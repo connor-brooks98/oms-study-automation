@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "gate": "gate_2a_source_trust",
+  "state": "blocked",
+  "claim": "gate_not_open",
+  "assessment_ref": {
+    "branch": "sol1/source-trust",
+    "sha": "SELF",
+    "self_reference_resolution": "Resolve SELF from the commit containing this record."
+  },
+  "assessed_input": {
+    "branch": "sol1/source-trust",
+    "sha": "4913842837748b77ecb78f87097745ef22f9a350",
+    "reviewed_task_1_7_candidate": "5ce14e0813c93896859094774ee0bc7a62797fad"
+  },
+  "task_acceptance_evidence": [
+    {
+      "task": "1.1",
+      "status": "accepted",
+      "evidence": "docs/implementation/handoffs/1.1.md"
+    },
+    {
+      "task": "1.2",
+      "status": "accepted",
+      "evidence": "docs/implementation/handoffs/1.2.md"
+    },
+    {
+      "task": "1.3",
+      "status": "accepted",
+      "evidence": "docs/implementation/handoffs/1.3.md"
+    },
+    {
+      "task": "1.4",
+      "status": "accepted",
+      "evidence": "docs/implementation/handoffs/1.4.md"
+    },
+    {
+      "task": "1.5",
+      "status": "accepted",
+      "evidence": "docs/implementation/handoffs/1.5.md"
+    },
+    {
+      "task": "1.6",
+      "status": "accepted",
+      "evidence": "docs/implementation/handoffs/1.6.md"
+    },
+    {
+      "task": "1.7",
+      "status": "accepted",
+      "evidence": "docs/implementation/handoffs/1.7.md"
+    }
+  ],
+  "verification": [
+    {
+      "id": "gate1_record",
+      "command": "PATH=/private/tmp/sol1-task16-full-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest tests/contracts/test_gate1_route_snapshot.py -q",
+      "status": "pass",
+      "evidence": "7 passed",
+      "scope": "Gate 1 record, manifest, route snapshot, and schema-command contracts remain valid."
+    },
+    {
+      "id": "source_trust_workstream",
+      "command": "PATH=/private/tmp/sol1-task16-full-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest -W ignore::ResourceWarning tests/knowledge tests/contracts -q",
+      "status": "pass",
+      "evidence": "Exit 0; all selected Source Trust and shared-contract tests passed.",
+      "scope": "Tasks 1.1-1.7, including deterministic IDs, authority policy, repository transactions, normalization, backfill, and application services."
+    },
+    {
+      "id": "source_trust_document_contracts",
+      "command": "PATH=/private/tmp/sol1-task16-full-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest tests/document_processing/test_shadow.py tests/document_processing/test_pptx_locator.py -q",
+      "status": "pass",
+      "evidence": "22 passed",
+      "scope": "LegacyPptxProcessor v1 repeatability, slide/note/table/asset provenance, and locator enrichment contracts."
+    },
+    {
+      "id": "ruff",
+      "command": "PATH=/private/tmp/sol1-task16-full-venv/bin:$PATH ruff check src tests scripts",
+      "status": "pass",
+      "evidence": "All checks passed!",
+      "scope": "Repository Python lint."
+    },
+    {
+      "id": "mypy_source",
+      "command": "PATH=/private/tmp/sol1-task16-full-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD mypy src",
+      "status": "pass",
+      "evidence": "Success: no issues found in 185 source files.",
+      "scope": "Repository source typing."
+    },
+    {
+      "id": "safe_broad_python",
+      "command": "PATH=/private/tmp/sol1-task16-full-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring python -m pytest -q -W ignore::ResourceWarning -m \"not windows_office\" --deselect tests/document_processing/test_pdf_adapter.py",
+      "status": "pass",
+      "evidence": "Exit 0; one expected skip; native Windows Office and the inherited macOS PDF-adapter path were excluded.",
+      "scope": "Safe broad Python non-regression lane with inherited platform exclusions stated explicitly."
+    },
+    {
+      "id": "baseline_javascript",
+      "command": "node --test \"tests/js/*.test.js\"",
+      "status": "pass",
+      "evidence": "168 passed; 0 failed",
+      "scope": "Baseline browser behavior."
+    },
+    {
+      "id": "native_windows_office",
+      "command": "PATH=/private/tmp/sol1-task16-full-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest tests/document_processing/test_windows_office.py -q -rs",
+      "status": "blocked",
+      "evidence": "One test skipped: requires Windows desktop Microsoft Office.",
+      "scope": "The existing one-slide/one-page SerialOfficeConverter smoke fixture did not execute on this macOS host and cannot by itself prove locator 3 maps to page 3."
+    },
+    {
+      "id": "physical_pptx_pdf_mapping",
+      "command": "In a Sol-0-authorized Windows platform test, build at least three deterministic synthetic PPTX slides, export with SerialOfficeConverter on desktop Microsoft Office, assert PPTX slide count equals output PDF page count, and explicitly assert slide/locator 3 maps to PDF page 3.",
+      "status": "blocked",
+      "evidence": "No native Windows Office output exists for this assessed input; the current checked-in smoke fixture contains only one slide and asserts only page_count == 1.",
+      "scope": "Required physical proof that PowerPoint slide N maps to exported PDF page N."
+    },
+    {
+      "id": "lecture13_private_dry_run",
+      "command": "python -m oms_hub.knowledge.backfill --dry-run --limit 1 in the approved private Lecture 13 environment only",
+      "status": "blocked",
+      "evidence": "Not run: current delegation forbids production/private-data access; the checked-in synthetic fixture is not represented as private Lecture 13 evidence.",
+      "scope": "Task 1.8 Step 4 private dry-run report."
+    },
+    {
+      "id": "storekey_composition",
+      "command": "In a Sol-0-composed accepted tree: python -c 'from oms_hub.indexing.models import StoreKey; from oms_hub.knowledge.backfill import scope_ids; course_id, exam_id, _ = scope_ids(\"StoreKey Gate Fixture\", 1, 13); key = StoreKey.course(course_id, exam_id); assert StoreKey.parse(key.value) == key; assert key.course_id == course_id; assert key.exam_id == exam_id'",
+      "status": "blocked",
+      "evidence": "StoreKey is absent at Sol-1 HEAD; sol2/gemini-indexing is 4abda3acda3e447051db9144f6d3a1cf437602ba and diverges from Sol-1 at merge base 82e22d7aa109a29a5fe4d7c26eb1672966317fbf.",
+      "scope": "CP-0002 cross-workstream StoreKey grammar/round-trip and opaque consumer composition."
+    },
+    {
+      "id": "dependency_staleness",
+      "command": "Covered fail-closed behavior in tests/knowledge; no mutation command is authorized without durable provenance.",
+      "status": "blocked",
+      "evidence": "KnowledgeService.mark_dependents_stale raises DependencyProvenanceUnavailable; Task 5.2 owns provenance and currently depends on Task 1.8.",
+      "scope": "Task 1.8 requirement that source changes mark dependent artifacts stale."
+    }
+  ],
+  "blockers": [
+    {
+      "id": "native_windows_office_physical_proof",
+      "status": "blocked",
+      "requirement": "CP-0002 requires physical proof that the citation-preview slide-to-PDF-page assumption holds.",
+      "owner": "Sol-0 release/platform lane",
+      "evidence_gap": "tests/document_processing/test_windows_office.py is skipped on macOS and its current one-slide/page-count-one assertion cannot prove locator 3 maps to page 3.",
+      "unblocking_action": "Sol-0 must authorize a Windows platform-test extension with at least three deterministic synthetic slides, real SerialOfficeConverter export, equal PPTX-slide/PDF-page counts, and explicit slide 3 to PDF page 3 evidence; preserve only sanitized counts, hashes, and pass status."
+    },
+    {
+      "id": "lecture13_private_dry_run",
+      "status": "blocked",
+      "requirement": "Task 1.8 Step 4 requires one private Lecture 13 dry-run report.",
+      "owner": "Connor/Sol-0 controlled private-data operator",
+      "evidence_gap": "Current task authorization forbids private-data access.",
+      "unblocking_action": "Authorize and run the dry-run in the controlled private environment; commit hashes, counts, locator distributions, and warnings only."
+    },
+    {
+      "id": "storekey_cross_workstream_composition",
+      "status": "blocked",
+      "requirement": "CP-0002 requires StoreKey.course()/parse() round-trip on composed accepted Sol-1 and Sol-2 contracts.",
+      "owner": "Sol-0 with Sol-2",
+      "evidence_gap": "StoreKey is Sol-2-owned and sol2/gemini-indexing diverges from Sol-1; Sol-1 must not copy or import it.",
+      "unblocking_action": "Compose accepted branches in a Sol-0-owned integration worktree and run the exact round-trip command."
+    },
+    {
+      "id": "durable_artifact_dependency_provenance",
+      "status": "blocked",
+      "requirement": "Task 1.8 requires source changes to mark dependents stale.",
+      "owner": "Sol-0 program decision and Sol-5 Task 5.2",
+      "evidence_gap": "Task 1.7 correctly fails closed because Task 5.2 provenance is absent, while the manifest makes Task 5.2 depend on Task 1.8.",
+      "unblocking_action": "Sol-0 must resolve the dependency cycle or formally narrow this Gate 2A criterion; Sol-1 cannot waive it."
+    }
+  ],
+  "platform_limitations": [
+    {
+      "id": "pymupdf_macos_pdf_adapter",
+      "status": "inherited_baseline_exception",
+      "command": "python -m pytest -q -W ignore::ResourceWarning -m \"not windows_office\" --deselect tests/document_processing/test_pdf_adapter.py",
+      "effect": "The known macOS PDF-adapter crash is excluded; this is not a Gate 2A pass for that path."
+    }
+  ],
+  "review": {
+    "terra_specification": "approved_to_record_blocked",
+    "terra_quality_release": "approved_to_commit_blocked",
+    "gate_open_approval": "not_granted"
+  }
+}
