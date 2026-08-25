@@ -1,0 +1,309 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from oms_hub.artifacts import ArtifactRole
+from oms_hub.db import Database
+from oms_hub.indexing.models import IndexState, ProviderStore, StoreKey
+from oms_hub.indexing.repository import IndexRepository
+from oms_hub.indexing.service import IndexingInputError, IndexingService
+from oms_hub.knowledge.models import SourceRevisionState
+from oms_hub.knowledge.service import CanonicalInputArtifact, IndexInputView
+from oms_hub.providers.contracts import AuthorityClass
+from oms_hub.providers.gemini.errors import GeminiContractError, GeminiTransientError
+from oms_hub.providers.gemini.file_search import (
+    CompletedOperation,
+    OperationRef,
+    UploadedFileRef,
+)
+
+
+class FakeKnowledgeService:
+    def __init__(self, view: IndexInputView) -> None:
+        self.view = view
+        self.calls: list[str] = []
+
+    def resolve_index_input(self, source_revision_id: str) -> IndexInputView:
+        self.calls.append(source_revision_id)
+        return self.view
+
+
+class FakeAdmin:
+    def __init__(self, store: ProviderStore, *, maximum_document_bytes: int = 100) -> None:
+        self.store = store
+        self.client_factory = SimpleNamespace(
+            config=SimpleNamespace(maximum_document_bytes=maximum_document_bytes)
+        )
+        self.ensure_calls: list[StoreKey] = []
+        self.upload_calls: list[tuple[Path, str]] = []
+        self.import_calls: list[tuple[str, str, object, object]] = []
+        self.wait_calls: list[str] = []
+        self.delete_calls: list[str] = []
+        self.import_failures: list[BaseException | None] = []
+        self.wait_failures: list[BaseException | None] = []
+        self.delete_error: BaseException | None = None
+
+    async def ensure_store(self, key: StoreKey) -> ProviderStore:
+        self.ensure_calls.append(key)
+        return self.store
+
+    async def upload_file(self, path: Path, display_name: str) -> UploadedFileRef:
+        self.upload_calls.append((path, display_name))
+        return UploadedFileRef("files/provider-1", path.stat().st_size)
+
+    async def import_file(
+        self,
+        store_name: str,
+        file_name: str,
+        metadata: object,
+        chunking: object,
+    ) -> OperationRef:
+        self.import_calls.append((store_name, file_name, metadata, chunking))
+        failure = self.import_failures.pop(0) if self.import_failures else None
+        if failure is not None:
+            raise failure
+        return OperationRef("operations/import-1")
+
+    async def wait_for_operation(self, operation_name: str) -> CompletedOperation:
+        self.wait_calls.append(operation_name)
+        failure = self.wait_failures.pop(0) if self.wait_failures else None
+        if failure is not None:
+            raise failure
+        return CompletedOperation(
+            operation_name,
+            "fileSearchStores/course-1/documents/document-1",
+        )
+
+    async def delete_file(self, file_name: str) -> None:
+        self.delete_calls.append(file_name)
+        if self.delete_error is not None:
+            raise self.delete_error
+
+
+def run(awaitable: Any) -> Any:
+    return asyncio.run(awaitable)
+
+
+def source_view(tmp_path: Path) -> IndexInputView:
+    revision_id = "sr_aaaaaaaaaaaaaaaaaaaaaaaaaa"
+    pptx = tmp_path / "lecture.pptx"
+    pdf = tmp_path / "lecture.pdf"
+    pptx.write_bytes(b"pptx bytes")
+    pdf.write_bytes(b"pdf bytes")
+    return IndexInputView(
+        source_document_id="opaque-source-document",
+        source_revision_id=revision_id,
+        source_family="legacy_slides",
+        revision_state=SourceRevisionState.READY,
+        authority_class=AuthorityClass.COURSE_MATERIAL,
+        course_id="heme-lymph-0123456789abcdef01234567",
+        exam_id="exam-2-0123456789abcdef01234567",
+        lecture_id="lecture-13-0123456789abcdef01234567",
+        pptx=CanonicalInputArtifact(
+            artifact_id=f"{revision_id}:pptx",
+            role=ArtifactRole.PPTX,
+            path=pptx,
+            sha256=hashlib.sha256(pptx.read_bytes()).hexdigest(),
+            media_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "presentationml.presentation"
+            ),
+        ),
+        pdf=CanonicalInputArtifact(
+            artifact_id=f"{revision_id}:pdf",
+            role=ArtifactRole.PDF,
+            path=pdf,
+            sha256=hashlib.sha256(pdf.read_bytes()).hexdigest(),
+            media_type="application/pdf",
+        ),
+        evidence_units=(),
+        assets=(),
+    )
+
+
+def service_bundle(
+    tmp_path: Path,
+    *,
+    view: IndexInputView | None = None,
+    maximum_document_bytes: int = 100,
+) -> tuple[IndexingService, IndexRepository, FakeAdmin, IndexInputView]:
+    resolved_view = view or source_view(tmp_path)
+    database = Database("sqlite://")
+    database.create_schema()
+    repository = IndexRepository(database)
+    key = StoreKey.course(resolved_view.course_id, resolved_view.exam_id)
+    store = repository.create_store(
+        ProviderStore(
+            store_key=key,
+            provider="gemini",
+            provider_store_name="fileSearchStores/course-1",
+            embedding_model="models/gemini-embedding-2",
+            authority_namespace=key.authority_namespace,
+            course_id=key.course_id,
+            exam_id=key.exam_id,
+        )
+    )
+    admin = FakeAdmin(store, maximum_document_bytes=maximum_document_bytes)
+    service = IndexingService(repository, FakeKnowledgeService(resolved_view), admin)
+    return service, repository, admin, resolved_view
+
+
+def test_course_revision_uploads_imports_and_persists_ready_document(tmp_path: Path) -> None:
+    service, repository, admin, view = service_bundle(tmp_path)
+
+    result = run(service.index_revision(view.source_revision_id))
+    document = repository.get_document_by_source_revision(
+        admin.store.id, view.source_revision_id
+    )
+
+    assert result.state is IndexState.READY
+    assert result.cleanup_warning is None
+    assert admin.upload_calls == [(view.pptx.path, "lecture.pptx")]
+    assert admin.import_calls == [
+        (
+            admin.store.provider_store_name,
+            "files/provider-1",
+            [
+                {"key": "authority_class", "string_value": "course_material"},
+                {"key": "course_id", "string_value": view.course_id},
+                {"key": "exam_id", "string_value": view.exam_id},
+                {"key": "lecture_id", "string_value": view.lecture_id},
+                {"key": "source_revision_id", "string_value": view.source_revision_id},
+            ],
+            None,
+        )
+    ]
+    assert admin.wait_calls == ["operations/import-1"]
+    assert admin.delete_calls == ["files/provider-1"]
+    assert document is not None
+    assert document.provider_file_name == "files/provider-1"
+    assert document.provider_operation_name == "operations/import-1"
+    assert document.provider_document_id == result.provider_document_name
+    assert document.state is IndexState.READY
+
+
+def test_retry_after_upload_resumes_at_import_without_reupload(tmp_path: Path) -> None:
+    service, repository, admin, view = service_bundle(tmp_path)
+    admin.import_failures = [GeminiTransientError("temporary"), None]
+
+    first = run(service.index_revision(view.source_revision_id))
+    persisted = repository.get_document_by_source_revision(
+        admin.store.id, view.source_revision_id
+    )
+    second = run(service.index_revision(view.source_revision_id))
+
+    assert first.state is IndexState.RETRYABLE_FAILURE
+    assert persisted is not None
+    assert persisted.provider_file_name == "files/provider-1"
+    assert persisted.provider_document_id is None
+    assert second.state is IndexState.READY
+    assert len(admin.upload_calls) == 1
+    assert len(admin.import_calls) == 2
+
+
+def test_retry_after_timeout_polls_persisted_operation_before_new_import(
+    tmp_path: Path,
+) -> None:
+    service, repository, admin, view = service_bundle(tmp_path)
+    admin.wait_failures = [GeminiTransientError("operation timed out"), None]
+
+    first = run(service.index_revision(view.source_revision_id))
+    persisted = repository.get_document_by_source_revision(
+        admin.store.id, view.source_revision_id
+    )
+    second = run(service.index_revision(view.source_revision_id))
+
+    assert first.state is IndexState.RETRYABLE_FAILURE
+    assert persisted is not None
+    assert persisted.provider_operation_name == "operations/import-1"
+    assert second.state is IndexState.READY
+    assert len(admin.upload_calls) == 1
+    assert len(admin.import_calls) == 1
+    assert admin.wait_calls == ["operations/import-1", "operations/import-1"]
+
+
+@pytest.mark.parametrize(
+    "case",
+    ("missing", "hash", "stale", "retired", "oversized", "authority"),
+)
+def test_invalid_source_is_rejected_before_any_provider_call(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    view = source_view(tmp_path)
+    maximum = 100
+    if case == "missing":
+        view.pptx.path.unlink()
+    elif case == "hash":
+        view = replace(view, pptx=replace(view.pptx, sha256="0" * 64))
+    elif case == "stale":
+        view = replace(view, revision_state=SourceRevisionState.STALE)
+    elif case == "retired":
+        view = replace(view, revision_state=SourceRevisionState.RETIRED)
+    elif case == "oversized":
+        maximum = 1
+    else:
+        view = replace(view, authority_class=AuthorityClass.PUBLISHED_JOURNAL)
+    service, _, admin, _ = service_bundle(
+        tmp_path, view=view, maximum_document_bytes=maximum
+    )
+
+    with pytest.raises(IndexingInputError):
+        run(service.index_revision(view.source_revision_id))
+
+    assert admin.ensure_calls == []
+    assert admin.upload_calls == []
+    assert admin.import_calls == []
+    assert admin.wait_calls == []
+
+
+def test_ready_is_idempotent_and_cleanup_failure_is_only_a_warning(tmp_path: Path) -> None:
+    service, repository, admin, view = service_bundle(tmp_path)
+    admin.delete_error = GeminiTransientError("cleanup unavailable")
+
+    first = run(service.index_revision(view.source_revision_id))
+    calls = (
+        len(admin.ensure_calls),
+        len(admin.upload_calls),
+        len(admin.import_calls),
+        len(admin.wait_calls),
+    )
+    second = run(service.index_revision(view.source_revision_id))
+    document = repository.get_document_by_source_revision(
+        admin.store.id, view.source_revision_id
+    )
+
+    assert first.state is IndexState.READY
+    assert first.cleanup_warning == "transient"
+    assert second.state is IndexState.READY
+    assert second.cleanup_warning is None
+    assert calls == (
+        len(admin.ensure_calls),
+        len(admin.upload_calls),
+        len(admin.import_calls),
+        len(admin.wait_calls),
+    )
+    assert document is not None and document.state is IndexState.READY
+
+
+def test_nonretryable_provider_failure_persists_terminal_state(tmp_path: Path) -> None:
+    service, repository, admin, view = service_bundle(tmp_path)
+    admin.import_failures = [GeminiContractError("contract changed")]
+
+    result = run(service.index_revision(view.source_revision_id))
+    document = repository.get_document_by_source_revision(
+        admin.store.id, view.source_revision_id
+    )
+
+    assert result.state is IndexState.TERMINAL_FAILURE
+    assert document is not None
+    assert document.state is IndexState.TERMINAL_FAILURE
+    assert document.last_error_category == "contract"
+
