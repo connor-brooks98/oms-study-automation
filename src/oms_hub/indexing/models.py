@@ -264,7 +264,7 @@ class ProviderStore:
 class ProviderDocument:
     store_id: str
     provider: str
-    provider_document_id: str
+    provider_document_id: str | None
     source_revision_id: str
     provider_file_name: str | None = None
     provider_document_name: str | None = None
@@ -281,11 +281,12 @@ class ProviderDocument:
     def __post_init__(self) -> None:
         object.__setattr__(self, "store_id", _require_text(self.store_id, "store id", 36))
         object.__setattr__(self, "provider", _require_text(self.provider, "provider", 50))
-        object.__setattr__(
-            self,
-            "provider_document_id",
-            _require_text(self.provider_document_id, "provider document id", 500),
-        )
+        if self.provider_document_id is not None:
+            object.__setattr__(
+                self,
+                "provider_document_id",
+                _require_text(self.provider_document_id, "provider document id", 500),
+            )
         object.__setattr__(
             self,
             "source_revision_id",
@@ -300,7 +301,7 @@ class ProviderDocument:
             value = getattr(self, field_name)
             if value is not None:
                 object.__setattr__(self, field_name, _require_text(value, field_name, 500))
-        if self.provider_document_name is None:
+        if self.provider_document_name is None and self.provider_document_id is not None:
             object.__setattr__(self, "provider_document_name", self.provider_document_id)
         if self.input_byte_count is not None and self.input_byte_count < 0:
             raise ValueError("input byte count cannot be negative")
@@ -310,7 +311,7 @@ class ProviderDocument:
         _require_text(self.id, "document id", 36)
 
     @property
-    def provider_name(self) -> str:
+    def provider_name(self) -> str | None:
         return self.provider_document_id
 
     @property
@@ -405,7 +406,7 @@ class ProviderDocumentModel(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     store_id: Mapped[str] = mapped_column(ForeignKey("provider_stores.id"), nullable=False)
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
-    provider_document_id: Mapped[str] = mapped_column(String(500), nullable=False)
+    provider_document_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
     source_revision_id: Mapped[str] = mapped_column(String(200), nullable=False)
     provider_file_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     provider_document_name: Mapped[str | None] = mapped_column(String(500), nullable=True)

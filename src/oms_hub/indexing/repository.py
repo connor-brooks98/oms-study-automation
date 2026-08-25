@@ -111,7 +111,7 @@ class IndexRepository:
     def upsert_document(self, document: ProviderDocument) -> ProviderDocument:
         with self.database.session() as session:
             row = session.get(ProviderDocumentModel, document.id)
-            if row is None:
+            if row is None and document.provider_document_id is not None:
                 row = session.scalar(
                     select(ProviderDocumentModel).where(
                         ProviderDocumentModel.provider == document.provider,
@@ -151,6 +151,20 @@ class IndexRepository:
             row = session.scalar(
                 select(ProviderDocumentModel).where(
                     ProviderDocumentModel.provider_document_id == provider_document_id
+                )
+            )
+            return self._document_from_row(row) if row is not None else None
+
+    def get_document_by_source_revision(
+        self,
+        store_id: str,
+        source_revision_id: str,
+    ) -> ProviderDocument | None:
+        with self.database.session() as session:
+            row = session.scalar(
+                select(ProviderDocumentModel).where(
+                    ProviderDocumentModel.store_id == store_id,
+                    ProviderDocumentModel.source_revision_id == source_revision_id,
                 )
             )
             return self._document_from_row(row) if row is not None else None

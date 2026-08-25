@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterable, Iterable, Mapping
+from dataclasses import dataclass
+from importlib import import_module
+from pathlib import Path
+from time import monotonic
 from typing import Any, cast
 from weakref import WeakKeyDictionary
 
@@ -16,7 +20,28 @@ from oms_hub.indexing.models import (
 )
 from oms_hub.indexing.repository import IndexRepository
 from oms_hub.providers.gemini.client import GeminiClientFactory, translate_gemini_error
-from oms_hub.providers.gemini.errors import GeminiContractError, GeminiProviderError
+from oms_hub.providers.gemini.errors import (
+    GeminiContractError,
+    GeminiProviderError,
+    GeminiTransientError,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class UploadedFileRef:
+    name: str
+    size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class OperationRef:
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedOperation:
+    name: str
+    document_name: str
 
 
 class GeminiFileSearchAdmin:
@@ -105,6 +130,77 @@ class GeminiFileSearchAdmin:
         mapped.sort(key=lambda item: (item.provider_document_id, item.id))
         return tuple(self.repository.upsert_document(item) for item in mapped)
 
+    async def upload_file(self, path: Path, display_name: str) -> UploadedFileRef:
+        path = Path(path)
+        display_name = _required_text(display_name, "file display name")
+        if not path.is_file():
+            raise GeminiContractError("Gemini upload source is not a regular file.")
+        size_bytes = path.stat().st_size
+        if size_bytes > self.client_factory.config.maximum_document_bytes:
+            raise GeminiContractError("Gemini upload source exceeds the configured size limit.")
+        async with self.client_factory.client() as client:
+            files = _files_api(client)
+            uploaded = await _call_provider(
+                files.upload,
+                file=path,
+                config={"display_name": display_name},
+            )
+        return UploadedFileRef(_provider_identity(uploaded, "file"), size_bytes)
+
+    async def import_file(
+        self,
+        store_name: str,
+        file_name: str,
+        metadata: object,
+        chunking: object | None,
+    ) -> OperationRef:
+        store_name = _required_text(store_name, "store name")
+        file_name = _required_text(file_name, "file name")
+        config = {"custom_metadata": metadata}
+        if chunking is not None:
+            config["chunking_config"] = chunking
+        async with self.client_factory.client() as client:
+            operation = await _call_provider(
+                _stores_api(client).import_file,
+                file_search_store_name=store_name,
+                file_name=file_name,
+                config=config,
+            )
+        return OperationRef(_provider_identity(operation, "operation"))
+
+    async def wait_for_operation(self, operation_name: str) -> CompletedOperation:
+        operation_name = _required_text(operation_name, "operation name")
+        deadline = monotonic() + self.client_factory.config.operation_timeout_seconds
+        operation = _import_operation(operation_name)
+        attempt = 0
+        async with self.client_factory.client() as client:
+            operations = _operations_api(client)
+            while True:
+                operation = await _call_provider(operations.get, operation)
+                if bool(_value(operation, "done")):
+                    return _completed_operation(operation_name, operation)
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise GeminiTransientError(
+                        "Gemini import operation timed out; resume the persisted operation."
+                    )
+                delay = min(
+                    self.client_factory.config.operation_poll_seconds * (2**attempt),
+                    15,
+                    remaining,
+                )
+                await asyncio.sleep(delay)
+                attempt += 1
+
+    async def delete_file(self, file_name: str) -> None:
+        file_name = _required_text(file_name, "file name")
+        async with self.client_factory.client() as client:
+            try:
+                await _call_provider(_files_api(client).delete, name=file_name)
+            except GeminiProviderError as error:
+                if error.provider_status_code != 404:
+                    raise
+
     async def delete_document(self, provider_document_id: str) -> None:
         document = self.repository.get_document_by_provider_id(provider_document_id)
         if document is None:
@@ -171,9 +267,23 @@ def _documents_api(client: object) -> Any:
     return documents
 
 
-async def _call_provider(method: Any, **kwargs: object) -> Any:
+def _files_api(client: object) -> Any:
+    files = _safe_attr(client, "files")
+    if files is None:
+        raise GeminiContractError("Gemini SDK does not expose Files.")
+    return files
+
+
+def _operations_api(client: object) -> Any:
+    operations = _safe_attr(client, "operations")
+    if operations is None:
+        raise GeminiContractError("Gemini SDK does not expose operations.")
+    return operations
+
+
+async def _call_provider(method: Any, *args: object, **kwargs: object) -> Any:
     try:
-        result = method(**kwargs)
+        result = method(*args, **kwargs)
         if hasattr(result, "__await__"):
             return await result
         raise GeminiContractError("Gemini File Search admin method was not asynchronous.")
@@ -195,6 +305,43 @@ def _provider_identity(value: object, kind: str) -> str:
     if len(normalized) > 500 or not normalized.isprintable():
         raise GeminiContractError(f"Gemini {kind} response contained an invalid provider identity.")
     return normalized
+
+
+def _required_text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise GeminiContractError(f"Gemini {label} is missing.")
+    normalized = value.strip()
+    if len(normalized) > 500 or not normalized.isprintable():
+        raise GeminiContractError(f"Gemini {label} is invalid.")
+    return normalized
+
+
+def _import_operation(name: str) -> object:
+    try:
+        operation_type = import_module("google.genai.types").ImportFileOperation
+    except (AttributeError, ImportError, ModuleNotFoundError):
+        return OperationRef(name)
+    try:
+        return operation_type(name=name)
+    except Exception as error:
+        raise _translate(error) from None
+
+
+def _completed_operation(name: str, operation: object) -> CompletedOperation:
+    error = _value(operation, "error")
+    if error:
+        status = _value(error, "code", "status_code", "status")
+        translated = _translate(_OperationFailure(status if isinstance(status, int) else None))
+        raise translated from None
+    response = _value(operation, "response")
+    document_name = _value(response, "document_name", "documentName")
+    return CompletedOperation(name, _required_text(document_name, "document name"))
+
+
+class _OperationFailure(Exception):
+    def __init__(self, status_code: int | None) -> None:
+        self.status_code = status_code
+        super().__init__("Gemini import operation failed.")
 
 
 async def _collect_documents(value: object) -> list[object]:
@@ -316,4 +463,9 @@ def _safe_attr(value: object, name: str) -> object | None:
         return None
 
 
-__all__ = ["GeminiFileSearchAdmin"]
+__all__ = [
+    "CompletedOperation",
+    "GeminiFileSearchAdmin",
+    "OperationRef",
+    "UploadedFileRef",
+]
