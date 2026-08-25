@@ -3,19 +3,20 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from oms_hub.artifacts import ArtifactRole
 from oms_hub.document_processing.domain import (
     DocumentLocator,
-    ParsedAsset,
     ParsedDocument,
     ParsedSegment,
     SegmentKind,
 )
 from oms_hub.knowledge.backfill import scope_ids
 from oms_hub.knowledge.ids import sha256_file
+from oms_hub.knowledge.ids import source_revision_id as make_revision_id
 from oms_hub.knowledge.models import (
     EvidenceLocator,
     EvidenceLocatorKind,
@@ -24,6 +25,7 @@ from oms_hub.knowledge.models import (
     SourceRevisionState,
 )
 from oms_hub.knowledge.normalization import CourseRevisionInput, normalize_course_revision
+from oms_hub.knowledge.service import KnowledgeService
 from oms_hub.providers.contracts import AuthorityClass, RetrievalScope, TruthMode
 
 
@@ -51,7 +53,8 @@ class _Parser:
     def __init__(self, document: ParsedDocument):
         self.document = document
 
-    def parse(self, snapshot, asset_root):
+    def parse(self, snapshot: object, asset_root: Path) -> ParsedDocument:
+        del snapshot, asset_root
         return self.document
 
 
@@ -60,13 +63,17 @@ class _Artifacts:
         self.pptx = pptx
         self.pdf = pdf
 
-    def resolve(self, revision_id: int, role: ArtifactRole):
+    def resolve(self, revision_id: int, role: ArtifactRole) -> SimpleNamespace:
         path = self.pptx if role is ArtifactRole.PPTX else self.pdf
         return SimpleNamespace(
             revision_id=revision_id,
             role=role,
             path=path,
-            media_type="application/pdf" if role is ArtifactRole.PDF else "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            media_type=(
+                "application/pdf"
+                if role is ArtifactRole.PDF
+                else "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            ),
         )
 
 
@@ -76,22 +83,25 @@ class _Knowledge:
         self.evidence = evidence
         self.database = None
 
-    def get_revision(self, revision_id):
+    def get_revision(self, revision_id: str) -> SourceRevision | None:
         return self.revision if revision_id == self.revision.source_revision_id else None
 
-    def list_evidence(self, revision_id):
+    def list_evidence(self, revision_id: str) -> tuple[EvidenceUnit, ...]:
         return self.evidence if revision_id == self.revision.source_revision_id else ()
 
 
-def _service(tmp_path: Path, *, state: SourceRevisionState = SourceRevisionState.READY):
-    from oms_hub.knowledge.service import KnowledgeService
+def _service(
+    tmp_path: Path,
+    *,
+    state: SourceRevisionState = SourceRevisionState.READY,
+) -> tuple[KnowledgeService, str, tuple[EvidenceUnit, ...], tuple[str, str, str]]:
 
     pptx = tmp_path / "deck.pptx"
     pdf = tmp_path / "deck.pdf"
     pptx.write_bytes(b"pptx")
     pdf.write_bytes(b"pdf")
     source_id = "legacy-study-revision:7"
-    revision_id = "sr_test"
+    revision_id = make_revision_id(source_id, sha256_file(pptx))
     document = _document(pptx, revision_id)
     course_id, exam_id, lecture_id = scope_ids("Heme", 2, 7)
     evidence = normalize_course_revision(
@@ -112,7 +122,7 @@ def _service(tmp_path: Path, *, state: SourceRevisionState = SourceRevisionState
     return service, revision_id, evidence, (course_id, exam_id, lecture_id)
 
 
-def test_resolve_index_input_returns_frozen_verified_opaque_view(tmp_path: Path):
+def test_resolve_index_input_returns_frozen_verified_opaque_view(tmp_path: Path) -> None:
     service, revision_id, evidence, scope = _service(tmp_path)
 
     view = service.resolve_index_input(revision_id)
@@ -125,17 +135,17 @@ def test_resolve_index_input_returns_frozen_verified_opaque_view(tmp_path: Path)
     assert view.evidence_units == evidence
     assert (view.course_id, view.exam_id, view.lecture_id) == scope
     with pytest.raises(FrozenInstanceError):
-        view.course_id = "changed"
+        view.course_id = "changed"  # type: ignore[misc]
 
 
-def test_resolve_index_input_fails_closed_for_unsupported_state(tmp_path: Path):
+def test_resolve_index_input_fails_closed_for_unsupported_state(tmp_path: Path) -> None:
     service, revision_id, _, _ = _service(tmp_path, state=SourceRevisionState.FAILED)
 
     with pytest.raises(Exception, match="state"):
         service.resolve_index_input(revision_id)
 
 
-def test_resolve_evidence_maps_only_positive_slide_to_pdf_preview(tmp_path: Path):
+def test_resolve_evidence_maps_only_positive_slide_to_pdf_preview(tmp_path: Path) -> None:
     service, _, evidence, _ = _service(tmp_path)
 
     view = service.resolve_evidence(evidence[0].evidence_id)
@@ -161,12 +171,12 @@ def test_resolve_evidence_maps_only_positive_slide_to_pdf_preview(tmp_path: Path
         service.resolve_evidence("ev_note")
 
 
-def test_scope_sources_validates_scope_and_is_deterministic(tmp_path: Path):
+def test_scope_sources_validates_scope_and_is_deterministic(tmp_path: Path) -> None:
     service, revision_id, evidence, scope = _service(tmp_path)
     service.knowledge.database = SimpleNamespace(engine=None)
     # A repository-backed scope query is exercised by route/integration tests;
     # this unit verifies the public policy boundary and ordering contract.
-    service._scope_rows = evidence + evidence
+    cast(Any, service)._scope_rows = evidence + evidence
 
     result = service.get_scope_sources(
         RetrievalScope(scope[0], scope[1], (scope[2],), TruthMode.COURSE_ONLY)
@@ -174,10 +184,10 @@ def test_scope_sources_validates_scope_and_is_deterministic(tmp_path: Path):
 
     assert result.evidence == tuple(sorted(evidence, key=lambda unit: unit.evidence_id))
     with pytest.raises(Exception, match="RetrievalScope"):
-        service.get_scope_sources("not-a-scope")
+        service.get_scope_sources(cast(Any, "not-a-scope"))
 
 
-def test_mark_dependents_stale_is_fail_closed_without_mutation(tmp_path: Path):
+def test_mark_dependents_stale_is_fail_closed_without_mutation(tmp_path: Path) -> None:
     service, revision_id, _, _ = _service(tmp_path)
 
     with pytest.raises(Exception, match="provenance"):
