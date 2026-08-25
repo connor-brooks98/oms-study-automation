@@ -39,6 +39,7 @@ from oms_hub.knowledge.normalization import CourseRevisionInput, normalize_cours
 from oms_hub.knowledge.repository import KnowledgeRepository
 from oms_hub.models import StudyRevisionModel, UploadBatchModel, UploadItemModel
 from oms_hub.providers.contracts import AuthorityClass
+from oms_hub.repositories import CatalogRepository, LectureInput
 
 _pptx_factory: Any = import_module("tests.document_processing.pptx_factory")
 SlideFixture: Any = _pptx_factory.SlideFixture
@@ -238,7 +239,13 @@ def test_partial_nonempty_evidence_is_repaired_not_already_present(
         FakeIngestion({revision.id: revision}), catalog, knowledge, parser=parser
     )
     candidate = service._prepare("7")
-    service.ensure_source_revision(candidate)
+    knowledge.create_source(candidate.source_document_id, AuthorityClass.COURSE_MATERIAL)
+    knowledge.create_revision(
+        source_document_id=candidate.source_document_id,
+        source_revision_id=candidate.source_revision_id,
+        file_sha256=revision.source_sha256,
+        state=SourceRevisionState.NORMALIZING,
+    )
     knowledge.put_evidence_units(candidate.source_revision_id, candidate.evidence[:1])
 
     report = service.backfill_all_ready_course_revisions(1)
@@ -356,7 +363,9 @@ def test_batch_is_numeric_limited_continues_after_failure_and_dry_run_writes_not
     )
 
 
-def test_invalid_lower_id_does_not_consume_numeric_limit(tmp_path: Path, database: Database) -> None:
+def test_invalid_lower_id_does_not_consume_numeric_limit(
+    tmp_path: Path, database: Database
+) -> None:
     valid_dir = tmp_path / "valid"
     invalid_dir = tmp_path / "invalid"
     valid_dir.mkdir()
@@ -413,12 +422,8 @@ def test_cli_dry_run_is_read_only_and_emits_safe_json(tmp_path: Path) -> None:
     pdf.write_bytes(b"pdf")
     database = Database(f"sqlite:///{tmp_path / 'cli.db'}")
     database.migrate()
-    lecture_id = __import__("oms_hub.repositories", fromlist=["CatalogRepository"]).CatalogRepository(
-        database
-    ).upsert_lecture(
-        __import__("oms_hub.repositories", fromlist=["LectureInput"]).LectureInput(
-            "CLI Course", 1, 1, "CLI", "", None
-        )
+    lecture_id = CatalogRepository(database).upsert_lecture(
+        LectureInput("CLI Course", 1, 1, "CLI", "", None)
     )
     with database.session() as session:
         session.add(UploadBatchModel(id="cli-batch", kind="slides", state="complete"))
@@ -469,6 +474,15 @@ def test_cli_dry_run_is_read_only_and_emits_safe_json(tmp_path: Path) -> None:
     assert (sha256_file(source), sha256_file(pdf)) == before
     with database.engine.connect() as connection:
         assert connection.execute(text("SELECT COUNT(*) FROM source_revisions")).scalar_one() == 0
+    blocked = subprocess.run(
+        [sys.executable, "-m", "oms_hub.knowledge.backfill", "--limit", "1"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert blocked.returncode != 0
+    assert "activation requires explicit application wiring" in blocked.stderr
     database.close()
 
 

@@ -420,6 +420,8 @@ class KnowledgeRepository:
         self,
         revision_id: str,
         *,
+        source_document_id: str | None = None,
+        file_sha256: str | None = None,
         source_family: str,
         authority_class: AuthorityClass,
         course_id: str,
@@ -460,7 +462,69 @@ class KnowledgeRepository:
                     {"revision_id": revision_id},
                 ).mappings().first()
                 if row is None:
-                    raise KeyError(revision_id)
+                    if source_document_id is None or file_sha256 is None:
+                        raise KeyError(revision_id)
+                    if revision_id != make_revision_id(source_document_id, file_sha256):
+                        raise ValueError(
+                            "source_revision_id must match its deterministic "
+                            "source/content identity"
+                        )
+                    existing_source = connection.execute(
+                        text(
+                            "SELECT authority_class FROM knowledge_sources WHERE id = :id"
+                        ),
+                        {"id": source_document_id},
+                    ).mappings().first()
+                    if existing_source is None:
+                        connection.execute(
+                            text(
+                                "INSERT INTO knowledge_sources (id, authority_class) "
+                                "VALUES (:id, :authority_class)"
+                            ),
+                            {
+                                "id": source_document_id,
+                                "authority_class": authority_class.value,
+                            },
+                        )
+                    elif existing_source["authority_class"] != authority_class.value:
+                        raise ValueError("authority_class does not match its knowledge source")
+                    connection.execute(
+                        text(
+                            "INSERT INTO source_revisions "
+                            "(id, source_document_id, file_sha256, state) "
+                            "VALUES (:id, :source_document_id, :file_sha256, :state)"
+                        ),
+                        {
+                            "id": revision_id,
+                            "source_document_id": source_document_id,
+                            "file_sha256": file_sha256,
+                            "state": SourceRevisionState.NORMALIZING.value,
+                        },
+                    )
+                    row = connection.execute(
+                        text(
+                            """
+                            SELECT r.id, r.source_document_id, r.file_sha256, r.state,
+                                   s.authority_class
+                            FROM source_revisions r
+                            JOIN knowledge_sources s ON s.id = r.source_document_id
+                            WHERE r.id = :revision_id
+                            """
+                        ),
+                        {"revision_id": revision_id},
+                    ).mappings().first()
+                    assert row is not None
+                elif source_document_id is not None or file_sha256 is not None:
+                    if (
+                        source_document_id != row["source_document_id"]
+                        or file_sha256 != row["file_sha256"]
+                    ):
+                        raise ValueError("revision identity does not match the existing revision")
+                if revision_id != make_revision_id(row["source_document_id"], row["file_sha256"]):
+                    raise ValueError(
+                        "source_revision_id must match its deterministic "
+                        "source/content identity"
+                    )
                 if _source_family(row["source_document_id"]) != source_family:
                     raise ValueError("revision does not belong to the requested source family")
                 if row["authority_class"] != authority_class.value:

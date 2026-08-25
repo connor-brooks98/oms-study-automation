@@ -3,21 +3,26 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import unicodedata
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
 
+from oms_hub.config import Settings
+from oms_hub.db import Database
 from oms_hub.document_processing.domain import ParsedDocument, SourceSnapshot
 from oms_hub.document_processing.shadow import LegacyPptxProcessor
 from oms_hub.files.atomic import sha256_file
 from oms_hub.ingestion.domain import StudyRevision, UploadKind
+from oms_hub.ingestion.repository import IngestionRepository
 from oms_hub.knowledge.ids import source_revision_id as make_revision_id
 from oms_hub.knowledge.models import EvidenceUnit, SourceRevision, SourceRevisionState
 from oms_hub.knowledge.normalization import CourseRevisionInput, normalize_course_revision
 from oms_hub.knowledge.repository import KnowledgeRepository
 from oms_hub.providers.contracts import AuthorityClass
+from oms_hub.repositories import CatalogRepository
 
 __all__ = [
     "BackfillReport",
@@ -39,6 +44,7 @@ class BackfillReport:
     already_present: int
     failed: int
     failure_ids: tuple[str, ...]
+    examined_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +100,9 @@ class SlideRevisionBackfill:
 
     def backfill_slide_revision(self, slide_revision_id: str) -> SourceRevision:
         candidate = self._prepare(slide_revision_id)
-        self.ensure_source_revision(candidate)
+        return self._activate_candidate(candidate)
+
+    def _activate_candidate(self, candidate: _Candidate) -> SourceRevision:
         existing = self.knowledge.get_revision(candidate.source_revision_id)
         already_present = (
             existing is not None
@@ -106,6 +114,8 @@ class SlideRevisionBackfill:
         )
         activated = self.knowledge.activate_revision(
             candidate.source_revision_id,
+            source_document_id=candidate.source_document_id,
+            file_sha256=candidate.revision.source_sha256,
             source_family="legacy_slides",
             authority_class=AuthorityClass.COURSE_MATERIAL,
             course_id=candidate.course_id,
@@ -125,17 +135,23 @@ class SlideRevisionBackfill:
         if limit < 0:
             raise ValueError("limit must not be negative")
         candidates = self._eligible_revisions()
-        selected = candidates[:limit]
-        created = already_present = 0
+        examined_ids = tuple(str(revision.id) for revision in candidates)
+        prepared: list[tuple[StudyRevision, _Candidate]] = []
         failures: list[str] = []
-        for revision in selected:
+        for revision in candidates:
+            try:
+                prepared.append((revision, self._prepare(str(revision.id))))
+            except Exception:
+                failures.append(str(revision.id))
+        selected = prepared[:limit]
+        created = already_present = 0
+        for revision, candidate in selected:
             revision_id = str(revision.id)
             try:
                 if dry_run:
-                    self._prepare(revision_id)
                     created += 1
                     continue
-                self.backfill_slide_revision(revision_id)
+                self._activate_candidate(candidate)
                 if getattr(self, "_last_already_present", False):
                     already_present += 1
                 else:
@@ -143,11 +159,12 @@ class SlideRevisionBackfill:
             except Exception:
                 failures.append(revision_id)
         return BackfillReport(
-            examined=len(selected),
+            examined=len(candidates),
             created=created,
             already_present=already_present,
             failed=len(failures),
-            failure_ids=tuple(failures),
+            failure_ids=tuple(sorted(set(failures), key=int)),
+            examined_ids=examined_ids,
         )
 
     def _eligible_revisions(self) -> list[StudyRevision]:
@@ -229,19 +246,6 @@ class SlideRevisionBackfill:
             evidence=evidence,
         )
 
-    def ensure_source_revision(self, candidate: _Candidate) -> SourceRevision:
-        self.knowledge.create_source(
-            candidate.source_document_id,
-            AuthorityClass.COURSE_MATERIAL,
-        )
-        return self.knowledge.create_revision(
-            source_document_id=candidate.source_document_id,
-            source_revision_id=candidate.source_revision_id,
-            file_sha256=candidate.revision.source_sha256,
-            state=SourceRevisionState.NORMALIZING,
-        )
-
-
 def backfill_slide_revision(slide_revision_id: str, **dependencies: Any) -> SourceRevision:
     service = SlideRevisionBackfill(
         dependencies.pop("ingestion"),
@@ -252,16 +256,7 @@ def backfill_slide_revision(slide_revision_id: str, **dependencies: Any) -> Sour
     if dependencies:
         raise TypeError(f"unexpected dependencies: {', '.join(dependencies)}")
     candidate = service._prepare(slide_revision_id)
-    service.ensure_source_revision(candidate)
-    return service.knowledge.activate_revision(
-        candidate.source_revision_id,
-        source_family="legacy_slides",
-        authority_class=AuthorityClass.COURSE_MATERIAL,
-        course_id=candidate.course_id,
-        exam_id=candidate.exam_id,
-        lecture_id=candidate.lecture_id,
-        units=candidate.evidence,
-    )
+    return service._activate_candidate(candidate)
 
 
 def backfill_all_ready_course_revisions(limit: int, **dependencies: Any) -> BackfillReport:
@@ -281,8 +276,44 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--limit", type=int, default=25)
-    parser.parse_args()
-    raise SystemExit("CLI wiring is owned by Sol-0 and is not activated by Task 1.6")
+    args = parser.parse_args()
+    if not args.dry_run:
+        raise SystemExit("Task 1.6 activation requires explicit application wiring")
+    settings = Settings()
+    database = Database(settings.database_url)
+    try:
+        knowledge = KnowledgeRepository(database)
+        from sqlalchemy import inspect
+
+        if not inspect(database.engine).has_table("source_revisions"):
+            report = BackfillReport(0, 0, 0, 0, (), ())
+            warnings = ["knowledge_schema_uninitialized"]
+        else:
+            report = backfill_all_ready_course_revisions(
+                args.limit,
+                ingestion=IngestionRepository(database),
+                catalog=CatalogRepository(database),
+                knowledge=knowledge,
+                dry_run=True,
+            )
+            warnings = []
+        print(
+            json.dumps(
+                {
+                    "examined_revision_ids": list(report.examined_ids),
+                    "examined": report.examined,
+                    "created": report.created,
+                    "already_present": report.already_present,
+                    "failed": report.failed,
+                    "failure_ids": list(report.failure_ids),
+                    "warnings": ["dry_run", *warnings],
+                },
+                sort_keys=True,
+            )
+        )
+    finally:
+        database.close()
+    return 0
 
 
 if __name__ == "__main__":
