@@ -13,10 +13,13 @@ from oms_hub.knowledge.models import EvidenceUnit
 from oms_hub.knowledge.service import (
     DependencyProvenanceUnavailable,
     EvidenceView,
+    InvalidKnowledgeScope,
     KnowledgeIntegrityError,
     KnowledgeNotFoundError,
     KnowledgeService,
+    KnowledgeServiceError,
     PreviewUnavailableError,
+    SourceRevisionView,
     UnsupportedRevisionState,
 )
 from oms_hub.providers.contracts import RetrievalScope, TruthMode
@@ -34,7 +37,9 @@ def build_knowledge_router(container: Any) -> APIRouter:
     def current(request: Request) -> KnowledgeService:
         if service is not None:
             return service
-        candidate = getattr(request.app.state, "knowledge_service", container)
+        candidate = getattr(request.app.state, "knowledge_service", None)
+        if candidate is None:
+            candidate = getattr(container, "knowledge_service", container)
         return candidate if isinstance(candidate, KnowledgeService) else KnowledgeService(candidate)
 
     @router.get("/scopes/{course_id}")
@@ -49,12 +54,12 @@ def build_knowledge_router(container: Any) -> APIRouter:
         scope = RetrievalScope(course_id, exam_id, lecture_ids, truth_mode, source_revision_ids)
         try:
             view = current(request).get_scope_sources(scope)
-        except Exception as error:
+        except KnowledgeServiceError as error:
             return _error(error)
         return _json(
             {
                 "scope": asdict(view.scope),
-                "evidence": [_evidence_payload(unit) for unit in view.evidence],
+                "revisions": [_revision_payload(revision) for revision in view.revisions],
             }
         )
 
@@ -63,39 +68,16 @@ def build_knowledge_router(container: Any) -> APIRouter:
         if not _REVISION_ID.fullmatch(revision_id):
             return _json({"detail": "source revision ID is malformed"}, 422)
         try:
-            view = current(request).resolve_index_input(revision_id)
-        except Exception as error:
+            view = current(request).get_revision_view(revision_id)
+        except KnowledgeServiceError as error:
             return _error(error)
-        return _json(
-            {
-                "source_document_id": view.source_document_id,
-                "source_revision_id": view.source_revision_id,
-                "source_family": view.source_family,
-                "revision_state": view.revision_state.value,
-                "authority_class": view.authority_class.value,
-                "course_id": view.course_id,
-                "exam_id": view.exam_id,
-                "lecture_id": view.lecture_id,
-                "pptx": _artifact_payload(view.pptx),
-                "pdf": _artifact_payload(view.pdf),
-                "evidence": [_evidence_payload(unit) for unit in view.evidence_units],
-                "assets": [
-                    {
-                        "asset_id": asset.asset_id,
-                        "media_type": asset.media_type,
-                        "sha256": asset.sha256,
-                        "locator": asdict(asset.locator),
-                    }
-                    for asset in view.assets
-                ],
-            }
-        )
+        return _json(_revision_payload(view))
 
     @router.get("/evidence/{evidence_id}")
     def evidence(request: Request, evidence_id: str) -> JSONResponse:
         try:
             view = current(request).resolve_evidence(evidence_id)
-        except Exception as error:
+        except KnowledgeServiceError as error:
             return _error(error)
         return _json(_evidence_view_payload(view))
 
@@ -105,7 +87,7 @@ def build_knowledge_router(container: Any) -> APIRouter:
             return _json({"detail": "source revision ID is malformed"}, 422)
         try:
             current(request).mark_dependents_stale(revision_id)
-        except Exception as error:
+        except KnowledgeServiceError as error:
             return _error(error)
         return _json({"detail": "rebuild is unavailable"}, 409)
 
@@ -121,8 +103,10 @@ def _json(payload: dict[str, Any], status_code: int = 200) -> JSONResponse:
 
 
 def _error(error: Exception) -> JSONResponse:
-    if isinstance(error, (KnowledgeNotFoundError,)):
+    if isinstance(error, KnowledgeNotFoundError):
         status = 404
+    elif isinstance(error, InvalidKnowledgeScope):
+        status = 422
     elif isinstance(
         error,
         (
@@ -138,12 +122,11 @@ def _error(error: Exception) -> JSONResponse:
     return _json({"detail": str(error)}, status)
 
 
-def _artifact_payload(artifact: Any) -> dict[str, Any]:
+def _revision_payload(view: SourceRevisionView) -> dict[str, Any]:
     return {
-        "artifact_id": artifact.artifact_id,
-        "role": artifact.role.value,
-        "sha256": artifact.sha256,
-        "media_type": artifact.media_type,
+        "source_revision_id": view.source_revision_id,
+        "revision_state": view.revision_state.value,
+        "upload_eligible": view.upload_eligible,
     }
 
 

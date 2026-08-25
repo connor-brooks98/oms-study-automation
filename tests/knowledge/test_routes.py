@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
 from oms_hub.app import create_app
 from oms_hub.config import Settings
 
@@ -70,12 +71,12 @@ def test_unexpected_service_error_is_generic_500(tmp_path: Path) -> None:
 
 def test_test_only_router_uses_application_auth_and_csrf(tmp_path: Path) -> None:
     from oms_hub.knowledge.routes import build_knowledge_router
+
     from .test_service import _service
 
     service, revision_id, evidence, _ = _service(tmp_path)
     app = create_app(
         Settings(
-            _env_file=None,
             data_dir=tmp_path,
             database_url=f"sqlite:///{tmp_path / 'hub.db'}",
             public_hostname="study.example.com",
@@ -90,7 +91,12 @@ def test_test_only_router_uses_application_auth_and_csrf(tmp_path: Path) -> None
     app.state.access_verifier = FakeAccessVerifier()
     app.include_router(build_knowledge_router(service))
     with TestClient(app, base_url="https://study.example.com") as client:
-        assert client.get(f"/api/v1/knowledge/evidence/{evidence[0].evidence_id}").status_code == 401
+        assert (
+            client.get(
+                f"/api/v1/knowledge/evidence/{evidence[0].evidence_id}"
+            ).status_code
+            == 401
+        )
         authorized = client.get(
             f"/api/v1/knowledge/evidence/{evidence[0].evidence_id}",
             headers={"Cf-Access-Jwt-Assertion": "valid"},

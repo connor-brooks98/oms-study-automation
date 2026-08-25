@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -8,6 +8,7 @@ from typing import Any, cast
 import pytest
 
 from oms_hub.artifacts import ArtifactRole
+from oms_hub.db import Database
 from oms_hub.document_processing.domain import (
     DocumentLocator,
     ParsedDocument,
@@ -25,6 +26,7 @@ from oms_hub.knowledge.models import (
     SourceRevisionState,
 )
 from oms_hub.knowledge.normalization import CourseRevisionInput, normalize_course_revision
+from oms_hub.knowledge.repository import KnowledgeRepository
 from oms_hub.knowledge.service import KnowledgeService
 from oms_hub.providers.contracts import AuthorityClass, RetrievalScope, TruthMode
 
@@ -66,6 +68,7 @@ class _Artifacts:
             get_study_revision=lambda revision_id: SimpleNamespace(
                 id=revision_id,
                 kind="slides",
+                lecture_id=7,
                 source_sha256=sha256_file(pptx),
                 immutable_source_path=pptx,
                 derived_sha256=sha256_file(pdf),
@@ -216,7 +219,10 @@ def test_mark_dependents_stale_is_fail_closed_without_mutation(tmp_path: Path) -
         service.mark_dependents_stale(revision_id)
 
 
-@pytest.mark.parametrize("state, eligible", [(SourceRevisionState.STALE, False), (SourceRevisionState.RETIRED, False)])
+@pytest.mark.parametrize(
+    "state, eligible",
+    [(SourceRevisionState.STALE, False), (SourceRevisionState.RETIRED, False)],
+)
 def test_resolve_index_input_allows_reconcilable_states(
     tmp_path: Path, state: SourceRevisionState, eligible: bool
 ) -> None:
@@ -246,3 +252,47 @@ def test_resolve_index_input_rejects_source_authority_mismatch(tmp_path: Path) -
     service.knowledge.source_authority = AuthorityClass.PUBLISHED_JOURNAL
     with pytest.raises(Exception, match="authority"):
         service.resolve_index_input(revision_id)
+
+
+def test_scope_sources_uses_joined_database_rows_and_keeps_all_lifecycle_states(
+    tmp_path: Path,
+) -> None:
+    service, revision_id, evidence, scope = _service(tmp_path)
+    database = Database(f"sqlite:///{tmp_path / 'scope.db'}")
+    repository = KnowledgeRepository(database)
+    repository.initialize()
+    repository.create_source("legacy-study-revision:7", AuthorityClass.COURSE_MATERIAL)
+    repository.create_revision(
+        source_document_id="legacy-study-revision:7",
+        source_revision_id=revision_id,
+        file_sha256=service.knowledge.revision.file_sha256,
+        state=SourceRevisionState.STALE,
+    )
+    repository.put_evidence_units(revision_id, evidence)
+    service.knowledge = repository
+    result = service.get_scope_sources(
+        RetrievalScope(scope[0], scope[1], (scope[2],), TruthMode.COURSE_ONLY)
+    )
+    assert result.revisions == (
+        service.get_revision_view(revision_id),
+    )
+    database.close()
+
+
+def test_reparse_and_persisted_evidence_mismatches_fail_closed(tmp_path: Path) -> None:
+    service, revision_id, evidence, _ = _service(tmp_path)
+    service.parser = _Parser(
+        replace(_document(tmp_path / "deck.pptx", revision_id), parser_version="2")
+    )
+    with pytest.raises(Exception, match="identity"):
+        service.resolve_index_input(revision_id)
+    service.parser = _Parser(_document(tmp_path / "deck.pptx", revision_id))
+    service.knowledge.evidence = (replace(evidence[0], normalized_text="tampered"),)
+    with pytest.raises(Exception, match="evidence"):
+        service.resolve_index_input(revision_id)
+
+
+def test_non_reconcilable_evidence_revision_is_rejected(tmp_path: Path) -> None:
+    service, _, evidence, _ = _service(tmp_path, state=SourceRevisionState.FAILED)
+    with pytest.raises(Exception, match="reconcilable"):
+        service.resolve_evidence(evidence[0].evidence_id)
