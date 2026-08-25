@@ -17,6 +17,14 @@ def test_outline_renderer_creates_valid_single_pdf():
     assert reader.pages[0].extract_text().startswith("Neuro")
 
 
+def test_outline_renderer_is_deterministic_for_safe_retries():
+    renderer = OutlinePdfRenderer()
+
+    assert renderer.render("Neuro Outline", "# Topic\nContent") == renderer.render(
+        "Neuro Outline", "# Topic\nContent"
+    )
+
+
 def test_outline_renderer_rejects_empty_content():
     try:
         OutlinePdfRenderer().render("Neuro Outline", " \n ")

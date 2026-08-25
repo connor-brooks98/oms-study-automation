@@ -156,6 +156,7 @@ class OutlinePdfRenderer:
             topMargin=0.7 * inch,
             bottomMargin=0.7 * inch,
             title=title,
+            invariant=1,
         )
         document.build(story, onLaterPages=_page_number)
         payload = buffer.getvalue()
