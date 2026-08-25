@@ -11,7 +11,7 @@ def test_v4_pipeline_states_are_explicit() -> None:
     assert tuple(
         state.value
         for state in CurationState
-        if not state.value.startswith("card_")
+        if not state.value.startswith(("card_", "v3_"))
     ) == (
         "queued",
         "preflight",

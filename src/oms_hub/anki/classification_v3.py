@@ -209,7 +209,7 @@ class ProviderSetCoverageBatch(BaseModel):
 
 def _provider_output_model(
     tier: Literal["cheap", "thorough"], bundles: Sequence[CandidateEvidenceBundle]
-) -> type[BaseModel]:
+) -> type[ProviderClassificationBatch]:
     bundle_ids = tuple(bundle.bundle_id for bundle in bundles)
     candidate_ids = tuple(sorted({bundle.candidate.candidate_id for bundle in bundles}))
     passage_ids = tuple(sorted({item for bundle in bundles for item in bundle.allowed_passage_ids}))
@@ -281,12 +281,15 @@ def _provider_output_model(
             None,
         ),
     )
-    return create_model(
-        "ProviderClassificationBatch",
-        __base__=ProviderClassificationBatch,
-        rows=(
-            tuple[row, ...],
-            Field(json_schema_extra={"minItems": len(bundles), "maxItems": len(bundles)}),
+    return cast(
+        type[ProviderClassificationBatch],
+        create_model(
+            "ProviderClassificationBatch",
+            __base__=ProviderClassificationBatch,
+            rows=(
+                tuple[row, ...],  # type: ignore[valid-type]
+                Field(json_schema_extra={"minItems": len(bundles), "maxItems": len(bundles)}),
+            ),
         ),
     )
 
@@ -492,9 +495,9 @@ class R7ClassificationService:
             if error is not None and repairable and defer_partial:
                 result = {}
                 for bundle in batch:
-                    diagnostic = f"deferred_to_set_coverage: {error}"
-                    escalations.append(_escalation(bundle, "contract_invalid", None, diagnostic))
-                    forced_unresolved[bundle.bundle_id] = _unresolved(bundle, None, diagnostic)
+                    defer_reason = f"deferred_to_set_coverage: {error}"
+                    escalations.append(_escalation(bundle, "contract_invalid", None, defer_reason))
+                    forced_unresolved[bundle.bundle_id] = _unresolved(bundle, None, defer_reason)
             elif error is not None and repairable:
                 repair = self._repair_if_authorized(
                     original_tier="cheap",
@@ -1078,7 +1081,7 @@ def _pack_set_coverage(
 
 def _set_coverage_output_model(
     groups: Sequence[tuple[str, Sequence[CandidateEvidenceBundle]]],
-) -> type[BaseModel]:
+) -> type[ProviderSetCoverageBatch]:
     fact_ids = tuple(fact_id for fact_id, _items in groups)
     candidate_ids = tuple(
         sorted({item.candidate.candidate_id for _fact_id, items in groups for item in items})
@@ -1135,12 +1138,15 @@ def _set_coverage_output_model(
             (),
         ),
     )
-    return create_model(
-        "ProviderSetCoverageBatch",
-        __base__=ProviderSetCoverageBatch,
-        rows=(
-            tuple[row, ...],  # type: ignore[valid-type]
-            Field(json_schema_extra={"minItems": len(groups), "maxItems": len(groups)}),
+    return cast(
+        type[ProviderSetCoverageBatch],
+        create_model(
+            "ProviderSetCoverageBatch",
+            __base__=ProviderSetCoverageBatch,
+            rows=(
+                tuple[row, ...],  # type: ignore[valid-type]
+                Field(json_schema_extra={"minItems": len(groups), "maxItems": len(groups)}),
+            ),
         ),
     )
 

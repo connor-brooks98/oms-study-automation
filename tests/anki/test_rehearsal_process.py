@@ -4,11 +4,9 @@ import hashlib
 import json
 import os
 import runpy
-import shutil
 import sqlite3
 import subprocess
 import sys
-import sysconfig
 import time
 import zipfile
 from ast import Import, ImportFrom, parse
@@ -1189,14 +1187,6 @@ def test_windows_runtime_probe_uses_launcher_attested_real_venv_dependency_path(
     launcher_python = launcher_venv / (
         "Scripts/python.exe" if os.name == "nt" else "bin/python"
     )
-    if os.name != "nt":
-        library_name = sysconfig.get_config_var("LDLIBRARY")
-        assert isinstance(library_name, str)
-        source_library = Path(sys.base_prefix) / "lib" / library_name
-        assert source_library.is_file()
-        target_library = launcher_venv / "lib" / library_name
-        target_library.parent.mkdir(exist_ok=True)
-        shutil.copy2(source_library, target_library)
     purelib = Path(
         subprocess.run(
             [
@@ -2906,14 +2896,6 @@ def test_standalone_launcher_full_reexec_uses_venv_dependencies_and_propagates_e
         text=True,
     )
     launcher_python = launcher_venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    if os.name != "nt":
-        library_name = sysconfig.get_config_var("LDLIBRARY")
-        assert isinstance(library_name, str)
-        source_library = Path(sys.base_prefix) / "lib" / library_name
-        assert source_library.is_file()
-        target_library = launcher_venv / "lib" / library_name
-        target_library.parent.mkdir(exist_ok=True)
-        shutil.copy2(source_library, target_library)
     assert launcher_python.is_file()
     assert launcher_python.resolve() != Path(sys._base_executable).resolve()
     purelib = Path(
