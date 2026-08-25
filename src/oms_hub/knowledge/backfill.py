@@ -99,7 +99,10 @@ class SlideRevisionBackfill:
         already_present = (
             existing is not None
             and existing.state is SourceRevisionState.READY
-            and bool(self.knowledge.list_evidence(candidate.source_revision_id))
+            and self.knowledge.has_exact_evidence(
+                candidate.source_revision_id,
+                candidate.evidence,
+            )
         )
         activated = self.knowledge.activate_revision(
             candidate.source_revision_id,
@@ -213,6 +216,8 @@ class SlideRevisionBackfill:
                 parsed_document=parsed,
             )
         )
+        if not evidence:
+            raise ValueError("empty evidence cannot become ready")
         return _Candidate(
             revision=revision,
             source_document_id=source_document_id,

@@ -239,6 +239,25 @@ def test_partial_nonempty_evidence_is_repaired_not_already_present(
     assert len(knowledge.list_evidence(candidate.source_revision_id)) == 2
 
 
+def test_repository_exact_evidence_ignores_lifecycle_timestamps(
+    database: Database,
+) -> None:
+    repository = KnowledgeRepository(database)
+    repository.initialize()
+    repository.create_source("legacy-study-revision:70", AuthorityClass.COURSE_MATERIAL)
+    revision = repository.create_revision(
+        "legacy-study-revision:70", "a" * 64, SourceRevisionState.NORMALIZING
+    )
+    stored = _ready_unit(revision.revision_id, source="slide", family_text="stable")
+    repository.put_evidence_units(revision.revision_id, (stored,))
+    rechecked = replace(
+        stored,
+        created_at="2026-08-25T12:00:00+00:00",
+        retired_at="2026-08-26T12:00:00+00:00",
+    )
+    assert repository.has_exact_evidence(revision.revision_id, (rechecked,))
+
+
 def test_repeat_parser_normalization_has_stable_locators_and_evidence_ids(
     tmp_path: Path,
 ) -> None:
@@ -698,12 +717,18 @@ def test_independent_empty_activations_reject_without_staling_predecessor_or_pee
     database = Database(f"sqlite:///{path}")
     try:
         repository = KnowledgeRepository(database)
-        assert repository.get_revision(predecessor.revision_id).state is SourceRevisionState.READY
-        assert all(
-            repository.get_revision(revision_id).state is SourceRevisionState.NORMALIZING
-            for revision_id in replacement_ids
-        )
-        assert repository.get_revision(transcript.revision_id).state is SourceRevisionState.READY
-        assert repository.get_revision(handout.revision_id).state is SourceRevisionState.READY
+        predecessor_state = repository.get_revision(predecessor.revision_id)
+        transcript_state = repository.get_revision(transcript.revision_id)
+        handout_state = repository.get_revision(handout.revision_id)
+        assert predecessor_state is not None
+        assert transcript_state is not None
+        assert handout_state is not None
+        assert predecessor_state.state is SourceRevisionState.READY
+        assert transcript_state.state is SourceRevisionState.READY
+        assert handout_state.state is SourceRevisionState.READY
+        for revision_id in replacement_ids:
+            replacement_state = repository.get_revision(revision_id)
+            assert replacement_state is not None
+            assert replacement_state.state is SourceRevisionState.NORMALIZING
     finally:
         database.close()

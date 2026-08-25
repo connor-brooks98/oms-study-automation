@@ -436,12 +436,14 @@ class KnowledgeRepository:
         """
         if source_family != "legacy_slides":
             raise ValueError("unsupported source family")
+        evidence = tuple(units)
+        if not evidence:
+            raise ValueError("empty evidence cannot become ready")
         if self.database.engine.dialect.name != "sqlite":
             raise RuntimeError(
                 "atomic source-family supersession requires SQLite write serialization "
                 "or an approved uniqueness schema change"
             )
-        evidence = tuple(units)
         with self.database.engine.connect() as connection:
             connection.exec_driver_sql("BEGIN IMMEDIATE")
             try:
@@ -572,6 +574,22 @@ class KnowledgeRepository:
             source_revision_id=row["id"],
             file_sha256=row["file_sha256"],
             state=SourceRevisionState.READY,
+        )
+
+    def has_exact_evidence(
+        self,
+        revision_id: str,
+        units: Sequence[EvidenceUnit],
+    ) -> bool:
+        """Compare deterministic evidence while ignoring lifecycle timestamps."""
+        expected = {unit.evidence_id: unit for unit in units}
+        if len(expected) != len(tuple(units)):
+            return False
+        existing = {unit.evidence_id: unit for unit in self.list_evidence(revision_id)}
+        return (
+            set(existing) == set(expected)
+            and all(_evidence_identity(existing[key]) == _evidence_identity(value)
+                    for key, value in expected.items())
         )
 
     def retire_revision(self, revision_id: str) -> None:
