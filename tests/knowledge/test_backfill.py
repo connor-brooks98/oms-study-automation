@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from importlib import import_module
 from pathlib import Path
 from threading import Barrier
@@ -165,6 +165,16 @@ def test_backfill_maps_current_slide_without_mutating_legacy_revision(
     assert result.file_sha256 == revision.source_sha256
     assert len(knowledge.list_evidence(result.revision_id)) == 1
     assert knowledge.list_evidence(result.revision_id)[0].exam_id is not None
+
+
+def test_backfill_report_public_contract_has_exact_five_fields() -> None:
+    assert tuple(field.name for field in fields(BackfillReport)) == (
+        "examined",
+        "created",
+        "already_present",
+        "failed",
+        "failure_ids",
+    )
 
 
 def test_backfill_is_idempotent_and_repairs_incomplete_revision(
