@@ -103,15 +103,15 @@
     {
       "id": "native_windows_office",
       "command": "PATH=/private/tmp/sol1-task16-full-venv/bin:$PATH PYTHONPATH=$PWD/src:$PWD python -m pytest tests/document_processing/test_windows_office.py -q -rs",
-      "status": "blocked",
-      "evidence": "One test skipped: requires Windows desktop Microsoft Office.",
-      "scope": "The existing one-slide/one-page SerialOfficeConverter smoke fixture did not execute on this macOS host and cannot by itself prove locator 3 maps to page 3."
+      "status": "pass",
+      "evidence": "Controlled Windows NUC run completed the marked repository test with '.' at 100% and no skip. Environment: WindowsProductName Windows 10 Pro; platform Windows-11-10.0.26200-SP0; build 26200; Python 3.12.10; PowerPoint 16.0.",
+      "scope": "Native SerialOfficeConverter smoke coverage executed with desktop Microsoft PowerPoint."
     },
     {
       "id": "physical_pptx_pdf_mapping",
       "command": "In a Sol-0-authorized Windows platform test, build at least three deterministic synthetic PPTX slides, export with SerialOfficeConverter on desktop Microsoft Office, assert PPTX slide count equals output PDF page count, and explicitly assert slide/locator 3 maps to PDF page 3.",
-      "status": "blocked",
-      "evidence": "No native Windows Office output exists for this assessed input; the current checked-in smoke fixture contains only one slide and asserts only page_count == 1.",
+      "status": "pass",
+      "evidence": "Controlled Windows NUC proof passed: 3 synthetic PPTX slides produced 3 PDF pages; GATE2A-SLIDE-3 appeared only on PDF page 3. PPTX SHA-256 10cf7cbf30d4d73f0f08828d74d5493f2c8c6d4fb7ccb93e4218ec4b009b5918; PDF SHA-256 0ddc86145d4ecf843f99972b1dd0d665ce4dffe63eb556a8cf07f82028ee1294.",
       "scope": "Required physical proof that PowerPoint slide N maps to exported PDF page N."
     },
     {
@@ -137,14 +137,6 @@
     }
   ],
   "blockers": [
-    {
-      "id": "native_windows_office_physical_proof",
-      "status": "blocked",
-      "requirement": "CP-0002 requires physical proof that the citation-preview slide-to-PDF-page assumption holds.",
-      "owner": "Sol-0 release/platform lane",
-      "evidence_gap": "tests/document_processing/test_windows_office.py is skipped on macOS and its current one-slide/page-count-one assertion cannot prove locator 3 maps to page 3.",
-      "unblocking_action": "Sol-0 must authorize a Windows platform-test extension with at least three deterministic synthetic slides, real SerialOfficeConverter export, equal PPTX-slide/PDF-page counts, and explicit slide 3 to PDF page 3 evidence; preserve only sanitized counts, hashes, and pass status."
-    },
     {
       "id": "lecture13_private_dry_run",
       "status": "blocked",
