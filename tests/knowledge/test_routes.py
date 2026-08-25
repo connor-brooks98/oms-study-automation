@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-import pytest
 
 from oms_hub.app import create_app
 from oms_hub.config import Settings
@@ -127,6 +127,7 @@ def test_legacy_integrity_failures_map_to_404_or_409(
     tmp_path: Path, failure: str
 ) -> None:
     from oms_hub.knowledge.routes import build_knowledge_router
+
     from .test_service import _service
 
     service, _, evidence, _ = _service(tmp_path)

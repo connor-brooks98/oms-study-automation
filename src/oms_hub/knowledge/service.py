@@ -353,6 +353,16 @@ class KnowledgeService:
             raise UnsupportedRevisionState("source revision state is not reconcilable")
         self._require_course_authority(unit.source_revision_id)
         legacy_id = self._legacy_id(revision.source_document_id)
+        course_id, exam_id, lecture_id = _evidence_scope(
+            (unit,), unit.source_revision_id
+        )
+        self._validate_legacy_metadata(
+            legacy_id,
+            revision,
+            course_id,
+            exam_id,
+            lecture_id,
+        )
         page = int(slide_match.group(1))
         self._artifact(legacy_id, ArtifactRole.PDF, unit.source_revision_id)
         return EvidenceView(
@@ -403,7 +413,10 @@ class KnowledgeService:
         catalog = getattr(self.artifacts, "catalog", None)
         if repository is None or catalog is None:
             raise KnowledgeIntegrityError("legacy read boundaries are unavailable")
-        legacy = repository.get_study_revision(legacy_id)
+        try:
+            legacy = repository.get_study_revision(legacy_id)
+        except KeyError as error:
+            raise KnowledgeNotFoundError("legacy revision was not found") from error
         if legacy is None:
             raise KnowledgeNotFoundError("legacy revision was not found")
         try:
@@ -427,7 +440,10 @@ class KnowledgeService:
             raise KnowledgeIntegrityError("legacy catalog scope does not match evidence")
         if not legacy.derived_sha256:
             raise KnowledgeIntegrityError("legacy PDF hash is missing")
-        pdf = self.artifacts.resolve(legacy_id, ArtifactRole.PDF)
+        try:
+            pdf = self.artifacts.resolve(legacy_id, ArtifactRole.PDF)
+        except Exception as error:
+            raise KnowledgeIntegrityError("legacy PDF artifact is unavailable") from error
         if not Path(pdf.path).is_file() or sha256_file(pdf.path) != legacy.derived_sha256:
             raise KnowledgeIntegrityError("legacy PDF hash does not match")
 

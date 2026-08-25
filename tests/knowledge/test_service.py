@@ -28,10 +28,10 @@ from oms_hub.knowledge.models import (
 )
 from oms_hub.knowledge.normalization import CourseRevisionInput, normalize_course_revision
 from oms_hub.knowledge.repository import KnowledgeRepository
-from oms_hub.knowledge.service import KnowledgeService
 from oms_hub.knowledge.service import (
     KnowledgeIntegrityError,
     KnowledgeNotFoundError,
+    KnowledgeService,
 )
 from oms_hub.providers.contracts import AuthorityClass, RetrievalScope, TruthMode
 
