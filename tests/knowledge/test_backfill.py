@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
+from importlib import import_module
 from pathlib import Path
 from threading import Barrier
+from typing import Any
 
 import pytest
 from sqlalchemy import event, text
@@ -16,6 +18,7 @@ from oms_hub.document_processing.domain import (
     ParsedSegment,
     SegmentKind,
 )
+from oms_hub.document_processing.shadow import LegacyPptxProcessor
 from oms_hub.files.atomic import sha256_file
 from oms_hub.ingestion.domain import StudyRevision, UploadKind
 from oms_hub.knowledge.backfill import (
@@ -35,6 +38,11 @@ from oms_hub.knowledge.models import (
 from oms_hub.knowledge.normalization import CourseRevisionInput, normalize_course_revision
 from oms_hub.knowledge.repository import KnowledgeRepository
 from oms_hub.providers.contracts import AuthorityClass
+
+_pptx_factory: Any = import_module("tests.document_processing.pptx_factory")
+SlideFixture: Any = _pptx_factory.SlideFixture
+build_pptx: Any = _pptx_factory.build_pptx
+snapshot_for: Any = _pptx_factory.snapshot_for
 
 
 @pytest.fixture
@@ -258,26 +266,45 @@ def test_repository_exact_evidence_ignores_lifecycle_timestamps(
     assert repository.has_exact_evidence(revision.revision_id, (rechecked,))
 
 
-def test_repeat_parser_normalization_has_stable_locators_and_evidence_ids(
+def test_repeat_real_legacy_parser_normalization_has_stable_locators_and_evidence_ids(
     tmp_path: Path,
 ) -> None:
-    revision, _, parser = _fixture(tmp_path)
+    source = build_pptx(
+        tmp_path / "repeat.pptx",
+        slides=(
+            SlideFixture("Question 1", "Factor VIII deficiency", note="Review coagulation."),
+            SlideFixture("Question 2", "von Willebrand disease", note="Review platelet adhesion."),
+        ),
+    )
+    snapshot = snapshot_for(source)
+    parser = LegacyPptxProcessor()
+    first_document = parser.parse(snapshot, tmp_path / "assets")
+    second_document = parser.parse(snapshot, tmp_path / "assets")
+    assert (first_document.parser_name, first_document.parser_version) == (
+        parser.name,
+        parser.version,
+    )
+    assert (second_document.parser_name, second_document.parser_version) == (
+        parser.name,
+        parser.version,
+    )
+    assert first_document.segments == second_document.segments
     first = normalize_course_revision(
         CourseRevisionInput(
-            source_revision_id=make_revision_id("legacy-study-revision:7", revision.source_sha256),
+            source_revision_id=make_revision_id("legacy-study-revision:7", snapshot.sha256),
             course_id="course",
             exam_id="exam",
             lecture_id="lecture",
-            parsed_document=parser.document,
+            parsed_document=first_document,
         )
     )
     second = normalize_course_revision(
         CourseRevisionInput(
-            source_revision_id=make_revision_id("legacy-study-revision:7", revision.source_sha256),
+            source_revision_id=make_revision_id("legacy-study-revision:7", snapshot.sha256),
             course_id="course",
             exam_id="exam",
             lecture_id="lecture",
-            parsed_document=parser.document,
+            parsed_document=second_document,
         )
     )
     assert [
@@ -344,6 +371,7 @@ def test_scope_ids_are_bounded_and_digest_complete() -> None:
         "lecture-2-58fd75ad073fd9e1058ad9ef",
     )
     assert scope_ids("  A / B  ", 1, 2) == scope_ids("a / b", 1, 2)
+    assert scope_ids("Ｈｅｍａｔｏｌｏｇｙ", 1, 2) == scope_ids("Hematology", 1, 2)
     with pytest.raises(ValueError):
         scope_ids("", 1, 2)
     with pytest.raises(ValueError):
