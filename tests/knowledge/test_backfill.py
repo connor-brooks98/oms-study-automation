@@ -32,6 +32,7 @@ from oms_hub.knowledge.models import (
     EvidenceUnit,
     SourceRevisionState,
 )
+from oms_hub.knowledge.normalization import CourseRevisionInput, normalize_course_revision
 from oms_hub.knowledge.repository import KnowledgeRepository
 from oms_hub.providers.contracts import AuthorityClass
 
@@ -182,6 +183,93 @@ def test_backfill_is_idempotent_and_repairs_incomplete_revision(
     assert len(knowledge.list_evidence(first.revision_id)) == 1
 
 
+def test_empty_parser_result_fails_closed_before_any_source_trust_write(
+    tmp_path: Path, database: Database
+) -> None:
+    revision, catalog, _ = _fixture(tmp_path)
+    empty = ParsedDocument(
+        source_id="legacy-study-revision:7",
+        source_sha256=revision.source_sha256,
+        source_format="pptx",
+        parser_name="fake-legacy",
+        parser_version="1",
+        segments=(),
+        assets=(),
+        warnings=(),
+    )
+    knowledge = KnowledgeRepository(database)
+    knowledge.initialize()
+    with pytest.raises(ValueError, match="empty evidence"):
+        backfill_slide_revision(
+            "7",
+            ingestion=FakeIngestion({revision.id: revision}),
+            catalog=catalog,
+            knowledge=knowledge,
+            parser=FakeParser(empty),
+        )
+    with database.engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM knowledge_sources")).scalar_one() == 0
+        assert connection.execute(text("SELECT COUNT(*) FROM source_revisions")).scalar_one() == 0
+
+
+def test_partial_nonempty_evidence_is_repaired_not_already_present(
+    tmp_path: Path, database: Database
+) -> None:
+    revision, catalog, parser = _fixture(tmp_path)
+    second = ParsedSegment(
+        key="slide-2-block-2",
+        kind=SegmentKind.PARAGRAPH,
+        text="von Willebrand disease",
+        locator=DocumentLocator("slide 2", slide_number=2, block_index=2),
+    )
+    parser = FakeParser(replace(parser.document, segments=(parser.document.segments[0], second)))
+    knowledge = KnowledgeRepository(database)
+    knowledge.initialize()
+    service = SlideRevisionBackfill(
+        FakeIngestion({revision.id: revision}), catalog, knowledge, parser=parser
+    )
+    candidate = service._prepare("7")
+    service.ensure_source_revision(candidate)
+    knowledge.put_evidence_units(candidate.source_revision_id, candidate.evidence[:1])
+
+    report = service.backfill_all_ready_course_revisions(1)
+    assert report.created == 1
+    assert report.already_present == 0
+    assert report.failed == 0
+    assert len(knowledge.list_evidence(candidate.source_revision_id)) == 2
+
+
+def test_repeat_parser_normalization_has_stable_locators_and_evidence_ids(
+    tmp_path: Path,
+) -> None:
+    revision, _, parser = _fixture(tmp_path)
+    first = normalize_course_revision(
+        CourseRevisionInput(
+            source_revision_id=make_revision_id("legacy-study-revision:7", revision.source_sha256),
+            course_id="course",
+            exam_id="exam",
+            lecture_id="lecture",
+            parsed_document=parser.document,
+        )
+    )
+    second = normalize_course_revision(
+        CourseRevisionInput(
+            source_revision_id=make_revision_id("legacy-study-revision:7", revision.source_sha256),
+            course_id="course",
+            exam_id="exam",
+            lecture_id="lecture",
+            parsed_document=parser.document,
+        )
+    )
+    assert [
+        (unit.evidence_id, unit.locator, unit.content_sha256, unit.normalized_text)
+        for unit in first
+    ] == [
+        (unit.evidence_id, unit.locator, unit.content_sha256, unit.normalized_text)
+        for unit in second
+    ]
+
+
 def test_batch_is_numeric_limited_continues_after_failure_and_dry_run_writes_nothing(
     tmp_path: Path, database: Database, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -196,6 +284,11 @@ def test_batch_is_numeric_limited_continues_after_failure_and_dry_run_writes_not
     knowledge = KnowledgeRepository(database)
     knowledge.initialize()
     service = SlideRevisionBackfill(ingestion, catalog, knowledge, parser=parser)
+    assert valid.canonical_derived_path is not None
+    before_hashes = (
+        sha256_file(valid.immutable_source_path),
+        sha256_file(valid.canonical_derived_path),
+    )
 
     dry = service.backfill_all_ready_course_revisions(2, dry_run=True)
     assert dry == BackfillReport(2, 1, 0, 1, ("20",))
@@ -210,6 +303,10 @@ def test_batch_is_numeric_limited_continues_after_failure_and_dry_run_writes_not
     assert report.failure_ids == ("20",)
     limited = service.backfill_all_ready_course_revisions(1)
     assert limited.already_present == 1
+    assert before_hashes == (
+        sha256_file(valid.immutable_source_path),
+        sha256_file(valid.canonical_derived_path),
+    )
 
 
 
@@ -222,6 +319,13 @@ def test_scope_ids_are_bounded_and_digest_complete() -> None:
         value.replace("-", "").replace("_", "").replace(".", "").isalnum()
         for value in first
     )
+    assert scope_ids("  A / B  ", 1, 2) == scope_ids("a / b", 1, 2)
+    with pytest.raises(ValueError):
+        scope_ids("", 1, 2)
+    with pytest.raises(ValueError):
+        scope_ids("course", 0, 2)
+    with pytest.raises(ValueError):
+        scope_ids("course", 1, 2**63)
 
 
 def test_backfill_rejects_noncanonical_or_ineligible_revision(
@@ -244,6 +348,41 @@ def test_backfill_rejects_noncanonical_or_ineligible_revision(
         )
         service.backfill_slide_revision("7")
     assert knowledge.get_revision("sr_missing") is None
+
+
+@pytest.mark.parametrize("case", ("missing", "catalog", "pdf", "hash", "non-slide"))
+def test_ineligible_candidates_fail_without_source_trust_writes(
+    tmp_path: Path, database: Database, case: str
+) -> None:
+    revision, catalog, parser = _fixture(tmp_path)
+    if case == "missing":
+        ingestion = FakeIngestion({})
+    elif case == "catalog":
+        ingestion = FakeIngestion({revision.id: revision})
+        catalog = FakeCatalog(Lecture(99, "Hematology / Core", 2, 4))
+    elif case == "pdf":
+        ingestion = FakeIngestion(
+            {revision.id: replace(revision, canonical_derived_path=None)}
+        )
+    elif case == "hash":
+        ingestion = FakeIngestion(
+            {revision.id: replace(revision, source_sha256="f" * 64)}
+        )
+    else:
+        ingestion = FakeIngestion({revision.id: replace(revision, kind=UploadKind.TRANSCRIPTS)})
+    knowledge = KnowledgeRepository(database)
+    knowledge.initialize()
+    with pytest.raises((KeyError, ValueError)):
+        backfill_slide_revision(
+            "7",
+            ingestion=ingestion,
+            catalog=catalog,
+            knowledge=knowledge,
+            parser=parser,
+        )
+    with database.engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM knowledge_sources")).scalar_one() == 0
+        assert connection.execute(text("SELECT COUNT(*) FROM source_revisions")).scalar_one() == 0
 
 
 def _ready_unit(revision_id: str, *, source: str, family_text: str) -> EvidenceUnit:
@@ -472,5 +611,99 @@ def test_activation_stales_predecessor_before_replacement_is_ready(tmp_path: Pat
         finally:
             event.remove(database.engine, "after_cursor_execute", observe)
         assert states == ["stale", "ready"]
+    finally:
+        database.close()
+
+
+def test_independent_empty_activations_reject_without_staling_predecessor_or_peers(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "empty-race.db"
+    seed = Database(f"sqlite:///{path}")
+    try:
+        repository = KnowledgeRepository(seed)
+        repository.initialize()
+        for source_id in (
+            "legacy-study-revision:40",
+            "legacy-study-revision:41",
+            "legacy-study-revision:42",
+            "transcript:40",
+            "handout:40",
+        ):
+            repository.create_source(source_id, AuthorityClass.COURSE_MATERIAL)
+        predecessor = repository.create_revision(
+            "legacy-study-revision:40", "a" * 64, SourceRevisionState.READY
+        )
+        replacement_ids = [
+            make_revision_id("legacy-study-revision:41", "b" * 64),
+            make_revision_id("legacy-study-revision:42", "c" * 64),
+        ]
+        replacements = [
+            repository.create_revision(
+                source_id,
+                digest,
+                SourceRevisionState.NORMALIZING,
+            )
+            for source_id, digest in (
+                ("legacy-study-revision:41", "b" * 64),
+                ("legacy-study-revision:42", "c" * 64),
+            )
+        ]
+        transcript = repository.create_revision(
+            "transcript:40", "d" * 64, SourceRevisionState.READY
+        )
+        handout = repository.create_revision(
+            "handout:40", "e" * 64, SourceRevisionState.READY
+        )
+        repository.put_evidence_units(
+            predecessor.revision_id,
+            (_ready_unit(predecessor.revision_id, source="old", family_text="old"),),
+        )
+        repository.put_evidence_units(
+            transcript.revision_id,
+            (_ready_unit(transcript.revision_id, source="transcript", family_text="transcript"),),
+        )
+        repository.put_evidence_units(
+            handout.revision_id,
+            (_ready_unit(handout.revision_id, source="handout", family_text="handout"),),
+        )
+    finally:
+        seed.close()
+
+    barrier = Barrier(2)
+
+    def reject(revision_id: str) -> None:
+        database = Database(f"sqlite:///{path}")
+        try:
+            repository = KnowledgeRepository(database)
+            barrier.wait(timeout=5)
+            with pytest.raises(ValueError, match="empty evidence"):
+                repository.activate_revision(
+                    revision_id,
+                    source_family="legacy_slides",
+                    authority_class=AuthorityClass.COURSE_MATERIAL,
+                    course_id="course",
+                    exam_id="exam",
+                    lecture_id="lecture",
+                    units=(),
+                )
+        finally:
+            database.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(reject, revision.revision_id) for revision in replacements]
+        for future in futures:
+            future.result(timeout=5)
+
+    database = Database(f"sqlite:///{path}")
+    try:
+        repository = KnowledgeRepository(database)
+        assert repository.get_revision(predecessor.revision_id).state is SourceRevisionState.READY
+        assert all(
+            repository.get_revision(revision_id).state is SourceRevisionState.NORMALIZING
+            for revision_id in replacement_ids
+        )
+        assert repository.get_revision(transcript.revision_id).state is SourceRevisionState.READY
+        assert repository.get_revision(handout.revision_id).state is SourceRevisionState.READY
     finally:
         database.close()
