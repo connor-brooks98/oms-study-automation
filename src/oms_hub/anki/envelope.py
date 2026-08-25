@@ -49,6 +49,52 @@ def field_hash(fields: Mapping[str, str]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def rebind_add_only_envelope(
+    envelope: ActionEnvelopeV2,
+    current_collection: Mapping[int, CurrentCollectionNote],
+) -> ActionEnvelopeV2:
+    """Rebase a never-started add-only plan over tag-only collection drift."""
+    # ponytail: explicit tag patches still require a new reviewed curation run.
+    touched = set(envelope.touched_note_hashes)
+    if not touched or set(current_collection) != touched:
+        raise EnvelopeBuildError("rebind requires every touched note and no others")
+    added: set[int] = set()
+    for operation in envelope.operations:
+        if isinstance(operation, RemoveTagsOperation):
+            raise EnvelopeBuildError("rebind does not support tag removals")
+        if isinstance(operation, AddTagsOperation):
+            if operation.tag.casefold() != envelope.target_tag.casefold():
+                raise EnvelopeBuildError("rebind supports only the frozen target tag")
+            added.update(operation.note_ids)
+    if added != touched:
+        raise EnvelopeBuildError("rebind requires one add-only target-tag plan")
+
+    expected_tag_hashes: dict[int, str] = {}
+    expected_note_tags: dict[int, tuple[str, ...]] = {}
+    for note_id in sorted(touched):
+        current = current_collection[note_id]
+        if current.note_id != note_id:
+            raise EnvelopeBuildError("current collection note identity changed")
+        if field_hash(current.fields) != envelope.touched_note_hashes[note_id]:
+            raise EnvelopeBuildError(f"note {note_id} fields changed after review")
+        tags = _canonical_tags(tuple(normalize_tag(tag) for tag in current.tags))
+        expected_tag_hashes[note_id] = tag_hash(tags)
+        expected_note_tags[note_id] = _canonical_tags(
+            _add_case_insensitive(tags, envelope.target_tag)
+        )
+
+    rebound = envelope.model_copy(
+        update={
+            "expected_tag_hashes": expected_tag_hashes,
+            "expected_note_tags": expected_note_tags,
+            "payload_sha256": "0" * 64,
+        }
+    )
+    return rebound.model_copy(
+        update={"payload_sha256": canonical_payload_sha256(rebound)}
+    )
+
+
 class EnvelopeBuilder:
     def __init__(self, tag_policy: TagPolicy) -> None:
         self.tag_policy = tag_policy

@@ -21,7 +21,8 @@ from starlette.responses import Response
 from oms_hub import __version__
 from oms_hub.anki.ankiconnect import AnkiConnectClient
 from oms_hub.anki.apply import ApplyCoordinator, ApplyGateway
-from oms_hub.anki.index import AnkiIndex
+from oms_hub.anki.index import AnkiIndex, LocalAnkiReader
+from oms_hub.anki.maintenance import LocalIndexMaintainer
 from oms_hub.anki.pipeline import CurationPipeline, StageArtifactStore
 from oms_hub.anki.prompt_catalog import AnkiPromptCatalogService
 from oms_hub.anki.prompts import (
@@ -1118,6 +1119,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.anki_curation_worker = None
     app.state.anki_embedder = None
     app.state.anki_companion_index = None
+    app.state.anki_index_maintainer = None
     app.state.anki_semantic_store = None
     app.state.anki_source_index = None
     if resolved.anki_enabled:
@@ -1282,6 +1284,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.anki_prompt_catalog = prompt_catalog
         app.state.anki_curation_pipeline = pipeline
         if resolved.anki_rehearsal_mode == "off":
+            app.state.anki_index_maintainer = LocalIndexMaintainer(
+                runtime,
+                cast(LocalAnkiReader, runtime.gateway),
+                companion,
+                semantic,
+                semantic_store,
+                semantic_model=resolved.anki_semantic_model,
+                semantic_dimensions=resolved.anki_semantic_dimensions,
+                min_coverage=resolved.anki_semantic_min_coverage,
+            )
             app.state.anki_apply_coordinator = ApplyCoordinator(
                 app.state.anki_repository,
                 cast(ApplyGateway, runtime.gateway),

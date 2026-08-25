@@ -107,6 +107,7 @@ class LocalIndexMaintainer:
                 preflight.blocking_reason
                 or "Local Anki preflight did not pass"
             )
+        await self.gateway.sync()
         normalized_query = query.strip()
         snapshot_id = self.snapshot_id_factory().strip()
         if not snapshot_id:

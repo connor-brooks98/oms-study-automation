@@ -59,6 +59,8 @@ _NO_FILTERS = CompanionFilters()
 
 
 class LocalAnkiReader(Protocol):
+    async def sync(self) -> None: ...
+
     async def find_notes(self, query: str) -> list[int]: ...
 
     async def notes_info(

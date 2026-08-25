@@ -1060,6 +1060,44 @@ def test_create_and_list_job_pins_server_generations_and_rejects_amboss(
     assert listed.json()["jobs"][0]["id"] == created.json()["id"]
 
 
+def test_create_job_refreshes_and_pins_the_current_server_snapshot(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, lecture_id, revision_id, _ = prepared_app
+
+    class RefreshedCompanion(FakeCompanionIndex):
+        current_snapshot = "snapshot-test"
+
+        def snapshot_id(self) -> str:
+            return self.current_snapshot
+
+    companion = RefreshedCompanion()
+
+    class Maintainer:
+        async def refresh(self) -> None:
+            companion.current_snapshot = "snapshot-fresh"
+
+    class RefreshedSemanticStore(FakeSemanticStore):
+        def load(self) -> object:
+            value = super().load()
+            value.manifest.generation = UUID("43a3b975-0e93-41e6-8a44-ec255c7e1269")
+            return value
+
+    app.state.anki_companion_index = companion
+    app.state.anki_semantic_store = RefreshedSemanticStore()
+    app.state.anki_index_maintainer = Maintainer()
+
+    created = client.post(
+        "/api/anki/jobs",
+        json=_create_payload(lecture_id, revision_id),
+    )
+
+    assert created.status_code == 201
+    assert created.json()["index_snapshot_id"] == "snapshot-fresh"
+    assert created.json()["companion_generation"] == "snapshot-fresh"
+    assert created.json()["semantic_generation"] == "43a3b975-0e93-41e6-8a44-ec255c7e1269"
+
+
 def test_create_job_pins_explicit_model(
     prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
 ) -> None:
@@ -1912,6 +1950,81 @@ def test_apply_requires_confirmation_and_reports_counts(
     assert applied.json()["apply_state"] == "complete"
     assert applied.json()["recovery"]["kind"] == "complete"
     assert len(gateway.created_note_ids) == 1
+
+
+def test_failed_before_apply_tag_drift_can_rebind_and_apply_idempotently(
+    prepared_app: tuple[TestClient, Any, int, int, FakeGateway],
+) -> None:
+    client, app, lecture_id, revision_id, gateway = prepared_app
+    job_id = _ready_job(
+        app,
+        lecture_id,
+        revision_id,
+        pipeline_contract_version=PipelineContractVersion.CARD_CENTRIC_V1,
+    )
+    app.state.anki_apply_coordinator = ApplyCoordinator(
+        app.state.anki_repository,
+        gateway,
+        runtime=app.state.anki_runtime,
+        supported_envelope_versions=frozenset({1, 2}),
+    )
+    app.state.anki_repository.validate_card_centric_envelope_acknowledgement = (
+        lambda envelope_id: True
+    )
+    envelope = client.post(
+        f"/api/anki/jobs/{job_id}/envelope",
+        json={"contract_version": 1, "review_revision": 0},
+    )
+    gateway.notes[42]["tags"].append("AnkiHub_Synced")
+
+    stale = client.post(
+        f"/api/anki/jobs/{job_id}/apply",
+        json={
+            "contract_version": 1,
+            "review_revision": 0,
+            "confirmation": "APPLY TO ANKI",
+        },
+    )
+    frozen = app.state.anki_repository.get_envelope(UUID(envelope.json()["envelope_id"]))
+    assert all(
+        app.state.anki_repository.operation_record(
+            frozen.envelope_id, operation.operation_id
+        ).attempts
+        == 0
+        for operation in frozen.operations
+    )
+    rebound = client.post(
+        f"/api/anki/jobs/{job_id}/envelope/rebind",
+        json={"contract_version": 1, "review_revision": 0},
+    )
+    applied = client.post(
+        f"/api/anki/jobs/{job_id}/apply",
+        json={
+            "contract_version": 1,
+            "review_revision": 0,
+            "confirmation": "APPLY TO ANKI",
+        },
+    )
+    repeated = client.post(
+        f"/api/anki/jobs/{job_id}/apply",
+        json={
+            "contract_version": 1,
+            "review_revision": 0,
+            "confirmation": "APPLY TO ANKI",
+        },
+    )
+
+    assert envelope.status_code == 201
+    assert stale.status_code == 200
+    assert stale.json()["apply_state"] == "failed_before_apply"
+    assert rebound.status_code == 200, rebound.json()
+    assert rebound.json()["payload_sha256"] != envelope.json()["payload_sha256"]
+    assert applied.json()["apply_state"] == "complete"
+    assert repeated.json()["apply_state"] == "complete"
+    assert len(gateway.created_note_ids) == 1
+    stored = app.state.anki_repository.get_job_envelope(job_id)
+    assert stored is not None
+    assert len(stored.receipt_summary["rebind_history"]) == 1
 
 
 def test_retry_sync_reuses_envelope_without_duplicate_generated_notes(

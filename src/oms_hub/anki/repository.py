@@ -3247,6 +3247,98 @@ class AnkiCurationRepository:
                 raise ValueError("stored action envelope failed integrity checks")
             return envelope
 
+    def rebind_failed_before_apply_envelope(
+        self,
+        job_id: UUID,
+        envelope: ActionEnvelopeV2,
+        *,
+        expected_payload_sha256: str,
+    ) -> StoredEnvelope:
+        if canonical_payload_sha256(envelope) != envelope.payload_sha256:
+            raise ValueError("rebound envelope payload hash does not match")
+        with self.database.session() as session:
+            job = self._require_job_model(session, job_id)
+            stored = session.scalar(
+                select(AnkiEnvelopeModel).where(AnkiEnvelopeModel.job_id == str(job_id))
+            )
+            if stored is None:
+                raise ValueError("the frozen apply plan is unavailable")
+            if (
+                job.state != CurationState.ENVELOPE_PENDING.value
+                or job.apply_state != ApplyState.FAILED_BEFORE_APPLY.value
+                or stored.state != ApplyState.FAILED_BEFORE_APPLY.value
+            ):
+                raise ValueError("only a failed-before-apply plan can be rebound")
+            if stored.payload_sha256 != expected_payload_sha256:
+                raise ValueError("the frozen apply plan changed; reload before rebinding")
+
+            prior = parse_action_envelope(stored.payload_json)
+            if not isinstance(prior, ActionEnvelopeV2) or prior.envelope_id != envelope.envelope_id:
+                raise ValueError("only the existing V2 envelope can be rebound")
+            prior_document = prior.model_dump(mode="json")
+            rebound_document = envelope.model_dump(mode="json")
+            for key in ("expected_tag_hashes", "expected_note_tags", "payload_sha256"):
+                prior_document.pop(key)
+                rebound_document.pop(key)
+            if prior_document != rebound_document:
+                raise ValueError("rebind changed the frozen mutation plan")
+
+            operations = session.scalars(
+                select(AnkiEnvelopeOperationModel).where(
+                    AnkiEnvelopeOperationModel.envelope_id == stored.id
+                )
+            ).all()
+            if any(
+                operation.state != "pending"
+                or operation.attempts != 0
+                or operation.result_json is not None
+                or operation.error is not None
+                for operation in operations
+            ):
+                raise ValueError("the frozen plan has mutation history and cannot be rebound")
+            receipt = (
+                cast(dict[str, Any], json.loads(stored.receipt_summary_json))
+                if stored.receipt_summary_json is not None
+                else {}
+            )
+            differences = receipt.get("differences")
+            touched = set(prior.touched_note_hashes)
+            if (
+                receipt.get("state") != ApplyState.FAILED_BEFORE_APPLY.value
+                or receipt.get("created_note_ids") != []
+                or receipt.get("rejected_duplicates") != []
+                or not isinstance(differences, list)
+                or not differences
+                or any(
+                    not isinstance(item, dict)
+                    or item.get("kind") != "tags"
+                    or item.get("note_id") not in touched
+                    for item in differences
+                )
+            ):
+                raise ValueError("the failed apply is not a zero-mutation tag-drift failure")
+
+            existing_history = receipt.get("rebind_history", [])
+            history = list(existing_history) if isinstance(existing_history, list) else []
+            history.append(
+                {
+                    "rebound_at": utc_now(),
+                    "superseded_payload": prior.model_dump(mode="json"),
+                    "failed_receipt": {
+                        key: value for key, value in receipt.items() if key != "rebind_history"
+                    },
+                }
+            )
+            stored.payload_json = _canonical_json(envelope.model_dump(mode="json"))
+            stored.payload_sha256 = envelope.payload_sha256
+            stored.state = ApplyState.PENDING.value
+            stored.receipt_summary_json = _canonical_json(
+                {"state": ApplyState.PENDING.value, "rebind_history": history}
+            )
+            job.apply_state = ApplyState.PENDING.value
+            session.flush()
+            return self._envelope(stored)
+
     def operation_record(
         self,
         envelope_id: UUID,
@@ -3327,6 +3419,14 @@ class AnkiCurationRepository:
             if stored is None:
                 raise KeyError(str(envelope_id))
             job = self._require_job_model(session, UUID(stored.job_id))
+            prior = (
+                cast(dict[str, Any], json.loads(stored.receipt_summary_json))
+                if stored.receipt_summary_json is not None
+                else {}
+            )
+            history = prior.get("rebind_history")
+            if isinstance(history, list):
+                summary = {**summary, "rebind_history": history}
             stored.state = state.value
             stored.receipt_summary_json = _canonical_json(summary)
             job.apply_state = state.value

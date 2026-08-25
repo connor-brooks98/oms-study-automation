@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import Field
 
+from oms_hub.anki.ankiconnect import AnkiConnectError
 from oms_hub.anki.apply import ApplyCoordinator, ApplyGateway, ApplyResult
 from oms_hub.anki.card_centric import CardCentricValidationError, resolve_card_centric_scope
 from oms_hub.anki.card_centric_contracts import CardConceptLedger
@@ -19,6 +20,7 @@ from oms_hub.anki.card_centric_fixture import FixtureUnavailable
 from oms_hub.anki.card_centric_fixture_service import fixture_for, validate_fixture
 from oms_hub.anki.card_centric_review import V3ReviewSnapshot
 from oms_hub.anki.contracts import (
+    ActionEnvelopeV2,
     AddNotesOperation,
     AddTagsOperation,
     ContractModel,
@@ -46,12 +48,14 @@ from oms_hub.anki.envelope import (
     CurrentCollectionNote,
     EnvelopeBuilder,
     EnvelopeBuildError,
+    rebind_add_only_envelope,
 )
 from oms_hub.anki.gaps import (
     GapCardProposal,
     GapValidationError,
     validate_gap_card_fields,
 )
+from oms_hub.anki.maintenance import LocalIndexRefreshError
 from oms_hub.anki.paths import LectureIdentity, target_deck, target_tag
 from oms_hub.anki.reconciliation import (
     CardCentricReconciliationInput,
@@ -348,7 +352,7 @@ async def run_card_centric_fixture(
     "/api/anki/jobs",
     status_code=status.HTTP_201_CREATED,
 )
-def create_anki_job(
+async def create_anki_job(
     request: Request,
     payload: CreateCurationJobRequest,
 ) -> dict[str, Any]:
@@ -359,13 +363,24 @@ def create_anki_job(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Build the local Anki index before starting curation",
         )
+    refreshed = False
+    maintainer = getattr(request.app.state, "anki_index_maintainer", None)
+    if maintainer is not None:
+        try:
+            await maintainer.refresh()
+        except (LocalIndexRefreshError, RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Anki sync and local index refresh did not complete",
+            ) from exc
+        refreshed = True
     snapshot_id = companion.snapshot_id()
     if snapshot_id is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="The companion index has no active snapshot",
         )
-    if payload.index_snapshot_id != snapshot_id:
+    if not refreshed and payload.index_snapshot_id != snapshot_id:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="The selected Anki snapshot is stale; refresh and try again",
@@ -508,6 +523,7 @@ def create_anki_job(
     try:
         domain = replace(
             payload.to_domain(model=resolved_model),
+            index_snapshot_id=snapshot_id,
             tag_allowlist=resolved_tag_allowlist,
             source_revision_hashes=hashes,
             semantic_generation=str(semantic.manifest.generation),
@@ -1178,6 +1194,65 @@ async def build_anki_envelope(
         "payload_sha256": stored.payload_sha256,
         "summary": _envelope_summary(envelope),
         "reconciliation": reconciliation,
+    }
+
+
+@router.post("/api/anki/jobs/{job_id}/envelope/rebind")
+async def rebind_anki_envelope(
+    request: Request,
+    job_id: UUID,
+    payload: EnvelopeRequest,
+) -> dict[str, Any]:
+    _deny_rehearsal_apply(request)
+    repository = _repository(request)
+    job = _require_job(repository, job_id)
+    if (
+        job.state is not CurationState.ENVELOPE_PENDING
+        or job.apply_state is not ApplyState.FAILED_BEFORE_APPLY
+        or job.review_revision != payload.review_revision
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only the unchanged failed-before-apply review can be rebound",
+        )
+    stored = repository.get_job_envelope(job_id)
+    if stored is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The frozen apply plan is unavailable",
+        )
+    envelope = repository.get_envelope(stored.id)
+    if not isinstance(envelope, ActionEnvelopeV2):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only a V2 apply plan can be rebound",
+        )
+    gateway = _gateway(request)
+    try:
+        await gateway.sync()
+    except AnkiConnectError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Anki sync did not complete; no mutation performed",
+        ) from exc
+    current = await _current_notes(gateway, sorted(envelope.touched_note_hashes))
+    try:
+        rebound = rebind_add_only_envelope(envelope, current)
+        rebound_stored = repository.rebind_failed_before_apply_envelope(
+            job_id,
+            rebound,
+            expected_payload_sha256=stored.payload_sha256,
+        )
+    except (EnvelopeBuildError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    return {
+        "job_id": str(job_id),
+        "envelope_id": str(rebound_stored.id),
+        "payload_sha256": rebound_stored.payload_sha256,
+        "summary": _envelope_summary(rebound),
     }
 
 

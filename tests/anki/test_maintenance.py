@@ -46,6 +46,14 @@ class FakeRuntime:
         return self.result
 
 
+class FakeGateway:
+    def __init__(self) -> None:
+        self.sync_calls = 0
+
+    async def sync(self) -> None:
+        self.sync_calls += 1
+
+
 class FakeSemantic:
     async def refresh(
         self,
@@ -122,7 +130,7 @@ def test_local_index_refresh_publishes_companion_and_semantic_generations(
 
     async def scenario() -> None:
         companion = FakeCompanion()
-        gateway = object()
+        gateway = FakeGateway()
         semantic = FakeSemantic()
         maintainer = LocalIndexMaintainer(
             FakeRuntime(_preflight()),
@@ -149,6 +157,7 @@ def test_local_index_refresh_publishes_companion_and_semantic_generations(
         assert result.duration_ms == 2500.0
         assert result.semantic_snapshot_size_bytes == 4096
         assert result.peak_memory_bytes == 8192
+        assert gateway.sync_calls == 1
         assert companion.calls == [
             {
                 "gateway": gateway,
@@ -169,7 +178,7 @@ def test_local_index_refresh_stops_when_preflight_is_not_safe() -> None:
         companion = FakeCompanion()
         maintainer = LocalIndexMaintainer(
             FakeRuntime(_preflight(reachable=False)),
-            object(),
+            FakeGateway(),
             companion,
             FakeSemantic(),
             FakeStore(),
@@ -224,7 +233,7 @@ def test_local_index_refresh_excludes_blank_notes_from_semantic_coverage() -> No
     async def scenario() -> None:
         maintainer = LocalIndexMaintainer(
             FakeRuntime(_preflight()),
-            object(),
+            FakeGateway(),
             BlankNoteCompanion(),
             FakeSemantic(),
             OneNoteStore(),
