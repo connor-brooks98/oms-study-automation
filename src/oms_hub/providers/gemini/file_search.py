@@ -176,7 +176,18 @@ class GeminiFileSearchAdmin:
         async with self.client_factory.client() as client:
             operations = _operations_api(client)
             while True:
-                operation = await _call_provider(operations.get, operation)
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise GeminiTransientError(
+                        "Gemini import operation timed out; resume the persisted operation."
+                    )
+                try:
+                    async with asyncio.timeout(remaining):
+                        operation = await _call_provider(operations.get, operation)
+                except TimeoutError:
+                    raise GeminiTransientError(
+                        "Gemini import operation timed out; resume the persisted operation."
+                    ) from None
                 if bool(_value(operation, "done")):
                     return _completed_operation(operation_name, operation)
                 remaining = deadline - monotonic()

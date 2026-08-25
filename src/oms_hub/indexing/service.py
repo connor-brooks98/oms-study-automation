@@ -22,6 +22,11 @@ from oms_hub.providers.gemini.errors import GeminiProviderError
 if TYPE_CHECKING:
     from oms_hub.knowledge.service import IndexInputView
 
+_CLEANUP_PREFIX = "cleanup:"
+_SAFE_ERROR_CATEGORIES = frozenset(
+    {"authentication", "contract", "provider", "quota", "transient"}
+)
+
 
 class IndexingInputError(ValueError):
     """The canonical source cannot safely cross the provider boundary."""
@@ -55,10 +60,14 @@ class IndexingService:
                 store.id, source_revision_id
             )
             if current is not None and current.state is IndexState.READY:
+                cleanup_warning = None
+                if (current.last_error_category or "").startswith(_CLEANUP_PREFIX):
+                    current, cleanup_warning = await self._cleanup(current)
                 return IndexResult(
                     source_revision_id,
                     IndexState.READY,
                     current.provider_document_name,
+                    cleanup_warning,
                 )
             if current is not None and current.state is IndexState.TERMINAL_FAILURE:
                 return IndexResult(source_revision_id, IndexState.TERMINAL_FAILURE)
@@ -114,7 +123,7 @@ class IndexingService:
                 state=IndexState.READY,
                 provider_document_id=completed.document_name,
                 provider_document_name=completed.document_name,
-                last_error_category=None,
+                last_error_category=f"{_CLEANUP_PREFIX}pending",
             )
         except GeminiProviderError as error:
             failed_state = (
@@ -130,18 +139,35 @@ class IndexingService:
             )
             return IndexResult(source_revision_id, document.state)
 
-        cleanup_warning = None
-        try:
-            assert document.provider_file_name is not None
-            await self.admin.delete_file(document.provider_file_name)
-        except GeminiProviderError as error:
-            cleanup_warning = error.category
+        document, cleanup_warning = await self._cleanup(document)
         return IndexResult(
             source_revision_id,
             document.state,
             document.provider_document_name,
             cleanup_warning,
         )
+
+    async def _cleanup(
+        self,
+        document: ProviderDocument,
+    ) -> tuple[ProviderDocument, str | None]:
+        if document.provider_file_name is None:
+            return document, None
+        try:
+            await self.admin.delete_file(document.provider_file_name)
+        except GeminiProviderError as error:
+            category = (
+                error.category if error.category in _SAFE_ERROR_CATEGORIES else "provider"
+            )
+            return (
+                self._save(
+                    document,
+                    state=IndexState.READY,
+                    last_error_category=f"{_CLEANUP_PREFIX}{category}",
+                ),
+                category,
+            )
+        return self._save(document, state=IndexState.READY, last_error_category=None), None
 
     def _provider_input(
         self,
