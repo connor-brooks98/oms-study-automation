@@ -449,8 +449,8 @@ def test_v2_selection_keeps_all_mandatory_high_existing_cards_above_soft_cap() -
         minimum=60,
     )
 
-    assert result.selected_existing_note_ids == (1,)
-    assert result.excluded_existing_note_ids == tuple(range(2, 72))
+    assert set(result.selected_existing_note_ids) == set(range(1, 72))
+    assert result.excluded_existing_note_ids == ()
 
 
 def test_v2_selection_stops_ordinary_cards_at_target_of_65() -> None:
@@ -495,8 +495,11 @@ def test_v2_selection_stops_ordinary_cards_at_target_of_65() -> None:
         minimum=60,
     )
 
-    assert result.selected_existing_note_ids == (1,)
-    assert result.excluded_existing_note_ids == tuple(range(2, 81))
+    assert len(result.selected_existing_note_ids) == 65
+    assert set(result.selected_existing_note_ids).isdisjoint(result.excluded_existing_note_ids)
+    assert set(result.selected_existing_note_ids) | set(
+        result.excluded_existing_note_ids
+    ) == set(range(1, 81))
     assert result.selected_generated_card_ids == ()
 
 
@@ -542,7 +545,7 @@ def test_v2_selection_allows_mandatory_high_cards_through_70_without_overflow() 
         minimum=60,
     )
 
-    assert result.selected_existing_note_ids == (1,)
+    assert set(result.selected_existing_note_ids) == set(range(1, 71))
 
 
 def test_v2_selection_places_mandatory_existing_before_medium_generated_rows() -> None:
@@ -607,11 +610,11 @@ def test_v2_selection_places_mandatory_existing_before_medium_generated_rows() -
         minimum=60,
     )
 
-    assert result.selected_existing_note_ids == (1,)
+    assert set(result.selected_existing_note_ids) == set(range(1, 11))
     assert result.selected_generated_card_ids == tuple(
         f"G{index:02d}" for index in range(1, 65)
     )
-    assert len(result.selected_existing_note_ids) + len(result.selected_generated_card_ids) == 65
+    assert len(result.selected_existing_note_ids) + len(result.selected_generated_card_ids) == 74
 
 
 def test_classifier_rejects_invented_ids_ungrounded_yes_and_partial_batch() -> None:

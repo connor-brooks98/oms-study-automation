@@ -1250,10 +1250,17 @@ def select_high_yield_v2(
 
     for classification in classifications:
         tier_priority = covered_priority(classification.covered_concept_ids)
+        # ponytail: note identity conservatively preserves distinct facts until the
+        # classifier emits covered_fact_ids; semantic note dedupe can replace this proxy.
         coverage = frozenset(
-            ("concept", concept_id)
-            for concept_id in classification.covered_concept_ids
-            if concept_id in concepts
+            {
+                ("note", str(classification.note_id)),
+                *(
+                    ("concept", concept_id)
+                    for concept_id in classification.covered_concept_ids
+                    if concept_id in concepts
+                ),
+            }
         )
         if selection_eligible_v2(classification, source_index):
             tier = SelectionTier.T3 if tier_priority == 0 else SelectionTier.T5

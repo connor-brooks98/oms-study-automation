@@ -822,7 +822,7 @@ def test_expected_red_p3_h3_s8_duplicate_identity_survives_into_s9_audit() -> No
                     verdict="YES",
                     primary_subject="heme synthesis",
                     reason="Grounded existing coverage.",
-                    covered_concept_ids=("C01",),
+                    covered_concept_ids=("C02",),
                     supporting_passage_ids=(slide_id,),
                 ),
                 *(
@@ -1022,8 +1022,8 @@ def test_duplicate_target_identity_survives_selection_into_reconciliation() -> N
 
     report = reconcile_card_centric(snapshot)
 
-    assert selection.selected_existing_note_ids == (11, *range(1, 10))
-    assert 10 in selection.excluded_existing_note_ids
+    assert selection.selected_existing_note_ids == (11, *range(1, 11))
+    assert selection.excluded_existing_note_ids == ()
     assert report.failed == ()
     # The deliberately 10-card fixture still warns below the policy floor;
     # its envelope status is unrelated to the duplicate-target invariant.
@@ -1449,8 +1449,8 @@ def test_selection_orders_t1_t2_t3_positions_expected_red_p3_m11() -> None:
     asyncio.run(scenario())
 
 
-def test_selection_keeps_only_best_redundant_coverage_expected_red_p3_h5() -> None:
-    """P3 H-5: selection exposes quality-first nonredundancy rather than count padding."""
+def test_selection_preserves_distinct_existing_notes_with_shared_concept() -> None:
+    """Existing notes remain distinct facts even when their concept coverage matches."""
 
     async def scenario() -> None:
         source = lifecycle_source_payload()
@@ -1500,20 +1500,11 @@ def test_selection_keeps_only_best_redundant_coverage_expected_red_p3_h5() -> No
             job=lifecycle_job(), stage=CurationStage.CARD_SELECTION, prior_payloads=prior
         )
 
-        assert selection.payload["selection_metadata"] == [
-            {
-                "correction_contract_version": 1,
-                "identity": "existing:1",
-                "selected_position": 1,
-                "tier": "T3",
-                "evidence_quality": "primary_source",
-                "mandatory": True,
-                "marginal_value_reason": None,
-                "overflow_reason": None,
-                "manual_acknowledgement_required": False,
-            }
-        ], "P3 H-5: Selection lacks quality-first nonredundant coverage evidence"
-        assert selection.payload["selected_existing_note_ids"] == [1]
+        assert set(selection.payload["selected_existing_note_ids"]) == set(range(1, 11))
+        assert len(selection.payload["selection_metadata"]) == 10
+        assert all(
+            item["tier"] == "T3" for item in selection.payload["selection_metadata"]
+        )
 
     asyncio.run(scenario())
 
@@ -1995,8 +1986,8 @@ def test_expected_red_p3_h5_positions_66_to_70_require_governed_marginal_reasons
     assert all(item.get("marginal_value_reason") in allowed for item in marginal)
 
 
-def test_expected_red_p3_h5_dominance_excludes_no_better_subset_coverage() -> None:
-    """P3 H-5: a no-better subset candidate cannot displace clearer atomic coverage."""
+def test_existing_subset_concept_coverage_preserves_distinct_note_facts() -> None:
+    """Concept subset coverage cannot prove that two existing notes repeat one fact."""
     source = CardCentricSourceIndex.model_validate(lifecycle_source_payload()["source_index"])
     slide_id = next(
         passage.passage_id for passage in source.passages if passage.authority == "slide"
@@ -2028,8 +2019,8 @@ def test_expected_red_p3_h5_dominance_excludes_no_better_subset_coverage() -> No
         )
     )
 
-    assert selected == (1,)
-    assert excluded == (2,)
+    assert selected == (1, 2)
+    assert excluded == ()
     assert generated == ()
 
 
