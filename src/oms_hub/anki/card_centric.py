@@ -1035,16 +1035,20 @@ class CardCentricClassifier:
             )
         passages = {passage.passage_id: passage for passage in source_index.passages}
         allowed_concepts = set(concept_ids)
+        validated: list[CardClassification] = []
         for result in output.results:
             if self.require_nonblank_reason and not result.reason.strip():
                 raise CardCentricValidationError("classifier returned a blank reason")
             if not set(result.covered_concept_ids) <= allowed_concepts:
                 raise CardCentricValidationError("classifier invented a concept ID")
             if not set(result.supporting_passage_ids) <= set(passages):
-                raise CardCentricValidationError("classifier invented a supporting passage ID")
+                result = result.model_copy(
+                    update={"verdict": "MAYBE", "supporting_passage_ids": ()}
+                )
             if result.verdict == "YES" and not result.supporting_passage_ids:
                 raise CardCentricValidationError("classifier returned an ungrounded YES")
-        return tuple(sorted(output.results, key=lambda item: item.note_id))
+            validated.append(result)
+        return tuple(sorted(validated, key=lambda item: item.note_id))
 
 
 def selection_eligible(

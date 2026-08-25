@@ -709,13 +709,15 @@ def test_classifier_validates_only_canonical_source_prefixed_passage_ids() -> No
             )
         }
     )
-    with pytest.raises(CardCentricValidationError, match="passage"):
-        classifier.validate_output(
-            opaque,
-            cards=(card,),
-            source_index=source,
-            concept_ids=(),
-        )
+    downgraded = classifier.validate_output(
+        opaque,
+        cards=(card,),
+        source_index=source,
+        concept_ids=(),
+    )
+    assert downgraded[0].verdict == "MAYBE"
+    assert downgraded[0].supporting_passage_ids == ()
+    assert not selection_eligible(downgraded[0], source)
 
 
 def test_classifier_uses_cached_prefix_and_restores_parallel_batch_order() -> None:
