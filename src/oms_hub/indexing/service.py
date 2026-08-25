@@ -6,7 +6,7 @@ import hashlib
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from oms_hub.indexing.models import (
     IndexState,
@@ -16,10 +16,11 @@ from oms_hub.indexing.models import (
 )
 from oms_hub.indexing.repository import IndexRepository
 from oms_hub.knowledge.models import SourceRevisionState
-from oms_hub.knowledge.service import IndexInputView
 from oms_hub.providers.contracts import AuthorityClass
 from oms_hub.providers.gemini.errors import GeminiProviderError
-from oms_hub.providers.gemini.file_search import GeminiFileSearchAdmin
+
+if TYPE_CHECKING:
+    from oms_hub.knowledge.service import IndexInputView
 
 
 class IndexingInputError(ValueError):
@@ -39,7 +40,7 @@ class IndexingService:
         self,
         repository: IndexRepository,
         knowledge_service: Any,
-        admin: GeminiFileSearchAdmin,
+        admin: Any,
     ) -> None:
         self.repository = repository
         self.knowledge_service = knowledge_service
@@ -59,6 +60,8 @@ class IndexingService:
                     IndexState.READY,
                     current.provider_document_name,
                 )
+            if current is not None and current.state is IndexState.TERMINAL_FAILURE:
+                return IndexResult(source_revision_id, IndexState.TERMINAL_FAILURE)
 
         store = await self.admin.ensure_store(key)
         document = self.repository.get_document_by_source_revision(
@@ -87,9 +90,11 @@ class IndexingService:
                 )
 
             if document.provider_operation_name is None:
+                file_name = document.provider_file_name
+                assert file_name is not None
                 operation = await self.admin.import_file(
                     store.provider_store_name,
-                    document.provider_file_name,
+                    file_name,
                     metadata,
                     None,
                 )
@@ -101,9 +106,9 @@ class IndexingService:
             elif document.state is not IndexState.IMPORTING:
                 document = self._save(document, state=IndexState.IMPORTING)
 
-            completed = await self.admin.wait_for_operation(
-                document.provider_operation_name
-            )
+            operation_name = document.provider_operation_name
+            assert operation_name is not None
+            completed = await self.admin.wait_for_operation(operation_name)
             document = self._save(
                 document,
                 state=IndexState.READY,
@@ -178,7 +183,7 @@ class IndexingService:
         document: ProviderDocument,
         *,
         state: IndexState,
-        **changes: object,
+        **changes: Any,
     ) -> ProviderDocument:
         if state is not document.state:
             validate_transition(document.state, state)

@@ -301,9 +301,12 @@ def test_nonretryable_provider_failure_persists_terminal_state(tmp_path: Path) -
     document = repository.get_document_by_source_revision(
         admin.store.id, view.source_revision_id
     )
+    calls = (len(admin.ensure_calls), len(admin.upload_calls), len(admin.import_calls))
+    repeated = run(service.index_revision(view.source_revision_id))
 
     assert result.state is IndexState.TERMINAL_FAILURE
+    assert repeated.state is IndexState.TERMINAL_FAILURE
+    assert calls == (len(admin.ensure_calls), len(admin.upload_calls), len(admin.import_calls))
     assert document is not None
     assert document.state is IndexState.TERMINAL_FAILURE
     assert document.last_error_category == "contract"
-
