@@ -9,7 +9,7 @@ from threading import Barrier
 from typing import Any
 
 import pytest
-from sqlalchemy import event, text
+from sqlalchemy import event, inspect, text
 
 from oms_hub.db import Database
 from oms_hub.document_processing.domain import (
@@ -492,6 +492,78 @@ def test_cli_dry_run_is_read_only_and_emits_safe_json(tmp_path: Path) -> None:
     )
     assert blocked.returncode != 0
     assert "activation requires explicit application wiring" in blocked.stderr
+    database.close()
+
+
+def test_cli_dry_run_works_without_knowledge_tables(tmp_path: Path) -> None:
+    import json
+    import os
+    import subprocess
+    import sys
+
+    source = build_pptx(
+        tmp_path / "legacy-only.pptx",
+        slides=(SlideFixture("Legacy title", "Legacy private source text"),),
+    )
+    pdf = tmp_path / "legacy-only.pdf"
+    pdf.write_bytes(b"pdf")
+    database = Database(f"sqlite:///{tmp_path / 'legacy-only.db'}")
+    database.migrate()
+    lecture_id = CatalogRepository(database).upsert_lecture(
+        LectureInput("Legacy CLI Course", 1, 1, "CLI", "", None)
+    )
+    source_hashes = (sha256_file(source), sha256_file(pdf))
+    with database.session() as session:
+        session.add(UploadBatchModel(id="legacy-batch", kind="slides", state="complete"))
+        session.add(
+            UploadItemModel(
+                id="legacy-item",
+                batch_id="legacy-batch",
+                kind="slides",
+                original_filename="legacy-only.pptx",
+                staged_path=str(source),
+                sha256=source_hashes[0],
+                size_bytes=source.stat().st_size,
+                state="complete",
+                lecture_id=lecture_id,
+            )
+        )
+        session.flush()
+        session.add(
+            StudyRevisionModel(
+                upload_item_id="legacy-item",
+                lecture_id=lecture_id,
+                kind="slides",
+                source_sha256=source_hashes[0],
+                immutable_source_path=str(source),
+                derived_sha256=source_hashes[1],
+                canonical_derived_path=str(pdf),
+                canonical_source_path=str(source),
+                state="current",
+                current=True,
+            )
+        )
+    assert not inspect(database.engine).has_table("knowledge_sources")
+    env = {**os.environ, "OMS_HUB_DATABASE_URL": f"sqlite:///{tmp_path / 'legacy-only.db'}"}
+    result = subprocess.run(
+        [sys.executable, "-m", "oms_hub.knowledge.backfill", "--dry-run", "--limit", "1"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["examined_revision_ids"] == ["1"]
+    assert payload["examined"] == 1
+    assert payload["created"] == 1
+    assert payload["failure_ids"] == []
+    assert "Legacy private source text" not in result.stdout
+    assert str(tmp_path) not in result.stdout
+    assert not inspect(database.engine).has_table("knowledge_sources")
+    assert not inspect(database.engine).has_table("source_revisions")
+    assert not inspect(database.engine).has_table("evidence_units")
+    assert (sha256_file(source), sha256_file(pdf)) == source_hashes
     database.close()
 
 
